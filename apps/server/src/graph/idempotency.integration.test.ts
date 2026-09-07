@@ -4,13 +4,7 @@ import fc from "fast-check";
 import { ScpClient } from "@scp/sdk";
 import { createTestOrg, listenTestServer } from "../test-support/harness.js";
 
-/**
- * BUILD_AND_TEST.md §8 M1 DoD (e): "fast-check property tests: randomized PUT upsert-by-URN
- * sequences and replayed Idempotency-Key POSTs converge to identical graph state on all write
- * endpoints." One shared org (writes are independent per random URN/key, so tests don't collide)
- * with a modest `numRuns` — each run is a handful of real HTTP round trips against a real
- * Postgres, not a pure in-memory check.
- */
+/** BUILD_AND_TEST.md §8 M1 DoD (e). See docs/graph.md §52. */
 describe("idempotency: fast-check convergence properties", () => {
   it("PUT upsert-by-URN: replaying the final write of a random sequence is a true no-op", async () => {
     const server = await listenTestServer();

@@ -9,34 +9,7 @@ import {
   type ListeningTestServer
 } from "../test-support/harness.js";
 
-/**
- * REGRESSION GUARD for a "component built, never installed" defect: the Ajv compiled-validator
- * cache in `graph/property-validation.ts` was keyed on `object_types.id`, and its exported
- * `invalidatePropertyValidatorCache` had ZERO callers anywhere in the tree. A long-lived process
- * therefore validated every write against the FIRST `property_schema` it ever compiled for a
- * type, for the whole life of the process.
- *
- * WHY THIS TEST IS SHAPED THE WAY IT IS. The schema edit below is applied over a SEPARATE ADMIN
- * CONNECTION, and the server under test is then driven only through its real HTTP routes. Nothing
- * tells the server the schema moved: no restart, no cache API, no hook, no in-process call. That
- * is not incidental — it is the entire point, and it mirrors production exactly. The only thing
- * that ever rewrites `property_schema` is a SQL migration, and on the Helm split topology those
- * arrive from `migrate-bin.ts` running as a `pre-upgrade` Job: a different, short-lived process
- * that applies the `UPDATE`, exits, and deliberately leaves the running api/worker pods serving
- * (the chart defaults to 2 + 2). A test that reached into the cache directly — or that called an
- * invalidator itself — would prove nothing about that, because in production there is no in-process
- * caller to do the reaching. It would go green against the exact bug it was written to catch.
- *
- * MUTATION-CHECKED, both halves: re-keying the cache on the type id (the old behaviour) makes the
- * `tier`-missing rejection below fail, and removing the write in step 1 that warms the cache makes
- * the test vacuous rather than failing — so the warm-up assertions are load-bearing and are
- * asserted on, not merely performed.
- *
- * The type is created through the API and edited by SQL because that is the real division of
- * labour: the API can only INSERT a type (`type-registry-repo.ts` has no update), so a
- * `property_schema` that CHANGES can only ever get there by migration. M22 does exactly this to
- * `component` and `policy`.
- */
+/** REGRESSION GUARD for a "component built, never installed" defect. See docs/graph.md §146. */
 describe("property_schema edits reach a live process (no restart)", () => {
   let server: ListeningTestServer;
 
@@ -102,12 +75,7 @@ describe("property_schema edits reach a live process (no restart)", () => {
       required: ["code", "tier"]
     });
 
-    // STEP 3 — the SAME live process must now enforce the NEW schema, in BOTH directions. One
-    // direction alone is not enough: a cache that always recompiled from scratch and a cache that
-    // was simply disabled would both pass (a), so (b) pins that valid writes still succeed.
-    //
-    // (a) newly-required `tier` is missing. Under the id-keyed cache this call SUCCEEDED — this is
-    //     the assertion that dies if the fix is reverted.
+    // The same live process must enforce the new schema both ways. See docs/graph.md §147.
     await expect(
       client.object(typeId).create({ name: "g2", properties: { code: "B" } })
     ).rejects.toThrow();

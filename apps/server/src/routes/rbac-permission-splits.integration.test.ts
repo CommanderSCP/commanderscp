@@ -14,66 +14,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * STEP 3 — THE THREE PERMISSION SPLITS AND THE FIVE PURPOSE ROLES (role-model.md §5 step 3)
- * ================================================================================================
- *
- * `drizzle/0099` splits `secret:write`, `scan:override` and `change:accept` out of the two generic
- * write verbs, deletes `org:admin`, and seeds SecurityOfficer / FederationAdmin / OrgAdmin /
- * ServiceAdmin / ComponentAdmin. Two of those splits change who can do what on a live deployment,
- * and role-model.md §8.5 measured why that is dangerous here: all 334 `403` occurrences across
- * `apps/server`'s tests were enumerated and **zero** of them pinned any of the behaviour this
- * increment moves. So the splits would otherwise ship with nothing holding them to anything.
- *
- * EVERY CASE BELOW ENTERS AT THE ROUTE, through `app.inject`, with a real bearer token from the
- * real login flow, against real PostgreSQL. Asserting `hasPermission()` directly would prove the
- * resolver agrees with itself and say nothing about whether the door demands the permission — which
- * is precisely the failure class this repo keeps hitting (a component built and wired nowhere).
- *
- * ------------------------------------------------------------------------------------------------
- * THE PAIRING RULE THIS FILE FOLLOWS
- * ------------------------------------------------------------------------------------------------
- * Every refusal is paired with an ADMISSION on the same door with the same request body, differing
- * only in the actor's role. A lone 403 proves nothing — a typo'd URL, a schema rejection or a
- * missing fixture all produce one — and the pair is what says the ACTOR'S STANDING decided it.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied ALONE, measured, then reverted (2026-08-27)
- * ------------------------------------------------------------------------------------------------
- *  1. `routes/executors.ts` PUT /secrets/:key — `secret:write` -> `object:write`
- *       -> "the credential doors refuse org-root `object:write` alone" FAILED:
- *          `{"configured":true,"key":"cred-c76be3f0"}: expected 200 to be 403`.
- *  2. `routes/scan-override-grants.ts` `decide` — deleted the whole `scan:override` `authorize()`
- *       -> "DECIDING refuses a `policy:write`-only principal" FAILED: `expected 200 to be 403`,
- *          the body carrying `"status":"approved"` — the OrgAdmin really did sign the waiver.
- *  3. `routes/changes.ts` accept handler — `assertAcceptableAtEveryChangeTarget` ->
- *     `assertWritableAtEveryChangeTarget`
- *       -> "accept and rollback refuse an org-root `object:write` holder" FAILED:
- *          `expected 409 to be 403`, detail `illegal transition: 'proposed' -> 'accepted'` — i.e.
- *          the org-root Operator cleared authorization and reached the state machine.
- *  4. `routes/changes.ts` CANCEL handler — `assertWritableAtEveryChangeTarget` ->
- *     `assertAcceptableAtEveryChangeTarget`
- *       -> "CANCEL still works for exactly that principal" FAILED: `expected 403 to be 200`,
- *          detail `subject '<id>' lacks 'change:accept' at scope '<orgId>'`.
- *  5. `drizzle/0099` §1 — deleted the `array_remove(permissions, 'org:admin')` statement
- *       -> "`org:admin` is gone from Owner" FAILED:
- *          `expected [ 'approval:write', ...(22) ] to not include 'org:admin'`.
- *  6. `drizzle/0099` §2c — added `'Operator'` to the `change:accept` grant's name list
- *       -> "Operator and Approver deliberately do NOT hold `change:accept`" FAILED:
- *          `Operator: expected [ 'audit:read', 'change:accept', ...(7) ] to not include
- *          'change:accept'` — AND case 3 FAILED too (`expected 409 to be 403`). The seed half and
- *          the door half agreeing is what says they are the same fact.
- *  7. `drizzle/0099` §3C — added `'scan:override'` to OrgAdmin's permission literal
- *       -> "the separation of duty is real" FAILED:
- *          `expected [ 'approval:write', ...(17) ] to not include 'scan:override'` — AND
- *          "DECIDING refuses a `policy:write`-only principal" FAILED (`expected 200 to be 403`),
- *          which is the SoD claim and its enforcement measured as one thing.
- *
- * Each mutation was CONFIRMED APPLIED before its run, and confirmed REVERTED after — the migration
- * ones by re-reading the `.sql` off disk, the route ones by `git diff --stat` plus a call-site
- * count. A mutation that never landed is a false negative, and this programme has produced one.
- */
+/** STEP 3 — THE THREE PERMISSION SPLITS AND THE FIVE PURPOSE ROLES. See docs/routes.md §338. */
 describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -170,17 +111,10 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     await server?.close();
   });
 
-  // =============================================================================================
   // SPLIT 1 — `secret:write` SUBSTITUTES `object:write` at the three credential doors (§1.3d)
-  // =============================================================================================
 
   it("the credential doors refuse org-root `object:write` alone — this is the breaking change", async () => {
-    // THE PRINCIPAL IS THE ONE THE SPLIT EXISTS TO STOP: org-root `Operator`, which holds
-    // `object:write` at the org root and therefore satisfied all three of these doors on every
-    // deployment before 0099. Three unrelated blast radii shared that one grant — writing the
-    // tokens SCP dials GitHub/ArgoCD/Terraform with, DELETING them (an availability kill switch for
-    // all coordination), and rotating the HMAC secret that authenticates inbound webhooks, where
-    // whoever sets it can thereafter forge signed source events.
+    // THE PRINCIPAL IS THE ONE THE SPLIT EXISTS TO STOP. See docs/routes.md §339.
     const key = `cred-${randomUUID().slice(0, 8)}`;
     const kind = `hook-${randomUUID().slice(0, 8)}`;
 
@@ -236,9 +170,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     expect(put.body).toContain("secret:write");
   });
 
-  // =============================================================================================
   // SPLIT 2 — `scan:override` is ADDED to the decide door's `policy:write` (§1.3e, ruling D3)
-  // =============================================================================================
 
   it("RAISING a scan override request still works on `object:write` at the component — no regression", async () => {
     // The half that must NOT change. A `requested` grant authorizes nothing until it is signed, so
@@ -376,11 +308,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
   });
 
   it("DENY refuses an already-approved grant — un-approving has exactly one path, `revoke`", async () => {
-    // The state-machine bar, not an authority one: `securityOfficer` clears BOTH permission bars in
-    // every call below. `approve` requires `requested` and `revoke` requires `approved`; `deny` used
-    // to require nothing, so `approved -> denied` silently took a LIVE waiver away through the verb
-    // that answers a request, skipping revoke's precondition and writing a transition no docblock in
-    // the route describes.
+    // The state-machine bar, not an authority one. See docs/routes.md §340.
     const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
     const grantId = await raiseGrant();
     expect(
@@ -418,9 +346,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     expect(revoke.statusCode, revoke.body).toBe(200);
   });
 
-  // =============================================================================================
   // SPLIT 3 — `change:accept` is ADDED at every target of accept/rollback, and NOT to cancel
-  // =============================================================================================
 
   it("accept and rollback refuse an org-root `object:write` holder — the intentional breakage", async () => {
     // `operator` is org-root `Operator`: `object:write` at the org root satisfies the WIDE arm of
@@ -444,11 +370,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
   });
 
   it("CANCEL still works for exactly that principal — the boundary, and the easiest thing to get wrong", async () => {
-    // THE SAME ACTOR, THE SAME CHANGE SHAPE, THE OTHER VERB. Cancelling STOPS a release rather than
-    // authorizing one, so it deliberately stays on `object:write` alone. Folding it into
-    // `change:accept` would make a cancel-only incident-responder role inexpressible — and that is
-    // the role an on-call rota most obviously wants, which is why it is pinned beside the breakage
-    // rather than in a file of its own.
+    // THE SAME ACTOR, THE SAME CHANGE SHAPE, THE OTHER VERB. See docs/routes.md §341.
     const changeId = await propose([componentId]);
     const cancel = await call("POST", operator.token, `/api/v1/changes/${changeId}/cancel`, {
       reason: "an operator can still stop a bad release"
@@ -508,9 +430,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     expect(res.body).toContain(otherComponent);
   });
 
-  // =============================================================================================
   // THE SEEDED DATA — asserted as SETS, so a later migration appending to the wrong role fails here
-  // =============================================================================================
 
   describe("the roles table after drizzle/0099", () => {
     /** Every built-in role row (`org_id IS NULL`), name -> its permission SET and `bindable_at`. */
@@ -566,17 +486,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
           "type_registry:read"
         ].sort()
       );
-      // `federation:pair` IS here, and its absence was a real bug this assertion caught. A first
-      // draft of 0099 withheld it fail-closed because §3C's list omitted it while §4.1 and D4 both
-      // granted it — the proposal contradicting itself. Owner ruling D6 (2026-08-27) resolved it in
-      // D4's favour: FederationAdmin is the ONLY deliberate withholding, because operating a link is
-      // not establishing one. Withholding it from OrgAdmin too would leave an org whose only pairing
-      // principals are Owner and the D5-deprecated Administrator.
-      //
-      // NOT `scan:override`, and that is the design's whole separation of duty: OrgAdmin authors org
-      // policy with `policy:write` and cannot waive a scan verdict, SecurityOfficer can waive and
-      // holds no `object:write`, and neither is the other. Nor the three bypasses
-      // (`freeze:override`, `change:emergency`, `campaign:deadline-override`).
+      // That permission is here, and its absence was a real bug. See docs/routes.md §342.
       expect(table.get("OrgAdmin")?.permissions).toEqual(
         [
           "approval:write",
@@ -634,12 +544,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     it("`bindable_at` is seeded exactly as §3 specifies, and NULL on the five ladder rungs", async () => {
       const table = await builtins();
 
-      // Org root ONLY, and both are MECHANICAL rather than conventional:
-      //  * SecurityOfficer — `OVERRIDE_APPROVAL_TIER_FLOOR = 'org'` and `tierForObjectType` maps no
-      //    graph object above org, so a domain-bound officer would mint waivers that are approved,
-      //    audited and INERT.
-      //  * FederationAdmin — all 14 federation doors pass `scopeObjectId: auth.orgId`, so a
-      //    narrower binding holds every permission and fails the SCOPE check on every door: a trap.
+      // Org root ONLY, and both are MECHANICAL rather than conventional. See docs/routes.md §343.
       expect(table.get("SecurityOfficer")?.bindableAt).toEqual(["organization"]);
       expect(table.get("FederationAdmin")?.bindableAt).toEqual(["organization"]);
       expect(table.get("OrgAdmin")?.bindableAt).toEqual(["organization"]);

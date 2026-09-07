@@ -3,55 +3,13 @@ import { describe, expect, it } from "vitest";
 import { parseKubernetesImages } from "./kubernetes-images.js";
 import { ManifestParseError, type DeclaredDependency } from "./types.js";
 
-/**
- * M21.7 — the Kubernetes/Helm image reader, trap by trap
- * (`docs/proposals/kubernetes-image-references.md` §2 shapes, §4 traps).
- *
- * EVERY ASSERTION NAMES THE SPECIFIC OUTCOME, never a count. "two declarations were returned" is
- * satisfied by two wrong ones, and the failure this parser exists to prevent — a version read
- * through YAML's coercion, an unreadable reference reported as absence — is invisible to a count.
- *
- * The one place a count DOES appear is as a negative control beside a named assertion: e.g. that a
- * file full of `imagePullPolicy`/`imagePullSecrets` keys yields NOTHING, which is what proves the
- * exact-key rule is doing work rather than the fixture being uninteresting.
- *
- * MUTATION LOG — ROUND 5, the false positives (each applied ALONE against a green suite, then
- * reverted). The whole suite passed on the first run after the fix, which is the shape a vacuous
- * test has, so every one of these was run before the round was called done.
- *
- *  1. Delete the image-context guard (`if (!underImageKey && image.kind !== "text") return;`)
- *     → 6 named tests red, all in "T13 — the `image` key is what makes a mapping an image".
- *  2. `isUsableCoordinate` returns true unconditionally → 5 red, incl. the pre-existing
- *     "a malformed reference is refused outright" — so the empty-coordinate rule is one rule.
- *  2b. Keep the empty check, delete only the per-segment check → 3 red. (Deleting only the
- *     `text === ""` clause kills NOTHING: it is redundant with the segment check, kept for
- *     legibility. Recorded rather than quietly left as an untested branch.)
- *  3. `registryRead` drops the `.trim() !== ""` test → 4 red, incl. the two realistic-file cases.
- *  4. Hoist the merge-key report above the context guard (the pre-fix behaviour) → 3 red.
- *  5. `parseAllDocuments(content)` without `{ uniqueKeys: false }` → 3 red, and the timing budget
- *     fails at 7.1 s against its 2 s bound rather than passing slowly.
- *  6. Delete the BLOCK_LITERAL/BLOCK_FOLDED refusal in `readKey` → 1 red.
- *  7. `isDigestShaped` returns true → 3 red, ONE OF THEM IN `dockerfile.test.ts` — which is the
- *     point of putting the helper in `dockerfile.ts` rather than here.
- *  8. `isEmptyDocument` narrowed back to `root === null` → 1 red.
- *  9. Suppress the duplicate-image-key report → 1 red.
- *
- * FIXTURE MUTATION: stripping the non-image furniture out of `REALISTIC_VALUES` leaves the suite
- * green — expected, since removing a hazard cannot fail a test. What proves the fixture is
- * load-bearing is mutation 1: with the guard gone, that one file alone reddens six cases.
- */
+/** The Kubernetes and Helm image reader, trap by trap. See docs/dependency-manifests.md §26. */
 
 /** The entry for one coordinate, or `undefined`. Assertions name the entry they mean. */
 const at = (declarations: readonly DeclaredDependency[], coordinate: string) =>
   declarations.find((d) => d.coordinate === coordinate);
 
-/**
- * A REAL sha256 digest, spelled at full length everywhere a fixture needs one.
- *
- * `sha256:deadbeef` used to do this job, and it is not a digest — it is 8 hex characters where 64
- * belong. Since M21.7's own fix checks the shape, a short fixture would now pass for the wrong
- * reason (refused as malformed) in tests written to prove the digest is CARRIED.
- */
+/** A real digest, spelled at full length everywhere. See docs/dependency-manifests.md §27. */
 const DIGEST = "sha256:bea051df6a6d3bc84288b6db098df38a81d87b7ed226f34d22aaae1bc329c2b7";
 const DIGEST_2 = "sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b";
 
@@ -402,17 +360,7 @@ describe("T9 — the same image twice in one file is ONE row, and says so", () =
   });
 });
 
-/**
- * A values file with the FURNITURE a real chart carries.
- *
- * Every false positive this block exists to catch comes from a file richer than a test author
- * invents: the shapes below are taken from charts that ship — a `sources:` block that names an
- * upstream repository and its release tag, a Kafka client's `schemaRegistry.registry`, a package
- * feed's `registry`, a `<<:` merging resource presets, a `tag` used as a pod LABEL, and the
- * `registry: ""` placeholder that means "the default registry". Exactly TWO images are declared in
- * it, and a parser that reads `repository`/`registry`/`tag` off whatever mapping carries them
- * reports six.
- */
+/** A values file with the furniture a real chart has. See docs/dependency-manifests.md §28. */
 const REALISTIC_VALUES = [
   "## upstream provenance this chart records verbatim",
   "sources:",
@@ -475,11 +423,7 @@ describe("T13 — the `image` key is what makes a mapping an image, and nothing 
   });
 
   it("and reports NOTHING unresolved about it, because `unsupported` must stay meaningful", () => {
-    // `projectIngestionStamp` stamps a manifest `unsupported` and its component `partial` when
-    // every declaration in it is unresolved, and names every unresolved one in the Decision. A
-    // parser that reported this file's `sources[0].tag`, its two non-image `registry` keys and its
-    // `resources.<<` would fire that warning on ordinary charts — and a warning that fires on
-    // everything is a warning nobody reads, which destroys the honesty mechanism M21.7 exists for.
+    // An all-unresolved manifest stamps unsupported. See docs/dependency-manifests.md §29.
     expect(
       parseKubernetesImages(REALISTIC_VALUES).filter((d) => d.constraint === "unresolved")
     ).toEqual([]);
@@ -544,14 +488,7 @@ describe("T13 — the `image` key is what makes a mapping an image, and nothing 
 });
 
 describe("T18 — a `tag:` beside a pod-spec `image:` is a key Kubernetes never reads", () => {
-  /**
-   * WHY THIS IS A WRITE-SIDE BUG AND NOT A REPORTING PREFERENCE. Until M21.7 a values file was
-   * read-only, so reading `containers[].tag` as a version was merely a wrong row. Now the version's
-   * LINE is the line a bump edits (`locateVersionLine` anchors on it), so the same reading has SCP
-   * open a pull request that moves a key the API server does not look at — a diff that reviews as
-   * an upgrade and changes nothing that runs. Trap 13's rule (a) cannot tell a Container object
-   * from a chart image block; rule (b) can, and that is the discriminator.
-   */
+  /** Why this is a write-side bug, not a preference. See docs/dependency-manifests.md §30. */
   it("a Container object's sibling `tag:` is NOT the image's version — and the key is NAMED", () => {
     const [entry, ...rest] = parseKubernetesImages(
       [
@@ -602,13 +539,7 @@ describe("T18 — a `tag:` beside a pod-spec `image:` is a key Kubernetes never 
     expect(entry?.note).toContain("was NOT read as this image's version");
   });
 
-  /**
-   * THE NEGATIVE CONTROL, AND IT IS THE WHOLE REASON THE RULE IS `underImageKey` RATHER THAN A LIST
-   * OF POD-SPEC KEY NAMES. ingress-nginx spells the repository under `image:` beside `registry:`,
-   * `tag:` and `digest:` — a mapping in context by rule (a) AND rule (b) — and Helm renders all of
-   * them. An exclusion that fired here would silently un-pin one of the most widely deployed charts
-   * there is, so a rule that refuses everything would pass the three cases above and fail this one.
-   */
+  /** The negative control behind the image-key rule. See docs/dependency-manifests.md §31. */
   it("NEGATIVE CONTROL: an image BLOCK's sibling tag and digest are still read (ingress-nginx)", () => {
     const entry = at(
       parseKubernetesImages(
@@ -631,11 +562,7 @@ describe("T18 — a `tag:` beside a pod-spec `image:` is a key Kubernetes never 
   });
 
   it("the duplicate report is scoped by the same rule — a repeated dead `tag:` is not an image problem", () => {
-    // THE SECOND CALL SITE OF THE SAME RULE. T17 reports a duplicated image key because Helm takes
-    // the last and a reader takes the first. In a Container object `tag:` is read by nobody, so
-    // reporting a duplicate of it is trap 16's "a warning that fires on things that are not image
-    // references", let back in through the duplicate door. Fixing the read and not this would be
-    // the incomplete-census shape.
+    // THE SECOND CALL SITE OF THE SAME RULE. See docs/dependency-manifests.md §32.
     const declarations = parseKubernetesImages(
       [
         "containers:",
@@ -828,16 +755,7 @@ describe("T1 — a BLOCK SCALAR is not an edit target", () => {
 
 describe("T17 — duplicate keys, and the composer scan that was quadratic", () => {
   it("scales LINEARLY in siblings — the composer's quadratic rescan is off", () => {
-    // NOT A MICRO-BENCHMARK, and deliberately NOT an absolute millisecond budget. `yaml`'s
-    // duplicate-key check rescans every sibling already composed for each new pair, so this input
-    // took 7.1 s with it on and 0.17 s with it off; at the 1 MiB read cap that is the difference
-    // between a minute of CPU per manifest and a fifth of a second. The header used to claim the
-    // work was "linear in the bytes the read cap already bounds", and it was not.
-    //
-    // An absolute budget measured the RUNNER, not the parser: it passed locally at 0.18 s and
-    // failed CI at 2.6 s, where the suite runs under `--coverage` on a shared runner. The property
-    // is a SHAPE — doubling the siblings must roughly double the time, not quadruple it — so it is
-    // measured as a ratio against itself, which no machine speed or instrumentation changes.
+    // Not a micro-benchmark, and not a millisecond budget. See docs/dependency-manifests.md §33.
     const build = (n: number): string => {
       const lines = ["image: acme/api:1.2.3"];
       for (let i = 0; i < n; i++) lines.push(`key${i}: value${i}`);
@@ -852,26 +770,7 @@ describe("T17 — duplicate keys, and the composer scan that was quadratic", () 
       return performance.now() - started;
     };
 
-    // RETRY THE MEASUREMENT, NEVER RELAX THE CLAIM. A single sample of each side flaked once in a
-    // full-repo `turbo run test --force` (`expected 8.64505652940312 to be less than 8`, 1 failure
-    // in 198, green standalone and on repeat) and was reproduced here on demand under the same
-    // load. A wall-clock sample can only ever be INFLATED by a scheduler steal, never deflated, so
-    // one stolen `tLarge` — or one lucky-fast `tSmall` — moves the ratio in the failing direction
-    // while the parser is unchanged. The lowest ratio of a few matched pairs is the uninterrupted
-    // measurement.
-    //
-    // NOTHING THE TEST CLAIMS IS WEAKENED, and that is deliberate: the bound is still 8, the
-    // sibling counts are still 8k and 32k, and the pairs are measured back to back so both halves
-    // of a ratio see the same load. A quadratic rescan lands an order of magnitude above the bound
-    // in EVERY attempt, so no number of retries can hide it. THE FIX FOR A FLAKE HERE IS MORE
-    // SAMPLES, NEVER A LARGER BOUND OR A SMALLER INPUT — those two are exactly the regression this
-    // test exists to catch, and it already had a 30 s timeout, so widening a budget could never
-    // have fixed it anyway.
-    //
-    // IT RETRIES ONLY ON FAILURE, WHICH IS WHAT KEEPS THE FAILURE READABLE. The happy path costs
-    // one pair (~0.2 s here). A genuine quadratic regression costs three (~23 s, inside the 30 s
-    // timeout) and still fails on the RATIO with every attempt printed, rather than on a timeout
-    // that says nothing about what regressed.
+    // RETRY THE MEASUREMENT, NEVER RELAX THE CLAIM. See docs/dependency-manifests.md §34.
     const small = build(8_000);
     const large = build(32_000);
     timed(small); // warm, so JIT compilation is not charged to the first measurement

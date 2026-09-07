@@ -1,33 +1,7 @@
-/**
- * @scp/plugin-testkit — public per-interface conformance suites (DESIGN.md §11: "`@scp/
- * plugin-testkit` ships public per-interface conformance suites, so operators can vet a
- * third-party plugin before baking it into an air-gap image — the only vetting point a
- * disconnected site gets"; BUILD_AND_TEST.md §4.2 "every shipped plugin runs the relevant
- * `@scp/plugin-testkit` suite in its own package tests").
- *
- * M3 (BUILD_AND_TEST.md §8 M3 item 7) is the first real implementation: only `ExecutorPlugin`
- * has a shipped implementation (the in-repo fake executor) to conform against, so only its suite
- * exists here. The other five `@scp/plugin-api` interfaces get their own `run*ConformanceSuite`
- * exports the same way once M4/M6/M7 ship a real implementation to test.
- *
- * Deliberately generic: every assertion checks only the SHAPE the `ExecutorPlugin` contract
- * itself promises (well-formed capabilities/refs/phases/events) — never fake-executor-specific
- * behavior (exact version numbering, file-backed state, timing). That's what lets a REAL executor
- * plugin (GitHub/ArgoCD, M7) reuse this exact suite later against a live or fixture-backed
- * instance, and what lets an operator vet an arbitrary third-party plugin with it before trusting
- * it into an air-gap image.
- */
+/** Public per-interface conformance suites for operators. See docs/plugin-testkit.md §1. */
 import { describe, expect, it } from "vitest";
 
-/**
- * Re-exported so every fixture that already imports from this package for the conformance suites
- * themselves — every `*.conformance.test.ts` in `packages/plugins/*` — gets the tracked-tempdir
- * allocator for free, with no new `package.json` dependency. Each fixture's factory calls
- * `runExecutorConformanceSuite`'s `factory` once PER `it()` (see that export below), so a fixture
- * that `mkdtemp`s its own `statePath` leaks one directory per assertion in the shared suite if it
- * uses the raw allocator instead of this one — see `@scp/test-tmpdir`'s module doc for the class
- * this closes.
- */
+/** Re-exports the tracked tempdir allocator to every fixture. See docs/plugin-testkit.md §2. */
 export {
   mkdtempTracked,
   mkdtempTrackedSync,
@@ -56,17 +30,7 @@ import type {
 export interface ExecutorConformanceFixture {
   plugin: ExecutorPlugin;
   ctx: PluginContext;
-  /**
-   * MAJOR #4 (adversarial review): optionally simulate a SUBPROCESS RESTART — return a FRESH
-   * plugin instance + ctx that share the FIRST fixture's DURABLE dedup state (i.e. the same
-   * on-disk `statePath`), NOT the first instance's in-process memory. If provided, the idempotency
-   * conformance test fires the two `trigger()` calls across this restart, proving the dedup
-   * guarantee survives the exact crash/resume scenario `coordination/reconcile.ts`'s three-step
-   * design targets (a retry after the subprocess died must NOT re-fire the real side effect). A
-   * fixture that only supports in-memory dedup omits this, and the test falls back to same-instance
-   * dedup (still correct, just a weaker guarantee — which is why the server ALWAYS injects a
-   * durable statePath for real executor instances, `executor-bindings-repo.ts`).
-   */
+  /** MAJOR #4 (adversarial review). See docs/plugin-testkit.md §3. */
   restart?: () => Promise<{ plugin: ExecutorPlugin; ctx: PluginContext }>;
 }
 
@@ -97,12 +61,7 @@ function assertWellFormedCapabilities(caps: ExecutorCapabilities): void {
   }
 }
 
-/**
- * Runs the `ExecutorPlugin` conformance suite against a fresh plugin+ctx built by `factory` —
- * called once per `it()` so each assertion starts from a clean instance rather than accumulating
- * state across the suite (a shipped plugin's own package test wires this up, e.g.
- * `runExecutorConformanceSuite("fake-executor", async () => ({ plugin, ctx }))`).
- */
+/** Runs the executor suite on a fresh instance per test. See docs/plugin-testkit.md §4. */
 export function runExecutorConformanceSuite(
   name: string,
   factory: () => Promise<ExecutorConformanceFixture>
@@ -116,7 +75,7 @@ export function runExecutorConformanceSuite(
     it("trigger() returns an ExternalRunRef with a non-empty externalId", async () => {
       const { plugin, ctx } = await factory();
       const caps = plugin.describeCapabilities();
-      if (!caps.supportsTrigger) return; // capability-gated, per the contract's own vocabulary
+      if (!caps.supportsTrigger) return;
 
       const kind = caps.triggerKinds[0] ?? "custom";
       const ref = await plugin.trigger(ctx, { kind, targetRef: "conformance-target" });
@@ -165,17 +124,7 @@ export function runExecutorConformanceSuite(
       }
     });
 
-    /**
-     * M7 (BUILD_AND_TEST.md §8 M7 item 6 — a tracked M3 item, now due): "extend the Executor
-     * conformance suite to assert an executor honors `idempotencyKey` (same key ⇒ same external
-     * run, no duplicate side effect)". `coordination/reconcile.ts`'s crash-safe `triggerWaveTarget`
-     * (DESIGN §9.3) depends on EVERY real executor plugin honoring this — a retry after a
-     * crash/resume re-derives the SAME `idempotencyKey` and must get back the SAME
-     * `ExternalRunRef` rather than firing a second real run. Two DIFFERENT keys, by contrast, must
-     * be free to mint different runs (this suite doesn't assert they're forced to differ — a
-     * plugin's own state might legitimately coincide — only that a REPEATED key never diverges,
-     * which is the actual safety property the engine relies on).
-     */
+    /** Same idempotency key, same run, no duplicate effect. See docs/plugin-testkit.md §5. */
     it("trigger() honors idempotencyKey — the SAME key returns the SAME ExternalRunRef on retry (no duplicate side effect)", async () => {
       const { plugin, ctx } = await factory();
       const caps = plugin.describeCapabilities();
@@ -218,13 +167,7 @@ export function runExecutorConformanceSuite(
   });
 }
 
-// -------------------------------------------------------------------------------------------
-// ControlPlugin conformance (DESIGN.md §10.2, BUILD_AND_TEST.md §8 M4 item 2) — M4's first real
-// implementation to conform against (`@scp/plugin-webhook-control`). Same generic-shape-only
-// discipline as the executor suite above: every assertion checks only what the `ControlPlugin`
-// contract itself promises (a well-formed `ControlOutcome`), never webhook-control-specific
-// behavior, so a future real control plugin can reuse this suite unchanged.
-// -------------------------------------------------------------------------------------------
+// ControlPlugin conformance: contract shape only. See docs/plugin-testkit.md §6.
 
 const KNOWN_CONTROL_STATUSES: ControlOutcomeStatus[] = [
   "pass",
@@ -242,11 +185,7 @@ export interface ControlConformanceFixture {
   request: ControlRequest;
 }
 
-/**
- * Runs the `ControlPlugin` conformance suite against a fresh plugin+ctx+request built by
- * `factory` — called once per `it()`, mirroring `runExecutorConformanceSuite`'s per-test
- * isolation.
- */
+/** Runs the control suite on a fresh instance per test. See docs/plugin-testkit.md §7. */
 export function runControlConformanceSuite(
   name: string,
   factory: () => Promise<ControlConformanceFixture>
@@ -273,16 +212,7 @@ export function runControlConformanceSuite(
   });
 }
 
-// -------------------------------------------------------------------------------------------
-// DiscoveryPlugin conformance (DESIGN.md §11, BUILD_AND_TEST.md §8 M7) — `@scp/plugin-github`'s
-// discovery half is the first real implementation. Shape-only, same discipline as every other
-// suite here: asserts `discover()` returns a well-formed `DiscoveryProposal`, never that it found
-// any particular thing. The "never auto-commits" guarantee DESIGN §11 requires is NOT (and cannot
-// be) asserted here — `discover()` has no graph access at all, structurally, so there is nothing
-// for this plugin-level suite to observe about commit behavior; that guarantee is proven at the
-// server layer instead (routes/executors.integration.test.ts: `/discovery/run` never writes to the
-// graph, only `/discovery/accept` does).
-// -------------------------------------------------------------------------------------------
+// DiscoveryPlugin conformance: a well-formed proposal only. See docs/plugin-testkit.md §8.
 
 export interface DiscoveryConformanceFixture {
   plugin: DiscoveryPlugin;
@@ -314,13 +244,7 @@ export function runDiscoveryConformanceSuite(
   });
 }
 
-// -------------------------------------------------------------------------------------------
-// NotificationPlugin conformance (DESIGN.md §11, BUILD_AND_TEST.md §8 M7) — `@scp/plugin-
-// webhook-notify`/`@scp/plugin-smtp-notify`'s first real implementations. Same shape-only
-// discipline: asserts `send()` returns a well-formed `DeliveryResult` and never throws even when
-// delivery itself fails (a notification's own failure must never propagate as an exception to
-// whatever engine seam called it — coordination/watchdog.ts, notify/dispatch.ts).
-// -------------------------------------------------------------------------------------------
+// NotificationPlugin conformance: a failure is not a throw. See docs/plugin-testkit.md §9.
 
 export interface NotificationConformanceFixture {
   plugin: NotificationPlugin;

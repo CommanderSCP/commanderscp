@@ -1,12 +1,4 @@
-/**
- * Wires `@scp/plugin-gitea` into `@scp/plugin-testkit`'s generic `ExecutorPlugin` conformance suite
- * (BUILD_AND_TEST.md §4.2: "every shipped plugin runs the relevant plugin-testkit suite"). Same
- * thin-fixture shape as `github.conformance.test.ts`: this plugin makes REAL outbound HTTP calls
- * (`ctx.http` is not a stub), so `gitea-test-support.ts`'s `createRealHttpClient()` + `nock`
- * fixtures stand in for a Gitea instance. Fixtures are `persist()`ed (the suite calls each verb an
- * unpredictable number of times) and this file deliberately does NOT assert `nock.isDone()` — that
- * precise single-call proof lives in `index.test.ts`.
- */
+/** Wires this plugin into the generic executor conformance suite. See docs/plugins.md §132. */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
@@ -59,7 +51,6 @@ beforeAll(() => {
     }))
     .persist();
 
-  // status(): ANY correlated run id reads back success.
   nock(base)
     .matchHeader("authorization", authHeader)
     .get(new RegExp(`/repos/${config.owner}/${config.repo}/actions/runs/\\d+$`))
@@ -70,14 +61,12 @@ beforeAll(() => {
     }))
     .persist();
 
-  // abort(): cancel ANY correlated run id.
   nock(base)
     .matchHeader("authorization", authHeader)
     .post(new RegExp(`/repos/${config.owner}/${config.repo}/actions/runs/\\d+/cancel$`))
     .reply(200)
     .persist();
 
-  // observe(): commits + runs + packages.
   nock(base)
     .matchHeader("authorization", authHeader)
     .get(`/repos/${config.owner}/${config.repo}/commits`)

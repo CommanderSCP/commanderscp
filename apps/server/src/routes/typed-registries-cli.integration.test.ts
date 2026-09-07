@@ -6,13 +6,7 @@ import {
 } from "../test-support/harness.js";
 import { startCliSession, type CliInvocation } from "../test-support/cli-runner.js";
 
-/**
- * `scp service register` is named explicitly in BUILD_AND_TEST.md's charter verification table
- * and used by later E2E/seed work, so it — and its 7 sibling `register` commands plus the
- * ownership convenience commands — must exist with these exact names against the real built CLI
- * binary (test-support/cli-runner.ts), not just typecheck. Mirrors
- * graph/custom-type.integration.test.ts's CLI black-box style.
- */
+/** That command is named in the charter verification. See docs/routes.md §415. */
 describe("CLI: M2 typed registry + ownership commands", () => {
   let server: ListeningTestServer;
 

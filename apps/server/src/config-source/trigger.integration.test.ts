@@ -17,35 +17,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE CONFIG-SOURCE TRIGGER, END TO END (ADR-0046 section 2; proposal section 4, increment 4).
- *
- * ============================================================================================
- * WHAT WAS MISSING UNTIL NOW
- * ============================================================================================
- * The registration (round B), the sync engine (round C) and the ownership record (D26) all landed
- * and NOTHING CALLED THEM. `syncConfigSourceCommit` had no production caller — the repo's named
- * dominant failure, and I said so in every PR rather than implying a live path.
- *
- * This is the path: a push arrives as a `change_source_events` row -> the webhook pass ENQUEUES it
- * against every registration covering that repo -> a reconcile tick DRAINS the queue, reads the
- * manifest over the plugin RPC, and applies it as the team.
- *
- * ============================================================================================
- * MUTATION LOG - each applied, watched fail, reverted, watched pass (MEASURED)
- * | Mutation | Result |
- * |---|---|
- * | delete the enqueue from `processChangeSourceEvents` | (1) and (2) FAIL — nothing is recorded, so nothing drains |
- * | **delete the drain from `reconcileOrgTick`** | (2) and (3) FAIL, and (1) stays green — the enqueue half cannot tell a wired drain from an unwired one, which is why (2) and (3) go through the REAL tick rather than calling the drain directly |
- * | the drain never marks an entry processed | (2) and (3) FAIL — the entry stays pending and is re-applied on the next tick |
- *
- * THREE FIXTURE FACTS THIS TEST TAUGHT ME, each a failure first and each recorded where it bit:
- * a GitHub delivery needs its `x-github-event` HEADER or `extractHint` falls back to the flat
- * generic shape and never sees the repo; `bindingRepoIdentity` reads `owner`+`repo` (or a GitLab
- * `projectPath`), never a bare `repo`; and two registrations covering ONE repo is
- * `registration_ambiguous` by design, so sharing a repo across cases made every drain refuse — the
- * matcher working and the fixture wrong.
- */
+/** THE CONFIG-SOURCE TRIGGER, END TO END. See docs/config-source.md §37. */
 describe("config-source trigger: push -> enqueue -> drain -> apply", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

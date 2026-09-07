@@ -9,13 +9,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M2 ownership/consumes/depends_on ergonomics (BUILD_AND_TEST.md §8 M2 item 1), exercised through
- * the real SDK over real HTTP (mirrors relationship-authz.integration.test.ts /
- * custom-type.integration.test.ts's style) — these sub-resources are thin wrappers around the
- * exact same `graph/relationships-repo.ts` functions the generic `/relationships` endpoint uses,
- * so correctness here is really about the wrapper's id/urn resolution and BOTH-endpoint RBAC.
- */
+/** M2 ownership/consumes/depends_on ergonomics. See docs/routes.md §293. */
 describe("ownership ergonomics: owns/consumes/depends_on sub-resources", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -125,7 +119,7 @@ describe("ownership ergonomics: owns/consumes/depends_on sub-resources", () => {
     const svcC = await admin.services.create({ name: "many-to-many-dst-2" });
 
     await admin.services.addConsumes(svcA.id, svcB.id);
-    await admin.services.addConsumes(svcA.id, svcC.id); // no cardinality conflict — many_to_many
+    await admin.services.addConsumes(svcA.id, svcC.id);
 
     const list = await admin.services.listConsumes(svcA.id);
     expect(list.items.map((r) => r.toId).sort()).toEqual([svcB.id, svcC.id].sort());

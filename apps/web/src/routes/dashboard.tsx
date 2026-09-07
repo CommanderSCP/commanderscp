@@ -13,18 +13,7 @@ import { StatCard } from "../components/ui/stat-card";
 import { QueryErrorNotice } from "../components/query-error";
 import { ActivityFeed } from "../components/ActivityFeed";
 
-/**
- * `/` (BUILD_AND_TEST.md §8 M2 item 2) — real services as the primary destination, catalog counts
- * below them, live activity demoted to the bottom.
- *
- * This is NOT the "Needs you" dashboard (approvals/blocked/freezes roll-up) design-spec §4A
- * describes as the eventual homepage — that needs a server-side aggregate across changes, freezes
- * and approvals that does not exist yet. See docs/proposals/homepage-dashboard.md for that design;
- * this page is the honest subset buildable from today's list endpoints.
- *
- * The org-name/"Signed in as" block that used to live here is gone — the header bar (AppShell
- * §3.3, `current-org` testid) is the one home of account chrome now.
- */
+/** `/` (BUILD_AND_TEST.md §8 M2 item 2). See docs/web.md §339. */
 
 const CATALOG_BASE_PATHS = ["services", "assemblies", "components", "deployment-targets"] as const;
 const CATALOG_REGISTRIES: RegistryConfig[] = CATALOG_BASE_PATHS.map((basePath) => {

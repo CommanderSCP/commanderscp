@@ -2,13 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { resolveScannersForType } from "./scanner-registry.js";
 
-/**
- * M13.3a — `resolveScannersForType` unit tests (ADR-0020 §2). The table read is driven through a
- * STUB `tx` returning canned rows, so the resolution/parsing behaviour is testable without a
- * database (the real seeded-table read is proven in the integration suite). What matters here is the
- * mapping from a stored `methods` jsonb to the returned `ScanMethod[]`, and the fail-closed `[]`
- * meanings.
- */
+/** M13.3a — `resolveScannersForType` unit tests. See docs/governance.md §413. */
 
 /** A minimal `TenantTx` whose only `execute` returns the given rows for `methods`. */
 function stubTx(rows: Array<{ methods: unknown }>): TenantTx {

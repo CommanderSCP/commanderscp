@@ -372,7 +372,7 @@ implementation one. Shipped as `freeze:write` pending the ruling; the three exit
 > safety resting on an unbuilt feature. `role-model.md` §5 step 5 built it
 > (`routes/role-bindings.ts`): there is now a `POST /api/v1/role-bindings`, and `role_binding:write`
 > is held by Administrator, Owner and the new OrgAdmin. **The property survives on the NO-ESCALATION
-> SUBSET RULE instead** (`authz/role-binding-door.ts` §2) — a binding may be written only if every
+> SUBSET RULE instead** (`docs/authz/role-binding-door.md` §2) — a binding may be written only if every
 > permission the granted role carries is one the writer already holds at that scope, resolved through
 > `hasPermission` per permission rather than read off the writer's role rows. Owner carries
 > `freeze:override`, `change:emergency` and `campaign:deadline-override`; Administrator carries none
@@ -388,7 +388,7 @@ implementation one. Shipped as `freeze:write` pending the ruling; the three exit
 > `relationship:write` at both endpoints, which **every org-root principal from Operator upward holds
 > for every object in the org**. The escalation floor was four rungs below Administrator.
 >
-> **Addressed by `authz/role-binding-door.ts` §2a**, which applies the SAME subset rule at
+> **Addressed by `docs/authz/role-binding-door.md` §2a**, which applies the SAME subset rule at
 > `graph/relationships-repo.ts`'s `createRelationship` — the choke point, so IaC apply and every other
 > caller inherit it, with the federation-import carve-out this repo already takes at that function.
 >
@@ -398,13 +398,13 @@ implementation one. Shipped as `freeze:write` pending the ruling; the three exit
 > in the same note, and the REVERSED ORDERING of the same two requests disproved it: an Operator joins
 > an *empty* team (201 — it is the common case and must stay one), an Owner then binds a
 > `freeze:override`-carrying role to that team, and the Operator holds the permission. §2a guards the
-> join; nothing guarded the grant. `role-binding-door.ts` §2b is the third door.
+> join; nothing guarded the grant. `docs/authz/role-binding-door.md` §2b is the third door.
 >
 > **This note now states what is CHECKED and lists what is OPEN, and stops there.** Checked: a grant
 > requires the actor to hold the role's permissions at that scope (§2); a `member_of` create requires
 > the same of the edge's author (§2a); a grant whose subject is a group/team is refused when it would
 > reach a principal this door will not bind directly (§2b). Open — the full list, with its reasoning
-> and its measurements, is `authz/role-binding-door.ts` §8:
+> and its measurements, is `docs/authz/role-binding-door.md` §8:
 >
 > - §2a applies the subset rule and **not** bar §1, so `relationship:write` alone chooses who is in a
 >   group. That is an unauthorised delegation of authority the actor already has, never an elevation

@@ -6,33 +6,7 @@ import type { Command } from "commander";
 import { ScanExclusionClassSchema } from "@scp/schemas";
 import type { InstanceScanExclusionAdmission } from "@scp/schemas";
 
-/**
- * M22.9 — THE OPERATOR SURFACE FOR THE TWO RUNGS EVERY EXCLUSION CLAUSE NEEDS, AND IT SHIPPED
- * WITH NOTHING HOLDING IT.
- *
- * A filterless `grep -rna 'instanceScanExclusionAdmissionRow|scan-exclusion-admissions'
- * --include='*.ts'` (dist excluded) found ZERO references outside `cli.ts` itself: the row
- * formatter, `list` and `set` were all reachable only from the command block that defines them, so
- * DELETING THE ENTIRE BLOCK left `@scp/cli` green. Four behaviours were untested and every one of
- * them is one-way:
- *
- *   - the `trust-domain` -> `trust_domain` literal mapping (ADR-0016/ADR-0033 terminology: the
- *     AMBIENT federation partition, never the intra-org containment `domain` object);
- *   - the class allowlist, whose whole point is that a typo admits NOTHING while the operator
- *     believes they granted something;
- *   - the `SCP_OPERATOR_TOKEN` precondition — an admission opens a loosening for every org on the
- *     deployment, so a tenant login must not be able to reach it;
- *   - and THE DESTRUCTIVE DEFAULT: `set` is a REPLACE, so omitting `--class` sends `classes: []`
- *     and REVOKES every admission at that rung. With that rung empty the monotone AND fails at the
- *     top for every clause beneath it, and every exclusion on the deployment goes inert.
- *
- * WHY THE WIRE AND NOT ONLY THE OPTIONS. `outpost-cli-surface.test.ts` can pin what a command
- * DECLARES; a build in which the options exist, the help text is perfect and the action sends the
- * wrong body passes it completely. That "wording, not behaviour" shape is this project's
- * second-most-common recurring bug, so the four assertions above are made against a stubbed
- * `@scp/sdk` — the `outpost-reconcile-precondition.test.ts` pattern, and the honest seam, because
- * the CLI consumes only the SDK (charter principle 3).
- */
+/** The operator surface for both rungs, which shipped unheld. See docs/cli.md §140. */
 
 interface PutCall {
   tier: string;
@@ -87,11 +61,7 @@ async function run(args: string[]): Promise<void> {
   await program.parseAsync(["node", "scp", "scan-exclusion-admissions", ...args]);
 }
 
-/** Warm the dynamic import in a hook rather than charging it to the first `it` — the reason
- *  `outpost-reconcile-precondition.test.ts` gives: the whole CLI module graph is transformed on
- *  first import, which is milliseconds warm and seconds on a cold runner, and vitest's per-test
- *  budget is 5s while `hookTimeout` is 10s. The import must be lazy so the SDK mock above is
- *  installed before the graph is evaluated. */
+/** Warm the dynamic import in a hook, not in the first test. See docs/cli.md §141. */
 beforeAll(async () => {
   await import("./cli.js");
 }, 30_000);
@@ -185,15 +155,7 @@ describe("scp scan-exclusion-admissions set — what actually reaches the API", 
   });
 
   it("OMITTING --class is now REFUSED, and nothing is sent — the withdrawal needs --revoke-all", async () => {
-    // THIS CASE CHANGED DELIBERATELY (owner decision, 2026-08-18), and its previous revision said so
-    // in advance: it pinned the silent-revocation default as SHIPPED-BUT-NOT-ENDORSED and named
-    // itself as the test that must change if a flag were ever added. This is that change.
-    //
-    // `set` is still a whole-set REPLACE on the wire — that server contract is right, because an
-    // additive verb would make withdrawal the harder operation on a LOOSENING. What changed is that
-    // the CLI no longer lets you reach the destructive case by forgetting a flag. `platform` is
-    // ALWAYS represented in the monotone AND, so an empty set there makes every exclusion clause on
-    // the whole deployment inert, for every org.
+    // THIS CASE CHANGED DELIBERATELY. See docs/cli.md §142.
     await expect(run(["set", "--tier", "platform"])).rejects.toThrow(/--revoke-all/);
     expect(putCalls).toHaveLength(0);
   });

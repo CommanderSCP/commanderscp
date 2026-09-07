@@ -1,14 +1,4 @@
-/**
- * Every HTTP call here is fixtured with `nock` against RECORDED, REAL response shapes — a Go module
- * proxy `@v/list` text body, an abbreviated npm packument, PyPI's JSON API with a yanked release,
- * and a real `maven-metadata.xml`. `nock.disableNetConnect()` is active for the whole file, so any
- * call a fixture does not cover fails loudly instead of reaching the internet (CLAUDE.md: "Tests
- * never touch the internet").
- *
- * The shapes are not invented. Each fixture below carries a comment naming the field it exercises
- * and why that field matters — a fixture built from a guess would prove the parser reads the
- * fixture, which is the vacuous-test shape this repo has already been bitten by.
- */
+/** Every call is fixtured against recorded real responses. See docs/plugins.md §46. */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import nock from "nock";
 import type { PluginContext } from "@scp/plugin-api";

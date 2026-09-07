@@ -3,36 +3,7 @@ import { describe, expect, it } from "vitest";
 import { CONTAINMENT_WALK_MAX_DEPTH, WALK_TRUNCATION_PROBE_DEPTH } from "../graph/containment.js";
 import { memberExpandCte, subjectExpandCte } from "./resolve.js";
 
-/**
- * ================================================================================================
- * THE TWO `member_of` CLOSURES — same edges, same bound, opposite directions
- * ================================================================================================
- *
- * `resolve.integration.test.ts`, `inverse-walk-drift.integration.test.ts` and
- * `rbac-role-binding-door.integration.test.ts` run these walks against real PostgreSQL and settle
- * what they RETURN. No fake database appears here. What this file pins is the property that is
- * decided before any row exists — the SHAPE of the emitted CTE — because that is the property this
- * pair has already drifted on.
- *
- * `subjectExpandCte`'s own docblock: it was "about to be hand-typed for the FIFTH time", and it
- * NAMES two copies it did not convert (`authz/readable-scope.ts`, `governance/policy-resolve.ts`).
- * CLAUDE.md's rule is that a well-written comment naming a hazard is a signal to sweep, not evidence
- * it was handled. A drifted copy does not error: it returns a set that is a little wrong, and the
- * symptom is rows quietly missing from a list or a binding quietly reaching one principal too many.
- * The four facts asserted below are the four ways that drift shows up:
- *
- *   1. the EDGE PREDICATE — `member_of` only, live edges only. Dropping `deleted_at IS NULL` makes a
- *      removed membership keep granting; widening `type_id` makes `contains` grant.
- *   2. the DIRECTION — `subject_expand` walks a principal UP to its groups, `member_expand` walks a
- *      group DOWN to its principals. Seeding the up-walk at a group (the plausible mistake the
- *      docblock warns about) answers a different question with no error.
- *   3. the BOUND — ADR-0037's shared depth, with the truncation probe's one-past-the-bound as the
- *      only override any caller makes.
- *   4. the SEED and the org id are BOUND PARAMETERS, never concatenated. Both come from
- *      `role_bindings` columns that carry no type constraint.
- *
- * The SQL is rendered with drizzle's own `PgDialect` — the serializer the driver uses.
- */
+/** THE TWO `member_of` CLOSURES. See docs/authz.md §24. */
 
 const ORG = "00000000-0000-4000-8000-000000000001";
 const SEED = "11111111-1111-4111-8111-111111111111";

@@ -43,15 +43,7 @@ export interface TypedRegistryConfig {
   basePath: string;
   /** Singular PascalCase resource name driving operationIds, e.g. 'Domain', 'ServiceAccount'. */
   resourceName: string;
-  /**
-   * PLURAL PascalCase for the list operationId, when `resourceName + "s"` is wrong.
-   *
-   * Every resource through `Domain`..`ServiceAccount` pluralises by appending `s`, so this was never
-   * needed. `Assembly` does not — the naive form is `listAssemblys`. That matters more than it looks:
-   * the operationId is the generated SDK method name and `/v1` is additive-only, so a misspelling
-   * shipped once is a misspelling forever (renaming an operationId is an oasdiff break — see
-   * OASDIFF-EXCEPTIONS.md, where two such renames each cost an exception).
-   */
+  /** Plural naming for the list operation, when adding s fails. See docs/routes.md §417. */
   pluralResourceName?: string;
   /** M4: policies/controls gate writes behind their own permission ('policy:write') rather than
    *  the generic 'object:write' every other typed resource uses (DESIGN §7's example role
@@ -69,19 +61,11 @@ export interface TypedRegistryConfig {
   ) => Promise<void>;
 }
 
-/**
- * The 8 typed convenience resources this milestone adds (BUILD_AND_TEST.md §8 M2 item 1),
- * invoked once each via `registerTypedRegistryRoutes` from app.ts. `typeId` matches the
- * pre-seeded `object_types.id` exactly (drizzle/0002_rls_rbac_seed.sql §5).
- */
+/** The 8 typed convenience resources this milestone adds. See docs/routes.md §418. */
 export const TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
   { typeId: "domain", basePath: "domains", resourceName: "Domain" },
   { typeId: "service", basePath: "services", resourceName: "Service" },
-  // The OPTIONAL level between a service and its components (migration 0055,
-  // `intermediate-grouping.md` D5). A plain typed registry like `service` — it needs no bespoke
-  // route, because the level is expressed by `contains` edges rather than by columns of its own.
-  // NOT listed in `components-repo.ts`'s parent check: that routes through `isContainerType`
-  // (containment.ts), which is the single definition of "may contain components".
+  // The OPTIONAL level between a service and its components. See docs/routes.md §419.
   {
     typeId: "assembly",
     basePath: "assemblies",
@@ -95,42 +79,14 @@ export const TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
   { typeId: "service-account", basePath: "service-accounts", resourceName: "ServiceAccount" }
 ];
 
-/**
- * M4 governance resources (BUILD_AND_TEST.md §8 M4 item 1/2): Policy and Control documents are
- * graph objects of the pre-seeded `policy`/`control` types (0002_rls_rbac_seed.sql §5), managed
- * through this exact same typed-registry machinery — versioned via `objects.version` (bumped on
- * every update, pinned into Decisions — DESIGN §10.1/§10.4), scope/enforcement/condition/effects
- * validated at write time by the Ajv property-schema path (drizzle/0010_governance.sql §5). The
- * only difference from `TYPED_REGISTRY_RESOURCES` above: writes require 'policy:write' rather
- * than the generic 'object:write' (DESIGN §7's example role bindings name it explicitly).
- */
+/** M4 governance resources (BUILD_AND_TEST.md §8 M4 item 1/2). See docs/routes.md §420. */
 export const GOVERNANCE_TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
   {
     typeId: "policy",
     basePath: "policies",
     resourceName: "Policy",
     writePermission: "policy:write",
-    // CRITICAL #1b — bind the policy's DECLARED scope to the author's own authority. All three
-    // write paths (POST / PATCH-with-properties / PUT) call `validateWrite`, so declaring it at the
-    // config covers every door THIS FILE opens.
-    //
-    // "Every door this file opens" is the limit of what a route-level hook can claim, and it is why
-    // ADR-0032 §6a's sibling refusal is NOT here. That one shipped in this exact spot, and the census
-    // of where `assertPolicyScopeWithinAuthority` is ALSO installed — `iac/plans-repo.ts:733` and
-    // `:758` — is what showed the spot to be the wrong altitude: `POST /plans` + `/plans/{id}/apply`,
-    // `POST /federation/hand-fill` and `POST /federation/overlays` all reach `createObject` without
-    // passing through here. It now lives at `graph/objects-repo.ts`'s `createObject`/`updateObject`,
-    // the one choke point every local write door funnels through, and this route inherits it there.
-    //
-    // This check has NOT moved with it, and that is a distinction rather than an omission — it is
-    // `federation/domain-local.ts`'s "authorization at the door, invariant at the repo" split.
-    // ADR-0032 §6a's refusal is an INVARIANT: it reads only the document, needs no subject, and is
-    // the same answer for every caller, so the repo is where it belongs. This one is AUTHORIZATION:
-    // it resolves the author's `policy:write` at the DECLARED scope. Pushing it down would make it
-    // run for the federation importer and every internal caller too, whose `actorObjectId` is a
-    // SYNTHETIC subject (`FEDERATION_IMPORT_ACTOR_ID`) — which is precisely how an authorization
-    // check quietly becomes a no-op. It stays at the doors, and its own three-site census
-    // (here + `iac/plans-repo.ts`'s create and update branches) is what keeps it honest.
+    // Bind the policy's declared scope to the author's authority. See docs/routes.md §421.
     validateWrite: async (tx, args) => {
       await assertPolicyScopeWithinAuthority(tx, args);
     }
@@ -143,23 +99,7 @@ export const GOVERNANCE_TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
   }
 ];
 
-/**
- * M2 typed convenience endpoints: thin, friendlier-path layers over the exact same generic graph
- * substrate `routes/objects-generic.ts` uses — same graph/objects-repo.ts functions, same
- * auth/authorize/idempotency structure, same RBAC scope semantics. The only differences are
- * ergonomic: a fixed path (`/api/v1/domains` instead of `/api/v1/objects/domain`), a hardcoded
- * `typeId` (never a route param, never client-suppliable), and distinct OpenAPI
- * operationId/tags per resource for SDK/CLI method naming. No new top-level tables, no new
- * authz/audit code paths: objects created here are the exact same `objects` rows the generic
- * `/objects/{type}` endpoint sees, and vice versa (proven by
- * typed-registries.integration.test.ts).
- *
- * Called once per entry in `TYPED_REGISTRY_RESOURCES` (app.ts) rather than hand-copied 8 times.
- *
- * Scope decision: identical to objects-generic.ts (see that file's module doc) — list checks
- * `object:read` at org-root scope; every other operation checks at the object's own scope
- * (existing objects) or its resolved containing domain (new objects).
- */
+/** M2 typed convenience endpoints. See docs/routes.md §422. */
 export function registerTypedRegistryRoutes(
   app: FastifyInstance,
   deps: AppDeps,
@@ -273,11 +213,7 @@ export function registerTypedRegistryRoutes(
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // The shared factory behind EVERY typed registry, so this one composition covers all ~10 of
-        // them. `readPermission` is whatever the registry declared (`policy:read` for the governance
-        // ones, `object:read` for the rest) and the SAME value feeds the gate and the row filter —
-        // a filter computed from a different permission than the gate checked would either widen or
-        // silently empty the list.
+        // The shared factory behind every typed registry. See docs/routes.md §423.
         const check: PermissionCheck = {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -411,19 +347,7 @@ export function registerTypedRegistryRoutes(
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7), inherited from
-        // `graph/objects-repo.ts`'s `deleteObject`. DECLARED ON THE TEMPLATE, therefore on all ten
-        // typed registries, and NOT on a hand-picked four — even though only `user`,
-        // `service-account`, `group` and `team` can hold a role binding through the write door.
-        // `role_bindings.subject_id` is a bare uuid with no foreign key and no type constraint (the
-        // property `ROLE_BINDING_SUBJECT_TYPES` names), so a hand-written or restored row can make
-        // ANY object a binding's subject, and `objectTouchesRoleAuthority` — which is what decides
-        // whether the floor runs — reads that column and not a type. Narrowing the declaration to
-        // the four would be a filter over the symptom rather than the property, and over-declaring
-        // a response code costs a client nothing. Additive under the oasdiff gate: `deleteDomain`,
-        // `deleteService`, `deleteAssembly`, `deleteDeploymentTarget`, `deleteTeam`, `deleteGroup`,
-        // `deleteUser`, `deleteServiceAccount`, `deletePolicy` and `deleteControl` each previously
-        // declared 200/401/403/404.
+        // THE ADMINISTRATOR FLOOR. See docs/routes.md §424.
         409: ProblemSchema
       }
     },

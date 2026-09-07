@@ -18,31 +18,7 @@ import {
 } from "../auth/operator-auth.js";
 import { notFound } from "../errors.js";
 
-/**
- * ================================================================================================
- * `/api/v1/instance/operator-credentials` — role-model.md §5 step 9 / §3B
- * ================================================================================================
- *
- * The management surface for the credential that replaces `SCP_OPERATOR_TOKEN`.
- *
- * GATED BY AN OPERATOR CREDENTIAL, NOT BY RBAC — and it must be, because these rows open every
- * instance-tier write door on the deployment. Any RBAC gating would put a tenant permission in
- * front of authority that binds the tenant's neighbours, which is the exact inversion the whole
- * instance tier exists to prevent (role-model.md §1.5: there is no authority tier above an org, so
- * this cannot be modelled as one).
- *
- * WHICH MAKES IT SELF-REFERENTIAL, DELIBERATELY: minting a credential requires already holding one.
- * The bootstrap `SCP_OPERATOR_TOKEN` is what resolves the regress — set it once, mint a real
- * credential, unset it. `GET` reports `callerMechanism` so an operator can SEE whether the
- * deployment is still on that bootstrap path, because otherwise the migration away from the env
- * token is invisible: minting credentials while leaving the env var set looks identical to having
- * finished.
- *
- * `requireAuth` RUNS TOO, on every operation. The operator credential is the AUTHORITY; the
- * authenticated principal is the ATTRIBUTION. Both matter and neither substitutes for the other —
- * that split is what the shared env token could not express, since one secret made every operator
- * indistinguishable from every other.
- */
+/** The instance operator-credential routes. See docs/routes.md §280. */
 export function registerOperatorCredentialRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -147,14 +123,7 @@ export function registerOperatorCredentialRoutes(app: FastifyInstance, deps: App
       await requireAuth(deps, request);
       await requireInstanceOperator(deps, request, "instance operator credentials");
 
-      // REVOKING YOUR OWN CREDENTIAL IS ALLOWED, and there is no last-credential floor here — the
-      // deliberate opposite of the administrative floor on role bindings (role-binding-door.ts §7).
-      // The difference is recoverability: an org that revokes its last Owner binding has NO way
-      // back through the API, whereas a deployment that revokes its last operator credential is
-      // recovered by setting SCP_OPERATOR_TOKEN and restarting — an action the operator of a
-      // self-hosted instance can always take, because they own the process. A floor here would
-      // block the legitimate "revoke everything, we suspect compromise" without protecting against
-      // anything unrecoverable.
+      // Revoking your own credential is allowed, with no floor. See docs/routes.md §281.
       const revoked = await revokeOperatorCredential(deps.config, request.params.id);
       if (!revoked) throw notFound(`operator credential '${request.params.id}' not found`);
 

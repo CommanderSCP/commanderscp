@@ -3,36 +3,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { executorBindings, objects, relationships, sourceMappings } from "../db/schema.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 
-/**
- * GRAPH INTEGRITY — rows that outlived the object they hang off.
- *
- * ============================================================================================
- * WHY THIS EXISTS AS A REPORT RATHER THAN A GUARD
- * ============================================================================================
- * `deleteObject` now cascades: it tombstones every edge touching the object, through
- * `deleteRelationship`, so each gets its own audit event and journal entry. That closes the
- * SOURCE. It cannot close the BACKLOG, and by design it never will close two cases:
- *
- *   - rows stranded by a delete that ran BEFORE the cascade shipped. On the live homelab that is
- *     the `docs/proposals/post-import-configuration.md` §6 pair merges: five components
- *     soft-deleted on 2026-08-02/03, leaving 52
- *     dangling edges, 12 source mappings and 1 executor binding behind.
- *   - REPLICA edges (`origin_domain_id != self`). The cascade skips them deliberately — single-writer
- *     authority means only the authoring domain may tombstone them — so such an edge legitimately
- *     outlives a locally-deleted object until its own authority catches up.
- *
- * A guard that only stops NEW strandings leaves both. Hence a report: it is the only thing that can
- * see rows already in the database, and it stays useful after the cascade is doing its job.
- *
- * ============================================================================================
- * THESE ARE INERT, AND SAYING SO IS PART OF THE REPORT'S HONESTY
- * ============================================================================================
- * Every read path already filters them: `containment.ts` skips deleted ancestors (so no policy or
- * role binding governs through a dead node), `correlation.ts`'s `componentIsLive()` drops events
- * correlated to a dead component, and `targetObjectIsLive` hides a stranded binding. This is
- * hygiene, not an outage — the report must not imply otherwise, or it becomes an alarm that gets
- * muted.
- */
+/** GRAPH INTEGRITY — rows that outlived the object they hang off. See docs/graph.md §53. */
 
 export interface DanglingRelationship {
   id: string;
@@ -46,7 +17,6 @@ export interface DanglingRelationship {
 }
 
 export interface OrphanProjectionRow {
-  /** `source_mappings.id` / `executor_bindings.id`. */
   id: string;
   /** The DEAD object the row hangs off, named for the operator. */
   ownerUrn: string;
@@ -63,13 +33,7 @@ export interface GraphIntegrityReport {
   orphanPlacements: OrphanProjectionRow[];
 }
 
-/**
- * Every integrity finding for one org, in one read-only pass.
- *
- * Scoped by `orgId` and run inside `withTenantTx` like every other repo function — this is a
- * TENANT report, not an instance-wide one, so an operator in one org can never enumerate another's
- * object names through it.
- */
+/** Every integrity finding for one org, in one read-only pass. See docs/graph.md §54. */
 export async function findGraphIntegrityIssues(
   tx: TenantTx,
   orgId: string

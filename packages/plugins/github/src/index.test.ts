@@ -1,19 +1,4 @@
-/**
- * `@scp/plugin-github` behavioral test suite (BUILD_AND_TEST.md §8 M7 item 1's Definition of
- * Done). Every HTTP call is fixtured deterministically with `nock` against Node's `http`/`https`
- * core modules — see `github-test-support.ts`'s module doc for why the `ScopedHttpClient` built
- * for these tests uses `node:https` directly rather than `fetch` (nock@13.5.6, the version this
- * repo pins, does not intercept the global fetch/undici client — verified empirically, not
- * asserted from memory). `nock.disableNetConnect()` is active for the whole file so any call this
- * suite didn't anticipate fails loudly (a rejected promise) instead of silently reaching the real
- * network (CLAUDE.md: "Tests never touch the internet").
- *
- * Every test that registers a nock interceptor is checked for full consumption by the file-wide
- * `afterEach` below (`nock.pendingMocks()` must be empty) — an unconsumed interceptor means the
- * plugin either didn't make a call it should have, or (for interceptors deliberately NOT
- * registered, e.g. the pagination test's absent "page 2") an accidental extra call would instead
- * surface as a thrown "no match" error from the rejected HTTP promise, not a silently-passing test.
- */
+/** `@scp/plugin-github` behavioral test suite. See docs/plugins.md §170. */
 import { createHmac } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,12 +25,7 @@ import {
 const plugin = createGithubExecutorPlugin();
 const discoveryPlugin = createGithubDiscoveryPlugin();
 
-/** Shared per-test fixture builder — mirrors `fake-executor`'s/`webhook-control`'s file-local
- *  `testCtx()` helper, just extended with the installation-token nock (needed by EVERY test in
- *  this file, since every plugin call goes through `getInstallationToken` first) and a ready-made
- *  `Bearer <token>` string for asserting downstream API calls carry it. Fresh appId/installationId
- *  per call (via `buildGithubConfig`) so the module-level token cache in index.ts never lets one
- *  test's cached token silently skip another test's token-exchange assertion. */
+/** Shared per-test fixture builder. See docs/plugins.md §171. */
 function setup(overrides: Partial<GithubConfig> = {}) {
   const config = buildGithubConfig(overrides);
   const ctx = buildTestCtx(config);
@@ -68,9 +48,7 @@ afterEach(() => {
   expect(pending, `unconsumed nock interceptors after test: ${pending.join(", ")}`).toEqual([]);
 });
 
-// -------------------------------------------------------------------------------------------
 // verifyGithubWebhookSignature — pure function, no HTTP/nock involved at all.
-// -------------------------------------------------------------------------------------------
 
 describe("verifyGithubWebhookSignature", () => {
   const secret = "test-webhook-secret";
@@ -120,10 +98,6 @@ describe("verifyGithubWebhookSignature", () => {
     );
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// mapGithubWebhookEventToHint — pure function, no HTTP/nock involved.
-// -------------------------------------------------------------------------------------------
 
 describe("mapGithubWebhookEventToHint", () => {
   it("maps a push event to repo/commitSha (from head_commit.id)/correlationKey (ref)", () => {
@@ -206,10 +180,6 @@ describe("mapGithubWebhookEventToHint", () => {
     expect(mapGithubWebhookEventToHint("issues", {})).toBeNull();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// trigger() — workflow_dispatch
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() — workflow_dispatch", () => {
   it("dispatches the workflow, correlates the newest matching run via the runs-list poll, and returns externalId = workflow_run::<id>", async () => {
@@ -301,11 +271,7 @@ describe("trigger() — workflow_dispatch", () => {
         `/repos/${config.owner}/${config.repo}/actions/workflows/${config.defaultWorkflowId}/dispatches`
       )
       .reply(204);
-    // correlateDispatchedRun makes up to 3 attempts with a real 500ms backoff between them when no
-    // match is found — .times(3) so every attempt gets a real (empty) response instead of hitting
-    // an unmocked URL. This test genuinely takes ~1s of wall-clock time (two 500ms backoffs); that
-    // real-timer cost is accepted here rather than faking timers, since faking setTimeout globally
-    // risks interfering with the underlying nock/https socket machinery this test also depends on.
+    // Correlation makes three attempts with a real backoff. See docs/plugins.md §172.
     const pollScope = nock(base)
       .matchHeader("authorization", authHeader)
       .get(
@@ -324,11 +290,7 @@ describe("trigger() — workflow_dispatch", () => {
   }, 10_000);
 
   it("throws a clear Error when no workflowId is available (no intent.parameters.workflowId and no config.defaultWorkflowId) — WITHOUT making any HTTP call at all", async () => {
-    // Deliberately not using setup()'s tokenScope here: index.ts's trigger() checks `workflowId`
-    // BEFORE ever calling api()/getInstallationToken, so no HTTP call (not even the token
-    // exchange) should happen. Registering a token-exchange interceptor here would leave it
-    // unconsumed and fail via the file-wide afterEach — which is itself a useful check: it would
-    // catch a regression that started resolving a token before validating workflowId.
+    // Deliberately not using setup()'s tokenScope here. See docs/plugins.md §173.
     const config = buildGithubConfig({ defaultWorkflowId: undefined });
     const ctx = buildTestCtx(config);
     await expect(plugin.trigger(ctx, { kind: "workflow_dispatch" })).rejects.toThrow(
@@ -336,10 +298,6 @@ describe("trigger() — workflow_dispatch", () => {
     );
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// trigger() — custom / repository_dispatch
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() — custom (repository_dispatch)", () => {
   it("POSTs repository_dispatch and returns a repository_dispatch::* externalId (no run correlation is possible for this event type)", async () => {
@@ -376,7 +334,7 @@ describe("trigger() — custom (repository_dispatch)", () => {
 
 describe("trigger() idempotency — in-memory dedup cache (statePath unset)", () => {
   it("a second trigger() call with the SAME idempotencyKey returns the SAME externalId and never re-dispatches", async () => {
-    const { config, ctx, authHeader, base } = setup(); // statePath omitted -> in-memory cache
+    const { config, ctx, authHeader, base } = setup();
     const runId = 777_001;
     const dispatchScope = nock(base)
       .matchHeader("authorization", authHeader)
@@ -421,12 +379,7 @@ describe("trigger() idempotency — in-memory dedup cache (statePath unset)", ()
 
   it("a DIFFERENT idempotencyKey is free to mint an independent run (dedup is per-key, not global)", async () => {
     const { config, ctx, authHeader, base } = setup();
-    // Two DISTINCT one-shot interceptors per path (not .times(2) with one shared body): each must
-    // resolve on its FIRST poll attempt (a matching run in the very first response) so neither
-    // call falls into correlateDispatchedRun's real 500ms-backoff retry loop, AND each must
-    // correlate to a DIFFERENT run id so "first.externalId !== second.externalId" is actually
-    // proving independence rather than two calls coincidentally matching the same fixture body.
-    // nock matches same-path interceptors in registration order, one consumption each.
+    // Two DISTINCT one-shot interceptors per path. See docs/plugins.md §174.
     const dispatchPath = `/repos/${config.owner}/${config.repo}/actions/workflows/${config.defaultWorkflowId}/dispatches`;
     const pollPath = `/repos/${config.owner}/${config.repo}/actions/workflows/${config.defaultWorkflowId}/runs`;
     const dispatchScopeA = nock(base)
@@ -486,14 +439,7 @@ describe("trigger() idempotency — in-memory dedup cache (statePath unset)", ()
 });
 
 describe("trigger() idempotency — file-backed dedup cache (statePath set)", () => {
-  // @scp/plugin-github's trigger()/status()/abort() are plain functions closing over the module-
-  // level `githubExecutorPlugin` object (see index.ts) — there is no per-instance class to `new`
-  // up a separate "process B" from, unlike @scp/plugin-fake-executor's FakeExecutorPlugin class.
-  // What actually proves restart-safety here is that trigger() calls loadState(statePath) fresh
-  // from disk on EVERY invocation (never caching DedupState in memory once statePath is set — see
-  // index.ts's loadState/saveState), so two trigger() calls through the SAME plugin reference
-  // still faithfully exercise the write-then-re-read-from-disk path a real process restart would
-  // take. This test additionally reads the state file directly to prove it's genuinely persisted.
+  // These verbs are plain functions closing over module state. See docs/plugins.md §175.
   let dir: string;
   let statePath: string;
 
@@ -549,12 +495,7 @@ describe("trigger() idempotency — file-backed dedup cache (statePath set)", ()
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// Base-URL resolution (M15.3b) — apiBaseUrl → serverUrl (Mode A: import an EXISTING GitHub /
-// GitHub Enterprise, injected as config.serverUrl) → the github.com default. Every request in this
-// block is fixtured ONLY on the host the resolution SHOULD pick; net-connect is disabled, so a
-// request that landed on the wrong host would reject with "no match" rather than pass silently.
-// -------------------------------------------------------------------------------------------
+// Base-URL resolution (M15.3b). See docs/plugins.md §176.
 
 describe("base URL resolution (apiBaseUrl → serverUrl → github.com default)", () => {
   it("with ONLY serverUrl set (a GitHub Enterprise host, no apiBaseUrl) every request goes to that host, not api.github.com", async () => {
@@ -623,10 +564,6 @@ describe("base URL resolution (apiBaseUrl → serverUrl → github.com default)"
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// status()
-// -------------------------------------------------------------------------------------------
-
 describe("status()", () => {
   async function statusFor(runBody: { status: string; conclusion: string | null }) {
     const { config, ctx, authHeader, base } = setup();
@@ -686,17 +623,7 @@ describe("status()", () => {
   });
 
   it("ENCODES the runId sliced out of externalId into the route", async () => {
-    // Same census class as `postCommitStatus`'s sha (see that test) and readFileAtRef's
-    // `repo`/`ref` (M21.2 review BLOCKERS 1-2): a non-literal string spliced into a REST route.
-    // `externalId` is stored correlation state and numeric in practice, so this encoding is an
-    // IDENTITY today and its removal would change no observed behaviour — which is exactly why it
-    // is pinned. An unpinned member of a censused class is indistinguishable from an untouched one
-    // on the next refactor (CLAUDE.md, "census by property, not by symptom"). Unencoded,
-    // `../../../user` re-targets this GET at `https://api.github.com/user` with the binding's
-    // installation token, because `new URL()` collapses literal `..` segments; encoded it is
-    // `..%2F..%2F..%2Fuser`, ONE segment a URL does not normalize away. The interceptor matches
-    // only the encoded form, and `disableNetConnect()` plus the file-wide pending-mocks check make
-    // the unencoded form fail loudly rather than pass quietly.
+    // Same census class as `postCommitStatus`'s sha. See docs/plugins.md §177.
     const { config, ctx, authHeader, base } = setup();
     const runId = "../../../user";
     const scope = nock(base)
@@ -709,10 +636,6 @@ describe("status()", () => {
     scope.done();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// abort()
-// -------------------------------------------------------------------------------------------
 
 describe("abort()", () => {
   it("cancels a correlated run", async () => {
@@ -767,9 +690,7 @@ describe("abort()", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // observe() — polling fallback, and its poll-vs-push equivalence with mapGithubWebhookEventToHint.
-// -------------------------------------------------------------------------------------------
 
 describe("observe() polling fallback", () => {
   it("maps recent commits and workflow runs to well-formed ExecutorEvents with populated correlation", async () => {
@@ -1016,20 +937,8 @@ describe("observe() pagination", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// Rate-limit / non-2xx handling
-// -------------------------------------------------------------------------------------------
-
 describe("rate-limit / non-2xx error handling", () => {
-  // TODO(M7 follow-up): trigger()/status()/observe()/abort() in index.ts implement NO retry or
-  // backoff of their own — every non-2xx response (including 403-with-rate-limit-headers and 429)
-  // throws (or, for observe(), is silently skipped for that one resource — see observe()'s
-  // `if (status >= 200 && status < 300)` guards, which is a DIFFERENT, more lenient behavior than
-  // trigger()/status()'s hard throw). That's a defensible, documented M7 posture: index.ts's
-  // module doc explains coordination/reconcile.ts's own retry loop is what re-attempts a failed
-  // trigger() on a LATER reconcile tick, so a single call failing fast (rather than blocking on an
-  // internal retry/backoff loop) is intentional, not an oversight. These tests assert exactly that
-  // documented behavior instead of inventing retry logic index.ts doesn't have.
+  // No retry or backoff in these verbs yet, and why. See docs/plugins.md §178.
   it("trigger() throws a clear HTTP-status-bearing Error when GitHub responds 403 with rate-limit-exhausted headers", async () => {
     const { config, ctx, authHeader, base } = setup();
     nock(base)
@@ -1083,10 +992,6 @@ describe("rate-limit / non-2xx error handling", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// discover() (DiscoveryPlugin)
-// -------------------------------------------------------------------------------------------
-
 describe("discover() (DiscoveryPlugin)", () => {
   it("proposes one Service (repo root) and one Component per marker-file-containing top-level directory; directories with no marker file and non-directory entries are skipped", async () => {
     const { config, ctx, authHeader, base } = setup({ owner: "acme", repo: "monorepo" });
@@ -1095,7 +1000,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       .get(`/repos/${config.owner}/${config.repo}/contents/`)
       .reply(200, [
         { name: "service-a", path: "service-a", type: "dir" },
-        { name: "docs", path: "docs", type: "dir" }, // dir, but no marker file inside -> skipped
+        { name: "docs", path: "docs", type: "dir" },
         { name: "README.md", path: "README.md", type: "file" } // not a dir -> no contents/ call at all
       ]);
     nock(base)
@@ -1135,11 +1040,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       toUrn: `urn:scp:component:github:${config.owner}/${config.repo}/service-a`
     });
 
-    // The endpoints must be the ALIASES the proposed objects declare, asserted BY REFERENCE to
-    // those objects rather than as a third copy of the literal. Restating the strings would let a
-    // plugin change its URN scheme in one of the two places and stay green — and an endpoint that
-    // names no proposed object is exactly the 404 (`object '...' not found`) that made this edge
-    // unimportable even once its type was right.
+    // Endpoints asserted by reference to the proposed objects. See docs/plugins.md §179.
     expect(proposal.relationships[0]?.fromUrn).toBe(services[0]?.urn);
     expect(proposal.relationships[0]?.toUrn).toBe(components[0]?.urn);
   });
@@ -1161,10 +1062,6 @@ describe("discover() (DiscoveryPlugin)", () => {
     expect(proposal.relationships).toHaveLength(0);
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// postCommitStatus()
-// -------------------------------------------------------------------------------------------
 
 describe("postCommitStatus()", () => {
   it("POSTs the mapped commit status payload, defaulting context to 'commanderscp/coordination'", async () => {
@@ -1217,11 +1114,7 @@ describe("postCommitStatus()", () => {
   });
 
   it("ENCODES the caller-supplied sha into the route — it is the same class as readFileAtRef's `repo`/`ref`", async () => {
-    // Censused out of the M21.2 review BLOCKERS 1-2 (a caller-supplied string spliced raw into a
-    // REST route), not reported against this function: `postCommitStatus` is the only other place
-    // in this package that did it. Unencoded, `../../..` here would have re-targeted the POST; the
-    // interceptor below only matches the ENCODED single segment, and `nock.disableNetConnect()`
-    // plus the file-wide pending-mocks check make the unencoded form fail rather than pass quietly.
+    // Censused out of the M21.2 review BLOCKERS 1-2. See docs/plugins.md §180.
     const { config, ctx, authHeader, base } = setup();
     const sha = "../../../user";
     const scope = nock(base)
@@ -1233,15 +1126,7 @@ describe("postCommitStatus()", () => {
   });
 });
 
-/**
- * `correlation.paths` — the changed-file set, which is what lets ONE repository route to
- * per-directory components. Without it every mapping on a monorepo is necessarily repo-only, they
- * all rank equally, and the oldest wins every event forever (see `correlation.ts`).
- *
- * The webhook and poll paths obtain it very differently — the push payload carries it inline, while
- * the commits LIST response does not, so polling must fetch each commit individually — which is
- * exactly why both are pinned here.
- */
+/** The changed-file set is what routes one repo per directory. See docs/plugins.md §181. */
 describe("correlation.paths: the changed-file set", () => {
   it("push webhook: unions added/modified/removed across EVERY commit, not just head_commit", () => {
     // A push delivers all its commits at once. A file touched by an earlier commit in the same push
@@ -1302,11 +1187,7 @@ describe("correlation.paths: the changed-file set", () => {
   });
 
   it("polling: a FAILED file fetch still yields the push event, just without paths", async () => {
-    // Regression. `api()` THROWS on a transport failure rather than returning a status, so an
-    // unguarded fetch aborted `pollCommits` mid-loop and lost the push events entirely — turning a
-    // best-effort enrichment into data loss, where the release would never be coordinated at all
-    // instead of merely routing by repository. Caught by this suite's `disableNetConnect` when the
-    // single-commit interceptor below was first left unregistered.
+    // The API call throws on a transport failure, not returns. See docs/plugins.md §182.
     const { config, ctx, authHeader, base } = setup();
     const commitSha = "f6".repeat(20);
     nock(base)
@@ -1333,19 +1214,7 @@ describe("correlation.paths: the changed-file set", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// readFileAtRef (M21.2, ADR-0032 §4) — the FIRST file-body read in this package. Every fixture
-// below is GitHub's real documented contents/commits response shape: the contents response for a
-// blob carries `type: "file"`, `encoding: "base64"`, `size`, `content` (base64 WRAPPED AT 60 CHARS
-// WITH NEWLINES — the fixtures wrap it, because that is what GitHub actually sends and an
-// implementation that measured the unstripped string would mis-size every real payload) and `sha`
-// (the BLOB sha); a directory comes back from the SAME route as a JSON array.
-//
-// Note the two-call shape being asserted: resolve `ref` -> commit sha, then read the blob AT THAT
-// SHA. The second interceptor matching on `?ref=<the sha from the first response>` is what proves
-// the pin actually happens — if the adapter read at the branch name instead, that interceptor never
-// matches and the file-wide `afterEach` fails on the unconsumed mock.
-// -------------------------------------------------------------------------------------------
+// The first file-body read in this package. See docs/plugins.md §183.
 
 describe("readFileAtRef()", () => {
   const REF_COMMIT_SHA = "9f".repeat(20);
@@ -1459,13 +1328,7 @@ describe("readFileAtRef()", () => {
   });
 
   it("ESCAPES a '#' in both the ref and the path — unencoded it starts a URL fragment and TRUNCATES the request", async () => {
-    // The nested-path test above pins per-segment vs whole encoding, but both of its strings are
-    // already URL-identity, so deleting the encoding entirely leaves it green (measured). `#` is
-    // the case where the encoding is load-bearing rather than decorative: `git check-ref-format`
-    // permits it in a ref and it is legal in a filename, so neither `assertSafeRef` nor
-    // `assertSafeRepoPath` refuses it — but unencoded it ends the URL, so step 1 would request
-    // `/commits/release/` and step 2 `/contents/docs/` (each a DIRECTORY listing, i.e. a wrong
-    // answer rather than an error). Both interpolations of this call are therefore pinned here.
+    // Both strings above are already safe; this one is not. See docs/plugins.md §184.
     const { config, ctx, authHeader, base } = setup();
     const ref = "release/#42";
     const path = "docs/notes#1.md";
@@ -1578,13 +1441,7 @@ describe("readFileAtRef()", () => {
     expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed) — a SEPARATE, larger ceiling from the
-  // decode-bound `too_large` refusals above. GitHub is incidentally bounded by its OWN
-  // `encoding: "none"` cutoff above 1MB (the very next test), but this adapter now sends an
-  // explicit transport ceiling on every call regardless — defense in depth, not a dependency on
-  // that provider behavior.
-  // -----------------------------------------------------------------------------------------
+  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed). See docs/plugins.md §185.
 
   it("THROWS on a response so large it exceeds the TRANSPORT ceiling, before decodeBoundedBase64 ever runs", async () => {
     const { config, ctx, authHeader, base } = setup();
@@ -1648,11 +1505,7 @@ describe("readFileAtRef()", () => {
 
     const result = await githubAdapter.readFileAtRef(ctx, { path: "services", ref: "main" });
     expect(result).toMatchObject({ outcome: "refused", reason: "not_a_file" });
-    // The `detail` assertion is what makes this test about the ARRAY branch. `reason` alone does
-    // not: with the `Array.isArray` branch deleted the same input still yields not_a_file via the
-    // type gate, because `[].type` is undefined — so both gates were individually mutation-
-    // survivable and this one test covered neither (verified by mutation, M21.2 review MAJOR 4).
-    // The entry COUNT is asserted for the same reason: it can only come from the array branch.
+    // The detail assertion is what makes this about the array. See docs/plugins.md §186.
     expect((result as { detail: string }).detail).toContain(
       "is a directory (contents returned a listing of 2 entries)"
     );
@@ -1724,7 +1577,7 @@ describe("readFileAtRef()", () => {
 
   it("honors an explicit `repo` override so one binding can read manifests for sibling components", async () => {
     const { config, ctx, authHeader, base } = setup({ owner: "acme", repo: "widgets" });
-    expect(`${config.owner}/${config.repo}`).toBe("acme/widgets"); // the binding's own repo
+    expect(`${config.owner}/${config.repo}`).toBe("acme/widgets");
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/acme/other-service/commits/main`)
@@ -1750,15 +1603,7 @@ describe("readFileAtRef()", () => {
     expect(result).toMatchObject({ outcome: "found", content: "module example.com/y\n" });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // ADVERSARIAL `ref` and `repo` (M21.2 review, BLOCKERS 1 and 2). Both were REACHABLE: `ref` was
-  // only percent-encoded per segment, and `encodeURIComponent("..") === ".."`; `repo` was spliced
-  // in raw — neither validated nor encoded. Each test below is a NEGATIVE CONTROL in the strongest
-  // available sense: `nock.disableNetConnect()` is on for the whole file and NO interceptor is
-  // registered, so if the refusal ever stops happening pre-flight the adapter's request escapes as
-  // a "no match for request" rejection with a URL in it — which is exactly what these assert
-  // against, since the message is asserted, not merely the fact of a throw.
-  // -----------------------------------------------------------------------------------------
+  // ADVERSARIAL `ref` and `repo`. See docs/plugins.md §187.
 
   it("refuses a REF traversal BEFORE any HTTP — `encodeURIComponent('..')` is '..', so encoding never closed this", async () => {
     const { ctx } = setup();
@@ -1783,7 +1628,6 @@ describe("readFileAtRef()", () => {
 
   it("refuses a REPO traversal BEFORE any HTTP — a raw `repo` re-targeted the route", async () => {
     const { ctx } = setup();
-    // Proven reachable before the fix: issued `GET https://api.github.com/commits/main`.
     await expect(
       githubAdapter.readFileAtRef(ctx, {
         repo: "acme/widgets/../../..",
@@ -1798,8 +1642,6 @@ describe("readFileAtRef()", () => {
 
   it("refuses a REPO containing '?' — it terminated the route and folded the rest into a query string", async () => {
     const { ctx } = setup();
-    // Proven reachable before the fix: issued
-    // `GET https://api.github.com/repos/acme/widgets?x=/commits/main`.
     await expect(
       githubAdapter.readFileAtRef(ctx, {
         repo: "acme/widgets?x=",
@@ -1821,16 +1663,7 @@ describe("readFileAtRef()", () => {
     nock.cleanAll();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // The two `not_a_file` gates, pinned INDEPENDENTLY (M21.2 review, MAJORS 3 and 4). They are
-  // separate branches over the same route: a directory arrives as an ARRAY, a symlink/submodule as
-  // an OBJECT with a non-`file` `type`. Asserting only `reason: "not_a_file"` covers neither —
-  // deleting the array branch still yields not_a_file via the type gate (`[].type` is undefined),
-  // and deleting the type gate leaves a symlink decoding to `content: ""`, i.e. a silently EMPTY
-  // manifest that downstream reads as "this component declares no dependencies". The `detail`
-  // string is the only thing that separates them, so both tests assert it — the same technique the
-  // `encoding: "none"` test above already uses.
-  // -----------------------------------------------------------------------------------------
+  // The two `not_a_file` gates, pinned INDEPENDENTLY. See docs/plugins.md §188.
 
   it("refuses a SYMLINK as not_a_file rather than decoding it to an empty manifest", async () => {
     const { config, ctx, authHeader, base } = setup();
@@ -1875,9 +1708,7 @@ describe("readFileAtRef()", () => {
     expect((result as { detail: string }).detail).toContain("content type 'submodule'");
   });
 
-  // -----------------------------------------------------------------------------------------
   // Two documented promises that no test held (M21.2 review, MINOR 6).
-  // -----------------------------------------------------------------------------------------
 
   it("NEVER fabricates `blobSha` — a response without one comes back without one", async () => {
     // read-file.ts's `ReadFileAtRefFound.blobSha` says "never fabricated when it did not"; a
@@ -1891,7 +1722,6 @@ describe("readFileAtRef()", () => {
       .query({ ref: REF_COMMIT_SHA })
       .reply(200, {
         path: "go.mod",
-        // no `sha` at all
         size: Buffer.byteLength(manifest, "utf8"),
         type: "file",
         encoding: "base64",
@@ -1920,11 +1750,7 @@ describe("readFileAtRef()", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. GitHub's
-// recursive tree listing (`GET .../git/trees/{sha}?recursive=1`) is one response, `truncated:
-// true` when it hit GitHub's own ceiling.
-// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12). See docs/plugins.md §189.
 
 describe("readFilesAtRef()", () => {
   const TREE_COMMIT_SHA = "6f".repeat(20);
@@ -2066,7 +1892,6 @@ describe("readFilesAtRef()", () => {
         ],
         truncated: false
       });
-    // NEGATIVE CONTROL: no `contents` interceptor registered.
 
     await expect(
       githubAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["**/go.mod"], maxFiles: 2 })
@@ -2147,22 +1972,7 @@ describe("readFilesAtRef()", () => {
   });
 });
 
-/**
- * ============================================================================================
- * THIS ADAPTER WRITES NOTHING (owner decision 2026-08-15; ADR-0032 §9)
- * ============================================================================================
- * ADR-0032 §9 admits `GitProviderAdapter` as an escape hatch on two grounds — the `ExecutorPlugin`
- * object is unchanged, and "It also only READS." M21.5 briefly grew branch/commit/pull-request
- * hooks on all three providers, which contradicts the second ground. The repository-write authority
- * now lives inside the enumerated `scp-managed-dep` class (`packages/plugins/managed-dep`), where
- * the charter's containment preconditions bind.
- *
- * `@scp/git-provider-core`'s own suite pins the INTERFACE at the type level. This pins the OBJECT,
- * here, because the interface is structural: an adapter carrying extra write methods still
- * satisfies it, so the type-level pin alone would not notice a hook re-added to this file. Asserted
- * per provider rather than once, because the hooks existed on all three — the census is the point
- * (CLAUDE.md: fix the property, then find every place with it).
- */
+/** THIS ADAPTER WRITES NOTHING. See docs/plugins.md §190. */
 describe("github adapter surface — read-only", () => {
   it("carries no repository-write hook, and still carries the read hook", () => {
     for (const hook of ["createBranch", "putFileOnBranch", "openPullRequest"]) {

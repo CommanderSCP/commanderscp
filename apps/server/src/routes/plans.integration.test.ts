@@ -9,12 +9,7 @@ import {
   type ListeningTestServer
 } from "../test-support/harness.js";
 
-/**
- * `@scp/iac` server-side plan/apply — full round trip via the SDK (BUILD_AND_TEST.md §8 M2 item
- * 4). DoD (b): "an `@scp/iac` stack applied twice is a no-op the second time (plan shows zero
- * actions)". `plans-cli.integration.test.ts` covers the same core property driven through the
- * real `scp` binary instead of the SDK directly.
- */
+/** `@scp/iac` server-side plan/apply. See docs/routes.md §308. */
 describe("plans: @scp/iac server-side plan/apply", () => {
   let server: ListeningTestServer;
 
@@ -321,12 +316,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // C1 — sourceMappings / executorBindings (docs/proposals/post-import-configuration.md §8).
-  // These two are PROJECTION TABLES, not graph objects, so nothing here can be inferred from the
-  // object/relationship tests above: their ownership, their prune scope and their write path are
-  // all separate code.
-  // -----------------------------------------------------------------------------------------
+  // C1 — sourceMappings / executorBindings. See docs/routes.md §309.
 
   it("C1 round trip: a stack declares a mapping + a binding, they land, and a re-plan is all-noop", async () => {
     const org = await createTestOrg(server, "plans-c1-roundtrip");
@@ -473,7 +463,6 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     ]);
     expect(second.diff.summary).toMatchObject({ updates: 1, deletes: 0 });
     await admin.plans.apply(second.id);
-    // BOTH rows converged; the plan settles.
     expect(await liveScopes()).toEqual(["domain", "domain"]);
     const settled = await admin.plans.create(build("domain"));
     expect(settled.diff.sourceMappings?.map((m) => m.action)).toEqual(["noop"]);
@@ -541,14 +530,12 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     expect(prune.diff.summary.deletes).toBe(2);
     await admin.plans.apply(prune.id);
 
-    // This stack's rows are gone...
     const componentUrn = `urn:scp:${stackName}:component:api`;
     const component = await admin.components.get(componentUrn);
     expect(await admin.executors.listBindings(componentUrn)).toEqual([]);
     const mappings = await admin.changeSources.listMappings("github");
     expect(mappings.items.filter((m) => m.componentObjectId === component.id)).toEqual([]);
 
-    // ...and the OTHER stack's are untouched.
     const otherUrn = `urn:scp:${otherStackName}:component:api`;
     const otherComponent = await admin.components.get(otherUrn);
     expect(await admin.executors.listBindings(otherUrn)).toHaveLength(1);

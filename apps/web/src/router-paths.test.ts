@@ -6,41 +6,7 @@ import { AdminGovernancePage } from "./routes/admin-governance";
 import { AdminDecisionsPage } from "./routes/admin-decisions";
 import { AdminAuditPage } from "./routes/admin-audit";
 
-/**
- * THE ROUTE TABLE STILL RESOLVES THE URLS OTHER THINGS DEPEND ON.
- *
- * ============================================================================================
- * WHY THIS FILE EXISTS — A REAL REGRESSION THAT PASSED EVERY REQUIRED PR CHECK
- * ============================================================================================
- * The service release board lived at `/services/{id}/board`. Making it the INDEX child of a new
- * `/services/$idOrUrn` tabbed layout removed that path, and NOTHING failed: a route table is data,
- * so typecheck has no opinion about which paths exist; the unit and integration suites never
- * navigate; and the one thing that did navigate there — `e2e/service-board-honesty.spec.ts` — is
- * Playwright. Every E2E job in `.github/workflows/ci.yml` carries `if: github.event_name == 'push'
- * && github.ref == 'refs/heads/main'`, so it was SKIPPED on pull requests. The break merged green and
- * surfaced only on `main` — job 9 RED with 5z GREEN beside it. That workflow's §6 comment predicted
- * this precise hole; E2E now runs on pull requests and 5z requires it, which closes the general case.
- *
- * So the guard belongs where it runs on EVERY PR: over the real route tree, in the "4. Unit tests"
- * job, with no browser and no server. It does not replace the E2E specs — they prove the page
- * renders against real authz and the real SDK. It proves the URL still exists, the cheap half that
- * was missing.
- *
- * WHEN THIS FAILS: restore the path, or — if the removal is deliberate — change it here AND in every
- * consumer named beside it, as one edit. The annotations exist so "who else uses this URL" cannot be
- * skipped.
- *
- * MUTATION LOG (each applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | remove `serviceBoardLegacyRoute` from the tree (the merged regression itself) | `/services/{id}/board` FAILS |
- * | `path: "/board"` -> `"/boards"` | same FAILS — the literal is pinned, not merely "some child exists" |
- * | remove `componentSettingsRoute` | the component-settings case FAILS |
- * | make the walk return every path as `/` | the anti-vacuity test FAILS (an unknown path would "resolve") |
- * | point `serviceBoardLegacyRoute` at a different component | "the SAME view" FAILS — the path surviving while its content moved is the same bug from outside |
- * | `component: ComponentDependenciesPage` -> `RegistryDetailPage` on the /dependencies child | "renders ComponentDependenciesPage" FAILS — the URL registered but pointed at the wrong view |
- */
+/** THE ROUTE TABLE STILL RESOLVES THE URLS OTHER THINGS DEPEND ON. See docs/web.md §147. */
 
 /** Every registered path pattern, walked from the real tree — not from source text, so a literal
  *  present but never added to `addChildren` does not count as registered. */

@@ -4,105 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { productionSourceFiles, readStripped } from "@scp/source-census";
 
-/**
- * ================================================================================================
- * THE ORG-ROOT SCOPE CENSUS — a new door may not be pinned at the org root by accident
- * ================================================================================================
- *
- * WHAT THIS GUARDS. `authz/resolve.ts`'s `scopeExpandCte` expands a checked scope UPWARD ONLY: the
- * target object plus every containing ancestor. A check written `scopeObjectId: auth.orgId` is
- * therefore satisfied by an ORG-ROOT BINDING AND BY NOTHING ELSE — no service-scoped, assembly-
- * scoped or component-scoped binding can ever reach it, because the walk never goes down. That is
- * correct for a genuinely org-level act (federation identity, the type registry, a deliberate
- * escalation bar) and wrong for a door that governs one object; role-model.md §8 is the analysis,
- * and increment 2.5a re-scoped the get-by-id doors that were wrong.
- *
- * The re-scopes each have their own behavioural test. NOTHING held the *shape* — a new door added
- * tomorrow with `scopeObjectId: auth.orgId` would be invisible, and §8.5 measured why that matters:
- * all 334 `403` occurrences across `apps/server` tests were enumerated and ZERO of them pin the
- * org-root behaviour of any door 2.5a touched. So this file enumerates every org-root-scoped check
- * in the server and asserts the set equals a checked-in list. A new one fails CI until someone adds
- * it here WITH A JUSTIFICATION — which is the point. The decision gets made, not defaulted into.
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THE GLOB IS `apps/server/src/**` AND NOT `routes/*.ts` — THE CENSUS THAT MISSED THE SURFACE
- * ------------------------------------------------------------------------------------------------
- * CLAUDE.md: census by PROPERTY, not by symptom; a filter is where the next instance hides. §8.1
- * recorded the original census doing exactly the wrong thing — `grep -rna 'scopeObjectId:
- * auth.orgId' apps/server/src/routes/*.ts`, which finds 81 lines and misses the surface twice over:
- *
- *   - `routes/objects.ts` contains ZERO `authorize(` calls. Its four routes — `POST`/`GET
- *     /api/v1/objects/service` and the `/orgs/:org/` variants — delegate to
- *     `services/objects-service.ts`, where the same property is spelled `scopeObjectId: orgId`
- *     (no `auth.`) one directory outside the glob. `listServiceObjects()` is in the list below
- *     because of this, and a `routes/`-only census would never have seen it.
- *   - the create doors spell it `X ?? auth.orgId` — a fallback, not a pin — and some of them assign
- *     it to a `const scopeObjectId` first (`components.ts:310`, `plans-repo.ts`), so even the
- *     `scopeObjectId:` property spelling misses them.
- *
- * So: the whole non-test TypeScript tree of `apps/server` (there is no enforcement in `packages/` —
- * §1's 170-call-site census found none), and the anchor is the ASSIGNMENT of a `scopeObjectId`, in
- * either the property form or the `const`/`let` form, whatever function it is later handed to.
- * `authorize`, `hasPermission`, `assertDenyNotTruncated` and the `{permission, scopeObjectId}` pairs
- * `iac/plans-repo.ts` pushes onto a check list are all covered without naming any of them, because
- * naming them would be the next filter.
- *
- * ------------------------------------------------------------------------------------------------
- * THE THREE CLASSES, AND WHY ALL THREE ARE CHECKED IN
- * ------------------------------------------------------------------------------------------------
- *   {@link ORG_ROOT_PINNED}    the value IS an org-root expression (`auth.orgId`, `orgId`,
- *                              `input.orgId`, `rootObjectId`). Only an org-root binding satisfies it.
- *   {@link ORG_ROOT_FALLBACK}  the org root is the `??`/ternary FALLBACK (`declaredParent ??
- *                              auth.orgId`). Correct-shaped already — it scopes to the declared
- *                              parent when there is one — but a new door written this way whose
- *                              left operand is always `undefined` is a pin wearing a disguise.
- *   {@link ORG_ROOT_DERIVED}   the org id appears only as an ARGUMENT to a helper that computes the
- *                              scope (`resolveApprovalScope(tx, input.orgId, …)`). Not org-root
- *                              scoped at all — listed so that "compute it in a helper" is not an
- *                              unwatched way to reintroduce the pin.
- *
- * ------------------------------------------------------------------------------------------------
- * READING FILES: NUL BYTES, AND THE KNOWN-POSITIVE CONTROL FOR THIS TEST'S OWN DISCOVERY
- * ------------------------------------------------------------------------------------------------
- * CLAUDE.md's NUL rule is about *tools that silently drop files*, and it applies to this file's own
- * discovery, not only to a shell `grep`. Three tracked files under `apps/server/src` carry literal
- * NUL bytes (`dependencies/ingestion-stamp-repo.ts`, `dependencies/internal-release-detection.ts`,
- * `iac/plan-diff.ts` — NUL is a composite-key delimiter there and is CORRECT). `readdirSync` +
- * `readFileSync(f, "utf8")` have no binary heuristic, so they are read like any other file — but
- * "no heuristic" is a claim about a tool, and a claim about a tool cannot be verified by asserting
- * it. {@link NUL_CARRYING_FILES} is the known-positive control: the test proves those three files
- * were discovered, that they really do contain a NUL byte, and that their text arrived non-empty.
- * If discovery ever starts dropping them, the census does not report green over the gap.
- *
- * ------------------------------------------------------------------------------------------------
- * WHAT THIS CANNOT PROVE — read `@scp/source-census`'s index.ts in full before trusting a result
- * ------------------------------------------------------------------------------------------------
- * A source census is a grep with good manners. {@link readStripped} removes comments, so a
- * commented-out check no longer counts as a check (`governance-move.ts:142` and four doc comments
- * in `handfill-repo.ts`/`schema.ts` say `scopeObjectId: auth.orgId` in prose and are correctly
- * absent below). It deliberately PRESERVES string and template contents, so a mention inside a
- * template literal WOULD count — today none of the entries below comes from one, and if a false
- * entry ever appears that is the first thing to check. And it cannot see dead code, a false
- * condition, or the wrong arguments.
- *
- * SO THIS IS A NECESSARY CONDITION, NEVER A SUFFICIENT ONE. It says "the set of org-root-scoped
- * checks is still exactly this set". It says NOTHING about whether any of them is enforced at
- * runtime — that is what the behavioural tests beside this file are for
- * (`change-target-scope.integration.test.ts`, `campaign-scope-doors.integration.test.ts`,
- * `change-source-mapping-authz.integration.test.ts`,
- * `federation-overlay-base-authority.integration.test.ts`).
- *
- * ------------------------------------------------------------------------------------------------
- * STILL OWED: §8.3's INVERSE-WALK INVARIANT — NOT THIS INCREMENT
- * ------------------------------------------------------------------------------------------------
- * §8.3 names an invariant nobody has tested: the upward walk and the downward walk must be EXACT
- * inverses, or get-by-id and LIST disagree — an object `authorize()` admits at its own id would be
- * absent from that subject's list, which reads as a cache bug rather than an authz bug. The test is
- * `hasPermission(o)` IFF `o ∈ readableSet(subject)` over a random sample. It cannot be written yet:
- * there is no downward walk to compare against until 2.5b builds `authz/readable-scope.ts`. It is
- * owed, it is the drift detector for the whole model, and this census is not a substitute for it —
- * this file only counts scopes, and the invariant is about what they RESOLVE to.
- */
+/** THE ORG-ROOT SCOPE CENSUS. See docs/routes.md §286. */
 
 /** One org-root-scoped `scopeObjectId` assignment, keyed by where it lives rather than by line
  *  number so that ordinary edits above it do not churn the list. */
@@ -115,24 +17,7 @@ interface CensusEntry {
   why: string;
 }
 
-/**
- * - `org-level` — the thing being acted on has no place in the containment graph below the org
- *   root, so there is no narrower scope to check at. The pin is correct and permanent.
- * - `escalation-bar` — org-root ON PURPOSE, so that a narrower binding CANNOT satisfy it. Widening
- *   one of these is a security regression, not a fix (role-model.md §8.6).
- * - `list-gate` — a LIST door's gate. §8.2 step 5 keeps this check unchanged — same permission, same
- *   org-root scope, evaluated FIRST — and does the widening by filtering rows inside the repo before
- *   the `LIMIT` (2.5b), which is what makes that change a pure widening: a caller who cleared it
- *   before still clears it, and still gets an UNFILTERED query. On the doors 2.5b has reached the
- *   check is no longer written in the route: it moved into `authz/list-door-scope.ts`'s wide arm,
- *   one definition for all eight list doors, and it is still org-root pinned there. The entries
- *   still naming a route are the doors 2.5b has not reached.
- * - `not-a-check` — a `scopeObjectId` written into a `role_bindings` ROW, not a permission check.
- *   Present because the property is "a scope set to the org root" and filtering by call target is
- *   where the next instance would hide.
- * - `deferred` — a door 2.5a did not re-scope, because §8.6 excluded it or a later increment owns
- *   it. LISTED, NOT ENDORSED: the entry records that the pin is known, with who owns the decision.
- */
+/** The thing acted on has no place in the containment graph. See docs/routes.md §287. */
 const ENTRY_CLASSES = [
   "org-level",
   "escalation-bar",
@@ -420,10 +305,9 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
   {
     site: "routes/role-bindings.ts :: GET /api/v1/roles :: type_registry:read",
     cls: "org-level",
-    why: "the roles catalogue is shared-singleton platform metadata with no containment scope of its own (its built-in rows are `org_id IS NULL`), so there is nothing narrower to re-scope onto — the same shape as the two type-registry reads above, and gated on the same permission at the same scope for that reason. The accepted cost is that a principal bound ONLY below the org root (a ComponentAdmin at a component) cannot read the role PICKER; role-model.md §5 step 6's `GET /authz/effective` is where a scoped principal learns what it holds. NOT the org-root arm: `authz/org-root-arm.ts` exists to rescue a door re-scoped onto an object, and this door governs no object. The role-binding WRITE door is deliberately absent from this list — it scopes at the binding's own `scope_object_id` (`authz/role-binding-door.ts` §1/§5), which is the whole point of it"
+    why: "the roles catalogue is shared-singleton platform metadata with no containment scope of its own (its built-in rows are `org_id IS NULL`), so there is nothing narrower to re-scope onto — the same shape as the two type-registry reads above, and gated on the same permission at the same scope for that reason. The accepted cost is that a principal bound ONLY below the org root (a ComponentAdmin at a component) cannot read the role PICKER; role-model.md §5 step 6's `GET /authz/effective` is where a scoped principal learns what it holds. NOT the org-root arm: `authz/org-root-arm.ts` exists to rescue a door re-scoped onto an object, and this door governs no object. The role-binding WRITE door is deliberately absent from this list — it scopes at the binding's own `scope_object_id` (`docs/authz/role-binding-door.md` §1/§5), which is the whole point of it"
   },
 
-  // ---- org-scoped configuration with no per-object subject ---------------------------------------
   {
     site: "routes/doctor.ts :: GET /api/v1/doctor :: federation:read",
     cls: "org-level",
@@ -465,19 +349,7 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "DEFERRED — ingestion writes the org's whole inventory and defaults to every component when none is named; a per-component re-scope needs the target list first, like changes did"
   },
 
-  // ---- LIST doors ------------------------------------------------------------------------------
-  // 2.5b routes EVERY list door's gate through `authz/list-door-scope.ts`'s WIDE ARM — the two
-  // entries directly below. Doors reached by 2.5b then fall into two shapes, and BOTH are correct:
-  //
-  //   - `/campaigns` and `/placements` pass the permission and org id as arguments, so the check is
-  //     no longer written in the route and they have no entry of their own here;
-  //   - `listObjects`'s four doors keep a `PermissionCheck` LITERAL in the route and hand the whole
-  //     thing to the shared gate. Nothing is checked twice — the literal IS what the wide arm runs —
-  //     and keeping it buys per-door visibility in this census, which matters most for
-  //     `services/objects-service.ts`, the door a `routes/*.ts` census cannot see at all (§8.1).
-  //
-  // The remaining route entries (`/changes`, `/change-sources/.../mappings`, `/relationships`,
-  // `/dependencies/producers`) are the doors 2.5b has not reached.
+  // The list doors, and how each is classified. See docs/routes.md §288.
   {
     site: "authz/list-door-scope.ts :: readableScopeForListDoor() :: -",
     cls: "list-gate",
@@ -557,13 +429,7 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
   }
 ];
 
-/**
- * THE ORG ROOT AS A FALLBACK, not as a pin. Every one of these scopes to a declared containment
- * parent and lands on the org root only when none was declared — which is what `null` MEANS at the
- * wire boundary (ADR-0021 D4), and what `containment-parent-doors-census.integration.test.ts` pins
- * behaviourally. Listed so that a new door whose left operand is always `undefined` — a pin wearing
- * a `??` — cannot arrive unnoticed.
- */
+/** THE ORG ROOT AS A FALLBACK, not as a pin. See docs/routes.md §289. */
 const ORG_ROOT_FALLBACK: readonly CensusEntry[] = [
   {
     site: "governance/gate-orchestrator.ts :: checkFreeze() :: freeze:override",
@@ -647,11 +513,7 @@ const ORG_ROOT_FALLBACK: readonly CensusEntry[] = [
   }
 ];
 
-/**
- * THE ORG ID AS AN ARGUMENT, not as a scope. The scope is computed by a helper that takes the org id
- * as its TENANT parameter. These are not org-root scoped — they are listed so that moving a scope
- * computation into a helper is not an unwatched way to reintroduce the pin.
- */
+/** THE ORG ID AS AN ARGUMENT, not as a scope. See docs/routes.md §290. */
 const ORG_ROOT_DERIVED: readonly CensusEntry[] = [
   {
     site: "governance/gate-orchestrator.ts :: prewarmGovernanceForChange() :: -",
@@ -670,13 +532,7 @@ const ORG_ROOT_DERIVED: readonly CensusEntry[] = [
   }
 ];
 
-/**
- * KNOWN-POSITIVE CONTROL for this file's own discovery. These three tracked files under
- * `apps/server/src` contain literal NUL bytes (a composite-key delimiter — correct, and must not be
- * "fixed"; `pnpm nul-census` is the authority on the current set). Every recursive search tool this
- * repo reaches for classifies them as binary and DROPS THEM SILENTLY. This test's discovery must
- * not, and asserting that it does not is the only way to know.
- */
+/** KNOWN-POSITIVE CONTROL for this file's own discovery. See docs/routes.md §291. */
 const NUL_CARRYING_FILES = [
   "dependencies/ingestion-stamp-repo.ts",
   "dependencies/internal-release-detection.ts",
@@ -689,7 +545,6 @@ const SERVER_SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  *  `getOrgRootObjectId` results, whose value is the org id by the bootstrap invariant. */
 const ORG_ROOT_EXPRESSION =
   /^(?:[A-Za-z_$][\w$]*\.)*orgId$|^(?:root|orgRoot)ObjectId!?$|^orgRootId!?$/;
-/** The same, anywhere inside a larger expression. */
 const ORG_ROOT_TOKEN =
   /(?:^|[^\w$.])(?:(?:[A-Za-z_$][\w$]*\.)*orgId|(?:root|orgRoot)ObjectId|orgRootId)\b/;
 /** BOTH spellings of "a scopeObjectId is being set": the object property, and the `const`/`let`
@@ -750,13 +605,7 @@ function enclosingBrace(source: string, index: number): number {
   return -1;
 }
 
-/**
- * A stable name for the door this check belongs to: `METHOD url` when the site sits inside a
- * `typed.route({…})` block (the form every route file but `events.ts`/`oidc.ts` uses), else the
- * `app.get("…")` form, else the enclosing top-level function. A NAME rather than a line number, so
- * that editing anything above a door does not churn the checked-in list — and so that the failure
- * message names the door a reviewer has to make a decision about.
- */
+/** A stable name for the door this check belongs to. See docs/routes.md §292. */
 function doorOf(source: string, index: number): string {
   let innermost: { open: number; close: number } | null = null;
   for (const match of source.matchAll(/(?:typed|app|server)\s*\.\s*route\s*\(\s*\{/g)) {

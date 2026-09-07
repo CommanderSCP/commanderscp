@@ -3,24 +3,7 @@ import pg from "pg";
 import { testDatabaseUrl } from "../test-support/harness.js";
 import { LEGAL_TRANSITIONS } from "./transitions.js";
 
-/**
- * THE DRIFT TRIPWIRE (M12 P4B close-out — docs/proposals/coupled-pipelines.md §3.8/§1.7).
- *
- * `drizzle/0007_change_coordination.sql` seeds a `state_transitions` table "mirrored exactly from
- * coordination/transitions.ts's LEGAL_TRANSITIONS constant (cross-checked by
- * coordination/transitions.integration.test.ts so the two never drift)" — a test that, for four
- * milestones, DID NOT EXIST. The drift it was claimed to prevent then actually happened: the M12
- * P4B `waiting` edges landed in `LEGAL_TRANSITIONS` (16 edges) while the DB seed sat at 0007's 13
- * rows, until `0032_state_transitions_waiting.sql` closed the gap.
- *
- * This file is that test, finally real. SET EQUALITY in BOTH directions, `trigger` included:
- *  - every DB row must appear in `LEGAL_TRANSITIONS` (no stale/renamed edge lingers in the seed),
- *  - every `LEGAL_TRANSITIONS` edge must appear in the DB (a new edge REQUIRES a new migration —
- *    this is the assertion that fires on the next `waiting`-style drift).
- *
- * The table is still read by no runtime code (`transitions.ts` is the sole runtime authority);
- * being seeded-and-checked is precisely what keeps it trustworthy as DESIGN §9.1 reference data.
- */
+/** THE DRIFT TRIPWIRE. See docs/coordination.md §1011. */
 describe("state_transitions seed mirrors LEGAL_TRANSITIONS exactly (M12 P4B drift tripwire)", () => {
   let pool: pg.Pool;
 

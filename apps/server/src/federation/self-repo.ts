@@ -4,24 +4,7 @@ import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationSelf } from "../db/schema.js";
 
-/**
- * This org's own federation domain identity (DESIGN.md §13: "every domain instance... a Domain
- * Control Plane"). SCOPING DECISION (db/schema.ts's module doc): kept org-scoped, not
- * instance-wide, so it rides the same RLS boundary as everything the journal carries.
- *
- * Created LAZILY with `role: 'unset'` the first time anything needs it — DESIGN §4.1 "every row is
- * born federation-ready" means `objects.originDomainId` needs a real domain id from the very first
- * object an org ever creates, well before an operator has necessarily run
- * `scp federation init --role commander|outpost|retrans`. `role` only changes via an explicit
- * `initFederationSelf` call (never inferred), so a domain silently defaults to none of
- * commander/outpost/retrans — federation stays fully opt-in per DESIGN §13 ("federation enhances
- * operation, it is never required for it").
- *
- * The `retrans` arm is no longer a placeholder (M15.5(c), ADR-0019): a `role: 'retrans'` instance
- * — and ONLY one — may run the byte relay (`retrans-relay.ts::buildRelayTarball`), the ADR-0004
- * validate-then-relay behavior. Role remains advisory for everything else, but the relay treats it
- * as a hard precondition (fail-closed 409 on any other role).
- */
+/** This org's own federation domain identity. See docs/federation.md §533. */
 export interface FederationSelf {
   orgId: string;
   /** TRUST sense (ADR-0021 D4) — this org's own security-domain identity. */
@@ -94,11 +77,7 @@ export interface InitFederationInput {
   role: "commander" | "outpost" | "retrans";
 }
 
-/** `scp federation init` — explicitly designates this domain's role and (optionally) renames it.
- *  Idempotent: safe to call again to rename, but changing `role` after peers are already paired
- *  is allowed (the operator's responsibility) since role is advisory metadata for the CLI/UI, not
- *  itself an authority check — single-writer authority is enforced by `originDomainId` alone,
- *  independent of `role`. */
+/** `scp federation init`. See docs/federation.md §534. */
 export async function initFederationSelf(
   tx: TenantTx,
   input: InitFederationInput

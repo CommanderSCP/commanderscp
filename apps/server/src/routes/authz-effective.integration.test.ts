@@ -8,22 +8,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * `GET /api/v1/authz/effective` and `/auth/me`'s identity half — role-model.md §5 step 6
- * ================================================================================================
- *
- * THE PROPERTY UNDER TEST IS AGREEMENT, NOT PLAUSIBILITY. An effective-permissions endpoint that
- * returns a believable-looking set is worse than none: a UI renders controls from it, and a set
- * that disagrees with what the doors actually enforce produces either phantom buttons that 403 or
- * hidden buttons the caller was entitled to. So the assertions below do not check the response
- * against a hand-written expectation of what a role "should" carry — they check it against what
- * `authorize` actually does, by making the same call the UI would gate and comparing.
- *
- * Every test enters through the HTTP surface rather than calling `effectivePermissions` directly.
- * A unit test of the resolver would pass identically whether or not the route were wired into
- * `app.ts` at all, and "built, never installed" is this repo's most expensive recurring defect.
- */
+/** `GET /api/v1/authz/effective` and `/auth/me`'s identity half. See docs/routes.md §5. */
 describe("GET /authz/effective — the caller's own permissions at one object (role-model.md §5 step 6)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -124,12 +109,7 @@ describe("GET /authz/effective — the caller's own permissions at one object (r
   });
 
   it("DENY-OVERRIDE IS PER-PERMISSION, not per-binding: a Viewer deny beside an Owner allow removes only Viewer's set", async () => {
-    // THE MISTAKE THIS EXISTS TO CATCH. `hasPermission` filters to bindings whose ROLE CARRIES THE
-    // REQUESTED PERMISSION and only then looks for a deny — so a deny row suppresses exactly the
-    // permissions its own role holds, and nothing else. The plausible one-query rewrite
-    // (`bool_or(effect='deny')` over ALL matching bindings, ungrouped) instead lets one narrow deny
-    // wipe the caller's entire set. Both implementations return a believable-looking array; only
-    // this fixture tells them apart.
+    // THE MISTAKE THIS EXISTS TO CATCH. See docs/routes.md §6.
     const mixed = await createTestUser(server, org, [
       { role: "Owner", scope: org.orgId, effect: "allow" },
       { role: "Viewer", scope: org.orgId, effect: "deny" }

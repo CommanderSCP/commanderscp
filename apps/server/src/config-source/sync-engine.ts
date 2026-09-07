@@ -1,42 +1,4 @@
-/**
- * THE CONFIG-SOURCE SYNC ENGINE (ADR-0046 §1/§2; team-pipeline-iac §4/§5, D2/D3/D9/D26) — one
- * commit's worth of repo-driven IaC delivery, and the first production caller the four pure
- * decision modules beside it have ever had.
- *
- * ================================================================================================
- * WHAT IT DOES, IN THE ORDER IT DOES IT
- * ================================================================================================
- * For one (config source, commit) pair: select the changed paths that are manifests, read each,
- * validate it, decide whose identity applies it, run the SAME plan/apply path the HTTP route runs,
- * and record a status and a Decision for every one of those steps that can stop.
- *
- * ================================================================================================
- * THE FORBIDDEN SHORTCUT, NAMED IN ADR-0046 §1 AND NOT TAKEN HERE
- * ================================================================================================
- * This engine is not an HTTP caller and holds no credential, so it would be trivially easy to call
- * `executePlanDiff` with `SYSTEM_ACTOR_ID` the way the reconcile engine does for its own writes.
- * That would void this design's central promise — "a team's stack cannot mutate another team's
- * service" — silently, because everything would still work. Instead the config source's resolved
- * TEAM OBJECT is the actor: `authz/resolve.ts` seeds its CTE at the subject, so a team's own role
- * bindings resolve at depth 0, and `prepareApplyChecks` + a per-check permission test run exactly as
- * `routes/plans.ts` runs them.
- *
- * ONE DELIBERATE DIVERGENCE FROM THE ROUTE, and it is about honesty rather than authority: the
- * route calls `authorize()`, which THROWS on the first denial. Here every check is evaluated and
- * every refusal collected, because the status this produces is the only thing an operator will see
- * — "refused" naming one of nine denials, when the other eight are also real, sends them round the
- * loop nine times. The apply is refused if ANY check fails, identically to the route.
- *
- * ================================================================================================
- * WHY A `readManifest` SEAM RATHER THAN A PLUGIN-HOST CALL
- * ================================================================================================
- * The caller supplies the read. The host's `gitFileRead(instanceId).readFileAtRef(...)` needs a
- * resolved git-provider instance (`dependencies/manifest-reader.ts` does that resolution today), it
- * is an out-of-process RPC, and it must not run inside the transaction this engine mutates the
- * graph in. Keeping it a parameter is what lets the trigger layer own instance resolution and
- * lifetime while this module stays a decision that can be driven from a test without a subprocess.
- * SCP reads ONLY the committed JSON and never executes team TypeScript (D2, charter principle 1).
- */
+/** THE CONFIG-SOURCE SYNC ENGINE. See docs/config-source.md §28. */
 
 import { createHash } from "node:crypto";
 import { DesiredStateManifestSchema, type DesiredStateManifest } from "@scp/schemas";
@@ -71,7 +33,6 @@ export interface ConfigSourceSyncInput {
   /** The repo the commit landed in, as the trigger identified it. */
   repoIdentity: string;
   commitSha: string;
-  /** Paths the commit touched (`ExtractedHint.paths`). */
   changedPaths: readonly string[];
   /** Snapshotted by the caller and used for the whole run — the same rule `freezesByTarget`
    *  states for its own `now`: two manifests of one commit must not be evaluated against two
@@ -81,18 +42,13 @@ export interface ConfigSourceSyncInput {
   readManifest: (path: string) => Promise<ManifestRead>;
 }
 
-/** What one manifest path's sync attempt came to. */
 export interface ManifestSyncOutcome {
   path: string;
   /** Present once the manifest parsed far enough to name a stack. */
   stackName?: string;
   /** Present once a registration governed the attempt and resolved a team. */
   teamObjectId?: string;
-  /** The six-way display status, OR a registration-level refusal that happens BEFORE a sync attempt
-   *  has a governing registration at all (`registration-match.ts`'s two). Kept distinguishable
-   *  because they are answers to different questions: "which registration governs this?" versus
-   *  "where did this attempt stop?" — collapsing them would make `sync-status.ts`'s exhaustive
-   *  six-way space quietly seven-way and untyped. */
+  /** Attempt status and registration refusal stay distinct. See docs/config-source.md §29. */
   status:
     | ConfigSourceSyncStatus
     | { status: "registration_ambiguous"; matchedConfigSourceIds: string[] }
@@ -104,20 +60,7 @@ function manifestContentHash(content: string): string {
   return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
 }
 
-/**
- * Every object a diff would touch, for the freeze coverage question.
- *
- * `id ?? scopeObjectId`, AND THE FALLBACK IS THE WHOLE POINT. A `create` entry has NO id until
- * `executePlanDiff` runs it, so an id-only reading would ask about an empty target set for a
- * manifest that creates rather than updates — i.e. a freeze would hold edits to existing objects
- * and wave brand-new ones straight through, which is backwards and would be invisible (an empty
- * list produces no freezes, which reads exactly like "nothing frozen"). `scopeObjectId` is the
- * resolved containment parent the create would land under, and containment is what
- * `freezesByTarget` walks, so it is the correct question for a not-yet-existing object.
- *
- * Relationship entries are addressed by their endpoints, which are objects, so the object set
- * covers them.
- */
+/** The scope fallback is the point: a create has no id yet. See docs/config-source.md §30. */
 function affectedObjectIds(
   objectResolutions: Map<string, { id?: string; scopeObjectId: string }>
 ): string[] {
@@ -128,16 +71,7 @@ function affectedObjectIds(
   return [...new Set(ids)];
 }
 
-/**
- * Sync one commit of one config source. Returns one outcome per manifest path it selected — an
- * empty array when the commit touched nothing this registration selects, which is the ordinary
- * case and is not an error.
- *
- * NOTHING THROWS FOR AN ORDINARY FAILURE. A manifest that cannot be read, does not parse, is
- * refused by authz, or is held by a freeze produces an OUTCOME and a Decision, because §4's failure
- * honesty rule is that "the repo being ahead of the graph must be a displayed state, not an
- * inferred one" — and a throw here would abandon the remaining manifests of the same commit.
- */
+/** Sync one commit of one config source. See docs/config-source.md §31. */
 export async function syncConfigSourceCommit(
   tx: TenantTx,
   orgId: string,

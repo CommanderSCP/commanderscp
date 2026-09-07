@@ -25,16 +25,7 @@ const QUERY_OPTIONS: { value: QuerySelection; label: string }[] = [
   { value: "traverse", label: "Traverse (outgoing)" }
 ];
 
-/**
- * `/graph/{idOrUrn}` (BUILD_AND_TEST.md §8 M2 item 2) — object-scoped Cytoscape.js explorer fed by
- * M1's named graph-query endpoints. Reachable from `/graph` (the landing/picker) or from an
- * object's registry-detail page.
- *
- * Edge sourcing: `traverse` already returns the real induced-subgraph edges. The named queries
- * (`impact-of`/`blast-radius`/…) return only the reachable object SET — so we take that set and
- * make a single follow-up `graph.subgraph` call to fetch the REAL relationships among it (root
- * included), rendering the true dependency DAG instead of a synthesized hub-and-spoke star.
- */
+/** `/graph/{idOrUrn}` (BUILD_AND_TEST.md §8 M2 item 2). See docs/web.md §347. */
 export function GraphExplorerPage(): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
   const [queryName, setQueryName] = useState<QuerySelection>("impact-of");

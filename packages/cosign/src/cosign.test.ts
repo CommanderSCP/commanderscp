@@ -5,18 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempTrackedForFileSync } from "@scp/test-tmpdir";
 import { COSIGN_BIN_ENV, VENDORED_COSIGN_PATH } from "./cosign-bin.js";
 
-/**
- * These are the OFFLINE unit tests for the lifted @scp/cosign wrapper (M17.3 E2). They must never
- * touch the real cosign binary or the network — the real-binary sign/verify path stays covered by
- * deploy/airgap's install-sh-tamper suite (the zero-behavior-change proof). Here we assert the two
- * things that CAN be proven without a genuine cosign:
- *   1. the sign-blob FLAG BUILDER — its keyful/offline invariants and the pinned-vs-probe split;
- *   2. the E1 binary RESOLUTION (pin-vs-probe) branch — exercised against a FAKE cosign shim on
- *      PATH rather than a real install.
- *
- * The `--use-signing-config` probe caches its result at module scope, so every probe-branch case
- * re-imports the module fresh via `vi.resetModules()` to get a clean cache.
- */
+/** Offline unit tests: never the real binary, never the network. See docs/cosign.md §5. */
 
 let shimDir: string;
 /** A fake cosign whose `sign-blob --help` ADVERTISES `--use-signing-config` (a newer/3.x build). */

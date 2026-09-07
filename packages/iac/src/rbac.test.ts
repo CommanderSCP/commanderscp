@@ -2,15 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Stack } from "./construct.js";
 import { OrgRole, RoleBinding } from "./rbac.js";
 
-/**
- * RBAC constructs — the L1/L2 equality, the group refusal, and determinism.
- *
- * THE EQUALITY CASE IS BUILT BY HAND ON THE L1 SIDE, deliberately. Deriving it from the same helper
- * the construct uses would make the two sides agree BY CONSTRUCTION and prove nothing about drift —
- * which is the whole property D16(1) asks for, since generated files and standards packages author
- * through the L1 door and would otherwise diverge invisibly until somebody diffed two manifests.
- * So every field the L2 form inherited is spelled out below.
- */
+/** The two levels' equality, the group refusal, and determinism. See docs/iac.md §305. */
 
 const SUBJECT = "urn:scp:acme:service-account:ci";
 const SCOPE = "urn:scp:acme:component:checkout";

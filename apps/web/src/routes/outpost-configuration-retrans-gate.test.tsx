@@ -5,28 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FederationPeerStatus, OutpostConfig } from "@scp/schemas";
 import { render } from "../test-support/render-dom";
 
-/**
- * THE STRAY-CONFIG HAZARD, CLOSED (LANE A, retrans-noun sweep).
- *
- * `TrustTierCard`/the tier editor used to be gated only on a config OBJECT existing, never on the
- * PEER's own federation role. `assertOutpostPeerBinding` (`outpost-binding.ts`, ADR-0004) refuses
- * (400) an UPDATE against a peer whose role is not `outpost` exactly as it refuses a CREATE — so a
- * STRAY config object bound to a peer whose role changed to `retrans` after the object was declared
- * (nothing deletes the row when that happens) rendered a live, clickable Save button the server
- * would refuse confusingly. This file pins the fix: the editor is withheld for such a peer and the
- * SAME refusal sentence `DeclareConfigCard` already renders for a non-outpost peer is shown instead.
- *
- * It also pins the two other retrans-role gates on this same wired-up section: the CardDescription
- * branch (a retrans peer holds no commander-declared outpost configuration — only poke-mode applies)
- * and the "managed elsewhere" notes being withheld for a retrans peer (freeze windows / the
- * outpost-local Gitea registry / bundled backends are outpost concepts a CDS-boundary retrans has
- * none of, per M13.1).
- *
- * Driven through the real wired-up `OutpostConfigurationSection` (not just the presentational
- * sub-components) with a mocked SDK, mirroring `outpost-configuration-tier-precondition.test.tsx`'s
- * pattern — a happy-dom render is what lets "no Save control is offered at all" be asserted as an
- * absence in the actual DOM rather than as an attribute beside a control that still renders.
- */
+/** THE STRAY-CONFIG HAZARD, CLOSED. See docs/web.md §353. */
 
 const PEER_ID = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
 const OWN_DOMAIN = "aa11bb22-cc33-4d44-8e55-ff6677889900";

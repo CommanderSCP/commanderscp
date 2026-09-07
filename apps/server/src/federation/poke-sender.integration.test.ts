@@ -40,21 +40,7 @@ import {
 } from "./test-support/mtls-pki.js";
 import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 
-/**
- * M14.3 — the COMMANDER POKE SENDER, end-to-end against real Postgres + a real mTLS listener
- * (docs/proposals/outpost-poke.md §"Milestone scope", ADR-0009).
- *
- * A commander (the SENDER, presenting its enrolled `urn:scp:domain:<commanderDomainId>` client cert)
- * pokes an outpost (the RECEIVER, running a real HTTPS mTLS listener with the M14.2 poke endpoint and
- * receiver-side pokeMode=true for the commander). The wake is asserted by injecting a RECORDING
- * pg-boss into the outpost's deps: an accepted poke enqueues exactly one immediate
- * `FEDERATION_SYNC_QUEUE` tick (the pull runs on the loop's worker, never inline).
- *
- * Proves: (1) a poke-mode outpost peer IS poked over mTLS; (2) a pokeMode=false peer is NOT;
- * (3) an unreachable peer fails best-effort — no throw, no escalation, the live peer still poked;
- * (4) coalescing — multiple signals in one window collapse to at most one poke. Skipped wholesale
- * when `openssl` is unavailable (mirrors the M14.0/M14.2 mTLS suites).
- */
+/** The commander poke sender, end to end over real mTLS. See docs/federation.md §375. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.resolve(__dirname, "../../drizzle");
@@ -137,8 +123,8 @@ async function bootDomain(label: string, mtlsEnv: Record<string, string> = {}): 
 
 describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-domain)", () => {
   let ca: TestCa;
-  let commander: Domain; // the SENDER (dials, presents its client cert)
-  let outpost: Domain; // the RECEIVER (real mTLS listener + poke endpoint)
+  let commander: Domain;
+  let outpost: Domain;
   let commanderClientMtls: FederationClientMtls;
   let outpostUrl: string;
   let deadOutpostDomainId: TrustDomainId;
@@ -280,7 +266,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
         name: "dead-outpost",
         role: "outpost",
         publicKey: outpostKeyPub,
-        baseUrl: "https://127.0.0.1:1", // nothing listening -> ECONNREFUSED
+        baseUrl: "https://127.0.0.1:1",
         pokeMode: true
       })
     );
@@ -309,7 +295,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
     try {
       sender.onEventsRelayed([commander.orgId]);
       await sender.drain();
-      sender.onEventsRelayed([commander.orgId]); // second signal in the SAME window -> coalesced
+      sender.onEventsRelayed([commander.orgId]);
       await sender.drain();
       // Despite two signals, the receiver was woken at most once.
       expect(sends).toEqual([FEDERATION_SYNC_QUEUE]);
@@ -319,12 +305,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
   });
 
   it("FAIL-CLOSED: a poke-mode peer with a plain-HTTP baseUrl is NEVER dialed (defense in depth)", async () => {
-    // `pairPeer`'s effective-state guard makes {pokeMode: true, http baseUrl} unrepresentable, so the
-    // only way to get such a row is to bypass the repo entirely (a hand-edited DB, or a row predating
-    // the guard). The SENDER must not depend on the row being well-formed: dialing it would put
-    // `Authorization: Bearer <federation bearer>` on the wire in CLEARTEXT with no mutual auth
-    // (scheme-derived requireMtls never fires for http). Write the bad row by raw UPDATE and prove the
-    // sender skips it entirely — it is not even in the outcome set, and NOTHING is dialed.
+    // `pairPeer`'s effective-state guard makes {pokeMode. See docs/federation.md §376.
     const badDomainId = asTrustDomainId(randomUUID());
     const outpostKeyPub = (
       await withTenantTx(outpost.db, outpost.orgId, (tx) => ensureInstanceKey(tx, outpost.orgId))
@@ -378,7 +359,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
 
   it("INERT: with no outbound client-cert material the sender no-ops (SCOPE 5, opt-in/default-off)", async () => {
     const sender = createCommanderPokeSender(commander.db, {
-      env: {}, // no SCP_FEDERATION_MTLS_* -> not configured
+      env: {},
       mtls: null // explicitly none
     });
     try {

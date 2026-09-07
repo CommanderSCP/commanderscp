@@ -2,15 +2,10 @@ import * as React from "react";
 import { cn } from "../../lib/utils";
 import { SectionLabel } from "./section-label";
 
-/**
- * §2.7 — the one dt/dd treatment (outpost-detail, outposts, federation-status, registry-detail
- * Properties). `tooltip` renders as `title=""` on the pair — the sanctioned home for a full
- * honesty sentence whose visible form is a fragment (copy rule 1).
- */
+/** §2.7 — the one dt/dd treatment. See docs/web.md §109. */
 export interface KeyValueItem {
   label: React.ReactNode;
   value: React.ReactNode;
-  /** Full-sentence tooltip on the pair (`title` attribute). */
   tooltip?: string;
   /** Mono value type (§1.3) — URNs, ids, versions. */
   mono?: boolean;

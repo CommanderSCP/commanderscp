@@ -12,28 +12,7 @@ import {
   type ScanFinding
 } from "./supply-chain.js";
 
-/**
- * M22.5 (component-declared facts, owner decision D2) and M22.6 (the override request, D3/D4) — THE
- * TWO REMAINING CLASS PREDICATES, pure.
- *
- * A separate file from `scan-exclusion-classes.test.ts` for the reason that file gives for existing
- * at all: these are tests of the CLASSES, and the two here share a property the earlier two do not.
- * `no_fix_available` and `vendor_latest` are assertions about the WORLD (the scanner shipped no fix;
- * the registry has nothing newer). These two are assertions about an ACT SOMEONE PERFORMED — a
- * component owner wrote a property, an authority approved a request — which makes the interesting
- * cases the ones where the act was incomplete, misspelled, or has since expired.
- *
- * WHAT IS DELIBERATELY NOT TESTED HERE: whether the facts are ever RESOLVED, and whether the
- * resolution is WIRED into a gate. A pure test of a pure predicate can say nothing about either, and
- * this repo's dominant defect is a component built, tested green against itself, and installed
- * nowhere. `scan-declared-override-exclusions.integration.test.ts` drives the real gate for that.
- *
- * MUTATIONS RUN against this file (2026-08-17), measured against a baseline of 20 passed and
- * reverted by an exact inverse edit:
- *   S-1  `declaredFactPredicate` accepts a clause with a KEY and no VALUE -> 1 failed. The same
- *        mutation reaches the real gate only after `pnpm -w build`, because the plugin subprocess
- *        loads the BUILT `@scp/schemas` — the unit suite caught it with no rebuild at all.
- */
+/** The component-declared facts and the override request. See docs/schemas.md §390. */
 
 const finding = (over: Partial<ScanFinding> = {}): ScanFinding => ({
   severity: "high",
@@ -57,9 +36,7 @@ const declared = (...pairs: Array<[string, string]>): ScanDeclaredFacts => ({
   declarations: pairs.map(([key, value]) => ({ key, value }))
 });
 
-// ===========================================================================================
 // M22.5 — `declared_fact`
-// ===========================================================================================
 
 describe("M22.5 — declared_fact needs BOTH halves of the clause and a matching declaration", () => {
   const EGRESS_NONE: ScanExclusionClause = {
@@ -120,14 +97,7 @@ describe("M22.5 — declared_fact needs BOTH halves of the clause and a matching
   });
 
   it("A CLAUSE WITH NO NARROWING MATCHER IS INERT — it would otherwise turn the scan gate off", () => {
-    // The class's predicate is finding-INDEPENDENT once the declaration holds, so with none of
-    // vulnerabilityId/pkgName/purl/findingClass it excludes EVERY finding at EVERY severity. Admission
-    // is per CLASS, so no tier above ever sees this clause's reach: one service-tier `policy:write`
-    // plus the component owner's own `object:write` on `properties.security` is the whole escalation.
-    //
-    // THE READ HALF of a pair — `scan-rule-authoring-guard.ts` refuses the same shape at the write
-    // door. This half is the one that reaches a clause already stored, or federated in (where the
-    // door deliberately cannot throw without wedging a signed bundle).
+    // The predicate is finding-independent once it holds. See docs/schemas.md §391.
     const findings = [
       finding({ severity: "critical", class: "os-pkgs", pkgName: "openssl" }),
       finding({ severity: "low", class: "lang-pkgs", pkgName: "axios" })
@@ -274,9 +244,7 @@ describe("M22.5 — the request body is STRICT even though the registry schema i
   });
 });
 
-// ===========================================================================================
 // M22.6 — `approved_override`
-// ===========================================================================================
 
 describe("M22.6 — approved_override joins a finding to a live grant, exactly", () => {
   const OVERRIDE: ScanExclusionClause = { class: "approved_override" };

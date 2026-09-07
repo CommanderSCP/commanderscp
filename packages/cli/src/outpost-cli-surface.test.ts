@@ -4,25 +4,7 @@ import { outpostClaimantTokens, OutpostTrustTierSchema } from "@scp/schemas";
 import type { OutpostConfig, OutpostConfigReconcileResult } from "@scp/schemas";
 import { buildProgram, formatReconcilePreviewLines, formatReconcileResultLines } from "./cli.js";
 
-/**
- * M16.2 phase A, REVIEW ROUND 5 — THE CLI HALF OF THE OUTPOST SURFACE (N1, N2).
- *
- * N1 — THE TIER FIX MISSED THE ONLY PLACE AN OPERATOR READS THE LIST. ADR-0022 widened
- * `OutpostTrustTier` from `commercial|fedramp-high|il5` to the glossary's five members, and the
- * schema, the migration header, the proposal and the glossary alignment were all corrected — while
- * `--trust-tier`'s two option descriptions kept printing the OLD THREE. `scp federation outpost
- * declare --help` is the only place an operator learns what to type, so an operator enrolling a
- * GovCloud outpost was told there was no value for it, and pushed to leave the tier unknown or
- * assert `commercial` — the INVENTED POSTURE the whole honest-unknown design exists to prevent.
- * The help text is now DERIVED from the enum; this test is the assertion that keeps documentation
- * and enum from drifting apart again, and it is deliberately written against the ENUM'S OWN
- * MEMBERS rather than a retyped list, so adding a sixth tier cannot leave the help behind.
- *
- * N2 — THE RECOVERY VERB HAD NO CLI. Charter principle 3 is API -> SDK -> CLI -> IaC -> UI, and
- * `reconcileOutpost` shipped in the SDK with no command. It is the verb an operator uses to un-wedge
- * a peer holding duplicate `outpost` objects — and that operator is the one person who cannot reach
- * it through the UI, because the wedged peer is what the UI fails to render.
- */
+/** M16.2 phase A, REVIEW ROUND 5 — THE CLI HALF OF THE OUTPOST SURFACE. See docs/cli.md §126. */
 
 function findCommand(root: Command, path: string[]): Command | undefined {
   let current: Command | undefined = root;
@@ -100,16 +82,7 @@ describe("scp federation outpost — the operator-facing surface", () => {
     expect(names).toEqual(["declare", "list", "reconcile", "set", "show"]);
   });
 
-  /**
-   * M1 (review round 6) — THE RECOVERY COMMAND MUST NOT DESCRIBE A JOURNALED, DOWNSTREAM-PROPAGATING
-   * DELETE OF THIS DOMAIN'S OWN CONFIG AS "removed N unverified shadow(s)". That wording is true only
-   * for `removedShadowObjectIds` (a stray hand-typed copy this domain never authored — nothing rides
-   * the journal). For `removedLocalObjectIds` (the `?keep=` verified-duplicate escape, N9) it is false:
-   * the row dropped is this domain's OWN declared config, and the tombstone journals down to the
-   * outpost. The two cases must read differently — this test fails if they are ever collapsed back
-   * into one bucket/one sentence, which is exactly the regression a `removedObjectIds.length` mutant
-   * would reintroduce.
-   */
+  /** A journaled delete must not be described as a local cleanup. See docs/cli.md §127. */
   function fakeConfig() {
     return {
       objectId: "00000000-0000-0000-0000-000000000001",
@@ -159,12 +132,7 @@ describe("scp federation outpost — the operator-facing surface", () => {
     expect(localLines).not.toMatch(/unverified shadow/i);
   });
 
-  /**
-   * THE OPTIMISTIC-CONCURRENCY PRECONDITION, ON THE SURFACE WITH THE LARGEST UNGUARDED WINDOW.
-   * `reconcile` went straight to the write with no read at all, so the CLI had neither a preview
-   * nor a staleness guard on a call that can adopt an operator's entered config, DISCARD it, or
-   * delete a row this domain authored and journal that delete downstream.
-   */
+  /** The concurrency precondition on the widest unguarded window. See docs/cli.md §128. */
   function claimant(over: Partial<OutpostConfig> & { objectId: string }): OutpostConfig {
     return {
       urn: `urn:scp:test:outpost:${over.objectId}`,
@@ -303,17 +271,7 @@ describe("scp federation outpost — the operator-facing surface", () => {
     expect(lines).not.toMatch(/journal/i);
   });
 
-  /**
-   * ROUND 3 — THE SAME HALF-GUARD, IN THE CLI. `adoptedObjectId` is required-NULLABLE
-   * (`federation.ts`), and BEFORE ADR-0023 the generated SDK validated NO response, so a server that omits the key
-   * hands this function `undefined`. Keyed on `=== null`, that took the OTHER branch and printed
-   *
-   *     Adopted: undefined (an unverified hand-filled shadow is now this domain's own object)
-   *
-   * — an adoption that did not happen, reported as one that did, from the CLI's own recovery verb.
-   * The browser half of this bug was fixed in `routes/outpost-configuration.tsx`; the class is
-   * broader than the file, so it is pinned in both.
-   */
+  /** ROUND 3 — THE SAME HALF-GUARD, IN THE CLI. See docs/cli.md §129. */
   it("an ABSENT adoptedObjectId reports NO adoption, never `Adopted: undefined`", () => {
     const absent = {
       config: fakeConfig(),

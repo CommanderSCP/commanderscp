@@ -102,11 +102,7 @@ async function keycloakAdminApi(
   }
 }
 
-/**
- * Generic OIDC (Authorization Code + PKCE via `openid-client`) round-trip against a CONTAINERIZED
- * Keycloak fixture — BUILD_AND_TEST.md §8 M2 DoD (c), non-negotiable. Drives the real PKCE dance
- * with raw `fetch` + manual `redirect: 'manual'` (no browser, no keycloak-admin-client SDK).
- */
+/** A real PKCE round-trip against a containerized Keycloak. See docs/auth.md §17. */
 describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", () => {
   let container: StartedTestContainer;
   let kcBaseUrl: string;
@@ -162,14 +158,7 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
       credentials: [{ type: "password", value: KEYCLOAK_TEST_PASSWORD, temporary: false }]
     });
 
-    // ------------------------------------------------------------------------------------------
-    // THE ENTRA APP-ROLE SHAPE, reproduced on Keycloak (role-model.md — SSO groups)
-    // ------------------------------------------------------------------------------------------
-    // Entra emits assigned APP ROLES as a `roles` claim whose values you choose. Keycloak does the
-    // same thing under a different name: a realm role plus a `oidc-usermodel-realm-role-mapper`
-    // that writes them into the ID TOKEN. `id.token.claim: "true"` is the load-bearing setting —
-    // without it the role lands in the ACCESS token only, `tokens.claims()` never sees it, and the
-    // sync silently reconciles to nothing. That is the exact silent-strip this feature refuses.
+    // THE ENTRA APP-ROLE SHAPE, reproduced on Keycloak. See docs/auth.md §18.
     await keycloakAdminApi(kcBaseUrl, adminToken, `/admin/realms/${KEYCLOAK_REALM}/roles`, {
       name: SCP_APP_ROLE
     });
@@ -350,7 +339,6 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
     expect(afterSecondLogin).toHaveLength(1);
     expect(afterSecondLogin[0]?.id).toBe(provisionedUserId);
 
-    // The second login's session is independently valid too.
     const secondReadRes = await fetch(`${SCP_BASE_URL}/domains`, {
       headers: { cookie: secondSessionCookieHeader }
     });
@@ -362,19 +350,7 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
   }, 120_000);
 
   it("SSO GROUPS END TO END: an app-role claim in a REAL login grants the mapped group's role", async () => {
-    // ------------------------------------------------------------------------------------------
-    // THE WIRING THIS FILE EXISTS TO PROVE, and which nothing else could.
-    // ------------------------------------------------------------------------------------------
-    // `identity-sync.integration.test.ts` calls `syncExternalGroupMembership` DIRECTLY, so it
-    // proves reconciliation and proves nothing about whether a login ever reaches it. The chain
-    // handleCallback -> claims.raw -> claimValuesFrom(config.roleClaim) -> sync was, until this
-    // test, verified only by reading the source. Delete the sync call from `routes/oidc.ts` and
-    // every other test in the suite stays green — which is this repo's dominant failure class
-    // wearing an SSO costume.
-    //
-    // Keycloak stands in for Entra deliberately: same generic-OIDC seam, same `roles` claim, no
-    // per-provider code. What is NOT covered is Entra's own quirks — the groups-claim overage in
-    // particular — which no local fixture can reproduce.
+    // THE WIRING THIS FILE EXISTS TO PROVE, and which nothing else could. See docs/auth.md §19.
     const asAdmin = {
       authorization: `Bearer ${bootstrapAdminToken}`,
       "content-type": "application/json"

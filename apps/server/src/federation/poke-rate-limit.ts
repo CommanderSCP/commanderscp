@@ -1,19 +1,4 @@
-/**
- * M14.2 (ADR-0009, docs/proposals/outpost-poke.md §"Design principles" 5) — the inbound federation
- * poke's PER-PEER token bucket.
- *
- * The poke is contentless and idempotent: N pokes in a window must trigger AT MOST ONE pull (the
- * pull drains everything pending regardless of how many pokes prompted it), so a spoofed or replayed
- * burst can do no more than one authorized pull's worth of work — no dedupe ledger is needed, just a
- * fixed low cap that drops the excess with a 429. This is a deliberately simple in-memory bucket,
- * NOT a durable/clustered limiter: the worst case a slipped-through extra poke can cause is one more
- * (already-authorized, idempotent) pull, so per-process state is sufficient and the charter's
- * PostgreSQL-only-required-dependency invariant is untouched (no new stateful service).
- *
- * Default cap is 1 with a short refill window: the first poke from a peer consumes the token and
- * wakes the pull; further pokes from that peer within the window are dropped (429) until the window
- * refills. Keyed per `(org, peer)` so one noisy commander can never starve another's pokes.
- */
+/** The inbound federation poke rate limit. See docs/federation.md §374. */
 
 /** Seconds between token refills — a peer regains one poke allowance each interval. */
 export const POKE_RATE_LIMIT_REFILL_SECONDS = Math.max(

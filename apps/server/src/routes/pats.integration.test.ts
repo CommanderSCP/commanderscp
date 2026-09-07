@@ -21,11 +21,7 @@ interface PatBody {
   lastUsedAt?: string | null;
 }
 
-/**
- * Personal Access Tokens (M2 step 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — create/use/list/
- * revoke, expiry, and the load-bearing RBAC-parity property: a PAT must resolve to EXACTLY the
- * same permission scope as the owning user's own session, never more.
- */
+/** Personal Access Tokens. See docs/routes.md §299. */
 describe("Personal Access Tokens", () => {
   let server: TestServer;
 
@@ -75,7 +71,6 @@ describe("Personal Access Tokens", () => {
     expect(listed).not.toHaveProperty("tokenHash");
     expect(listed).not.toHaveProperty("tokenId");
 
-    // Revoke.
     const revoke = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/auth/pats/${created.id}`,

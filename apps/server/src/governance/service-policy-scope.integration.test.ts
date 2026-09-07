@@ -10,21 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Service-scoped POLICY (model P2 — the authz half lives in authz/service-scope.integration.test.ts).
- *
- * This file's counterpart header, and DESIGN §10.1, have always said resolution walks
- * `org -> domain -> service -> component`. It didn't: `containmentChain` walked `objects.domain_id`
- * only, and components/services are siblings under a domain — so a service-scoped policy governed
- * NOTHING. Migration 0021's `contains` edge plus the two-route walk is what makes the documented
- * behaviour real, and this is the test that says so.
- *
- * The precedence case is the subtle one. With two routes the chain is a DAG, not a line: a
- * component's domain is reachable BOTH directly (component.domain_id) and via its service
- * (service.domain_id), at different depths. policy-model.ts sorts by depth DESC (deepest = most
- * specific wins), so picking the wrong depth for the domain would let a domain-scoped policy
- * outrank a service-scoped one — silently, and only for components that have a service.
- */
+/** Service-scoped policy, with the authz half elsewhere. See docs/governance.md §428. */
 describe("policy resolution: service scope governs the service's components", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -118,13 +104,7 @@ describe("policy resolution: service scope governs the service's components", ()
   });
 
   it("KNOWN LIMIT: a component's OWN domain and its service TIE when the domains differ", async () => {
-    // Documented in containmentChain: if C.domain_id != S.domain_id, then C's own domain and its
-    // service are each exactly ONE hop from C and are structurally equidistant — max-depth cannot
-    // separate them. Pinned here so the behaviour is a known, tested fact rather than a surprise.
-    //
-    // INERT today: policy-model.ts groups by policy NAME and merges order-independently, using depth
-    // only to order a display-only `contributors` array — so a tie changes no outcome. If this test
-    // ever starts mattering for enforcement, containmentChain's depth model needs fixing first.
+    // Documented in containmentChain. See docs/governance.md §429.
     const otherDomain = await admin.object("domain").create({ name: "other-domain" });
     const svcElsewhere = await admin.object("service").create({
       name: "svc-in-other-domain",

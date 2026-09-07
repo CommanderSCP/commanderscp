@@ -1,22 +1,5 @@
 #!/usr/bin/env node
-/**
- * @scp/airgap build-bundle — builds `scp-bundle-<version>.tar.gz` (DESIGN.md §16 "Air-gapped
- * bundle", BUILD_AND_TEST.md §8 M8). See deploy/airgap/README.md for the full bundle format and
- * usage; this file's own comments explain the WHY of each step, not just the WHAT.
- *
- * Run: `pnpm --filter @scp/airgap bundle -- --version 1.0.0-rc` (extra args after `--` are
- * commander's; see `--help` for the full flag list). Requires `skopeo`/`cosign`/`tar` on PATH —
- * see BUILD_AND_TEST.md §1. Reads each source image from wherever it already is (local Docker
- * daemon by default — see `--*-source`); never pulls anything from the network unless explicitly
- * told to via `--*-source docker` (a deliberate, documented, operator-chosen pull — not a
- * phone-home).
- *
- * WHAT THE BUNDLE CARRIES IS NOT DECIDED HERE. `bundle-images.ts` holds the canonical list, and
- * this file derives BOTH its `--*-ref`/`--*-source` flags AND the images it copies from that one
- * array — so a bundle cannot carry an image the CLI can't point at, and the CLI cannot advertise a
- * flag for an image the bundle won't carry. `--list-images` prints the resolved list without
- * touching skopeo, which is also how `bundle-images.test.ts` proves this wiring is live.
- */
+/** @scp/airgap build-bundle — builds `scp-bundle-<version>.tar.gz`. See docs/airgap.md §1. */
 import { Command } from "commander";
 import { cp, mkdir, rm, writeFile, chmod, copyFile, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -172,13 +155,11 @@ async function main(): Promise<void> {
     });
   }
 
-  // ---- 2. manifest.json / manifest.sh --------------------------------------------------------
   const builtAt = new Date().toISOString();
   const manifest = buildManifest(bundleImages, opts.version, builtAt);
   await writeFile(path.join(bundleRoot, "manifest.json"), renderManifestJson(manifest), "utf8");
   await writeFile(path.join(bundleRoot, "manifest.sh"), renderManifestSh(manifest), "utf8");
 
-  // ---- 3. Helm chart, compose files, docs ----------------------------------------------------
   process.stderr.write("\n-- copying helm chart, compose files, docs --\n");
   await cp(HELM_CHART_DIR, path.join(bundleRoot, "helm"), { recursive: true });
   // The bundled-backends chart + its one-command wrapper ride the bundle too: install.sh applies the
@@ -207,11 +188,9 @@ async function main(): Promise<void> {
   await copyFile(BUILD_AND_TEST_DOC, path.join(bundleRoot, "docs", "BUILD_AND_TEST.md"));
   await copyFile(DESIGN_DOC, path.join(bundleRoot, "docs", "DESIGN.md"));
 
-  // ---- 4. install.sh ---------------------------------------------------------------------------
   await copyFile(path.join(ASSETS_DIR, "install.sh"), path.join(bundleRoot, "install.sh"));
   await chmod(path.join(bundleRoot, "install.sh"), 0o755);
 
-  // ---- 5. Signing key + per-image signatures ---------------------------------------------------
   process.stderr.write("\n-- signing --\n");
   const scratchDir = await cosign.makeScratchDir();
   const key = await cosign.resolveSigningKey(scratchDir);
@@ -223,7 +202,6 @@ async function main(): Promise<void> {
     cosign.signBlobDetached(digestFile, `${digestFile}.sig`, key);
   }
 
-  // ---- 6. CHECKSUMS.txt (whole extracted-bundle integrity) --------------------------------------
   process.stderr.write("\n-- checksums --\n");
   const checksumEntries = await computeChecksums(bundleRoot);
   const checksumsPath = path.join(bundleRoot, "CHECKSUMS.txt");

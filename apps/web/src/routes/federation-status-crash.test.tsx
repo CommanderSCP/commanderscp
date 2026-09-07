@@ -6,36 +6,7 @@ import { ScpClient } from "@scp/sdk";
 import type { FederationPeerStatus } from "@scp/schemas";
 import { render } from "../test-support/render-dom";
 
-/**
- * Z1 — `/federation` MUST REPORT A CONTRACT FAILURE, NOT SWALLOW IT.
- *
- * WHY THIS FILE WAS REWRITTEN (ADR-0023). Its previous form mocked `client.federation.status()` to
- * RESOLVE with a body whose `recentTransfers` key was deleted, and asserted the row rendered "none".
- * The SDK now validates every 2xx JSON body against the generated schema, so THE REAL SDK CAN NO
- * LONGER PRODUCE THAT RESOLUTION — it rejects. The old assertions therefore pinned a scenario that
- * cannot occur while staying green, giving the web suite zero signal about what the page actually
- * does with a malformed response: the vacuous-guard class (wording, not behaviour) in its purest
- * form. The REVERT TEST it advertised — "delete the `?? []`s and this goes red" — had stopped being
- * true for exactly the same reason.
- *
- * WHAT IT PINS NOW, AND WHY IT DRIVES THE REAL SDK. The behaviour under test spans two packages: the
- * SDK converts a malformed body into an `ScpResponseValidationError`, react-query converts the
- * rejected `queryFn` into `isError`, and this page must RENDER that. Mocking `client` would stub out
- * the first half — the exact half that decides whether the second half is reachable at all. So these
- * tests construct a REAL `ScpClient` over a stubbed `fetch`: everything from the wire bytes up is
- * production code.
- *
- * THE REGRESSION THIS CLOSES, MEASURED. With the real SDK and a body whose one peer omits
- * `recentTransfers`, the page rendered the identity card and an EMPTY "Peers" card — no peer row, and
- * no occurrence anywhere in the DOM of "fail", "error", "contract", "invalid", or "skew". The
- * failure was detected, diagnosed, and then died in the query cache. Before response validation, the
- * `?? []` guard at least rendered that peer's row with "none". Detection that never reaches a human
- * is worse than the guard it replaced; the `isError` branches restore, and improve on, what an
- * operator sees.
- *
- * REVERT TEST: delete the `statusQuery.isError` branch in `federation-status.tsx` and the first case
- * below fails on the missing `federation-status-error` node.
- */
+/** Z1 — `/federation` MUST REPORT A CONTRACT FAILURE, NOT SWALLOW IT. See docs/web.md §341. */
 
 const PEER_ID = "0e0a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
 const OTHER_PEER_ID = "1f1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d";
@@ -150,7 +121,6 @@ describe("/federation: a body that fails contract validation must reach the oper
     expect(notice.getAttribute("data-error-kind")).toBe("contract");
     // the OPERATION — the thing no call-site census could have produced
     expect(notice.textContent).toContain("GET /federation/status");
-    // the FIELD that was missing
     expect(notice.textContent).toContain("recentTransfers");
     // and it is legible AS a contract/version-skew failure, not as a network or permission fault
     expect(notice.textContent).toMatch(/contract/i);

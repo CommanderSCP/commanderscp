@@ -1,34 +1,4 @@
-/**
- * CONSOLE URLs — where a HUMAN goes to look at the thing a pipeline node names.
- *
- * ============================================================================================
- * WHY THIS IS NOT `resolveProviderBaseUrl`
- * ============================================================================================
- * `git-provider-core`'s `resolveProviderBaseUrl` resolves the REST base URL an adapter CALLS —
- * `https://api.github.com`. That is precisely the URL a person must not be sent to. The web console
- * and the API endpoint are different addresses for the same system, and conflating them produces a
- * link that returns JSON to a browser. This module owns only the human-facing address; nothing here
- * is ever used to make a request.
- *
- * ============================================================================================
- * THE RULE: A LINK IS RETURNED ONLY WHEN IT IS KNOWN, NEVER GUESSED
- * ============================================================================================
- * Every function here returns `null` rather than a plausible-looking URL it cannot justify, and the
- * client renders an un-clickable node in that case. A dead link in an operator console is worse than
- * plain text: it is a claim that something is over there.
- *
- * Two cases where that bites, both real on the live estate:
- *
- *   - A `source_mappings.repo_pattern` is a PATTERN. `AgentKitProject/agentkit` is a literal repo
- *     and links fine; anything containing a glob names a set of repos, and there is no single page
- *     to open. Globbed patterns therefore return null.
- *   - An execution-system's `serverUrl` is the address SCP COORDINATES through, which for an
- *     in-cluster Argo CD is `http://argocd-server.argocd.svc.cluster.local` — correct for the server
- *     and useless in a browser. Operators can set `properties.webUrl` to the browsable address;
- *     `execution-system`'s registered property schema is open (`{"type":"object"}`, migration 0019),
- *     so that needs no migration. `webUrl` wins where set, and `serverUrl` is the fallback because
- *     for most deployments the two ARE the same host.
- */
+/** Console URLs: where a human goes to look at the thing. See docs/coordination.md §323. */
 
 /** A pattern that names a SET of repos has no single page to open. */
 function isGlob(pattern: string): boolean {
@@ -39,14 +9,7 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-/**
- * A console link is rendered as a raw `href` in the SPA, so a `webUrl`/`serverUrl` of
- * `javascript:…` (or `data:`/`vbscript:`) would execute in the operator's browser when clicked —
- * stored XSS, since execution-system `properties` are operator-supplied and its property schema is
- * open (`{"type":"object"}`, migration 0019). Only `http(s)` addresses are browsable links; every
- * other scheme is dropped to null (an un-clickable node) at this single server choke point, which
- * every render site reaches via `executorConsoleUrl`. Returns the trimmed URL or null.
- */
+/** A console link is a raw href, so the scheme is checked. See docs/coordination.md §324. */
 function httpConsoleUrlOrNull(candidate: string): string | null {
   let parsed: URL;
   try {
@@ -58,15 +21,7 @@ function httpConsoleUrlOrNull(candidate: string): string | null {
   return trimSlash(candidate);
 }
 
-/**
- * The web page for a source repo, or null when it cannot be known.
- *
- * Only `github` resolves today, and deliberately to `github.com` rather than to any configured host:
- * a `source_mappings` row carries no execution-system reference, so there is nothing to read a
- * GitHub Enterprise host from. `gitlab` and `gitea` are self-hosted-by-default and therefore return
- * null until a mapping can name its host — guessing `gitlab.com` would send an operator to a
- * stranger's repo, which is worse than not linking.
- */
+/** The web page for a source repo, or null when unknown. See docs/coordination.md §325. */
 export function repoConsoleUrl(sourceKind: string, repoPattern: string | null): string | null {
   if (!repoPattern || isGlob(repoPattern)) return null;
   const repo = repoPattern.replace(/^\/+|\/+$/g, "");
@@ -92,14 +47,7 @@ export function executionSystemConsoleBase(
   return null;
 }
 
-/**
- * The page for ONE bound thing inside an execution system — the Argo CD application, the GitHub
- * Actions workflow list — or null.
- *
- * `kind` is the execution-system's own `properties.kind` (`argocd`, `github`, …), NOT the binding's
- * routing Type: two bindings of the same Type can live in different systems, and it is the system
- * that decides the URL shape.
- */
+/** The page for ONE bound thing inside an execution system. See docs/coordination.md §326. */
 export function executorConsoleUrl(input: {
   kind: string | null;
   base: string | null;

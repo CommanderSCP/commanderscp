@@ -16,21 +16,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * SECURITY CONTRACT (M26.1 review finding F1 — fixed; this test is the standing gate).
- *
- * Postgres NOTIFY is not channel-access-controlled: any role that can merely CONNECT can
- * `pg_notify('scp_sse_events', …)` — including `scp_pgboss`, which is deliberately granted NOTHING
- * on `outbox` precisely so a pg-boss compromise cannot read tenant data. The bridge's original
- * full-envelope fast path validated the payload's SHAPE, not its AUTHENTICITY, and keyed delivery
- * on the payload's OWN `orgId` — letting any DB login fabricate an event for any tenant's live SSE
- * stream (a cross-tenant integrity regression the M26.1 cross-process bridge introduced).
- *
- * The contract pinned here: the NOTIFY payload is a POINTER, never authority. The relay NOTIFYs an
- * id (+ orgId as a non-authoritative hint), and the bridge ALWAYS re-derives the event from the
- * authoritative `outbox` row under `SET LOCAL ROLE scp_relay` — one fetch path for every event, so
- * a frame no outbox row backs delivers nothing, to anyone.
- */
+/** The security contract, and this test is its standing guard. See docs/events.md §49. */
 describe("SSE bridge — NOTIFY payload authenticity", () => {
   let server: TestServer;
   let orgB: TestOrg;
@@ -54,11 +40,7 @@ describe("SSE bridge — NOTIFY payload authenticity", () => {
     // Writes the REAL outbox row whose delivery is this test's positive signal (see below).
     admin = new pg.Client({ connectionString: testDatabaseUrl() });
     await admin.connect();
-    // The bridge's LISTEN is established asynchronously and NOTIFY has no replay. That matters
-    // DOUBLY here: a forged frame sent before the LISTEN is up would never reach the bridge at all,
-    // so "nothing was delivered" would be true for the wrong reason and this security test would
-    // pass VACUOUSLY. Wait for the LISTEN first, so the forgery is genuinely seen and genuinely
-    // dropped. (Shared helper — see sse-bridge.integration.test.ts.)
+    // The listen is established asynchronously and has no replay. See docs/events.md §50.
     await waitForSseBridgeListening(admin);
   }, 90_000);
 
@@ -93,11 +75,7 @@ describe("SSE bridge — NOTIFY payload authenticity", () => {
       };
       await attacker.query("SELECT pg_notify('scp_sse_events', $1)", [JSON.stringify(forged)]);
 
-      // POSITIVE SIGNAL for a negative assertion (integration-sleep-census.test.ts's property — a
-      // fixed sleep here would be both flaky on a loaded box and vacuous on an idle one). Instead:
-      // send a GENUINE frame, backed by a real outbox row, immediately after the forgery. NOTIFY is
-      // ordered per channel and the bridge consumes one LISTEN connection in order, so the moment the
-      // genuine event arrives, the forged frame has DEFINITIVELY already been processed — and dropped.
+      // POSITIVE SIGNAL for a negative assertion. See docs/events.md §51.
       const realId = randomUUID();
       await admin.query(
         `INSERT INTO outbox (id, org_id, type, source, subject, data, created_at)

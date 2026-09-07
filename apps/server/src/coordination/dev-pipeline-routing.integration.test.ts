@@ -15,20 +15,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M18 / ADR-0030 §1–§2 — a dev pipeline is SELECTED by the source ref, and its dev-ness is READ
- * from the operator's declaration on the winning mapping.
- *
- * What this suite is really pinning is that `ref_pattern` behaves as a PEER of the two globs that
- * predate it, in all four places that matters: matching, fail-closed skipping, precedence, and
- * IDENTITY. The last one is the reason this file exists rather than a couple more cases in
- * `source-mapping-precedence`: a ref is the first glob on this table that two otherwise-identical
- * rows can legitimately differ by, so it is the first one whose absence from the identity tuple
- * would silently destroy a live route.
- *
- * Each case uses its own `sourceKind`. The match is scoped to `(orgId, sourceKind)`, so a private
- * source kind is what makes "these mappings and no others matched" a true statement.
- */
+/** A dev pipeline is selected by the source ref. See docs/coordination.md §426. */
 describe("dev pipelines route by source ref (ADR-0030)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -186,15 +173,7 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
   });
 
   it("rule 1 COUNTS the ref: two wide globs outrank one narrow one", async () => {
-    // Isolates rule 1 from rule 2a, which the case above does NOT do — there, the ref-scoped mapping
-    // also wins on narrowest-wildcard, so dropping the ref from rule 1 leaves that test green. (It
-    // did: this case exists because that mutation survived.)
-    //
-    // Here the two ranks DISAGREE, so only the one that runs first can decide it:
-    //   catchAll  — repo exact, no ref     -> rule 1 count 1, rule 2a tier 3
-    //   devWide   — repo `**` + ref `**`   -> rule 1 count 2, rule 2a tier 1+1 = 2
-    // Rule 1 (applied first, and counting three globs) picks `devWide`. A rule 1 that still counted
-    // only two globs ties at 1 and falls through to rule 2a, which picks `catchAll` instead.
+    // Isolates rule one from rule two, which the last did not. See docs/coordination.md §427.
     const sourceKind = `dev-rank1-${uuidv7()}`;
     const repo = `acme/app-${uuidv7()}`;
     const catchAll = await component("rank1-exact-repo");

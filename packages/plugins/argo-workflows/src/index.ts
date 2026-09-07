@@ -14,89 +14,9 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 
-/**
- * `@scp/plugin-argo-workflows` — the Argo Workflows `ExecutorPlugin` (team-pipeline-iac increment
- * 8, sibling of `@scp/plugin-argocd`). Argo Workflows runs TESTS on behalf of a coordinated
- * pipeline; it never performs a rollout, so `describeCapabilities()` deliberately OMITS the
- * `rollout` field (see that function below) rather than declaring an authority this plugin does
- * not have.
- *
- * MODELED ON `@scp/plugin-argocd`, deliberately, not on `pipeline-generic`/`terraform`: Argo
- * Workflows is a typed REST API problem (typed request/response shapes, a real list endpoint, a
- * file-backed idempotency cache), exactly like ArgoCD, not a URL-template escape hatch. Every call
- * goes through `ctx.http` (the host-mediated, egress-controlled client), never a raw fetch.
- *
- * ================================================================================================
- * HONEST COVERAGE NOTE — every shape below is ASSUMED, not verified against a live Argo Workflows
- * instance. This is a known, named risk (the Gitea lesson: an assumed webhook-signature scheme
- * that differed from GitHub's cost a full round to discover and fix). So every assumed shape is
- * typed in ONE place (the "Argo Workflows REST shapes" section below) and every assumption is
- * listed here as a single checklist a live-verification pass can work from:
- *
- *  1. Submit from a template — `POST /api/v1/workflows/{namespace}/submit`, body
- *     `{ resourceKind: "WorkflowTemplate", resourceName, submitOptions?: { parameters?: string[] } }`
- *     → response `{ metadata: { name, uid }, status?: {...} }`. Used by `trigger()`.
- *  2. Get one — `GET /api/v1/workflows/{namespace}/{name}` →
- *     `{ metadata: { name, uid, creationTimestamp, labels? }, status?: { phase?, startedAt?,
- *     finishedAt?, message?, progress? } }`. Used by `status()` and `abort()`.
- *  3. List — `GET /api/v1/workflows/{namespace}` (optionally `?listOptions.labelSelector=`) →
- *     `{ items: Workflow[] }`, same per-item shape as #2. Used by `observe()`.
- *  4. Terminate — `PUT /api/v1/workflows/{namespace}/{name}/terminate`, no body, success = 2xx.
- *     Used by `abort()`. IMPORTANT SUB-ASSUMPTION: the real API has NO distinct terminal phase for
- *     "explicitly terminated" — a terminated workflow settles into `Failed`/`Error` exactly like a
- *     genuine failure, distinguished (if at all) only by free-form `status.message` text this
- *     plugin does not want to pin its behavior on. So this plugin tracks "did *this plugin instance*
- *     call terminate on this workflow" itself, in the SAME file-backed state the idempotency cache
- *     uses (see `DedupState.abortedNames` below), and `status()` reads that local record — not any
- *     Argo-reported phase — to report `aborted` rather than `failed`. That is honest for aborts THIS
- *     plugin issued; a workflow terminated by some other actor (`argo terminate` from the CLI, a
- *     different SCP instance with a different `statePath`) still reports `failed`, which is a
- *     narrower guarantee than a phase-based signal would give, stated rather than assumed away.
- *  5. Workflow `status.phase` — `Pending | Running | Succeeded | Failed | Error` (assumed enum).
- *     Mapped to `ExecutionPhase`: `Pending`→`pending`, `Running`→`running`, `Succeeded`→`succeeded`,
- *     `Failed`/`Error`→`failed` (or `aborted` per #4 above when locally tracked), an UNKNOWN string
- *     →`running` (never silently promoted to a terminal success) with a `ctx.logger.warn`, and an
- *     absent/empty phase (freshly submitted, controller hasn't reconciled it yet) → `pending` — this
- *     last mapping is this plugin's own inference, since the assumed enum names no "not yet set"
- *     value explicitly.
- *  6. `status.progress` — assumed to be a human string of the form `"N/M"` (steps completed / total),
- *     parsed into a `0..1` fraction when it matches; falls back to a phase-based estimate (pending=0,
- *     running=0.5, terminal=1) when absent or unparsable. NOT verified against a live instance.
- *  7. Auth — `Authorization: Bearer <token>` from `ctx.secrets` (or `config.token` for
- *     tests/fixtures only, mirroring `@scp/plugin-argocd`'s `ArgoCdConfig.token`).
- *  8. `commitSha` convention (`observe()` only) — read from the workflow's own
- *     `metadata.labels["commanderscp.io/commit-sha"]` label, ONLY when present. Argo Workflows has
- *     no native notion of "the commit this run is for"; this is a convention a submitting caller
- *     (e.g. a pipeline that sets `submitOptions.labels` on its own trigger) may choose to follow.
- *     Never fabricated — omitted entirely when the label is absent.
- *  9. Cron workflows — `GET /api/v1/cron-workflows/{namespace}` →
- *     `{ items: [{ metadata, status?: { lastScheduledTime? } }] }`. Typed below
- *     (`ArgoCronWorkflow`/`ArgoCronWorkflowList`) for a live-verification pass to have the shape
- *     ready, but DELIBERATELY UNUSED by every verb in this increment — none of observe/trigger/
- *     status/abort's specified behavior calls for it. Reserved for a possible future increment (a
- *     CronWorkflow can spawn, complete, and be pruned by TTL GC between two `observe()` polls,
- *     which the current Workflow-list-only `observe()` would miss entirely) — do not wire it up
- *     without re-confirming this shape against a live instance first.
- * ================================================================================================
- *
- * IDEMPOTENCY (mirrors `@scp/plugin-argocd` exactly): `TriggerIntent.idempotencyKey` must dedup to
- * the SAME `ExternalRunRef` without re-submitting the workflow, and the mapping must survive a
- * subprocess-host restart — so it is kept in a small file-backed cache, write-to-temp-then-rename
- * for crash safety, identical in shape to `@scp/plugin-argocd`'s and `@scp/plugin-fake-executor`'s.
- *
- * EGRESS / IN-CLUSTER REACH: this plugin is a TENANT-CONFIGURABLE executor, not an operator-plane
- * module — it is deliberately absent from `subprocess-entry.ts`'s `OPERATOR_PLANE_MODULES`. An
- * operator who needs to coordinate an in-cluster (private ClusterIP) Argo Workflows server reaches
- * it through ADR-0003's two-layer model instead: the execution-system object's own
- * `allowInternalEgress` declaration, gated by the deployment-wide `SCP_INTERNAL_EGRESS_HOSTS`
- * allowlist — see `docs/adr/0003-internal-egress-for-execution-systems.md`. Adding this module to
- * `OPERATOR_PLANE_MODULES` instead would be a security regression (ADR-0003 alternative 4,
- * rejected): it grants internal egress to the whole module class regardless of a tenant's declared
- * intent.
- */
+/** The Argo Workflows executor plugin. See docs/plugins.md §3. */
 
 export interface ArgoWorkflowsConfig {
-  /** Argo Workflows API server base URL, e.g. `https://argo-workflows.example.com`. */
   serverUrl: string;
   /** Every endpoint this plugin calls is namespaced (assumption #1-3, #9) — one plugin instance
    *  addresses exactly one namespace, mirroring how one `@scp/plugin-argocd` instance addresses
@@ -156,12 +76,7 @@ async function resolveToken(
   return undefined;
 }
 
-// -----------------------------------------------------------------------------------------
-// Dedup + abort-tracking cache — see module doc assumptions #4/#7. Same write-to-temp+rename
-// persistence shape as `@scp/plugin-argocd`/`@scp/plugin-fake-executor`, for the identical reason:
-// a subprocess-host restart mid-wave must not lose the mapping. `normalize` backfills
-// `abortedNames` for a state file written before that field existed.
-// -----------------------------------------------------------------------------------------
+// Dedup + abort-tracking cache. See docs/plugins.md §4.
 
 const dedupCache = createFileBackedJsonCache<DedupState>(
   () => ({ targets: {}, abortedNames: {} }),
@@ -242,13 +157,7 @@ async function apiRequest(
   return { status: response.status, body: response.body };
 }
 
-/**
- * Assumption #5 — the phase-mapping table. An UNKNOWN phase string must NEVER silently become
- * `succeeded`: it maps to `running` (still in flight, as far as this plugin honestly knows) and is
- * logged so an operator can see a real API drift rather than a silently-wrong verdict. An absent
- * phase (a workflow this plugin's own `trigger()` just submitted, before Argo's controller has
- * reconciled it) maps to `pending` — this plugin's own inference, not part of the assumed enum.
- */
+/** Assumption #5 — the phase-mapping table. See docs/plugins.md §5. */
 function mapWorkflowPhase(rawPhase: string | undefined, ctx: PluginContext): ExecutionPhase {
   switch (rawPhase) {
     case undefined:
@@ -282,10 +191,6 @@ function computeProgress(progress: string | undefined, phase: ExecutionPhase): n
   if (phase === "running") return 0.5;
   return 1;
 }
-
-// -----------------------------------------------------------------------------------------
-// ExecutorPlugin
-// -----------------------------------------------------------------------------------------
 
 async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
@@ -428,15 +333,7 @@ async function abort(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResu
   return { aborted: true, detail: "argo-workflows: workflow terminated" };
 }
 
-/**
- * `stateRef` = `${uid}${REF_DELIMITER}${phase}` — the workflow's own identity plus its CURRENT
- * phase (assumption #5). This is what lets an idle re-list of an unchanged workflow (same uid, same
- * phase, polled again with the object's `startedAt`/`finishedAt` unchanged) collapse to one event
- * downstream instead of minting a new row every poll — the exact property `@scp/plugin-argocd`'s
- * `syncStateRef` documents (measured 26k spurious rows/day without it on a 61-application ArgoCD
- * instance). A workflow whose phase genuinely changes (Running -> Succeeded) gets a DIFFERENT
- * `stateRef`, so a genuine transition still produces a distinguishable event.
- */
+/** `stateRef` = `${uid}${REF_DELIMITER}${phase}`. See docs/plugins.md §6. */
 function workflowStateRef(wf: ArgoWorkflow): string | undefined {
   const uid = wf.metadata.uid;
   if (!uid) return undefined;
@@ -495,17 +392,7 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
   return events;
 }
 
-/**
- * D12's `rollout` capability field is DELIBERATELY OMITTED here — never set it, even to
- * `{ authority: "verified", targetClasses: [] }`. Argo Workflows runs TESTS on behalf of a
- * coordinated pipeline; it has no notion of a progressive rollout at all, so declaring ANY
- * `RolloutCapability` (even a nominally empty one) would misrepresent this executor as having an
- * opinion on rollout authority it structurally cannot have. `ExecutorCapabilities.rollout`'s own
- * doc comment in `@scp/plugin-api` is explicit: absent means "declares no rollout authority" and
- * must never read as a claim. If a future increment adds progressive-delivery awareness to Argo
- * Workflows itself, that is a deliberate, reviewed addition — not a default this field should ever
- * silently acquire by someone "completing" the capability list.
- */
+/** D12's `rollout` capability field is DELIBERATELY OMITTED here. See docs/plugins.md §7. */
 function describeCapabilities(): ExecutorCapabilities {
   return {
     supportsObserve: true,
@@ -518,19 +405,7 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-/**
- * ASSUMPTION #10 — CronWorkflow WRITE. `POST /api/v1/cron-workflows/{namespace}` creates and
- * `PUT /api/v1/cron-workflows/{namespace}/{name}` updates, body `{ cronWorkflow: {...} }`;
- * `DELETE .../{name}` removes. Cadence is a cron EXPRESSION (`spec.schedule`), so a seconds
- * cadence is rendered to the coarsest expression that fits.
- *
- * WIRED AGAINST AN ASSUMED SHAPE, KNOWINGLY. Assumption #9 above says not to wire the cron
- * endpoints without re-confirming against a live instance; that check has not been possible here
- * (this suite never touches the network) and the owner accepted the risk deliberately, so it is
- * recorded rather than implied. The mitigation is that the assumed request shape is PINNED BY
- * TESTS: a real API drift fails them loudly instead of silently declaring a probe nobody runs.
- * Re-confirm against a live instance before trusting this in an estate that matters.
- */
+/** ASSUMPTION #10 — CronWorkflow WRITE. See docs/plugins.md §8. */
 function cronExpressionFor(cadenceSeconds: number): string {
   // Coarsest expression that fits, and never finer than a minute — Argo's cron has no seconds
   // field, so a sub-minute cadence cannot be expressed and is rounded UP to one minute rather

@@ -16,92 +16,11 @@ import {
   assertSafeRepoPath
 } from "@scp/git-provider-core";
 
-/**
- * `write-guard.ts` — **the refusals that are the condition of `scp-managed-dep` being allowed to
- * write to somebody else's repository at all**, and the HMAC proof that makes them structural rather
- * than advisory.
- *
- * ============================================================================================
- * WHY IT LIVES HERE AND NOT IN `@scp/git-provider-core` (owner decision 2026-08-15)
- * ============================================================================================
- * M21.5 was built twice by two agents: once as write HOOKS on `GitProviderAdapter`, once as this
- * managed executor. Two independent implementations of one authority is the hazard, so there is now
- * one write path and it is this package's.
- *
- * `GitProviderAdapter` went back to READ-ONLY, and the reason is ADR-0032 §9's own argument. §9
- * admits the adapter as an escape hatch on two grounds: the `ExecutorPlugin` object is unchanged,
- * AND "It also only READS." Extending that same mechanism to writes contradicts half of its stated
- * justification — it would put repository-write authority into a library every git-provider plugin
- * loads, outside the charter's enumerated managed classes, where none of the containment
- * preconditions bind. Inside `scp-managed-dep` they do: an isolated single-shot runner, a per-run
- * single-repository credential, an enumerated class, an owner-approved amendment.
- *
- * The GUARD LAYER built on that other path was the best thing in it and is orthogonal to where the
- * HTTP happens, so it was kept whole and moved here, beside its one consumer (`repo-write.ts`).
- *
- * ============================================================================================
- * WHAT AUTHORISES THE WRITE, AND WHAT IT COSTS
- * ============================================================================================
- * PROJECT_CHARTER.md's `scp-managed-dep` amendment (2026-08-13) admits ONE new managed class to the
- * enumerated allowlist, narrowly defined as *editing the declared version of an already-declared
- * dependency in a manifest the component already contains*. Every clause of that amendment is a
- * precondition, not an aspiration, so every clause that can be enforced in code is enforced here:
- *
- *  - **never adds or removes a dependency** → {@link verifyManifestOnlyEdit} re-parses both sides
- *    with M21.2's parsers and refuses unless the dependency SET is identical element-for-element.
- *  - **never edits a file that declares no dependency** → the target must be a known manifest
- *    basename for its ecosystem AND a path the component's own inventory already declares.
- *  - **never resolves or regenerates a lockfile** → an independent lockfile refusal that does not
- *    depend on the manifest allowlist agreeing with it.
- *  - **never runs a package manager, never builds/compiles/tests** → structurally impossible from
- *    here: this module's only reach is `@scp/dependency-manifests`, whose every export is a pure
- *    function of a string with no I/O of any kind.
- *
- * ADR-0002 §3 gate 5 ("single-shot ephemeral runner… no build farm, no compilation") and the
- * anti-CI corollary are what make the lockfile line the boundary rather than a limitation: a class
- * that needs lockfile resolution is CI by definition and is coordinated, never managed.
- *
- * ============================================================================================
- * THE VERB SET DOES NOT CHANGE (ADR-0032 §9, charter principle 1)
- * ============================================================================================
- * A bump is an ordinary `trigger()`, exactly as an apply is for managed-iac and a scan is for
- * managed-scan. `ExecutorPlugin` remains observe/trigger/status/abort — the four verbs ARE the
- * structural enforcement of "coordination, not execution", so a fifth would remove the mechanism
- * rather than extend it.
- *
- * ============================================================================================
- * THE SAME URL-SAFETY PROPERTY AS THE READ PATH, WITH A WORSE BLAST RADIUS
- * ============================================================================================
- * M21.2's read path was hardened after two proven holes, both of the same property: a
- * caller-supplied string spliced into a REST route re-targets the ROUTE, not just the resource, and
- * `encodeURIComponent("..") === ".."` so encoding is not the control — a validator is. A `ref` of
- * `../../../../user` reached `GET https://api.github.com/user` with the binding's credentials, and a
- * raw `repo` of `acme/widgets?x=` terminated the route at a query string.
- *
- * The write path splices the same three strings into routes, plus a fourth (the BRANCH NAME) and a
- * body. It therefore inherits `assertSafeRepo`/`assertSafeRepoPath`/`assertSafeRef` VERBATIM from
- * `@scp/git-provider-core` — those shipped with the read path, are shared with it, and the point of
- * a census is to fix the property, not to write a second, subtly different validator. The wrappers
- * below ({@link assertWriteRepo} and friends) exist only so the refusal carries a structured
- * {@link RepoWriteRefusalReason} instead of a message that says "readFileAtRef", never to soften
- * one. {@link assertWriteBranch} adds the three rules a BRANCH NAME needs on top of a ref's.
- */
+/** The refusals that are the condition of being allowed at all. See docs/plugins.md §378. */
 
-// -------------------------------------------------------------------------------------------
 // Refusals — structured, because a refusal must be assertable without pinning its wording
-// -------------------------------------------------------------------------------------------
 
-/**
- * Why a proposed repository write was refused. Every one of these is a REFUSAL, not a validation
- * failure: the fallthrough of a bug here is a commit on a user's branch, so each is stated as its
- * own reason with its own test rather than folded into a generic "invalid request".
- *
- * The reason exists so tests can assert the refusal that actually fired instead of matching on
- * prose. That is load-bearing for mutation-proving: `lockfile` and `not_a_known_manifest` both
- * refuse `go.sum`, so a test that asserted only "it threw" would stay green with the lockfile check
- * deleted — green for the wrong reason. Asserting the reason code fails the moment the specific
- * control is removed.
- */
+/** Why a proposed repository write was refused. See docs/plugins.md §379. */
 export type RepoWriteRefusalReason =
   // --- URL safety, inherited from the read path -------------------------------------------
   /** `repo` failed `assertSafeRepo` — traversal, query injection, or a bad segment charset. */
@@ -183,20 +102,9 @@ function refuse(reason: RepoWriteRefusalReason, message: string, cause?: unknown
   throw new RepoWriteRefusal(reason, message, cause);
 }
 
-// -------------------------------------------------------------------------------------------
 // URL safety on the write path — the READ path's asserts, reused verbatim
-// -------------------------------------------------------------------------------------------
 
-/**
- * Runs the read path's own `assertSafeRepo` and re-throws its refusal with a write-path reason
- * code.
- *
- * The delegation is the point. `assertSafeRepo` is where the `..`-segment and `?`-termination
- * refusals were proven and where the `[A-Za-z0-9._-]` charset lives; a second validator written for
- * the write path would be the same class of mistake that produced those holes in the first place —
- * a fix applied to an instance rather than to the property (CLAUDE.md, census-by-property). Only the
- * message is restated, because `assertSafeRepo`'s says "readFileAtRef" and this is not a read.
- */
+/** Runs the read path's own assert, with a write-path reason. See docs/plugins.md §380. */
 export function assertWriteRepo(provider: string, repo: string, exactSegments?: number): void {
   try {
     assertSafeRepo(provider, repo, exactSegments);
@@ -235,23 +143,7 @@ export function assertWriteBaseRef(provider: string, ref: string): void {
   }
 }
 
-/**
- * Everything `assertSafeRef` refuses, plus the three rules a BRANCH NAME needs that a ref in general
- * does not. Returns the reason prose, or `undefined` when the name is a plain branch name.
- *
- *  1. **No `refs/` prefix.** The create-branch call takes a plain branch name and composes
- *     `refs/heads/<name>` itself (GitHub's `POST git/refs` wants the fully-qualified ref in the
- *     body). A caller passing `refs/heads/x` would otherwise produce `refs/heads/refs/heads/x`.
- *  2. **Not `HEAD`.** `HEAD` is a symbolic ref, not a branch; writing "the branch HEAD" is a
- *     request whose meaning depends on the server's current checkout.
- *  3. **No leading `-`.** A branch name is echoed into git plumbing and CLI arguments downstream of
- *     SCP (the org's own CI, a maintainer's `git fetch`), where a leading dash is read as a flag.
- *     Refused here rather than escaped at each future consumer.
- *
- * Factored out rather than inlined because BOTH branch names this class handles need it — the bump
- * branch and the base branch — while carrying different reason codes. Two copies of these three
- * rules is how one of them acquires a fourth.
- */
+/** Everything a ref refuses, plus three branch-name rules. See docs/plugins.md §381. */
 function branchRuleViolation(branch: string): string | undefined {
   if (branch.startsWith("refs/")) {
     return `'${branch}' must be a plain branch name, not a fully-qualified ref — the provider call composes the 'refs/heads/' prefix itself`;
@@ -282,20 +174,7 @@ export function assertWriteBranch(provider: string, branch: string): void {
   }
 }
 
-/**
- * The base BRANCH: what the bump is cut from and what the pull request targets.
- *
- * Stricter than {@link assertWriteBaseRef} on purpose, and this distinction is the one place the
- * relocation could have quietly lost a refusal. `assertSafeRef` is a rule about REFS IN GENERAL, so
- * it permits `--force` (a legal, if unwise, ref name) — the leading-dash refusal is a BRANCH rule.
- * The base of a bump is always a branch: it is looked up as `heads/<name>` and sent as a pull
- * request's `base`. So it gets the branch rules, while keeping its own reason code, because "the
- * base you named is not usable" and "the branch we would author is not usable" are different
- * operator problems.
- *
- * {@link assertWriteBaseRef} remains for the general ref position (reading a file at a ref), where a
- * tag or a commit sha is a legitimate answer and a branch rule would be wrong.
- */
+/** The base BRANCH. See docs/plugins.md §382. */
 export function assertWriteBaseBranch(provider: string, branch: string): void {
   assertWriteBaseRef(provider, branch);
   const violation = branchRuleViolation(branch);
@@ -304,14 +183,7 @@ export function assertWriteBaseBranch(provider: string, branch: string): void {
   }
 }
 
-/**
- * The bump branch may never BE the base ref. Checked wherever both names are known, because it is
- * the refusal that keeps the class "propose" rather than "apply": delivery is a pull request
- * (PROJECT_CHARTER `scp-managed-dep`; ADR-0032 §8), and a commit written straight to the branch the
- * pull request would have targeted is the default-branch write this whole design exists to avoid.
- * Auto-merge is a separate, governed control over an OPEN pull request; it never becomes a direct
- * write.
- */
+/** The bump branch may never BE the base ref. See docs/plugins.md §383. */
 export function assertBranchIsNotBase(provider: string, branch: string, baseRef: string): void {
   if (branch === baseRef) {
     refuse(
@@ -321,20 +193,7 @@ export function assertBranchIsNotBase(provider: string, branch: string, baseRef:
   }
 }
 
-/**
- * The commit id a MERGE is conditioned on.
- *
- * This is not URL safety — the value is a request-body field, never a route segment. It is a
- * PRECONDITION guard, and its shape is the control: GitHub's merge endpoint refuses the merge when
- * its `sha` parameter does not equal the pull request's current head, which is the mechanism that
- * turns "a governed control evidenced commit X" into "the tree that merged IS commit X". A shortened
- * sha would not match that head and would fail the merge for the wrong reason (looking like a
- * provider refusal rather than a malformed request), and an empty string would be dropped from the
- * body and silently remove the precondition altogether — the fail-OPEN this exists to prevent.
- *
- * Full-length hex only, both cases accepted (providers spell object ids either way), 40 for SHA-1
- * and 64 for SHA-256 repositories.
- */
+/** The commit id a MERGE is conditioned on. This is not URL safety. See docs/plugins.md §384. */
 export function assertWriteCommit(provider: string, commit: string): void {
   if (!/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(commit)) {
     refuse(
@@ -348,24 +207,9 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// -------------------------------------------------------------------------------------------
 // WHAT MAY BE EDITED — lockfiles, manifests, and the component's own declared set
-// -------------------------------------------------------------------------------------------
 
-/**
- * Lockfile basenames, refused outright.
- *
- * This list is deliberately WIDER than the five ecosystems M21 parses. A denylist that only refuses
- * has no cost for being generous, and the failure it prevents — SCP rewriting a resolved dependency
- * graph it did not resolve — is the same failure in an ecosystem M21 has not reached yet.
- *
- * The check is INDEPENDENT of the manifest allowlist rather than derived from it, which matters for
- * a reason that is easy to talk yourself out of: today no lockfile could pass the manifest allowlist
- * anyway (`go.sum` is not `go.mod`), so this looks redundant. It is not — the allowlist is about "is
- * this the file we edit", the lockfile rule is about "is this a file we may never touch", and they
- * answer to different clauses of the charter. Collapsing them would mean a future relaxation of the
- * allowlist silently relaxes the lockfile boundary too.
- */
+/** Lockfile basenames, refused outright. See docs/plugins.md §385. */
 export const LOCKFILE_BASENAMES: readonly string[] = [
   "package-lock.json",
   "npm-shrinkwrap.json",
@@ -419,26 +263,7 @@ export function isLockfileName(basename: string): boolean {
 /** A pure `content -> declarations` parser, the only shape `@scp/dependency-manifests` exposes. */
 export type ManifestParser = (content: string) => DeclaredDependency[];
 
-/**
- * The manifest basenames each ecosystem is edited THROUGH, and the parser that reads each one.
- *
- * Two ecosystems need a per-basename decision rather than a per-ecosystem one, which is why this is
- * keyed on the pair: `python` is `pyproject.toml` OR a `requirements*.txt` and those are different
- * parsers with different contracts (`parseRequirementsTxt` is the one export in the package that
- * never throws), and `oci` is spelled FIVE ways by TWO parsers — four Dockerfile spellings read by
- * `parseDockerfile`, and a chart's `values.yaml` read by `parseKubernetesImages`. That second one is
- * the reason the table is keyed on (ecosystem, basename) rather than on ecosystem alone: an image
- * pinned in Helm values and an image pinned in a `FROM` are the same `dependency_lines` row, and
- * only the file they were read out of differs.
- *
- * Being an ALLOWLIST is the charter clause "never edits a file that declares no dependency" made
- * structural. It is checked in addition to the component's own declared-manifest set, not instead of
- * it: the declared set comes from the inventory projection tables, which are derived and high-churn,
- * so a bug or a stale row there must not be able to widen what kind of file SCP writes. (They were
- * also described as "per-domain" here, quoting ADR-0032 §3; §7d reverses that — they are derived on
- * the commander only. It changes nothing about this allowlist's reason for existing, which is that a
- * DERIVED set must not decide what SCP writes.)
- */
+/** The manifest basenames per ecosystem, and their parsers. See docs/plugins.md §386. */
 const MANIFEST_MATCHERS: ReadonlyArray<{
   ecosystem: DependencyEcosystem;
   matches: (basename: string) => boolean;
@@ -481,14 +306,7 @@ const MANIFEST_MATCHERS: ReadonlyArray<{
   },
   {
     ecosystem: "oci",
-    // M21.7 SPLIT-SHAPE ROUND. A chart's `values.yaml` was inventoried but deliberately NOT
-    // writable, because `verifyManifestBump`'s clause 3 required the changed line to name the
-    // coordinate and in `image: {repository, tag}` it names it on the line above. That clause now
-    // has an anchored alternative ({@link locateVersionLine}, `bump-edit.ts`'s anchored branch), so
-    // the allowlist opens — and it opens on EXACTLY the basename the ingestion side registers
-    // (`inventory-ingestion.ts`'s manifest-candidate map: `["values.yaml", parseKubernetesImages]`).
-    // Not `values.yml`, not `*-values.yaml`: a path this allowlist admits and the inventory never
-    // reads is a file SCP would write into without ever having declared a dependency in it.
+    // M21.7 SPLIT-SHAPE ROUND. See docs/plugins.md §387.
     matches: (b) => b === "values.yaml",
     parser: parseKubernetesImages,
     spelling: "values.yaml"
@@ -502,12 +320,7 @@ function spellingsFor(ecosystem: DependencyEcosystem): string {
     .join(" or ");
 }
 
-/**
- * The parser for a (ecosystem, path) pair, or a refusal.
- *
- * Refuses BEFORE anything else looks at the content, and in this order — lockfile first, then the
- * manifest allowlist — so the reason an operator is handed names the strongest rule the path broke.
- */
+/** The parser for a (ecosystem, path) pair, or a refusal. See docs/plugins.md §388. */
 export function manifestParserFor(ecosystem: DependencyEcosystem, path: string): ManifestParser {
   const basename = basenameOf(path);
   if (isLockfileName(basename)) {
@@ -526,24 +339,9 @@ export function manifestParserFor(ecosystem: DependencyEcosystem, path: string):
   return matcher.parser;
 }
 
-// -------------------------------------------------------------------------------------------
 // WHICH LINE CARRIES THE DECLARED VERSION — the anchor, derived from the same bytes
-// -------------------------------------------------------------------------------------------
 
-/**
- * The line a bump must edit, when the coordinate is not written on it.
- *
- * DERIVED, NEVER TRANSPORTED. Nothing puts this on the wire, in `intent.parameters`, or in a
- * database column: it is computed by {@link locateVersionLine} from the manifest bytes the
- * orchestrator has just read at the base branch, and spent immediately against those same bytes.
- * A line number captured at INGESTION and spent at ACTUATION would be a number derived from a read
- * at one ref and applied to a read at another — a confidently wrong edit, which is the failure this
- * module exists to prevent (`split-shape-image-bumps.md` §2.2).
- *
- * `text` is what makes it safe to carry a number at all: it is COMPARED, never emitted. The edited
- * line is always rebuilt from the file's own bytes, so a wrong or stale descriptor can only cause a
- * REFUSAL, never a smuggled byte.
- */
+/** The line a bump must edit: derived, never transported. See docs/plugins.md §389. */
 export interface ManifestVersionAnchor {
   /** 1-based line number of the declaration's version text, as the registered parser reports it. */
   readonly line: number;
@@ -551,59 +349,7 @@ export interface ManifestVersionAnchor {
   readonly text: string;
 }
 
-/**
- * WHERE IS THIS DECLARATION'S VERSION WRITTEN? — or `undefined`, which is never an error.
- *
- * ============================================================================================
- * WHY THIS IS HERE AND NOT IN `bump-edit.ts`
- * ============================================================================================
- * `bump-edit.ts` is a refusal, and its header's central warning is that a per-ecosystem rewriter
- * "that knew what a valid edit looked like would be a second implementation of the editor". A
- * LOCATOR is exactly that: it chooses the edit target, and a bug in it makes a wrong edit ACCEPTED
- * rather than a right one refused. So the structural knowledge stays in this file, which already
- * owns {@link MANIFEST_MATCHERS} and already parses both sides of every edit — one parser table, one
- * place, nothing to drift. What crosses into `bump-edit.ts` is DATA (a line number and its text) and
- * one branch, not a format.
- *
- * ============================================================================================
- * THE FIVE STEPS, AND WHY STEP 4 IS THE ONE THAT MAKES IT HONEST
- * ============================================================================================
- *  1. The parser for this (ecosystem, path) — the SAME allowlist entry the verifier will use, so an
- *     unlisted basename or a lockfile never reaches step 2. Its refusal is swallowed here (this
- *     function never throws) because `verifyManifestOnlyEdit` re-asks and refuses properly; a
- *     derivation that threw would turn a missing anchor into a failure mode of its own.
- *  2. The declarations whose coordinate AND declared version are exactly what the descriptor names.
- *  3. Exactly one, or NO anchor. Zero means the manifest disagrees with the inventory; more than one
- *     means the target is ambiguous, and choosing would be a guess about which the subscriber meant.
- *  4. It reports a line, and THE FILE'S OWN BYTES ON THAT LINE CONTAIN the declared version — else
- *     no anchor. This is what makes the derivation self-selecting rather than a per-format
- *     allowlist: `pom-xml.ts` records the line of the `<dependency>` OPEN TAG while the version sits
- *     several lines below it (the same fact this file's gate-5 comment already turns on), so a Maven
- *     declaration yields NO anchor and Maven's path cannot change. The anchor exists exactly where
- *     it is honest, by construction rather than by intention.
- *
- *     WHERE THAT LEAVES EACH ECOSYSTEM, enumerated because the useful claim is a map and not a
- *     slogan — "the working ecosystems are untouched BY CONSTRUCTION" was written here once and was
- *     false of four of them. AN ANCHOR IS DERIVED for `go` (go.mod), `python`'s `requirements*.txt`
- *     and `oci`'s Dockerfile: their parsers report the line the version is written on. NO ANCHOR is
- *     derived for `npm` and `python`'s `pyproject.toml` (steps 3–4: those parsers report no `line`
- *     at all) or for `maven` (step 4, above). What keeps the first three unchanged is therefore
- *     clause (c) of `verifyManifestBump` rather than the absence of an anchor: those parsers take
- *     the coordinate VERBATIM off the same line, so the anchor line names the coordinate too and is
- *     a candidate of the coordinate rule itself — the veto then admits it only when it is the sole
- *     candidate, which is the unanchored rule's own condition. The anchor cannot move the edit for
- *     them, because a line naming the coordinate is never a line the coordinate rule is silent
- *     about, and silence is the only gap an anchor fills.
- *  5. It is not a MERGED multi-site entry (`DeclaredDependency.occurrences > 1`). One values file
- *     can pin `acme/api:1.2.3` in a Deployment and in a CronJob; the parser merges them because the
- *     inventory row merges, and editing one line would leave the other behind. Refused here rather
- *     than downstream because it costs no container run and yields a legible reason — gate 5 would
- *     catch it anyway (one declaration before becomes two after → `dependency_set_changed`), which
- *     is fail-closed but illegible.
- *
- * ABSENCE IS NOT AN ERROR. A caller that gets `undefined` proceeds with the coordinate rule
- * unchanged; that is why every ecosystem that works today keeps working without a special case.
- */
+/** WHERE IS THIS DECLARATION'S VERSION WRITTEN? See docs/plugins.md §390. */
 export function locateVersionLine(
   before: string,
   spec: {
@@ -640,15 +386,7 @@ export function locateVersionLine(
   return { line, text };
 }
 
-/**
- * The target must be a manifest the component's own inventory ALREADY records — "a manifest the
- * component already contains", in the charter's words.
- *
- * Compared verbatim, with no normalisation: the inventory stores `manifest_path` exactly as the
- * ingestion read it, and a comparison that trimmed, case-folded or resolved `./` here would accept a
- * path the inventory does not actually hold. An empty declared set refuses everything, which is the
- * correct answer for a component with no ingested manifests — absence is never permission.
- */
+/** The target must be a manifest the inventory already records. See docs/plugins.md §391. */
 export function assertDeclaredManifest(
   path: string,
   declaredManifestPaths: readonly string[]
@@ -661,46 +399,14 @@ export function assertDeclaredManifest(
   }
 }
 
-// -------------------------------------------------------------------------------------------
 // THE MANIFEST-ONLY PROOF
-// -------------------------------------------------------------------------------------------
 
-/**
- * Per-process HMAC key for {@link ManifestEditProof}. Minted at import, never exported, never
- * persisted.
- *
- * This is what makes the proof a control rather than a label. A plain object — even a branded one —
- * can be constructed by any caller with an `as` cast, so a `proof` field would document an intent
- * without enforcing it. Signed with a key only this module holds, a proof can be minted ONLY by
- * {@link verifyManifestOnlyEdit}, and {@link assertManifestEditProof} — which the write path calls
- * before it issues the commit — refuses anything else. That is the difference between "the actuator
- * is supposed to check" and "content that did not pass the check cannot reach a repo".
- *
- * The key is per-process, so verifier and writer must run in the same process. They do: both are
- * this package, loaded once into one plugin subprocess. If that ever stops being true the signature
- * fails to verify and the write is REFUSED — the failure mode is closed, not open.
- */
+/** Per-process HMAC key for {@link ManifestEditProof}. See docs/plugins.md §392. */
 const PROOF_KEY = randomBytes(32);
 
-/**
- * Evidence that a specific edited manifest passed {@link verifyManifestOnlyEdit}. Carried into the
- * write and re-checked there.
- *
- * It names the FACTS the verifier established, so a Decision can quote them (charter principle 6):
- * which coordinate moved, from what to what, in which file. `contentSha256` is over the exact bytes
- * that may be written — the proof does not travel with the content, it BINDS to it.
- */
+/** Evidence that an edited manifest passed verification. See docs/plugins.md §393. */
 export interface ManifestEditProof {
-  /**
-   * WHICH REPOSITORY AND WHICH BRANCH these bytes were verified FOR.
-   *
-   * They are in the proof because the guarantee it states is "these bytes may be written", and a
-   * write has a destination. Without them the proof bound path + content and said nothing about
-   * where they were going, so a proof minted for `acme/widget@scp/dep-bump/<id>` verified cleanly
-   * against a publish to a different repository, or to the BASE branch, at the same path — the
-   * guarantee was one field short of what it claimed. `publishBump` re-checks both against the
-   * target it is about to send to, which is the only place the pairing is observable.
-   */
+  /** Which repository and branch these bytes were verified for. See docs/plugins.md §394. */
   readonly repo: string;
   readonly headBranch: string;
   readonly path: string;
@@ -738,17 +444,7 @@ function sha256Hex(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-/**
- * Re-checks a proof against the content and path the write path is about to send. Called before any
- * request that carries content.
- *
- * Three independent checks, because each catches a different mistake: the path check catches a proof
- * minted for a different file in the same run; the content hash catches content mutated after
- * verification (the whole point of binding rather than trusting); the signature catches a proof that
- * never came from {@link verifyManifestOnlyEdit} at all. `timingSafeEqual` is used for the signature
- * because it is a MAC comparison, and its length-mismatch throw is caught and treated as a refusal —
- * fail-closed either way.
- */
+/** Re-checks a proof against what is about to be sent. See docs/plugins.md §395. */
 export function assertManifestEditProof(
   provider: string,
   input: {
@@ -826,7 +522,6 @@ export interface ManifestOnlyEditInput {
    *  refuses that pairing at the descriptor and again at the splice site, and binding it here means a
    *  proof cannot be re-aimed at one either. */
   headBranch: string;
-  /** Repo-relative path of the manifest being edited. */
   path: string;
   /** Every manifest path this component's inventory declares (ADR-0032 §3 projection rows). */
   declaredManifestPaths: readonly string[];
@@ -839,73 +534,13 @@ export interface ManifestOnlyEditInput {
   coordinate: string;
 }
 
-/**
- * Proves an edit is a version-string-only change to one already-declared dependency, or refuses.
- *
- * ============================================================================================
- * WHY IT RE-PARSES INSTEAD OF TRUSTING THE AUTHOR
- * ============================================================================================
- * Whoever authored `newContent` is not the subject of this check; the BYTES are. Re-parsing both
- * sides with M21.2's own parsers and comparing the declaration sets means the guarantee holds for
- * any authoring strategy — including the isolated runner being rebuilt wrong, replaced, or simply
- * handed a manifest whose grammar its editor mis-parses — and it holds against a BUG in the author
- * rather than only against a malicious one.
- *
- * This is the SECOND of the two verifiers this package runs, and they are not redundant: `bump-edit`'s
- * `verifyManifestBump` is a TEXTUAL reconstruction anchored on the descriptor (does replacing
- * `fromVersion` with `toVersion` on the changed line reproduce it exactly?), while this one is a
- * PARSE anchored on the document (is the declared dependency set identical, and did exactly one
- * already-declared version move?). Each catches what the other structurally cannot: the textual one
- * catches a runner that edited the right line wrongly; this one catches a runner that produced a
- * document declaring something different while passing the line test. Only this one mints the proof,
- * so this one is the gate.
- *
- * ============================================================================================
- * THE SEVEN GATES, AND WHY EACH IS SEPARATELY NECESSARY
- * ============================================================================================
- *  1. **Path**: not a lockfile, a known manifest for the ecosystem, and one the component declares.
- *  2. **Content bounds**: non-empty, within the shared byte ceiling, text (no NUL), and actually
- *     different from the base — a no-op write would open a PR that proposes nothing.
- *  3. **One line**: exactly one line of the file differs. A version-string edit never spans lines,
- *     and this is the gate that refuses the "bump a version AND add a `postinstall` script" shape
- *     with a message that names what happened.
- *  4. **Both sides parse**: an unparseable side is refused rather than treated as "declares
- *     nothing" — the collapse `@scp/dependency-manifests` exists to prevent.
- *  5. **The dependency set is identical**: same count, and element-for-element equal on coordinate,
- *     scope, declaredIn and line. This is the charter's "never adds or removes a dependency", and
- *     comparing positionally also refuses a REORDER, which is not a version edit either.
- *  6. **Exactly one version differs, and it is the subscribed one**: with an unchanged constraint
- *     KIND, from a constraint that has a version to change, and — where the declaration is pinned
- *     TWICE — with its digest moved alongside its tag. Refusing a constraint-kind change is not
- *     fussiness: `>=2.0` → `==2.31.0` rewrites a range as a pin, which `types.ts` names as the
- *     thing an actuator must not do, and `unpinned` → `pinned` would be ADDING a version the author
- *     never wrote. The digest clause is the one refusal here that catches an edit which is
- *     structurally perfect and OPERATIONALLY A NO-OP: `alpine:3.19@sha256:…` and a chart's
- *     `{tag, digest}` are both resolved BY DIGEST, so moving the tag alone changes the file and not
- *     the running image (`digest_pin_not_moved`).
- *  7. **The change is confined to the version text**: the one differing region, measured as the span
- *     between the common prefix and the common suffix, must lie inside the dependency's own declared
- *     version text on each side. Gate 3 already refuses two changes on two lines; this refuses two
- *     changes on ONE line, which is the whole attack surface a minified `package.json` presents.
- *
- * ============================================================================================
- * WHAT IS DELIBERATELY *NOT* CHECKED, AND WHY
- * ============================================================================================
- * The changed LINE NUMBER is not required to equal the changed dependency's `line`. It looks like a
- * free extra binding and it is not: `pom-xml.ts` records the line of the `<dependency>` OPEN TAG
- * (`current = { line: tagLine }`), while the version sits several lines below it, so that check
- * would refuse every legitimate Maven bump. A rule that is right for four ecosystems and wrong for
- * the fifth is the provenance-label failure — a label named after the branch that happened to match.
- * Gates 5 and 7 already bind the textual change to the parsed entry without it.
- */
+/** Proves the edit is a version-only change, or refuses. See docs/plugins.md §396. */
 export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEditProof {
   const { path, ecosystem, baseContent, newContent, coordinate } = input;
 
-  // --- Gate 1: the path -------------------------------------------------------------------
   const parser = manifestParserFor(ecosystem, path);
   assertDeclaredManifest(path, input.declaredManifestPaths);
 
-  // --- Gate 2: the content bounds ---------------------------------------------------------
   for (const [label, content] of [
     ["base", baseContent],
     ["edited", newContent]
@@ -931,7 +566,6 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
     );
   }
 
-  // --- Gate 3: exactly one line differs ---------------------------------------------------
   const baseLines = baseContent.split("\n");
   const newLines = newContent.split("\n");
   if (baseLines.length !== newLines.length) {
@@ -956,7 +590,6 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
     );
   }
 
-  // --- Gate 4: both sides parse -----------------------------------------------------------
   const baseDeps = parseOrRefuse(parser, baseContent, path, ecosystem, "unparseable_base", "base");
   const newDeps = parseOrRefuse(parser, newContent, path, ecosystem, "unparseable_edit", "edited");
 
@@ -1043,25 +676,7 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
       `scp-managed-dep: '${coordinate}' in '${path}' carries no declared version text on ${fromDeclared === undefined ? "the base" : "the edited"} side`
     );
   }
-  // A TAG MOVED WHILE ITS DIGEST STAYED — the bump that silently changes nothing (ADR-0032 §8i).
-  //
-  // Both `oci` spellings can pin twice: `FROM alpine:3.19@sha256:…` in a Dockerfile, and
-  // `{repository, tag, digest}` in a chart's values. Where both are present the digest WINS —
-  // containerd and Docker resolve by digest and the tag becomes a label — so moving the tag alone
-  // leaves the deployed bytes exactly where they were, while the pull request reads as an upgrade
-  // and the manifest now says two different things about which release it wants.
-  //
-  // Refused rather than half-applied, and refused rather than guessed at: the digest for the new
-  // version IS available upstream (`dependency_lines.latest_digest`, resolved by the same poll that
-  // moved `latest_version`), but moving both is a TWO-LINE edit in the split shape, and clause 2 of
-  // `verifyManifestBump` — "exactly ONE line differs" — is a charter-enforcing refusal that does
-  // not get widened to a pair as a side effect of this one. So the tag-only edit is refused with
-  // its own name, which is the "skipped rather than guessed" rule (ADR-0032 §7) applied to an
-  // actuation instead of to a reading. `split-shape-image-bumps.md` §11 carries the follow-up.
-  //
-  // The condition is deliberately "the digest did not move", not "a digest exists": an edit that
-  // moves the tag AND its digest together is a correct bump and is accepted (a named test drives
-  // exactly that literal), and so is a digest-only move.
+  // A TAG MOVED WHILE ITS DIGEST STAYED. See docs/plugins.md §397.
   if (
     before.digest !== undefined &&
     before.digest === after.digest &&
@@ -1108,15 +723,7 @@ function parseOrRefuse(
   }
 }
 
-/**
- * The version text of a declaration AS IT APPEARS IN THE FILE.
- *
- * For every ecosystem but `oci` that is just `declared`. For `oci` the parser splits one literal
- * `alpine:3.19@sha256:…` into `declared: "3.19"` and `digest: "sha256:…"`, and a tag bump legitimately
- * moves BOTH — so the text a change may occupy is the two rejoined by the `@` the file itself uses.
- * This is reconstruction of a literal, not invention: it is exactly the substring the Dockerfile
- * contains.
- */
+/** The version text of a declaration AS IT APPEARS IN THE FILE. See docs/plugins.md §398. */
 function versionTextOf(dep: DeclaredDependency): string {
   if (dep.declared !== undefined && dep.digest !== undefined) {
     return `${dep.declared}@${dep.digest}`;
@@ -1124,19 +731,7 @@ function versionTextOf(dep: DeclaredDependency): string {
   return dep.declared ?? dep.digest ?? "";
 }
 
-/**
- * Refuses any textual change that reaches outside the dependency's own version text.
- *
- * The differing region is measured, not guessed: the longest common prefix and the longest
- * non-overlapping common suffix bracket a single contiguous span, and everything that changed is
- * inside it. If that span is a substring of the base's version text, and its counterpart a substring
- * of the edit's, then no byte outside a version string moved.
- *
- * This is the gate that survives a minified manifest. Gate 3 (one line changed) is defeated by a
- * `package.json` written on a single line, where "bump react AND add a `postinstall` script" is one
- * line's worth of change; this one is not, because the resulting span contains the injected script
- * and no version string does.
- */
+/** Refuses any change reaching outside the version text. See docs/plugins.md §399. */
 function assertChangeConfinedToVersionText(
   path: string,
   coordinate: string,
@@ -1174,9 +769,7 @@ function truncate(value: string, max = 120): string {
   return value.length <= max ? value : `${value.slice(0, max)}…`;
 }
 
-// -------------------------------------------------------------------------------------------
 // Bounds on the text SCP writes into a repo alongside the manifest edit
-// -------------------------------------------------------------------------------------------
 
 export const MAX_COMMIT_MESSAGE_CHARS = 4096;
 export const MAX_PR_TITLE_CHARS = 250;

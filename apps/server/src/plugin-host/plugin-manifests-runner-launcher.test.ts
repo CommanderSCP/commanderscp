@@ -1,32 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validatePluginConfig } from "./plugin-manifests.js";
 
-/**
- * M23.2 — LAYER 2 OF THE THREE THE ADAPTER-SELECTION FIELD HAS TO MOVE THROUGH.
- *
- * `@scp/runner-launcher`'s own header has said since M23.1 that `dockerBinary` and anything added
- * beside it live in a class enforced in three layers that must move together — each plugin's
- * manifest `configSchema` (`additionalProperties: false`), `validatePluginConfig` at the four write
- * doors, and the LAST-wins injection sites — and that "WHEN M23.2 ADDS ADAPTER SELECTION it becomes a
- * config field, and all three layers must be updated in that same change". This file is the second
- * layer, pinned BY NAME.
- *
- * WHY IT NEEDS ITS OWN TEST WHEN THE SCHEMAS ALREADY SAY `additionalProperties: false`. Because that
- * is exactly the argument that was false for `managed-scan`, and the failure was arbitrary code
- * execution on the SCP host: it authored a schema refusing `dockerBinary`, and the schema was never
- * consulted because the module had no entry in `MANIFEST_BY_MODULE` and `validatePluginConfig`
- * returned early for a module it had no manifest for. The protection existed in a doc comment. A key
- * that decides WHICH SUBSTRATE runs a tenant's managed executor — and, through
- * `kubernetes.workspaceVolume`, WHICH HOST PATH a pod mounts — is at least that class of key, so its
- * refusal is asserted rather than argued.
- *
- * `kubernetes.io` DESERVES ITS OWN SENTENCE. It is a FUNCTION-CARRYING object and therefore cannot
- * survive a JSON round trip at all — but a binding config is stored as JSON and read back, so an
- * attacker cannot smuggle a callable through it in any case. What a tenant COULD smuggle, absent
- * this refusal, is `kubernetes.workspaceVolume: { kind: "hostPath", path: "/" }`, which mounts the
- * node's root filesystem into a runner container. That is the reason the whole `kubernetes` block is
- * refused as one key rather than field by field.
- */
+/** Layer two of the three the adapter selection rests on. See docs/plugin-host.md §83. */
 
 const MANAGED_MODULES = ["managed-iac", "managed-scan", "managed-dep"] as const;
 

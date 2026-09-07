@@ -1,39 +1,4 @@
-/**
- * The subprocess plugin host (DESIGN.md §11, BUILD_AND_TEST.md §8 M3 item 7): "one child process
- * per configured plugin instance (`scpd plugin-host`, same image), speaking JSON-RPC 2.0 over
- * stdio, with host-enforced call timeouts, restart-with-backoff, and OS-level resource limits. A
- * crashed or hung plugin cannot take down the worker."
- *
- * `contract.ts` declares the `PluginHost`/`ExecutorPluginClient` interfaces this implements —
- * written first so `coordination/reconcile.ts` depends on a narrow, stable seam rather than this
- * file's process-management internals. What this file adds on top of the wire protocol
- * (rpc-protocol.ts) and the child's own entry point (subprocess-entry.ts):
- *
- *  - **Spawn**: `node <subprocess-entry.js>` per instance, config passed via env vars (never
- *    argv — subprocess-entry.ts's module doc), stdout/stdin reserved exclusively for
- *    newline-delimited JSON-RPC (readline-framed), stderr passed through for log aggregation.
- *  - **Readiness gate**: calls queued against an instance block until its `ready` notification
- *    arrives (or the instance's overall call budget elapses) — see `call()` below.
- *  - **Host-enforced timeouts**: every RPC round trip races a timer; on timeout the (possibly
- *    hung) child is killed, which converts a "hung" plugin into the same recovery path as a
- *    "crashed" one.
- *  - **Restart-with-backoff**: an unexpected child exit (crash, killed-for-timeout, killed by an
- *    operator/test) schedules a respawn after an exponentially growing delay (reset once the
- *    instance has stayed up past a stability window) — never gives up, since a plugin instance is
- *    load-bearing infrastructure for whatever wave targets reference it.
- *  - **Transparent retry across a respawn**: `contract.ts`'s promise that "callers never see a
- *    dead subprocess, only a slower/retried call" is honored by `call()` itself: if the in-flight
- *    request's promise is rejected because ITS child exited mid-call, and time remains in the
- *    call's own timeout budget, `call()` waits for the respawned instance to become ready and
- *    retries once more — the caller (coordination/reconcile.ts) only ever sees either a
- *    successful result or a timeout, never a raw "child process died" error.
- *  - **Soft resource limit**: children are spawned with `--max-old-space-size` (Node's own heap
- *    ceiling) — a real cgroup/container memory limit is a deployment-level concern (the
- *    Kubernetes pod / compose service the whole `scpd` process runs in), out of reach from inside
- *    a plain `child_process.spawn` on every platform this needs to run on (macOS dev, Linux CI,
- *    air-gapped VMs), so this is the honest, portable subset: it bounds the ONE resource every
- *    plugin instance (a Node process) can blow up in-process, without a new dependency.
- */
+/** The subprocess plugin host. See docs/plugin-host.md §50. */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import path from "node:path";
@@ -86,17 +51,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-/**
- * When THIS module is itself executing as compiled JS (production `node dist/main.js`), the
- * compiled sibling `subprocess-entry.js` sits right next to it. But when this module is executing
- * as TS source directly — `tsx watch src/main.ts` in dev, or vitest's on-the-fly TS transform for
- * every `*.test.ts` — there is no compiled sibling to find, and the correct default is to run the
- * `.ts` entry point through the same `tsx` loader this process itself is already running under
- * (see `spawnInstance`'s `--import tsx` below). `import.meta.url` reliably keeps the ORIGINAL
- * source extension under both tsx and vite-node, so checking it is a robust signal, not a
- * heuristic — this is NOT a "which file happens to exist on disk" check (dist/ can be stale or
- * absent in dev) but a "how was I, this very module, loaded" check.
- */
+/** When THIS module is itself executing as compiled JS. See docs/plugin-host.md §51. */
 const RUNNING_FROM_SOURCE = __filename.endsWith(".ts");
 const DEFAULT_SUBPROCESS_ENTRY_PATH = path.resolve(
   __dirname,
@@ -104,20 +59,10 @@ const DEFAULT_SUBPROCESS_ENTRY_PATH = path.resolve(
 );
 
 export interface PluginHostOptions {
-  /**
-   * The HANG DETECTOR: per-call RPC budget (ms), including any wait-for-ready + one transparent
-   * retry. Default 10s.
-   *
-   * NOT A UNIVERSAL BUDGET SINCE M23.1c. It applies to every method that is supposed to be fast, and
-   * a managed executor's `trigger` — the one method that legitimately runs a container to completion
-   * — derives its own from the instance's resolved `timeoutMs` instead (`call-policy.ts`). Do not
-   * "fix" a slow managed run by raising this: doing so blinds the host to a wedged `status()` on
-   * every plugin in the product, which is the thing this number is for.
-   */
+  /** The HANG DETECTOR. See docs/plugin-host.md §52. */
   callTimeoutMs?: number;
   /** First restart delay after a crash (ms), doubled per consecutive crash. Default 200ms. */
   restartBackoffBaseMs?: number;
-  /** Ceiling on the restart delay (ms). Default 10s. */
   maxRestartBackoffMs?: number;
   /** An instance that stays up this long before crashing again resets its backoff to the base
    *  delay — otherwise a plugin that crash-loops forever would (correctly) back off forever, but
@@ -137,24 +82,7 @@ export interface PluginHostOptions {
   nodeExecutable?: string;
 }
 
-/**
- * CRITICAL #3 (PR #7 review): the previous `{ ...process.env, SCP_PLUGIN_* }` spread handed every
- * plugin subprocess the FULL parent environment — `DATABASE_URL` (the admin/superuser connection,
- * main.ts phase 1), `SCP_COOKIE_SECRET`, `SCP_OIDC_CLIENT_SECRET`, `SCP_RUNTIME_DATABASE_URL`, all
- * of it. This allowlists only the handful of variables a Node child genuinely needs to boot and run
- * `tsx`/module resolution: `PATH` (module resolution / any tool the loader shells out to), and the
- * tmp/home dirs a couple of Node/esbuild internals fall back to when unset. Every `SCP_PLUGIN_*`
- * config var the plugin actually needs is passed explicitly by the caller below — never inherited.
- *
- * SCOPE OF THIS CONTROL — read before treating it as a sandbox. This narrows what the subprocess
- * INHERITS; it is NOT an OS isolation boundary. The child is spawned same-uid with no namespace/seccomp
- * confinement, so code that runs INSIDE it can still read the parent's `/proc/<ppid>/environ`
- * directly, and can ignore the injected `ctx.http` egress guard by using `node:net`/`node:fs`
- * itself. So this defends against ACCIDENTAL env leakage and a COOPERATIVE plugin — and shrinks the
- * blast radius of a bug — but it does not contain a plugin that is actively hostile at the code
- * level. Real OS-level isolation (separate uid, unshare/PID-ns, seccomp) is the follow-up that would
- * make the in-process `ctx.http`/env mediation a true boundary; see DESIGN.md §11.
- */
+/** The previous environment passthrough was far too wide. See docs/plugin-host.md §53. */
 function minimalChildEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP"]) {
@@ -164,30 +92,14 @@ function minimalChildEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-/**
- * CRITICAL #4 (PR #7 review): `readline.createInterface` has no built-in cap on how many bytes it
- * will accumulate while waiting for the next `\n` — a plugin that streams bytes without ever
- * emitting a newline (buggy, hung, or malicious) would otherwise grow the PARENT process's memory
- * without bound, defeating DESIGN.md §11's "a crashed or hung plugin cannot take down the worker."
- *
- * A plain byte-counting tracker rather than an intermediate `Transform` piped in front of
- * readline: Node readable streams happily deliver each chunk to MULTIPLE `'data'` listeners, so
- * this taps the exact same chunks readline consumes, independently, with none of the destroy/
- * unpipe race conditions a Transform-in-the-pipe-chain approach has to fight when it needs to
- * abort mid-stream. `record()` tracks bytes seen since the last `\n` — across chunk boundaries,
- * and at every `\n` found WITHIN a single chunk (not just the chunk's tail), so one pathologically
- * oversized embedded line can't slip through just because the chunk happens to end on a newline —
- * and returns `true` the moment that count exceeds `maxBytes`. The caller (`spawnInstance`) reacts
- * by killing the child directly, routing through the exact same exit handler — and therefore the
- * same restart-with-backoff recovery — as a crash or a call timeout.
- */
+/** The line reader has no built-in cap, so one is added. See docs/plugin-host.md §54. */
 function createLineLengthTracker(maxBytes: number): { record(chunk: Buffer): boolean } {
   let sinceNewline = 0;
   return {
     record(chunk: Buffer): boolean {
       let searchStart = 0;
       for (;;) {
-        const idx = chunk.indexOf(0x0a, searchStart); // '\n'
+        const idx = chunk.indexOf(0x0a, searchStart);
         if (idx === -1) {
           sinceNewline += chunk.length - searchStart;
           return sinceNewline > maxBytes;
@@ -254,36 +166,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Kills the WHOLE process group the plugin subprocess leads, not just that one PID.
- *
- * WHY. The child is spawned `detached: true` below specifically so it becomes its own process
- * group leader — anything IT execs (`runner-launcher`'s `execFileAsync(dockerBinary, …)`, one
- * `docker create`/`cp`/`start`/`rm` per step) inherits THAT group by default, not this host
- * process's. A plain `child.kill(signal)` therefore only ever hit the plugin's own event loop;
- * a `docker start -a` it had already spawned survived every SIGKILL this file issues — on a
- * genuine hang-timeout in production exactly as on `killInstanceForTest` in a test — as an
- * ownerless process on the host, still holding stdio open, until the container it wraps finished
- * on its own. `managed-trigger-budget.test.ts`'s ENOTEMPTY flake was that same orphan's startup
- * preamble (a `docker create`/`start` stub unconditionally does `mkdir -p`+append-log on every
- * invocation, orphan or not) landing mid-walk of a directory `afterEach` was already removing —
- * a symptom of this leak, not a test-only race to retry past.
- *
- * `-child.pid` is the POSIX process-group-kill form of `process.kill` (the negated pid addresses
- * the group `detached: true` made this child the leader of, not the single process). Falls back
- * to the single-process kill when the child never got a pid (already gone) or the platform has no
- * process groups (Windows). Two error codes are swallowed rather than thrown, both MEASURED, not
- * guessed — `host.test.ts`'s own CRITICAL #4 case (a second kill, from `stop()`'s `tearDown`,
- * racing the line-guard's own already-issued kill of the same instance) reproduced the second one
- * within one `--force` test loop:
- *   - `ESRCH` — the group is already empty (child and everything it spawned are already gone).
- *   - `EPERM` — on macOS/BSD, `kill(-pid, …)` on a pid whose process (and process GROUP) has
- *     ALREADY EXITED and been reaped can resolve against a DIFFERENT, unrelated process group that
- *     has since reused the same numeric id, which this process has no permission to signal. That
- *     is a races-with-reaping artifact of asking twice, not a real permission failure in our own
- *     tree — the single-process kill below is attempted regardless, for the same reason the ESRCH
- *     case falls through to it.
- */
+/** Kills the whole process group, not just the one child. See docs/plugin-host.md §55. */
 function killInstanceProcess(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
   if (typeof child.pid === "number" && process.platform !== "win32") {
     try {
@@ -327,16 +210,7 @@ export class SubprocessPluginHost implements PluginHost {
     };
   }
 
-  /**
-   * Idempotent per instance id (M4 addition — DESIGN §10.2's control bindings have no
-   * plugin-instance-configuration API yet, same gap `executor-config.ts` documents for
-   * executors, so `governance/control-runner.ts` provisions a control's plugin instance
-   * ON DEMAND from whatever `control_bindings` row it finds, calling `start()` again every time
-   * it might be needed). A config whose `id` is ALREADY registered is silently skipped rather
-   * than re-spawned — re-spawning would leak the previous child process (never killed) while a
-   * fresh one takes its place under the same id, and would race any in-flight call against it.
-   * Main.ts's own single boot-time `start()` call is unaffected (every id it passes is new).
-   */
+  /** Idempotent per instance id. See docs/plugin-host.md §56. */
   async start(configs: PluginHostInstanceConfig[]): Promise<void> {
     await Promise.all(
       configs
@@ -366,20 +240,7 @@ export class SubprocessPluginHost implements PluginHost {
     this.instances.clear();
   }
 
-  /**
-   * M21.4 — stop and FORGET a named subset, leaving every other instance running. See
-   * `PluginHost.stopInstances` for why a partial stop exists (the version poll's index instances are
-   * derived from a work-list, not from operator configuration, and accumulated per org forever).
-   *
-   * Teardown is byte-identical to `stop()`'s — the same `tearDown` both now call, so the two can
-   * never drift on what "stopped" means. `stopped = true` BEFORE the kill is what makes it a stop
-   * rather than a crash: `scheduleRestart` checks that flag, so the child's `exit` event does not
-   * respawn it. Deleting the id from the registry is what lets a later `start()` spawn it afresh —
-   * `start()` skips an id it already holds.
-   *
-   * Unknown ids are ignored: a sweep that threw before starting an instance must still be able to
-   * hand its whole intended set to this from a `finally`.
-   */
+  /** Stop and forget a named subset, leaving the rest. See docs/plugin-host.md §57. */
   async stopInstances(instanceIds: readonly string[]): Promise<void> {
     for (const id of instanceIds) {
       const instance = this.instances.get(id);
@@ -389,7 +250,6 @@ export class SubprocessPluginHost implements PluginHost {
     }
   }
 
-  /** The one teardown, shared by `stop()` and `stopInstances()`. */
   private tearDown(instance: Instance, why: string): void {
     instance.stopped = true;
     if (instance.restartTimer) clearTimeout(instance.restartTimer);
@@ -397,12 +257,7 @@ export class SubprocessPluginHost implements PluginHost {
     if (instance.child) killInstanceProcess(instance.child, "SIGTERM");
   }
 
-  /** Test-only: forcibly kills the currently-running child for `instanceId`, simulating a crash
-   *  (an OOM, a segfault, an operator's `kill -9`) so integration tests can exercise the
-   *  plugin-host isolation DoD scenario ("kill the fake-executor SUBPROCESS mid-wave — the
-   *  worker survives, the plugin restarts with backoff, the wave resumes") without needing OS
-   *  access to the real PID from outside this class. No-ops if the instance isn't currently
-   *  running (already mid-restart) — the point is to induce exactly one crash, not to assert one. */
+  /** Test-only: forcibly kills the running child, simulating. See docs/plugin-host.md §58. */
   killInstanceForTest(instanceId: string): void {
     const child = this.instances.get(instanceId)?.child;
     if (child) killInstanceProcess(child, "SIGKILL");
@@ -480,27 +335,13 @@ export class SubprocessPluginHost implements PluginHost {
     };
   }
 
-  /**
-   * M21.4 (ADR-0032 §7a) — the git-provider file read. Same host, same instance registry, same
-   * timeout/restart-with-backoff and the same egress-guarded `ScopedHttpClient` the executor verbs
-   * on this instance use, because it IS the same subprocess and the same binding's credentials.
-   *
-   * The instance id is an EXECUTOR instance's id — a git binding is one hosted instance, and the
-   * subprocess loads the adapter's hook beside the four-verb plugin (subprocess-entry.ts's
-   * `ReadFileHook`). Addressed through its own accessor rather than as a fifth method on
-   * `executor()` so the four-verb set stays the four-verb set (ADR-0032 §9). An instance whose
-   * module has no such hook rejects the call, from the subprocess, naming that.
-   */
+  /** M21.4 (ADR-0032 §7a) — the git-provider file read. See docs/plugin-host.md §59. */
   gitFileRead(instanceId: string): GitFileReadPluginClient {
     return {
       readFileAtRef: (request: ReadFileAtRefRequest) =>
         this.call(instanceId, "readFileAtRef", { request }) as Promise<ReadFileAtRefResult>
     };
   }
-
-  // -----------------------------------------------------------------------------------------
-  // Process lifecycle
-  // -----------------------------------------------------------------------------------------
 
   private spawnInstance(instance: Instance): void {
     if (instance.stopped) return;
@@ -523,19 +364,7 @@ export class SubprocessPluginHost implements PluginHost {
       // Its own env var (not `SCP_PLUGIN_CONFIG_JSON`), so a plugin's `config` can never spoof it.
       SCP_PLUGIN_ALLOW_INTERNAL_EGRESS: String(instance.config.allowInternalEgress === true)
     };
-    // M8 hardening (DESIGN.md §13, BUILD_AND_TEST.md §8 M8 item 6 "Federation mTLS transport
-    // identity"): forward the HOST-level (operator-configured, NEVER tenant-suppliable — same
-    // trust tier as `SCP_MANAGED_IAC_RUNNER_IMAGE` in executor-bindings-repo.ts) client-certificate
-    // file paths into ONLY the `federation-https` subprocess's env, gated on MODULE IDENTITY (the
-    // exact same discipline `subprocess-entry.ts`'s `OPERATOR_PLANE_MODULES` already uses for the
-    // internal-IP egress allowance) — no other plugin module ever sees these vars, and a tenant's
-    // `PluginHostInstanceConfig.config`/`secrets` can never reach or override them, since they are
-    // read straight from THIS (the scpd parent) process's own environment, not from any binding
-    // row. `subprocess-entry.ts` reads the actual PEM files (if the paths are set) and presents the
-    // client certificate for every request `federation-https` makes to the parent — real
-    // transport-level peer identity on top of the existing bearer+RBAC+Ed25519 journal signing, not
-    // a replacement for it. Unset (the pre-M8 default): federation-https keeps working exactly as
-    // before, with no client certificate.
+    // The federation mutual-TLS material handed to a subprocess. See docs/plugin-host.md §60.
     if (instance.config.module === "federation-https") {
       for (const key of [
         "SCP_FEDERATION_MTLS_CERT_FILE",
@@ -546,19 +375,7 @@ export class SubprocessPluginHost implements PluginHost {
         if (value) env[key] = value;
       }
     }
-    // The OPERATOR's extra CA bundle for executor TLS, forwarded to EVERY plugin subprocess rather
-    // than gated on module identity the way the mTLS material above is. The asymmetry is deliberate
-    // and worth stating: those three vars carry a client CERTIFICATE — an identity only
-    // `federation-https` may present, so leaking them to another module would let it speak as this
-    // instance. This one carries a trust ANCHOR: it decides whom a plugin is willing to verify, grants
-    // no identity, and weakens no check (there is deliberately no skip-verify option anywhere on this
-    // path). Any executor can face a privately-signed endpoint — the bundled Argo Workflows server is
-    // the case that forced it, serving HTTPS on 2746 with a self-signed certificate — so restricting
-    // it by module would just reintroduce the gap for the next backend.
-    //
-    // Still SERVER-PROVENANCE: it is an env var on the host process, read from a file path only the
-    // operator controls. It is never read from the executor binding or plugin config, which are
-    // tenant-writable — a tenant that could name the CA could vouch for the endpoint it also names.
+    // The operator's extra certificate bundle, forwarded to all. See docs/plugin-host.md §61.
     {
       const executorCaFile = process.env.SCP_EXECUTOR_TLS_CA_FILE;
       if (executorCaFile) env.SCP_EXECUTOR_TLS_CA_FILE = executorCaFile;
@@ -578,12 +395,7 @@ export class SubprocessPluginHost implements PluginHost {
       {
         env,
         stdio: ["pipe", "pipe", "pipe"],
-        // `detached: true` makes this child the LEADER of its own new process group (POSIX;
-        // harmless — Node ignores it — on Windows) rather than a member of this host process's
-        // own group. That is what lets `killInstanceProcess` below target `-child.pid` and take
-        // down everything the plugin itself spawned (a `docker create`/`cp`/`start`/`rm` per
-        // runner-launcher step) in the same signal, instead of leaving those grandchildren as
-        // orphans once the plugin process it addressed is gone. See that function's doc comment.
+        // Detached makes this child its own process-group leader. See docs/plugin-host.md §62.
         detached: true
       }
     ) as ChildProcessWithoutNullStreams;
@@ -624,7 +436,7 @@ export class SubprocessPluginHost implements PluginHost {
       instance.child = undefined;
       this.rejectAllPending(instance, new PluginInstanceCrashedError(instance.config.id));
 
-      if (instance.stopped) return; // stop() requested this exit — no restart.
+      if (instance.stopped) return;
 
       if (!wasReady) {
         // Crashed before ever becoming ready (e.g. a bad config) — still worth retrying with
@@ -729,10 +541,6 @@ export class SubprocessPluginHost implements PluginHost {
     });
   }
 
-  // -----------------------------------------------------------------------------------------
-  // RPC calls
-  // -----------------------------------------------------------------------------------------
-
   /** One RPC attempt against whatever child is currently running for `instance` — does not wait
    *  for readiness and does not retry; `call()` composes this with `waitForReady`/retry. */
   private sendOnce(
@@ -749,16 +557,7 @@ export class SubprocessPluginHost implements PluginHost {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         instance.pending.delete(id);
-        // A timeout means the plugin is hung, not necessarily crashed — kill it so the normal
-        // exit handler reclaims it and restart-with-backoff kicks in, converting "hung forever"
-        // into "will come back". `sendOnce`'s caller (`call`) still only sees a timeout error.
-        //
-        // THIS SIGKILL IS WHY THE BUDGET HAS TO BE PER-METHOD (M23.1c). There is no `finally` here
-        // and there cannot be one: the cleanup that matters lives in the CHILD (the runner
-        // launcher's `rm -f`, `withRecordedOutcome`, managed-iac's `saveState`) and SIGKILL runs
-        // none of it. So the only defence is to never let this fire while a legitimate managed run
-        // is in progress — see `call-policy.ts`'s grace, which exists to guarantee the plugin's own
-        // inner `execFile` timeout is the one that wins.
+        // A timeout means hung, not crashed, so it is killed. See docs/plugin-host.md §63.
         if (instance.child) killInstanceProcess(instance.child, "SIGKILL");
         reject(
           new Error(
@@ -771,32 +570,12 @@ export class SubprocessPluginHost implements PluginHost {
     });
   }
 
-  /**
-   * The public entry point every `ExecutorPluginClient` method funnels through: waits for the
-   * instance to be ready (bounded by the remaining call budget), sends the request, and — if the
-   * ONLY reason it failed was the child exiting mid-call (`PluginInstanceCrashedError`) — waits
-   * for the respawned instance and retries exactly once more per crash, as long as time remains.
-   * This is what makes `contract.ts`'s "callers never see a dead subprocess, only a
-   * slower/retried call" true rather than aspirational.
-   *
-   * WITH ONE EXCLUSION, M23.1c: a managed executor's `trigger` is NOT retried. It is not idempotent
-   * from here — its ledger entry is written only after the run completes, so a retry re-enters a
-   * `tofu apply` that may still be in flight, and the retry's container name (derived from the same
-   * `idempotencyKey`) collides with the first run's and gets it torn down. That crash belongs to
-   * `reconcile.ts`, which has the Decision record and the backoff; it must not be swallowed here.
-   */
+  /** The entry point every client method funnels through. See docs/plugin-host.md §64. */
   private async call(instanceId: string, method: string, params?: unknown): Promise<unknown> {
     const instance = this.instances.get(instanceId);
     if (!instance) throw new Error(`no plugin instance configured with id '${instanceId}'`);
 
-    // PER-METHOD, NOT ONE NUMBER FOR EVERYTHING (M23.1c). `opts.callTimeoutMs` stays the 10s HANG
-    // DETECTOR for `observe`/`status`/`abort`/`evaluate`/`send`/… — it is meaningful precisely
-    // because those are supposed to be fast. A managed executor's `trigger` is the one method that
-    // legitimately blocks for minutes (the charter's scoped execution exception runs its container
-    // synchronously), so its budget is derived from that instance's own resolved `timeoutMs` and its
-    // transparent crash-retry is switched OFF. See `call-policy.ts` for the measured consequences of
-    // the uniform 10s this replaces — an orphaned runner holding live credentials, and a second
-    // `tofu apply` issued while the first was still applying.
+    // PER-METHOD, NOT ONE NUMBER FOR EVERYTHING. See docs/plugin-host.md §65.
     const policy = resolveCallPolicy({
       module: instance.config.module,
       config: instance.config.config,

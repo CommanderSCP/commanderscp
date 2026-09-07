@@ -2,15 +2,7 @@ import type { PluginContext, ScopedHttpRequest, ScopedHttpResponse } from "@scp/
 import type { ManifestBumpSpec } from "./bump-edit.js";
 import { verifyManifestOnlyEdit, type ManifestEditProof } from "./write-guard.js";
 
-/**
- * Shared fixtures for the write path's suites — the same convention `@scp/plugin-github` uses
- * (`github-test-support.ts`), for the same reason: the traversal MATRIX and the wire suite must
- * exercise the identical fixture, or a refusal proven in one could be absent from the other and both
- * would still be green.
- *
- * Nothing here fakes a refusal or hand-builds a proof. {@link realProof} runs the REAL verifier, so
- * a test that needs a valid proof cannot get one for content the verifier would refuse.
- */
+/** Shared fixtures for the write path's suites. See docs/plugins.md §400. */
 
 /** A genuine npm manifest and a genuine one-declared-version bump of it. */
 export const PACKAGE_JSON_BASE = [
@@ -36,11 +28,7 @@ export const BUMP_SPEC: ManifestBumpSpec = {
 
 export const DECLARED_MANIFEST_PATHS = ["package.json"];
 
-/**
- * A chart's `values.yaml` in the SPLIT shape — the coordinate on one line, the version on the next,
- * and the same version text present three more times where it means something else. M21.7's
- * anchored path is the only way this file is editable at all.
- */
+/** A chart's `values.yaml` in the SPLIT shape. See docs/plugins.md §401. */
 export const VALUES_YAML_BASE = [
   "global:",
   "  imageTag: 1.2.3",
@@ -100,14 +88,7 @@ export interface RecordedCall {
   authorization?: string;
 }
 
-/**
- * A `PluginContext` whose http client RECORDS every request and answers from `handler`.
- *
- * `calls.length` is what the adversarial suites assert on, and that is deliberate: "zero HTTP" is
- * MEASURED, never inferred from an absent interceptor — a request can satisfy an absent interceptor
- * by failing for an unrelated reason, and on this provider the very first request of a run is the
- * App-JWT → installation-token exchange, so a counted zero also proves the refusal precedes AUTH.
- */
+/** A plugin context whose client records every request. See docs/plugins.md §402. */
 export function recordingCtx(handler: (req: ScopedHttpRequest) => ScopedHttpResponse): {
   ctx: PluginContext;
   calls: RecordedCall[];
@@ -140,11 +121,7 @@ export function recordingCtx(handler: (req: ScopedHttpRequest) => ScopedHttpResp
  */
 export function githubHandler(
   overrides: Record<string, ScopedHttpResponse> = {},
-  /** WHAT THE PROVIDER SAYS THE PULL REQUEST IS. Defaults to a pull request that agrees with
-   *  {@link WRITE_TARGET} on every axis the merge path compares — open, from SCP's branch, into the
-   *  granted base — so a suite states only the axis it is contradicting. It is a PARAMETER rather
-   *  than a constant because the head branch is derived from the change id, and different suites
-   *  merge different changes. */
+  /** WHAT THE PROVIDER SAYS THE PULL REQUEST IS. See docs/plugins.md §403. */
   pullRequest: { state?: string; headRef?: string; baseRef?: string } = {},
   /** What a `GET /contents/…` answers with. Defaults to {@link PACKAGE_JSON_BASE}; a suite bumping a
    *  chart's `values.yaml` passes that instead. It is a parameter rather than an `overrides` entry

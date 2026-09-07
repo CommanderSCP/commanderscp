@@ -52,13 +52,7 @@ interface LogicalLine {
   readonly line: number;
 }
 
-/**
- * Join `\`-continued physical lines into logical instructions.
- *
- * Docker's own parser drops comment lines that appear INSIDE a continuation, which is why comments
- * are stripped here rather than before joining — stripping first would splice a comment's text into
- * the middle of an instruction.
- */
+/** Join continued lines into logical instructions. See docs/dependency-manifests.md §4. */
 function toLogicalLines(content: string): LogicalLine[] {
   const out: LogicalLine[] = [];
   const physical = content.split(/\r?\n/);
@@ -94,13 +88,7 @@ function toLogicalLines(content: string): LogicalLine[] {
   return out;
 }
 
-/**
- * Registered OCI digest algorithms and the EXACT length of their lowercase-hex encoding.
- *
- * The length is the half that matters. A shape-only check passes `sha256:abc`, which is not a
- * truncation of anything — it is a value that would be compared against a real 64-character digest
- * for the rest of a subscription's life and never match.
- */
+/** Digest algorithms and their exact hex lengths. See docs/dependency-manifests.md §5. */
 const DIGEST_ALGORITHM_HEX_LENGTH: ReadonlyMap<string, number> = new Map([
   ["sha256", 64],
   ["sha512", 128]
@@ -109,22 +97,7 @@ const DIGEST_ALGORITHM_HEX_LENGTH: ReadonlyMap<string, number> = new Map([
 /** `algorithm ":" encoded`, per the OCI image spec's descriptor grammar. */
 const DIGEST_SHAPE = /^([a-z0-9]+(?:[.+_-][a-z0-9]+)*):([A-Za-z0-9=_-]+)$/;
 
-/**
- * Is this text an OCI digest?
- *
- * SHARED BY BOTH IMAGE READERS, for the same reason {@link splitImageRef} is: `parseDockerfile`
- * takes a digest off a `FROM …@…` and `parseKubernetesImages` takes one off a `digest:` key or off
- * the same `@`, and both write it to `component_dependencies.resolved_digest` — the column the
- * version poller compares a registry's answer against. A digest is IDENTITY (proposal §6.3, *"Tag ≠
- * identity"*), so recording a value that is not one records a pin to bytes that do not exist:
- * strictly worse than recording no digest, because the row then reads as pinned. Fixing this in one
- * parser and not the other would be the incomplete-census failure — the property is "a digest is
- * written without checking it is one", and it had two instances.
- *
- * Deliberately NOT a general "looks hex-ish" test, and deliberately not a full reference grammar.
- * An unregistered algorithm is allowed at the spec's own minimum of 32 encoded characters;
- * `sha256` and `sha512` must be exactly right.
- */
+/** Is this text an OCI digest? See docs/dependency-manifests.md §6. */
 export function isDigestShaped(text: string): boolean {
   const match = DIGEST_SHAPE.exec(text);
   if (match === null) return false;
@@ -135,20 +108,7 @@ export function isDigestShaped(text: string): boolean {
   return encoded.length >= 32;
 }
 
-/**
- * Split an image reference into registry+name / tag / digest, brace-aware.
- *
- * EXPORTED FOR ONE OTHER READER, and deliberately not copied: `kubernetes-images.ts` splits the
- * same one-scalar reference (`image: "localhost:5000/foo:1.2"`) out of a YAML document. A second
- * splitter is how the port-vs-tag and the digest-colon rules below come to disagree between two
- * parsers that must place the same image on the same `dependency_lines` row.
- *
- * Brace awareness is load-bearing for exactly one construct: `${BASE:-alpine}` (Docker supports
- * shell-style defaults in `ARG` expansion). A plain "last colon wins" split would cut that in half
- * and report a package named `${BASE` — the classic mis-split. Depth-0 tracking also handles the
- * ordinary registry-port case `localhost:5000/foo:1.2`, where the last depth-0 colon after the last
- * depth-0 slash is the tag separator and the earlier one is a port.
- */
+/** Split an image reference, brace-aware. See docs/dependency-manifests.md §7. */
 export function splitImageRef(ref: string): { name: string; tag?: string; digest?: string } {
   let depth = 0;
   let lastSlash = -1;
@@ -210,11 +170,7 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
   const out: DeclaredDependency[] = [];
   /** Whether any instruction was a `FROM`. See the @throws above. */
   let sawFrom = false;
-  /**
-   * Stage names declared by `AS <name>` so far, lower-cased. Docker matches stage names
-   * case-insensitively, and a stage shadows any image of the same name, so membership here is
-   * decisive — we never fall back to "maybe it is also an image".
-   */
+  /** Stage names so far, lower-cased like Docker. See docs/dependency-manifests.md §8. */
   const stages = new Set<string>();
 
   for (const { text, line } of toLogicalLines(content)) {
@@ -229,17 +185,10 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
     while (idx < tokens.length && (tokens[idx] ?? "").startsWith("--")) idx++;
 
     const ref = tokens[idx];
-    if (ref === undefined) continue; // malformed `FROM` with no operand
+    if (ref === undefined) continue;
     idx++;
 
-    // (1) A reference to an EARLIER stage is not a dependency. This is the case a naive parser gets
-    // wrong, and it is negative-controlled in the tests: the same file with a genuine second image
-    // must still yield two.
-    //
-    // The membership test is taken against the stages declared by earlier instructions and BEFORE
-    // this instruction's own `AS` name is added. A stage cannot reference itself, so recording first
-    // makes `FROM alpine AS alpine` — a stage named after its own base image, which is ordinary
-    // style — delete a genuine bumpable dependency. Order is the whole fix.
+    // A reference to an earlier stage is not a dependency. See docs/dependency-manifests.md §9.
     const isStageRef = stages.has(ref.toLowerCase());
 
     // `AS <name>` — recorded on EVERY FROM, including the ones that yield nothing below, because
@@ -257,11 +206,7 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
 
     const { name, tag, digest } = splitImageRef(ref);
 
-    // A malformed reference is refused outright rather than minted as a row. `FROM :1.0` has an
-    // EMPTY name, and an empty-string coordinate is an identity every malformed manifest in the org
-    // would collide on; `FROM alpine@` has an empty digest, which would be recorded as `pinned` —
-    // a pin to nothing. Both are the "a dependency with a wrong version is worse than a dependency
-    // that is missing" rule this package applies in `go-mod.ts:parseRequireLine`.
+    // A malformed reference is refused, never minted. See docs/dependency-manifests.md §10.
     if (name === "" || digest === "" || tag === "") continue;
 
     // (3) Interpolation in the NAME makes the whole coordinate unknowable — we cannot even say
@@ -336,15 +281,7 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
       continue;
     }
 
-    // A real tag. Its numeric core is extracted by the ONE shared helper — image tags are not
-    // semver, so `latest`, `stable`, `edge` and `alpine` all yield undefined here and are simply
-    // carried without a comparable version (ADR-0032 §7: skipped, never string-ordered).
-    //
-    // Note the deliberate asymmetry with `parseImageTagVersion`: on this DECLARED side a single
-    // numeric component (`node:20`) is kept, because nothing is being ordered — there is exactly
-    // one string and it is the component's current state. On the CANDIDATE side, where a registry's
-    // whole tag list is ranked, `parseImageTagVersion` refuses precision-1 tags because a date
-    // stamp and a major line are indistinguishable there. Ordering is where the guess would happen.
+    // A real tag. See docs/dependency-manifests.md §11.
     const version = parseComparableVersion(tag);
 
     out.push({
@@ -357,14 +294,7 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
       ...(digest !== undefined ? { digest } : {}),
       declaredIn: "FROM",
       line,
-      // The note names WHAT WAS READ, not which branch matched. "Moving tag" is only true of a tag
-      // that actually spells a partial version line (`3.19`, `3.19-alpine`). A precision-1 tag is
-      // NOT reliably one: `1a2b3c4d` (a git sha whose first character happens to be a digit) and
-      // `20240115` (a date stamp) both parse to precision 1, and telling an operator that a
-      // sha-pinned base image "names a line, not a point" is a provenance label named after the
-      // branch that matched — false the moment the branch covers a second kind of input. Precision 1
-      // gets its own note, mirroring `parseImageTagVersion`'s default `minPrecision: 2` refusal on
-      // the candidate side, and for the same reason.
+      // The note names what was read, not what matched. See docs/dependency-manifests.md §12.
       ...(version === undefined
         ? {
             note: `tag "${tag}" carries no parseable version core; it must be skipped, never string-ordered`

@@ -33,12 +33,7 @@ import type { ChangeState } from "@scp/schemas";
 
 type RouterLinkProps = React.ComponentProps<typeof Link>;
 
-/**
- * An outline `Button`-styled router `Link` (spec §2.12/§4B: every `→` literal dies, replaced by
- * `ArrowRight` on an outline Button). `Button` itself renders a `<button>`, so a navigating control
- * cannot use it directly — this mirrors its `outline size="sm"` classes plus the shared focus ring
- * (§2.10) onto a `Link` instead of duplicating a second visual treatment.
- */
+/** An outline `Button`-styled router `Link`. See docs/web.md §478. */
 function LinkButton({
   to,
   params,
@@ -179,23 +174,8 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
   );
 }
 
-/**
- * One component's row. EXPORTED for `service-board-honesty.test.tsx`, which renders it directly:
- * the unknown-vs-observed distinction below is the whole point of this view, and it must be pinned
- * by a check that runs on every PR at a cheaper altitude than the Playwright suite (which now also
- * runs on PRs).
- */
-/**
- * THE PER-PIPELINE STATE of one row, as one chip per ADR-0007 Category.
- *
- * The board used to say ONE thing per component — its latest change — about a component that runs
- * several independent pipelines. Whichever moved most recently spoke for all of them, so a pipeline
- * that had never run was indistinguishable from one that had just succeeded (owner, 2026-08-10).
- *
- * `not bound` is rendered, not omitted: a component with no infrastructure pipeline is a fact, and
- * an absent chip would read as "this board does not show infra". Same rule as the component
- * pipeline's lanes.
- */
+/** One component's row. See docs/web.md §479. */
+/** The per-pipeline state of one row, one chip per category. See docs/web.md §480. */
 /** The exact ADR-0007 Category spellings — the owner's consistency rule (2026-08-11): rendered
  *  copy uses the wire vocabulary verbatim; "infra"/"config" abbreviations were drift. */
 export const CATEGORY_LABEL: Record<string, string> = {
@@ -269,11 +249,7 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
          field this row lists in unknownFields, which reintroduces in the DOM the
          exact confusion the response shape removes on the wire. */
       data-blocked={isUnknown(row, "attention.blocked") ? "unknown" : String(row.attention.blocked)}
-      /* "none" — not "true" — when the server sent no driver at all. `driver` is nullable (no
-         latest change to attribute), and defaulting an ABSENT driver to `true` made a row with
-         nothing to drive machine-readable as one this domain DRIVES, indistinguishable from a
-         real local-origin row. Same class as `data-blocked` above, and as the bare row-level
-         `data-trust-tier` fixed in `routes/outposts.tsx`. */
+      // "none" — not "true" — when the server sent no driver at all. See docs/web.md §481.
       data-driven-here={row.driver ? String(row.driver.drivenHere) : "none"}
     >
       <TableCell>
@@ -383,25 +359,10 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
   );
 }
 
-/**
- * The releasing / blocked / stable / not-driven-here strip. EXPORTED for the same reason
- * {@link BoardRow} is: `Not driven here` must never be dressed as a success, and `Stable` must stop
- * being dressed as one the moment the server declares it unobservable.
- */
-/**
- * The two BOARD-LEVEL unknowns, exported so the WIRING is gated and not just the components it
- * feeds. Reading a literal field name out of `unknownFields` inline is exactly the kind of line a
- * later edit silently changes: nothing would fail, and the caveat would just stop appearing.
- */
+/** The releasing / blocked / stable / not-driven-here strip. See docs/web.md §482. */
+/** The two board-level unknowns, exported so wiring is gated. See docs/web.md §483. */
 export function changeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
-  // The server names `summary.stable` unobservable for THREE distinct reasons, all of which mean
-  // the same thing to this badge — the count is not an all-clear:
-  //   (1) a peer paired at a scope that does not carry change objects (`status_only` sends change
-  //       STATUS without the change; `policies_only` sends neither);
-  //   (2) evidence of a change in flight on a peer that this instance could not attach to anything
-  //       local — which is what catches the SENDING side being the narrow one;
-  //   (3) the upstream this board depends on is overdue by its own sync cadence.
-  // Which one it is shows in the "as of" line (3) and the row-level markers (1, 2).
+  // The server names that unobservable for three distinct reasons. See docs/web.md §484.
   return declaredUnknowns(board).includes("summary.stable");
 }
 
@@ -409,28 +370,7 @@ export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): b
   return declaredUnknowns(board).includes("rows[].activeFreeze");
 }
 
-/**
- * DESIGN §13's "as of &lt;bundle/date&gt;" label — the requirement paired with an explicit ban on
- * *"presenting stale data as live status"*, and the UI is the layer §13 names as responsible for it.
- * A board on a federated instance renders another domain's changes; without this line nothing on
- * screen distinguishes a live view from a snapshot taken last quarter.
- *
- * THREE READINGS, THREE TREATMENTS — and `null` is deliberately not one of the other two:
- *  - `stale === true`  → the upstream is past the age at which a cycle counts as missed. Warned, and
- *    the server has additionally named `summary.stable` unobservable, so the Stable badge drops its
- *    green in the same render.
- *  - `stale === false` → not overdue. A plain, quiet timestamp.
- *  - `stale === null`  → this instance schedules no pulls for that peer at all (an air-gapped peer;
- *    an outpost seen from the commander). There is no schedule for the data to be late against, so
- *    rendering it as "fresh" would assert something nobody measured. It renders as the bare as-of
- *    label, which is exactly the bounded guarantee §13 grants for an air-gapped domain.
- *
- * THE THRESHOLD IS `staleAfterSeconds`, NEVER `expectedWithinSeconds`. The two differ by the
- * server's grace factor, and this tooltip used to quote the cadence as if it were the bound —
- * telling an operator that 90-second-old data was "within" a 60-second cadence, which is false and
- * is exactly the kind of number a reader checks against a clock. Both are shown, each named for
- * what it is; the factor between them is never recomputed here.
- */
+/** DESIGN §13's "as of &lt;bundle/date&gt;" label. See docs/web.md §485. */
 export function BoardAsOfLabel({
   asOf
 }: {
@@ -472,17 +412,7 @@ export function BoardSummary({
 }: {
   summary: ServiceBoardSummary;
   stableUnknown: boolean;
-  /**
-   * How many components sit under an ASSEMBLY of this service rather than directly under it.
-   *
-   * The four buckets are computed over `rows`, and `rows` is deliberately direct-children-only
-   * (intermediate-grouping D3 — an assembly is reported separately, never flattened into its
-   * descendants). That is a decided model, and this does not change it. What it changes is the
-   * READING: a service whose components all live in an assembly renders four honest zeroes, and
-   * four zeroes with no qualifier says "nothing here" when the true statement is "nothing HELD
-   * DIRECTLY here". Same class as `stableUnknown` above — a number that is arithmetically right
-   * and, unlabelled, tells the operator something false.
-   */
+  /** How many components sit under an assembly, not directly. See docs/web.md §486. */
   componentsBelowAssemblies?: number;
 }): React.JSX.Element {
   return (
@@ -543,33 +473,8 @@ export function BoardSummary({
   );
 }
 
-/**
- * `/services/{id}/board` — the Service release board (coordination-ui-views.md § "Service release
- * board", Phase 2, Layer A). One scannable table of the service's components: each row shows that
- * component's latest change per-wave status, its current wave, and any attention signal (the
- * BLOCKED component surfaced in red with a decision_id "Why?" link), and opens the Phase-1 component
- * pipeline. A summary strip counts releasing / blocked / stable / not-driven-here.
- *
- * Strictly Layer A — real data only. Per-wave image versions/digests and component health are Layer
- * B (not modeled yet); they are shown as an explicit placeholder, never fabricated. The same rule
- * governs federation: a change this instance does not DRIVE (`row.driver.drivenHere === false`)
- * arrives as a read-only replica WITHOUT its plan, Decisions or approvals (and without any freeze
- * the driving domain declared non-federating — M25.7/D6 made an org-tier freeze able to cross, and a
- * replicated one is enforced here like a local one), so every field
- * the server named in `row.unknownFields` renders as an explicit "unknown here" marker — visually
- * distinct from both a clean row and the stable count, never a fourth flavour of fine. Freezes are
- * READ-ONLY status here; declaring/lifting one is a controls-phase concern (Phase 5), so the
- * "Freeze service" affordance is present but disabled.
- */
-/**
- * ASSEMBLY children of this service (migration 0055, intermediate-grouping D3).
- *
- * Their own card rather than rows in the components table: an assembly is a different KIND of child,
- * and a component COUNT is not a release status — putting it in a status column would read as one.
- * Renders nothing at all when there are none, which is every service on the estate today; unlike the
- * pipeline chips, an empty list here is not a fact worth a card, just a service whose components sit
- * directly under it.
- */
+/** `/services/{id}/board` — the Service release board. See docs/web.md §487. */
+/** ASSEMBLY children of this service. See docs/web.md §488. */
 export function BoardAssemblies({ assemblies }: { assemblies: ServiceBoardAssembly[] }) {
   if (assemblies.length === 0) return null;
   return (
@@ -633,16 +538,7 @@ export function ServiceBoardPage(): React.JSX.Element {
   const board = boardQuery.data;
   const { service, rows, summary, serviceFreeze } = board;
   const componentsBelowAssemblies = board.childAssemblies.reduce((n, a) => n + a.componentCount, 0);
-  // BOARD-LEVEL unknowns (as opposed to a row's own): today, freeze visibility on a federated
-  // deployment. A freeze crosses a boundary only when the domain that declared it said so
-  // (`federate: true`, M25.7 / owner decision D6 — it becomes a graph object and is rebuilt into
-  // this instance's own freeze table, where it blocks like any local one), and that DEFAULTS OFF.
-  // So on an instance with a federation peer NO row's "not frozen" — driven here or not — can be
-  // read as "no freeze applies", and nothing on the wire says how much is missing.
-  //
-  // This comment used to say freezes never ride the sync journal in either direction. That was true
-  // and deliberate until D6 retracted it; the conclusion the UI draws is unchanged, the reason is
-  // not, and the server states the same thing at greater length in `service-board.ts`.
+  // BOARD-LEVEL unknowns (as opposed to a row's own). See docs/web.md §489.
   const freezeVisibilityUnknown = freezeVisibilityUnknownOf(board);
   // The other board-level unknown: a peer paired at a sync scope that does not carry change objects
   // (`status_only` sends change STATUS without the change; `policies_only` sends neither) leaves this

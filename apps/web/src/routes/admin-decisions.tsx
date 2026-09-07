@@ -28,37 +28,7 @@ import {
 } from "../components/decision/DecisionDetailDialog";
 import { formatRelative } from "./admin-dependencies";
 
-/**
- * ADMIN › DECISIONS — every Decision record browsable, not just the one-at-a-time `WhyLink`
- * (owner-approved 2026-08-23; charter principle 6: "every engine verdict persists a Decision
- * record with its inputs"; server route `GET /api/v1/decisions`,
- * `apps/server/src/routes/changes.ts`; SDK `client.decisions.list/get`).
- *
- * FILTERS AS THE WIRE PROVIDES THEM, no more: `DecisionListQuerySchema`
- * (packages/schemas/src/changes.ts) carries exactly `subjectId` and `kind` besides cursor/limit —
- * both offered here as real server-side filters, nothing client-side pretending to be one. `kind`
- * answers "which mechanism", not "what happened" — several kinds carry more than one verdict
- * against the same subject (see the schema's own doc comment), which is why the verdict badge is
- * still per-row rather than folded into the filter.
- *
- * CURSOR PAGING, ONE PAGE EAGER: the `decisions` table once grew 1.44 GB/day in a production
- * incident (a reconcile loop re-writing a byte-identical Decision every tick) — this page fetches
- * exactly one page on load and one more per explicit "Load more" click, never on a timer and never
- * unbounded.
- *
- * WIRE ORDER, NOT RECENCY: `listDecisions` (`coordination/decisions-repo.ts`) orders ascending by
- * `(createdAt, id)` — the same keyset-ascending convention every list endpoint in this app uses —
- * so this table reads oldest-first within whatever filter is applied; "Load more" reveals LATER
- * rows, not older ones. There is no server-side descending order to request.
- *
- * The Why-style affordance opens `DecisionDetailDialog` (`components/decision/`) — the same
- * `decisionSummary` formatting `change-detail.tsx`/`campaign-detail.tsx` use for their inline
- * timelines, in a standalone viewer keyed by id (see that component's doc for why it is not
- * literally `WhyLink`/`ReasonDialog`).
- *
- * Honest empties: the "No decisions" state renders ONLY after a successful zero-row read, never
- * while pending, and a failed read shows `QueryErrorNotice`'s diagnosis instead of a table.
- */
+/** ADMIN › DECISIONS. See docs/web.md §168. */
 
 type DecisionFilters = { subjectId?: string; kind?: string };
 

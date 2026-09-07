@@ -2,28 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ProblemError } from "../errors.js";
 import { assertEnforceableDependencySubscriptionScope } from "./subscription-authoring-guard.js";
 
-/**
- * The guard's whole value is that it is NARROW: it refuses exactly one authoring SCOPE and leaves
- * everything else alone. So the negative controls below carry as much weight as the refusal — a
- * guard that rejected more than it should would be indistinguishable, from the refusal test alone,
- * from one that works.
- *
- * M21.4 WIDENED IT BY ONE AXIS AND ONE ONLY (ADR-0032 §6a, 2026-08-15): the refusal covers a
- * group-scoped ENABLE as well as a group-scoped opt-out. Every OTHER narrowing is unchanged and is
- * still pinned below — the scope narrowing especially, since widening the direction axis is exactly
- * the kind of edit that quietly widens a second one.
- *
- * WHY M21.4 WIDENED IT IS NOT WHY IT STAYS WIDE (ADR-0032 §6a-ii, 2026-08-17). M21.4's stated reason
- * — "the acting job is the system sentinel, which belongs to no group, so a group-scoped enable is
- * permanently inert" — is FALSE, and was false on the day it was written: ADR-0016 §2a shipped group
- * scope's OWNING half (`policy-resolve.ts:313`, `:150-173`), which never reads the actor, so such an
- * enable DOES fire for `SYSTEM_ACTOR_ID` wherever the group owns anything on the chain
- * (`governance/group-scope-ownership.integration.test.ts:188`). The refusal now rests on ONE ground
- * in both directions: a group-scoped effect's reach is decided by membership and by MUTABLE `owns`
- * edges rather than by what the author wrote — which for an opt-out is a fail-open, and a trapdoor,
- * because deleting an `owns` edge silently re-subscribes. The assertions below are on the message's
- * CLAIM, so they fail if that reasoning is ever reverted into the message.
- */
+/** The guard's whole value is that it is NARROW. See docs/dependencies.md §362. */
 
 const optOut = (extra: Record<string, unknown> = {}) => ({
   dependencySubscription: { enabled: false, ...extra }
@@ -83,12 +62,7 @@ describe("group-scoped dependency-subscription effects are refused at authoring 
   });
 
   it("REFUSES an ENABLE scoped to a group — its reach is decided by `owns` edges, not by the author", () => {
-    // M21.4 refused this case (ADR-0032 §6a) on the reasoning that the acting job is the system
-    // sentinel and so the enable is permanently INERT. §6a-ii retired that reasoning as false — the
-    // owning half of group scope ignores the actor entirely — while keeping the refusal. What the
-    // message must now say is the true failure: a group-scoped enable applies wherever the group
-    // OWNS something on the chain, a set the author never named and that changes when ownership is
-    // edited.
+    // M21.4 refused this case. See docs/dependencies.md §363.
     const err = refusalFrom({ scope: { group: "team-platform" }, effects: [enable()] });
     expect(err.status).toBe(400);
     expect(err.detail).toMatch(/enable \(enabled: true\)/);
@@ -100,9 +74,7 @@ describe("group-scoped dependency-subscription effects are refused at authoring 
     expect(err.detail).toMatch(/objectRef/);
   });
 
-  // ----------------------------------------------------------------------------------------
   // NEGATIVE CONTROLS — everything the guard must NOT touch.
-  // ----------------------------------------------------------------------------------------
 
   it("PERMITS an opt-out AND an enable at objectRef or selector scope — those do not depend on who is asking", () => {
     // The direction axis widened; the SCOPE axis did not. Both of these are the ordinary way to
@@ -117,15 +89,7 @@ describe("group-scoped dependency-subscription effects are refused at authoring 
     }
   });
 
-  // ----------------------------------------------------------------------------------------
-  // THE NARROWING: `group` must be the ONLY scope for the refusal to fire.
-  //
-  // `matchPoliciesForTargets` runs the three scope branches INDEPENDENTLY — `objectRef`
-  // (policy-resolve.ts:271-279) and `selector` (:281-290) each record a match before the `group`
-  // branch (:292-322) is reached. So a policy carrying group AND one of the others contributes for
-  // every caller through that other route, the hazard is absent, and the 400 was telling the author
-  // to do what they had already done.
-  // ----------------------------------------------------------------------------------------
+  // The narrowing: group must be the only scope to refuse. See docs/dependencies.md §364.
 
   it("PERMITS a group-scoped effect that ALSO carries an objectRef — the objectRef branch matches for everyone", () => {
     // Asserted for BOTH directions since M21.4: the objectRef route reaches exactly what it names,

@@ -38,12 +38,7 @@ export function changeStatusContentHash(payload: Record<string, unknown>): strin
 
 export type ChangeRow = typeof changes.$inferSelect;
 type ObjectRow = typeof objects.$inferSelect;
-/** The minimal object shape `toChangeShape` actually reads — satisfied by both a raw `ObjectRow`
- *  (joined-query callers below) and a `GraphObject` (createObject's return shape in `proposeChange`,
- *  which has ISO-string dates and no `contentHash`) without forcing either side to convert.
- *  `originDomainId` is typed as plain `string` (not `ObjectRow`'s branded `TrustDomainId`) so
- *  `GraphObject.originDomainId` (also plain `string` on the wire schema) satisfies it directly —
- *  a `TrustDomainId` is itself always a valid `string`, so an `ObjectRow` still satisfies this too. */
+/** The minimal object shape `toChangeShape` actually reads. See docs/coordination.md §262. */
 type ObjectLike = Pick<ObjectRow, "id" | "urn" | "name"> & {
   properties: unknown;
   originDomainId: string;
@@ -108,15 +103,7 @@ export interface ProposeChangeInput {
   topologyIdOrUrn?: string;
   /** Object ids or URNs this change targets — resolved to ids and stashed in properties for the plan compiler. */
   targets: string[];
-  /**
-   * WHICH pipeline of its targets this change rolls (M12 P4A) — the routing Type (ADR-0007). Omitted
-   * ⇒ 'configuration' (the server default).
-   *
-   * Deliberately per-CHANGE, not per-target: a change IS a release, and a release comes from ONE
-   * source per pipeline, so one change drives one pipeline. A release needing both is two releases.
-   * This also keeps `properties.targets` a plain string[] — it is PERSISTED on every existing change
-   * object, and restructuring it would break them all.
-   */
+  /** WHICH pipeline of its targets this change rolls. See docs/coordination.md §263. */
   type?: ExecutorType;
   /** Coupled-pipeline keys this release provides at its targets (M12 P4B). Stored verbatim in
    *  `properties.provides`. */
@@ -130,25 +117,11 @@ export interface ProposeChangeInput {
    *  `properties.stageDependencies`. Unlike `requires`, this does NOT park the change: it is read
    *  per (target × stage) in the executing loop to decide whether to fire that target's trigger. */
   stageDependencies?: StageDependency[];
-  /**
-   * WHO DECLARED the `stageDependencies` above, when that is not who the change is attributed to
-   * (ADR-0028). Used ONLY to attribute the `depends_on` edges the declaration mints; everything
-   * else about the change — its object, its Decision, its audit event — stays `actorObjectId`'s.
-   *
-   * It exists for exactly one caller: the persist-then-process ingress, whose processor runs as
-   * SYSTEM_ACTOR_ID (nobody asked for the change; a push happened) while the declaration riding the
-   * same body is a deliberate, authorized graph write by the reporting principal the ROUTE
-   * authenticated and authorized. Absent everywhere else, where the actor already IS the declarer.
-   */
+  /** Who declared these, when not who the change is from. See docs/coordination.md §264. */
   declarationActorObjectId?: string;
   /** Set only when this Change IS a rollback of another change (coordination/rollback.ts). */
   rollbackOfObjectId?: string;
-  /** M6 (DESIGN §13): set when this Change was instantiated from a Promotion Bundle —
-   *  `federation/promotion-repo.ts`'s `importPromotionBundle` is the only caller that sets this.
-   *  The resulting Change is a genuinely LOCAL, locally-authoritative Change (its own graph object
-   *  originates at THIS domain) that must still pass every local policy/control/approval gate —
-   *  approvals carried in the bundle are evidence attached separately (imported_approval_evidence),
-   *  never a bypass of local governance. */
+  /** Set when this change came from a promotion bundle. See docs/coordination.md §265. */
   importedFromDomain?: TrustDomainId;
 }
 
@@ -164,11 +137,7 @@ function pipelineSummary(
     case "component":
       return "pipeline inherited from the target's own releases_via edge";
     case "service":
-      // NOT "the owning service": since migration 0055 this rung is a LADDER, and the enum value is
-      // kept at `service` only because widening the wire enum would be an oasdiff break
-      // (`pipeline-resolution.ts` rung 2 documents that). So the id here may be an assembly's, and a
-      // sentence asserting "service" would be a false explanation — the one thing `scp change
-      // explain` must not produce. The id disambiguates; the sentence must not overclaim.
+      // NOT "the owning service". See docs/coordination.md §266.
       return `pipeline inherited from the nearest containing service or assembly ${attachedToObjectId}`;
     case "organization":
       return `pipeline inherited from the org default on ${attachedToObjectId}`;
@@ -179,17 +148,7 @@ function pipelineSummary(
   }
 }
 
-/**
- * Creates a Change: a graph object (type `change`) via the existing `createObject` (which itself
- * writes the `change.create` audit event + outbox publish, DESIGN §4.1/§8) plus the `changes`
- * projection row in state `proposed`, plus one Decision record so `scp change explain` always has
- * at least one entry from the moment a change exists (DESIGN §10.4). This is NOT a state
- * transition (there is no "from" state) so it does not go through `transitionChange` — but it
- * follows the identical "write the thing + write a Decision" discipline.
- *
- * Also the SINGLE POINT where a change acquires its release topology, whether set explicitly or
- * inherited from the graph (ADR-0026 §5) — see the resolution block below for why it lives here.
- */
+/** Creates a Change. See docs/coordination.md §267. */
 export async function proposeChange(
   tx: TenantTx,
   input: ProposeChangeInput
@@ -206,18 +165,7 @@ export async function proposeChange(
     targetLocality.push({ urn: target.urn, domainLocal: target.domainLocal });
   }
 
-  // A CHANGE MAY NOT SPAN A LOCALITY BOUNDARY (ADR-0031 §5). Refused at propose time — loudly, at
-  // authoring, where the author is still deciding scope — because NEITHER resolution is safe:
-  //
-  //   * resolving the change to LOCAL would silently darken a legitimate cross-boundary release: the
-  //     shared components in the same change would deploy while the commander never learned the
-  //     release existed. In a coordination platform, a real release invisible to the coordinator is
-  //     a coordination failure, not a conservative default.
-  //   * resolving it to SHARED would leak — the change object names all of its targets.
-  //
-  // Refusal is the only outcome with no silent failure mode. It bites rarely: webhook-born changes
-  // target one component, and multi-target changes come from campaigns, initiatives and explicit API
-  // calls, where an author is already reasoning about scope.
+  // A CHANGE MAY NOT SPAN A LOCALITY BOUNDARY. See docs/coordination.md §268.
   const localTargets = targetLocality.filter((t) => t.domainLocal);
   if (localTargets.length > 0 && localTargets.length !== targetLocality.length) {
     const shared = targetLocality.filter((t) => !t.domainLocal).map((t) => t.urn);
@@ -232,16 +180,7 @@ export async function proposeChange(
   }
   const changeIsDomainLocal = localTargets.length > 0;
 
-  // M12 P4B: resolve each requirement's `at` idOrUrn to an object id NOW, so a typo is a 404 at
-  // propose time rather than a change that waits forever on an object that never existed.
-  //
-  // `requires` is TYPED-FIELD-ONLY: a value smuggled in via the free-form `properties` is dropped
-  // (stripped from the spread below), never stored. That is deliberate — an unresolved `at` string
-  // in `properties.requires` would sail past this resolution and become exactly the silent
-  // forever-wait we forbid, and NO legitimate caller needs the properties path: the typed field
-  // covers the API/CLI, and federation promotion STRIPS `requires` (`promotion-repo.ts`) precisely
-  // so it is not re-evaluated in the receiving domain. `provides`, by contrast, IS carried in
-  // properties (federation replay preserves it), so it keeps a properties fallback.
+  // Resolve each requirement now, so a typo 404s at propose. See docs/coordination.md §269.
   const resolvedRequires =
     input.requires === undefined
       ? []
@@ -251,33 +190,7 @@ export async function proposeChange(
             at: (await getObjectByIdOrUrnAnyType(tx, input.orgId, req.at)).id
           }))
         );
-  // ADR-0028: resolve every stage dependency's `dependsOn` — and every member of its `atTargets` —
-  // to an object id NOW, for exactly the reason `requires[].at` is resolved above: an unresolvable
-  // reference must be refused where it was AUTHORED, not become a hold that never clears because
-  // the thing it names never existed. Both halves are resolved: an `atTargets` typo would otherwise
-  // scope the coupling to a place that does not exist, which reads as "applies nowhere" — a silent
-  // fail-OPEN, the mirror image of the forever-wait.
-  //
-  // AND THE TYPE IS CHECKED, ON THE SAME PRINCIPLE. Resolving proves the object EXISTS; it does not
-  // prove the declaration can ever be enforced, and a reference of the wrong type is inert in
-  // exactly the silent way an unresolvable one would have been:
-  //
-  //   * `dependsOn` MUST BE A COMPONENT. The `depends_on` edge type permits a service at both
-  //     endpoints, and a service is the shape users write (`seed.ts` has service->service), so this
-  //     is accepted-looking: the edge is minted, the declaration is stored, and NOTHING EVER HOLDS.
-  //     The hold resolves a wave target to its placement and asks `listPlacementsForComponents` for
-  //     the dependency's placements — and a placement's `component` must be typeId `component`
-  //     (`graph/placements-repo.ts`), so a service returns no rows, every verdict is `not_placed`
-  //     -> satisfied, and not even the `stage_dependency_unscoped` warn fires. Silently inert
-  //     forever is the worst of the available answers.
-  //   * `atTargets` MUST BE DEPLOYMENT-TARGETS. The hold matches these against the placement's own
-  //     `deploymentTargetId`, so anything else matches nothing, the declaration applies nowhere, and
-  //     the release runs uncoupled — the same fail-open the unresolvable-ref 404 above exists to
-  //     prevent, just wearing a valid id.
-  //
-  // Refused with a 400 where it was authored, the same call `createRelationship` already makes for
-  // an endpoint its type forbids (a `dependsOn` naming a deployment-target used to reach that check
-  // and is now refused here instead, with a message that says what to do about it).
+  // ADR-0028: resolve every stage dependency's `dependsOn`. See docs/coordination.md §270.
   const resolveDeclaredRef = async (
     idOrUrn: string,
     expectedTypeId: "component" | "deployment-target",
@@ -317,26 +230,7 @@ export async function proposeChange(
         );
   const providesValue = input.provides ?? providesOf(input.properties);
   const requiresValue = resolvedRequires;
-  // `stageDependencies` follows `requires`' TYPED-FIELD-ONLY idiom, not `provides`' fallback one:
-  // the typed field is the only way to store one, and a caller-supplied `properties.stageDependencies`
-  // is DROPPED (the destructure below is what drops it).
-  //
-  // THERE IS NO PROPERTIES FALLBACK BECAUSE IT WAS A THIRD, UNGUARDED DECLARATION DOOR. `POST
-  // /changes` authorizes the TYPED field — `relationship:write` at both endpoints of every edge the
-  // declaration would mint (`campaign-scope-authz.ts`) — and passes `properties` straight through.
-  // A fallback preserving the same declaration verbatim therefore accepted, and the hold honoured,
-  // exactly what the typed field 403s: an authority bypass, plus disclosure of another component's
-  // deployment state through the Decision's `branch`/`dependencyStatus`. (No edge is minted that
-  // way — `materialiseStageDependencyEdges` reads the resolved typed field only — so it is not a
-  // privilege escalation, but a coupling that binds a component the declarer has no authority over
-  // is not the declarer's to write either.)
-  //
-  // AND NO LEGITIMATE CALLER NEEDS IT, which is the same census `requires` passed: the typed field
-  // covers the API, the CLI and the CI report ingress, campaign fan-out and rollback pass no
-  // properties at all, and federation promotion STRIPS `stageDependencies` before it re-proposes
-  // (`federation/promotion-repo.ts`, ADR-0028 — the coupling was enforced upstream at the commander
-  // and evaluating it in the receiving domain would fail open under any sync scope narrower than
-  // `full`). The only propose path that carries caller properties at all is `POST /changes`.
+  // Stage dependencies follow the typed-field-only idiom. See docs/coordination.md §271.
   const stageDependenciesValue =
     resolvedStageDependencies !== undefined && resolvedStageDependencies.length > 0
       ? resolvedStageDependencies
@@ -351,18 +245,7 @@ export async function proposeChange(
     ...restProperties
   } = input.properties ?? {};
 
-  // PIPELINE RESOLUTION (ADR-0026, §5, D4/D15). An explicit `--topology` always wins and is outside
-  // the walk; otherwise the change INHERITS one from the graph.
-  //
-  // This lives HERE, in `proposeChange`, and not in `webhook-processor.ts`. Several paths create
-  // changes — the webhook processor, the API, campaign expansion, federation promotion replay — and
-  // fixing the caller instead of the single decision point is the incomplete-call-site-census
-  // mistake this repo has now paid for five times (BUILD_AND_TEST.md §4.4). Every change that gets
-  // proposed at all gets resolution, by construction.
-  //
-  // `pipelineRung` is carried to the Decision below, not just the topology: principle 6. "Why did
-  // this change get this pipeline?" has four answers — explicit, own edge, service's edge, org
-  // default — and only the rung tells them apart.
+  // PIPELINE RESOLUTION (ADR-0026, §5, D4/D15). See docs/coordination.md §272.
   let topologyObjectId: string | undefined;
   let topologyVersion: number | undefined;
   let pipelineRung: PipelineRung | "explicit" | null = null;
@@ -398,16 +281,7 @@ export async function proposeChange(
     urn: input.urn,
     name: input.name,
     domainId: input.domainId,
-    // Type precedence (M12 P4A / ADR-0007): the typed field wins; failing that, whatever the caller's
-    // own properties already say; failing that, 'configuration'.
-    //
-    // The `?? typeOf(input.properties)` middle rung is load-bearing, not defensive padding. This
-    // spread writes `type` AFTER `...input.properties`, so a bare `input.type ?? "configuration"`
-    // silently CLOBBERS a type the caller passed inside properties. Federation promotion
-    // (`federation/promotion-repo.ts`) does exactly that — it replays a bundle's change properties
-    // verbatim — so an `infrastructure` release promoted across domains would arrive as
-    // 'configuration' and trigger the receiving domain's configuration binding. Inheriting here fixes
-    // it for every such caller at once, rather than one call site at a time.
+    // Type precedence (M12 P4A / ADR-0007). See docs/coordination.md §273.
     properties: {
       ...restProperties,
       targets: targetObjectIds,
@@ -449,12 +323,7 @@ export async function proposeChange(
     .returning();
   if (!row) throw new Error("failed to insert changes projection row");
 
-  // M6 (DESIGN §13 journal entry kinds — richer than the generic `object_upsert` `createObject`
-  // above already wrote for this change's underlying graph object): a `change_status` snapshot
-  // carrying the full projection-row state, for peers syncing with a `changes_only` scope and for
-  // the commander cross-domain status view. Written even for an IMPORTED change (importedFromDomain
-  // set) — its LOCAL lifecycle from here on is this domain's own to report, distinct from the
-  // origin domain's own journal entry for the promotion itself.
+  // Journal entry kinds richer than the generic upsert. See docs/coordination.md §274.
   {
     const payload = {
       objectId: object.id,
@@ -467,11 +336,7 @@ export async function proposeChange(
       importedFromDomain: input.importedFromDomain ?? null,
       rollbackOfObjectId: input.rollbackOfObjectId ?? null
     };
-    // M20.3 (ADR-0031 §5) — a domain-local change's status is allocated NO journal sequence either.
-    // This one matters on its own: `change_status` is the entry kind `status_only` peers receive, so
-    // a commander scoped down to bare status would otherwise still be told that a release happened,
-    // when it was supposed to learn nothing at all. Its payload also carries the change's `urn` and
-    // `name`.
+    // A domain-local change's status gets no journal sequence. See docs/coordination.md §275.
     if (!changeIsDomainLocal) {
       await appendJournalEntry(tx, {
         orgId: input.orgId,
@@ -517,14 +382,7 @@ export async function proposeChange(
     }
   });
 
-  // ADR-0028 decision 6/7, increment 2. Materialised from the RESOLVED TYPED FIELD only — which is
-  // now also the only thing this function stores, since a caller-supplied
-  // `properties.stageDependencies` is dropped above. Edges are never minted from stored entries
-  // that did not go through propose-time resolution and the both-endpoint authority check: a
-  // replayed peer's entries name the PEER's object ids, so writing edges from them would either
-  // fabricate an edge this domain never asserted or 400 on an endpoint that was never synced here
-  // and take the whole import down with it. Edges have their own federation channel
-  // (`relationship_upsert`); the origin domain's materialisation is what travels.
+  // Materialised from the resolved typed field only. See docs/coordination.md §276.
   if (resolvedStageDependencies !== undefined) {
     await materialiseStageDependencyEdges(tx, input, targetObjectIds, resolvedStageDependencies);
   }
@@ -532,49 +390,7 @@ export async function proposeChange(
   return { change: toChangeShape(row, object), targetObjectIds };
 }
 
-/**
- * ADR-0028 decision 6 — a change's declared stage dependencies become `depends_on` edges,
- * component→component, so the declaration that will gate the trigger ALSO answers "what depends on
- * what". This is the "derive the dependency charts instead of guessing" half of the owner's ask, and
- * it is the only half there can be: nothing SCP observes carries inter-component dependency data
- * (ADR-0028 decision 7 — the ArgoCD resource tree models `{group,version,kind,namespace,name,
- * status,health}`, discovery proposes no dependency edges, and no scan/SBOM code writes edges), so a
- * dependency edge can only ever be DECLARED.
- *
- * IDEMPOTENT BY PRE-CHECK, NOT BY CATCHING THE 409. The same CI declaration arrives on every single
- * push, so a duplicate must be a silent no-op — but `createRelationship`'s unique-violation branch
- * throws only AFTER postgres has already aborted the surrounding transaction, and `proposeChange` is
- * mid-transaction with more edges (and its caller's own writes) still to come. Catching the conflict
- * here would fail on the very next statement. The pre-check is therefore the mechanism, and the
- * unique index stays the backstop for the one race it cannot cover — two first-ever pushes of the
- * same declaration committing at the same instant — which surfaces as a 409 on propose and is
- * retried by the ingress path. That is the identical pre-check-plus-index shape `assertCardinality`
- * already uses in `graph/relationships-repo.ts`.
- *
- * THE PRE-CHECK DELIBERATELY DOES NOT FILTER ON `deleted_at`. `relationships_org_type_from_to_key`
- * is a plain UNIQUE, not a partial index, and `deleteRelationship` is a SOFT delete — so a
- * tombstoned edge still occupies the key and NO create can ever replace it. Treating a tombstone as
- * "already materialised" is what stops an operator's one-off deletion from turning every subsequent
- * push of that microservice into a 409. THE DECLARED coupling is unaffected either way: the hold
- * reads it off `properties.stageDependencies`, which no edge deletion touches. (The edge is not
- * inert — it ALSO orders a pair that are both targets of one change, ADR-0028 decision 6 — but that
- * is the same fact arriving twice, and the declaration is the half a tombstone cannot take away.)
- *
- * NOTHING IS EVER DELETED HERE, and there is no pruning story on purpose. A declaration is ONE
- * repo's assertion about its own component; pruning "edges this push did not mention" would let A's
- * repo silently delete the dependency B's repo asserted.
- *
- * `minWeight`/`atTargets` DO NOT RIDE ON THE EDGE. Relationship `properties` are silently discarded
- * on four separate legs of the way in (rollout-step-coupling.md §0.5) and relationships have no
- * update path at all, so per-dependency semantics hung on an edge would validate, apply, and store
- * nothing. The change's own `properties.stageDependencies` stays the only source of a QUALIFIED
- * dependency; the edge carries only the FACT of one, which is all impact analysis
- * (`graph/named-queries.ts`'s `DEFAULT_IMPACT_TYPES`) consumes — and all the hold reads it for, in
- * the one case where it does (both endpoints targets of the same change, ADR-0028 decision 6, where
- * it applies the plain `succeeded` test with no qualifiers). Existing `consumes` edges are left
- * strictly alone for the same reason — impact analysis reads both, so nothing is lost by not
- * converging them, and converging them would rewrite data this feature never authored.
- */
+/** Declared stage dependencies become `depends_on` edges. See docs/coordination.md §277. */
 async function materialiseStageDependencyEdges(
   tx: TenantTx,
   input: Pick<
@@ -591,12 +407,7 @@ async function materialiseStageDependencyEdges(
       // `from === to` (`buildDependencyMap`, and the stage-mode edge walk), so the graph layer's
       // 400 would be the only consequence of a declaration that means nothing either way.
       if (fromId === toId) continue;
-      // The pre-check runs INSIDE this transaction and so sees this loop's own uncommitted inserts.
-      // That is what makes two entries naming the same dependency (differing only in
-      // `minWeight`/`atTargets`, which the edge does not carry) collapse onto one edge, with no
-      // separate in-memory de-dupe: the earlier iteration's row is simply already there. A
-      // belt-and-braces `Set` was written here first and then removed — a mutation proved it dead,
-      // because the pre-check already covered every case it claimed to.
+      // The pre-check sees this loop's own uncommitted inserts. See docs/coordination.md §278.
 
       const existing = await tx.query.relationships.findFirst({
         where: (t, { eq: eqOp, and: andOp }) =>
@@ -609,17 +420,7 @@ async function materialiseStageDependencyEdges(
       });
       if (existing) continue;
 
-      // An endpoint that cannot participate in a `depends_on` is already refused by
-      // `proposeChange`'s type-checked resolution above, before anything is written; this call is
-      // reached only for a resolved component.
-      //
-      // ATTRIBUTED TO THE DECLARER, which is not always the change's own actor. The persist-then-
-      // process ingress proposes as SYSTEM_ACTOR_ID — right for a change nobody asked for — but
-      // this edge IS an authorized graph write by the principal the ingress route authenticated,
-      // and `graph.dependentIds` is a live CEL policy input for the depended-on component, so an
-      // audit event naming the system actor would leave a policy-relevant write unattributable
-      // (charter principle 6). Falls back to the change's actor, which is who declared it on every
-      // other path.
+      // An unusable endpoint is already refused before here. See docs/coordination.md §279.
       await createRelationship(tx, {
         orgId: input.orgId,
         actorObjectId: input.declarationActorObjectId ?? input.actorObjectId,
@@ -658,57 +459,7 @@ export async function getChangeRow(tx: TenantTx, orgId: string, id: string): Pro
   return found.change;
 }
 
-/**
- * Batch fetch for the reconciliation loop (coordination/reconcile.ts — its SIX `advance*` passes are
- * the only callers; `watchdog.ts`, which an earlier version of this line also named, has never
- * called it): every change currently sitting in one of `states`, LONGEST-SINCE-ITS-LAST-TURN first
- * (so a sweep drains the changes waiting longest for a turn rather than starving them behind a
- * churny newer one), capped at `limit` per tick so one org with a huge backlog can't starve every
- * other org's sweep turn.
- *
- * ## The ORDER BY column is `reconcile_cursor_at`, and it is not `updated_at` (migration 0058)
- *
- * This query's ordering column IS the round-robin cursor — the whole starvation guarantee below is
- * a statement about it — so it must be a column NOTHING but the scheduler writes. It used to be
- * `updated_at`, which meant two things at once: an ordinary content-changed timestamp that any
- * write moved, and a queue position. Splitting them left this ORDER BY reading engine state alone
- * and gave `Change.updatedAt` back to operators (see its docblock in `@scp/schemas`).
- *
- * THE SPLIT PRESERVES THE GUARANTEE BY DIRECTION, which is the thing to re-check if this is ever
- * touched again. Starvation needs a not-advanced path to push a change BACKWARD in the queue; all
- * five such paths write `reconcile_cursor_at` and are enumerated in `candidate-loop-registry.test.
- * ts`. Every OTHER write that used to move `updated_at` — a transition, a `source_ref` stamp, a
- * park — now leaves the cursor alone, which can only make a change be served SOONER than before.
- * No write that could DELAY a change was removed, so nothing here got less fair.
- *
- * MAJOR #6 fix (PR #7 review — "batch starvation"): excludes changes `markChangeReconcileBlocked`
- * has parked (an `executing` change whose active wave failed and is awaiting an operator's manual
- * cancel/rollback — see reconcile.ts's `failed` branch). `reconcile_blocked_at` is only ever set
- * while a change is `executing`, so this filter is a no-op for every other state and safe to apply
- * unconditionally rather than needing a state-specific variant of this query.
- *
- * ## `selfDomainId` — the S10 single-writer filter, and why it lives HERE rather than in the loops
- *
- * A read-only replica of a peer's change is never ours to drive (S10; `transition.ts`'s
- * `enforceLocalChangeAuthority`). Five of reconcile.ts's `advance*` loops already opened with
- * `if (object.originDomainId !== selfDomainId) continue;` — and that `continue` skips the row
- * WITHOUT writing it, which is precisely the batch-starvation property this query's `ORDER BY
- * reconcile_cursor_at ASC LIMIT n` makes lethal (see `candidate-loop-registry.test.ts`'s header,
- * and the 13-day production outage recorded in `executing-batch-starvation.integration.test.ts`).
- * More than `limit` foreign-origin rows in one state would freeze their cursor forever, own every
- * batch slot, and starve every locally-originated change queued behind them.
- *
- * The remedy is this filter, NOT a round-robin cursor bump on the skip path: bumping would
- * WRITE to a replica's row, which is the very thing single-writer authority forbids. Filtering
- * removes those rows from the candidate set entirely — exactly what `reconcile_blocked_at IS NULL`
- * does for a parked change — which makes all six candidate loops genuinely self-evicting instead of
- * merely un-triggerable. It also preserves the "SKIP, NOT PARK" guarantee
- * (`federation/foreign-origin-writes.integration.test.ts`): nothing is written to the replica, so
- * the moment authority returns the row rejoins the candidate set and resumes on its own.
- *
- * REQUIRED, not optional, and deliberately so: a future call site that forgets it would silently
- * re-open the hole, and this project's recurring bug is fixing SOME call sites of a concept.
- */
+/** Batch fetch for the reconciliation loop. See docs/coordination.md §280. */
 export async function listChangeRowsInStates(
   tx: TenantTx,
   orgId: string,
@@ -753,44 +504,7 @@ export async function markChangeReconcileBlocked(
     );
 }
 
-/**
- * M16.1 (I1) — stamps a promotion bundle's `checksum` onto a change's `sourceRef`, giving the
- * boundary segment its PER-CHANGE JOIN into the `bundle_transfers` ledger (which has no change
- * column; see `federation/boundary-bundle-ref.ts` for the full rationale).
- *
- * Additive to whatever `sourceRef` already holds; no other key is touched, and the value is a
- * deduped list because one change may be exported to several peers.
- *
- * §9.4 (pipeline-substrate-registry-scan.md): the SAME read-modify-write, when given
- * `promotionExport`, also appends the record of WHAT THE COMMANDER SIGNED for this export
- * (`sourceRef.promotionExports[]` — peer, exportedAt, checksum, manifest, manifestSignature,
- * keyFingerprint; `boundary-bundle-ref.ts`). One lock, one UPDATE: the two lists are written from
- * the same locked read, so a concurrent export to another peer can clobber neither. This is
- * deliberately NOT a sibling function with its own read — a second unlocked (or separately locked)
- * read is precisely the lost-update shape the `FOR UPDATE` below exists to rule out.
- *
- * ## Journalling — what is actually true
- *
- * The intent is that a replica of this change on another domain does NOT inherit this domain's
- * checksums (they are per-instance observational bookkeeping about THIS instance's
- * `bundle_transfers` rows; the far side stamps whatever IT observed). Two stamp sites, two
- * different stories:
- *
- * - THE EXPORT-SIDE STAMP (this function, called from `exportPromotionBundle` phase 4) genuinely
- *   is not journalled — it is a bare `UPDATE changes`, and no `change_status` entry is appended
- *   for it. Nothing leaves the instance.
- * - THE IMPORT-SIDE STAMP is NOT exempt. `applyPromotionImport` puts the checksum into the
- *   `sourceRef` it hands `proposeChange`, and `proposeChange` appends a `change_status` journal
- *   entry whose payload carries `sourceRef` verbatim (see the `change_status` block above). So the
- *   importing instance's stamp DOES ride the journal onward to any peer syncing `changes_only`.
- *
- * The consequence of that leak is nil today, and by construction rather than by luck: the
- * `change_status` import path (`federation/import-repo.ts`) records the received status for the
- * cross-domain view and never creates a local `changes` row from it, so no peer can ever grow a
- * boundary segment out of a replicated stamp — `boundarySegment` only ever reads the `changes` row
- * this instance minted itself. If a future change lets `change_status` materialize local change
- * rows, the import-side stamp must be stripped there.
- */
+/** Stamps a bundle's checksum onto the change's source ref. See docs/coordination.md §281. */
 export async function stampBoundaryBundleChecksum(
   tx: TenantTx,
   orgId: string,
@@ -798,24 +512,14 @@ export async function stampBoundaryBundleChecksum(
   checksum: string,
   promotionExport?: PromotionExportStamp
 ): Promise<void> {
-  // `FOR UPDATE`. This is a read-modify-write of an opaque JSONB column, and the LIST shape exists
-  // precisely because one change can be exported to SEVERAL peers — concurrently, in the ordinary
-  // case (two air-gapped peers, two `exportPromotionBundle` calls). Under READ COMMITTED an
-  // unlocked SELECT lets both txs read the same pre-stamp `sourceRef`; the second then blocks on
-  // the row lock at UPDATE time but still writes from its STALE read, silently clobbering the
-  // first peer's checksum. The segment would then show one hop where two really happened — a
-  // real export erased from a read model whose whole job is to not overclaim. Locking on the read
-  // serializes the two stampers so each appends onto the other's committed result.
-  //
-  // `exportPromotionBundle` takes no per-change advisory lock (unlike reconcile), so this row lock
-  // is the only thing ordering them.
+  // `FOR UPDATE`: this is a read-modify-write of a JSONB list. See docs/coordination.md §282.
   const [row] = await tx
     .select({ sourceRef: changes.sourceRef })
     .from(changes)
     .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)))
     .limit(1)
     .for("update");
-  if (!row) return; // change vanished (cancelled/purged mid-export) — nothing to decorate.
+  if (!row) return;
   const stamped = withBoundaryBundleChecksum(row.sourceRef, checksum);
   const next = promotionExport ? withPromotionExport(stamped, promotionExport) : stamped;
   await tx
@@ -848,22 +552,7 @@ export interface ParsedRequires {
   malformed: unknown[];
 }
 
-/**
- * Cross-change prerequisites a change REQUIRES (M12 P4B), off `properties.requires` — each a
- * `{ key, at }` with `at` already an object id (resolved at propose time).
- *
- * FAIL-CLOSED (coupled-pipelines.md §6#14): a malformed entry is NOT silently dropped — it is
- * returned under `malformed`, and every reader (the routing guard and the waiting-sweep predicate
- * in reconcile.ts, wait-status in routes/changes.ts, the watchdog) treats a change carrying one as
- * UNSATISFIABLE: it parks in `waiting` (where the 24h SLA flags it and wait-status names the bad
- * entry) rather than proceeding as if uncoupled. Dropping used to be the behaviour, and it was
- * fail-OPEN: a version-skewed federation peer or a corrupted legacy row would execute a release
- * whose author explicitly declared a prerequisite. Deliberately returns rather than throws
- * (`purposeOf`-style) — a throw at the sweep would let ONE bad row brick `advanceWaitingChanges`
- * for every healthy waiter behind it; "unsatisfiable, skip, surface" contains the blast radius to
- * the one change that carries the junk. Propose-time typed validation (Zod + `at` resolution) is
- * unchanged — these entries can only arrive PAST the API.
- */
+/** Cross-change prerequisites a change REQUIRES. See docs/coordination.md §283. */
 export function requiresOf(properties: Record<string, unknown> | null | undefined): ParsedRequires {
   const requires = properties?.requires;
   if (requires === undefined || requires === null) return { requirements: [], malformed: [] };
@@ -903,56 +592,7 @@ export interface ResolvedStageDependency {
   atTargets?: string[];
 }
 
-/**
- * Stage-scoped component couplings a change declared (ADR-0028), off `properties.stageDependencies`
- * — each a `{ dependsOn, minWeight?, atTargets? }` whose object references are already ids
- * (resolved at propose time by `proposeChange`).
- *
- * NARROWS AND COLLECTS, exactly as `requiresOf` does above, and for the identical reason: a
- * malformed entry is NOT silently dropped, because dropping one fails OPEN — the release would
- * deploy with no hold at all, ahead of the very component its author named. It is returned under
- * `malformed` for the hold to treat as unsatisfiable and surface. Deliberately RETURNS rather than
- * throws: a throw in the per-target executing loop would let one corrupt row wedge every other
- * target in the same tick, where "unsatisfiable, hold, surface" contains the blast radius to the one
- * change carrying the junk.
- *
- * A `minWeight` outside 1..100, or a non-integer, makes the WHOLE entry malformed rather than
- * degrading it to the universal succeeded-test. The two inputs are not the same: an ABSENT
- * `minWeight` means "no weight qualifier was asked for", which has a right answer; a present but
- * nonsensical one means somebody DID ask and asked for something we cannot honour — the same
- * distinction `typeOf` draws below. Propose-time Zod validation makes these unreachable through the
- * API, and `proposeChange` no longer stores a caller's raw `properties.stageDependencies` at all —
- * so a malformed entry can only be a row written before that (or one repaired by hand). The narrower
- * stays because "unsatisfiable, hold, surface" is the only reading of such a row that is not
- * fail-open.
- *
- * ============================================================================================
- * KNOWN LIMITATION: A DECLARATION IS CHANGE-SCOPED, AND IS APPLIED TO EVERY TARGET
- * ============================================================================================
- * `properties.stageDependencies` hangs off the CHANGE. Nothing in it records WHICH of the change's
- * targets a given entry was declared for, so `reconcile.ts` parses this once per change and
- * evaluates the whole set against every one of that change's wave targets. For a change targeting
- * [A, B] where only A's CI declared `dependsOn: C`, **B is held behind C as well.**
- *
- * WHY IT IS NOT FIXED HERE. There is no data to fix it FROM. ADR-0028 decision 5 has the
- * microservice's own CI declare its own dependencies, and a webhook-born change targets exactly one
- * component (`webhook-processor.ts`) — 277 of 281 measured changes, so the declaration and the
- * target coincide and the over-application is unobservable. A multi-target change arrives through
- * the API or campaign fan-out with ONE array and several targets, and the association between an
- * entry and a target simply was never carried. `materialiseStageDependencyEdges` above takes the
- * same reading — it mints an edge from EVERY target to `dependsOn` — so the breadth is already a
- * standing graph fact for such a change, not something this parse could narrow after the event.
- *
- * WHAT THE SHAPE WOULD NEED TO BE. One optional field on `StageDependencySchema`, e.g.
- * `forComponents?: string[]` — component ids/URNs, resolved at propose time exactly as `dependsOn`
- * and `atTargets` already are, absent meaning "every target of this change" so existing declarations
- * keep their current meaning. `atTargets` cannot stand in for it: that axis is deployment-targets
- * (WHERE the coupling applies), and this one is components (WHOSE coupling it is). The hold would
- * filter on it beside the existing `atTargets` filter, and `materialiseStageDependencyEdges` would
- * mint edges only from the named components. Additive request field, so the oasdiff gate stays
- * green. Recorded in ADR-0028's Non-goals; `stage-dependency-hold.integration.test.ts` pins the
- * current breadth so a future narrowing has a red test to flip rather than a silent behaviour swap.
- */
+/** Stage-scoped component couplings a change declared. See docs/coordination.md §284. */
 export function stageDependenciesOf(
   properties: Record<string, unknown> | null | undefined
 ): ParsedStageDependencies {
@@ -991,29 +631,7 @@ export function stageDependenciesOf(
   return { stageDependencies, malformed };
 }
 
-/**
- * WHICH pipeline a change rolls, read back off its persisted properties (M12 P4A / ADR-0007) — the
- * routing Type, the counterpart to `targetObjectIdsOf`, and the ONLY place that knows how the Type is
- * stored on a change.
- *
- * ABSENT reads as 'configuration' (the server default). That covers every change written without an
- * explicit Type.
- *
- * PRESENT BUT UNRECOGNISED throws, deliberately, rather than degrading to a default. The two inputs
- * look similar and are not: absent means "nobody said", which has a right answer; a value this
- * version doesn't know means somebody DID say, and said something we cannot honour. Coercing it to a
- * default would trigger the wrong pipeline for a release that explicitly declared otherwise — the
- * exact wrong-pipeline failure P4A exists to prevent, and unrecoverable in a way that refusing is
- * not. This is ALSO the version-skew safety net for the hard cutover (ADR-0007 D3): the retired
- * 'infra'/'software' values now hit this throw, so a change carrying a pre-cutover Type is refused
- * rather than silently mis-routed. It is a REACHABLE case: Types are additive by design, federation
- * is hub-and-spoke with air-gap bundles, and `federation/promotion-repo.ts` replays a peer's change
- * properties verbatim — so a version-skewed peer can hand this function a Type it has never heard of.
- *
- * Narrowed against the enum rather than cast: `properties` is free-form jsonb, so a blind `as` would
- * let junk reach `getExecutorBinding`, which matches no binding and silently falls back to the
- * default fake-executor — a "nothing happened, no error" failure.
- */
+/** Which pipeline a change rolls, read back off properties. See docs/coordination.md §285. */
 export function typeOf(properties: Record<string, unknown> | null | undefined): ExecutorType {
   const raw = properties?.type;
   if (raw === undefined || raw === null) return "configuration";

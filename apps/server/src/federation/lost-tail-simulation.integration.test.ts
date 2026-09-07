@@ -13,13 +13,7 @@ import { getCursor } from "./cursors-repo.js";
 import { signResyncRequest, authorizeResyncAndReExport, applyResyncBundle } from "./resync-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * §7.5 LOST-TAIL SIMULATION — the permanent gate that ties the divergence rails and resync together
- * end to end. A (exporter) loses its journal tail (a rolled-back async restore): its journal is
- * rewound below what B (a full-scope importer) has already applied. A real pull then RAIL-1-refuses
- * (a cursor cannot outrun the origin's tail), and the resync operation converges B back onto A's
- * restored reality. This is the flow §7.5 demands, exercised over two real databases.
- */
+/** §7.5 LOST-TAIL SIMULATION. See docs/federation.md §295. */
 describe("§7.5 lost-tail simulation: a rolled-back exporter tail refuses a pull, and resync recovers", () => {
   let domainA: IsolatedDomain;
   let domainB: IsolatedDomain;
@@ -147,7 +141,7 @@ describe("§7.5 lost-tail simulation: a rolled-back exporter tail refuses a pull
       ownJournalTail(tx, domainA.orgId)
     );
     expect(cursorAfter.sequence).toBe(tailAfterResync.sequence);
-    expect(cursorAfter.sequence).toBeLessThan(cursorBefore.sequence); // no longer stranded ahead
+    expect(cursorAfter.sequence).toBeLessThan(cursorBefore.sequence);
 
     // And a forward pull no longer refuses (the divergence is gone).
     await expect(

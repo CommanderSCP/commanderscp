@@ -6,14 +6,7 @@ import {
   normalizeRepoIdentity
 } from "./manifest-reader.js";
 
-/**
- * M21.4 — WHICH BINDING MAY READ WHICH REPO (ADR-0032 §7a).
- *
- * The read is the first time SCP reaches into a user repo for the DEPENDENCY path, and the binding
- * it goes through carries credentials. So the match is exact and by the provider's own repo
- * identity: "any github binding in the org" would read one team's repo with another team's
- * installation token whenever the first binding happened to be sorted first.
- */
+/** M21.4 — WHICH BINDING MAY READ WHICH REPO. See docs/dependencies.md §341. */
 
 describe("bindingRepoIdentity", () => {
   it("reads github/gitea's owner + repo, the same fields their adapters require", () => {

@@ -20,30 +20,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE DOMAIN-LOCAL BINDING RECONCILER, END TO END (ADR-0046 section 4).
- *
- * WHAT HAS TO BE TRUE, and none of it is established by "a row appeared":
- *
- *  1. A domain declares its HOW ONCE, as a policy, and the placements a team declared get bound -
- *     without the team naming an execution system, which it cannot see.
- *  2. HAND-AUTHORED BINDINGS ARE NEVER TOUCHED. Provenance is read from the row
- *     (`managed_by_policy_id`), never inferred from what matches now - so the rule cannot delete
- *     the one-offs an operator cared enough to write by hand.
- *  3. PRUNING IS REAL. Remove the placement and the derived row goes; the reconciler owning its
- *     rows is what makes that safe.
- *  4. THE FALLBACK IS NOT MATERIALISED. A test lane covered by the build lane produces no second
- *     row and no gap - `resolveLaneBinding` does it at read time, once.
- *
- * MUTATION LOG - each applied, watched fail, reverted, watched pass (MEASURED)
- * | Mutation | Result |
- * |---|---|
- * | the prune query drops `isNotNull(managedByPolicyId)` | (2) FAILS - the hand-authored one-off is deleted, which is the outcome ADR-0046 section 4 exists to forbid |
- * | the reconciler MATERIALISES a lane fallback (guard removed) | (4) FAILS - a second, duplicate row appears in the test lane. **SURVIVED the first version of (4)**, which declared no test hook: `listHookLanes` then returns `["build"]` only, the resolver never resolves a test lane, and the guard is never reached. The hook is what makes the case exercise the property. |
- * | the prune never removes anything | (3) FAILS - the derived row outlives the placement that explained it |
- * | `resolveLaneBinding` stops falling back | (4) FAILS - a declared test hook has no reachable executor even though the build lane covers it |
- * | **the call is deleted from `reconcileOrgTick`** | (5) FAILS **and the other four stay green** - which is the whole reason (5) exists. Cases (1)-(4) call the reconciler directly, so they cannot tell a wired loop from an unwired one, and "built, tested, called by nobody" is this repo's named dominant failure. |
- */
+/** THE DOMAIN-LOCAL BINDING RECONCILER, END TO END. See docs/binding-policy.md §10. */
 describe("binding reconciler (ADR-0046 section 4)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -262,11 +239,7 @@ describe("binding reconciler (ADR-0046 section 4)", () => {
   });
 
   it("(5) WIRING: the REAL reconcile tick runs it — delete the call from reconcileOrgTick and this dies", async () => {
-    // THE ONLY CHECK THAT WORKS FOR "installed" IS DELETING THE WIRING AND WATCHING A TEST FAIL.
-    // Every other case in this file calls `reconcileExecutorBindingsForOrg` directly, so all four
-    // stay green with the loop wired to nothing — which is this repo's named dominant failure
-    // (built, tested, and called by no one). Measured: with the try/catch block removed from
-    // `reconcileOrgTick`, this case fails and the other four do not.
+    // Delete the wiring and watch a test fail: the only proof. See docs/binding-policy.md §11.
     const e = await estate(`e-${randomUUID().slice(0, 6)}`);
     await declareHow(e, "e");
     expect(await rowsFor(e.targetId)).toHaveLength(0);
@@ -285,15 +258,7 @@ describe("binding reconciler (ADR-0046 section 4)", () => {
   });
 });
 
-/**
- * b5-perf: `gatherContributions` batched to ONE `matchPoliciesForTargets` call per org-tick instead
- * of one per target (`governance/policy-resolve.ts`'s `matchPoliciesForTargetsByTarget`).
- *
- * A dedicated org and describe block, not a case tacked onto the suite above: an ORG-WIDE
- * (unscoped) policy is declared here on purpose, and every existing target in a shared org would
- * pick up a second contribution from it — this isolates that blast radius from the suite whose
- * assertions above depend on a target having EXACTLY the contribution its own test declared.
- */
+/** One policy match per org-tick, not one per target. See docs/binding-policy.md §12. */
 describe("binding reconciler — per-target attribution survives batching (b5-perf)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -365,11 +330,7 @@ describe("binding reconciler — per-target attribution survives batching (b5-pe
       })
     );
 
-    // UNSCOPED — matches at every target's org root, so t1's and t2's chains resolve to the SAME
-    // matched-ancestor object id (the org root). A shared, cross-target dedup key
-    // (`${policyId}::${matchedAncestorObjectId}`) would keep only ONE of the two contributions,
-    // silently unbinding whichever target lost the race — this is the exact hazard
-    // `matchPoliciesForTargetsByTarget`'s per-target dedup exists to close.
+    // Unscoped: a shared dedup key would unbind a target. See docs/binding-policy.md §13.
     const policy = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       createObject(tx, {
         orgId: org.orgId,

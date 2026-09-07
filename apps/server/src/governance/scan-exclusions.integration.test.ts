@@ -29,75 +29,7 @@ import {
 } from "../test-support/harness.js";
 import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
-/**
- * M22.2 — THE EXCLUSION DIMENSION, PROVEN AT THE REAL GATE (ADR-0033 §1–§4, migration 0066).
- *
- * The pure algebra is pinned in `scan-requirements.test.ts` and the pure application in
- * `packages/schemas/src/supply-chain.test.ts`. NEITHER of those can tell you whether the thing is
- * WIRED, and this repo's dominant defect is a component built, tested green against itself, and
- * installed nowhere. So every test in this file drives a PRODUCTION entry point end to end:
- *
- *   - the real lifecycle gate (`prewarmGovernanceForChange` / `evaluateGovernanceGate` via the
- *     reconcile loop), through the real subprocess plugin host running the real
- *     `scan-result-control` against a real loopback Trivy-shaped result;
- *   - the commander's own managed scan (`runPromotionScanStep`), which resolves and applies
- *     exclusions server-side because it has no plugin to thread a context to.
- *
- * Nothing here calls `resolveEffectiveScanExclusions` or `applyScanExclusions` directly.
- *
- * MUTATIONS RUN against this file (2026-08-17) — the MEASURED result of each, reverted afterwards by
- * an exact inverse edit. Baseline: 11 passed. Nothing below is a prediction.
- *
- *   M-1  DROP `scanExclusions` from `buildControlContext`'s returned object (gate-orchestrator.ts)
- *          -> 6 failed (G2, G11, G3, G4, G5, G8). The clauses resolve and never reach the control.
- *   M-2  DROP the `scanExclusions` argument at the PREWARM call site ONLY, leaving the evaluate site
- *        wired
- *          -> 1 failed: G11, AND ONLY G11. This is the measurement that changed the shape of this
- *             file. Every other test's change goes straight to `executing` and its only control run
- *             is a `wave_boundary` one, so the whole suite except G11 proves the EVALUATE site and
- *             says NOTHING about the prewarm — whose run is the one that gets CACHED and read at the
- *             host-less accept edge. G11 exists because this mutation survived without it.
- *   M-3  route exclusions through `ceilingContributorKeys` instead of `exclusionContributorKeys`
- *          -> 1 failed (G4). An unevaluable CEL condition would then ADMIT the clause — the
- *             fail-open this dimension's opposite sign exists to prevent.
- *   M-4  UNION the per-target clause sets instead of intersecting them
- *          -> 1 failed (G5). A clause admitted for component A leaks onto sibling component B.
- *   M-5  restore `firedPolicies: []` in `federation/promotion-scan-step.ts`
- *          -> 2 failed (G6, G7). The commander path stops seeing anything authored below the
- *             instance floors, which is the divergence at the boundary where evidence is FROZEN.
- *             G7 fails too because its `refused: "unsupported"` marker only appears once a clause
- *             was admitted at all.
- *   M-6  `persistScanFindings` writing `scanFindingRetentionClass(false)` unconditionally
- *          -> 1 failed (G8). Excluded findings lose their accepted-risk (class E) retention.
- *
- * M22.9 MUTATIONS RUN (2026-08-18) against the ADMISSION WRITE DOOR — the MEASURED result of each,
- * reverted afterwards by an exact inverse edit. Baseline: 15 passed. Nothing below is a prediction.
- *
- *   M-1  DELETE `registerInstanceScanExclusionAdmissionRoutes(app, deps)` from `app.ts`
- *          -> 13 of 15 failed HERE, plus 3 in `scan-requirements-read.integration.test.ts`. The two
- *             survivors are G1 (admits nothing by design) and G9 (asserts the table's CHECK over the
- *             admin pool). This is the measurement the whole increment exists for: before the
- *             conversion, deleting the production write door for the exclusion dimension's mandatory
- *             precondition killed NOTHING anywhere in the tree. Measured again (M-1b) against the
- *             other two converted suites: 17 more failed across `scan-exclusion-actuator` and
- *             `scan-declared-override-exclusions`, for 33 across four files.
- *   M-2  the PUT becomes ADDITIVE (the replace's `DELETE ... NOT (class = ANY($3))` removed)
- *          -> 2 failed: E2 (the withdrawal path) and E4 (its step 4 re-block never happens, so the
- *             wait for a `fail` run times out). The revocation is load-bearing, not decoration.
- *   M-3  DELETE `requireOperator(deps, request)` from the PUT handler
- *          -> 1 failed (E3), and ONLY E3. A tenant admin could then admit a loosening for every org
- *             on the deployment.
- *   M-4  [ANTI-VACUITY] the PUT answers 200 with the requested set but stores NO row (the INSERT
- *        loop removed and the read-back replaced by the request's own classes)
- *          -> 12 failed, E1 and E2 among them. E1 asserts the ROW over the admin pool rather than
- *             the response body, which is the only reason it can tell these two apart; E3 correctly
- *             SURVIVED, because its subject is the refusal and a refusal writes nothing either way.
- *
- * Instance-scoped `scan_exclusion_admissions` rows are GLOBAL to the deployment and the integration
- * suite runs `singleFork` against ONE shared Postgres, so a row left behind would silently admit
- * loosenings in every later suite. They are cleared in an `afterEach` that runs regardless of
- * outcome, and once more at teardown.
- */
+/** M22.2 — THE EXCLUSION DIMENSION, PROVEN AT THE REAL GATE. See docs/governance.md §320. */
 
 const OPERATOR_TOKEN = "m22-2-operator-token-fixture";
 const MATCH_DIGEST = "sha256:eeee444444444444444444444444444444444444444444444444444444444444";
@@ -108,12 +40,7 @@ interface TrivySource {
   close(): Promise<void>;
 }
 
-/**
- * Loopback-only Trivy fixture (never the internet). `sev` seeds the severities; `fix` is a parallel
- * list of `y`/`n` deciding whether that entry carries a `FixedVersion` — the ONE field the
- * `no_fix_available` class reads, and the reason this file cannot reuse M17.5's source, which emits
- * none at all.
- */
+/** Loopback-only Trivy fixture. See docs/governance.md §321. */
 async function startTrivySource(): Promise<TrivySource> {
   const httpServer = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -183,31 +110,13 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
         maxRestartBackoffMs: 300
       }
     });
-    // The ADMIN connection is kept for the STORAGE-CONTRACT tests below (G9/G10 assert the CHECK
-    // constraints and the two write barriers directly) and for teardown. It is NO LONGER how an
-    // admission is authored: `admitAtInstance` now goes through the production route, for the
-    // reason M22.9 exists — an integration suite that INSERTs the precondition itself proves
-    // nothing about whether an operator can ever create one.
+    // The admin connection is kept for the storage tests. See docs/governance.md §322.
     adminPool = new pg.Pool({ connectionString: testDatabaseUrl() });
     const bootstrap = await createTestOrg(server, "excl-operator");
     operator = new ScpClient({ baseUrl: server.baseUrl, token: bootstrap.adminToken });
   }, 180_000);
 
-  /**
-   * THE PRODUCTION WRITE DOOR, and the reason this helper looks the way it does.
-   *
-   * Every admitting test in this file used to `INSERT INTO scan_exclusion_admissions` over the admin
-   * pool. That made the suite green while the `platform`/`trust_domain` rungs — which every clause
-   * in ADR-0033 §1's monotone AND requires, and which NO policy can ever contribute — had no writer
-   * outside these tests. The exclusion dimension was built, tested and INERT on any real deployment.
-   *
-   * So this now calls `PUT /api/v1/instance/scan-exclusion-admissions/{tier}` with the deployment
-   * operator token, exactly as an operator would. Delete that route's registration in `app.ts` and
-   * every admitting test in this file dies at its first line.
-   *
-   * The PUT is a whole-set REPLACE, so the helper unions with what is already admitted (read back
-   * through the route's own GET) rather than clobbering an earlier call in the same test.
-   */
+  /** The production write door, and why the helper is so. See docs/governance.md §323. */
   async function admitAtInstance(tiers: Array<"platform" | "trust_domain">, cls: string) {
     for (const tier of tiers) {
       const current = await operator.instanceScanExclusionAdmissions.list();
@@ -238,10 +147,6 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     await trivy?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixtures
-  // -----------------------------------------------------------------------------------------
-
   async function buildChain(org: TestOrg, admin: ScpClient, label: string) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
@@ -265,14 +170,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     effect: Record<string, unknown>,
     condition?: string
   ) {
-    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
-    // `scanExclusion` rule that requires no scan control: such a document is silently inert,
-    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
-    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
-    // doc: a real bound control would add a control run and change what these tests measure.
-    // An `admit`-ONLY effect is EXEMPT and is deliberately left untouched: it is an admission,
-    // not a rule about a finding, and demanding that an org-wide admission enumerate scan controls
-    // would be wrong. Every `admit`-only call in this suite therefore still exercises the exemption.
+    // M22.8 — the authoring guard. See docs/governance.md §324.
     const requires =
       effect.exclude === undefined
         ? []
@@ -299,11 +197,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     threshold: Record<string, number>,
     condition?: string
   ) {
-    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
-    // `scanThreshold` rule that requires no scan control: such a document is silently inert,
-    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
-    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
-    // doc: a real bound control would add a control run and change what these tests measure.
+    // M22.8 — the authoring guard. See docs/governance.md §325.
     const scanControlId = SCAN_RULE_TEST_CONTROL_REF;
     return admin.policies.create({
       name,
@@ -373,9 +267,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     );
   }
 
-  // ===========================================================================================
   // THE GATE PATH — resolution in gate-orchestrator, application in the plugin.
-  // ===========================================================================================
 
   it("G1: with NOTHING admitted anywhere, a no-fix HIGH still counts and the gate still BLOCKS — byte-identical to pre-M22.2", async () => {
     const org = await createTestOrg(server, "excl-none");
@@ -443,20 +335,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
   });
 
   it("G11: THE PREWARM'S OWN RUN carries the exclusions — the run that gets CACHED and read at the host-less accept edge", async () => {
-    // MEASURED, and it is why this test exists rather than being folded into G2: G2's change moves
-    // straight to `executing` and its ONLY control run is a `wave_boundary` one, so G2 proves the
-    // EVALUATE site and NOTHING about the PREWARM site. Threading only the evaluate site is a real
-    // and plausible mistake — mutation M-2 in the header removes exactly that argument — and it
-    // would leave a loosening working at a wave boundary and silently absent at the edge a human
-    // clicks, because `prewarmGovernanceForChange`'s run is the one `readExistingControlOutcomes`
-    // reads at the host-less `validating -> accepted` gate.
-    //
-    // `prewarmGovernanceForChange` IS the production entry point: `coordination/reconcile.ts`
-    // `advanceValidatingChanges` calls it with exactly these arguments, once per tick, for every
-    // change sitting in `validating`. It is driven directly here because no change in this harness
-    // stays in `validating` long enough for a tick to catch it — which is a fixture limitation, not
-    // a statement about production, and driving the same function with the same real plugin host
-    // and real CEL sandbox exercises the same code path.
+    // Measured, and why this is not folded into the other. See docs/governance.md §326.
     await admitAtInstance(["platform", "trust_domain"], "no_fix_available");
 
     const org = await createTestOrg(server, "excl-prewarm");
@@ -589,7 +468,6 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     const evidence = run.evidence as unknown as ScanEvidence;
     expect(evidence.threshold.maxHigh, "the errored ceiling still binds").toBe(9);
     expect(evidence.severityCounts.high).toBe(1);
-    // THE ARM THAT MATTERS: nothing was excluded.
     expect(run.evidence).not.toHaveProperty("exclusions");
 
     // NEGATIVE CONTROL — the same clause WITHOUT a condition does apply, so the refusal above is
@@ -827,10 +705,6 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     }
   });
 
-  // ===========================================================================================
-  // THE STORAGE CONTRACT
-  // ===========================================================================================
-
   it("G9: the admission table's class CHECK agrees with ScanExclusionClassSchema, and refuses anything else", async () => {
     // Two copies of one list is a cost migration 0074's header states rather than hides. This test
     // is what keeps them from drifting: a fifth class added to the schema and not to the CHECK would
@@ -856,14 +730,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     ).rejects.toThrow();
   });
 
-  // ===========================================================================================
-  // M22.9 — THE OPERATOR WRITE DOOR ITSELF.
-  //
-  // Everything above admits through `PUT /instance/scan-exclusion-admissions/{tier}`, so the whole
-  // file already dies if that route disappears. These cases pin the door's OWN properties: who may
-  // open it, what a write actually stores, and that withdrawal works — none of which a gate test
-  // can tell you, because a gate only ever observes the admitted state.
-  // ===========================================================================================
+  // M22.9 — THE OPERATOR WRITE DOOR ITSELF. See docs/governance.md §327.
 
   async function expectApiError(fn: () => Promise<unknown>): Promise<ScpApiError> {
     try {
@@ -934,7 +801,6 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     );
     expect((await admissionRows("trust_domain")).map((r) => r.class)).toEqual(["no_fix_available"]);
 
-    // ...and the total withdrawal.
     const empty = await operator.instanceScanExclusionAdmissions.put(
       "trust_domain",
       { origin: "local", classes: [] },

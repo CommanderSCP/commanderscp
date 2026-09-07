@@ -27,73 +27,7 @@ import {
   type ManagedScanRunner
 } from "./promotion-scan-step.js";
 
-/**
- * M22.9 (ADR-0033 §10) — THE EXCLUSION-SET RE-CHECK IS THREADED IN AT BOTH FEDERATION CALL SITES.
- *
- * `evaluateScanCoverage` gained `expectedExclusionSetHash` and a `stale_exclusion_set` refusal, and
- * the rule itself is pinned as a pure function in `scan-evidence.test.ts`. That file cannot tell you
- * whether either CONSUMER passes the argument, and until this file nothing could: both call sites
- * were protected only by the parameter being a REQUIRED POSITIONAL, so omitting it is a compile
- * error while passing the WRONG VALUE is not. This repo's dominant defect is a component built,
- * tested green against itself, and installed nowhere.
- *
- * THE TWO SITES, and they are genuinely different consumers of the same rule:
- *
- *   1. `promotion-scan-step.ts`'s covering-run SHORT-CIRCUIT — "this artifact already has passing
- *      evidence, so do not spend a managed scan on it". Wrong here and a stale verdict silently
- *      suppresses the re-scan that would refresh it.
- *   2. `promotion-repo.ts`'s E6 EXPORT GATE — "this artifact may cross the boundary". Wrong here and
- *      an expired waiver authorises a crossing.
- *
- * WHAT THIS FILE DRIVES, AND WHAT IT DOES NOT. Every case goes through `exportPromotionBundle`, the
- * function `routes/federation.ts`'s `POST /federation/peers/:peer/promotions/:change` calls and the
- * one that owns both call sites — the scan step in phase 1.5 and the gate in phase 2. It is reached
- * directly rather than over HTTP for one reason: the injected `ManagedScanRunner` is the seam the
- * step exposes so these branches are hermetic (no Docker, no registry, no real Trivy), and no route
- * can inject it. STILL UNPROVEN HERE, stated rather than glossed: that the ROUTE reaches this
- * function and turns `{refused: true}` into a 409 carrying `decision_id`. That wiring is covered by
- * `federation.integration.test.ts`, and the real-container end-to-end by
- * `promotion-scan-step.integration.test.ts`.
- *
- * THE SETUP USES THE REAL AUTHORING DOORS — the M22.9 operator admission route for the two instance
- * rungs, `POST /policies` for the clause, and `POST /scan-override-grants` + `/approve` + `/revoke`
- * for the grant. Nothing here writes an admission or a grant behind the API, because a fixture that
- * plants a row the product cannot is how the exclusion dimension shipped green and inert once
- * already.
- *
- * THE REPORT IS BYTE-IDENTICAL ON EVERY PASS — a clean scan, zero findings, in every case. That is
- * deliberate: the counts, the threshold and the digest binding are then constant across the whole
- * file, so the ONLY thing that can move a verdict is the exclusion SET. A refusal here cannot come
- * from anywhere else.
- *
- * MUTATIONS RUN against this file (2026-08-18) — the MEASURED result of each, each applied ALONE
- * against a passing suite and reverted by an exact inverse edit. Baseline: 4 passed. Nothing below
- * is a prediction.
- *
- *   M-1  `promotion-repo.ts`: pass `undefined` instead of `expectedExclusionSetHash` to
- *        `evaluatePromotionScanGate` (the E6 EXPORT GATE)
- *          -> 4 failed (B1, B2, B3, B4). Every case exports at least once under a set that is still
- *             in force, and under the mutation every one of those exports refuses
- *             `stale_exclusion_set` — including B2's SETUP export, which is why the security case
- *             fails here too rather than passing for the wrong reason.
- *   M-2  `promotion-scan-step.ts`: pass `undefined` instead of `exclusionSetHash` to
- *        `isCoveringScanOutcome` (the covering-run SHORT-CIRCUIT)
- *          -> 1 failed (B3), and ONLY B3: `expected [...] to have a length of 1 but got 2`. B1 and B4
- *             stayed green because the mutation's cost is a redundant managed scan, not a wrong
- *             verdict — the re-scan re-stamps under the current set and the export still crosses. The
- *             `promotion-scan-step.test.ts` + `scan-evidence.test.ts` unit suites also stayed green
- *             (48 passed), which is the point: nothing but a call-count assertion at a real export
- *             can see this deletion.
- *
- * WHY THE POSITIVE CASES ARE THE ONES THAT CATCH BOTH OMISSIONS, which is the opposite of the guess
- * this file was written on. `undefined` is not "no check" — it is "expect NO clause to be in force".
- * Against a run stamped with a hash, `H !== undefined` still refuses, so B2 (the security property:
- * a moved set must not authorise the crossing) is satisfied by the mutated code too and CANNOT see
- * either deletion. What the deletions break is the agreeing case: a run judged under the set that is
- * still in force stops being recognised. So B1/B3/B4 — "and it still crosses / still short-circuits"
- * — are the installation proofs, and B2 is the property they exist to protect. A file of nothing but
- * refusal cases would have called both mutations harmless.
- */
+/** The exclusion re-check is threaded in at both call sites. See docs/federation.md §513. */
 
 const OPERATOR_TOKEN = "m22-9-boundary-operator-token-fixture";
 const ARTIFACT_DIGEST = `sha256:${"d".repeat(64)}`;
@@ -135,11 +69,7 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
   }, 180_000);
 
   afterAll(async () => {
-    // Cleared even though `vitest.integration.config.ts` gives this FILE its own database: an
-    // admission is INSTANCE-scoped, so a row left behind admits loosenings for anything that later
-    // shares a database with it — and that isolation is a property of the runner config, not of this
-    // file. Over the ADMIN connection because the request-serving `scp_app` role holds no write grant
-    // on this table (which is the whole reason the write door is an operator route).
+    // Cleared even though this file gets its own database. See docs/federation.md §514.
     const adminPool = new pg.Pool({ connectionString: testDatabaseUrl() });
     await adminPool.query("DELETE FROM scan_exclusion_admissions").catch(() => undefined);
     await adminPool.end();
@@ -174,14 +104,7 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
     grantId: string;
   }
 
-  /**
-   * An org with: a federation identity and a paired outpost peer to export to; a component under a
-   * service; an admitted `approved_override` clause at the org; and ONE live grant excusing a CVE on
-   * that component.
-   *
-   * The grant is the LEVER. Revoking it moves the resolved set — and therefore its hash — while
-   * touching nothing else: same clause, same targets, same admissions, same scan report.
-   */
+  /** An org with an identity, a paired peer and a component. See docs/federation.md §515. */
   async function scenario(label: string): Promise<Scenario> {
     const org = await createTestOrg(server, label);
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -315,8 +238,6 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
     });
   }
 
-  // ===========================================================================================
-
   it("B1: an artifact scanned under the set that is STILL in force crosses the boundary, and the run carries the set's hash", async () => {
     // THE AGREEING CASE, and the one that catches the export gate's omission. Nothing changes between
     // the scan and the gate: the step resolves the set, stamps its hash on the evidence, and the gate
@@ -340,14 +261,7 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
   });
 
   it("B2: REVOKING the grant makes the SAME passing run stop authorising the crossing — refused `stale_exclusion_set`, with a Decision", async () => {
-    // THE SECURITY PROPERTY. The run is untouched: same row, same `pass`, same clean counts, same
-    // digest binding. Only the set moved, and the boundary re-check is the only thing that can see
-    // it. `scanRunner: null` disables the step for the second export deliberately — a re-scan would
-    // refresh the stamp and hide exactly the state this case is about.
-    //
-    // NOTE WHAT THIS CASE CANNOT DETECT, because a test that over-claims is worse than none: passing
-    // the gate `undefined` instead of the resolved hash ALSO refuses here (a stamped run never equals
-    // `undefined`). B1 is the case that sees that. This one pins the behaviour; B1 pins the wiring.
+    // THE SECURITY PROPERTY. See docs/federation.md §516.
     const s = await scenario("boundary-revoked");
     const changeId = await proposeArtifactChange(s);
     const runner = cleanRunner();
@@ -392,13 +306,7 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
   });
 
   it("B3: with the set UNCHANGED the scan step recognises its own stamp and re-scans nothing", async () => {
-    // THE SHORT-CIRCUIT'S INSTALLATION PROOF. A second export of the same change, with nothing moved,
-    // must reuse the covering run — the step exists to not pay for a managed scan twice. Hand
-    // `isCoveringScanOutcome` `undefined` instead of the resolved hash and every stamped run looks
-    // stale, so this export scans again and the call count goes to 2.
-    //
-    // The cost of that mutation is amplification rather than an unearned crossing, and the export
-    // still succeeds under it — which is precisely why this assertion is a COUNT and not a verdict.
+    // THE SHORT-CIRCUIT'S INSTALLATION PROOF. See docs/federation.md §517.
     const s = await scenario("boundary-stable");
     const changeId = await proposeArtifactChange(s);
     const runner = cleanRunner();
@@ -415,15 +323,7 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
   });
 
   it("B4: a STALE stamp does not short-circuit — the step re-scans under the current set and the crossing then succeeds", async () => {
-    // B3'S PAIR, and the case that says the boundary refusal is not a wedge. `promotion-scan-step.ts`
-    // resolves the hash ABOVE the short-circuit loop for exactly this reason: computed after it, the
-    // step could only ever re-stamp what this pass already believed, and a change carrying an
-    // exclusion would refuse `stale_exclusion_set` forever with no way to clear it.
-    //
-    // Byte-for-byte B2 with ONE substitution: the second export has the runner armed rather than
-    // disabled. Read the two together — the same revoked grant either refuses the crossing (no
-    // scanner available) or buys a fresh verdict under the current set (scanner available). Nothing
-    // in between.
+    // The pair to that case: the refusal is not a wedge. See docs/federation.md §518.
     const s = await scenario("boundary-rescan");
     const changeId = await proposeArtifactChange(s);
     const runner = cleanRunner();

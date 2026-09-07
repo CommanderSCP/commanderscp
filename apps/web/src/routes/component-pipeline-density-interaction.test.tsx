@@ -3,31 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ComponentPipelineResponse, ComponentPipelineStage } from "@scp/sdk";
 import { fire, render } from "../test-support/render-dom";
 
-/**
- * TILE DENSITY (pipeline-substrate-registry-scan.md §10.3) — the BEHAVIOURAL half.
- *
- * `component-pipeline-density.test.tsx` pins WHAT the compact and expanded markup hold. This file
- * pins that the controls actually MOVE between them, which a string render cannot show (see
- * `test-support/render-dom.tsx` for why a real DOM was taken on):
- *
- *   - a tile's chevron toggles ITS region, and only its;
- *   - the page-level control flips EVERY tile — Expand all, then Collapse all;
- *   - a tile's own chevron OVERRIDES the page-level state locally, until the next page-level flip,
- *     which wins again (the `version` in the context is what makes the override expire).
- *
- * The tiles render under the SAME `TileDetailsScope` the page mounts, so what is clicked here is
- * what the operator clicks.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `TileDetailsScope` does not bump `version` on a flip | the "override expires on the next page flip" test FAILS — the locally-shut tile stays shut after Expand all |
- * | `useTileDetails` ignores `local` (always follows the scope) | the chevron test FAILS — a click changes nothing |
- * | `useTileDetails` ignores the scope once a local override exists (no version check) | the expiry test FAILS |
- * | the page control flips only `expandedAll` on the FIRST click and never back | the Collapse-all half FAILS |
- */
+/** TILE DENSITY (pipeline-substrate-registry-scan.md §10.3). See docs/web.md §246. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -161,7 +137,6 @@ describe("§10.3 — the Details controls actually move the tiles", () => {
     expect(region?.getAttribute("data-state")).toBe("open");
     expect(region?.querySelector('[data-testid="stage-maintainer"]')).not.toBeNull();
     expect(region?.querySelector('[data-testid="stage-current"]')).not.toBeNull();
-    // aria-controls names exactly this region.
     expect(first.getAttribute("aria-controls")).toBe(region?.id);
     click(first);
     expect(states(r.container)).toEqual(["false", "false", "false", "false"]);
@@ -176,7 +151,6 @@ describe("§10.3 — the Details controls actually move the tiles", () => {
     const all = r.byTestId("pipeline-details-toggle-all");
     expect(all.textContent).toContain("Collapse all");
     expect(all.getAttribute("data-expanded-all")).toBe("true");
-    // Each KIND's detail content is really there.
     expect(r.container.querySelectorAll('[data-testid="stage-maintainer"]')).toHaveLength(2);
     expect(
       r.container.querySelector('[data-testid="pipeline-registry-provenance"]')
@@ -201,10 +175,8 @@ describe("§10.3 — the Details controls actually move the tiles", () => {
     // The page-level control still reads as "all expanded" — it reports ITS ask, not a tally.
     expect(r.byTestId("pipeline-details-toggle-all").textContent).toContain("Collapse all");
 
-    // Collapse all: everything shuts, the override included.
     r.click("pipeline-details-toggle-all");
     expect(states(r.container)).toEqual(["false", "false", "false", "false"]);
-    // Open ONE by hand under "all collapsed"…
     click(second);
     expect(states(r.container)).toEqual(["false", "true", "false", "false"]);
     // …then Expand all: the hand-opened tile stays open (it agrees), the rest open too.

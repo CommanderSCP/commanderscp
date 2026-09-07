@@ -22,29 +22,7 @@ import {
   scanDbStatusRow
 } from "./cli.js";
 
-/**
- * THE PINS FOR THE CLI HALF OF THE `isAbsent` CENSUS (review round 4, Y2).
- *
- * WHY THIS FILE EXISTS AT ALL. Round 3 replaced `=== null` with `isAbsent(...)` at eleven CLI sites,
- * and the PR body reported all of them as mutation-proven. A lens reverted them ONE AT A TIME and
- * found TEN SURVIVORS: only `formatReconcileResultLines` (already exported, already tested) went
- * red. The other ten lived either in a module-private function (`printFederationStatus`,
- * `campaignDetailRow`) or inline in a Commander `.action()` closure (the scan-floor and scan-db
- * mappers), so NO test could reach them — the guards were correct and completely unheld.
- *
- * The fix was structural: those mappers are now exported functions rather than closures, and this
- * file calls each one with the key ABSENT. Each assertion below has been mutation-proven by
- * reverting its `isAbsent(...)` to `=== null` and watching this file go red.
- *
- * WHAT "ABSENT" MEANS, and why `=== null` is not enough (see `isAbsent`'s own doc in `cli.ts`): an
- * omitted key arrives as `undefined` whatever `.nullable()` says. For an `.optional()` field that is
- * CONTRACT-LEGAL and ADR-0023's response validation passes it through untouched, so these guards are
- * the only thing; for a required field the SDK now rejects the body at the boundary instead and they
- * are defence in depth. Either way the formatters are called DIRECTLY here, which is the only level
- * at which the guard itself — as opposed to the boundary in front of it — can be pinned. Every
- * fixture below therefore DELETES the key rather than setting it to `null` — `null` is the case that
- * already worked.
- */
+/** THE PINS FOR THE CLI HALF OF THE `isAbsent` CENSUS. See docs/cli.md §3. */
 
 /** Delete one key from an otherwise-valid value: what an older/newer server actually puts on the
  *  wire, which no type in this repo can rule out at runtime. */
@@ -151,9 +129,6 @@ function baseScanDbStatus(overrides: Partial<ScanDbStatus> = {}): ScanDbStatus {
   } as ScanDbStatus;
 }
 
-// -------------------------------------------------------------------------------------
-// cli.ts:205 — campaignDetailRow.topologyVersion
-// -------------------------------------------------------------------------------------
 describe("campaignDetailRow: an absent topologyVersion is blank, never the word `undefined`", () => {
   it("prints an empty cell when the key is OMITTED (not merely null)", () => {
     const row = campaignDetailRow(without(baseCampaign(), "topologyVersion"));
@@ -171,9 +146,7 @@ describe("campaignDetailRow: an absent topologyVersion is blank, never the word 
   });
 });
 
-// -------------------------------------------------------------------------------------
 // M25.6a — campaignDetailRow.deadline / .adoptionSignal
-// -------------------------------------------------------------------------------------
 describe("campaignDetailRow: an absent deadline is blank, never the word `undefined`", () => {
   it("prints empty cells when the key is OMITTED (an older server, or a client ahead of one)", () => {
     const row = campaignDetailRow(without(baseCampaign(), "deadline"));
@@ -195,9 +168,7 @@ describe("campaignDetailRow: an absent deadline is blank, never the word `undefi
     expect(campaignDetailRow(baseCampaign({ deadline: null })).deadline).toBe("");
   });
 
-  // -----------------------------------------------------------------------------------
   // M25.6b — campaignDetailRow.deadlineOverrides
-  // -----------------------------------------------------------------------------------
   it("blanks the waiver cell for an absent, null or waiver-less deadline — never `undefined`", () => {
     const at = "2026-12-31T23:59:59.000Z";
     expect(campaignDetailRow(without(baseCampaign(), "deadline")).deadlineOverrides).toBe("");
@@ -240,9 +211,7 @@ describe("campaignDetailRow: an absent deadline is blank, never the word `undefi
   });
 });
 
-// -------------------------------------------------------------------------------------
 // cli.ts:275 / :295 / :301 / :302 — federationStatusRow
-// -------------------------------------------------------------------------------------
 describe("federationStatusRow: never invents a sync position or a backlog", () => {
   it(":275 an OMITTED lastAppliedSequence reads `never synced`, not `seq undefined`", () => {
     const row = federationStatusRow(without(basePeerStatus(), "lastAppliedSequence"));
@@ -281,11 +250,7 @@ describe("federationStatusRow: a trust tier is an assertion, and its provenance 
   });
 
   it(":302 A HAND-TYPED TIER IS NEVER PRINTED BARE — the `unknownFields` clause is load-bearing", () => {
-    // THE MOST CONSEQUENTIAL MUTANT IN THIS FILE. `trustTierProvenance` is itself a field an older
-    // server omits, so provenance-only detection is not enough: the server ALSO declares the tier in
-    // `unknownFields`, and dropping the `|| (p.unknownFields ?? []).includes("trustTier")` OR makes
-    // `scp federation status` print a hand-typed `il5` as though the commander had asserted it —
-    // the exact fabrication the web `TrustTierCell` exists to prevent, reproduced on the CLI.
+    // THE MOST CONSEQUENTIAL MUTANT IN THIS FILE. See docs/cli.md §4.
     const row = federationStatusRow(
       basePeerStatus({
         trustTier: "il5",
@@ -328,9 +293,6 @@ describe("federationStatusRow: a trust tier is an assertion, and its provenance 
   });
 });
 
-// -------------------------------------------------------------------------------------
-// cli.ts:2253-2256 — instanceScanFloorRow
-// -------------------------------------------------------------------------------------
 describe("instanceScanFloorRow: an unset ceiling is `-`, and `-` is not 0", () => {
   for (const [key, column] of [
     ["maxCritical", "maxCritical"],
@@ -353,13 +315,7 @@ describe("instanceScanFloorRow: an unset ceiling is `-`, and `-` is not 0", () =
   });
 });
 
-// -------------------------------------------------------------------------------------
-// instanceScanExclusionAdmissionRow — M22.9's twin of the block above, and it shipped with NO test
-// at all. A filterless `grep -rna 'instanceScanExclusionAdmissionRow'` over `--include='*.ts'`
-// found the formatter referenced ONLY by `cli.ts` itself, while its sibling `instanceScanFloorRow`
-// three lines up was covered here — the round-4 finding recurring on the next feature: the lift-out
-// happened, the pin did not, so deleting the whole M22.9 command block left this package green.
-// -------------------------------------------------------------------------------------
+// The twin of the block above, which shipped with no test. See docs/cli.md §5.
 describe("instanceScanExclusionAdmissionRow: an absent audit column must not read as authored", () => {
   it("an OMITTED note renders empty, never the literal `undefined`", () => {
     // The severe direction is specific: `note` is the operator's stated REASON for opening a
@@ -390,9 +346,6 @@ describe("instanceScanExclusionAdmissionRow: an absent audit column must not rea
   });
 });
 
-// -------------------------------------------------------------------------------------
-// cli.ts:2437 — scanDbStatusRow.ageHours
-// -------------------------------------------------------------------------------------
 describe("scanDbStatusRow: an unknown DB age must not kill the command", () => {
   it("an OMITTED ageHours renders `(unknown)` instead of throwing on `.toFixed`", () => {
     // THE MUTANT HERE DOES NOT MISPRINT, IT CRASHES: `=== null` lets `undefined` reach
@@ -409,15 +362,7 @@ describe("scanDbStatusRow: an unknown DB age must not kill the command", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------
-// ROUND 5 (Z2/Z3/Z4) — THE CLI TWINS OF GUARDS THE WEB SIDE ALREADY TOOK.
-//
-// Each of the three below is the SAME required-not-optional field, off the SAME endpoint, as a
-// web-side site fixed in an earlier round; each was left bare on the CLI half, and each lived in a
-// MODULE-PRIVATE function so no test could have caught it. `peerRow` and `outpostConfigRow` are now
-// exported for that reason — round 4's Y2 finding restated: a guard no test can invoke is a guard
-// nothing holds in place.
-// -------------------------------------------------------------------------------------
+// ROUND 5 (Z2/Z3/Z4) — THE CLI TWINS OF GUARDS THE WEB SIDE ALREADY TOOK. See docs/cli.md §6.
 
 function basePeer(overrides: Partial<FederationPeer> = {}): FederationPeer {
   return {
@@ -466,14 +411,9 @@ function baseReconcile(
   } as OutpostConfigReconcileResult;
 }
 
-// cli.ts — peerRow.syncScope (Z2)
 describe("peerRow: a peer whose response omits `syncScope` must not kill `scp federation peers`", () => {
   it("prints `?` instead of throwing on `.mode`", () => {
-    // THE MUTANT: `p.syncScope.mode` throws `TypeError: Cannot read properties of undefined
-    // (reading 'mode')` while building the FIRST row, so the command prints NO table at all — not a
-    // degraded one. `syncScope` is required-not-optional on `FederationPeerSchema` and the generated
-    // BEFORE ADR-0023 the SDK validated no response; this is the same field `outpost-settings.tsx`
-    // guards on the web. These cases drive the FORMATTER directly, which is where the guard lives.
+    // THE MUTANT: `p.syncScope.mode` throws. See docs/cli.md §7.
     const peer: Partial<FederationPeer> = basePeer();
     delete peer.syncScope;
     expect(() => peerRow(peer as FederationPeer)).not.toThrow();
@@ -495,7 +435,6 @@ describe("peerRow: a peer whose response omits `syncScope` must not kill `scp fe
   });
 });
 
-// cli.ts — outpostConfigRow.unknownFields (Z3)
 describe("outpostConfigRow: an omitted `unknownFields` must not kill six commands", () => {
   it("prints `-` instead of throwing on `.join`", () => {
     // THE MUTANT: `o.unknownFields.join(", ")` throws `TypeError: … reading 'join'`. `unknownFields`
@@ -521,7 +460,6 @@ describe("outpostConfigRow: an omitted `unknownFields` must not kill six command
   });
 });
 
-// cli.ts — formatReconcileResultLines removal buckets (Z4)
 describe("formatReconcileResultLines: the report of a DESTRUCTIVE verb must survive a missing key", () => {
   for (const key of ["removedShadowObjectIds", "removedLocalObjectIds"] as const) {
     it(`an OMITTED ${key} still produces a report instead of throwing`, () => {
@@ -563,9 +501,7 @@ describe("formatReconcileResultLines: the report of a DESTRUCTIVE verb must surv
   });
 });
 
-// cli.ts — printFederationStatus.peers (Z5)
 describe("printFederationStatus: an omitted `peers` list must not kill `scp federation status`", () => {
-  /** Capture stdout for one call. */
   function capture(fn: () => void): string {
     const out: string[] = [];
     const original = console.log;
@@ -600,7 +536,6 @@ describe("printFederationStatus: an omitted `peers` list must not kill `scp fede
       text = capture(() => printFederationStatus(response, "table"));
     }).not.toThrow();
     expect(text).toContain("No paired peers.");
-    // and the self line above it survives
     expect(text).toContain("Self: hq");
   });
 
@@ -656,7 +591,6 @@ describe("scanDbOutcomeRow: `scp scan-db refresh`/`load` must not print `undefin
     expect(refreshed.loaded).toBeUndefined();
     expect(loaded.loaded).toBe("true");
     expect(loaded.refreshed).toBeUndefined();
-    // a real age still prints
     expect(loaded.ageHours).toBe("4.25");
     expect(loaded.source).toBe("refreshed");
   });

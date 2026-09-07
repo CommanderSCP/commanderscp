@@ -17,16 +17,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
-/**
- * Campaign integration suite (BUILD_AND_TEST.md §8 M5 DoD, Testcontainers
- * postgres:16) — the campaign-scoped counterpart of coordination.integration.test.ts /
- * governance.integration.test.ts. Drives everything through the real HTTP API via `@scp/sdk`'s
- * `ScpClient`, with a real reconcile loop and a real subprocess plugin host (fake-executor +
- * webhook-control), never mocked. Re-verifies the M3/M4 invariants the M5 DoD calls out
- * explicitly hold at campaign scope: the guarded transition still writes audit+Decision
- * atomically for campaign-driven (member) changes, governance gates still apply, and RLS/RBAC
- * (both-endpoint authz) still gate campaign objects and their `coordinates` edges.
- */
+/** Campaign integration suite. See docs/coordination.md §234. */
 
 interface TestWebhookServer {
   url: string;
@@ -129,7 +120,7 @@ describe("campaigns (M5)", () => {
   it("compiles per-target member changes with correct wave ordering; wave 1 accepts while wave 2 is blocked by a failing required control; status aggregates; rollback reverts the accepted target", async () => {
     const infra = await createTestComponent(admin, { name: "camp-infra" });
     const app = await createTestComponent(admin, { name: "camp-app" });
-    await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra first
+    await admin.components.addDependsOn(app.id, infra.id);
 
     const failingControl = await createFailingControl(admin, org, "camp-fail-1", webhook.url);
     await requireControlOn(admin, org, "camp-fail-policy-1", app.id, failingControl.id);
@@ -244,21 +235,9 @@ describe("campaigns (M5)", () => {
     expect(memberExplain.decisions.some((d) => d.kind === "rollback_trigger")).toBe(true);
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
-  // SAFETY (the headline campaign-ordering invariant): a campaign must never advance PAST a failed
-  // wave. Both tests below get their OWN org on purpose — a reconcile pass batches campaigns
-  // per-org (campaign-reconcile.ts's BATCH_LIMIT) and the whole proof here is "the reconciler had
-  // every opportunity to advance this campaign and did not", which must not depend on where this
-  // suite's ~10 other campaigns land in the batch.
-  // -----------------------------------------------------------------------------------------
+  // SAFETY (the headline campaign-ordering invariant). See docs/coordination.md §235.
 
-  /** Positive liveness proof that the campaign reconciler completed a full pass over `client`'s org
-   *  AFTER the caller's setup: an independent campaign, created now, whose member Change the
-   *  reconciler must propose. A pass visits campaigns `updatedAt` ASC (campaign-repo.ts's
-   *  `listActiveCampaignObjectIds`), so the older campaign-under-test is always visited BEFORE this
-   *  canary in the very pass that proposes the canary's member change — if the engine were going to
-   *  advance the campaign under test, it already has by the time this resolves. Without this, the
-   *  "nothing shipped" assertions below could pass vacuously against a stalled reconciler. */
+  /** Positive proof a full reconciler pass completed. See docs/coordination.md §236. */
   async function awaitReconcilerPass(client: ScpClient, label: string): Promise<void> {
     const canaryTarget = await createTestComponent(client, { name: `${label}-canary-target` });
     const canary = await client.campaigns.propose({
@@ -283,7 +262,7 @@ describe("campaigns (M5)", () => {
 
     const infra = await createTestComponent(failAdmin, { name: "failwave-infra" });
     const app = await createTestComponent(failAdmin, { name: "failwave-app" });
-    await failAdmin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra is wave 0
+    await failAdmin.components.addDependsOn(app.id, infra.id);
 
     const campaign = await failAdmin.campaigns.propose({
       name: "patch failwave-infra then failwave-app",
@@ -308,12 +287,7 @@ describe("campaigns (M5)", () => {
       { describe: "wave 0's (infra) member Change is proposed", timeoutMs: 20_000 }
     );
 
-    // Drive wave 0's member Change to a FAILED outcome. `cancelled` rather than `rolled_back` is
-    // deliberate: campaign-reconcile.ts maps BOTH to a failed wave target, but `rolled_back` would
-    // additionally make computeCampaignStatus report `rolled_back` (it checks rollback FIRST, ahead
-    // of every forward-progress signal), masking the `failed` reading this test is about. Cancel
-    // from `validating` — a settled state on the member's own lifecycle, so there is no race with
-    // the reconciler concurrently transitioning it.
+    // Drive wave 0's member Change to a FAILED outcome. See docs/coordination.md §237.
     await waitUntil(
       async () =>
         (await failAdmin.changes.get(wave0MemberChangeId)).state === "validating" || undefined,
@@ -475,7 +449,7 @@ describe("campaigns (M5)", () => {
     });
 
     const narrowActor = await createTestUser(server, org, [
-      { role: "Viewer", scope: org.orgId }, // POST /plans needs object:read at org root
+      { role: "Viewer", scope: org.orgId },
       { role: "Administrator", scope: ownDomain.id }
     ]);
     const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrowActor.token });
@@ -515,17 +489,10 @@ describe("campaigns (M5)", () => {
   });
 
   it("an IaC-authored campaign whose manifest declares targets/topology by URN (not id) still resolves depends_on-based wave ordering correctly", async () => {
-    // @scp/iac's Campaign/ReleaseTopology constructs only ever have a deterministically-derived
-    // URN at pure/offline synth time (never a real database id) — this reproduces exactly that
-    // shape by hand (no @scp/iac dependency needed here — a DesiredStateManifest is plain JSON),
-    // proving campaign-reconcile.ts's idOrUrn resolution (added alongside the IaC construct work)
-    // makes target/topology resolution creation-path-agnostic: an IaC-authored campaign's implicit
-    // depends_on-based auto-sequencing now works exactly like an API-created campaign's does,
-    // instead of silently no-oping on URN-shaped target strings (loadDependsOnEdges queries
-    // `relationships` by real object id — URN strings would never match).
+    // IaC constructs only get a derived URN at synth time. See docs/coordination.md §238.
     const infra = await createTestComponent(admin, { name: "camp-iac-urn-infra" });
     const app = await createTestComponent(admin, { name: "camp-iac-urn-app" });
-    await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra first
+    await admin.components.addDependsOn(app.id, infra.id);
 
     const stackName = `camp-iac-urn-${randomUUID().slice(0, 8)}`;
     const campaignUrn = `urn:scp:${stackName}:campaign:patch`;
@@ -565,13 +532,7 @@ describe("campaigns (M5)", () => {
     expect(waves[1]!.targets.map((t) => t.targetObjectId)).toEqual([app.id]);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M5 CRITICAL (adversarial review of PR #12): campaign membership must NOT be
-  // injectable through the unprotected `coordinates` graph edge. `coordinates` is now
-  // system-managed (`graph/system-managed-relationships.ts`) — refused on BOTH the generic
-  // `POST /relationships` endpoint and the IaC apply path — and campaign rollback sources
-  // membership from the authoritative `campaign_wave_targets`, never raw edges.
-  // -----------------------------------------------------------------------------------------
+  // M5 CRITICAL (adversarial review of PR #12). See docs/coordination.md §239.
 
   it("SECURITY: the generic POST /relationships endpoint refuses a `coordinates` edge (system-managed, 403)", async () => {
     const target = await createTestComponent(admin, { name: "camp-coord-block-target" });
@@ -614,7 +575,6 @@ describe("campaigns (M5)", () => {
     };
     const plan = await admin.plans.create(manifest);
     await expect(admin.plans.apply(plan.id)).rejects.toMatchObject({ status: 403 });
-    // No `coordinates` edge was created.
     const edges = await admin.relationships.list({
       fromId: campaign.id,
       typeId: "coordinates",
@@ -647,12 +607,7 @@ describe("campaigns (M5)", () => {
     );
     await admin.changes.accept(trueMemberChangeId);
 
-    // The INJECTED member: a completely unrelated Change, driven to a rollback-eligible state
-    // ('validating'), then linked to the victim campaign by a stray `coordinates` edge written
-    // straight through the repo (bypassing the now-guarded HTTP endpoint) — exactly simulating a
-    // legacy/migrated/future-bug edge that the type-level HTTP+IaC blocks can't retroactively
-    // prevent. If campaign rollback trusted raw `coordinates` edges (the pre-fix behavior), this
-    // change WOULD be swept into the rollback.
+    // The INJECTED member. See docs/coordination.md §240.
     const injectedTarget = await createTestComponent(admin, { name: "camp-stray-injected-target" });
     const injectedChange = await admin.changes.propose({
       name: "injected-not-a-member",
@@ -676,7 +631,6 @@ describe("campaigns (M5)", () => {
       })
     );
 
-    // Roll back the campaign.
     const rollbackResult = await admin.campaigns.rollback(
       campaign.id,
       "stray-edge test: revert true members only"

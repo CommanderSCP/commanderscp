@@ -1,24 +1,8 @@
 import { useLocation, useParams, useSearch } from "@tanstack/react-router";
 
-/**
- * Loosely-typed param/search accessors (`strict: false`) so route page components don't need to
- * import their own route object from router.tsx — avoids a circular import between router.tsx
- * (which imports every page component) and the pages themselves.
- */
+/** Loosely-typed param/search accessors. See docs/web.md §144. */
 
-/**
- * Which REGISTRY this page is showing — `components`, `services`, `deployment-targets`, …
- *
- * Falls back to the URL's FIRST SEGMENT when there is no `$basePath` param, which is what lets
- * `RegistryDetailPage` mount at a static path as well as at the generic `/$basePath/$idOrUrn`.
- * `/components/{id}/settings` needs exactly that: `/components/{id}` is a static route (the
- * pipeline, which out-ranks the dynamic one), so its `settings` child has no `$basePath` to read,
- * and without this fallback the alternative is a duplicate copy of a ~570-line page.
- *
- * The segment is not trusted to BE a registry — `findRegistry` still decides that, and returns
- * undefined for `/changes` or `/federation`, which render "Not found" exactly as an unknown
- * `$basePath` always has.
- */
+/** Which REGISTRY this page is showing. See docs/web.md §145. */
 export function useBasePathParam(): string | undefined {
   const param = (useParams({ strict: false }) as { basePath?: string }).basePath;
   const firstSegment = useLocation({ select: (l) => l.pathname.split("/")[1] });

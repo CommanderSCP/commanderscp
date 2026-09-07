@@ -10,17 +10,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { instanceCosignKeys } from "../db/schema.js";
 
-/**
- * E5/PR #102 adversarial-review follow-up — SIDE-EFFECT-BEFORE-AUTHORIZATION on GET
- * /federation/status. The handler resolves the org's cosign PUBLIC key via
- * `getInstanceCosignPublicKey`, which LAZILY PROVISIONS the org's cosign keypair (a cosign
- * subprocess) on first call. That resolution must run ONLY AFTER the `federation:read` authorize
- * check passes — otherwise an authenticated-but-unauthorized caller could trigger provisioning of
- * their OWN org's keypair just by hitting the route. These tests pin the corrected ordering:
- *
- *  - an authenticated caller LACKING `federation:read` gets 403 AND provisions NO keypair;
- *  - the authorized path still returns the cosign public key (and the keypair is provisioned then).
- */
+/** E5/PR #102 adversarial-review follow-up. See docs/routes.md §188. */
 describe("GET /federation/status — authz gates cosign provisioning (Testcontainers)", () => {
   let server: TestServer;
   let org: TestOrg;

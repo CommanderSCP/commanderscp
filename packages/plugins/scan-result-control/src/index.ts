@@ -1,34 +1,4 @@
-/**
- * @scp/plugin-scan-result-control — turns a coordinated **Trivy scan verdict** into GATE EVIDENCE
- * (DESIGN §10.2 ControlPlugin, ADR-0013 "scan as a boundary-authorization gate",
- * BUILD_AND_TEST.md §8 M17). A sibling of `@scp/plugin-webhook-control`: same `ControlPlugin`
- * contract, same subprocess plugin host, same PULL intake pattern (fetch a result from a
- * per-binding operator-configured `url` via the host-mediated `ctx.http`, map it into a
- * `ControlOutcome`). Bound to a `control` graph object via a `control_binding`, exactly like
- * webhook-control — no execution-system involved.
- *
- * CHARTER — coordinate, NOT execute (principle 1): this plugin NEVER runs Trivy. Trivy runs inside
- * an execution system SCP merely coordinates (the Argo Workflows Trivy step, ADR-0012); this plugin
- * only *consumes* the resulting verdict JSON as evidence. It holds no scanner credentials and
- * launches no scan. (Since ADR-0020, the commander's separate `scp-managed-scan` promotion scan
- * step is a genuine, charter-enumerated exception that DOES execute scans — this plugin remains
- * the org-pipeline evidence ingress and is unaffected: it still runs no scanner of any kind.)
- *
- * SCOPE (ADR-0013) — this is a BOUNDARY-CROSSING AUTHORIZATION gate, not a universal code-quality
- * gate. It fires ONLY where an operator binds a scan control into a policy's `requireControls` (or a
- * raw `gate_binding`) for a commander-tracked, boundary-crossing artifact — never unconditionally on
- * every change. The engine wiring (governance/control-runner.ts, coordination/gates.ts) already
- * enforces "runs only where bound"; nothing here fires on its own.
- *
- * FAIL-CLOSED: an unreachable/unparseable source, a non-2xx response, a timeout, a
- * digest mismatch, or a verdict over the configured severity threshold ALL yield `fail` (never a
- * silent pass) — a broken or absent scan can never authorize a boundary crossing.
- *
- * DIGEST BINDING ("nothing slipped in", ADR-0013): the verdict is bound to the digest Trivy
- * actually scanned AND to the digest the change is promoting. A verdict for a DIFFERENT digest —
- * a stale or substituted scan — returns `fail` (mismatch), so it can never authorize a different
- * artifact.
- */
+/** Turns a coordinated scan verdict into gate evidence. See docs/plugins.md §523. */
 import type { ControlOutcome, ControlPlugin, ControlRequest, PluginContext } from "@scp/plugin-api";
 import {
   EffectiveScanExclusionsSchema,
@@ -136,34 +106,9 @@ function scannedDigest(raw: TrivyResultJson): string | undefined {
   return undefined;
 }
 
-/**
- * M22.1a introduced a `countSeverities(raw)` wrapper here that derived the counts from the shared
- * `parseTrivyFindings`. M22.1b inlines it at the call site, because the plugin now needs the
- * FINDINGS themselves (to hand to the server) as well as the counts, and a wrapper that parses and
- * throws the findings away would have meant parsing the same document twice — the second parse being
- * exactly the place the two could drift apart again.
- *
- * The counts are still numerically unchanged from pre-M22.1: `parseTrivyFindings` retains exactly
- * the entries the original hand-written loop counted (per-entry, no de-duplication, `UNKNOWN` folded
- * away, malformed input yielding zero).
- */
+/** The wrapper that derived counts from the shape, and its fate. See docs/plugins.md §524. */
 
-/**
- * M22.1b (ADR-0033 §7) — HAND THE FINDINGS TO THE SERVER, because this plugin cannot persist them.
- *
- * A ControlPlugin runs in the subprocess plugin host with no `DATABASE_URL`; its only channel back
- * is `ControlOutcome.evidence`. So the capped findings ride out on that record under a transport key
- * that `control-runner.ts` STRIPS as it reads (`takeScanFindingsFromTransport`) — they must not
- * survive onto the persisted `control_runs.evidence`, which federation copies VERBATIM into a
- * promotion bundle. ADR-0033 §8 keeps findings commander-local; the bundle keeps counts.
- *
- * Attached AFTER `ScanEvidenceSchema.parse`, because that parse strips unknown keys.
- *
- * ATTACHED ON EVERY OUTCOME, including the digest-mismatch fail. The findings belong to the scan
- * that produced them and the very same evidence document records which digest that was, so nothing
- * is misattributed; and a FAILING verdict is precisely the one an exclusion would later act on, so
- * dropping them there would make the mechanism inert exactly where it is meant to work.
- */
+/** Hand the findings to the server, which alone can persist. See docs/plugins.md §525. */
 function withFindings(
   evidence: ScanEvidence,
   capped: CappedScanFindings,
@@ -187,18 +132,7 @@ function resolveScannerVersion(raw: TrivyResultJson, config: ScanResultControlCo
   return "unknown";
 }
 
-/**
- * M17.5 (ADR-0016) — the GATE-RESOLVED, most-restrictive-wins ceiling across the six scan-
- * requirement tiers (platform -> trust domain (partition) -> org -> containment domain -> service ->
- * component), threaded onto the request context by `gate-orchestrator.ts`'s `buildControlContext` —
- * the exact same conditional-context mechanism that already carries `artifactDigest`.
- *
- * Returns `undefined` when the gate threaded nothing (no tier set any ceiling — the unchanged M17.1
- * path). A PRESENT-BUT-MALFORMED value is a distinct, louder case: it means the gate produced
- * something this control cannot interpret, and silently ignoring it would apply a LOOSER threshold
- * than governance resolved. That is exactly the "silent pass" this plugin exists to prevent, so the
- * caller fails closed on it (`"malformed"`).
- */
+/** The gate-resolved ceiling across the scan requirements. See docs/plugins.md §526. */
 function resolveContextThreshold(
   req: ControlRequest
 ): EffectiveScanThreshold | undefined | "malformed" {
@@ -208,22 +142,7 @@ function resolveContextThreshold(
   return parsed.success ? parsed.data : "malformed";
 }
 
-/**
- * M22.2 (ADR-0033) — the GATE-RESOLVED exclusion clauses, threaded on the request context by the
- * same `buildControlContext` mechanism that carries `artifactDigest` and `scanThreshold`.
- *
- * A plugin has no database and no lookup ability, so every exclusion FACT — which classes each tier
- * admitted, which clauses survived the monotone AND, for which targets — is resolved SERVER-SIDE and
- * serialized here. This function only reads what the gate decided.
- *
- * ABSENT is the shipped default (nothing admitted anywhere) and means "no exclusions" — NOT an
- * error. A PRESENT-BUT-MALFORMED value is treated the same way, and the asymmetry with
- * `resolveContextThreshold` is deliberate rather than an oversight: a threshold this control cannot
- * interpret means it would judge against a LOOSER ceiling than governance resolved, so it fails
- * closed; an exclusion set it cannot interpret means it would count MORE findings than governance
- * intended, which is strictly stricter. Failing the control closed on a malformed loosening would
- * convert an authoring mistake into a blocked promotion — the wrong sign for this dimension.
- */
+/** The gate-resolved exclusion clauses, threaded on the context. See docs/plugins.md §527. */
 function resolveContextExclusions(req: ControlRequest): EffectiveScanExclusions | undefined {
   const raw = (req.context as { scanExclusions?: unknown }).scanExclusions;
   if (raw === undefined || raw === null) return undefined;
@@ -232,27 +151,7 @@ function resolveContextExclusions(req: ControlRequest): EffectiveScanExclusions 
   return parsed.data.clauses.length > 0 ? parsed.data : undefined;
 }
 
-/**
- * The threshold this verdict is judged against.
- *
- * PREFERS the gate-resolved scoped ceiling over the flat per-binding `config.threshold` — mirroring
- * exactly how `resolveExpectedDigest` prefers `context.artifactDigest` over `config.expectedDigest`.
- * Where BOTH set a ceiling for a severity the tighter one wins (per-severity MIN), because
- * most-restrictive-wins is the whole model: a per-binding config value must never be able to LOOSEN
- * what the platform/trust-domain/org/containment-domain/service/component chain resolved. A severity
- * neither source constrains keeps its historical default — `maxCritical`/`maxHigh` = 0 (fail-closed:
- * any Critical or High fails), `maxMedium`/`maxLow` unbounded — so a binding with no scoped floor
- * behaves precisely as it did in M17.1.
- *
- * THE REPORTED SOURCE IS THE DECIDING SOURCE, PER SEVERITY. Because the merge is a per-severity MIN
- * over TWO sources, "a scoped floor was threaded" is a different claim from "the scoped floor set
- * the ceiling that blocked this change" — with `config.maxHigh = 0` against `scoped.maxHigh = 50`
- * the applied 0 came from the CONFIG. Labelling that `"scoped"` would make the Decision misdescribe
- * its own inputs (charter principle 6), so every severity carries the source that actually supplied
- * its applied value, and the summary label is `"mixed"` when both sources decided something and
- * `"default"` when NEITHER did (the applied 0/0 is the historical fail-closed default, not a config
- * value — claiming `"config"` there would misdescribe the inputs just as badly).
- */
+/** The threshold this verdict is judged against. See docs/plugins.md §528. */
 function resolveThreshold(
   config: ScanResultControlConfig,
   scoped: EffectiveScanThreshold | undefined
@@ -415,13 +314,7 @@ export function createScanResultControlPlugin(): ControlPlugin {
       // meaning forever: operators author CEL conditions against `evidence.severityCounts.*`.
       const counts = severityCountsFromFindings(findings);
 
-      // M22.2 — EXCLUDE BEFORE COUNTING (ADR-0033 §2), never as a waiver on the verdict.
-      //
-      // Capped ONCE here and reused, because the ordinals in `exclusions.applied` must index the
-      // rows the server will actually persist. `scanFindingsRecordFor` is the same pure function the
-      // server uses to stamp `evidence.findingsRecord`, so a TRUNCATED set refuses every exclusion
-      // on both sides of the transport rather than only on one ("you cannot except what you did not
-      // record").
+      // M22.2 — EXCLUDE BEFORE COUNTING. See docs/plugins.md §529.
       const capped = capScanFindings(findings);
       const exclusions = resolveContextExclusions(req);
       const applied = applyScanExclusions(

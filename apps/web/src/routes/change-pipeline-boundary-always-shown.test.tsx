@@ -2,40 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BoundarySegment, Change, ChangeExplainResponse } from "@scp/sdk";
 
-/**
- * "THE BOUNDARY SEGMENT IS **ALWAYS SHOWN**" — pinned at the PAGE, by a check that runs on every PR.
- *
- * ## Why this file exists separately from `change-pipeline-boundary-honesty.test.tsx`
- *
- * That file is the presentational contract: given a segment, does `BoundarySegmentStrip` keep
- * "cannot see" and "observed" distinct and refuse to dress either as a pass? It renders
- * `BoundarySegmentStrip` / `NoBoundarySegment` DIRECTLY. Nothing in it — and nothing anywhere else
- * in the required PR checks — renders `ChangePipelinePage`. The Playwright specs that do walk the
- * real route were `main`-only and SKIPPED on pull requests when this was written; they now run on PRs
- * and 5z requires them. This file still owns the page altitude on the cheap side of the gate.
- *
- * The gap that left: DELETING the boundary card from `change-pipeline.tsx`, or flipping its
- * `boundarySegment ? <Strip/> : <NoBoundarySegment/>` to render nothing when the segment is null,
- * passes every required PR check with both components still perfectly honest in isolation. "Always
- * shown" is a DoD clause (`docs/BUILD_AND_TEST.md` M16) and it was the one clause no PR-gate test
- * held. This file holds it, at the only altitude that can: the page.
- *
- * ## Both branches, because only one of them is the interesting one
- *
- * The null branch is where "always shown" actually bites. A change that never crossed a domain
- * boundary is the COMMON case, and the tempting simplification is to render nothing for it — which
- * would silently turn "this change has not crossed a domain boundary" (a statement) into an absence
- * (which an operator reads as "there is nothing to say here", i.e. nothing to check). So the
- * present-and-null cases are asserted as a pair.
- *
- * ## Mocking
- *
- * The page's data comes from four `useQuery` calls and its id from the router. Both are stubbed at
- * the module seam: `useQuery` answers off `queryKey[1]`, `useIdParam` returns a fixed id, and
- * `../lib/client` is replaced so no `ScpClient` is constructed. Nothing about the boundary card
- * itself is stubbed — the real `ChangePipelinePage`, the real `BoundarySegmentStrip` and the real
- * `NoBoundarySegment` render.
- */
+/** "THE BOUNDARY SEGMENT IS **ALWAYS SHOWN**". See docs/web.md §195. */
 
 const CHANGE_ID = "3f1a2b3c-4d5e-4f60-9a1b-2c3d4e5f6a7b";
 const PEER_DOMAIN_ID = "9a8b7c6d-5e4f-4a3b-8c1d-2e3f4a5b6c7d";
@@ -60,7 +27,6 @@ vi.mock("../lib/client", () => ({ client: {} }));
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-query")>()),
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
-    // ["change", <what>, id] — see lib/query-client.ts.
     const data = queryKey[1] === "detail" ? explainData.current : undefined;
     return { data, isLoading: false, isError: false, error: null };
   }

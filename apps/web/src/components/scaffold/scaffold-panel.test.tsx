@@ -5,34 +5,7 @@ import type { DiscoveryProposal, ScaffoldDiscoveryResponse } from "@scp/schemas"
 import { ScaffoldPanel } from "./scaffold-panel";
 import { flush, render, typeInto } from "../../test-support/render-dom";
 
-/**
- * THE SCAFFOLDER PANEL — what replaced `POST /discovery/accept` in the wizards (ADR-0047).
- *
- * ============================================================================================
- * THE ONE PROPERTY THAT CARRIES THE ADR
- * ============================================================================================
- * "The orphan problem is solved at authoring time, where a human is present." The old path wrote
- * components into the graph with no owning service — the homelab's ~50 orphans — and the wizard then
- * offered a triage screen to repair them one at a time.
- *
- * So the case that matters is NOT that code is emitted. It is that a component nobody grouped is
- * **shown and excluded**, never defaulted into some invented service. A panel that quietly emitted
- * a `Component` under a made-up service name would pass a "does it produce code?" test and
- * reintroduce exactly the defect this replaced.
- *
- * THE DOOR IS A DOUBLE, NOT A MOCK OF `@scp/iac`. The emitter runs server-side (the UI may not
- * import `@scp/iac`), so this stands in for `POST /discovery/scaffold` and applies the SAME rule the
- * server does — a component with no service is reported, never emitted. Testing the panel against a
- * double that defaulted the ungrouped ones would prove the panel renders whatever it is handed,
- * which is true and useless.
- *
- * MUTATION LOG — each applied, watched fail, reverted, watched pass (MEASURED)
- * | Mutation | Result |
- * |---|---|
- * | the ungrouped banner is not rendered | "(2) an ungrouped component is SHOWN" FAILS |
- * | the panel defaults an ungrouped component to a service name instead of excluding it | "(2)" FAILS on the exclusion half — the name appears in the emitted source |
- * | "Apply to all" writes a hidden default instead of filling the per-component fields | "(3)" FAILS — the inputs no longer show what the code uses |
- */
+/** THE SCAFFOLDER PANEL. See docs/web.md §103. */
 describe("ScaffoldPanel", () => {
   function proposal(names: string[]): DiscoveryProposal {
     return {

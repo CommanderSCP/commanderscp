@@ -7,37 +7,9 @@ import { Badge } from "../ui/badge";
 import { cn, focusRing } from "../../lib/utils";
 import { formatDate, waveStatusBorder, waveStatusTone } from "./wave-status";
 
-/**
- * THE ONE WAVE CARD (design spec §2.13) — one compiled wave, one ordered step of a plan, the set of
- * stages advanced at once (ADR-0021 D6), rendered top-to-bottom with `PromotionArrow` connectors.
- *
- * MODULE CONTRACT — generalized so change surfaces use it today and campaign-detail.tsx migrates
- * onto it later WITHOUT changes here:
- *   - `wave` is the narrow STRUCTURAL `PipelineWaveLike` below, which both `ChangeWave` and
- *     `CampaignWave` already satisfy (they mirror). Deliberately not a union of the SDK types: a
- *     type-only structural prop keeps campaign schemas out of this module's import graph entirely,
- *     so bundling/tree-shaking cannot drag them in.
- *   - `testIdPrefix` drives every testid: `${prefix}-card`, `${prefix}-status-badge`,
- *     `${prefix}-kind-badge`, `${prefix}-target-row`, `${prefix}-observed-image`,
- *     `${prefix}-observed-revision`, `${prefix}-observed-rollout`, `${prefix}-executor-link`,
- *     `${prefix}-repo-link`, `${prefix}-target-change-link`. Defaults `pipeline-wave` (the change
- *     pipeline view); change detail passes `wave` (its historical ids); campaigns pass
- *     `campaign-wave`, which reproduces the wave board's pinned ids exactly.
- *   - Change-only detail (category/type kinds, attempt, observed version/rollout) and campaign-only
- *     detail (`memberChangeObjectId` → the member-Change link) are optional fields: each renders
- *     exactly when the data is present, so campaigns get version/executor/rollout parity the moment
- *     their wire type carries the fields.
- *   - `linksFor` is optional — surfaces that don't fetch binding/source links simply omit it.
- */
+/** THE ONE WAVE CARD. See docs/web.md §78. */
 
-/**
- * ONE FIELD'S ENTRY IN `observed.truncation` — mirrors `PersistedJsonFieldTruncation`
- * (`packages/runner-launcher/src/index.ts`) as surfaced through `ChangeWaveTargetSchema`
- * (`packages/schemas/src/changes.ts:346` on #264). `dropped: true` means the field is not in the
- * stored value AT ALL, and that is the persistence bound's doing, not the executor's silence —
- * the whole reason this module cannot keep treating "absent" and "cut" as the same pixels
- * (docs/proposals/observed-truncation-ui.md, charter principle 6).
- */
+/** ONE FIELD'S ENTRY IN `observed.truncation`. See docs/web.md §79. */
 export interface ObservedTruncationEntry {
   dropped: boolean;
   droppedCharacters?: number;
@@ -45,12 +17,7 @@ export interface ObservedTruncationEntry {
   droppedFields?: number;
 }
 
-/** One covering freeze on a wave target's `hold.freezes` (`ChangeWaveTargetSchema.hold` —
- *  packages/schemas/src/changes.ts, campaigns-rework.md's "wave-target hold projection"). Every
- *  field is exactly as the server composed it — `summary` is a rendered-verbatim sentence
- *  (charter principle 6: this module composes no copy from raw fields), `scope` is already
- *  enriched to `{objectId, name}` (`null` for a platform-tier freeze), and `endsAt` is the
- *  window's real boundary, never `now`. */
+/** One covering freeze on a wave target's `hold.freezes`. See docs/web.md §80. */
 export interface WaveTargetFreezeEntry {
   freezeId: string;
   scope: { objectId: string; name: string | null } | null;
@@ -58,15 +25,7 @@ export interface WaveTargetFreezeEntry {
   endsAt: string;
 }
 
-/** One holding `continuous` probe on a wave target's `hold.continuousTests`
- *  (`ContinuousTestHoldSchema`, team-pipeline-iac D21/D11). Composed at read time exactly like the
- *  freeze half — a probe that goes green is simply ABSENT on the next read, never a stale "held".
- *
- *  `reason` is carried and rendered because the three states hold identically and mean different
- *  things, and an operator's next action differs for each: `no_evidence` and `stale` say go look at
- *  the PROBER, `failed` says go look at the TARGET. Collapsing them to "held" would make the badge
- *  honest and the page useless. `summary` is server-composed and rendered VERBATIM, per the same
- *  rule the freeze line follows. */
+/** One holding continuous probe on a wave target. See docs/web.md §81. */
 export interface WaveTargetContinuousTestEntry {
   hookId: string;
   reason: "no_evidence" | "stale" | "failed";
@@ -82,20 +41,11 @@ export interface PipelineWaveTargetLike {
   targetObjectId: string;
   targetUrn?: string | undefined;
   targetName?: string | undefined;
-  /** The FREEZE-HOLD half of `ChangeWaveTargetSchema.hold` — present only while the target is
-   *  genuinely held by an active freeze, composed at read time (a lifted freeze is simply absent
-   *  on the next read). CampaignWaveTarget does not carry this yet, so it is optional and a
-   *  campaign wave simply renders no freeze line — never a fabricated one. The STAGE-DEPENDENCY
-   *  half of a hold rides a SEPARATE channel (`holdFor` below) for the reason that field's own
-   *  doc states: it is not part of this schema. */
+  /** The FREEZE-HOLD half of `ChangeWaveTargetSchema.hold`. See docs/web.md §82. */
   hold?:
     | {
         freezes: WaveTargetFreezeEntry[];
-        /** The CONTINUOUS-PROBE half of the hold. Optional on the wire and never sent as an empty
-         *  array (`ChangeWaveTargetSchema.hold`), so `undefined` here means "no probe holds this
-         *  target" and NOT "we did not look" — the same absence rule the freeze array follows.
-         *  Rendering it is what stops a target held solely by a stale probe from showing a `held`
-         *  badge with nothing under it: the reason was on the wire and this component dropped it. */
+        /** The CONTINUOUS-PROBE half of the hold. See docs/web.md §83. */
         continuousTests?: WaveTargetContinuousTestEntry[] | undefined;
       }
     | undefined;
@@ -136,27 +86,12 @@ export interface PipelineWaveLike {
   status: string;
   startedAt: string | null;
   completedAt: string | null;
-  /** SERVER-COMPUTED (`ChangeWaveSchema.heldTargetCount`) — freeze-held plus stage-dependency-held
-   *  targets of this wave. NEVER RECOMPUTED HERE: a client tally from `targets[].hold` alone would
-   *  undercount by exactly the stage-dependency half, which this component has no way to see
-   *  unless the page also threads `holdFor` — this field is the server's answer regardless of
-   *  which optional props a given page passes. CampaignWave does not carry it yet, so it is
-   *  optional and the chip simply does not render for a campaign wave. */
+  /** Server-computed: freeze-held plus stage-held together. See docs/web.md §84. */
   heldTargetCount?: number | undefined;
   targets: PipelineWaveTargetLike[];
 }
 
-/**
- * The real-data source/executor links for one wave target (coordination-ui-views.md Layer A, where
- * they are called "Stage source/executor links" — the wave sense of that word, ADR-0021 D6).
- * Every field is optional because it comes from a *separate* lookup that
- * may legitimately be absent:
- *   executorRef       — the binding's `externalRef` (e.g. the Argo CD Application name). NB this is
- *                       sourced from the executor BINDING, never the wave-target's `executorRef`
- *                       (that is a run ref, null until the target triggers — grounding caveat).
- *   executorSystemUrl — the registered `execution-system` object's `serverUrl` (deep-link base).
- *   repoPattern       — the source-mapping `repoPattern` (the git source/config repo).
- */
+/** The real-data source/executor links for one wave target. See docs/web.md §85. */
 export interface PipelineWaveTargetLinks {
   executorRef?: string | undefined;
   executorSystemUrl?: string | undefined;
@@ -185,15 +120,7 @@ function hostOf(url: string): string {
 
 type ObservedLike = PipelineWaveTargetLike["observed"];
 
-/**
- * THE ONE HELPER EVERY `observed.truncation` READ GOES THROUGH (proposal §3 rule 4,
- * docs/proposals/observed-truncation-ui.md) — a future read site that calls this instead of
- * indexing `target.observed?.truncation` directly inherits the honesty rule for free, rather than
- * having a chance to re-introduce the "cut looks like absent" lie. Returns the RAW entry
- * (`dropped` may be `false`, e.g. a tail-cut array whose field survived) — callers decide what a
- * `dropped: true` versus a merely-shortened field means for their own slot; see `droppedEntry`
- * below for the common "was this field's own presence removed" case.
- */
+/** THE ONE HELPER EVERY `observed.truncation` READ GOES THROUGH. See docs/web.md §86. */
 function truncationOf(observed: ObservedLike, field: string): ObservedTruncationEntry | undefined {
   return observed?.truncation?.[field];
 }
@@ -205,23 +132,7 @@ function droppedEntry(observed: ObservedLike, field: string): ObservedTruncation
   return entry?.dropped === true ? entry : undefined;
 }
 
-/**
- * THE REAL, EXECUTOR-REPORTED PREFIX OF `images` — strips the store's marker slot when a cut
- * happened, using the record's `droppedEntries` COUNT and the array's own length, never the
- * marker's own text. The proposal is explicit that a consumer must not pattern-match the stored
- * value (§1: "a cut array's last element is a literal elision-marker string that must never be
- * pattern-matched OR rendered") — the marker is content-shaped and a plugin can legally put those
- * exact characters in a real image ref. When a cut removed every real entry, the stored array is
- * the marker ALONE (`entriesElisionMarker`, `@scp/runner-launcher`) with `dropped` still `false`
- * (the field itself survived); this returns `[]` for that case too, so index 0 is only ever a real
- * entry, structurally guaranteed rather than sniffed.
- *
- * DELEGATES to `@scp/schemas`'s `realObservedImages` — the SAME function `component-pipeline.ts`'s
- * per-stage `version` derivation calls server-side (per-stage version threading), so the two can
- * never disagree about which prefix of `images` is "real". This wrapper exists only to keep the
- * `ObservedLike` structural type (this module's own, deliberately not `@scp/sdk`'s campaign-carrying
- * types — see the module contract at the top) as the call sites' declared parameter type.
- */
+/** THE REAL, EXECUTOR-REPORTED PREFIX OF `images`. See docs/web.md §87. */
 function realImages(observed: ObservedLike): string[] {
   return realObservedImages(observed);
 }
@@ -250,12 +161,7 @@ function elisionSentence(report: string, notClaim: string, entry: ObservedTrunca
 const WHOLE_STATE_FALLBACK_SENTENCE =
   'The executor\'s status report exceeded the stored bound and could not be preserved. This is not "not observed yet".';
 
-/** Rung 1's diagnostic sentence (proposal §1, measured against #264: `boundPersistedJson`'s
- *  fallback ladder is `{__scpElided: "<sentence>"}` -> `{__scpElided: true}` -> `null`, so this
- *  value is `string | true`). NOT part of the declared SDK shape — `ChangeWaveTargetSchema.observed`
- *  names only revision/images/rollout/truncation, so this reads the wire object loosely and on
- *  purpose. COPY ONLY: never the guard for the pill (that is §3 rule 5's `truncation`-only key),
- *  because `true` and "absent" both mean "no extra sentence available", not "not truncated". */
+/** Rung 1's diagnostic sentence. See docs/web.md §88. */
 function wholeStateDiagnostic(observed: ObservedLike): string | undefined {
   const elided = (observed as Record<string, unknown> | null | undefined)?.__scpElided;
   return typeof elided === "string" ? elided : undefined;
@@ -292,13 +198,7 @@ function TruncatedBadge({
   );
 }
 
-/**
- * A short, human-facing label for a deployed image ref (ADR-0008 signal 1) — the per-wave version.
- * Prefers the tag (`ghcr.io/x/y:1.2.3` → `1.2.3`); falls back to a git-style short digest
- * (`...@sha256:abcdef0…` → `sha256:abcdef0`); then to the image name. NEVER fabricates — the input
- * is the REAL ref reconcile observed from the executor. The `:`-that-is-a-tag is the last colon
- * AFTER the last `/` (so a `registry:5000/x/y` port is not mistaken for a tag).
- */
+/** A short, human-facing label for a deployed image ref. See docs/web.md §89. */
 export function imageVersionLabel(image: string): string {
   const atIdx = image.indexOf("@");
   const digest = atIdx >= 0 ? image.slice(atIdx + 1) : undefined;
@@ -325,11 +225,7 @@ export function imageVersionLabel(image: string): string {
   return name.length > 0 ? name : image;
 }
 
-/**
- * The target's display name, hyperlinked to its component page (spec §4C: resolve wave-target
- * UUIDs — a bare UUID renders only as the mono LAST resort, when the server sent neither name nor
- * URN). This is the one renderer of a wave target's identity; every wave surface goes through it.
- */
+/** The target's display name, hyperlinked to its component page. See docs/web.md §90. */
 function TargetName({
   target,
   nameOf
@@ -356,22 +252,7 @@ function TargetName({
   );
 }
 
-/**
- * WHAT IS WITHHOLDING ONE WAVE TARGET'S TRIGGER (ADR-0028 increment 4) — the change-pipeline's half
- * of the same fix the component-pipeline view got.
- *
- * The defect in one sentence: a held target's `change_wave_targets.status` IS `pending`, and so is
- * the status of a target the wave has not reached yet. Rendering the raw column and nothing else
- * made "waiting on something NAMED" and "nothing is happening here" the same picture — on the page
- * an operator opens first when a release is not moving.
- *
- * It names the dependency, because a badge saying only "held" moves the question from "why is this
- * pending?" to "why is this held?" and no further. Each line is the server's own
- * `describeStageDependencyHold` sentence, the same one the hold Decision's `reasonTree` carries.
- *
- * The RAW STATUS IS KEPT beside it rather than replaced: the column really does say `pending`, and
- * a view that quietly rewrote it would be lying in the other direction.
- */
+/** WHAT IS WITHHOLDING ONE WAVE TARGET'S TRIGGER. See docs/web.md §91. */
 function HeldTargetLine({ held }: { held: ChangeStageDependencyTarget }): React.JSX.Element {
   return (
     <div
@@ -412,22 +293,7 @@ function HeldTargetLine({ held }: { held: ChangeStageDependencyTarget }): React.
   );
 }
 
-/**
- * THE FREEZE HALF OF A TARGET'S HOLD (`ChangeWaveTargetSchema.hold`) — one line per covering
- * freeze, mirroring `HeldTargetLine` above (ADR-0028's stage-dependency line) so a target held by
- * BOTH kinds at once renders two lines under the one `held` badge rather than one kind winning.
- * Amber, not blue: a freeze is a governance instrument (design spec §1.5 `warning` tone —
- * "needs attention, degraded, frozen"), where the stage-dependency line's blue is informational
- * ("this clears itself"). `summary` is rendered VERBATIM — server-composed, no client copy.
- *
- * THE BOLD LABEL ONLY APPEARS WHEN THERE IS A REAL NAME TO SHOW (M25.UI review minor finding 2).
- * `scope: null` means PLATFORM tier (`plan-service.ts`'s `toWaveTargetHold`), not "every org on
- * this instance" — a platform freeze addresses a stage coordinate (environment/region), which can
- * be as narrow as one region, and that wire shape carries no `match` to say which. Composing
- * "instance-wide" here claimed a scope the freeze may not have; `freeze.summary` already states
- * the tier and the coordinate it matched verbatim ("… (platform tier) …"), so a `scope: null` or
- * unresolved-name freeze renders that sentence ALONE rather than a client-invented label beside it.
- */
+/** THE FREEZE HALF OF A TARGET'S HOLD. See docs/web.md §92. */
 function FreezeHoldLines({ freezes }: { freezes: WaveTargetFreezeEntry[] }): React.JSX.Element {
   return (
     <div
@@ -435,11 +301,7 @@ function FreezeHoldLines({ freezes }: { freezes: WaveTargetFreezeEntry[] }): Rea
       data-testid="pipeline-wave-target-freeze-hold"
     >
       {freezes.map((freeze) => (
-        // `endsAt` is on the wire precisely so the CLIENT's clock can contextualize it (the
-        // schema's stated reason for carrying it; the server summary states the same instant in
-        // raw UTC). A title tooltip keeps the verbatim-summary rule: no client-composed prose in
-        // the rendered line itself, local time on hover (§ structural conventions — title is the
-        // honesty channel tests can see).
+        // The end instant is on the wire so the client can place it. See docs/web.md §93.
         <div
           key={freeze.freezeId}
           data-testid="pipeline-wave-target-freeze-hold-line"
@@ -459,27 +321,7 @@ function FreezeHoldLines({ freezes }: { freezes: WaveTargetFreezeEntry[] }): Rea
   );
 }
 
-/**
- * THE CONTINUOUS-PROBE HALF OF A TARGET'S HOLD (`ChangeWaveTargetSchema.hold.continuousTests`) —
- * one line per holding probe, mirroring `FreezeHoldLines` above so a target held by a freeze AND a
- * probe renders both under the one `held` badge rather than one kind winning.
- *
- * WHAT THIS FIXES: the field has been on the wire since increment 8 and this component read only
- * `hold.freezes`, so a target held SOLELY by a stale or failed probe rendered a `held` badge with
- * nothing beneath it — the same shape as the truncated-as-absent lie this card already had to fix
- * once. The reason was always there; the UI dropped it.
- *
- * AMBER, like the freeze line, not the stage-dependency line's blue: blue is for "this clears
- * itself" (a dependency that will be satisfied by ordinary progress), and a probe hold does NOT
- * clear itself — a human has to go and fix either the prober or the target. Same tone, same
- * `warning` semantics (design spec §1.5).
- *
- * `reason` IS RENDERED AS ITS OWN LABEL rather than folded into the sentence, because it is the
- * routing information: `no_evidence`/`stale` send an operator to the PROBER, `failed` sends them to
- * the TARGET. The label is a fixed lookup over the closed enum, never composed from the value — a
- * client that prettified an unrecognized reason would invent copy for a state it does not
- * understand. `summary` is the server's sentence, rendered VERBATIM beside it.
- */
+/** THE CONTINUOUS-PROBE HALF OF A TARGET'S HOLD. See docs/web.md §94. */
 const CONTINUOUS_HOLD_LABEL: Record<WaveTargetContinuousTestEntry["reason"], string> = {
   no_evidence: "never reported",
   stale: "stale",
@@ -601,11 +443,7 @@ export function PipelineWaveCard({
         {wave.targets.map((target) => {
           const links = linksFor?.(target) ?? {};
           const held = holdFor?.(target) ?? null;
-          // The FREEZE half of a hold, read straight off the target — no closure prop needed,
-          // because `ChangeWaveTargetSchema.hold` rides the target itself rather than a side
-          // channel (unlike the stage-dependency half above). A target can carry BOTH kinds at
-          // once; `anyHeld` is the union that drives the shared badge/border, and each kind gets
-          // its own line below rather than one silently winning.
+          // The FREEZE half of a hold, read straight off the target. See docs/web.md §95.
           const freezeHold =
             target.hold && target.hold.freezes.length > 0 ? target.hold.freezes : null;
           // The PROBE half, read off the same object. `continuousTests` is optional on the wire and

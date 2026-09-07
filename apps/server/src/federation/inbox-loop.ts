@@ -1,80 +1,4 @@
-/**
- * M13.1a — the staging-node INBOX INGEST LOOP (docs/proposals/airgap-cds-validate-promote.md
- * §13.1): the six-step manual CDS boundary walk's steps "import what arrived", automated. An
- * unattended pg-boss tick (cloned from `startObserveLoop`'s self-rescheduling singleton shape)
- * lists each resolved delivery inbox and routes every NEW file to the EXISTING verify path for
- * its kind — the loop automates only *who names the file*, never what is trusted.
- *
- * ## Opt-in (documented choice)
- *
- * The loop is DEFAULT-OFF and runs only when BOTH hold:
- *   1. `SCP_INBOX_LOOP=1` — the explicit operator enable. Chosen as an env var (not per-peer
- *      config) because whether THIS instance watches inboxes is an instance-deployment concern,
- *      exactly like `SCP_RELAY_IN_DIR` itself; anything else would let replicated config start
- *      unattended ingest on an instance whose operator never opted in.
- *   2. The instance actually resolves an inbox to watch — per org, per tick, via 13.2a's
- *      `resolveDeliveryTarget` (per-peer `deliveryTarget.inDir` first, `SCP_RELAY_IN_DIR` env
- *      fallback). An enabled instance with nothing resolvable does no per-file work: the tick is
- *      one SQL round-trip per org and re-checks next tick (peers can gain inboxes at runtime
- *      without a restart). With the flag unset (the default) the loop is NEVER scheduled — an
- *      unconfigured instance does not spin.
- *
- * ## Role-aware routing (per file)
- *
- *   - `*.scpbundle` → the EXISTING federation import (`importSyncBundle` /
- *     `importPromotionBundle`) on EVERY role — checksum + Ed25519 signature verify, journal
- *     replay, M17.4(a) manifest verify, exactly the CLI path (the route and this loop call the
- *     same repos).
- *   - `scp-relay-*.tar.gz` → role-aware: at an OUTPOST (any non-retrans role), the EXISTING
- *     `importRelayTarball` (verify + push into the local registry + re-inspect); at a RETRANS,
- *     the push-less `validateAndForwardRelayTarball` (the §13.1 extraction — same checks, no
- *     registry half), dropping the byte-identical tarball to the onward DeliveryTarget.
- *   - anything else → skipped-with-log, never a crash.
- *
- * A multi-tenant instance runs the tick per org: a bundle addressed to a DIFFERENT org's domain
- * is left untouched for that org's own tick (transient skip, no ledger); a tarball whose
- * `.scpbundle` has not landed yet is likewise left for a later tick (bundles are processed before
- * tarballs within one tick, so the common same-drop case completes in one pass).
- *
- * ## Dedupe ledger + quarantine posture (documented §13.1a decisions)
- *
- * Processed state lives in `federation_inbox_files` (drizzle/0034) keyed on CONTENT identity
- * (inbox dir + file name + sha256): re-processing an already-imported file is a no-op; a REPLACED
- * file (same name, new bytes) is new work. `bundle_transfers` stays the per-hop status surface
- * the import paths write (validate-gated, D4) — it has no file identity and a refusal writes no
- * transfer row, so it cannot be the dedupe. Refused files are QUARANTINED-IN-PLACE: the loop
- * never deletes or moves what an operator (or CDS product) dropped — the ledger row (+ block
- * Decision) is what stops re-processing.
- *
- * ## D4 — validate-gated confirm, and zero-trust surviving automation
- *
- * Confirmation always happens INSIDE the verify paths, strictly after their checks pass
- * (`importSyncBundle` / `applyPromotionImport` / `importRelayTarball` /
- * `validateAndForwardRelayTarball` each record their own confirmed transfer row in the same tx
- * as their allow Decision) — the loop itself never confirms anything, so a blind confirm is
- * structurally impossible from here. On ANY validation failure the underlying path's block
- * Decision + hash-chained audit event stand exactly as a CLI invocation would leave them (the
- * DoD's identical-outcomes bar); where a refusal path throws WITHOUT persisting a Decision (e.g.
- * a sync bundle checksum mismatch — a plain 409 on the CLI too), the loop writes its own
- * `federation-inbox-ingest` block Decision so an unattended refusal is never explainable-by-
- * nobody (charter principle 6). One bad file never bricks the tick: every per-file outcome is
- * caught and the loop continues.
- *
- * The upstream-relay verification key for arriving tarballs is resolved from the PAIRED peer
- * registry: the cosign public key of this org's (single) `role: retrans` peer — the same
- * out-of-band pairing exchange that distributes every other federation key (M17.3 E5); no key
- * material ever comes from the inbox itself. No / ambiguous retrans peers → tarballs are left
- * unprocessed with a log (config gap, retried next tick), never a guessed key.
- *
- * The poke-chain trigger IS in this file now: {@link wakeInboxNow} (M14.4 S6) is the AIR-GAP leg of
- * the contentless poke — an air-gapped outpost has no `role: commander` peer to dial, so waking
- * THIS loop is what makes the last hop real. The interval tick remains the reliable floor that wake
- * merely optimizes.
- *
- * STILL OUT OF SCOPE here (owner-decided M14 / 13.1b): only the retrans AUTO-RELAY BUILD after a
- * promotion import — i.e. an import on the retrans automatically building + emitting the onward
- * tarball. That hop stays operator-gated (ADR-0009 D3).
- */
+/** M13.1a — the staging-node INBOX INGEST LOOP. See docs/federation.md §281. */
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
@@ -125,15 +49,7 @@ export const INBOX_INGEST_DECISION_KIND = "federation-inbox-ingest";
 /** Ledger sha256 sentinel for a file that could not be read at all (traversal-shaped name). */
 const UNREADABLE_SHA = "-";
 
-/**
- * The `.scpbundle` branch below reads the WHOLE file into memory before it can hash or parse it
- * (unlike the relay-tarball branch, which streams). Without a pre-read ceiling, a single oversized
- * file dropped in the CDS staging dir OOMs the worker before the dedupe ledger can fire — and since
- * the content hash is only computed AFTER the read, the file is never recorded as processed, so the
- * self-rescheduling loop crash-loops on it. This is the same DoS the HTTP door bounds at `app.ts`'s
- * 64 MiB `bodyLimit`; the air-gap door is documented as strictly LESS trusted, so it gets the same
- * ceiling, enforced by `fs.stat` BEFORE the read. Env-overridable for estates with larger bundles.
- */
+/** This branch reads the whole file before it can hash it. See docs/federation.md §282. */
 const INBOX_MAX_BUNDLE_BYTES = (() => {
   const raw = process.env.SCP_INBOX_MAX_BUNDLE_BYTES;
   const parsed = raw ? Number(raw) : NaN;
@@ -159,9 +75,7 @@ export interface InboxSweepOptions {
   relayConfig?: RelayConfig;
 }
 
-// -------------------------------------------------------------------------------------------------
 // Ledger (federation_inbox_files) — content-identity dedupe, insert-only.
-// -------------------------------------------------------------------------------------------------
 
 async function ledgerHas(
   tx: TenantTx,
@@ -212,9 +126,7 @@ async function insertLedgerRow(
     .onConflictDoNothing();
 }
 
-// -------------------------------------------------------------------------------------------------
 // Per-file terminal outcomes — each in ONE tx (ledger + audit + any loop-level Decision together).
-// -------------------------------------------------------------------------------------------------
 
 /** Terminal refusal: the underlying path's Decision when it wrote one (identical to the CLI
  *  outcome), else the loop's own `federation-inbox-ingest` block Decision — an unattended refusal
@@ -341,10 +253,6 @@ function deferFile(orgId: string, fileName: string, reason: string): InboxFileOu
   return { outcome: "deferred", detail: reason, decisionId: null };
 }
 
-// -------------------------------------------------------------------------------------------------
-// Routing helpers.
-// -------------------------------------------------------------------------------------------------
-
 function isPromotionBundle(body: ImportBundleRequest): body is PromotionBundle {
   return body.header.kind === "promotion";
 }
@@ -382,10 +290,6 @@ function upstreamRelayCosignKey(peers: FederationPeerRow[]): string | null {
   return candidates[0]!.cosignPublicKey;
 }
 
-// -------------------------------------------------------------------------------------------------
-// The per-file processor.
-// -------------------------------------------------------------------------------------------------
-
 /** Exported for the integration suite (the DoD's per-file semantics are asserted through it);
  *  production reaches it only via {@link inboxOrgTick}. */
 export async function processInboxFile(
@@ -416,12 +320,7 @@ export async function processInboxFile(
     });
   }
 
-  // Content identity for the dedupe ledger. For a `.scpbundle` we read the bytes ONCE and hash the
-  // SAME buffer we hand to JSON.parse (in processBundleFile) — so the ledger's content-identity
-  // matches EXACTLY the bytes that were imported, closing the separate-hash-read-vs-parse-read
-  // window. For a relay tarball (potentially multi-GB) we stream-hash the file; its verify path
-  // re-ingests the bytes into a server-controlled private copy (retrans-relay: copy-once) so a
-  // post-hash swap of the inbox file cannot change what is verified/forwarded/imported.
+  // Content identity for the dedupe ledger. See docs/federation.md §283.
   const isBundle = fileName.endsWith(".scpbundle");
   let bundleBytes: Buffer | null = null;
   let sha256: string;
@@ -517,13 +416,7 @@ async function processBundleFile(
 ): Promise<InboxFileOutcome> {
   let parsed: ImportBundleRequest;
   try {
-    // `parseJsonRejectingPrototypePoisoning`, not a bare `JSON.parse`: this is the AIR-GAP door,
-    // the second of the two places foreign bytes become objects in this process (the other is the
-    // HTTP body parser in `app.ts`), and it needs the same admission control. A `.scpbundle`
-    // arrives from a peer domain across a CDS boundary on removable media — strictly less trusted
-    // than an authenticated HTTP request, not more. A `PrototypePoisoningError` is a `SyntaxError`
-    // subclass, so the existing catch arm below already turns it into the ordinary "not parseable
-    // as a .scpbundle" file refusal, ledgered like any other malformed bundle.
+    // The poisoning-rejecting parse: this is an air-gap door. See docs/federation.md §284.
     const raw = parseJsonRejectingPrototypePoisoning(rawBytes.toString("utf8"));
     const result = ImportBundleRequestSchema.safeParse(raw);
     if (!result.success) {
@@ -591,18 +484,7 @@ async function processBundleFile(
       decisionId: null
     });
   } catch (err) {
-    // 409 = the verify path REFUSED (checksum/signature/chain/manifest — identical to the CLI's
-    // outcome, carrying its Decision when the path persisted one). Anything else (400/404 —
-    // unpaired peer, graph not yet synced, config gap; or a transient error) is deferred and
-    // retried next tick.
-    //
-    // THIS IS THE AIR-GAP SURFACE for `import-repo.ts`'s `verifySegment` contiguity diagnostic, and
-    // the likeliest place to hit it: a deliberately scope-narrowed outpost is usually the air-gapped
-    // one, and nobody is watching a terminal when its `.scpbundle` lands. `err.detail` is passed
-    // through WHOLE — it is the "compare `scp federation peers` on BOTH domains" guidance — so it
-    // reaches the operator three ways: the ledger row's `detail`, the block Decision's reason tree,
-    // and the audit event. Never summarise it here; the ledger row is very often the only record
-    // anyone reads.
+    // 409 = the verify path REFUSED. See docs/federation.md §285.
     if (err instanceof ProblemError && err.status === 409) {
       return refuseFile(db, {
         orgId,
@@ -745,9 +627,7 @@ async function processRelayTarballFile(
   }
 }
 
-// -------------------------------------------------------------------------------------------------
 // The tick — per org, then every org (mirrors observe.ts's sweep shape).
-// -------------------------------------------------------------------------------------------------
 
 /** Bundles BEFORE tarballs (a tarball's change comes from its bundle — same-tick completion for
  *  the common both-dropped-together case), each group in stable name order, junk last. */
@@ -777,11 +657,7 @@ export async function inboxOrgTick(
   const seenDirs = new Set<string>();
   for (const peer of peers) {
     const resolved = resolveDeliveryTarget(peer, config);
-    // M13.2b census note: this tick sweeps FILESYSTEM inboxes only — an s3-compatible peer resolves
-    // with `inbound.dir === null` (its location is `inbound.s3`), so the guard below correctly
-    // skips it. Sweeping an s3 inbox needs vault-cred threading + local temp-file materialization
-    // (the `listInbox`/`getDeliveryFile` s3 seams exist; wiring them into the per-file processor,
-    // which reads a local path, is a follow-on to this increment) — not a silent drop of an fs dir.
+    // M13.2b census note: this tick sweeps FILESYSTEM inboxes only. See docs/federation.md §286.
     if (resolved.inbound.source === "peer" && resolved.inbound.dir !== null) {
       if (!seenDirs.has(resolved.inbound.dir)) {
         seenDirs.add(resolved.inbound.dir);
@@ -814,16 +690,7 @@ export async function inboxOrgTick(
         console.error(`[inbox] org ${orgId}: processing '${name}' failed (will retry):`, err);
         outcomes.push({
           outcome: "deferred",
-          // `describeError` for the same reason the five explicit `err.detail ?? err.message` sites
-          // above use it: an escaping `ProblemError`'s `message` is the bare HTTP title. This is the
-          // containment catch, so it is precisely the path where the throw was NOT anticipated and
-          // the text matters most. (Unlike the coordination sites, this `detail` is
-          // observability-only — `InboxFileOutcome` is returned, never persisted — so no Decision
-          // was being degraded here; the inconsistency was.)
-          //
-          // PINNED BY `inbox-loop.integration.test.ts`'s Q3 case, mutation-proven. That test injects
-          // the throw at the db seam on purpose: every fixture-shaped failure is caught one layer
-          // down, which is exactly why this catch is the unanticipated-throw path.
+          // `describeError` for the same reason the five explicit. See docs/federation.md §287.
           detail: describeError(err),
           decisionId: null
         });
@@ -833,7 +700,6 @@ export async function inboxOrgTick(
   return outcomes;
 }
 
-/** Every org, one tick — mirrors `runObserveSweep`. */
 export async function runInboxSweep(
   db: Db,
   masterKey: Buffer,
@@ -849,23 +715,7 @@ export async function runInboxSweep(
   }
 }
 
-/**
- * M14.4 (S6, ADR-0009 addendum) — enqueue ONE immediate inbox tick: the AIR-GAP leg of the poke.
- * Mirrors `wakeFederationSyncNow` exactly (a plain `boss.send`, NO singleton, so a queued interval
- * tick can never swallow the wake) and, like it, THROWS when the queue does not exist — the caller
- * treats that as accepted-but-no-op.
- *
- * WHY THIS EXISTS. ADR-0009 §38 makes the high-side-retrans→outpost poke inside an air gap
- * REQUIRED, not optional. But an air-gapped outpost has NO `role: commander` peer with a `baseUrl`
- * — there is nothing to dial; its content arrives as a FILE that the INBOX loop ingests. So a poke
- * that woke only the sync sweep resolved to ZERO peers and did nothing at all. Waking the inbox
- * loop is what makes the last hop of the chain real.
- *
- * The wake carries no CONTENT: which files are waiting is discovered by the sweep itself, exactly as
- * on an interval tick, so the poke stays contentless. It does carry `reason: "poke"` — a routing
- * marker, not content — so the handler can tell a wake from an interval tick and, mirroring the sync
- * loop, NOT re-schedule (see {@link INBOX_POKE_REASON}).
- */
+/** Enqueues one immediate inbox tick, the air-gap leg. See docs/federation.md §288. */
 export const INBOX_POKE_REASON = "poke";
 
 /** The payload an inbox tick carries. An interval tick sends `{}`, so `reason === undefined` is
@@ -882,13 +732,7 @@ export interface InboxLoopHandle {
   stop(): Promise<void>;
 }
 
-/**
- * Self-rescheduling pg-boss loop — the SAME singleton shape as `startObserveLoop` (boss.work
- * handler re-`send`s itself with `startAfter` + `singletonKey`). Runs only under
- * `SCP_ROLE=all|worker` (wired in `main.ts` beside the other loops) AND only when the operator
- * explicitly enabled it (`SCP_INBOX_LOOP=1`) — otherwise this returns an inert handle and the
- * queue is never created: an unconfigured instance does not spin.
- */
+/** Self-rescheduling pg-boss loop. See docs/federation.md §289. */
 export async function startInboxLoop(
   boss: PgBoss,
   db: Db,
@@ -902,13 +746,7 @@ export async function startInboxLoop(
   await boss.createQueue(INBOX_QUEUE);
   await boss.work(INBOX_QUEUE, async (jobs: { data?: InboxJobData }[]) => {
     if (stopped) return;
-    // A POKE WAKE DOES NOT RE-SCHEDULE — mirroring the federation-sync loop, and for the same
-    // reason: pg-boss computes a singleton slot from now() AT INSERT, so a wake landing in a
-    // different slot than the already-pending interval tick is not deduped and leaves TWO pending
-    // ticks. The interval job that was pending before the wake still fires on schedule, so the
-    // (deliberately NOT sparse) inbox cadence is unaffected. Keyed on "the batch contains a
-    // non-poke job" rather than "no poke present" so a batchSize>1 queue could never consume the
-    // interval job and skip its re-schedule.
+    // A POKE WAKE DOES NOT RE-SCHEDULE. See docs/federation.md §290.
     const batch = jobs ?? [];
     const reschedule =
       batch.length === 0 || batch.some((job) => job.data?.reason !== INBOX_POKE_REASON);

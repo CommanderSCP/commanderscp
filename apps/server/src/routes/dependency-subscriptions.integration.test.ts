@@ -19,35 +19,7 @@ import { createSourceMapping } from "../coordination/source-mappings-repo.js";
 import { upsertExecutorBinding } from "../coordination/executor-bindings-repo.js";
 import type { GitFileReadPluginClient, PluginHost } from "../plugin-host/contract.js";
 
-/**
- * M21.3 — THE ENABLEMENT CHAIN'S API SURFACE (ADR-0032 §3a/§6, routes/dependency-subscriptions.ts).
- *
- * The merge itself is proven pure in `dependencies/subscription-resolution.test.ts` and against real
- * Postgres in `dependencies/subscription-resolution.integration.test.ts`. THIS file proves only the
- * things that live in the route layer and nowhere else:
- *
- *   1. THE OPERATOR WRITE IS OPERATOR-ONLY. A perfectly valid TENANT token — the org's bootstrap
- *      ADMIN, the most privileged principal an org has — is REFUSED, and the NEGATIVE CONTROL is
- *      that the identical request carrying the deployment operator token SUCCEEDS. Without that
- *      control a 403 proves only that the route is broken.
- *   2. THE READS ARE TENANT-FACING, and the unlock read is the SAME projection the write returns —
- *      including `updatedAt: null` for the never-set (locked) default, which is the state a
- *      deployment ships in.
- *   3. THE RESOLUTION SURFACE CARRIES ITS CONTRIBUTIONS, and they identify WHICH TIER turned an
- *      enablement off (charter principle 6). That is the entire reason `contributions` exists, so it
- *      is asserted through the API rather than only at the resolver.
- *   4. READING A COMPONENT'S ENABLEMENT IS READING THE COMPONENT — `object:read` at the component's
- *      scope, with a narrowly-bound user as the negative control.
- *
- * A subscription is authored here the ONLY way it can be — as a `dependencySubscription` effect on
- * an ordinary `policy` object through the EXISTING policy routes (ADR-0032 §3a). If a bespoke
- * subscription write path is ever added, these tests keep passing and the reviewer should ask why it
- * was needed.
- *
- * INSTANCE-GLOBAL FIXTURE. `dependency_subscription_unlock` has no `org_id` and the integration
- * suite runs `singleFork` against ONE shared Postgres, so the row is deleted at teardown no matter
- * how this file exits.
- */
+/** M21.3 — THE ENABLEMENT CHAIN'S API SURFACE. See docs/routes.md §121. */
 describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
   const OPERATOR_TOKEN = "m21-3-operator-token";
 
@@ -119,15 +91,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
   const line: DependencyLineKey = { ecosystem: "npm", coordinate: "@acme/lib", major: "1" };
 
   beforeAll(async () => {
-    // `withPluginHost` because the M21.2 backfill route fail-closes on `deps.pluginHost` — reading a
-    // dependency manifest is a live plugin call, exactly as `POST /discovery/run` is. No
-    // reconcile loop: nothing here needs one, and it would be a live competitor for queued work.
-    //
-    // `federationRole: "commander"` because the backfill is COMMANDER-ONLY and fail-closed on an
-    // UNDECLARED deployment (ADR-0032 §7d). The harness leaves `SCP_FEDERATION_ROLE` unset by
-    // default, which yields a DEFAULTED commander — `federationRoleDeclared: false` — under which
-    // every backfill below would answer 409. Setting it here DECLARES the posture these tests mean
-    // to exercise; the refusals get their own servers in the block after "(5)".
+    // A plugin host, because the backfill route fails closed. See docs/routes.md §122.
     server = await listenTestServer({
       operatorToken: OPERATOR_TOKEN,
       withPluginHost: true,
@@ -144,9 +108,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (1) The operator write — the whole reason this resource is split in two
-  // -----------------------------------------------------------------------------------------
 
   describe("(1) PUT the instance unlock is OPERATOR-only", () => {
     it("REFUSES the org's bootstrap admin with no operator token — negative control: the SAME request with the operator token succeeds", async () => {
@@ -156,11 +118,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
       // OPERATOR: the unlock binds every org on the deployment, so no tenant role can grant it.
       const refused = await putUnlock(org.adminToken, { unlocked: true });
       expect(refused.status).toBe(403);
-      // Matches the HEADER NAME, not the prose. The refusal used to say "operator token"; since
-      // role-model.md §5 step 9 replaced the shared env token with named revocable credentials it
-      // says "operator credential", and an assertion on the noun would have to be rewritten every
-      // time the wording improves. `x-scp-operator-token` is the actionable part and is stable —
-      // it stays the header name precisely so existing operators and scripts keep working.
+      // Matches the HEADER NAME, not the prose. See docs/routes.md §123.
       expect(JSON.stringify(refused.json)).toMatch(/x-scp-operator-token/i);
 
       // …and a WRONG operator token is refused too, so the 403 above is not merely "header absent".
@@ -204,10 +162,6 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (2) The tenant read of the unlock
-  // -----------------------------------------------------------------------------------------
-
   describe("(2) GET the instance unlock is tenant-readable", () => {
     it("reads the never-set default as LOCKED with a NULL `updatedAt` — negative control: a written row carries a timestamp", async () => {
       await clearUnlock();
@@ -243,10 +197,6 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
       expect(typeof response.json.unlocked).toBe("boolean");
     });
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (3) The resolution surface — the explainability payload
-  // -----------------------------------------------------------------------------------------
 
   describe("(3) GET the (component, line) resolution", () => {
     const tiersThatTurnedItOff = (contributions: DependencySubscriptionContribution[]) =>
@@ -342,9 +292,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (4) Reading a component's enablement is reading the component
-  // -----------------------------------------------------------------------------------------
 
   describe("(4) the resolution read is authorized at the component", () => {
     it("REFUSES a principal with no read on the component — negative control: the admin reads it", async () => {
@@ -370,15 +318,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (5) M21.2 — THE INVENTORY BACKFILL ROUTE (ADR-0032 §4)
-  //
-  // Ingestion is event-driven, so this route is how an EXISTING estate — and any component that has
-  // not released since being enabled — acquires an inventory at all. The behaviour of the ingestion
-  // itself is proven against a recording provider in
-  // `dependencies/inventory-ingestion.integration.test.ts`; what is proven HERE is that the route
-  // reaches it, authorizes it as a write, and does not weaken the enablement gate on the way.
-  // -----------------------------------------------------------------------------------------
+  // (5) M21.2 — THE INVENTORY BACKFILL ROUTE. See docs/routes.md §124.
 
   describe("(5) POST /dependencies/inventory/backfill", () => {
     it("REFUSES a principal with no object:write — negative control: the admin is accepted", async () => {
@@ -445,9 +385,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
       expect(response.ref).toBe("refs/heads/release-1");
     });
 
-    // ---------------------------------------------------------------------------------------
     // THE SUCCESS PATH — never driven before, so the whole projection below was unexercised
-    // ---------------------------------------------------------------------------------------
     describe("a run that actually reads manifests", () => {
       const BACKFILL_REPO = "acme/backfill";
       /** Swapped onto `deps.pluginHost` for these tests only: the route resolves the host per
@@ -568,13 +506,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
       });
 
       it("STAMPS ITS OWN PRODUCER — a backfill's receipt says `backfill`, not `loop`", async () => {
-        // WHY THIS TEST EXISTS: `source` answers "is this component's inventory maintained by its
-        // own releases, or is it only as fresh as the last time an operator ran a backfill?" — two
-        // very different readings of one timestamp. Nothing pinned the route's half of it: every
-        // test that asserted `backfill` passed the literal into `ingestComponentManifests` itself,
-        // so swapping THIS route's label to `"loop"` left all 17 tests in this file and the whole
-        // ingestion suite green (measured). A provenance label is only worth having if a mislabel
-        // is loud.
+        // WHY THIS TEST EXISTS. See docs/routes.md §125.
         bodies = { "package.json": JSON.stringify({ dependencies: { "@acme/lib": "^1.2.3" } }) };
         const target = await createOrphanComponent(server, org, `backfill-stamp-${uuidv7()}`);
         await withTenantTx(server.deps.db, org.orgId, async (tx) => {
@@ -661,25 +593,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
   });
 });
 
-/**
- * ================================================================================================
- * (6) THE BACKFILL IS COMMANDER-ONLY, AND THE ROUTE IS NOT THE DOOR AROUND THE JOBS' GUARD
- * ================================================================================================
- * ADR-0032 §7d (owner decision, 2026-08-17): all dependency automation runs on the commander only.
- * The event-driven ingestion loop is guarded, and this route performs THE SAME INGESTION on demand
- * — so an unguarded route would let an outpost rebuild the identical inventory by POSTing, and the
- * loop's guard would be decorative.
- *
- * A SEPARATE SERVER PER POSTURE, deliberately. `federationRole`/`federationRoleDeclared` are
- * install-time config read from the environment at boot, so they cannot be toggled on the shared
- * fixture without lying about how the value is produced. Each block below boots the deployment
- * shape it is about, which is also what makes the UNDECLARED case reachable at all: it is the
- * harness's own default, and it is the branch that would otherwise never be executed by anything.
- *
- * WHAT IS ASSERTED IS THE SPECIFIC VIOLATION, not a status code alone: a 409 that came from some
- * other conflict would satisfy `status === 409`, so each case also requires the refusal to name the
- * axis that refused and where the work belongs.
- */
+/** The backfill is commander-only, and the route is not it. See docs/routes.md §126. */
 describe("(6) POST /dependencies/inventory/backfill is COMMANDER-ONLY (ADR-0032 §7d)", () => {
   /** Calls the route over real HTTP and returns the status plus the RFC7807 detail. The SDK is not
    *  used here because it throws on a non-2xx and the body is the thing under test. */
@@ -735,11 +649,7 @@ describe("(6) POST /dependencies/inventory/backfill is COMMANDER-ONLY (ADR-0032 
     let undeclaredOrg: TestOrg;
 
     beforeAll(async () => {
-      // NO `federationRole` — exactly what `loadConfig` sees with `SCP_FEDERATION_ROLE` unset, which
-      // is what a pre-M16.3 install and a chart that omits the value both produce. `config.
-      // federationRole` therefore READS 'commander' here; only `federationRoleDeclared` separates
-      // this from the accepted case, which is why a guard testing the value alone is fail-OPEN for
-      // exactly the population most likely to be an outpost.
+      // No role set, exactly what the loader sees when unset. See docs/routes.md §127.
       undeclared = await listenTestServer({ withPluginHost: true });
       undeclaredOrg = await createTestOrg(undeclared, "dep-backfill-undeclared");
     }, 120_000);
@@ -769,21 +679,7 @@ describe("(6) POST /dependencies/inventory/backfill is COMMANDER-ONLY (ADR-0032 
     });
   });
 
-  /**
-   * ==============================================================================================
-   * THE ROUTE TAKES THE FEDERATION AXIS AND *NOT* THE PROCESS AXIS — AND THAT IS NOW PINNED
-   * ==============================================================================================
-   * The handler calls `commanderOnlyFederationVerdict`, not `commanderOnlyJobVerdict`, deliberately:
-   * in the split topology the chart deploys — `SCP_ROLE=api` serving HTTP in front of
-   * `SCP_ROLE=worker` draining queues — EVERY HTTP request lands on an api process, so a route
-   * carrying the process axis would 409 every caller on a perfectly correct commander.
-   *
-   * That reasoning was right and NOTHING PINNED IT. Swapping in the job verdict left `tsc` clean,
-   * every unit test green and all 22 backfill integration tests green, because every other server in
-   * this file boots at the harness default `SCP_ROLE=all` — which satisfies the process axis and so
-   * cannot tell the two verdicts apart. The one deployment shape that distinguishes them is an api
-   * process, and until this block nothing in the repo booted one.
-   */
+  /** THE ROUTE TAKES THE FEDERATION AXIS AND *NOT* THE PROCESS AXIS. See docs/routes.md §128. */
   describe("an api-only process on a declared commander — the split topology", () => {
     let apiOnly: ListeningTestServer;
     let apiOnlyOrg: TestOrg;
@@ -849,34 +745,7 @@ describe("(6) POST /dependencies/inventory/backfill is COMMANDER-ONLY (ADR-0032 
   });
 });
 
-/**
- * ================================================================================================
- * (7) EVERY RESOLVE ANSWER SAYS WHETHER ANYTHING HERE WILL ACT ON IT (ADR-0032 §7d, M21.7)
- * ================================================================================================
- * Block (6) proves the WRITE door is shut on a non-commander. This block is about the door that
- * stays OPEN and must therefore explain itself.
- *
- * The resolve route does not refuse on an outpost, and should not: a team there may legitimately ask
- * what their subscription resolves to, and the answer is arithmetically correct — the policies it
- * merges federated down from the commander. What was missing is that NO DEPENDENCY JOB RUNS ON THAT
- * DEPLOYMENT, so `enabled: true` there means "the commander would author a bump", never "a bump will
- * be authored here". An unqualified verdict is an answer whose REASON is unavailable, which is
- * charter principle 6 failing rather than being satisfied.
- *
- * THE FLAGSHIP ASSERTION IS THE COMBINATION, not either field alone: a resolution that says
- * `enabled: true` sitting beside `managedHere: false`. That pair is the live hole this closes, and
- * asserting `managedHere: false` on a component that resolved to `enabled: false` anyway would not
- * exercise it.
- *
- * `role_undeclared` GETS ITS OWN POSTURE because it is the branch that reads as `commander` on the
- * config VALUE alone — `loadConfig` defaults `federationRole` to 'commander' when
- * SCP_FEDERATION_ROLE is unset. A deployment there is the exact opposite of what the default says,
- * and it is the population most likely to be an air-gapped outpost.
- *
- * A SEPARATE SERVER PER POSTURE, for the same reason block (6) does it: these are install-time
- * config read from the environment at boot, so toggling them on a shared fixture would lie about
- * how the value is produced.
- */
+/** Every resolve answer says whether anything here will act. See docs/routes.md §129. */
 describe("(7) the resolve answer is QUALIFIED by whether dependencies are managed here", () => {
   /** The instance unlock is a DEPLOYMENT-GLOBAL singleton in the shared test database, so it is set
    *  once here and deleted at teardown no matter how this block exits. Written by SQL rather than
@@ -967,7 +836,6 @@ describe("(7) the resolve answer is QUALIFIED by whether dependencies are manage
         // `false` for an unrelated reason, which is not the hole being closed.
         expect(resolved.resolution.enabled).toBe(true);
         expect(resolved.resolution.reason).toBe("enabled");
-        // …and the qualifier that makes it honest.
         expect(resolved.dependencyManagement.managedHere).toBe(false);
         expect(resolved.dependencyManagement.reason).toBe(posture.reason);
       });

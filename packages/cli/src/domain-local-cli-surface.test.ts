@@ -2,24 +2,7 @@ import type { Command } from "commander";
 import { describe, expect, it } from "vitest";
 import { buildProgram } from "./cli.js";
 
-/**
- * M20 (ADR-0031) — THE CLI HALF OF THE DOMAIN-LOCAL SURFACE.
- *
- * Charter principle 3 is API → SDK → CLI → IaC → UI, and a capability that stops at the SDK is a
- * parity hole. Two things need a witness here, and neither is about wording for its own sake:
- *
- *  1. **Every typed registry gets the flag.** `--domain-local` is added inside ONE factory
- *     (`registerTypedResourceCrud`) that generates the command set for every registered type, so a
- *     regression would silently drop it from all of them at once. Asserting across the whole list —
- *     derived from the program itself rather than retyped — is what makes "every registry" a claim
- *     rather than a hope.
- *
- *  2. **Publish is a VERB, and its help says the thing that cannot be undone.** `publish` is
- *     one-way: federation has no un-send. An operator meets that fact either in the help text or by
- *     discovering it afterwards, so the word "one-way" being present is a real requirement, not
- *     decoration. Equally, there must be NO `unpublish`/`--no-domain-local` anywhere — the absence
- *     is the guarantee, and an absence is exactly what nobody notices regressing.
- */
+/** M20 (ADR-0031) — THE CLI HALF OF THE DOMAIN-LOCAL SURFACE. See docs/cli.md §113. */
 
 function findCommand(root: Command, path: string[]): Command | undefined {
   let current: Command | undefined = root;

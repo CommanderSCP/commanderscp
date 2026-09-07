@@ -1,20 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-/**
- * `observed.truncation` HONESTY (docs/proposals/observed-truncation-ui.md §3, M23.1g) — the
- * card must not let a platform-side persistence cut render as "the executor never reported this".
- *
- * MUTATION-SENSITIVITY, stated up front rather than left implicit: every pill assertion below goes
- * RED if the corresponding `dropped: true` in its fixture is flipped to `false` (the field then
- * "renders" instead of being reported truncated) or deleted (the truncation key vanishes, which is
- * rule 6 territory and is pinned separately as its own case). The marker-text assertion goes RED if
- * `realImages`/`imageVersionLabel` is bypassed and `images[0]` is rendered directly again — that is
- * the actual regression this proposal exists to prevent, not a hypothetical.
- *
- * Same harness as `change-pipeline-hold.test.tsx`: `renderToStaticMarkup`, no jsdom, `Link` stubbed
- * to a bare anchor since it throws outside a `RouterProvider`.
- */
+/** The observed-truncation honesty rules, as rendered. See docs/web.md §75. */
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -240,14 +227,7 @@ describe("PipelineWaveCard: observed.truncation honesty (proposal §3)", () => {
   });
 });
 
-/**
- * `ChangeWaveTargetSchema.hold` / `ChangeWaveSchema.heldTargetCount` (M25.UI increment 2) — the
- * freeze half of a target's hold, read straight off the target rather than a `holdFor` closure
- * (unlike the stage-dependency half, which mirrors `change-pipeline-hold.test.tsx`'s own reasoning
- * for testing at THIS altitude: the card is the thing that owns rendering it once handed the
- * field, and `wave={wave}` on every real page already carries `targets[].hold` straight from the
- * `explain` response — no page-level plumbing is needed for the freeze half at all).
- */
+/** `ChangeWaveTargetSchema.hold` / `ChangeWaveSchema.heldTargetCount`. See docs/web.md §76. */
 const FREEZE_ENTRY: WaveTargetFreezeEntry = {
   freezeId: "8b9c0d1e-2f3a-4b5c-9d6e-7f8a9b0c1d2e",
   scope: { objectId: "9c0d1e2f-3a4b-4c5d-8e9f-0a1b2c3d4e5f", name: "amer" },
@@ -285,20 +265,7 @@ const PROBE_ENTRY = {
   lastReportedAt: "2026-08-27T23:40:00.000Z"
 };
 
-/**
- * THE CONTINUOUS-PROBE HALF OF A TARGET'S HOLD (team-pipeline-iac D21/D11, increment 8).
- *
- * WHAT WAS BROKEN: `ChangeWaveTargetSchema.hold.continuousTests` has been on the wire since
- * increment 8 and this component read only `hold.freezes`. A target held SOLELY by a stale or
- * failed probe therefore rendered a `held` badge with NOTHING beneath it — the operator could see
- * that the wave was stuck and not why, for a reason the server had already composed and sent. It is
- * the same shape as the truncated-as-absent lie this card had to fix once before: the data arrived
- * and the UI dropped it.
- *
- * Case 1 is the load-bearing one. It asserts the LINE, not merely the badge — a test that only
- * checked for `held` would have passed against the broken build, since the badge came from the
- * freeze half and the stage-dependency half all along.
- */
+/** THE CONTINUOUS-PROBE HALF OF A TARGET'S HOLD. See docs/web.md §77. */
 describe("PipelineWaveCard: the continuous-probe hold half (increment 8, D21)", () => {
   it("a probe-ONLY held target renders the reason, not a badge with nothing under it", () => {
     const html = renderCard({
@@ -490,7 +457,6 @@ describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, 
 
     // ONE badge, not two — `anyHeld` is a union, never a second "held" pill.
     expect((html.match(/pipeline-wave-target-held-badge/g) ?? []).length).toBe(1);
-    // BOTH lines present, neither one winning.
     expect(html).toContain('data-testid="pipeline-wave-target-hold"');
     expect(html).toContain("agentkit-api");
     expect(html).toContain('data-testid="pipeline-wave-target-freeze-hold"');

@@ -1,21 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseTopologyWaves } from "./topology-waves.js";
 
-/**
- * Unit tests for `parseTopologyWaves`'s `gates` handling (§14 resolution 5). The rest of the
- * parser's loud-refusal behaviour (malformed `waves`, bad `mode`, missing `targets`, ...) is
- * pinned by `stage-compilation.integration.test.ts`'s mutation log; these tests are scoped to what
- * changed here: the `gates` key itself, and the fact that adding it must not weaken every OTHER
- * unknown-key refusal.
- *
- * **Mutation log** (each applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | drop `"gates"` from `KNOWN_WAVE_KEYS` | "a valid gates entry parses" fails |
- * | drop the `WaveGateSchema` validation (accept any `gates` array) | "a malformed gates entry is refused" fails |
- * | normalize absent `gates` to `[]` (`w.gates ?? []`), or empty `[]` to `undefined` | "absent gates and an empty gates array parse to DISTINGUISHABLE" fails |
- */
+/** Unit tests for `parseTopologyWaves`'s `gates` handling. See docs/coordination.md §1003. */
 describe("coordination/topology-waves — parseTopologyWaves gates", () => {
   const wave = (extra: Record<string, unknown> = {}) => ({
     name: "gamma",

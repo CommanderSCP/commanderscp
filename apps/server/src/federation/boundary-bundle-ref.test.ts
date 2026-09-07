@@ -7,19 +7,7 @@ import {
   type PromotionExportStamp
 } from "./boundary-bundle-ref.js";
 
-/**
- * §9.4 — the pure `sourceRef` helpers under the export stamp. The integration test
- * (boundary-segment.integration.test.ts scenario 7) covers the real export path; this pins the
- * defensive edges a real export never produces on its own: a malformed stored entry, a duplicate
- * checksum, a stamp on a non-object `sourceRef`.
- *
- * MUTATION LOG (each applied ALONE, then reverted)
- * | Mutation | Result |
- * |---|---|
- * | `withPromotionExport` appends without the checksum dedupe | the dedupe test FAILS (2 entries) |
- * | `promotionExportsOf` returns malformed entries as-is (no safeParse) | the lenient test FAILS (`unparseable` 0, entries 2) |
- * | `withoutPromotionExports` returns the input unchanged | the strip test FAILS |
- */
+/** §9.4 — the pure `sourceRef` helpers under the export stamp. See docs/federation.md §48. */
 describe("boundary-bundle-ref: promotionExports[] helpers (§9.4)", () => {
   const stamp = (checksum: string): PromotionExportStamp => ({
     peerDomainId: "11111111-1111-4111-8111-111111111111",

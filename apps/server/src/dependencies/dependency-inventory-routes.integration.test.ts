@@ -38,59 +38,7 @@ import {
 import { ingestComponentManifests } from "./inventory-ingestion.js";
 import { resolveComponentIngestionGate } from "./subscription-resolution.js";
 
-/**
- * M21.6 — THE READ SURFACE against real Postgres and the real app
- * (docs/proposals/dependency-subscription-ui.md §3.1/§3.2/§5).
- *
- *   GET /components/{idOrUrn}/dependency-inventory
- *   GET /components/{idOrUrn}/dependency-bumps
- *
- * What this file pins, and why each pin is the shape it is:
- *
- *  1. DELETE-THE-WIRING. Both routes are requested THROUGH THE APP and asserted 200. Remove either
- *     `typed.route({...})` registration in `routes/dependency-subscriptions.ts` and the matching
- *     test 404s. (Proven once at authoring time; this test is what keeps it proven.)
- *  2. ONE ROW PER (line, dependency manifest). `manifestPath` is in `component_dependencies`' key,
- *     so a line declared from two manifests is two rows — a consumer that wants one-per-line groups.
- *  3. NO SECOND AND. Every row's `subscription` is BYTE-EQUAL (JSON.stringify) to what
- *     `GET /components/{id}/dependency-subscription` returns THE SAME CALLER for THE SAME LINE. That
- *     equality dies the moment anyone recomputes `enabled` locally in the read path — mutated once
- *     to watch it die, then restored.
- *  4. `componentGate` EQUALS the ingestion gate — the same `resolveComponentIngestionGate` answer for
- *     the same actor, not a re-derivation.
- *  5. `ingestion` IS THE M21.7 STAMP, read in the same transaction: `null` (never attempted) and a
- *     null `lastIngestionDecision` UNTIL an ingested pass writes both — then the stamp carries the
- *     pass's outcome/source/rows and its per-repo `manifests[]`, and the Decision its id and
- *     manifest paths. Mutation: `ingestion: null` hard-coded in the route → the ingested case RED.
- *  5a. BOTH responses carry `dependencyManagement` from `dependencyManagementOf(config)` — on this
- *     file's DECLARED commander `{ managedHere: true, reason: "commander" }`, and on an UNDECLARED
- *     server (a second harness) `{ managedHere: false, reason: "role_undeclared" }` with the same
- *     200 and the same RBAC (the reads do not refuse; the envelope qualifies). Mutation: drop the
- *     spread from either route → the response serializer refuses the missing required field.
- *  6. RBAC IS AT THE COMPONENT: a Viewer bound at the component 200s, a principal bound nowhere near
- *     it 403s, an unknown component 404s. This is the property that makes the inventory reachable to
- *     a component team at all (`GET /changes` / `GET /decisions` are org-scoped and would 403 them).
- *  7. THE COORDINATE TRAVELS VERBATIM (`@acme/lib`).
- *  8. PAGINATION terminates and neither drops nor repeats a row; a syntactically valid but
- *     semantically garbage cursor (a non-uuid id, an unparseable date) is the FIRST PAGE, not a 500.
- *  8a. RESOLVED AS THE CALLER — not merely "byte-equal to resolve() for the admin". The objectRef
- *     policies above match independently of the actor, so the admin and the SYSTEM sentinel gather
- *     the SAME candidates and a read path that hard-coded `SYSTEM_ACTOR_ID` (or dropped the
- *     parameter) would leave every other pin green. The one place the actor changes the answer is a
- *     group-only enable (acting half `via: "group"` — no `owns` edge), which the authoring guard
- *     refuses at every local door but which reaches the DB over the `federationImport` exemption.
- *     A member of that group reads `enabled` and the org admin reads `not_enabled` for the SAME
- *     row; both byte-equal to THEIR OWN resolve(). Mutated once (actor → SYSTEM sentinel in
- *     `dependency-read-surface.ts`): this pin RED, everything else green; restored.
- *  9. BUMPS: rows are joined to the change name and to the newest merge Decision (drop the join and
- *     the test dies — mutated once), `pullRequestUrl` is READ off the authorship row (the URL the
- *     provider returned, stored by `recordBumpPullRequest`) — present on the row that has one, `null`
- *     on the row that does not, never composed — newest dispatch first,
- *     the dispatch Decision's delivery is read (not the tenant-writable `source_ref`), and RBAC is
- *     at the component.
- *
- * INSTANCE-GLOBAL FIXTURE: the unlock singleton is deleted at teardown however this file exits.
- */
+/** The read surface, against real Postgres and the real app. See docs/dependencies.md §185. */
 describe("M21.6 dependency read surface — inventory + bumps routes", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -219,12 +167,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     await declare(component, lineWanted, "services/api/package.json", "^1.1.0");
     lineOptedOutId = await declare(component, lineOptedOut, "package.json", "^1.0.0");
 
-    // A DECLARED producer on the wanted COORDINATE (ADR-0032 §7e — the grain is the coordinate,
-    // `dependency_line_producers`, not the line), and an OBSERVED head — so `producer` and `head`
-    // are asserted against stored facts rather than against nulls that would pass for the wrong
-    // reason. The opted-out line's coordinate (`acme-lib`, the slug-colliding spelling) is NOT
-    // declared: a producer read that matched by URN slug instead of by verbatim coordinate would
-    // show a producer on that row too.
+    // A DECLARED producer on the wanted COORDINATE. See docs/dependencies.md §186.
     await inOrg(async (tx) => {
       await declareDependencyLineProducer(tx, org.orgId, {
         ecosystem: lineWanted.ecosystem,
@@ -255,9 +198,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (1) DELETE-THE-WIRING — both routes answer through the app
-  // -----------------------------------------------------------------------------------------
   describe("(1) the routes are registered", () => {
     it("GET /components/{id}/dependency-inventory answers 200 through the app, carrying the REQUIRED dependencyManagement envelope", async () => {
       const { status, body } = await getInventory(component, org.adminToken);
@@ -314,9 +255,6 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (2) The inventory
-  // -----------------------------------------------------------------------------------------
   describe("(2) the inventory", () => {
     it("returns one row per (line, dependency manifest), coordinates verbatim, head and producer read", async () => {
       const { status, body } = await getInventory(component, org.adminToken);
@@ -337,7 +275,6 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       const wantedRoot = body.rows.find(
         (r) => r.line.id === lineWantedId && r.manifestPath === "package.json"
       )!;
-      // Verbatim — the scoped npm name survives untouched.
       expect(wantedRoot.line.coordinate).toBe("@acme/lib");
       expect(wantedRoot.declaredVersion).toBe("^1.2.0");
       expect(wantedRoot.resolvedVersion).toBe("1.2.0");
@@ -623,9 +560,6 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (3) The bumps
-  // -----------------------------------------------------------------------------------------
   describe("(3) the bumps", () => {
     let bumped: string;
     let olderChange: string;

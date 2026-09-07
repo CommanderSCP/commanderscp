@@ -19,22 +19,7 @@ import { resolveDeclaredContainmentParent } from "../graph/containment-parent-au
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { createPlacement, listPlacements, withdrawPlacement } from "../graph/placements-repo.js";
 
-/**
- * `placement` routes (ADR-0026 D2/D3/D14, post-import-configuration.md §3, owner decision D17).
- *
- * `placement` is deliberately NOT a `TYPED_REGISTRY_RESOURCES` entry — the shared template's
- * `POST`/`PUT` take free-form `properties` and cannot require two endpoints, resolve them,
- * type-check them, or write the derived edges atomically. It is refused on the generic
- * `/objects/placement` route and on the federation overlay route (`graph/pair-bound-types.ts`), so
- * this is the ONLY door by which a placement is declared locally, and it requires both endpoints.
- *
- * NO `PATCH`, deliberately. A placement's properties ARE its identity: re-pointing
- * `componentId`/`deploymentTargetId` would silently make it a different placement while keeping its
- * id, URN, executor binding and wave-target history — and per D8 a pair is DECLARED, so changing one
- * is a new declaration, not an edit. Deleting and re-declaring is the honest form and leaves an
- * audit trail that says so. (Renaming for display is not offered either, since the name is derived
- * from both endpoints and `deriveUrn` never recomputes a URN — §6's D13 finding.)
- */
+/** The placement routes, and the identity they enforce. See docs/routes.md §305. */
 export function registerPlacementRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
   const base = "/api/v1/placements";
@@ -134,13 +119,7 @@ export function registerPlacementRoutes(app: FastifyInstance, deps: AppDeps): vo
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // THE GATE, AND THE ROW FILTER, IN ONE CALL (role-model.md §8.2, increment 2.5b). The
-        // org-root `object:read` check this replaced is still the first thing it runs and still
-        // throws the same 403 when nothing else grants; what is new is that a principal bound
-        // BELOW the org root now lists the placements their binding reaches instead of being
-        // refused outright. See `authz/list-door-scope.ts` for why the resolver is a callback:
-        // `?scopeObjectId=` must be resolved AFTER the gate (existence oracle) and authorized at
-        // the RESOLVED id (404-becomes-403).
+        // THE GATE, AND THE ROW FILTER, IN ONE CALL. See docs/routes.md §306.
         const readableFilter = await readableScopeForListDoor(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,

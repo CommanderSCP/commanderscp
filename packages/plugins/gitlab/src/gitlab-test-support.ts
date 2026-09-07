@@ -1,11 +1,4 @@
-/**
- * Test-only support shared by `gitlab.conformance.test.ts` and `index.test.ts`. NOT part of this
- * package's public surface. Mirrors `@scp/plugin-gitea`'s `gitea-test-support.ts` — the same
- * empirically-verified reason applies: `nock@13` does NOT intercept the global `fetch`/undici
- * client, only Node's `http`/`https` core modules, so the `ScopedHttpClient` built here uses
- * `node:https`/`node:http` directly (never `fetch`) — otherwise every `nock` fixture in this
- * package's suite would be silently defeated (CLAUDE.md: "Tests never touch the internet").
- */
+/** Test-only support, not part of this package's surface. See docs/plugins.md §214. */
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type {
@@ -17,17 +10,7 @@ import type {
 import { scopedHttpResponseTooLargeError } from "@scp/plugin-api";
 import type { GitlabConfig } from "./index.js";
 
-/**
- * Builds a `ScopedHttpClient` backed by Node's `http`/`https` core modules — see module doc for
- * why this, and not `fetch`, is what makes `nock` fixtures actually apply.
- *
- * Honors `ScopedHttpRequest.maxResponseBytes` the SAME way the production client
- * (`apps/server/src/plugin-host/subprocess-entry.ts`'s `scopedFetchHttpClient`) does — bound
- * checked DURING accumulation, in the `data` handler itself, not after `end` — so this package's
- * own bound tests exercise the real transport-level enforcement over a real (loopback) HTTP
- * connection, not a mock of it. `res.destroy()` on the incoming message aborts the read at the
- * socket the moment the bound trips, mirroring the production client's `reader.cancel()`.
- */
+/** An HTTP client backed by Node's core modules. See docs/plugins.md §215. */
 export function createRealHttpClient(): ScopedHttpClient {
   return {
     request(req: ScopedHttpRequest): Promise<ScopedHttpResponse> {

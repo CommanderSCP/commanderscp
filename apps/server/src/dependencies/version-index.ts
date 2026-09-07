@@ -19,46 +19,7 @@ import {
   type FeedRead
 } from "./version-index-feed.js";
 
-/**
- * M21.4 — THE THIRD-PARTY VERSION INDEX SEAM (ADR-0032 §7).
- *
- * Two jobs, and keeping them in one file is deliberate:
- *
- *  1. REACH an index for one ecosystem — through the plugin host, so `egress-guard.ts` and the
- *     per-instance `allowedHosts` allowlist apply to an operator-configurable registry URL — or say
- *     precisely why it could not be reached.
- *  2. RANK what came back, in the ONE place ranking is allowed to happen.
- *
- * NEVER GUESS A VERSION (ADR-0032 §7). This is the rule the whole module is arranged around, so it
- * is worth stating as the property rather than the behaviour: **if a version cannot be determined,
- * NOTHING is recorded and the reason is legible.** A wrong version is worse than no version, because
- * a wrong one makes a component look up to date — a missed bump is a delay, a wrong bump is a commit
- * in someone's repository. Concretely:
- *
- *  - ordering is `@scp/dependency-manifests`'s `compareVersions` and nothing else. There is no
- *    string comparison of versions anywhere in this file, and there must never be: string order
- *    gives `"9" > "10"` and `"1.2.3-alpine" < "1.2.3"`.
- *  - a candidate whose text does not parse is SKIPPED and COUNTED, never coerced.
- *  - a line whose own `major` does not parse yields `undetermined`, not a scan of everything.
- *  - `unavailable` (nothing answered) is a DIFFERENT outcome from `undetermined` (something answered
- *     and nothing on the line could be understood) and from a head being unchanged. Collapsing any
- *     two of those makes an air-gapped estate indistinguishable from a fully up-to-date one.
- *
- * THE INDEXES ARE OPERATOR CONFIG, NOT TENANT CONFIG. Each ecosystem's base URL comes from this
- * process's own environment, is unset by default, and reaches the plugin instance as its config
- * together with an `allowedHosts` entry derived from that same URL. An unset URL is not a
- * degradation to "no new version" — it is `not_configured`, the air-gap default (charter principle
- * 5: nothing phones home because someone installed the chart).
- *
- * IMAGES NEED NO FALLBACK. `oci` is configured from the allowlist the deployment ALREADY has
- * (`SCP_ARTIFACT_OCI_REGISTRY_HOSTS`) and the vendored skopeo it ALREADY resolves, so in an
- * air-gapped domain the org's own registry is a working index while the four language ecosystems
- * report unavailable. `version-poll.integration.test.ts` pins exactly that asymmetry.
- */
-
-// -------------------------------------------------------------------------------------------
-// Which plugin module serves which ecosystem
-// -------------------------------------------------------------------------------------------
+/** M21.4 — THE THIRD-PARTY VERSION INDEX SEAM. See docs/dependencies.md §413. */
 
 /** Total over `DependencyEcosystem` by construction — adding an ecosystem to the enum without an
  *  index here is a compile error, not a silent "this one never gets polled". */
@@ -80,17 +41,7 @@ export const INDEX_URL_ENV_BY_ECOSYSTEM: Record<DependencyIndexEcosystem, string
   oci: null
 };
 
-/**
- * The plugin-instance config for one ecosystem's index, or `null` when this deployment has none.
- *
- * `allowedHosts` is derived from the operator's OWN url rather than taken from anywhere a tenant can
- * write — the same discipline `executor-bindings-repo.ts` applies — so the egress allowlist and the
- * target can never disagree. `allowInternalEgress` is deliberately NOT set: a language index is a
- * registry, and pointing one at `127.0.0.1`/`10.x` is the SSRF shape MAJOR #6 closed. An operator
- * running an in-cluster mirror reaches it the same way every other tenant-configurable plugin does
- * (the two-layer `SCP_INTERNAL_EGRESS_HOSTS` + execution-system declaration), which this path
- * deliberately does not shortcut.
- */
+/** The index config for one ecosystem, or null. See docs/dependencies.md §414. */
 export function resolveIndexInstanceConfig(
   ecosystem: DependencyIndexEcosystem,
   orgId: string,
@@ -143,9 +94,7 @@ export function resolveIndexInstanceConfig(
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // Ranking — the ONE place a version order is computed
-// -------------------------------------------------------------------------------------------
 
 /** Why a head could not be picked even though an index answered. Each is a distinct operator
  *  action, which is the whole reason they are not one value. */
@@ -168,7 +117,6 @@ export interface LineHeadSelection {
   /** The head of the line, or `undefined` — and `undefined` means NOTHING IS RECORDED. */
   head?: { version: string; parsed: ComparableVersion };
   reason?: LineHeadUndeterminedReason;
-  /** How many versions the index offered. */
   considered: number;
   /** Offered but UNPARSEABLE — `latest`, `stable`, a branch name, a malformed tag. Counted so a
    *  Decision can say "we looked at 40 tags and understood 12" instead of silently discarding 28. */
@@ -177,17 +125,7 @@ export interface LineHeadSelection {
   offLine: number;
 }
 
-/**
- * THE HEAD OF A LINE — the single ranking function.
- *
- * Pure and total: no I/O, no throw, and every rejected candidate is accounted for in the returned
- * counts. Extracted as a pure function per BUILD_AND_TEST.md §4.1 so the never-guess properties are
- * pinned without a database, a network, or a plugin host.
- *
- * A caller MUST treat `head === undefined` as "record nothing". There is deliberately no
- * "best-effort" branch and no `?? versions[0]`: the moment such a fallback exists, the failure mode
- * is a plausible-looking wrong answer instead of a visible absence.
- */
+/** THE HEAD OF A LINE. See docs/dependencies.md §415. */
 export function selectLineHead(
   line: LineHeadIdentity,
   versions: readonly DependencyIndexVersion[]
@@ -247,9 +185,7 @@ export function selectLineHead(
   return { head: best, considered, skipped, offLine };
 }
 
-// -------------------------------------------------------------------------------------------
 // Asking an index — plugin first, operator-loaded feed second, unavailable last
-// -------------------------------------------------------------------------------------------
 
 /** Where an answer came from, carried into the Decision so "why does this line say that?" is
  *  answerable from the record alone (charter principle 6). */
@@ -259,11 +195,7 @@ export type LineHeadOutcome =
   | {
       status: "observed";
       source: LineHeadSource;
-      /** The version AND the digest that belongs to it, always both — `digest: null` means "this
-       *  version's bytes were not resolved" (a language ecosystem has none, the air-gap feed carries
-       *  none, an inspect can fail). It is NOT optional, because an ABSENT digest is what let a
-       *  previous version's digest survive beside a new tag: the pair moves together (ADR-0032 §7,
-       *  `line-head.ts`). */
+      /** The version and its digest, always both. See docs/dependencies.md §416. */
       head: { version: string; digest: string | null };
       selection: LineHeadSelection;
     }
@@ -287,16 +219,7 @@ export interface QueryLineHeadDeps {
   /** Pre-read once per tick by the caller — reading and staleness-classifying the operator feed per
    *  line would re-stat the same file for every dependency in the estate. */
   feed?: FeedRead;
-  /**
-   * Called with the id of an index instance this call STARTED (or re-used), immediately after
-   * `host.start()` returns, so the caller can stop it when its sweep is over (M21.4 lifecycle).
-   *
-   * REPORTED, NEVER INFERRED. The caller could compute the same ids by re-running
-   * `resolveIndexInstanceConfig` over the ecosystems in its work-list — and that is precisely the
-   * shape that goes wrong later: it would be a SECOND derivation of "which instances are running",
-   * true only while the two agree. This one is a receipt from the code that actually started them,
-   * so an instance the sweep starts can never be one the sweep forgets to stop.
-   */
+  /** Called with the id of an instance this call started. See docs/dependencies.md §417. */
   onIndexInstanceStarted?: (instanceId: string) => void;
 }
 
@@ -308,28 +231,7 @@ function unavailableOutcome(
   return { status: "unavailable", source, reason, detail };
 }
 
-/**
- * Resolve ONE line's head.
- *
- * Order of resort, and why it is this order:
- *  1. THE INDEX PLUGIN, when this deployment configures one for the ecosystem. Live, authoritative.
- *  2. THE OPERATOR-LOADED SIGNED FEED, when it does not — the air-gap path (see
- *     `version-index-feed.ts`, which copies the Trivy-DB shape verbatim). A HARD-STALE feed is
- *     refused rather than used, fail-closed, exactly as a hard-stale scanner DB is.
- *  3. UNAVAILABLE. Never "no new version".
- *
- * A feed is not consulted when a live index answered — including when it answered `unknown_coordinate`
- * or `unauthorized`. A live index's "I do not have this package" is a real answer about the world,
- * and letting a months-old operator snapshot override it is how a subscription gets bumped onto a
- * version that was withdrawn.
- *
- * IT TAKES A {@link ThirdPartyLine}, AND THAT IS THE INGRESS SPLIT, NOT A TYPE FLOURISH (ADR-0032
- * §7). An INTERNAL line's head is DERIVED from the org's own production releases; polling one
- * against a public index lets a stranger's package that shares the coordinate overwrite the org's
- * own `2.1.0` with `9.9.9`, and every subscriber is then bumped onto it — dependency confusion,
- * arriving on a daily timer. The brand means a caller cannot pass an internal line by forgetting a
- * filter: the only constructor is `asThirdPartyLine`, which reads `produced_by_object_id`.
- */
+/** Resolve ONE line's head. See docs/dependencies.md §418. */
 export async function queryLineHead(
   line: ThirdPartyLine,
   deps: QueryLineHeadDeps
@@ -376,17 +278,7 @@ export async function queryLineHead(
     };
   }
 
-  // A MUTABLE TAG IS NOT AN IDENTITY (ADR-0032 §7): for images the digest is what the version claim
-  // actually means, so it is resolved for the head and only the head — one extra call per line, not
-  // one per tag.
-  //
-  // AN UNRESOLVED DIGEST IS `null`, NEVER ABSENT. A digest that cannot be resolved does not void the
-  // observation — the tag is still the head, and the air-gap feed carries no digests at all, so
-  // requiring one would make an air-gapped estate unable to record an image head ever. But it must
-  // travel as an explicit `null`: while this field was optional, an unresolved digest left the
-  // PREVIOUS version's digest standing beside the NEW tag, and the row asserted a (tag, digest) pair
-  // that never existed in any registry. The pair moves together — `recordDependencyLineHead` writes
-  // both from this one observation.
+  // A MUTABLE TAG IS NOT AN IDENTITY. See docs/dependencies.md §419.
   let digest: string | null = null;
   if (ecosystem === "oci") {
     try {

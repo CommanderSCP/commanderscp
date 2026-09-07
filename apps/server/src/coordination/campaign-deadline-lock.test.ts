@@ -9,38 +9,7 @@ import type { CampaignDeadline, CampaignRecipe } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { CampaignAdoptionResult } from "./campaign-adoption.js";
 
-/**
- * ================================================================================================
- * M25.6a — THE PARTS OF THE DEADLINE PREDICATE THAT NEED NO DATABASE
- * ================================================================================================
- *
- *  1. `resolveCampaignDeadline` — every outcome, including the two that must NOT be reported as
- *     "no deadline": a document the strict schema refuses, and one whose `at` passes the ISO FORMAT
- *     check but is not an instant any clock can hold.
- *  2. NOT DUE => INERT, proven twice over: the transaction handed in is a Proxy that throws on any
- *     property access, AND the one resolution core is a recorder asserted to have been called ZERO
- *     times. The second is the one that actually bites, because every query this predicate can make
- *     goes through that function — so "the core was not called" IS "zero further queries", and
- *     deleting the early return turns the call count into 1.
- *  3. The DUE branches: `adopted` is the only exit; `not_adopted` and `unknown` both lock, and the
- *     two are recorded distinctly rather than collapsed.
- *  4. `describeLockedTargets`'s sort, against a deliberately DESCENDING input.
- *  5. The census pin between this feature's declared-signal vocabulary and `AdoptionEvidenceSchema`'s
- *     discriminator, so a fourth evidence kind cannot land on only one of them.
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THE ONE RESOLUTION CORE IS STUBBED HERE, AND WHAT STOPS THAT HIDING ANYTHING
- * ------------------------------------------------------------------------------------------------
- * `evaluateCampaignAdoption` reads three real tables and cannot produce `adopted` without a
- * database; the repo's rule is that a DB-reading predicate is exercised against real PostgreSQL and
- * never a mocked one. So what is stubbed here is a SIBLING MODULE, not a database — this file tests
- * the deadline predicate's own branch logic and nothing else.
- *
- * The thing that keeps that honest is `campaign-deadline.integration.test.ts`, which drives THIS
- * predicate over the REAL core against real PostgreSQL for all three verdicts (a component at 3.12
- * is `adopted` and not locked; one at 2.7 is `not_adopted` and locked; one never ingested is
- * `unknown` and locked). A stub that answered differently from the core would be caught there.
- */
+/** The parts of the deadline predicate that need no database. See docs/coordination.md §83. */
 
 /** Hoisted above the `vi.mock` factory below — a module-scope `const` would be in its temporal dead
  *  zone when the factory runs during import. */
@@ -85,7 +54,6 @@ const DEADLINE_AT = "2026-12-31T23:59:59.000Z";
 const DEADLINE = { at: DEADLINE_AT } as const;
 const AT = new Date(DEADLINE_AT);
 
-/** One stored waiver, as `POST /campaigns/{id}/deadline-override` writes it. */
 function waiver(targetObjectId: string, until?: string) {
   return {
     targetObjectId,
@@ -155,19 +123,7 @@ describe("resolveCampaignDeadline — a refusal is never an absence", () => {
     expect(resolved.outcome).toBe("malformed");
   });
 
-  /**
-   * §4.1's `overrides[]` — M25.6a REFUSED this key outright, and this case is the same case flipped
-   * rather than a new one, because what changed is a fact about the system rather than about the
-   * test: THERE IS NOW A WRITER. `POST /campaigns/{id}/deadline-override` mints entries behind the
-   * Owner-only `campaign:deadline-override` (drizzle/0088) checked at the campaign plus
-   * `object:write` at each named target, so an `overrides` array on a stored document is now an
-   * AUTHORIZED artefact rather than an unauthenticated waiver channel sitting in the schema.
-   *
-   * THE MEMBERS ARE STILL STRICT, and that half is asserted directly below rather than assumed. The
-   * accepted-but-unread hazard M25.6a named did not go away; it moved down one level. A waiver whose
-   * unknown key was silently dropped would be a document an operator believes says one thing while
-   * the predicate reads another — and this document is the input to a governance record.
-   */
+  /** The same refusal flipped, not a new case. See docs/coordination.md §84. */
   it("accepts an `overrides` array now that M25.6b has a writer for it", () => {
     const resolved = resolveCampaignDeadline({
       deadline: {
@@ -213,18 +169,7 @@ describe("resolveCampaignDeadline — a refusal is never an absence", () => {
     }
   });
 
-  /**
-   * THE AUTHORING DOORS CANNOT MINT ONE. `POST /campaigns` runs at plain `object:write`, always — a
-   * create is always a FIRST set. `POST /campaigns/{id}/deadline` runs at plain `object:write` for a
-   * first set or a SHORTENING, and adds the Owner-only `campaign:deadline-override` only on its
-   * widening acts (a clear, or a move to a later instant — owner ruling 2026-08-25, D1 b-i). The
-   * waiver ALWAYS takes `campaign:deadline-override` at the campaign, and — the part neither
-   * authoring door pays at any price — `object:write` AT EACH NAMED TARGET, plus a per-target audit
-   * event. So if the two shared one schema, `POST /campaigns` would be the expensive permission's
-   * outright bypass and the deadline route would be its bypass for the per-target bar even where the
-   * permissions coincide. The split is the authority check and this is what holds it in place — a
-   * 400 at the door, never a key silently dropped.
-   */
+  /** THE AUTHORING DOORS CANNOT MINT ONE. See docs/coordination.md §85. */
   it("the AUTHORING schema omits `overrides` entirely — the cheap door cannot mint a waiver", () => {
     expect("overrides" in CampaignDeadlineSchema.shape).toBe(true);
     expect("overrides" in CampaignDeadlineInputSchema.shape).toBe(false);
@@ -242,17 +187,7 @@ describe("resolveCampaignDeadline — a refusal is never an absence", () => {
     expect(attempt.success).toBe(false);
   });
 
-  /**
-   * A DEADLINE THAT COULD NEVER COME DUE IS REFUSED AT THE PARSE, whichever bar catches it.
-   *
-   * MEASURED, and recorded because it decides which of the two bars is load-bearing: this repo's
-   * zod validates the CALENDAR, not merely the shape — month 13, 30 February, 31 April, day 32 and
-   * leap-second 23:59:60 are all refused by `z.string().datetime()` itself. So
-   * `resolveCampaignDeadline`'s own `Invalid Date` guard is a SECOND bar that nothing reaches today.
-   * It is asserted here as an OUTCOME ("this never becomes a live deadline") rather than as a claim
-   * about which line did the refusing, so the case keeps its meaning if the wire schema is ever
-   * loosened toward the bare string §4.1's federation argument pushes for.
-   */
+  /** A deadline that can never come due is refused. See docs/coordination.md §86. */
   it("refuses every instant no clock can hold, so a deadline can never silently fail to come due", () => {
     for (const at of [
       "2026-13-01T00:00:00.000Z",
@@ -266,11 +201,7 @@ describe("resolveCampaignDeadline — a refusal is never an absence", () => {
   });
 
   it("names six distinct decision kinds so no two writers about a campaign can alternate", () => {
-    // `insertDecisionIfChanged` dedupes against the LATEST row of a `(subject_id, kind)` pair, and
-    // the wave gate, the freeze hold, the adoption shortcut, the lock, the authoring act and
-    // M25.6b's waiver all write about the SAME subject — a campaign object. Any two sharing a kind
-    // is ADR-0024's 1.44 GB/day flood: a human `allow` row interleaving with the tick's `block`
-    // rows means suppression never fires once.
+    // Dedupe is against the latest row of a subject and kind. See docs/coordination.md §87.
     const kinds = new Set([
       "gate",
       "freeze_admission",
@@ -284,11 +215,7 @@ describe("resolveCampaignDeadline — a refusal is never an absence", () => {
 });
 
 describe("evaluateCampaignDeadlineLock — the predicate", () => {
-  /**
-   * NOT DUE => INERT, and the assertion that makes it non-vacuous is the CALL COUNT. Every read this
-   * predicate can make goes through the one resolution core, so "the core was not called" is exactly
-   * "zero further queries". Deleting the `now <= at` early return makes this call count 1.
-   */
+  /** Not due means inert, and the call count proves it. See docs/coordination.md §88. */
   it("is INERT before the deadline: no lock, and the resolution core is not called ONCE", async () => {
     adoptionCore.mockClear();
     adoptionCore.mockResolvedValue(adoption("not_adopted"));
@@ -299,11 +226,7 @@ describe("evaluateCampaignDeadlineLock — the predicate", () => {
     expect(adoptionCore).toHaveBeenCalledTimes(0);
   });
 
-  /**
-   * THE BOUNDARY, IN BOTH DIRECTIONS. `<=`, not `<`: the deadline instant itself is still inside the
-   * window the author granted. An off-by-one here locks a fleet a millisecond early and nothing in
-   * the record would say so.
-   */
+  /** THE BOUNDARY, IN BOTH DIRECTIONS. See docs/coordination.md §89. */
   it("treats the deadline INSTANT as still inside the window, and one millisecond later as past it", async () => {
     adoptionCore.mockClear();
     adoptionCore.mockResolvedValue(adoption("not_adopted"));
@@ -327,13 +250,7 @@ describe("evaluateCampaignDeadlineLock — the predicate", () => {
     expect(adoptionCore).toHaveBeenCalledTimes(1);
   });
 
-  /**
-   * BOTH ABSENCES LOCK, AND THEY ARE RECORDED DISTINCTLY. `not_adopted` ("we looked, it is a
-   * laggard") and `unknown` ("the named evidence source had nothing to say") are different facts
-   * with different remedies — migrate it, versus wire up the evidence source. Collapsing them to a
-   * boolean would reproduce, inside this feature's own permanent record, the conflation
-   * `campaign-adoption.ts` exists to refuse.
-   */
+  /** BOTH ABSENCES LOCK, AND THEY ARE RECORDED DISTINCTLY. See docs/coordination.md §90. */
   it("locks on `not_adopted` AND on `unknown`, recording which", async () => {
     adoptionCore.mockClear();
     adoptionCore
@@ -357,11 +274,7 @@ describe("evaluateCampaignDeadlineLock — the predicate", () => {
   });
 });
 
-/**
- * ================================================================================================
- * M25.6b — THE PER-TARGET WAIVER, INSIDE THE SAME PREDICATE
- * ================================================================================================
- */
+/** M25.6b — THE PER-TARGET WAIVER, INSIDE THE SAME PREDICATE */
 describe("evaluateCampaignDeadlineLock — the M25.6b override branch", () => {
   function evaluateWith(
     deadline: CampaignDeadline,
@@ -379,13 +292,7 @@ describe("evaluateCampaignDeadlineLock — the M25.6b override branch", () => {
     });
   }
 
-  /**
-   * THE WAIVER EXITS BEFORE THE RESOLUTION CORE IS ASKED — §4.2's "cheapest first", asserted by CALL
-   * COUNT rather than by reading the source. That is the same non-vacuity trick the not-due case
-   * uses: every query this predicate can make goes through `evaluateCampaignAdoption`, so "the core
-   * was not called" IS "this cost no evidence query". Moving the override check BELOW the adoption
-   * call leaves `locked` correct and turns this count into 1.
-   */
+  /** THE WAIVER EXITS BEFORE THE RESOLUTION CORE IS ASKED. See docs/coordination.md §91. */
   it("a live waiver excuses the target AND costs no evidence query — the core is not called ONCE", async () => {
     adoptionCore.mockClear();
     adoptionCore.mockResolvedValue(adoption("not_adopted"));
@@ -417,12 +324,7 @@ describe("evaluateCampaignDeadlineLock — the M25.6b override branch", () => {
     expect(adoptionCore).toHaveBeenCalledTimes(1);
   });
 
-  /**
-   * READ-TIME EXPIRY, WHICH IS THE WHOLE DESIGN. `until` is a stored BOUNDARY compared against the
-   * caller's `now` on every evaluation; there is no job, nothing to un-flip, and an `until` in the
-   * past is simply not effective. The two rows here are one document read at two instants — which is
-   * exactly how production sees it, since nothing rewrites the waiver as it lapses.
-   */
+  /** READ-TIME EXPIRY, WHICH IS THE WHOLE DESIGN. See docs/coordination.md §92. */
   it("an `until` in the PAST is not effective — the target is locked again, with no job to run", async () => {
     const past = new Date(AT.getTime() + 60_000);
     const deadline: CampaignDeadline = {
@@ -483,14 +385,7 @@ describe("findEffectiveDeadlineOverride", () => {
     ).toBeUndefined();
   });
 
-  /**
-   * AN UNREADABLE `until` IS NOT A WAIVER. Two doors refuse it before this ever runs
-   * (`CampaignDeadlineOverrideSchema` at the route, `resolveCampaignDeadline` at the read), so this
-   * is a third bar nothing reaches today — asserted anyway because `Date.parse` returns `NaN` and
-   * every comparison against `NaN` is `false`, so getting the direction wrong here would silently
-   * waive a deadline forever rather than fail loudly. The one place fail-CLOSED is right in this
-   * fail-open module: the failure withholds a WAIVER, never a change.
-   */
+  /** AN UNREADABLE `until` IS NOT A WAIVER. See docs/coordination.md §93. */
   it("does not waive on an unparseable `until` — NaN falls out as NOT effective", () => {
     const broken = {
       at: DEADLINE_AT,
@@ -500,16 +395,7 @@ describe("findEffectiveDeadlineOverride", () => {
   });
 });
 
-/**
- * THE SORT, AGAINST A DELIBERATELY DESCENDING INPUT — `describeHeldTargets`'s own test's reason,
- * unchanged: the integration fixture cannot perturb the loop's input order on demand (a wave's
- * targets are created monotonically, so loop order and id order coincide), and a sort tested only
- * against already-sorted input is not tested.
- *
- * It is load-bearing because this array goes verbatim into a Decision's `inputContext` and
- * `restatesDecision` canonicalizes object KEYS while deliberately preserving array ORDER. An
- * unstable `locked[]` is one new Decision row per second for the life of the campaign.
- */
+/** THE SORT, AGAINST A DELIBERATELY DESCENDING INPUT. See docs/coordination.md §94. */
 describe("describeLockedTargets", () => {
   it("sorts by targetObjectId and carries ids and verdicts only — nothing clock-shaped", () => {
     const record = describeLockedTargets([
@@ -527,14 +413,7 @@ describe("describeLockedTargets", () => {
   });
 });
 
-/**
- * THE CENSUS PIN. `CampaignDeadlineAdoptionSignalSchema` is declarative — it names WHICH evidence
- * kind a deadline was authored against, and the verdict always comes from the recipe's own
- * `adoption` document through the one core. But two vocabularies for one concept is how the two
- * drift, so a fourth evidence kind must not be able to land on only one of them: this asserts the
- * signal enum is exactly the evidence union's discriminator set, and fails the day either grows
- * without the other.
- */
+/** THE CENSUS PIN. See docs/coordination.md §95. */
 describe("the declared-signal vocabulary IS the adoption evidence vocabulary", () => {
   it("has exactly the members AdoptionEvidenceSchema discriminates on", () => {
     const evidenceKinds = AdoptionEvidenceSchema.options

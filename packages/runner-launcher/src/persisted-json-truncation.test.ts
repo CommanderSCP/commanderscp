@@ -7,55 +7,7 @@ import {
   boundPersistedJson
 } from "./index.js";
 
-/**
- * ================================================================================================
- * M23.1g — THE BOUND CUT SOMETHING AND SAID SO. THE PROPERTY IS "AND SAID SO".
- * ================================================================================================
- * `persisted-json-bound.test.ts` measures WHAT SURVIVES: 63 arms, every one of them about the value.
- * Not one of them could see the defect M23.1g exists for, because that defect is not in the value —
- * it is in everything the value does NOT say. A row that lost `rollout` and a row whose executor
- * never reported one are byte-identical, and a suite that only reads the row cannot tell them apart
- * any better than the UI could.
- *
- * So this file asserts the pair. Every arm reads `truncation`, and the two arms that matter most
- * are the ones that assert it is ABSENT — a signal that fires on readings that lost nothing is a
- * signal an operator learns to ignore.
- *
- * ================================================================================================
- * THE GATE: A BOUND MAY NOT BE APPLIED WITHOUT EMITTING THE SIGNAL
- * ================================================================================================
- * "THE BOUND CUT SOMETHING AND SAID NOTHING" IS THE DEFECT, and it is stated here as a sweep rather
- * than as a fixture, for the reason M23.1f's own definition of done gives: "Random shape generation
- * is the wrong instrument for this class. 6 000 random shapes found ZERO instances against a build
- * a structured budget sweep caught 49 518 times. The axis eleven passes never varied was the
- * BUDGET." So the gate below varies the budget densely over a structured family and asserts, at
- * every point, that `renderedValue !== renderedInput` implies `truncation !== undefined`. Delete
- * any one of the four accounting sites in the walk and it goes red naming the shape.
- *
- * WHAT IT DELIBERATELY DOES NOT ASSERT: the converse. `truncation` defined implies something was
- * cut is a weaker and less useful law, and sanitising (U+0000 -> U+FFFD) is a legitimate case where
- * the value changes and nothing was removed — see "SANITISING IS NOT TRUNCATION" below.
- *
- * ================================================================================================
- * MUTATION LOG — applied one at a time against a clean tree, watched fail, reverted
- * ================================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `budget.loss.entries += value.length - i` deleted (array tail) | RED, 5 of 12 |
- * | `budget.loss.fields += entries.length - i` deleted (phase-1 elision) | RED, 1 of 12 |
- * | `budget.loss.characters += bounded.dropped` deleted (string leaf) | RED, 3 of 12 |
- * | the depth-limit accounting deleted | RED, 1 of 12 — only the depth arm. THE SWEEP STAYS GREEN, and that is recorded rather than hidden: its family is shallow by construction, so a sweep is the wrong instrument for a depth defect and the separate arm is not redundant with it |
- * | `refusedKeys` never collected (the `if (collector)` block in phase 1) | RED, 1 of 12 — and it is the arm that matters: `dropped: true` is the ONLY thing separating a cut field from one the executor never reported. The sweep stays green because the other counters still fire, which is exactly why "something was cut" and "WHICH field" are two different assertions |
- * | `field.loss = { characters: field.keyDropped, … }` deleted, so `addLoss` ACCUMULATES across rounds | RED, 1 of 12 — a re-walked field reports its cut two and three times over |
- * | `truncation: wholesaleTruncation(value)` -> `truncation: undefined` (the backstop reports nothing) | RED, 1 of 12 |
- * | `boundTruncationReport`'s reserve -> 0 | RED, 2 of 12 — the report itself goes over its own bound |
- * | `truncationOf(field.loss, false)` -> `truncationOf(field.loss, true)` | RED, 2 of 12 — every shortened field would read as dropped |
- *
- * NINE MUTATIONS, NINE REDS, each applied to a clean tree and reverted. No rebuild is needed for
- * this file — it imports `./index.js` from `src` — but every server-side arm that reaches the same
- * code through the plugin host does need `pnpm exec turbo build --force`, because
- * `@scp/runner-launcher` resolves through `main: dist/index.js`.
- */
+/** M23.1g — THE BOUND CUT SOMETHING AND SAID SO. See docs/runner-launcher.md §383. */
 
 const imageRefs = (n: number) =>
   Array.from(
@@ -79,20 +31,13 @@ describe("M23.1g: what the bound removed comes back with what it kept", () => {
   });
 
   it("A FIELD THE BOUND REFUSED IS `dropped`, NAMED — the wrong-cause defect, directly", () => {
-    // `observedStateFrom` composes `{revision, images, rollout}` in that order and `rollout` is the
-    // one ADR-0028's `minWeight` gate reads. Before M23.1g this arrived at the UI as
-    // `rollout: undefined`, which the card renders as "no rollout" — an operator told the executor
-    // reported nothing, about a field this repository removed.
-    // 160 sits in the measured band [126, 206] where phase 1 seats `revision` and `images` and can
-    // no longer seat `rollout`: the two survivors need 4 and 5 characters, `rollout` needs its
-    // exact 70, and the budget covers the first two and not the third. Stated as a band rather
-    // than a magic number so a retune that moved it out reads as a fixture drift.
+    // The composer builds those fields in that order. See docs/runner-launcher.md §384.
     const bounded = boundPersistedJson({ revision: "v1", images: ["a"], rollout: ROLLOUT }, 160);
     const stored = bounded.value as Record<string, unknown>;
     expect(stored.revision).toBe("v1"); // …the siblings really did survive, so this is not a
-    expect(stored.images).toEqual(["a"]); //  test of a budget that dropped everything
-    expect(stored.rollout).toBeUndefined(); // …the absence an operator would have to explain
-    expect(bounded.truncation?.rollout).toEqual({ dropped: true }); // …and the explanation
+    expect(stored.images).toEqual(["a"]);
+    expect(stored.rollout).toBeUndefined();
+    expect(bounded.truncation?.rollout).toEqual({ dropped: true });
 
     // AND THE NAME IS NOT RECOVERABLE FROM THE ROW. `__scpElided` is a COUNT; the report is the only
     // place the name survives, which is the whole reason it is a return value.
@@ -139,12 +84,7 @@ describe("M23.1g: what the bound removed comes back with what it kept", () => {
   });
 
   it("THE DEPTH LIMIT REPORTS WHAT IT REPLACED, in the unit it replaced it in", () => {
-    // Not a budget clip — no amount of extra budget brings the subtree back — but it IS content the
-    // reader is not seeing, which is a different question and the one the report answers.
-    // Exactly `PERSISTED_JSON_MAX_DEPTH` wrappers, so the object the limit replaces is the
-    // three-field one and the count below is a fact about it. One wrapper more and the limit falls
-    // on a `{ next }` — a different, correct, answer of 1, which is what a first draft of this arm
-    // measured and mistook for a defect.
+    // Not a budget clip. See docs/runner-launcher.md §385.
     let deep: Record<string, unknown> = { a: 1, b: 2, c: 3 };
     for (let i = 0; i < PERSISTED_JSON_MAX_DEPTH; i++) deep = { next: deep };
     const bounded = boundPersistedJson(deep);
@@ -153,19 +93,7 @@ describe("M23.1g: what the bound removed comes back with what it kept", () => {
   });
 
   it("THE DEPTH LIMIT'S OTHER BRANCH: an over-deep ARRAY reports its ENTRIES, and the count is real", () => {
-    // M23.0 verification pass 15. The arm above exercises exactly ONE of the depth limit's two
-    // accounting branches — `budget.loss.fields += Object.keys(...).length` — and the array branch
-    // beside it, `budget.loss.entries += value.length`, had no arm at all. Deleting either one
-    // reddens the pair, which is why the mutation log recorded the deletion as caught; but a WRONG
-    // COUNT in the array branch was invisible to the whole 255-test suite. Measured: replacing
-    // `value.length` with `1` leaves every test green while the report tells a reader that ONE
-    // entry was replaced where FORTY were — a number the reader cannot check against anything,
-    // because the subtree it describes is exactly what the row no longer contains (charter
-    // principle 6, and the same class as a provenance label that is read rather than inferred).
-    //
-    // The count is asserted against `ENTRY_COUNT` rather than a literal, and the literal is
-    // deliberately not 1: `+= 1` is the mutation this arm exists to kill, and an arm whose fixture
-    // has one entry cannot tell the two apart.
+    // M23.0 verification pass 15. See docs/runner-launcher.md §386.
     const ENTRY_COUNT = 40;
     let deep: unknown = Array.from({ length: ENTRY_COUNT }, (_, i) => `entry-${i}`);
     for (let i = 0; i < PERSISTED_JSON_MAX_DEPTH; i++) deep = { next: deep };
@@ -238,12 +166,7 @@ describe("M23.1g: what the bound removed comes back with what it kept", () => {
 });
 
 describe("M23.1g GATE: the bound may not remove content without emitting the signal", () => {
-  /**
-   * A DENSE BUDGET SWEEP over a structured family — never a random corpus. M23.1f's own definition
-   * of done records why: 6 000 random shapes found zero instances of a defect a structured budget
-   * sweep caught 49 518 times, because the axis that matters is the BUDGET and randomness does not
-   * vary it. Every shape below is a plausible `observed_state`.
-   */
+  /** A DENSE BUDGET SWEEP over a structured family. See docs/runner-launcher.md §387. */
   const family: [string, unknown][] = [
     ["a revision alone", { revision: "r".repeat(4_000) }],
     ["a list alone", { images: imageRefs(60) }],
@@ -328,7 +251,7 @@ describe("M23.1g GATE: the bound may not remove content without emitting the sig
     };
     const bounded = boundPersistedJson(saturating, PERSISTED_JSON_MAX_CHARS);
     expect(bounded.truncation?.images?.droppedEntries).toBeGreaterThan(300);
-    expect(bounded.truncation?.revision).toBeUndefined(); // a 40-char SHA is not cut
+    expect(bounded.truncation?.revision).toBeUndefined();
     expect(bounded.truncation?.rollout).toBeUndefined(); // and the gate's leaf survives
   });
 });

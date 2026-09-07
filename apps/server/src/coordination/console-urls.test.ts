@@ -1,22 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { executionSystemConsoleBase, executorConsoleUrl, repoConsoleUrl } from "./console-urls.js";
 
-/**
- * A LINK IS ONLY EVER RETURNED WHEN IT IS KNOWN.
- *
- * These are the cases where the tempting answer is a plausible URL and the correct answer is null.
- * A dead link in an operator console is a claim that something is over there; plain text is not.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | drop the glob check from `repoConsoleUrl` | the pattern test FAILS — `org/*` would link to a repo literally named `*` |
- * | fall back to `gitlab.com` for a gitlab mapping | the self-hosted test FAILS — that URL points at a stranger's repo |
- * | prefer `serverUrl` over `webUrl` | the console-base test FAILS — the operator's browsable address loses to the in-cluster one |
- * | drop the http(s)-scheme check from `executionSystemConsoleBase` | the XSS tests FAIL — a `javascript:` webUrl would be returned and rendered as a live href |
- */
+/** A LINK IS ONLY EVER RETURNED WHEN IT IS KNOWN. See docs/coordination.md §322. */
 describe("repo console URLs", () => {
   it("links a literal github repo", () => {
     expect(repoConsoleUrl("github", "AgentKitProject/agentkit")).toBe(

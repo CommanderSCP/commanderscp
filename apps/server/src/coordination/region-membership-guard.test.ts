@@ -1,17 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { REGION_MEMBERSHIP_KEYS, declaresRegionMembership } from "./region-membership-guard.js";
 
-/**
- * The PREDICATE half of the un-declaration guard. It has exactly one job: agree, row for row, with
- * `regional-executors.ts`'s `readDeclaredRegionMembership`, which reads the same two properties out
- * of `jsonb` with PostgreSQL's `->>` and trims. A row this predicate calls "not declared" while the
- * gate calls it "declared" is the evasion rebuilt inside the guard — free to withdraw here, still
- * governed there — so the cases below are all about the boundary between the two readers, not about
- * ergonomics.
- *
- * (That the guard RUNS, at real doors, against a real subject, is proven separately and cannot be
- * proven here: see `regional-gate-undeclare.integration.test.ts`.)
- */
+/** The PREDICATE half of the un-declaration guard. See docs/coordination.md §825. */
 describe("declaresRegionMembership — the predicate must agree with the gate's `->>` read", () => {
   it("names the two keys the gate reads, and no others", () => {
     expect([...REGION_MEMBERSHIP_KEYS]).toEqual(["environment", "region"]);

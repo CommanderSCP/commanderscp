@@ -37,91 +37,9 @@ import { observedRunForComponent } from "./observed-run-facts.js";
 import { requiresOf } from "./changes-repo.js";
 import { namesForObjectIds } from "../dependencies/producer-declaration.js";
 
-/**
- * A COMPONENT'S PIPELINE — its stages, derived from durable graph state.
- *
- * ============================================================================================
- * WHY THIS EXISTS, AND WHAT IT REPLACES
- * ============================================================================================
- * The pipeline surface used to be keyed on a CHANGE (`/changes/{id}/pipeline`), so a component with
- * nothing in flight had no pipeline at all — the service board's link renders only when the row has a
- * `latestChangeId`. That is a RUN view wearing a pipeline's name, and it inverted the model: a
- * pipeline is a durable property of a component, and artifacts move THROUGH it.
- *
- * Everything here is read from state that exists whether or not anything is releasing:
- *   - the STAGES are the resolved release topology's ordered waves (see below);
- *   - what EXECUTES at a stage is that stage's placement's executor binding;
- *   - the pipeline DEFINITION and the rung it was inherited from come from `pipeline-resolution.ts`.
- * Only `current` reads change rows, and it is legitimately null for a stage nothing has released to.
- *
- * ============================================================================================
- * WHY STAGES COME FROM THE TOPOLOGY AND NOT FROM THE PLACEMENTS (owner, 2026-08-10)
- * ============================================================================================
- * The first version of this module built the stage list from the component's PLACEMENTS. That is
- * backwards for a pipeline. A pipeline's job is to show the JOURNEY — where a release goes next and
- * where it stops — and placements can only ever show where the component already IS. A wave the
- * component is not placed at did not render at all, so the single most operationally important fact,
- * "this component never reaches prod", rendered as NOTHING.
- *
- * Measured on the live estate the day it was reported: topology `commercial-gamma-then-prod` declares
- * waves `gamma` then `prod`; `agentkit-bootstrap` holds ONE placement (gamma); the view showed one
- * card and prod appeared nowhere.
- *
- * So the journey is the topology's waves, in order. A wave place this component IS placed at becomes
- * a `stages[]` entry, exactly as before; one it is NOT placed at becomes an `unplacedStages[]` entry,
- * which a client renders greyed and explicitly "not placed" — deliberately distinguishable from
- * "placed but nothing has released yet" (a `stages[]` entry with `current: null`), a different and
- * much less alarming fact. `order` is contiguous across the union, so the two arrays recombine into
- * one ordered pipeline. Why two arrays and not one nullable `placement`: see
- * `ComponentPipelineResponseSchema.unplacedStages` — it is an oasdiff ERR, measured.
- *
- * TWO CASES STILL COME FROM PLACEMENTS, and both are load-bearing:
- *
- *   1. NO STAGE-SHAPED TOPOLOGY (`stageSource: "placements"`). No rung supplies a topology, or the
- *      one it supplies is LEGACY-shaped — its waves name the change's own targets rather than
- *      deployment-targets (`plan-service.ts` classifies the same two shapes the same way, from what
- *      the ids ARE, because both exist in real data). There is no declared journey to show, so the
- *      stages are the placements, exactly as before. This is why a component with placements and no
- *      topology still has a pipeline, which is the acceptance criterion this view was built for.
- *   2. A PLACEMENT AT A TARGET NO WAVE NAMES. It is appended after the topology's stages, with a
- *      null `wave`. Dropping it would re-create this very bug mirror-imaged: real state — a place
- *      this component genuinely deploys to — hidden because a document does not mention it.
- *
- * A MALFORMED topology (`parseTopologyWaves` throws) falls back to case 1 rather than failing the
- * request: this is a read view, and a component page that fails outright because someone saved a bad
- * document tells an operator less than one that shows the placements and says where its stages came
- * from. The loud refusal stays where it changes behaviour — plan compilation, which is what
- * `topology-waves.ts`'s header is about.
- *
- * ============================================================================================
- * PER-STAGE VERSION (Phase 4a) — DERIVED, NEVER RE-OBSERVED
- * ============================================================================================
- * The design's "version staircase" comes from state `observe()` already writes —
- * `change_wave_targets.observed_state` — read here a second time (`currentsByPlacement` selects
- * `t.observed_state` alongside the rest of the row) and reduced with `preferredObservedVersion`
- * (`@scp/schemas`): the first REAL deployed image, else the git-style revision. A stage whose
- * newest current has never had `observed` written carries `version: null` and lists `"version"`
- * in `unknownFields`, so a client renders "not observed" rather than a blank that reads as "no
- * version" — same rule the service board and the graph health surfaces follow for every other
- * unobserved field.
- */
+/** A COMPONENT'S PIPELINE. See docs/coordination.md §299. */
 
-/**
- * The most recent wave target for each placement, PER PIPELINE — "what last happened at this stage,
- * in each of the pipelines that run here", newest first.
- *
- * DISTINCT ON the (placement, TYPE) pair, not the placement alone. A stage's pipelines release
- * independently, so the single newest row across all of them describes exactly one pipeline and says
- * nothing about the others — rendered per-lane it would show the software pipeline's release as the
- * infra pipeline's, and a lane that has never run would inherit a release it never had.
- * `change_wave_targets.type` is the routing Type the plan snapshotted for this target, which is what
- * makes this a direct read.
- *
- * Ordered by the change's `created_at` then id (UUIDv7, time-ordered) so two changes created in the
- * same transaction still order deterministically — the same tiebreak `getLatestCampaignPlan`
- * documents. Several Types can share a Category (`image`/`rpm`/`npm` are all `build`), so the caller
- * reduces to one entry per Category; this returns them already newest-first for that reason.
- */
+/** The most recent wave target per placement, per pipeline. See docs/coordination.md §300. */
 async function currentsByPlacement(
   tx: TenantTx,
   orgId: string,
@@ -203,49 +121,10 @@ async function currentsByPlacement(
   return out;
 }
 
-/** The two wave-target statuses whose trigger can STILL be withheld — reconcile's own set, verbatim
- *  (`stage-dependency-status.ts` uses the same one for the same reason). A held target is left
- *  `pending` because the hold `continue`s before `triggerWaveTarget`; `triggering` is what a crash
- *  mid-claim leaves behind, and reconcile re-offers such a target to the hold on the next tick.
- *  Anything past those has already been handed to an executor, and a hold cannot un-ring that bell. */
+/** The two statuses whose trigger can still be withheld. See docs/coordination.md §301. */
 const WITHHOLDABLE_STATUSES = new Set(["pending", "triggering"]);
 
-/**
- * WHICH STAGES HAVE A RELEASE SITTING HERE WITH ITS TRIGGER WITHHELD (ADR-0028 increment 4).
- *
- * Keyed on the PLACEMENT, because in stage mode a wave target's `target_object_id` IS the placement
- * — so `status.targets[].targetObjectId` joins to `seed.placement.id` exactly, with no (component,
- * place) pair to reassemble and no chance of attributing one stage's hold to another.
- *
- * ============================================================================================
- * WHY THIS RE-EVALUATES INSTEAD OF READING THE DECISION IT ALREADY WROTE
- * ============================================================================================
- * `recordStageDependencyHold` persists a `hold` Decision carrying exactly the join keys this needs
- * (`componentObjectId` + `deploymentTargetObjectId` per entry), and reading it would be one query
- * for the whole page. It is still the wrong source, for the reason `reconcile.ts` spells out where
- * it chose `verdict: "hold"` over `"block"`: NOTHING anywhere writes a clearing row. The newest
- * `stage_dependency` row of a change that was briefly held, triggered, succeeded and reached
- * `accepted` is STILL a `hold`, permanently — so a badge sourced from it would paint every stage
- * that was EVER held as held forever, which is the permanent-marker bug rebuilt one surface over.
- * The kind is overloaded on top of that: `applyPromotionImport` writes `stage_dependency`/`allow`
- * against the same subject, so on an outpost the newest row of that kind is not a hold at all.
- *
- * `resolveStageDependencyStatus` is the ONE read side of the hold (`explain` and the watchdog use
- * the same function) and it re-runs reconcile's own predicate. It is read-only by contract and
- * persists nothing: stamping a `held` flag onto `change_wave_targets` so this could be a column read
- * would be one UPDATE per held target per 1 s tick, which is ADR-0024's 1.44 GB/day write
- * amplification relocated to another table.
- *
- * ============================================================================================
- * WHAT IT COSTS
- * ============================================================================================
- * Nothing for a component with nothing releasing (the candidate set is empty and this returns before
- * any query), and nothing for an uncoupled release: the resolver's declaration parse is in memory
- * and it returns `null` before touching the plan. The candidates are only those releases that could
- * still be withheld — a change with a `pending`/`triggering` target at one of THIS component's
- * placements — which is at most one per pipeline per stage. A candidate whose change is no longer
- * `executing` costs one indexed state read inside the resolver and stops there.
- */
+/** Which stages hold a release with its trigger withheld. See docs/coordination.md §302. */
 async function holdsByPlacement(
   tx: TenantTx,
   orgId: string,
@@ -253,16 +132,7 @@ async function holdsByPlacement(
 ): Promise<Map<string, ComponentPipelineHold>> {
   const out = new Map<string, ComponentPipelineHold>();
 
-  // NO LIVE-STATE GATE HERE ANY MORE, and its absence is the fix rather than an omission. This
-  // module used to carry one — `current.changeState !== "executing" && continue` — and it was the
-  // ONLY one of the resolver's three call sites that did, so `explain` and the watchdog reported a
-  // cancelled release as held forever. The gate now lives inside `resolveStageDependencyStatus`
-  // (`isStillTriggerable`), which is the one place every caller passes through. Re-adding a copy
-  // here would restore the two-predicates-one-question shape that produced the bug.
-  //
-  // This filter is a DIFFERENT predicate and stays: a target past `pending`/`triggering` has been
-  // handed to an executor, so no release at this stage could be withheld and there is nothing to
-  // ask the resolver about.
+  // No live-state gate here; its absence is the fix. See docs/coordination.md §303.
   const candidates = new Set<string>();
   for (const list of currents.values()) {
     for (const current of list) {
@@ -332,19 +202,7 @@ interface StageSeed {
   placement: { id: string; urn: string } | null;
 }
 
-/**
- * The topology's waves as ordered lists of DEPLOYMENT-TARGET ids, or `undefined` when this topology
- * declares no journey over places.
- *
- * `undefined` covers three genuinely different documents, all of which mean the same thing HERE —
- * "there is no declared sequence of places to show":
- *   - no `waves` key at all (`parseTopologyWaves` returns undefined);
- *   - a malformed document (`parseTopologyWaves` throws — see the module header on why a read view
- *     absorbs that instead of failing);
- *   - a LEGACY-shaped document whose waves name the change's own targets rather than places. This is
- *     classified from what the ids ARE, exactly as `plan-service.ts#resolveStagePlacements` does,
- *     because both shapes exist in real data and no flag on the document distinguishes them.
- */
+/** The topology's waves as ordered deployment-target ids. See docs/coordination.md §304. */
 async function topologyWavePlaces(
   tx: TenantTx,
   orgId: string,
@@ -382,27 +240,8 @@ async function topologyWavePlaces(
   return out;
 }
 
-/**
- * WHAT GATES ENTRY TO ONE STAGE — the same policy resolution the wave-boundary gate runs, so this
- * view cannot disagree with the engine about what is required.
- *
- * `actorObjectId` is the REQUESTING user, because `scope.group`'s ACTING half still matches on the
- * acting subject (DESIGN §10.1): the honest reading of this field is therefore "what would gate a
- * release YOU made", not "what gates everyone". Passing a system placeholder instead would drop
- * every acting-half match and under-report the gate, which is the worse error of the two.
- *
- * NARROWED 2026-08-15 (ADR-0016 §2a). `scope.group`'s OWNING half — the group, or a member of it,
- * holding an `owns` edge into the target's containment chain — does NOT read this field, so the
- * viewer-dependence of this view is now confined to the acting half. A group-scoped policy that
- * reaches this placement through ownership renders identically for every viewer, and identically to
- * the wave-boundary gate that passes `SYSTEM_ACTOR_ID`. Only a policy whose reach comes PURELY from
- * the caller's own membership still shows differently to two people on the same page.
- */
-/**
- * The DB-independent half of `gateForStage`: which policies apply and which controls they require.
- * Split out so the stage loop can collect every `controlId` across every stage BEFORE resolving
- * control names, and resolve them in one batched read instead of one per control per stage.
- */
+/** WHAT GATES ENTRY TO ONE STAGE. See docs/coordination.md §305. */
+/** The DB-independent half of `gateForStage`. See docs/coordination.md §306. */
 async function resolveGatePolicies(
   tx: TenantTx,
   orgId: string,
@@ -428,11 +267,7 @@ async function resolveGatePolicies(
   return { policies, controlIds };
 }
 
-/**
- * The rest of `gateForStage` — outcomes plus control names — resolved from a `controlNames` map
- * built ONCE for the whole journey (see the stage loop in `getComponentPipeline`), instead of one
- * `findFirst` per control here.
- */
+/** The rest of `gateForStage`. See docs/coordination.md §307. */
 async function buildGateChecks(
   tx: TenantTx,
   orgId: string,
@@ -562,26 +397,13 @@ export async function getComponentPipeline(
     // misreading this field exists to prevent.
     return { domainId: originDomainId, name: null, isSelf: false, role: null };
   };
-  // WHICH OUTPOST EACH PLACE IS PART OF (§10.2, the owner's TRUST-DOMAIN RULE; §10.5, every target is
-  // within an outpost): the `outpost` object whose `properties.peerDomainId` equals the target's OWN
-  // `origin_domain_id`. Read, never inferred — not from the target's name, and not from its
-  // containment `domain_id` (GLOSSARY: containment has nothing to do with deployment topology). ONE
-  // batched read of the live outpost objects (the repo resolves duplicates by the same authority rule
-  // the outposts API uses — see `resolveOutpostObjectsByPeer` for why that is not stated as
-  // "ambiguous"), plus the SAME `federation_self` and `federation_peers` reads `maintainerOf` already
-  // made.
+  // Which outpost each place is part of, by trust domain. See docs/coordination.md §308.
   const outpostByPeer = await resolveOutpostObjectsByPeer(tx, orgId);
   const outpostOf = (originDomainId: string | null): ComponentPipelineTargetOutpost => {
     const isSelf = originDomainId !== null && originDomainId === self.domainId;
     const peer = originDomainId ? peerById.get(originDomainId) : undefined;
     const outpost = originDomainId ? outpostByPeer.get(originDomainId) : undefined;
-    // PRECEDENCE — OBJECT-FIRST (§10.5; this supersedes §10.2's self-first sentence). An `outpost`
-    // object naming the target's origin domain wins WHETHER OR NOT that domain is self: an outpost
-    // site's replica of its own config is exactly "an `outpost` object whose `peerDomainId` names
-    // self", so that site's own targets read `outpost <its own name> · <tier>`; a commander that has
-    // registered the HQ outpost (`peerDomainId` = its own domain — outpost-binding.ts) reads
-    // it for every target it authored. `peerRole` is the peer row's role, or self's own role for the
-    // co-located record (there is no peer row for self).
+    // PRECEDENCE — OBJECT-FIRST. See docs/coordination.md §309.
     if (outpost && originDomainId) {
       return {
         state: "outpost",
@@ -606,12 +428,7 @@ export async function getComponentPipeline(
       };
     }
     if (peer && originDomainId) {
-      // A paired peer with no `outpost` object registered. Say WHO — and say WHETHER one can be
-      // declared for it: POST /federation/outposts binds ONLY to a peer of role `outpost`
-      // (outpost-binding.ts REQUIRED_PEER_ROLE, 400 otherwise). A `commander` or `retrans` peer is
-      // NOT "missing an outpost record" — on every outpost site that is what every commander-authored
-      // (replicated) target's origin is — so it is stated as its own thing, with the role, and a
-      // client must not offer the declare-an-outpost fix for it.
+      // A paired peer with no `outpost` object registered. See docs/coordination.md §310.
       return {
         state: peer.role === "outpost" ? "peer-without-outpost" : "peer-not-outpost",
         id: null,
@@ -694,7 +511,7 @@ export async function getComponentPipeline(
     if (a.wave !== null && b.wave !== null && a.wave.index !== b.wave.index) {
       return a.wave.index - b.wave.index;
     }
-    if (a.wave !== null && b.wave !== null) return 0; // within a wave, keep the document's order
+    if (a.wave !== null && b.wave !== null) return 0;
     return (targetById.get(a.deploymentTargetId)?.name ?? "").localeCompare(
       targetById.get(b.deploymentTargetId)?.name ?? ""
     );
@@ -706,11 +523,7 @@ export async function getComponentPipeline(
   const stages: ComponentPipelineStage[] = [];
   const unplacedStages: ComponentPipelineUnplacedStage[] = [];
 
-  // FIRST PASS over placed seeds: resolve everything that does not need a control's or an execution
-  // system's own row (policy matching, binding resolution), and collect their ids. The SECOND pass
-  // below resolves those two id sets with one batched read each — the same "collect ids across the
-  // whole journey, then one `inArray` read" shape `targetRows` already uses above — instead of one
-  // `findFirst` per control per stage and one per execution-system-carrying binding per stage.
+  // FIRST PASS over placed seeds. See docs/coordination.md §311.
   type PreparedStage = {
     order: number;
     seed: StageSeed;
@@ -771,11 +584,7 @@ export async function getComponentPipeline(
     // pushed into whichever array this seed lands in.
     const outpost = outpostOf(target?.originDomainId ?? null);
 
-    // AN UNPLACED STAGE CARRIES NO BINDING, NO `current` AND NO `version` — all three are keyed on a
-    // placement that does not exist, and a null `binding` beside a real stage is the ADR-0006 case
-    // (a) ALARM ("no executor — this would fake-succeed"). Rendering that over what is only an
-    // absence of a placement would cry wolf on every component that simply does not go to prod. The
-    // separate array is what keeps the two unconfusable.
+    // An unplaced stage carries no binding, current or version. See docs/coordination.md §312.
     if (!seed.placement) {
       // `seed.wave` is non-null here by construction: an unplaced seed can only come from a wave,
       // since the only other source of a seed IS a placement.
@@ -791,27 +600,7 @@ export async function getComponentPipeline(
       continue;
     }
 
-    // EVERY pipeline the ENGINE would run at this stage, from the SAME resolution reconcile uses
-    // (binding-resolution.ts, ADR-0027/0029) — never a bare placement-only listing. The listing
-    // version shipped first and produced a projection that CONTRADICTED the engine: a component-
-    // level binding (the owner's own-infra case, 2026-08-12 — checkout-api's terraform'd bucket)
-    // triggered fine but rendered as "No executor" / "no infrastructure pipeline is bound", a
-    // false alarm about a working pipeline.
-    //
-    // RESOLVED FROM THE COMPONENT, mapped onto stages by outcome — not resolved from the placement.
-    // The first attempt at this fix called `resolveBindingForTarget(placement.id)` and STILL missed
-    // the component rung, because `containsAncestors` seeds AT the component and pushes only its
-    // parents: a placement-rooted walk visits assembly/service/org but never the component itself.
-    // The engine does not have this problem because it resolves from the component (that is what a
-    // wave target carries) and lets `via_placement` name the stage-local winner. Mirror that:
-    //   direct        -> the component's own binding, acts at EVERY stage ("component")
-    //   via_placement -> a stage-local binding, acts ONLY at the stage whose placement it names
-    //   via_service   -> an ancestor's binding, acts at every stage (labelled with the ancestor's
-    //                    own object type — provenance READ, never inferred,
-    //                    resolution-provenance.test.ts)
-    //   ambiguous     -> nothing here: projecting the refusal is the reconcile/Decision path's job
-    //                    (ADR-0027 D2), and rendering nothing is what this view always did.
-    // `componentResolutions` is computed ONCE for the whole journey — it does not vary by stage.
+    // Every pipeline the engine would run at this stage. See docs/coordination.md §313.
     const resolved: { row: ExecutorBindingRow; resolvedVia: string }[] = [];
     for (const resolution of componentResolutions) {
       if (!resolution.binding) continue;
@@ -902,13 +691,7 @@ export async function getComponentPipeline(
       controlNames
     );
 
-    // THE VERSION STAIRCASE (Phase 4a) — derived from the stage's newest current (`current`,
-    // `placementCurrents[0]`), never from a per-pipeline scan: `current` already IS "the most
-    // recent change to touch this stage in any pipeline", so the version rendered beside it must
-    // read the SAME wave target's `observed`, not a different pipeline's. `preferredObservedVersion`
-    // is the ONE preference rule (`@scp/schemas`, shared with `PipelineWaveCard.tsx`'s per-target
-    // render) — undefined only when nothing has ever been observed here, in which case the field
-    // stays `null` and `"version"` stays in `unknownFields`, exactly as before Phase 4a existed.
+    // THE VERSION STAIRCASE. See docs/coordination.md §314.
     const derivedVersion: string | undefined = preferredObservedVersion(
       p.placementCurrents[0]?.observed
     );
@@ -992,11 +775,7 @@ export async function getComponentPipeline(
       id: component.id,
       urn: component.urn,
       name: component.name,
-      // outpost-ui.md §9.3a — the two facts the source lane READS to know its shape: a component
-      // maintained by another domain (typically the commander) has that domain UPSTREAM of this
-      // domain's repos; a domain-local one has no upstream at all — its repo IS the source. Stated
-      // by the server from `originDomainId`/`domainLocal` + federation self, never inferred by
-      // the client from labels or names.
+      // The two facts the source lane reads to know its shape. See docs/coordination.md §315.
       maintainedBy: maintainerOf(component.originDomainId),
       domainLocal: component.domainLocal
     },
@@ -1013,13 +792,7 @@ export async function getComponentPipeline(
   };
 }
 
-/**
- * THE `hosted_on` DEPLOYMENT-TARGET IDS a component names directly (owner decision, 2026-08-24) —
- * one relationship read, mirroring `registryForComponent`'s `publishes_to` read: the same
- * `fromId`/`typeId` shape, joined live (`deleted_at IS NULL`) to the deployment-target it names.
- * `hosted_on` is a component-level fact, independent of placement — a component can be `hosted_on`
- * a place it holds no `placement` row at all.
- */
+/** The `hosted_on` targets a component names directly. See docs/coordination.md §316. */
 async function hostedOnDeploymentTargetIds(
   tx: TenantTx,
   orgId: string,
@@ -1052,47 +825,7 @@ async function hostedOnDeploymentTargetIds(
  *  qualifies both ways (component-pipeline.ts module doc, `ComponentPipelineCorrelatedInfraChangeSchema`). */
 type CorrelationRoute = "placement" | "hosted_on";
 
-/**
- * THE CORRELATED-INFRASTRUCTURE LANE (owner decision, 2026-08-24) — every infrastructure change
- * NOT this component's own whose wave/bound target names a deployment-target this component's
- * placements ALSO name, or that this component is `hosted_on`; plus a coupling arm for a
- * `provides`/`requires` match. See `ComponentPipelineCorrelatedInfraChangeSchema` for the full rule
- * and `ComponentPipelineCorrelatedInfraSchema` for the always-emitted-once-evaluated contract.
- *
- * ============================================================================================
- * THE KEY SET, AND WHY IT IS THREE UNIONS
- * ============================================================================================
- * `change_wave_targets.target_object_id` is a PLACEMENT id under stage-shaped compilation
- * (`plan-service.ts`'s `resolveStagePlacements` — every stage-mode wave target IS a placement,
- * never the deployment-target it sits at), but a change that targets a deployment-target DIRECTLY
- * (no component in its `targets` at all — a legitimate shape: an infrastructure change about the
- * place itself, e.g. a cluster upgrade, has no component to be `placements`-resolved through) never
- * enters stage mode and keeps the raw deployment-target id under legacy compilation. BOTH id shapes
- * are real, so the key set is the union of this component's own placement ids (catches this
- * component's OWN stage-mode releases — see the exclusion below) and its placements' own
- * deployment-target ids (catches a direct infrastructure change against the place itself), plus
- * every deployment-target this component is `hosted_on`.
- *
- * ============================================================================================
- * WHY THE COMPONENT'S OWN CHANGES ARE EXCLUDED BY READING `properties.targets`, NOT BY IDENTITY
- * ============================================================================================
- * This component's own stage-mode infrastructure releases land in the key set for free (their wave
- * target IS one of this component's own placement ids), which is exactly why they must be filtered
- * OUT — the lane this section sits beside already renders them. The filter reads
- * `properties.targets` (the same field `targetObjectIdsOf` names) rather than comparing wave-target
- * identity, because that is the field that actually states "whose release this is" — a wave target
- * id says WHERE a release lands, not WHOSE release it is.
- *
- * ============================================================================================
- * WHAT IT COSTS
- * ============================================================================================
- * One relationship read (`hosted_on`), one bounded (`LIMIT 25`) scan of `change_wave_targets` keyed
- * on the `change_wave_targets_org_target` index, and — only if this component's own recent changes
- * declare a `requires` — one bounded scan for those plus one probe per distinct key, each served by
- * the `obj_props` GIN index exactly as `coupling.ts`'s `requirementStatuses` is. Nothing for a
- * component with no placements, no `hosted_on` edge and no `requires`: the key set is empty and the
- * placement/hosted_on scan is skipped, and the coupling scan returns no keys to probe.
- */
+/** THE CORRELATED-INFRASTRUCTURE LANE. See docs/coordination.md §317. */
 async function correlatedInfraForComponent(
   tx: TenantTx,
   orgId: string,
@@ -1103,7 +836,7 @@ async function correlatedInfraForComponent(
   // belongs to. A deployment-target id claimed by BOTH `placementByTargetId` and `hosted_on` keeps
   // its `placement` route (the more specific fact), never gets downgraded.
   const routeByTargetObjectId = new Map<string, CorrelationRoute>();
-  const deploymentTargetIdOf = new Map<string, string>(); // target_object_id -> deployment-target id
+  const deploymentTargetIdOf = new Map<string, string>();
   for (const [deploymentTargetId, placement] of placementByTargetId) {
     routeByTargetObjectId.set(deploymentTargetId, "placement");
     deploymentTargetIdOf.set(deploymentTargetId, deploymentTargetId);
@@ -1131,13 +864,7 @@ async function correlatedInfraForComponent(
   const byChangeId = new Map<string, MatchedChange>();
 
   if (keySet.length > 0) {
-    // Ordered newest-first, same tiebreak `currentsByPlacement` documents (a UUIDv7 change id is
-    // itself time-ordered, so `object_id DESC` breaks a same-timestamp tie deterministically). NOT
-    // `DISTINCT ON` — a change can carry several matching wave targets (placed at more than one
-    // correlated place), and the JS reduction below needs every one of them to apply the
-    // placement-beats-hosted_on priority correctly; the bounded page is the guard against an
-    // unbounded scan instead (the same tradeoff `artifact-facts.ts`'s `pickArtifactChange` fallback
-    // documents).
+    // Ordered newest first, with the same tiebreak. See docs/coordination.md §318.
     const rows = await tx.execute<{
       target_object_id: string;
       change_object_id: string;
@@ -1183,11 +910,7 @@ async function correlatedInfraForComponent(
         name: r.change_name,
         state: r.change_state,
         type: r.type,
-        // `new Date(...)` rather than trusting the declared string type: `tx.execute` is the raw
-        // driver path (unlike a drizzle `.select()`, which decodes per the schema's column type and
-        // hands back a `Date`), and its runtime shape for a `timestamptz` is not this file's to
-        // assume — `currentsByPlacement` gets away with the bare string because it only ever
-        // `localeCompare`s it, never puts it on the wire. This is the one place here that does.
+        // `new Date(...)`, since the raw driver path is untyped. See docs/coordination.md §319.
         createdAt: new Date(r.created_at).toISOString(),
         route,
         deploymentTargetId
@@ -1306,21 +1029,7 @@ async function correlatedInfraForComponent(
   return { changes: changesOut };
 }
 
-/**
- * THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE (§9.2) — resolved from its outgoing
- * `publishes_to` edges (component → execution-system, migration 0065), never from the `image`
- * executor binding (a binding's Type is WHICH PIPELINE it drives, ADR-0007 — the image binding
- * names what BUILDS the artifact, not where it lands).
- *
- * ONE query for the edges (joined to the live execution-system row) — lane-level, not per stage.
- * Per-site by construction: a registry is created `domainLocal:true` at each site, and an edge with
- * a domain-local endpoint never journals (relationships-repo.ts, M20.3), so this instance's
- * `relationships` table holds only the edges declared HERE.
- *
- * `state` is STATED, not chosen. >1 edge is `ambiguous` with the count and NULL identity fields —
- * there is no rule that would make picking one honest, and rendering the first would look exactly
- * like `declared`.
- */
+/** THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE. See docs/coordination.md §320. */
 async function registryForComponent(
   tx: TenantTx,
   orgId: string,
@@ -1365,12 +1074,7 @@ async function registryForComponent(
   const row = rows[0]!;
   const sysProps = (row.systemProperties ?? null) as Record<string, unknown> | null;
   const edgeProps = (row.edgeProperties ?? null) as Record<string, unknown> | null;
-  // Every identity field READ, never inferred: name off the object, kind off `properties.kind`
-  // (string guard — the registered schema for execution-system is open), url = console base only
-  // (`webUrl` → `serverUrl`; no registry deep-link shape is known, so none is guessed), repository
-  // off the EDGE's own property (0065's open schema types it as a string, but a row written before
-  // that or replicated from elsewhere was never checked, hence the guard — a non-string is null,
-  // not a crash).
+  // Every identity field READ, never inferred. See docs/coordination.md §321.
   return {
     state: "declared",
     executionSystemId: row.systemId,

@@ -10,24 +10,20 @@ import {
   type EgressResolver
 } from "./egress-guard.js";
 
-/**
- * Unit tests for the SSRF egress guard (MAJOR #6). All cases use IP LITERALS so `assertEgressAllowed`
- * short-circuits DNS resolution (`isIP` !== 0) and never touches the network — the guard's blocking
- * logic is fully exercised without a real DNS lookup or HTTP server.
- */
+/** Unit tests for the SSRF egress guard. See docs/plugin-host.md §26. */
 describe("classifyIp", () => {
   const cases: Array<[string, ReturnType<typeof classifyIp>]> = [
     ["127.0.0.1", "loopback"],
     ["127.53.1.9", "loopback"],
-    ["169.254.169.254", "linkLocal"], // cloud metadata endpoint
+    ["169.254.169.254", "linkLocal"],
     ["169.254.0.1", "linkLocal"],
     ["0.0.0.0", "unspecified"],
     ["10.0.0.5", "private"],
     ["172.16.4.4", "private"],
     ["172.31.255.255", "private"],
-    ["172.32.0.1", "public"], // just outside 172.16/12
+    ["172.32.0.1", "public"],
     ["192.168.1.1", "private"],
-    ["100.64.0.1", "private"], // CGNAT
+    ["100.64.0.1", "private"],
     ["8.8.8.8", "public"],
     ["1.1.1.1", "public"],
     ["::1", "loopback"],
@@ -36,7 +32,7 @@ describe("classifyIp", () => {
     ["fc00::1", "private"],
     ["fd12:3456::1", "private"],
     ["2606:4700:4700::1111", "public"],
-    ["::ffff:127.0.0.1", "loopback"], // IPv4-mapped loopback
+    ["::ffff:127.0.0.1", "loopback"],
     ["::ffff:169.254.169.254", "linkLocal"],
     ["::ffff:8.8.8.8", "public"]
   ];
@@ -49,8 +45,8 @@ describe("classifyIp", () => {
 
 const url = (ip: string): string => `http://${ip.includes(":") ? `[${ip}]` : ip}/x`;
 // Third arg = allowInternalPrivate, derived from MODULE identity by the caller (not shown here).
-const TENANT = false; // webhook-notify/github/argocd/terraform/managed-iac
-const OPERATOR_PLANE = true; // webhook-control/federation-https
+const TENANT = false;
+const OPERATOR_PLANE = true;
 
 describe("assertEgressAllowed", () => {
   it("ALWAYS blocks link-local (cloud metadata) + unspecified — for EVERY plugin incl. operator-plane escape hatches", async () => {
@@ -115,14 +111,7 @@ describe("assertEgressAllowed", () => {
   });
 });
 
-/**
- * DNS-rebinding pinning (`createEgressPinRegistry`). These run REAL undici requests through the
- * exact Agent shape `subprocess-entry.ts`'s `scopedFetchHttpClient` builds — `connect.lookup` set
- * to the registry — because the defect being closed lives entirely in what the SOCKET does, not in
- * what the guard returns. The only server involved is a loopback one this file starts; the
- * hostnames used are `.invalid`, which by RFC 6761 no real resolver can answer, so a request that
- * ARRIVES proves the pin (and nothing else) chose the address.
- */
+/** DNS-rebinding pinning (`createEgressPinRegistry`). See docs/plugin-host.md §27. */
 describe("createEgressPinRegistry", () => {
   let server: Server;
   let port: number;

@@ -4,11 +4,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { secrets } from "../db/schema.js";
 import { decryptSecretValue, encryptSecretValue } from "./crypto.js";
 
-/**
- * CRUD over the encrypted `secrets` table (db/schema.ts's M7 section, crypto.ts's AES-256-GCM
- * envelope). Every read/write here is org-scoped through `TenantTx` (RLS-backed, same as every
- * other tenant table) — there is no cross-org secret lookup path.
- */
+/** CRUD over the encrypted `secrets` table. See docs/secrets.md §4. */
 
 export interface PutSecretInput {
   orgId: string;
@@ -70,11 +66,7 @@ export async function getSecretValue(
   );
 }
 
-/** Resolves every `{configFieldName: secretKey}` ref in one call (executor/notification bindings'
- *  `secretRefs` column) into `{configFieldName: plaintextValue}` — refs that don't resolve to an
- *  existing secret are silently omitted from the result (fail-soft here; the plugin itself decides
- *  whether a missing credential is fatal when it tries to use it, exactly like `SecretsAccessor`
- *  contract's `Promise<string | undefined>`). */
+/** Resolves every `{configFieldName: secretKey}` ref in one call. See docs/secrets.md §5. */
 export async function resolveSecretRefs(
   tx: TenantTx,
   orgId: string,

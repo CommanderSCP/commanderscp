@@ -2,28 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { SubprocessPluginHost } from "./host.js";
 
-/**
- * M21.2 review MAJOR 5, closed — THE TRANSPORT BOUND, PROVED OVER THE REAL SUBPROCESS BOUNDARY.
- *
- * `git-file-read.test.ts` proves `readFileAtRef` reaches the adapter's own hook inside the
- * subprocess; this file proves the fix for the gap that hook's own `decodeBoundedBase64` doc
- * flagged as a LIVE GAP (now closed — see `packages/plugins/git-provider-core/src/read-file.ts`):
- * before this fix, `apps/server/src/plugin-host/subprocess-entry.ts`'s `scopedFetchHttpClient` did
- * `await res.text()` over the WHOLE response with no cap, so Gitea/GitLab's uncapped contents API
- * would have buffered an arbitrarily large blob in full before `decodeBoundedBase64`'s gates ever
- * ran.
- *
- * WHY THE FAKE SERVER NEVER ENDS THE RESPONSE. This is the strongest proof available that the
- * bound is enforced DURING accumulation and not after: the local server below writes chunks in an
- * unbounded loop and never calls `res.end()`. `await res.text()` (or any "wait for the stream to
- * finish, then check the size" implementation) would hang on this response FOREVER — there is no
- * "after" to check at. Only an implementation that inspects the running total as bytes arrive, and
- * aborts the read once the total exceeds the bound, can ever settle this call. So the test passing
- * at all (rather than timing out) is itself the proof, independent of the specific assertion below.
- * `gitea` is used (a single static PAT, no App-JWT token exchange) so the fake server only needs to
- * answer the two REST calls `readFileAtRef` actually makes — the ref-resolution list and the
- * contents fetch — rather than also emulate an OAuth-shaped exchange.
- */
+/** M21.2 review MAJOR 5, closed. See docs/plugin-host.md §39. */
 
 let host: SubprocessPluginHost | undefined;
 let server: Server | undefined;

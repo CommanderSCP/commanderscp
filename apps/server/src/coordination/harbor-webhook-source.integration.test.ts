@@ -13,26 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M15.3c — Harbor as a WEBHOOK CHANGE-SOURCE, END TO END through the REAL inbound path (not a unit
- * tautology): a `source_mappings` row (sourceKind=`harbor`) binds a `project/repo` glob to a
- * component; Harbor PUSHES a `PUSH_ARTIFACT` webhook (authed by a `Bearer <SCP PAT>` Authorization
- * header, NO signature header — a registry cannot sign, and no secret is configured for harbor); the
- * reconcile-tick processor (`processChangeSourceEvents`) correlates it against the mapping and
- * proposes a Change TARGETING that component AND carrying `sourceRef.artifact_digest` = the pushed
- * image digest (the connective tissue the M17.1 scan gate binds to, ADR-0013).
- *
- * This exercises the whole census-critical seam at once:
- *   - the OPEN `harbor` sourceKind flows through the route/DB/schema with NO enum/allowlist change;
- *   - `requireAuth` (the Bearer PAT) gates the push — the harbor auth model, no HMAC;
- *   - `extractHint`'s BODY-DERIVED event name (harbor names its event in `payload.type`, not a
- *     header) is what makes the event reach `mapEvent` at all (the header-only path would drop it);
- *   - correlation is on REPO via the existing `source_mappings` globs (no correlator change);
- *   - `artifactDigest` is threaded into `sourceRef.artifact_digest`.
- *
- * COORDINATE-NOT-EXECUTE: SCP only RECEIVES + correlates the push; it never calls Harbor. CONNECTED
- * registries only — air-gap PULL (SCP polling the registry) is a DEFERRED follow-on.
- */
+/** Harbor as a webhook change-source, end to end. See docs/coordination.md §544. */
 describe("harbor webhook-source: a PUSH_ARTIFACT correlates end-to-end into a Change carrying the image digest", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -97,7 +78,6 @@ describe("harbor webhook-source: a PUSH_ARTIFACT correlates end-to-end into a Ch
     // the other coordination processing tests).
     await withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId));
 
-    // The event was processed and produced a Change.
     const eventRow = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.id, eventId))
     );

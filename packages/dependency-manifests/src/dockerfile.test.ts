@@ -2,11 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ManifestParseError } from "./types.js";
 import { parseDockerfile } from "./dockerfile.js";
 
-/**
- * A genuine multi-stage build of the shape this repo's own root Dockerfile uses: a builder stage, a
- * vendored-tool stage pinned by digest, and a runtime stage that copies from both. The last two
- * `FROM`s reference STAGES, not images.
- */
+/** A genuine multi-stage build, like this repo's own. See docs/dependency-manifests.md §1. */
 const MULTI_STAGE = `# syntax=docker/dockerfile:1.7
 ARG NODE_VERSION=22.11.0
 
@@ -70,14 +66,7 @@ describe("parseDockerfile — multi-stage", () => {
 });
 
 describe("parseDockerfile — NEGATIVE CONTROL for the stage-reference case", () => {
-  /**
-   * The identical file, with the one difference that the third `FROM` names a genuine second image
-   * (`alpine:3.19`) instead of the `build` stage.
-   *
-   * Without this control, "the stage reference yields no dependency" would pass just as well if the
-   * parser dropped every third FROM, or every FROM whose operand lacks a slash, or simply returned
-   * fewer results than it should. The control proves the exclusion is driven by stage-ness.
-   */
+  /** Same file, but the third FROM is a real image. See docs/dependency-manifests.md §2. */
   const WITH_REAL_SECOND_IMAGE = MULTI_STAGE.replace(
     "FROM build AS prune",
     "FROM alpine:3.19 AS prune"
@@ -203,13 +192,7 @@ describe("parseDockerfile — the awkward reference forms", () => {
   });
 
   it("drops a comment INSIDE a continuation rather than splicing it into the instruction", () => {
-    // The load-bearing case the comment-skip describes, and the one neither fixture contained: both
-    // had comments only BETWEEN instructions, where stripping them changes nothing. Docker's own
-    // parser drops a comment line mid-continuation.
-    //
-    // With the skip disabled the instruction breaks in two — `FROM alpine:3.19 # …` and a stray
-    // `AS base` — so the stage `base` is never declared and the later `FROM base` is minted as a
-    // phantom dependency on an image no registry has.
+    // A comment inside a continuation, which neither had. See docs/dependency-manifests.md §3.
     const deps = parseDockerfile(
       "FROM alpine:3.19 \\\n# why this base and not the slim one\n  AS base\nFROM base\nRUN true\n"
     );

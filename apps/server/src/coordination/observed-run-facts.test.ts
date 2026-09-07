@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runIdentityOfSourceRef } from "./observed-run-facts.js";
 
-/**
- * `runIdentityOfSourceRef` — the predicate + read beneath `observedRun`
- * (component-journey-view.md §3 Segment 2). One case per writer shape traced in the module doc:
- * github flat-nested-under-`raw` (observed) and nested-under-`workflow_run` (webhook), gitea
- * (observed only — its webhook adapter maps no run-completion event), gitlab pipeline (observed) and
- * `object_attributes` (webhook) — plus absence and malformed input for each.
- */
+/** The predicate and read beneath the observed run. See docs/coordination.md §574. */
 describe("runIdentityOfSourceRef", () => {
   describe("github — OBSERVED (poll) shape: the run object nested under sourceRef.raw", () => {
     const observedSourceRef = {

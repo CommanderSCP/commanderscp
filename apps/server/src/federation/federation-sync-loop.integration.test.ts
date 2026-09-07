@@ -18,24 +18,7 @@ import {
 import { TrustDomainId } from "@scp/schemas";
 import { asTrustDomainId } from "@scp/schemas";
 
-/**
- * M14.4 (test g) — THE WAKE AT THE REAL pg-boss LEVEL. Everything else in this milestone drives
- * `federationSyncOrgTick` directly; this file proves the queue wiring the poke actually depends on:
- *
- *   1. with a FUTURE-DATED interval job already pending (the loop's own self-reschedule), a
- *      `wakeFederationSyncNow` runs the handler within a couple of seconds — the wake is NOT
- *      swallowed by the pending singleton tick; and
- *   2. that wake is a FORCED tick: it pulls a peer whose due-window has NOT elapsed. Without the
- *      `{reason:"poke"}` payload → `force` plumbing, the M14.4 due-gate would answer "not due for
- *      another 59 seconds" and the poke would silently do nothing; and
- *   3. it leaves NO MORE THAN ONE pending interval job — a forced tick must not re-schedule, or
- *      poke traffic would insert extra pending ticks (pg-boss computes a singleton slot from now()
- *      AT INSERT) and make the "sparse" loop non-deterministically denser.
- *
- * The observable side effect is `federation_peers.last_pull_attempt_at`, stamped by the scheduler's
- * atomic claim. The peer's baseUrl points at a closed port, so the pull itself fails fast — this
- * file tests the SCHEDULING, not the transport (that is `federation-sync.integration.test.ts`).
- */
+/** M14.4 (test g) — THE WAKE AT THE REAL pg-boss LEVEL. See docs/federation.md §149. */
 describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", () => {
   let boss: PgBoss;
   let domain: IsolatedDomain;
@@ -74,24 +57,9 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
     }
   }
 
-  /**
-   * Insert a COMPLETED job in the singleton slot that a `singletonKey: "startup"` +
-   * `singletonSeconds: 10` send would target right now — i.e. the residue of a previous boot inside
-   * the same wall-clock bucket.
-   *
-   * This must NOT block the fixed (unkeyed) send: `job_i4` is
-   * `(name, singleton_on, COALESCE(singleton_key,''))` and an unkeyed send leaves `singleton_on`
-   * NULL, which the index's `WHERE singleton_on IS NOT NULL` excludes outright.
-   */
+  /** Inserts a completed job into the singleton slot. See docs/federation.md §150. */
   async function seedCompletedStartupJob(): Promise<void> {
-    // `singleton_on` is NOT `now()` — pg-boss stores a TRUNCATED bucket. Copied verbatim from
-    // pg-boss 10.4.2 `src/plans.js`:
-    //   'epoch'::timestamp + '1 second'::interval * ("singletonSeconds" * floor(date_part('epoch', now()) / "singletonSeconds"))
-    // Seeding a bare `now()` would store an unaligned timestamp that collides with nothing, and this
-    // test would then pass against the very defect it exists to catch.
-    //
-    // Both the CURRENT and NEXT bucket are seeded: the send happens milliseconds after this insert,
-    // so a bucket rollover in between would otherwise silently un-reproduce the collision.
+    // `singleton_on` is NOT `now()`. See docs/federation.md §151.
     const bucket = (offsetBuckets: number) =>
       `'epoch'::timestamp + '1 second'::interval * (10 * (floor(date_part('epoch', now()) / 10) + ${offsetBuckets}))`;
     const client = new pg.Client({ connectionString: testPgBossDatabaseUrl() });
@@ -176,21 +144,7 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
     expect(await pendingJobs()).toBeLessThanOrEqual(1);
   }, 60_000);
 
-  /**
-   * B1 REGRESSION — THE RESTART CASE THE ORIGINAL STARTUP TICK SILENTLY LOST.
-   *
-   * The first test above passes trivially because a brand-new peer has `last_pull_attempt_at =
-   * NULL`, which the due-gate reads as "due now". But that column is DB state: it SURVIVES the
-   * process restart. A peer pulled moments before a rolling upgrade / OOM kill / node drain comes
-   * back NOT due, so a non-forcing startup tick pulled NOTHING and the outpost stayed stale for the
-   * rest of its window — silently disabling the pull-on-(re)connect leg of the decided reliability
-   * floor.
-   *
-   * This pins BOTH halves of the two-flag model at the real pg-boss level:
-   *   - the startup tick FORCES (the peer is attempted despite being deep inside its window), and
-   *   - it still RE-SCHEDULES (exactly ONE pending interval job — the chain is bootstrapped, not
-   *     killed, and not duplicated).
-   */
+  /** The restart case the original startup tick silently lost. See docs/federation.md §152. */
   it("RESTART: the startup tick FORCES past the due-gate for an already-attempted peer AND leaves exactly one pending interval job", async () => {
     // Tear the first loop down COMPLETELY (offWork unsubscribes the worker, not just the flag) so
     // only the restarted loop can service the queue.
@@ -215,22 +169,9 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
     );
     expect(await pendingJobs()).toBe(0);
 
-    // OCCUPY THE SINGLETON SLOT A KEYED STARTUP SEND WOULD LAND IN — deterministically, instead of
-    // hoping the wall clock arranges it. `clearPendingJobs()` above deletes only `state = 'created'`,
-    // and `job_i4` is `WHERE state <> 'cancelled'`, so a COMPLETED startup job from the previous boot
-    // survives the teardown and still holds `(name, singleton_on, key)`.
-    //
-    // This is what made the bug a COIN FLIP rather than a CI quirk. The two startup sends are ~3-6s
-    // apart (the gap is dominated by pg-boss's 2s pollingInterval, since nothing notifies the worker
-    // on send) against a 10s bucket, so they collided with probability roughly 0.4-0.7 ON ANY
-    // MACHINE. Note the direction, which is the opposite of the intuitive one: a SLOWER runner
-    // lengthens the gap and makes the collision LESS likely, so "passes locally, fails in CI" was a
-    // sampling artefact and never evidence about the runner. Seeding the row makes the collision
-    // certain, so this test now fails 100% of the time against a keyed startup send and passes 100%
-    // against an unkeyed one.
+    // Occupies the slot a keyed startup send would land in. See docs/federation.md §153.
     await seedCompletedStartupJob();
 
-    // THE RESTART.
     loop = await startFederationSyncLoop(boss, domain.db);
 
     const restartAttempt = await waitFor(async () => {

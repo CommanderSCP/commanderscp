@@ -5,18 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { changeSourceWebhookSecrets } from "../db/schema.js";
 import { getSecretValue } from "../secrets/secrets-repo.js";
 
-/**
- * Per-source-kind webhook signature verification (BUILD_AND_TEST.md §8 M7 DoD: "webhook SIGNATURE
- * verification (reject bad HMAC)... for every webhook source"; SECURITY-SENSITIVE list: "a bad/
- * missing HMAC signature is rejected, never processed — for every webhook source"). Closes the gap
- * `routes/change-sources.ts`'s M3 doc comment explicitly flagged: "M3 ships no per-source-kind
- * secret storage/configuration surface to verify against (that arrives with the real executor
- * plugins in M7)".
- *
- * Verification always runs against the RAW request body bytes (`request.rawBody`, app.ts's custom
- * content-type parser) — never a re-serialized `JSON.stringify(request.body)`, which is not
- * guaranteed byte-identical to what the sender actually signed (whitespace, key order).
- */
+/** Per-source-kind webhook signature verification. See docs/coordination.md §1115. */
 
 export interface WebhookSignatureVerifier {
   /** The header this source kind carries its signature in. */
@@ -51,26 +40,10 @@ const DEFAULT_VERIFIER: WebhookSignatureVerifier = {
   verify: verifyGenericHmacSha256
 };
 
-/**
- * Resolves the signature verifier for a source kind through the per-`sourceKind` webhook ADAPTER
- * REGISTRY (`webhook-adapters.ts`, M15.1b) — github (`sha256=<hex>` in `x-hub-signature-256`) and
- * gitea (bare-hex in `x-gitea-signature`) each resolve their OWN provider verifier off their own
- * `GitProviderAdapter`, so this file no longer imports any single provider's verifier directly.
- *
- * A source kind with no provider-specific adapter (e.g. `terraform`, or a generic first-party
- * reporter) falls back to `DEFAULT_VERIFIER` — the generic `sha256=<hex>` scheme in
- * `x-scp-signature-256`. TFC/Atlantis native signature schemes are still NOT specifically
- * implemented (HONEST LIMITATION): an org relying on those configures the generic scheme instead
- * until a source-specific adapter lands as follow-up.
- */
+/** Resolves the signature verifier through the registry. See docs/coordination.md §1116. */
 export function verifierForSourceKind(sourceKind: string): WebhookSignatureVerifier {
   const adapter = webhookAdapterForSourceKind(sourceKind);
-  // An adapter that ships its own signature scheme (github/gitea/gitlab) resolves it here. A
-  // webhook-source adapter that carries NO `verify`/`signatureHeaderName` (harbor — a registry
-  // authed by a `Bearer`-PAT `Authorization` header, with no separate signature header, M15.3c)
-  // falls back to `DEFAULT_VERIFIER`. This path is only ever reached when a secret IS configured
-  // for the source kind; harbor configures none, so it is never exercised for harbor — the fallback
-  // is defensive, keeping the type honest rather than asserting a `verify` that isn't there.
+  // An adapter that ships its own signature scheme. See docs/coordination.md §1117.
   if (adapter?.verify && adapter.signatureHeaderName) {
     return { headerName: adapter.signatureHeaderName, verify: adapter.verify };
   }

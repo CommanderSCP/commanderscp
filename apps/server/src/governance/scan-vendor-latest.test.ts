@@ -9,18 +9,7 @@ import {
   type VendorInventoryRow
 } from "./scan-vendor-latest.js";
 
-/**
- * M22.4 (ADR-0033, owner decision D1) — THE VENDOR RULE'S ARITHMETIC, pure.
- *
- * Everything here is about the direction of a MISSING fact. A vendor-pass removes a finding before
- * it is counted, so an absence read the wrong way does not produce an error, it produces a PASS —
- * and the pass looks exactly like a component that really is current. Each `it` below is one of the
- * absences ADR-0033 and the M22 definition of done enumerate, and each asserts the refusal by its
- * NAME rather than by "not at head", so a future edit that collapses two refusals into one has to
- * say so out loud.
- *
- * MUTATIONS RUN — measured, each reverted by an exact inverse edit; recorded in the increment report.
- */
+/** The vendor rule's arithmetic, kept pure. See docs/governance.md §402. */
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 /** The default poll interval is daily, so the default bound is three days. Computed, never spelled,
@@ -57,9 +46,7 @@ const ociLine = (over: Partial<VendorInventoryRow> = {}): VendorInventoryRow => 
   ...over
 });
 
-// ===========================================================================================
 // The freshness bound is DERIVED, never spelled
-// ===========================================================================================
 
 describe("the staleness bound is derived from the poll interval, never hardcoded", () => {
   it("moves with SCP_DEPENDENCY_VERSION_POLL_INTERVAL_SECONDS", () => {
@@ -85,10 +72,6 @@ describe("the staleness bound is derived from the poll interval, never hardcoded
     ).toBe(300 * 1000 * VENDOR_LATEST_STALENESS_POLL_CYCLES);
   });
 });
-
-// ===========================================================================================
-// One (line, declaration) pair — every absence, named
-// ===========================================================================================
 
 describe("evaluateVendorLineAtHead — every absence fails closed, by name", () => {
   it("A NULL latest_version DOES NOT QUALIFY — 'not observed' is never 'up to date'", () => {
@@ -159,10 +142,6 @@ describe("evaluateVendorLineAtHead — every absence fails closed, by name", () 
     ).toEqual({ atHead: false, reason: "version_not_comparable" });
   });
 
-  // ---------------------------------------------------------------------------------------
-  // THE OCI ARM — the non-negotiable
-  // ---------------------------------------------------------------------------------------
-
   it("OCI COMPARES THE DIGEST, NEVER THE TAG — two images agreeing on the tag and differing by digest do NOT both qualify", () => {
     // The headline rule of the oci arm. An index reports TAGS; a tag is mutable, so `3.19.1` names
     // one set of bytes today and another next week. If this ever starts comparing `resolvedVersion`
@@ -205,10 +184,6 @@ describe("evaluateVendorLineAtHead — every absence fails closed, by name", () 
     });
   });
 });
-
-// ===========================================================================================
-// One target's facts
-// ===========================================================================================
 
 describe("foldVendorLatestFacts — ALL, never ANY", () => {
   it("NO declared oci line at all means NO base-image credit", () => {
@@ -258,7 +233,6 @@ describe("foldVendorLatestFacts — ALL, never ANY", () => {
     const rows = [
       npmLine({ lineId: "l-z", coordinate: "zod" }),
       npmLine({ lineId: "l-a", coordinate: "axios" }),
-      // Two python lines that canonicalise to ONE key.
       npmLine({ lineId: "l-p1", ecosystem: "python", coordinate: "zope.interface" }),
       npmLine({ lineId: "l-p2", ecosystem: "python", coordinate: "zope_interface" })
     ];
@@ -267,10 +241,6 @@ describe("foldVendorLatestFacts — ALL, never ANY", () => {
     expect(keys).toEqual(["npm|axios|4.17.21", "npm|zod|4.17.21", "python|zope-interface|4.17.21"]);
   });
 });
-
-// ===========================================================================================
-// Composition across targets
-// ===========================================================================================
 
 describe("intersectVendorLatestFacts — an intersection, never a union", () => {
   const a: ScanVendorLatestFacts = {

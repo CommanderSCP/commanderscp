@@ -15,11 +15,7 @@ import {
 import { Sha256DigestSchema } from "./supply-chain.js";
 import { DesiredStateManifestSchema } from "./iac.js";
 
-/**
- * `packages/schemas/src/pipeline-behaviors.ts` — the pipeline BEHAVIOUR contract (D11/D12/D13/D21/
- * D23/D25). Every `it()` below proves a PROPERTY the file's own doc comments state, not a mechanic —
- * see the header of that file for the reasoning each test is pinning.
- */
+/** The pipeline behaviour contract, and what it pins. See docs/schemas.md §332. */
 
 const COMPONENT_URN = "urn:scp:org1:component:api";
 const TARGET_URN = "urn:scp:org1:deployment-target:prod-cluster";

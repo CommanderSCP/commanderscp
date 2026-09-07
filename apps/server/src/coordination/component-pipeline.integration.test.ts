@@ -13,48 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * A COMPONENT'S PIPELINE IS CONTINUOUS — it exists whether or not anything is releasing — AND IT IS
- * THE WHOLE JOURNEY, including the stages this component never reaches.
- *
- * ============================================================================================
- * THE TWO PROPERTIES, AND THE TWO BUGS THEY REPLACE
- * ============================================================================================
- * BUG 1 (2026-08-03). The pipeline surface was keyed on a CHANGE (`/changes/{id}/pipeline`). The
- * service board's link renders only when a row has a `latestChangeId`, so a component with nothing
- * in flight had NO pipeline to open — a run view wearing a pipeline's name.
- *
- * BUG 2 (owner-reported the same day, against the fix for bug 1). The replacement derived its stages
- * from the component's PLACEMENTS, so a stage the component is NOT placed at did not exist in the
- * view. Measured on the live estate: topology `commercial-gamma-then-prod` declares gamma then prod,
- * `agentkit-bootstrap` holds ONE placement (gamma), and prod rendered NOWHERE. A pipeline's job is
- * the JOURNEY — where a release goes next and where it stops — and placements can only ever show
- * where the component already IS, so the most operationally important fact about the component
- * ("it never reaches prod") was the one fact the view structurally could not state.
- *
- * TWO TESTS ARE THE WHOLE POINT, one per bug: "has stages for a component that has NEVER released"
- * (no other assertion here could fail on the old change-anchored surface) and "shows a declared stage
- * the component is NOT placed at" (none could fail on the placement-derived one).
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | seed stages from placements only (drop the wave seeds) | the unplaced-stage AND interleaving tests FAIL — `unplacedStages` empty; this is bug 2 exactly |
- * | drop the off-topology placements from the seed list | 6 tests FAIL, the off-topology one by name — the mirror-image bug, real state hidden by a document's omission |
- * | `stageSource: "topology"` whenever a topology resolved (ignoring the shape check) | the legacy-shape test FAILS — a client would read an empty `unplacedStages` as "reaches every stage" when it means "unknowable" |
- * | assign `order` per-array (`unplacedStages.length`) instead of across the union | the interleaving test FAILS — but ONLY after it was strengthened. Its first version had ONE placed and ONE unplaced stage, where per-array numbering coincidentally equals the union index, and the mutation left it GREEN. It now uses three waves with only the first placed, so the two disagree (0,0,1 vs 0,1,2) |
- * | `bindings[0]` instead of every binding at a stage | the every-pipeline test FAILS — a stage's build/infra/config pipelines collapse to one, which is how the owner experienced "missing the infra pipeline" |
- * | `DISTINCT ON (placement)` instead of `(placement, type)` for `currents` | the per-pipeline-release test FAILS — but ONLY after that test was WRITTEN; the mutation survived the first run of this suite entirely, because nothing covered per-pipeline history at all |
- * | resolve the gate to `{policies: []}` without calling the policy resolver | the gate test FAILS — the prod approval, and the 282 pending requests behind it, render as nothing |
- * | report `not_started` for a check whether or not a release is at the gate | the check-status test FAILS — "nothing to run against" and "here and unanswered" collapse into one grey state |
- * | derive stages from wave targets instead of placements | the never-released test FAILS with 0 stages — exactly bug 1 |
- * | drop `"version"` from a stage's `unknownFields` | the honesty test FAILS — a null version would read as an observation |
- * | ignore the topology's wave order when sorting | the ordering test FAILS — but ONLY after it was fixed: its first version used targets named "gamma"/"prod", which sort into release order anyway, so the name fallback satisfied it and the mutation left it GREEN. It now uses names that sort the other way round |
- * | make `maintainerOf` return `isSelf: true` for every domain | NOT CAUGHT HERE, and recorded as a gap rather than hidden: this org is single-domain with 0 federation peers, so the peer and unknown-domain branches are exercised only by the CLIENT test ("shows an UNRECOGNISED domain as unknown"). The server-side branches need a two-domain federation fixture — the same caveat as the stage-name row below |
- * | resolve the stage name from the LOCAL federation name rather than the target's `origin_domain_id` | the stage-name test still passes here (single domain) — noted, NOT relied on; ADR-0026 D1's cross-domain case needs a federation fixture |
- */
+/** A COMPONENT'S PIPELINE IS CONTINUOUS. See docs/coordination.md §294. */
 describe("a component's pipeline is continuous", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -311,12 +270,7 @@ describe("a component's pipeline is continuous", () => {
   });
 
   it("derives the per-stage version from observed state — the real deployed image over the git revision", async () => {
-    // Per-stage version threading (Phase 4a): `currentsByPlacement` now selects
-    // `t.observed_state`, and the stage's `version` is `preferredObservedVersion` of the newest
-    // current's `observed` — the SAME preference rule `PipelineWaveCard.tsx`'s per-target render
-    // applies (`@scp/schemas`'s `preferredObservedVersion`, extracted so server and web cannot
-    // disagree). Both `images` and `revision` are set here so the assertion pins the PREFERENCE,
-    // not just "some string came back".
+    // Per-stage version threading (Phase 4a). See docs/coordination.md §295.
     const component = await createOrphanComponent(server, org, `version-derived-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     const topo = await attachTopology(component.id, [{ name: "gamma", target: gamma.id }]);
@@ -380,13 +334,7 @@ describe("a component's pipeline is continuous", () => {
   });
 
   it("shows EVERY pipeline bound at a stage, not just the first", async () => {
-    // A component runs several pipelines at one place: an `image` BUILD, an `infrastructure`
-    // plan/apply, a `configuration` sync. `UNIQUE(org_id, target_object_id, type)` is what makes
-    // that legal (ADR-0007 — Type is the routing key), and both live deployment-targets already
-    // carry `image` + `configuration`. The first version of this projection read `bindings[0]` and
-    // rendered it alone, so a stage's build pipeline or its infra pipeline simply vanished with no
-    // sign it existed — owner-reported ("the component pipeline is missing the infra pipeline / the
-    // software pipeline", 2026-08-03).
+    // A component runs several pipelines at one place. See docs/coordination.md §296.
     const component = await createOrphanComponent(server, org, `multi-pipeline-${uuidv7()}`);
     const placement = await admin.placements.create({
       component: component.id,
@@ -419,13 +367,7 @@ describe("a component's pipeline is continuous", () => {
   });
 
   it("resolves a COMPONENT-rung binding into the stage — the projection uses the engine's ladder", async () => {
-    // The owner's own-infra case (2026-08-12): checkout-api carried an `infrastructure` binding on
-    // the COMPONENT while running on a shared cluster — the engine's ladder (ADR-0027/0029,
-    // binding-resolution.ts) resolves it for every wave target, but the projection listed
-    // placement-rung rows only, so the journey said "No executor" / "no infrastructure pipeline is
-    // bound" about a pipeline that would in fact trigger. The projection must answer what the
-    // ENGINE would do, and say where the answer came from (resolvedVia, read off the resolver's
-    // own provenance — never inferred).
+    // The owner's own-infra case (2026-08-12). See docs/coordination.md §297.
     const component = await createOrphanComponent(server, org, `component-rung-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     await admin.executors.putBinding(component.id, {
@@ -686,11 +628,7 @@ describe("a component's pipeline is continuous", () => {
   });
 
   it("says WHICH DOMAIN maintains each place — the commander coordinates, the outpost runs", async () => {
-    // Owner, 2026-08-04. ADR-0017 §2 devolves execution to the originating outpost and leaves the
-    // commander owning only the cross-boundary gate; ADR-0011 has the receiving outpost validate
-    // every deploy inside its own domain. Resolved from the TARGET's own `origin_domain_id`, never
-    // from this instance's identity — the same rule ADR-0026 D1 applies to stage names, so a
-    // replicated target reads the same at the commander and at the outpost.
+    // Execution devolves to the originating outpost. See docs/coordination.md §298.
     const component = await createOrphanComponent(server, org, `maintainer-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
 

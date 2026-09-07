@@ -21,30 +21,13 @@ import { withTenantTx } from "../db/tenant-tx.js";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * M13.3b-ii — OFFLINE SCANNER-DB PRE-LOAD + REFRESH (ADR-0020, proposal §13.3b). The single home for
- * the commander's server-maintained Trivy-DB cache: reading its on-disk `metadata.json`, classifying
- * its staleness against the operator's INSTANCE-SCOPED policy (owner decision 2026-07-24: "a company
- * applies their own rules"), asserting its schema is one the PINNED Trivy binary can read, and
- * populating it two ways — a connected operator-invoked skopeo refresh, and an air-gap operator-load
- * of a cosign-signed DB blob carried across the CDS.
- *
- * WHY A SERVER-MAINTAINED OPERATIONAL CACHE IS NEW (and does NOT violate "SCP has no blob storage
- * for promotion artifacts"): the trivy-db is the scan's INPUT (operational data), not a promotion
- * artifact SCP is caching for someone else. It is exactly the objectStorage-PVC precedent
- * (values.yaml) applied to operational scanner data.
- *
- * FAIL-CLOSED THROUGHOUT (proposal §13.3b, owner 2026-07-24): a configured-but-missing/corrupt/
- * unreadable-schema/hard-stale DB yields NO scan → NO evidence → E6 refuses. Only a fresh (or
- * soft-stale WARN) DB scans; a warn is surfaced in the ScanEvidence + Decision, never silently.
- */
+/** M13.3b-ii — OFFLINE SCANNER-DB PRE-LOAD + REFRESH. See docs/governance.md §283. */
 
 /** The trivy-db schema version the PINNED Trivy binary (tools/trivy/pin.env TRIVY_DB_SCHEMA_VERSION)
  *  can read. A DB built for a different schema is UNREADABLE by that binary, so the refresh/load
  *  paths refuse it fail-closed. Kept in lockstep with pin.env by `scan-db.test.ts`. */
 export const EXPECTED_TRIVY_DB_SCHEMA_VERSION = 2;
 
-/** trivy-db's on-disk `metadata.json` (the fields we consume). */
 export interface TrivyDbMetadata {
   Version: number;
   UpdatedAt: string;
@@ -59,10 +42,6 @@ const SCAN_DB_POLICY_READ_ORG = "commander";
 /** The sidecar the cache carries recording HOW its current DB was populated (refresh vs operator
  *  load), so the status read and the ScanEvidence can name the source honestly. */
 const SOURCE_SIDECAR = "scp-scan-db-source.json";
-
-// -------------------------------------------------------------------------------------------
-// Cache path + presence
-// -------------------------------------------------------------------------------------------
 
 /** The configured DB cache dir (`SCP_MANAGED_SCAN_DB_CACHE`), or undefined ⇒ no cache (the runner
  *  falls back to the image-baked DB, the fail-closed fallback as stale as the image). */
@@ -258,10 +237,6 @@ export function classifyScanDbStaleness(input: ScanDbClassifyInput): ScanDbClass
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// Instance staleness policy (the operator's commander-level setting)
-// -------------------------------------------------------------------------------------------
-
 interface PolicyRow extends Record<string, unknown> {
   soft_max_age_hours: number | null;
   hard_max_age_hours: number | null;
@@ -322,10 +297,6 @@ export async function resolveActiveStalenessBounds(db: Db | undefined): Promise<
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// Status projection (the tenant-readable GET /instance/scan-db)
-// -------------------------------------------------------------------------------------------
-
 /** The full status of the DB the runner would consume — the API projection + the block reason a
  *  Decision would cite. `cacheDir` undefined ⇒ the baked-image fallback (no staleness gate). */
 export async function readScanDbStatus(
@@ -385,17 +356,9 @@ export async function readScanDbStatus(
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // Populating the cache — the atomic swap shared by refresh + operator-load
-// -------------------------------------------------------------------------------------------
 
-/**
- * Build a fresh DB directory in staging, VALIDATE it (trivy.db present + readable metadata + a
- * schema the pinned binary accepts), then ATOMICALLY swap it into `<cacheDir>/db` — no torn read
- * during a concurrent scan (a scan `docker cp`s a point-in-time snapshot of the dir; `rename` keeps
- * any already-opened inode intact). Refuses (throws, no cache write) a DB the pinned Trivy can't
- * read. Staging is created UNDER `cacheDir` so the rename is same-filesystem (hence atomic).
- */
+/** Build a database in staging, validate it, then swap. See docs/governance.md §284. */
 export async function atomicInstallDb(
   cacheDir: string,
   source: ScanDbSource,
@@ -408,7 +371,6 @@ export async function atomicInstallDb(
     await mkdir(stagingDb, { recursive: true });
     await populate(stagingDb);
 
-    // VALIDATE before we touch the live cache.
     if (!existsSync(join(stagingDb, "trivy.db"))) {
       throw new Error("scan-db install: staged payload has no trivy.db — refusing");
     }
@@ -470,9 +432,7 @@ async function extractDbFilesInto(archivePath: string, destDbDir: string): Promi
   }
 }
 
-// -------------------------------------------------------------------------------------------
 // Connected refresh — operator-invoked skopeo pull of the upstream OCI trivy-db
-// -------------------------------------------------------------------------------------------
 
 /** The upstream OCI trivy-db (proposal §13.3b). Overridable for a mirror, but the host must still be
  *  in SCP_ARTIFACT_OCI_REGISTRY_HOSTS. */
@@ -495,12 +455,7 @@ function ociHostOf(ref: string): string | null {
   return null;
 }
 
-/**
- * Connected refresh: skopeo-copy the upstream OCI trivy-db (allowlist-guarded, ADR-0019 §4) into a
- * `dir:` layout, extract its layer(s), and atomically install the resulting DB into the cache with
- * the schema-compat assertion. Operator-invoked; the ONE place this reaches the network, exactly the
- * vendored-skopeo channel #111 established. Returns the installed metadata.
- */
+/** Connected refresh: skopeo-copy the upstream OCI trivy-db. See docs/governance.md §285. */
 export async function refreshScanDbConnected(cacheDir: string): Promise<TrivyDbMetadata> {
   const ref = trivyDbOciRef();
   const host = ociHostOf(ref);
@@ -540,9 +495,7 @@ export async function refreshScanDbConnected(cacheDir: string): Promise<TrivyDbM
   }
 }
 
-// -------------------------------------------------------------------------------------------
 // Air-gap operator-load — verify a cosign-signed DB blob, then install it
-// -------------------------------------------------------------------------------------------
 
 function normalizeSha256(raw: string): string | null {
   const v = raw.trim().toLowerCase();
@@ -558,14 +511,7 @@ export interface LoadScanDbBlobInput {
   expectedDigest?: string;
 }
 
-/**
- * Air-gap operator-load: VERIFY a cosign-signed DB blob (detached signature against the operator's
- * public key, plus an optional digest cross-check) BEFORE accepting the bytes into the cache. No
- * federation message/flow — the operator produced the signed blob at the connected side (skopeo-pull
- * + repackage + cosign sign-blob) and walked it across the CDS. The blob is the SAME `type:'blob'`
- * shape as the connected repackage: a (gzipped) tar carrying trivy.db + metadata.json. A tampered
- * blob / wrong key / digest mismatch is REFUSED with NO cache write.
- */
+/** Air-gap operator-load: VERIFY a cosign-signed DB blob. See docs/governance.md §286. */
 export async function loadScanDbBlob(input: LoadScanDbBlobInput): Promise<TrivyDbMetadata> {
   if (!existsSync(input.blobPath))
     throw new Error(`scan-db load: blob '${input.blobPath}' not found`);

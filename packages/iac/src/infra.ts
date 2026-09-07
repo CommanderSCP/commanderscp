@@ -9,81 +9,7 @@ import {
 } from "./construct.js";
 import { slugify } from "./urn.js";
 
-/**
- * Typed infra-product constructs (team-pipeline-iac.md D19/D24) — `Cluster`, `InstanceGroup`,
- * `Database`, `Bucket`, `Queue`, one per member of `InfraKindSchema` (`@scp/schemas/pipeline-
- * behaviors.ts`), scoped to the Infrastructure/Configuration `Pipeline` that manages it
- * (`pipeline.ts` — a `Cluster`'s scope is a pipeline, never a bare `Stack`, which is what round A's
- * widened `ResourceConstruct` scope union exists to allow).
- *
- * ============================================================================================
- * INFRA PRODUCTS ARE `deployment-target` OBJECTS, NOT A PARALLEL TYPE — READ BEFORE CHANGING typeId
- * ============================================================================================
- * The first version of this file gave each infra kind its OWN manifest `typeId` (`"cluster"`,
- * `"instanceGroup"`, …) and had `placeAt` emit a `deploys_to` relationship to route around
- * `placements`' `deployment-target`-only endpoint. Both halves of that were wrong, and MEASURED
- * wrong on `main`, not merely awkward:
- *
- *   1. `deploys_to`'s registered relationship type excludes every infra kind as a `to` endpoint
- *      (`apps/server/drizzle/0002_rls_rbac_seed.sql`: `to_types = ['deployment-target']`) — an edge
- *      to a `cluster`/`instanceGroup`/… object is refused at apply, exactly the failure the
- *      workaround existed to dodge.
- *   2. `deploys_to` is explicitly legacy on the component path (`apps/server/drizzle/
- *      0055_assembly_object_type.sql`: "ADR-0026 made the component/target pair a `placement`, so
- *      this edge is legacy on the component path already") — building new behavior on it
- *      contradicts the ADR that created placements in the first place.
- *
- * The actual fix needs no migration: `docs/GLOSSARY.md` already defines "deployment target" as
- * *"the graph object type an executor acts on (cluster, host, environment, region) — deliberately
- * broad"* — naming *cluster* as an example, not a different type. D24's infra kinds are SUBTYPES of
- * `deployment-target`, not a sibling type needing its own placement machinery.
- *
- * So every infra product below synthesizes with `typeId: "deployment-target"` and carries its infra
- * kind as `properties.kind` (`"cluster"`, `"instanceGroup"`, …) — additive data on an ALREADY-OPEN
- * property schema (`apps/server/drizzle/0081_target_facet_and_publishes_to.sql`'s header states the
- * schema is deliberately open: no `enum`, no `required`, no `additionalProperties:false`, precisely
- * so a new well-known property never needs a migration or wedges an older federation peer). `placeAt`
- * (`pipeline.ts`) writes a REAL `placements` entry, which is legal for exactly the reason the
- * workaround wasn't: `createPlacement`'s `typeId === "deployment-target"` check now PASSES, because
- * the object genuinely is one. D19's "the graph object and the real infrastructure share one
- * managing pipeline" still holds through `managed_by_stack`, unchanged by any of this.
- *
- * ============================================================================================
- * WHY THE COMPILE-TIME COMPATIBILITY DERIVATION LIVES HERE, AND WHAT "DERIVED" ACTUALLY MEANS
- * ============================================================================================
- * D24: "Each pipeline kind's `placeAt` accepts only the infra interfaces its artifact can actually
- * land on... Derive the per-kind signatures from `ARTIFACT_INFRA_COMPATIBILITY` so the types and
- * the server's matrix cannot drift."
- *
- * `@scp/schemas` exports `ARTIFACT_INFRA_COMPATIBILITY` typed as `Record<ExecutorType, readonly
- * InfraKind[]>` — an explicit WIDENING annotation, deliberate on that side (D24's own doc: "TOTALITY
- * IS THE POINT... a TOTAL mapping keyed by the enum itself"). The cost of that annotation is that
- * TypeScript cannot recover each key's LITERAL row (`image: ["cluster"]`) from the exported VALUE —
- * once a value is typed `readonly InfraKind[]`, every element reads back as the general union
- * `InfraKind`, not the specific literal(s) that row actually holds. A `placeAt` overload keyed off
- * the erased type could therefore only accept `InfraKind` in general, which is exactly the "anything
- * accepts anything" hole D24 exists to close — so pulling the TYPE-LEVEL information through the
- * VALUE-LEVEL export, alone, cannot produce a compile-time-checked `placeAt`.
- *
- * The derivation therefore happens in two layers, and BOTH must hold for the guarantee to be real:
- *
- *   1. TYPE level — `PLACEMENT_MATRIX` below is `@scp/schemas`'s rows, re-declared `as const` so
- *      TypeScript keeps each key's LITERAL tuple, combined with `satisfies Record<ExecutorType,
- *      readonly InfraKind[]>` (not a `:` annotation) so the totality guarantee is STILL compile-
- *      checked — a member added to `ExecutorTypeSchema` without a row here is a compile error,
- *      exactly like the schemas-side export. `satisfies` is what lets both things be true at once:
- *      totality-checked AND literal-preserving, which a `:`-annotated `Record` cannot be.
- *   2. VALUE level — `infra.test.ts`'s parity case asserts, by `Object.entries`, that this
- *      constant is deep-equal to the real `ARTIFACT_INFRA_COMPATIBILITY` import, row for row. A row
- *      that drifts from the server's own matrix fails that test immediately.
- *
- * Together: a member or a value can never drift from `@scp/schemas` without one of the two layers
- * catching it at build time or test time — which is the best TypeScript can do here, since it has no
- * way to recover literal types from an already-widened value it does not itself declare. This is the
- * "if TypeScript cannot express that derivation cleanly, say so" case D24's build instructions
- * anticipate; the honest answer is a two-layer derivation, not a single one, and NOT eleven
- * hand-written `placeAt` signatures with no check tying them back to the schema's matrix.
- */
+/** Typed infra-product constructs (team-pipeline-iac.md D19/D24). See docs/iac.md §268. */
 export const PLACEMENT_MATRIX = {
   image: ["cluster"],
   chart: ["cluster"],
@@ -108,13 +34,7 @@ export interface InfraKindInterfaceMap {
   queue: IQueue;
 }
 
-/**
- * The infra interface(s) a `K`-kind pipeline's `placeAt` accepts, derived from `PLACEMENT_MATRIX`
- * (see the module doc above for exactly what "derived" means and does not mean here). Distributes
- * over a multi-row kind (`configuration` → `ICluster | IInstanceGroup`); a kind whose row is `[]`
- * (`npm`, `infrastructure`, …) derives `never`, which is what makes `placeAt` UNCONSTRUCTABLE for
- * those kinds — a compile error at the call site, not a runtime check (D24's compile rung).
- */
+/** The infra interfaces a pipeline of that kind accepts. See docs/iac.md §269. */
 export type PlaceableTarget<K extends ExecutorType> =
   (typeof PLACEMENT_MATRIX)[K][number] extends infer Row
     ? Row extends keyof InfraKindInterfaceMap
@@ -127,20 +47,11 @@ export type PlaceableTarget<K extends ExecutorType> =
 // scoped to — the Infrastructure or Configuration pipeline that manages it").
 // -------------------------------------------------------------------------------------------
 
-/** Any construct that owns a `Stack` and can therefore parent an infra product — round A's
- *  `ResourceConstruct` (widened) or round B's `Pipeline` base. Kept narrow and structural rather
- *  than importing `PipelineBase` here, so `infra.ts` has no dependency on `pipeline.ts` (the reverse
- *  dependency — `pipeline.ts` imports `infra.ts` for `PlaceableTarget`/the interface types — would
- *  otherwise become circular). */
+/** Any construct owning a stack, which can parent a product. See docs/iac.md §270. */
 export type InfraProductScope = Construct & { readonly stack: Stack };
 
 export interface InfraProductProps extends ResourceProps {
-  /** The BROADER deployment-target (stage) this infra product lives at/within — GLOSSARY's stage
-   *  grammar (e.g. `commercial-amer-production`). Recorded as `properties.within` (a plain URN,
-   *  resolved from a construct/reference/string like every other endpoint in this package) rather
-   *  than as a relationship, since no cross-boundary consumer of that fact exists yet in this
-   *  increment. Orthogonal to the object's OWN identity as a (narrower) deployment-target in its own
-   *  right — see this module's doc for why an infra product is a `deployment-target` object. */
+  /** The BROADER deployment-target. See docs/iac.md §271. */
   readonly within: IDeploymentTarget | string;
 }
 
@@ -153,44 +64,17 @@ function resourceUrn(ref: IResourceRef | string): string {
  *  imported; see that module's `nameReferenceUrn` doc for the full rule this mirrors). */
 const INFRA_NAME_REFERENCE_NAMESPACE = "named-ref";
 
-/** Every infra product's placeholder reference lives in the SAME (typeId=`deployment-target`, name)
- *  namespace an ordinary `DeploymentTarget.fromName()` reference does — because it IS one. Two infra
- *  products (or an infra product and a plain stage) sharing a display name collide here exactly as
- *  two same-named deployment-targets would collide server-side; this is the expected, pre-existing
- *  rule, not a new hazard this file introduces. */
+/** Every infra product's placeholder reference lives in the SAME. See docs/iac.md §272. */
 function infraNameReferenceUrn(name: string): string {
   return `urn:scp:${INFRA_NAME_REFERENCE_NAMESPACE}:deployment-target:${slugify(name)}`;
 }
 
-/**
- * A reference to an infra product — deliberately NOT `IResourceRef<Kind>` (round A's pattern for
- * every OTHER typed-registry reference, where the interface's `typeId` field equals the object's
- * real wire `typeId`). An infra product's wire `typeId` is uniformly `"deployment-target"` (this
- * module's doc explains why), so reusing `IResourceRef<Kind>` here would make `ICluster` and
- * `IInstanceGroup` the SAME type once `Kind` is fixed to `"deployment-target"` for both — exactly
- * the "anything accepts anything" hole D24's compile rung exists to close. `kind` is the extra,
- * TYPE-LEVEL-ONLY discriminant that keeps `ICluster`/`IInstanceGroup`/… structurally distinct; it is
- * ALSO real wire data (`properties.kind`), so it is never a fabricated field — see `_toManifestObject`
- * below, where the two uses of `kind` (the TS discriminant and the property) are kept in lockstep by
- * construction (one `kind` variable feeds both). Structurally still an `IDeploymentTarget`
- * (`urn` + `typeId: "deployment-target"`, with `kind` as an allowed EXTRA property) — an infra
- * product reference is legal anywhere a plain deployment-target reference is accepted, matching "an
- * infra product IS a deployment-target" all the way down to the type system.
- */
+/** A reference to an infra product. See docs/iac.md §273. */
 export interface IInfraProductRef<Kind extends InfraKind = InfraKind> extends IDeploymentTarget {
   readonly kind: Kind;
 }
 
-/**
- * Type guard: true for an OWNED resource construct that is one of THIS module's infra products
- * (`Cluster`/`InstanceGroup`/`Database`/`Bucket`/`Queue`) — as opposed to a plain `DeploymentTarget`
- * or any other `"deployment-target"`-typed resource a program might declare. `defineInfraProduct
- * Construct`'s generated classes are the only place a `kind` field is ever set on an instance, so
- * checking for it is sufficient without importing this module's private class list. Used by
- * `products.ts` (D20) to walk a pipeline's owned resources (`Stack._resourcesWithin`, construct.ts)
- * and pick out only its own declared products, never a bare stage a program also happens to declare
- * in the same subtree.
- */
+/** Type guard: true for an owned resource of this module. See docs/iac.md §274. */
 export function isInfraProductConstruct(
   resource: ResourceConstruct
 ): resource is ResourceConstruct<"deployment-target"> & IInfraProductRef {
@@ -258,11 +142,7 @@ export type IBucket = IInfraProductRef<"bucket">;
 /** A reference to an EXISTING `queue` product — same non-deploy-target rule as `IDatabase`. */
 export type IQueue = IInfraProductRef<"queue">;
 
-/**
- * A kubernetes-style cluster (D24 `InfraKindSchema`'s `"cluster"` member) — the deploy target for
- * `image`/`chart`/`configuration` pipelines (`PLACEMENT_MATRIX`). Synthesizes as a `deployment-
- * target` object with `properties.kind: "cluster"` (this module's doc) — a real placement target.
- */
+/** A kubernetes-style cluster. See docs/iac.md §275. */
 export const Cluster = defineInfraProductConstruct("cluster");
 /** A VM fleet (`InfraKindSchema`'s `"instanceGroup"`) — the deploy target for `rpm`/`deb`/
  *  `vm-image`/`configuration` pipelines. */

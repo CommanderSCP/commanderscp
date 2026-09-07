@@ -1,9 +1,4 @@
-/**
- * Test-only worker entry that receives messages but never responds — lets
- * `cel-sandbox.test.ts` exercise `CelSandbox`'s hard-timeout/terminate path deterministically,
- * without depending on being able to construct a genuinely slow real CEL expression (cel-js has
- * no loop/sleep construct to hang itself with, by design — see cel-sandbox.test.ts's comment).
- */
+/** A worker that receives messages but never responds. See docs/governance.md §431. */
 import { parentPort } from "node:worker_threads";
 
 if (!parentPort) {

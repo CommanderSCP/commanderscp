@@ -26,40 +26,7 @@ import { DEPENDENCY_DELEGATION_DECISION_KIND } from "./delegation-detection.js";
 import { readBumpAuthorship, recordBumpPullRequest } from "./bump-authorship-repo.js";
 import { upsertDependencyLine } from "./dependency-inventory-repo.js";
 
-/**
- * M21.5 — THE TWO THINGS THE SERVER SIDE OF `scp-managed-dep` HAS TO GET RIGHT, END TO END
- * (charter amendment 2026-08-13; ADR-0032 §8, §9).
- *
- * ================================================================================================
- * 1. THE ENABLEMENT-TIME CONFLICT REFUSAL — at the choke point, not at the route
- * ================================================================================================
- * "CommanderSCP refuses to enable dependency subscriptions for a component whose repository already
- * delegates the same manifests to another dependency-update system." That refusal is what makes
- * "opting a component in is itself the gate-1 flip" (ADR-0032 §8) a true statement instead of an
- * aspiration: a flip only means something if it is exclusive, and two actuators editing one file is
- * the failure it invites.
- *
- * It is installed at `graph/objects-repo.ts`'s `createObject`/`updateObject` for exactly the reasons
- * `subscription-authoring-guard.ts`'s header sets out and `subscription-guard-write-doors.integration.test.ts`
- * MEASURED for its sibling: the typed `/policies` route is not the boundary, and three free-form-`typeId`
- * doors reach `createObject` with the same document. So this file exercises the typed route AND the
- * IaC door AND hand-fill, because a refusal installed in one of them is a refusal with three holes.
- *
- * ================================================================================================
- * 2. THE PROVENANCE LOOP — SCP's own commit must come back as itself
- * ================================================================================================
- * ADR-0032 §9: "A commit SCP authors is observed back in via the normal webhook path, so the bump
- * change must be recorded such that the returning event CORRELATES TO IT rather than minting a
- * second, unrelated change."
- *
- * The webhook is REPLAYED here, through the real `extractHint` → real github adapter → real
- * `processChangeSourceEvents`, with a real GitHub push payload. The assertion that matters is the
- * NEGATIVE one: no second change object exists afterwards. A test that only checked the event was
- * attached would pass while a duplicate sat beside it.
- *
- * The forgery case is the other half and is not optional: the branch name is attacker-typable, so a
- * push to `scp/dep-bump/<some-uuid>` from a repository the change never claimed must NOT attach.
- */
+/** The two things the server side has to get right. See docs/dependencies.md §123. */
 describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance loop (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -134,10 +101,6 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
         )
     );
   }
-
-  // ---------------------------------------------------------------------------------------------
-  // 1. THE ENABLEMENT-TIME CONFLICT REFUSAL
-  // ---------------------------------------------------------------------------------------------
 
   it("refuses to ENABLE subscriptions for a component whose repo delegates — naming the file found", async () => {
     const component = await createTestComponent(admin, {
@@ -380,15 +343,7 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
     expect(resolved.controlObjectId).toBe(controlObjectId);
   });
 
-  /**
-   * ==============================================================================================
-   * THE MODULE NAME BINDS THE EVIDENCE TO NOTHING ON ITS OWN
-   * ==============================================================================================
-   * "The component's OWN checks" was enforced as a MODULE-NAME STRING plus a commit id. A commit id
-   * is a content hash and travels between repositories freely — a fork, a mirror, a vendored copy —
-   * so a `github-check` control an operator configured against an UNRELATED repository containing
-   * the same commit object reported green for exactly the right commit and the merge was granted.
-   */
+  /** The module name binds the evidence to nothing alone. See docs/dependencies.md §124. */
   it("an own-check PASS in a DIFFERENT repository grants nothing", async () => {
     const repo = `acme/${randomUUID().slice(0, 8)}`;
     const { changeObjectId } = await authorBump(repo, "auto_merge");
@@ -447,15 +402,7 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
     expect(resolved.delivery).toBe("pull_request");
   });
 
-  /**
-   * ==============================================================================================
-   * A BINDING RE-POINTED LATER MUST NOT RE-NARRATE WHAT AN OLD RUN EVIDENCED
-   * ==============================================================================================
-   * The module used to be read from the CURRENT `control_bindings` row by LEFT JOIN, and a binding
-   * is mutable: re-pointing one control from `webhook-control` to `github-check` retroactively
-   * relabelled every historical pass of that control as an own-check pass — and this grant reads
-   * historical runs. It is now stamped on the run at insert (migration 0063).
-   */
+  /** A re-pointed binding must not re-narrate an old run. See docs/dependencies.md §125. */
   it("re-pointing a control's binding does NOT retroactively relabel its old runs as own-checks", async () => {
     const repo = `acme/${randomUUID().slice(0, 8)}`;
     const { changeObjectId } = await authorBump(repo, "auto_merge");
@@ -678,7 +625,6 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
     );
     expect(row?.processedAt).not.toBeNull();
     expect(row?.resultingChangeObjectId).toBe(changeObjectId);
-    // THE ASSERTION THAT MATTERS: nothing new was proposed.
     expect(await liveChangeCount()).toBe(before);
   });
 
@@ -767,18 +713,7 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
     expect(row!.sourceKind).toBe("dependency-bump");
   });
 
-  /**
-   * ==============================================================================================
-   * WHAT `recordBumpPullRequest` WILL AND WILL NOT PUT IN `pull_request_url` (migration 0066)
-   * ==============================================================================================
-   * These drive the write door directly and make NO claim that anything calls it — that claim is
-   * `bump-dispatch.integration.test.ts`'s "records the pull request URL THE PROVIDER RETURNED, on
-   * the real authoring path", which enters through the head write door, the queue and the loop.
-   * What is tested here is the SEMANTICS the door owes every caller, and each case below is a value
-   * a real provider response can carry: the plugin degrades an unreadable `html_url` to `""`
-   * (`packages/plugins/managed-dep/src/repo-write.ts`'s `readPullRequest`), a self-hosted forge can
-   * answer with anything at all, and a redelivery can restate a pull request the row already has.
-   */
+  /** What will and will not go into the stored URL. See docs/dependencies.md §126. */
   describe("the pull-request record (migration 0066)", () => {
     /** A fresh bump with its pull request recorded exactly once, as phase 5 records it. */
     async function bumpWithPullRequest(
@@ -801,15 +736,7 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
       expect(authorship?.pullRequestUrl).toBe(url);
     });
 
-    /**
-     * The number is recorded and the URL is NOT, for every value that is not an absolute http(s)
-     * URL. Absent has to mean "SCP recorded no link": storing `""` would make a consumer
-     * special-case a value the column can already express as NULL, and storing a `javascript:` or
-     * `data:` value would ship a script-execution hazard to whatever renders it as an href —
-     * refused at the ONE writer rather than sanitised in every reader.
-     *
-     * Each case gets its OWN row, so one refusal cannot be hidden behind another's leftovers.
-     */
+    /** The number is recorded and the URL is not. See docs/dependencies.md §127. */
     it.each([
       ["the empty string the plugin degrades an unreadable html_url to", ""],
       ["whitespace", "   "],
@@ -834,12 +761,7 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
       expect(authorship?.pullRequestUrl).toBeUndefined();
     });
 
-    /**
-     * THE WRITE-ONCE CONTROL, WHICH THE URL MUST NOT WEAKEN. The number is what a merge is
-     * addressed to, so a later run naming a DIFFERENT pull request is refused — and the URL that
-     * arrived with it is refused too. A link pointing at pull request 99 sitting beside the number
-     * 7 is worse than no link: it sends a human to read one pull request while SCP merges another.
-     */
+    /** THE WRITE-ONCE CONTROL, WHICH THE URL MUST NOT WEAKEN. See docs/dependencies.md §128. */
     it("a LATER run naming a DIFFERENT pull request changes neither the number nor the url", async () => {
       const first = "https://gitea.dc1.internal/acme/widget/pulls/7";
       const { changeObjectId } = await bumpWithPullRequest(7, first);
@@ -857,13 +779,7 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
       expect(authorship?.pullRequestUrl).toBe(first);
     });
 
-    /**
-     * ...AND THE ONE CASE THE PREDICATE DELIBERATELY ADMITS. A row from before this column existed,
-     * or one whose first authoring run got a provider response with no readable `html_url`, has a
-     * number and no link. A restatement of THE SAME number carrying a URL cannot re-point anything
-     * — the number is compared, not overwritten — so filling the link in is safe, and refusing it
-     * would only mean the link stayed missing forever.
-     */
+    /** ...AND THE ONE CASE THE PREDICATE DELIBERATELY ADMITS. See docs/dependencies.md §129. */
     it("a restatement of the SAME number fills in a url the row was missing", async () => {
       const { changeObjectId } = await bumpWithPullRequest(7, "");
       expect(

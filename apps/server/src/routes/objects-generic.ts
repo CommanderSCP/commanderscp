@@ -38,13 +38,7 @@ import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 
-/**
- * THE MESSAGE NAMES THE TYPED DOOR PER TYPE, NOT `/policies` FOR EVERYTHING. The set is now four
- * ids across three subsystems (`policy`/`control`, `scan_override_grant`, and M25.7's `freeze`) and
- * a fixed sentence pointing every one of them at `/api/v1/policies` sends an operator who typed
- * `POST /objects/freeze` to a route that will 404 them — a refusal that misroutes is barely better
- * than no refusal. The permission sentence stays type-agnostic because the gate genuinely is.
- */
+/** The message names the typed door per type, not one route. See docs/routes.md §265. */
 const GOVERNANCE_MANAGED_TYPED_DOOR: Readonly<Record<string, string>> = {
   policy: "/api/v1/policies",
   control: "/api/v1/controls",
@@ -52,20 +46,7 @@ const GOVERNANCE_MANAGED_TYPED_DOOR: Readonly<Record<string, string>> = {
   freeze: "/api/v1/freezes"
 };
 
-/**
- * Governance-owned object types (`policy`, `control`) are refused here entirely — mirrors
- * `assertNotSystemManagedRelationship` (routes/relationships.ts) blocking `approves` edges from
- * the generic `/relationships` endpoint. Without this, the generic `/objects/{type}` endpoints
- * created/updated the SAME `policy`/`control` graph objects the typed `/policies`/`/controls`
- * routes do (routes/typed-registries.ts), but checked only generic `object:write` — skipping both
- * the `policy:write` permission gate AND `assertPolicyScopeWithinAuthority`'s binding of a
- * policy's DECLARED scope to the author's own authority (CRITICAL #1b). That gap let a
- * component-scoped Administrator publish an org-wide policy through this endpoint, and let ANY
- * actor holding bare `object:write` (e.g. an Operator with zero `policy:write` anywhere) create an
- * org-wide `required` policy demanding an unreachable approval quorum — a live governance-bypass
- * DoS. Checked before the transaction even opens: no DB round trip is needed to reject a request
- * this endpoint will never legitimately serve.
- */
+/** Governance-owned object types. See docs/routes.md §266. */
 function assertNotGovernanceManagedObjectType(type: string): void {
   if (isGovernanceManagedObjectType(type)) {
     throw forbidden(
@@ -78,17 +59,7 @@ function assertNotGovernanceManagedObjectType(type: string): void {
   }
 }
 
-/**
- * M5 (BUILD_AND_TEST.md §8 M5 security note — "if a new authority-scoped object type is
- * introduced, it needs the governance-managed-types treatment"): `campaign` binds its DECLARED
- * `properties.targets` to the actor's own authority (`coordination/campaign-scope-authz.ts`),
- * exactly the same class of risk `policy.properties.scope` has — so it gets the exact same
- * generic-endpoint block, forcing every caller through `POST /campaigns`
- * (`coordination/campaign-repo.ts`'s `proposeCampaign`), which performs that check per target.
- * A SEPARATE set from `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS` on purpose: campaign writes still only
- * need plain `object:write`, never `policy:write` — this is a distinct authority model, not the
- * governance subsystem's.
- */
+/** A new authority-scoped object type needs its own door. See docs/routes.md §267. */
 function assertNotCoordinationTargetScopedObjectType(type: string): void {
   if (isCoordinationTargetScopedObjectType(type)) {
     throw forbidden(
@@ -99,22 +70,7 @@ function assertNotCoordinationTargetScopedObjectType(type: string): void {
   }
 }
 
-/**
- * M12 P5a (docs/proposals/organize-after.md): `component` binds its MEMBERSHIP — a directly-created
- * component must belong to a service. That invariant can only be enforced by a create path that
- * takes the service inline and writes the `contains` edge atomically, so `component` is refused on
- * the generic route (all write verbs), forcing creates through the strict `POST /components`
- * (`graph/components-repo.ts`'s `createComponentInService`).
- *
- * A SEPARATE set from `COORDINATION_TARGET_SCOPED_OBJECT_TYPE_IDS` ON PURPOSE — that set's meaning is
- * target-AUTHORITY binding; a component's reason is service-MEMBERSHIP. Conflating them would be
- * exactly the kind of comment-that-lies this codebase already has too many of. The true IMPORT paths
- * (discovery/accept, federation-journal replay) call `createObject` directly and never touch a create
- * ROUTE, so they stay permissive by construction — the owner ruling. The `SERVICE_MEMBER_OBJECT_TYPE_IDS`
- * set now lives in `graph/service-member-types.ts` so this guard and the federation OVERLAY route
- * (`federation/overlay-repo.ts`) — a user-facing create surface, NOT an import path — agree (owner
- * ruling 2026-07-16: overlay refuses component too).
- */
+/** M12 P5a (docs/proposals/organize-after.md). See docs/routes.md §268. */
 function assertNotServiceMemberObjectType(type: string): void {
   if (isServiceMemberObjectType(type)) {
     throw forbidden(
@@ -125,17 +81,7 @@ function assertNotServiceMemberObjectType(type: string): void {
   }
 }
 
-/**
- * M16.2 phase A (E1): the `outpost` type carries COMMANDER-AUTHORED federation config, so its writes
- * are gated on `federation:write`, not plain `object:write`. This endpoint checks only the latter —
- * the same permission-mismatch shape that let a bare-`object:write` actor publish governance objects
- * through here (see `assertNotGovernanceManagedObjectType`) — so the type is refused outright and
- * callers go through `/api/v1/federation/outposts`.
- *
- * The 1:1 peer BINDING is NOT enforced by this refusal: it is enforced inside `graph/objects-repo.ts`
- * for every local write door at once (`federation/outpost-binding.ts` explains why one choke point
- * rather than N route guards). This block is purely about the permission gate.
- */
+/** The outpost type carries commander-authored config. See docs/routes.md §269. */
 function assertNotPeerBoundObjectType(type: string): void {
   if (isPeerBoundObjectType(type)) {
     throw forbidden(
@@ -146,15 +92,7 @@ function assertNotPeerBoundObjectType(type: string): void {
   }
 }
 
-/**
- * ADR-0026 D2/D3 (owner decision D17): a `placement`'s identity IS a pair of other objects, so it
- * cannot be created through a door that takes free-form `properties`. This route would store two
- * UUIDs without resolving them, without checking they name a `component` and a `deployment-target`,
- * and — decisively — without writing the two derived edges that make the pair traversable, leaving
- * an island invisible to every impact query. Refused outright; callers go through
- * `/api/v1/placements`. See `graph/pair-bound-types.ts` for why this is a separate set from the
- * service-membership one rather than a merged "special types" list.
- */
+/** A placement's identity is a pair of other objects. See docs/routes.md §270. */
 function assertNotPairBoundObjectType(type: string): void {
   if (isPairBoundObjectType(type)) {
     throw forbidden(
@@ -165,20 +103,7 @@ function assertNotPairBoundObjectType(type: string): void {
   }
 }
 
-/**
- * Generic `/objects/{type}` endpoints over the full graph model (DESIGN.md §4.1, §6) — works for
- * ANY registered object type, built-in or org-defined via the type registry, with no special
- * casing (BUILD_AND_TEST.md §8 M1 DoD (b)) EXCEPT the governance-owned `policy`/`control` types,
- * which every write verb below refuses outright (`assertNotGovernanceManagedObjectType` — security
- * fast-follow after PR #9). `PUT .../{urn}` is the idempotent upsert-by-URN path; every `POST`
- * accepts `Idempotency-Key` for replay-safe retries.
- *
- * Scope decision (documented): list operations check `object:read` at the org-root scope
- * (listing spans arbitrary containment, so a single finer-grained scope isn't meaningful without
- * per-row ReBAC filtering — an M2+ concern); every other operation checks at the specific
- * object's own scope (existing objects) or its resolved containing domain (new objects), so
- * `authz/resolve.ts`'s containment walk is exercised precisely.
- */
+/** Generic `/objects/{type}` endpoints over the full graph model. See docs/routes.md §271. */
 export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -282,11 +207,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const auth = await requireAuth(deps, request);
       const { type } = request.params;
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // ONE check object for BOTH the gate and the row filter (role-model.md §8.2 steps 4+5), so
-        // the permission the door authorizes with and the permission the filter is computed from
-        // cannot be edited apart. The org-root scope is unchanged and is still tried first; what is
-        // new is that failing it now falls through to the subject's own scopes instead of 403-ing a
-        // ServiceAdmin who can read every row they asked for.
+        // ONE check object for BOTH the gate and the row filter. See docs/routes.md §272.
         const check: PermissionCheck = {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -300,16 +221,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     }
   });
 
-  /**
-   * M20.4 (ADR-0031 §6) — publish a domain-local object.
-   *
-   * A VERB, not a `PATCH` of `domainLocal`, and the distinction is deliberate: this re-journals the
-   * object's current full state and sweeps its edges, so it is an action with an effect rather than a
-   * field edit that quietly emits a stream of entries. `PATCH` still cannot express locality at all,
-   * which is what keeps the column immutable everywhere except here.
-   *
-   * ONE-WAY. There is no un-publish route and there will not be one — federation has no un-send.
-   */
+  /** M20.4 (ADR-0031 §6) — publish a domain-local object. See docs/routes.md §273. */
   typed.route({
     method: "POST",
     url: "/api/v1/objects/:type/:idOrUrn/publish",
@@ -335,31 +247,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const { type, idOrUrn } = request.params;
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const existing = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
-        // ADDED, NEVER SUBSTITUTED — `object:write` is a SECOND bar in front of the federation one
-        // below, which is unchanged. Publish is still a federation act; it is now also an estate
-        // write, because it is one.
-        //
-        // THE ASYMMETRY IS THE ARGUMENT. DECLARING locality (`POST /objects/{type}` above, and the
-        // five sibling doors `assertMayDeclareDomainLocal` guards) requires BOTH `object:write` and
-        // `federation:write` — ADR-0031 §1's split: `object:write` is the permission for describing
-        // your estate, `federation:write` is the permission for deciding what crosses a security
-        // boundary. Publish is the INVERSE verb of that same decision and until now cost strictly
-        // less than making it: `federation:write` alone. That is backwards. `publishDomainLocalObject`
-        // does not merely flip a federation flag — it `UPDATE`s the estate row (clearing
-        // `domain_local` and its inherited-from provenance), BUMPS `version`, writes an audit event,
-        // and sweeps the object plus its edges onto the journal. A subject holding `federation:write`
-        // and no `object:write` — the FederationAdmin shape, "operates the link, does not edit the
-        // estate" (`federation/handfill-repo.ts`) — was mutating and re-versioning estate rows here.
-        //
-        // WHY A REFUSAL IS SAFE AT THIS DOOR, unlike the import path. This is a local operator's
-        // per-request POST and its failure mode is one 403 to the caller who typed it. The federation
-        // IMPORT path deliberately carries carve-outs instead of bars, because a throw there wedges a
-        // peer's whole signed bundle and `inbox-loop.ts` re-fetches it forever. Nothing here can
-        // absorb a refusal on someone else's behalf.
-        //
-        // Scoped to the object itself for both bars, like every other operation on an existing object
-        // in this router; `authz/resolve.ts`'s `scope_expand` walks upward only, so an org-root or
-        // ancestor grant already satisfies a check here.
+        // ADDED, NEVER SUBSTITUTED. See docs/routes.md §274.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -496,11 +384,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7). Tombstoning the principal that
-        // holds the org's last administrative binding — or the team that holds it — is refused with
-        // 409 from `graph/objects-repo.ts`'s `deleteObject`, a CHOKE POINT this route inherits. An
-        // added response code is additive under the oasdiff gate: `deleteObject` previously declared
-        // 200/401/403/404.
+        // THE ADMINISTRATOR FLOOR. See docs/routes.md §275.
         409: ProblemSchema
       }
     },

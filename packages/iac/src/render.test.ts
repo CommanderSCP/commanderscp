@@ -15,14 +15,7 @@ import {
   updateGeneratedSection
 } from "./render.js";
 
-/**
- * D21(d): `scp iac render` shows ALL gates that will apply, including estate-imposed ones the team
- * never declared — "the picture must be the truth, not the team's subset of it." This file proves
- * the two halves of that: what a synthesized manifest's OWN declarations render as (waves, source,
- * publish, declared hooks), and the FIXED, always-present honesty section (`MANIFEST_ONLY_
- * DISCLAIMER` + the estate-imposed gate lines) that `render.ts`'s module doc explains render can and
- * cannot know from a manifest alone.
- */
+/** The render shows all gates that apply, including inherited. See docs/iac.md §310. */
 
 /** The worked example's own shape (team-pipeline-iac-examples.md §7): one component, an image
  *  pipeline placed at a Cluster its own infrastructure pipeline declares, staging then production. */

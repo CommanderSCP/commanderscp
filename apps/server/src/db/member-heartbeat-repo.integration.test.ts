@@ -3,11 +3,7 @@ import { sql } from "drizzle-orm";
 import { recordMemberClusterHeartbeat, listLiveMemberHeartbeats } from "./member-heartbeat-repo.js";
 import { buildTestServer, type TestServer } from "../test-support/harness.js";
 
-/**
- * §7.4 — the member-cluster heartbeat round-trip (also validates that migration 0093 applies and the
- * runtime `scp_app` role can upsert its own row under the instance-wide RLS policy). A live heartbeat
- * is what the migrations Job's version-skew gate and the instance doctor read.
- */
+/** §7.4 — the member-cluster heartbeat round-trip. See docs/db.md §4. */
 describe("member-cluster heartbeat (§7.4)", () => {
   let server: TestServer;
 
@@ -35,11 +31,7 @@ describe("member-cluster heartbeat (§7.4)", () => {
 
   it("a heartbeat older than the live window is not returned as live", async () => {
     await recordMemberClusterHeartbeat(server.deps.db, "cluster-stale", "0.9.0");
-    // AGE THE ROW EXPLICITLY rather than shrinking the window to zero. The zero-width version
-    // compared a DB-clock `updated_at` against a JS-clock cutoff and so depended on the two clocks
-    // agreeing to the millisecond — it passed locally and failed in CI, where the row came back
-    // "live" because the container's clock ran marginally ahead. Ageing the row by an hour makes the
-    // assertion about the WINDOW, which is what it claims to be about, on any clock.
+    // AGE THE ROW EXPLICITLY rather than shrinking the window to zero. See docs/db.md §5.
     await server.deps.db.execute(
       sql`UPDATE member_cluster_heartbeat SET updated_at = now() - interval '1 hour' WHERE cluster_id = 'cluster-stale'`
     );

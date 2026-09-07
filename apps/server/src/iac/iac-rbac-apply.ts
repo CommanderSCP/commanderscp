@@ -15,27 +15,7 @@ import {
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { findObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
-/**
- * ================================================================================================
- * IaC-APPLIED ROLE BINDINGS AND ORG ROLES (drizzle/0108)
- * ================================================================================================
- *
- * THROUGH THE REAL DOORS, NEVER AROUND THEM. Every function here composes the same
- * `authz/role-binding-door.ts` guards `routes/role-bindings.ts` uses. An IaC path that inserted
- * rows itself would be a SECOND door with its own drift, and this milestone's whole guard census
- * would be wrong the day the two disagreed.
- *
- * WHAT IS DIFFERENT FROM THE TYPED ROUTE, and each is deliberate:
- *
- *  - **`managed_by_stack` is stamped**, which is what makes the row prunable by a later apply. A
- *    binding created through the route carries NULL and no manifest can ever touch it.
- *  - **No D7 acknowledgement**, because group and team subjects are not declarable at all
- *    (`packages/iac/src/rbac.ts` refuses them at synth). `assertBindableSubject` re-checks that
- *    here rather than trusting the client: the construct is one authoring path, and a hand-written
- *    manifest is another.
- *  - **No `Idempotency-Key`** — an apply is already idempotent by diff: a binding that exists is a
- *    `noop` line and never reaches this code.
- */
+/** IaC-APPLIED ROLE BINDINGS AND ORG ROLES. See docs/iac.md §46. */
 
 interface StackBindingInput {
   orgId: string;
@@ -67,7 +47,7 @@ export async function createStackManagedRoleBinding(
   input: StackBindingInput
 ): Promise<void> {
   // FIRST STATEMENT, as on the typed door: two concurrent applies reading before either writes is
-  // the shape `role-binding-door.ts` §0 takes this lock for.
+  // the shape `docs/authz/role-binding-door.md` §0 takes this lock for.
   await lockOrgRoleAuthority(tx, input.orgId);
 
   const role = await roleByName(tx, input.orgId, input.roleName);

@@ -8,13 +8,7 @@ import {
   showsCorrelatedInfra
 } from "./component-pipeline";
 
-/**
- * THE CORRELATED-INFRASTRUCTURE SECTION (owner decision, 2026-08-24) — the rendering half.
- * `component-pipeline-correlated-infra.integration.test.ts` (server) proves the response is
- * computed correctly; this proves the client paints exactly what the response states, keeps
- * absent (older server) distinguishable from empty (evaluated, none), and never mounts the
- * section on the software lane, whose pipeline has nothing this fact is about.
- */
+/** THE CORRELATED-INFRASTRUCTURE SECTION. See docs/web.md §245. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children, to }: { children?: React.ReactNode; to?: string }) => (

@@ -4,38 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CreateObjectRequest, DiscoveryProposal, GraphObject } from "@scp/schemas";
 import { flush, render, typeInto } from "../test-support/render-dom";
 
-/**
- * M19.1 — the two "Connect Argo CD" wizard guarantees that must hold on EVERY PR, with no browser
- * and no server. The Playwright spec (`e2e/connect-argocd.spec.ts`) proves the flow works against a
- * real server and a fake Argo CD; it runs in CI job 9, which is minutes and a compose stack. These
- * are the two claims that would be silently wrong rather than loudly broken, so they belong in the
- * unit job:
- *
- *   (b) THE CREDENTIAL LEAVES BY ONE DOOR. Proven by SEARCHING FOR THE TOKEN, not by reading the
- *       code: a sentinel is typed and submitted, then asserted ABSENT from the query cache, the
- *       mutation cache (where `mutate(vars)` would have parked it), the rendered markup and the
- *       URL — while `putSecret` is asserted to have RECEIVED it, so the test cannot pass by way of
- *       a token that never existed. That anti-vacuity half is the point: "the token is nowhere" is
- *       trivially true of a form that never captured one.
- *
- *   (c) THE ORPHAN NOTICE FOLLOWS THE DATA. `discovery accept` creates components and bindings but
- *       no relationships, so the success screen must not imply a graph link that is not there —
- *       AND must not hardcode that absence, because the day the plugin emits relationships a
- *       hardcoded "not part of any service" becomes the lie instead. Both directions are asserted.
- *
- * MUTATION LOG (each applied alone against this file, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | `mutationFn: async (vars) => …` + `register.mutate(draft)` (the token as mutation variables) | token-in-mutation-cache FAILS |
- * | drop `setDraft(prev => ({...prev, token: ""}))` from `onSuccess` | token-in-markup FAILS |
- * | `type="password"` -> `type="text"` on the token input | the password-input case FAILS |
- * | `relationships === 0` -> `true` (always show the orphan notice) | the non-zero case FAILS |
- * | render a literal `0` for the relationship count | the non-zero case FAILS |
- * | `...(draft.allowInternalEgress ? {allowInternalEgress: true} : {})` -> always `true` | the unchecked-checkbox case FAILS |
- * | `putSecret` after `createExecutionSystem` | the ordering case FAILS |
- * | `config: {executionSystemId, serverUrl}` in `sdkDoors.runDiscovery` | the "only the system id" case FAILS |
- */
+/** The two wizard guarantees that must hold on every step. See docs/web.md §318. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -123,10 +92,6 @@ function withQueryClient(node: React.ReactElement): {
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// (b) The credential
-// ---------------------------------------------------------------------------------------------
-
 describe("hazard (b): the Argo CD token reaches secrets.put and nothing else", () => {
   it("is submitted, stored, and then findable NOWHERE the browser keeps state", async () => {
     const doors = doorsDouble();
@@ -163,7 +128,6 @@ describe("hazard (b): the Argo CD token reaches secrets.put and nothing else", (
       "prod-argocd-token"
     );
 
-    // The four places a browser would keep it.
     const queries = JSON.stringify(
       queryClient
         .getQueryCache()
@@ -188,21 +152,8 @@ describe("hazard (b): the Argo CD token reaches secrets.put and nothing else", (
   });
 });
 
-// ---------------------------------------------------------------------------------------------
-// (c) The orphan notice
-// ---------------------------------------------------------------------------------------------
-
 describe("hazard (c): the success screen reports what the SERVER returned", () => {
-  // THE ORPHAN-NOTICE PAIR IS GONE WITH `ImportSummary` (ADR-0047).
-  //
-  // Both cases asserted that the post-import screen told the truth about components the accept path
-  // had just created without a service — the notice appeared when no relationships were written and
-  // stayed away when they were. There is no post-import screen now, and no component can be created
-  // without a service: the scaffolder refuses to EMIT one, so the state those cases described is
-  // unreachable rather than merely unreported.
-  //
-  // What replaced them is `scaffold-panel.test.tsx`'s ungrouped case, which asserts the same
-  // concern one step earlier — at authoring time, where ADR-0047 moved it.
+  // THE ORPHAN-NOTICE PAIR IS GONE WITH `ImportSummary`. See docs/web.md §319.
 
   it("stores the secret BEFORE creating the system that references it", async () => {
     const doors = doorsDouble();

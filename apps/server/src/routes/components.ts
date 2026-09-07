@@ -38,29 +38,11 @@ import { resolveDeclaredContainmentParent } from "../graph/containment-parent-au
 import { createComponentInService, setComponentService } from "../graph/components-repo.js";
 import { mergeComponents } from "../coordination/component-merge-repo.js";
 
-/**
- * Strict `component` routes (M12 P5a, docs/proposals/organize-after.md). `component` is deliberately
- * NOT a `TYPED_REGISTRY_RESOURCES` entry (the shared template's `POST`/`PUT` cannot require a service
- * and write the `contains` edge atomically) and is refused on the generic `/objects/component` route
- * (`objects-generic.ts`'s `assertNotServiceMemberObjectType`). So this is the ONLY route by which a
- * component is created directly, and it requires a service.
- *
- * `POST`/create-branch of `PUT` are strict; `GET`/list/`PATCH`/`DELETE` are byte-for-byte the shared
- * template's behaviour (updating/reading/deleting a component needs no service — re-assignment is
- * P5b's `move` verb). Imports (discovery/accept, federation, overlay) call `createObject` directly,
- * never these routes, so they stay permissive.
- */
+/** Strict `component` routes. See docs/routes.md §80. */
 export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
-  // GET /components/:idOrUrn/pipeline — THE COMPONENT'S PIPELINE (coordination-ui-views.md §2, as
-  // corrected 2026-08-03). One projection of the component's STAGES — its placements — with what
-  // executes at each and what last released there.
-  //
-  // The point of the correction: this is well-defined for a component with nothing in flight. The
-  // surface it replaces was keyed on a change, so a stable component had no pipeline at all. An
-  // extra `/pipeline` segment, so it never collides with the registry's `/:idOrUrn` detail route —
-  // same shape as `/services/:idOrUrn/board`.
+  // GET /components/:idOrUrn/pipeline — THE COMPONENT'S PIPELINE. See docs/routes.md §81.
   typed.route({
     method: "GET",
     url: "/api/v1/components/:idOrUrn/pipeline",
@@ -102,20 +84,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
     }
   });
 
-  // GET /components/:idOrUrn/scan-requirements — M22.8 (ADR-0033 §11, charter principle 3).
-  //
-  // THE RULES IN FORCE FOR ONE COMPONENT: the resolved six-tier ceiling and every tier that
-  // contributed to it (ADR-0016), plus which exclusion CLASSES the tiers above admit and where a
-  // clause of each would actually have effect (ADR-0033 §1).
-  //
-  // IT WRITES NO DECISION. That is the whole reason it exists as a separate surface rather than
-  // "just call `POST /policy-evaluate`": that endpoint runs the real orchestrator and writes one
-  // Decision per call with no suppression, so a polled UI on it would recreate — per viewer, per
-  // interval — the 1.44 GB/day amplification ADR-0024 §D0 exists over. Anything added to this
-  // handler that writes a row breaks the contract this route is named for.
-  //
-  // An extra path segment, so it never collides with the registry's `/:idOrUrn` detail route —
-  // the same shape as `/pipeline` above and `/services/:idOrUrn/board`.
+  // GET /components/:idOrUrn/scan-requirements — M22.8. See docs/routes.md §82.
   typed.route({
     method: "GET",
     url: "/api/v1/components/:idOrUrn/scan-requirements",
@@ -395,12 +364,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7), inherited from
-        // `graph/objects-repo.ts`'s `deleteObject` — the same choke point, so the same declaration
-        // as the typed-registry template next door, and for the reason stated there: the floor runs
-        // when `objectTouchesRoleAuthority` says this row is some binding's subject or has a live
-        // `member_of` edge, and that probe reads `role_bindings.subject_id`, an unconstrained uuid,
-        // rather than a type. Additive: `deleteComponent` previously declared 200/401/403/404.
+        // THE ADMINISTRATOR FLOOR. See docs/routes.md §83.
         409: ProblemSchema
       }
     },

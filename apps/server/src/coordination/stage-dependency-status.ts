@@ -15,49 +15,7 @@ import {
   type StageDependencyVerdict
 } from "./stage-dependency-hold.js";
 
-/**
- * ADR-0028 increment 4 — THE READ SIDE OF THE HOLD, and the ONLY one.
- *
- * THREE callers, one predicate: `explain` (routes/changes.ts), the watchdog's `executing` stall arm,
- * and the component-pipeline projection's per-stage `hold` (component-pipeline.ts). All three need
- * the same answer — *which dependency is withholding this change's trigger, at which place, and why*
- * — and they get it from this one function. Two copies would be two predicates, and the second would
- * drift the moment a branch was added: the whole point of ADR-0028 decision 4 is that the branches
- * are DISTINGUISHABLE, which is a property a second implementation cannot inherit.
- *
- * LIVE, NOT OFF THE PINNED DECISION. `recordStageDependencyHold` persists a `hold` Decision and
- * NOTHING anywhere writes a clearing row when the hold releases. So the newest `stage_dependency` row
- * of a change that was briefly held, triggered, succeeded and reached `accepted` is STILL a `hold`,
- * forever. A read surface that answered "is this held?" from that row would rebuild exactly the
- * permanent-marker bug the `hold` verdict (rather than `block`) was chosen to avoid —
- * `reconcile.ts`'s `recordStageDependencyHold` doc spells that trap out at length. Worse here than
- * there, because the surface would be the one an operator consults FIRST.
- *
- * The kind is overloaded too, which is the same trap wearing a second hat: `applyPromotionImport`
- * writes `kind: "stage_dependency", verdict: "allow"` against the same subject to record the
- * import-time strip, so on an outpost the LATEST row of that kind is an `allow` for a change that may
- * well be held. Neither row is the answer. The answer is the predicate, re-run.
- *
- * INERT WHEN NOTHING IS COUPLED, structurally: the declaration parse is in memory, the edge query is
- * skipped for the single-target change (277 of 281 measured — ADR-0026), and this returns `null`
- * before touching the plan when there is nothing to evaluate. An uncoupled change's `explain` costs
- * one property read it was already doing.
- *
- * NOTHING HERE PERSISTS ANYTHING (ADR-0024). `evaluateStageDependencies` is read-only by contract —
- * "takes a `TenantTx` and reads only; the caller decides what to persist" — and this caller persists
- * nothing at all. Stamping a `held` flag anywhere so a projection could read it back cheaply would be
- * one write per held target per 1 s tick: the 1.44 GB/day write amplification relocated to another
- * table.
- *
- * THE LIVE-STATE GATE IS IN HERE, not at the call sites, and that placement is the fix for a real
- * defect rather than tidying. The first version of this module left the gate to the caller;
- * `component-pipeline.ts` applied one and the other two callers did not, so `explain` — and
- * therefore `scp change explain` and `scp change wait-status` — reported `held: true` FOREVER for a
- * CANCELLED change. That is the permanent-marker trap the module doc above is entirely about,
- * arrived at from the other direction: not a stale row, but a live predicate run against a change
- * nothing will ever act on. A gate a caller has to remember is a gate the next caller forgets, so it
- * lives at the one place all of them pass through. See `isStillTriggerable` below for the predicate.
- */
+/** The read side of the hold, and the only one. See docs/coordination.md §962. */
 export async function resolveStageDependencyStatus(
   tx: TenantTx,
   orgId: string,
@@ -102,11 +60,7 @@ export async function resolveStageDependencyStatus(
     (wave) => wave.status !== "succeeded" && wave.status !== "skipped"
   );
 
-  // ONLY THE TARGETS THE HOLD CAN STILL ACT ON. Reconcile evaluates the coupling in the TRIGGER
-  // branch alone — a `triggered`/`observing` target has already been handed to its executor and a
-  // hold cannot un-ring that bell, so reporting a verdict for one would describe a wait that is over.
-  // `triggering` is included for the same reason reconcile includes it: it is the state a crash
-  // mid-claim leaves behind, and such a target is re-offered to the hold on the next tick.
+  // ONLY THE TARGETS THE HOLD CAN STILL ACT ON. See docs/coordination.md §963.
   const pending = (activeWave?.targets ?? []).filter(
     (target) => target.status === "pending" || target.status === "triggering"
   );
@@ -155,42 +109,12 @@ export async function resolveStageDependencyStatus(
   };
 }
 
-/**
- * A HOLD IS ONLY REAL WHILE THE ENGINE WOULD STILL TRIGGER THE TARGET, and exactly one change state
- * satisfies that: `executing`. `reconcile.ts` evaluates the coupling in ONE place —
- * `advanceExecutingChanges`, whose selector is `listChangeRowsInStates(tx, orgId, ["executing"], …)`
- * — inside the branch that decides whether to call `triggerWaveTarget`. No other state reaches it.
- *
- * So for every other state the honest answer is "no wave target is awaiting a trigger", and it is
- * NOT the same as "held: false because the dependencies are satisfied". A cancelled or failed
- * change's active wave is the dead one; its never-run `pending` targets each still evaluate to a
- * hold, because the dependency genuinely never deployed and nothing about that verdict knows the
- * release was abandoned. Reporting it would tell an operator a corpse is waiting for something.
- *
- * The two states it is tempting to include, and why they are not:
- *   - `coordinated` — the plan exists and its targets are `pending`, but the hold has not been
- *     applied to them yet and the change may still be blocked before it ever gets there. A verdict
- *     here would be a forecast, and this surface's whole claim is that it reports what IS.
- *   - `waiting` — parked on a CROSS-CHANGE `requires` prerequisite (a different mechanism entirely,
- *     `coupling.ts`). Its targets are not being withheld by a stage dependency; they are not being
- *     considered at all. `waitStatus` is the field that answers for that change.
- *
- * The value is deliberately a `state`, not "does a plan exist" or "is the wave running": those are
- * derived facts that can be true of a dead change, and the state column is the one the engine's own
- * selector reads.
- */
+/** A hold is only real while the engine would still trigger. See docs/coordination.md §964. */
 function isStillTriggerable(state: string | undefined): boolean {
   return state === "executing";
 }
 
-/** What a change that IS coupled but is past (or short of) the point of being triggered reports.
- *  NOT `null` — null is "this change coupled nothing at any stage", a different claim, and the CLI
- *  prints it as one. An empty `targets` renders as "no wave target is awaiting a trigger", which is
- *  the true statement about a cancelled release that declared a coupling.
- *
- *  A FUNCTION rather than a module constant, because a constant would hand every caller the SAME
- *  object (and the same `targets` array). Nothing mutates it today; a shared mutable reply on a
- *  read path is a bug waiting for the first caller that sorts its own copy in place. */
+/** What a change that IS coupled but is past. See docs/coordination.md §965. */
 function nothingAwaitingATrigger(): ChangeStageDependencyStatus {
   return { held: false, waveIndex: null, unenforced: false, targets: [] };
 }
@@ -220,15 +144,7 @@ function toWireVerdict(
   };
 }
 
-/** A `dependsOn` that is actually an object id. An `undeclarable` verdict's `dependsOn` is the raw
- *  stored entry rendered as JSON — `"not-a-stage-dependency-at-all"`, `{"dependsOn":42}` — because
- *  there was no parseable id to name, and the wire schema says so (`ChangeStageDependencyVerdict`'s
- *  `dependsOn` is deliberately NOT `.uuid()`). Postgres does not shrug at those: `id IN ('…')`
- *  against a `uuid` column RAISES `invalid input syntax for type uuid`, so a single malformed stored
- *  entry turned this whole read into a 500 — `GET /changes/{id}/explain`, `scp change explain` and
- *  `scp change wait-status` all of them, for exactly the change an operator is trying to diagnose.
- *  The comment below already said such ids "are simply absent"; the query it described had no way to
- *  make that true. Naming a hazard is not handling it. */
+/** A `dependsOn` that is actually an object id. See docs/coordination.md §966. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Display names for every id this status mentions, in ONE query. Ids that resolve to nothing (a
@@ -261,15 +177,7 @@ async function resolveNames(
   return new Map(rows.map((row) => [row.id, row.name]));
 }
 
-/**
- * The stage-dependency status as ONE operator sentence, for the watchdog's stall notice — `null`
- * when nothing is held, so a caller can tell "no coupling is involved" from "a coupling is, and here
- * it is" without inspecting the structure.
- *
- * Built from the SAME per-verdict `describeStageDependencyHold` the hold Decision's `reasonTree`
- * uses, with the place appended: the Decision names the deployment-target by id (it must stay
- * byte-stable), whereas a notification is read by a human who needs the name.
- */
+/** The stage-dependency status as one operator sentence. See docs/coordination.md §967. */
 export function describeStageDependencyStatus(status: ChangeStageDependencyStatus): string | null {
   const lines = status.targets.flatMap((target) =>
     target.dependencies

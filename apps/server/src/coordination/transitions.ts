@@ -1,37 +1,7 @@
 import type { ChangeState } from "@scp/schemas";
 import { ChangeStateSchema } from "@scp/schemas";
 
-/**
- * The change lifecycle state machine (DESIGN.md §9.1) as DATA — a pure, exhaustively unit-tested
- * module with zero I/O, per BUILD_AND_TEST.md §4.1: "anything testable as a pure function must
- * be written as a pure function (the design's single guarded transition function... exist partly
- * for this)". `coordination/transition.ts`'s guarded transition function uses `isLegalTransition`
- * below as its legality gate — the SOLE runtime authority. (`drizzle/0007_change_coordination.sql`
- * — plus `0032_state_transitions_waiting.sql` for the M12 P4B `waiting` edges — also seeds a
- * `state_transitions` table. That table is still read by no runtime code, but it is now
- * seeded-and-checked: `transitions.integration.test.ts` asserts SET EQUALITY, both directions and
- * triggers included, between the DB rows and `LEGAL_TRANSITIONS`, so the two can never silently
- * drift again. `transitions.test.ts` separately cross-checks THIS constant against a hardcoded
- * edge set.)
- *
- * Edge rationale (DESIGN §9.1's diagram + prose):
- *  - The "happy path" states form a chain: proposed -> evaluated -> coordinated -> executing ->
- *    validating -> accepted. Each step corresponds to the engine's own observe/compare/decide/
- *    coordinate progression (coordination/reconcile.ts).
- *  - `waiting` (M12 P4B) is an OPTIONAL detour on the coordinated->executing step: a change with
- *    unsatisfied `properties.requires` goes coordinated -> waiting and is held there until every
- *    cross-change prerequisite is satisfied, then waiting -> executing. A change with no `requires`
- *    takes coordinated -> executing directly, exactly as before — both edges are legal. `cancel` is
- *    legal from `waiting` too (it is pre-acceptance); `rollback` is not (nothing has executed yet).
- *  - `cancel` is legal from every pre-acceptance state (proposed/evaluated/coordinated/executing/
- *    validating) — an operator can always abort a change that hasn't been accepted yet.
- *  - `rollback` is legal once the change has actually done something an external system needs
- *    reverting (executing/validating/accepted) — never from proposed/evaluated/coordinated, where
- *    nothing has executed yet and `cancel` is the correct verb.
- *  - `cancelled` and `rolled_back` are terminal EXCEPT `accepted -> rolled_back` (an accepted
- *    change can still be rolled back later) — every other state has no outgoing edges once
- *    reached.
- */
+/** The change lifecycle state machine. See docs/coordination.md §1013. */
 export const CHANGE_STATES = ChangeStateSchema.options;
 
 export interface StateTransitionEdge {
@@ -63,7 +33,6 @@ const LEGAL_EDGE_SET: ReadonlySet<string> = new Set(
   LEGAL_TRANSITIONS.map((edge) => `${edge.from}->${edge.to}`)
 );
 
-/** Terminal states have no outgoing edges at all. */
 export const TERMINAL_STATES: ReadonlySet<ChangeState> = new Set(
   CHANGE_STATES.filter((s) => !LEGAL_TRANSITIONS.some((edge) => edge.from === s))
 );

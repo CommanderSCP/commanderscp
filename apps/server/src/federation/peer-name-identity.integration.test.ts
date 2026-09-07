@@ -14,25 +14,7 @@ import { syncCursors } from "../db/schema.js";
 import { initFederationSelf } from "./self-repo.js";
 import { getCursor } from "./cursors-repo.js";
 
-/**
- * M16.2 phase A, REVIEW ROUND 4 — H6 (a peer NAME must identify a peer) and H8 (a RENAME is not a
- * sync-scope declaration). Both live on `PATCH /v1/federation/peers/{id}`, the route E4 added.
- *
- * H6, MEASURED BEFORE THE FIX: `federation_peers` had no `(org_id, name)` uniqueness and
- * `getPeerByIdOrName` resolved a non-UUID parameter by name with `LIMIT 1` and no ORDER BY. Renaming two
- * peers to the same string both returned 200, after which `GET`/`PATCH /v1/federation/peers/{name}`
- * resolved to whichever row Postgres returned — a TRANSPORT WRITE landing on a peer the operator did not
- * select. Re-pairing could already collide names, so E4 did not introduce it; E4 exists so a settings form
- * can RENAME a peer, which makes it the likely trigger, on the very route that then writes baseUrl /
- * pokeMode / syncScope. drizzle/0045 makes the name unique; these cases pin the refusal on BOTH doors.
- *
- * H8: `permitCursorReanchor` — a SECURITY-SENSITIVE one-shot permit (drizzle/0042) — fired whenever the
- * RESULTING scope was `full`, which absent-means-preserve made true of a PATCH that only set `name`. Not
- * exploitable (the anchorless-cursor predicate is the whole safety story and is unchanged), but the
- * trigger was WIDER than `cursors-repo.ts` and the G8 census row both claim, and doc-vs-code drift on this
- * exact function is what this repo keeps paying for. The permit is now gated on the request actually
- * DECLARING a scope.
- */
+/** A peer name must identify a peer, and a rename is an act. See docs/federation.md §350. */
 describe("M16.2 H6/H8: a peer name identifies a peer; a rename declares no scope (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -183,11 +165,7 @@ describe("M16.2 H6/H8: a peer name identifies a peer; a rename declares no scope
     const victim = await pairFresh("h9b-victim");
     const before = await admin.federation.getPeer(victim);
 
-    // The handler used to build `{ orgId, domainId: existing.id, ...request.body }` with the SPREAD
-    // LAST, so a body key named `domainId` would have overridden the RESOLVED peer id. It was safe only
-    // because fastify-type-provider-zod's validatorCompiler key-strips the body — a behaviour documented
-    // nowhere near the call site. The five transport fields are now spread explicitly, so the safety is
-    // local; this drives the attack shape through the real route to keep it that way.
+    // The handler used to build. See docs/federation.md §351.
     const res = await server.app.inject({
       method: "PATCH",
       url: `/api/v1/federation/peers/${target}`,

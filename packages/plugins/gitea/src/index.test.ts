@@ -1,15 +1,4 @@
-/**
- * `@scp/plugin-gitea` behavioral test suite (M15.1b). Every HTTP call is fixtured deterministically
- * with `nock` against Node's `http`/`https` core modules (see `gitea-test-support.ts`'s module doc
- * for why the `ScopedHttpClient` uses `node:https` directly, not `fetch`). `nock.disableNetConnect()`
- * is active file-wide so any unanticipated call fails loudly rather than reaching the real network
- * (CLAUDE.md: "Tests never touch the internet"). Each test's interceptors are checked for full
- * consumption by the file-wide `afterEach` (`nock.pendingMocks()` must be empty).
- *
- * These assert REAL Gitea wire shapes (documented Swagger + the bare-hex X-Gitea-Signature), not
- * tautologies: the auth header is `token <PAT>` (NOT github's Bearer), the base is `/api/v1`, the
- * run status is a single Gitea enum, and the webhook signature is bare hex with NO `sha256=` prefix.
- */
+/** `@scp/plugin-gitea` behavioral test suite. See docs/plugins.md §133. */
 import { createHmac } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,15 +38,12 @@ afterEach(() => {
   expect(pending, `unconsumed nock interceptors after test: ${pending.join(", ")}`).toEqual([]);
 });
 
-// -------------------------------------------------------------------------------------------
 // verifyGiteaWebhookSignature — bare-hex X-Gitea-Signature (NO sha256= prefix). Pure function.
-// -------------------------------------------------------------------------------------------
 
 describe("verifyGiteaWebhookSignature (bare-hex X-Gitea-Signature)", () => {
   const secret = "gitea-webhook-secret";
   const body = Buffer.from(JSON.stringify({ ref: "refs/heads/main" }));
 
-  /** Gitea's real signing scheme: bare hex, no prefix. */
   function sign(rawBody: Buffer, withSecret: string): string {
     return createHmac("sha256", withSecret).update(rawBody).digest("hex");
   }
@@ -97,10 +83,6 @@ describe("verifyGiteaWebhookSignature (bare-hex X-Gitea-Signature)", () => {
     expect(verifyGiteaWebhookSignature(tampered, validForOriginal, secret)).toBe(false);
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// mapGiteaWebhookEventToHint — pure function.
-// -------------------------------------------------------------------------------------------
 
 describe("mapGiteaWebhookEventToHint", () => {
   it("maps push to repo/commitSha/ref", () => {
@@ -168,9 +150,7 @@ describe("mapGiteaWebhookEventToHint", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() — workflow_dispatch (Gitea Actions, ASSUMED shapes; the token-auth header is real).
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() — workflow_dispatch", () => {
   it("dispatches, correlates the newest run, returns action_run::<id>, and carries the token auth header", async () => {
@@ -291,9 +271,7 @@ describe("trigger() — workflow_dispatch", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() idempotency
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() idempotency — in-memory dedup cache", () => {
   it("a second trigger() with the SAME idempotencyKey returns the SAME ref and never re-dispatches", async () => {
@@ -369,10 +347,6 @@ describe("trigger() idempotency — file-backed dedup cache", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// status() — Gitea's SINGLE status enum → phase.
-// -------------------------------------------------------------------------------------------
-
 describe("status() — single Gitea status enum", () => {
   async function statusFor(runStatus: string) {
     const { config, ctx, authHeader, base } = setup();
@@ -418,16 +392,7 @@ describe("status() — single Gitea status enum", () => {
   });
 
   it("ENCODES the runId sliced out of externalId into the route", async () => {
-    // Same census class as readFileAtRef's `repo`/`ref` (M21.2 review BLOCKERS 1-2) and github's
-    // `postCommitStatus` sha: a non-literal string spliced into a REST route. `externalId` is
-    // stored correlation state and numeric in practice, so this encoding is an IDENTITY today and
-    // its removal would change no observed behaviour — which is exactly why it is pinned. An
-    // unpinned member of a censused class is indistinguishable from an untouched one on the next
-    // refactor (CLAUDE.md, "census by property, not by symptom"). Unencoded, `../../../user`
-    // re-targets this GET at `<base>/user` because `new URL()` collapses literal `..` segments;
-    // encoded it is `..%2F..%2F..%2Fuser`, ONE segment a URL does not normalize away. The
-    // interceptor matches only the encoded form, and `disableNetConnect()` plus the file-wide
-    // pending-mocks check make the unencoded form fail loudly rather than pass quietly.
+    // Same census class as readFileAtRef's `repo`/`ref`. See docs/plugins.md §134.
     const { config, ctx, authHeader, base } = setup();
     const runId = "../../../user";
     const scope = nock(base)
@@ -440,10 +405,6 @@ describe("status() — single Gitea status enum", () => {
     scope.done();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// abort()
-// -------------------------------------------------------------------------------------------
 
 describe("abort()", () => {
   it("cancels a correlated run", async () => {
@@ -495,9 +456,7 @@ describe("abort()", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // observe() — commits + runs + PACKAGE pushes (artifactDigest), and poll-vs-push equivalence.
-// -------------------------------------------------------------------------------------------
 
 describe("observe() polling — commits, runs, and package pushes", () => {
   function nockCommitsAndRuns(
@@ -550,7 +509,7 @@ describe("observe() polling — commits, runs, and package pushes", () => {
       token: JSON.stringify({ push: watermark, workflow_run: watermark })
     });
 
-    expect(events.filter((e) => e.kind === "push")).toHaveLength(101); // 100 + the one after it
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(101);
     scope.done();
   });
 
@@ -734,11 +693,7 @@ describe("observe() polling — commits, runs, and package pushes", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// Base-URL resolution (M15.3b) — explicit `baseUrl` → injected `serverUrl` (Mode A: import an
-// EXISTING Gitea, the execution-system's serverUrl injected as config.serverUrl). Gitea has NO
-// provider default (unlike github's api.github.com), so neither being set is a hard, clear error.
-// -------------------------------------------------------------------------------------------
+// Base-URL resolution (M15.3b). See docs/plugins.md §135.
 
 describe("base URL resolution (baseUrl → serverUrl; required, no default)", () => {
   it("with ONLY serverUrl set (no baseUrl) every request targets <serverUrl>/api/v1", async () => {
@@ -802,12 +757,7 @@ describe("base URL resolution (baseUrl → serverUrl; required, no default)", ()
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// discover() (DiscoveryPlugin) — Gitea contents-API topology walk. The `sourceKind: 'gitea'` on
-// the proposed component's sourceMapping is the load-bearing assertion (matches the executor's
-// source_kind so imported components correlate observed gitea events). Gitea's contents API is
-// GitHub-compatible; the fixtures below are REAL Gitea contents-API entry shapes.
-// -------------------------------------------------------------------------------------------
+// discover() (DiscoveryPlugin) — Gitea contents-API topology walk. See docs/plugins.md §136.
 
 describe("discover() (DiscoveryPlugin)", () => {
   it("proposes one Service (repo root) + one Component per marker-file-containing top-level dir; the component's sourceMapping.sourceKind is 'gitea'; non-marker dirs and non-dir entries are skipped", async () => {
@@ -818,7 +768,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       .get(`/repos/${config.owner}/${config.repo}/contents/`)
       .reply(200, [
         { name: "service-a", path: "service-a", type: "dir" },
-        { name: "docs", path: "docs", type: "dir" }, // dir, but no marker file inside -> skipped
+        { name: "docs", path: "docs", type: "dir" },
         { name: "README.md", path: "README.md", type: "file" } // not a dir -> no contents/ call
       ]);
     nock(base)
@@ -861,11 +811,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       toUrn: `urn:scp:component:gitea:${config.owner}/${config.repo}/service-a`
     });
 
-    // The endpoints must be the ALIASES the proposed objects declare, asserted BY REFERENCE to
-    // those objects rather than as a third copy of the literal. Restating the strings would let a
-    // plugin change its URN scheme in one of the two places and stay green — and an endpoint that
-    // names no proposed object is exactly the 404 (`object '...' not found`) that made this edge
-    // unimportable even once its type was right.
+    // Endpoints asserted by reference to the proposed objects. See docs/plugins.md §137.
     expect(proposal.relationships[0]?.fromUrn).toBe(services[0]?.urn);
     expect(proposal.relationships[0]?.toUrn).toBe(components[0]?.urn);
   });
@@ -892,15 +838,7 @@ function randomKey(): string {
   return Math.random().toString(36).slice(2);
 }
 
-// -------------------------------------------------------------------------------------------
-// readFileAtRef (M21.2, ADR-0032 §4) — the first file-body read in this package. Gitea's contents
-// API is deliberately GITHUB-COMPATIBLE, so the fixtures below carry Gitea's documented
-// `ContentsResponse` fields (`type`/`encoding`/`size`/`content`/`sha`, with `sha` being the BLOB
-// sha) and a directory comes back from the same route as an array — the same shapes github's suite
-// asserts. What is NOT github-shaped, and is asserted here, is the ref resolution: Gitea's contents
-// response has no commit sha, so the commit comes from `GET /repos/{o}/{r}/commits?sha=<ref>&limit=1`
-// (the same documented list-commits endpoint `pollCommits` already uses).
-// -------------------------------------------------------------------------------------------
+// The first file-body read in this package. See docs/plugins.md §138.
 
 describe("readFileAtRef()", () => {
   const REF_COMMIT_SHA = "7c".repeat(20);
@@ -958,12 +896,7 @@ describe("readFileAtRef()", () => {
   });
 
   it("ESCAPES a '#' in both the ref and the path — unencoded it starts a URL fragment and TRUNCATES the request", async () => {
-    // `#` is where these two encodings are load-bearing rather than decorative: `git
-    // check-ref-format` permits it in a ref and it is legal in a filename, so neither
-    // `assertSafeRef` nor `assertSafeRepoPath` refuses it — but unencoded it ends the URL, so step
-    // 1's `?sha=release/#42` would query `sha=release/` (resolving the WRONG commit) and step 2
-    // would request the `docs/` directory listing. Both are wrong answers, not errors, which is
-    // why they are pinned rather than left to the not-found paths.
+    // `#` is where both encodings become load-bearing. See docs/plugins.md §139.
     const { config, ctx, authHeader, base } = setup();
     const ref = "release/#42";
     const path = "docs/notes#1.md";
@@ -1090,13 +1023,7 @@ describe("readFileAtRef()", () => {
     expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed) — a SEPARATE, larger ceiling from the
-  // decode-bound `too_large` refusals above. Those two tests prove `decodeBoundedBase64`'s gates;
-  // this one proves the response never gets there in the first place when it is far past what any
-  // legitimate manifest could be. Gitea is the provider where this mattered most: unlike GitHub,
-  // it has no `encoding: "none"` cutoff and serves arbitrarily large blobs inline.
-  // -----------------------------------------------------------------------------------------
+  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed). See docs/plugins.md §140.
 
   it("THROWS on a response so large it exceeds the TRANSPORT ceiling, before decodeBoundedBase64 ever runs", async () => {
     const { config, ctx, authHeader, base } = setup();
@@ -1210,11 +1137,7 @@ describe("readFileAtRef()", () => {
   });
 
   it("surfaces an egress-guard denial as an actionable error naming the self-hosted case (the guard is NOT relaxed)", async () => {
-    // This is the failure an in-cluster Gitea on a private address produces: the guard blocks
-    // loopback/private egress for every tenant-configurable plugin (subprocess-entry.ts:210-215,
-    // egress-guard.ts:83) and `gitea` is deliberately not an operator-plane module. The adapter's
-    // job is to make that legible, never to bypass it — so this test injects a ctx whose http client
-    // throws exactly what the guard throws, and asserts only on the message.
+    // The failure an in-cluster Gitea on a private address gives. See docs/plugins.md §141.
     const config = buildGiteaConfig();
     const ctx = {
       ...buildTestCtx(config),
@@ -1242,13 +1165,7 @@ describe("readFileAtRef()", () => {
     ).rejects.toThrow(/^gitea readFileAtRef: path .* contains a '\.'\/'\.\.' segment/);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // ADVERSARIAL `ref` and `repo` (M21.2 review, BLOCKERS 1 and 2). `repo` was spliced into this
-  // adapter's routes RAW — proven to build `.../repos/acme/widgets/../../../commits?sha=main` —
-  // and `ref` was only `encodeURIComponent`d, which leaves `..` intact. Each test registers NO
-  // interceptor, so with the assert removed the call escapes as a nock no-match; asserting the
-  // MESSAGE (not merely that it threw) is what keeps these from passing for the wrong reason.
-  // -----------------------------------------------------------------------------------------
+  // ADVERSARIAL `ref` and `repo`. See docs/plugins.md §142.
 
   it("refuses a REPO traversal BEFORE any HTTP — the route, not just the repo, was being re-targeted", async () => {
     const { ctx } = setup();
@@ -1297,7 +1214,6 @@ describe("readFileAtRef()", () => {
       .query({ ref: REF_COMMIT_SHA })
       .reply(200, {
         path: "go.mod",
-        // no `sha` at all
         type: "file",
         size: Buffer.byteLength(manifest, "utf8"),
         encoding: "base64",
@@ -1310,11 +1226,7 @@ describe("readFileAtRef()", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. Gitea's
-// recursive tree listing is GITHUB-COMPATIBLE (`GET .../git/trees/{sha}?recursive=true`, one
-// response, `truncated: true` when it hit Gitea's own ceiling).
-// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12). See docs/plugins.md §143.
 
 describe("readFilesAtRef()", () => {
   const TREE_COMMIT_SHA = "5e".repeat(20);
@@ -1528,22 +1440,7 @@ describe("readFilesAtRef()", () => {
   });
 });
 
-/**
- * ============================================================================================
- * THIS ADAPTER WRITES NOTHING (owner decision 2026-08-15; ADR-0032 §9)
- * ============================================================================================
- * ADR-0032 §9 admits `GitProviderAdapter` as an escape hatch on two grounds — the `ExecutorPlugin`
- * object is unchanged, and "It also only READS." M21.5 briefly grew branch/commit/pull-request
- * hooks on all three providers, which contradicts the second ground. The repository-write authority
- * now lives inside the enumerated `scp-managed-dep` class (`packages/plugins/managed-dep`), where
- * the charter's containment preconditions bind.
- *
- * `@scp/git-provider-core`'s own suite pins the INTERFACE at the type level. This pins the OBJECT,
- * here, because the interface is structural: an adapter carrying extra write methods still
- * satisfies it, so the type-level pin alone would not notice a hook re-added to this file. Asserted
- * per provider rather than once, because the hooks existed on all three — the census is the point
- * (CLAUDE.md: fix the property, then find every place with it).
- */
+/** THIS ADAPTER WRITES NOTHING. See docs/plugins.md §144. */
 describe("gitea adapter surface — read-only", () => {
   it("carries no repository-write hook, and still carries the read hook", () => {
     for (const hook of ["createBranch", "putFileOnBranch", "openPullRequest"]) {

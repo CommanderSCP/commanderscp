@@ -15,11 +15,7 @@ import {
   startFederationSyncLoop
 } from "./federation-sync.js";
 
-/**
- * M14.0 unit coverage — the cert-resolution + FAIL-CLOSED path (PIECE 1) and the loop's opt-in +
- * interval (PIECE 2). No network / no DB — the mTLS round-trip and import are proven in
- * `federation-sync.integration.test.ts`.
- */
+/** M14.0 unit coverage. See docs/federation.md §122. */
 describe("M14.0 federation outbound mTLS dialer (fail-closed)", () => {
   it("resolveFederationClientMtls: unset env -> undefined (no client cert, the default)", () => {
     expect(resolveFederationClientMtls({})).toBeUndefined();
@@ -65,16 +61,7 @@ describe("M14.0 federation outbound mTLS dialer (fail-closed)", () => {
   });
 });
 
-// M14.1 (ADR-0009) + M14.3 hardening: the pair-time poke-mode guard's decision table. The guard in
-// `pairPeer` (peers-repo.ts) REFUSES iff the EFFECTIVE POST-WRITE state is poke-mode true against a
-// non-mTLS effective baseUrl — it reuses `federationPeerRequiresMtls` exactly. This documents the
-// truth table the persist-layer integration tests exercise against a real DB.
-//
-// M14.3: the predicate is over the EFFECTIVE tuple, not the input transition. The two fields merge
-// with OPPOSITE rules on re-pair (baseUrl: request wins when present; pokeMode: tri-state, EXISTING
-// wins when absent), so the old `input.pokeMode === true` form validated a DIFFERENT tuple than the
-// one persisted — a re-pair that downgraded baseUrl to http while OMITTING pokeMode skipped the
-// guard and left a poke-mode peer on an unauthenticated transport.
+// The pair-time poke-mode guard's decision table. See docs/federation.md §123.
 describe("M14.1/M14.3 pair-time poke-mode guard decision (EFFECTIVE post-write state)", () => {
   // Mirrors the inline guard predicate exactly, including the effective-state merge.
   const guardRejects = (

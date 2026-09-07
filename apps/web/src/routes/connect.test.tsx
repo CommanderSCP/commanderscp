@@ -9,21 +9,7 @@ import type {
 } from "@scp/schemas";
 import { flush, render, typeInto } from "../test-support/render-dom";
 
-/**
- * B1/B3/B4 (docs/proposals/outpost-ui.md §4 Lane B) — `/connect/$kind`'s guarantees that must hold
- * with no browser and no server, mirroring `connect-argocd.test.tsx`'s house pattern:
- *
- *   - B1: the generalized wizard is driven by the server's OWN manifest catalog, and a module whose
- *     secret field the execution-system-backed merge cannot forward (`github-discovery`'s
- *     `privateKeySecretKey`) is excluded by DERIVATION, not a hand-maintained list.
- *   - B4: a proposed `deployment-target` object gets the identical review-list/skip treatment as a
- *     `component` — but ONLY when the proposal actually contains one, and skip is withdrawn the
- *     moment the proposal carries relationships it cannot safely re-filter.
- *   - B3: the accept response's positional correspondence to the SUBMITTED proposal is what lets the
- *     triage list name and assign each imported component.
- *   - The Argo CD credential hazard (`connect-argocd.test.tsx` hazard (b)) generalizes: the secret
- *     still reaches `putSecret` and nowhere else, for a module OTHER than argocd.
- */
+/** B1/B3/B4 (docs/proposals/outpost-ui.md §4 Lane B). See docs/web.md §326. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -138,9 +124,7 @@ function withQueryClient(node: React.ReactElement): React.ReactElement {
   return <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>;
 }
 
-// -------------------------------------------------------------------------------------------
 // B1 — the connectable set is DERIVED, not hardcoded
-// -------------------------------------------------------------------------------------------
 
 describe("connectableKinds: derived from the server's own manifest catalog", () => {
   it("includes argocd/gitea/gitlab and excludes github (no tokenSecretKey)", () => {
@@ -190,9 +174,7 @@ describe("runConfigFields: per-run config, never the system-level fields", () =>
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // B4 — target rows, and where skip is (and is not) safely offered
-// -------------------------------------------------------------------------------------------
 
 describe("groupObjectsByType", () => {
   it("groups a deployment-target apart from components, in first-seen order", () => {
@@ -209,17 +191,7 @@ describe("groupObjectsByType", () => {
 });
 
 describe("ReviewStepGeneric: the step scaffolds instead of importing", () => {
-  // THE THREE CASES THAT WERE HERE DESCRIBED AN AFFORDANCE THAT NO LONGER EXISTS (ADR-0047): a
-  // grouped list of proposed objects with a checkbox per row, so an operator could accept a SUBSET,
-  // plus the rule that the checkboxes withdrew when relationships made a subset unsafe to submit.
-  //
-  // There is no submission now. The step emits IaC, and a proposal is not something you accept part
-  // of — you decide which components belong to which service and commit the result. Keeping the
-  // checkbox cases would have meant keeping a selection UI whose only consumer was the removed
-  // write.
-  //
-  // What replaces them lives in `components/scaffold/scaffold-panel.test.tsx`, which tests the
-  // decision that actually matters now: grouping, and what happens to a component nobody grouped.
+  // Three cases described an affordance that no longer exists. See docs/web.md §327.
   it("renders the scaffolder, and offers no way to write to the graph", () => {
     const view = render(
       withQueryClient(
@@ -276,18 +248,7 @@ describe("filterProposal: skipping an object drops only ITS bindings/sourceMappi
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// B3 IS GONE, AND SO IS WHAT IT DESCRIBED (ADR-0047).
-//
-// It pinned the POSITIONAL correspondence between the accept response's `createdObjectIds` and the
-// proposal that was submitted — the join that let the triage list name each imported component —
-// and then that the triage screen appeared exactly when components had landed without a service.
-//
-// Both describe a graph write that no longer happens. `discovery.accept` is removed; the wizard
-// emits IaC and a component cannot be emitted without a service, so there is no created-object list
-// to zip against and no orphan to triage. The concern moved one step earlier, to
-// `scaffold-panel.test.tsx`'s ungrouped case, which is where ADR-0047 put it: at authoring time,
-// where a human is present.
+// B3 IS GONE, AND SO IS WHAT IT DESCRIBED. See docs/web.md §328.
 
 describe("RegisterStepGeneric: the secret still reaches putSecret and nowhere else", () => {
   it("stores the token under the derived key and stamps the right execution-system kind", async () => {
@@ -375,16 +336,9 @@ describe("EnumerateStepGeneric: run config assembly", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // The page: only server-known kinds get the real wizard
-// -------------------------------------------------------------------------------------------
 
-// The manifest catalog is SEEDED directly into the QueryClient cache rather than awaited through
-// `listManifestsSpy`'s promise: TanStack Query batches its post-fetch notification outside a plain
-// microtask (a `flush()` awaits only `Promise.resolve()`), so asserting on the settled state needs
-// either a real timer tick or — far more deterministic here — never going through the fetch at all.
-// `connectableKinds`'s own unit tests above already pin the exclusion logic; this only needs to pin
-// that the PAGE wires that result into the right branch.
+// The catalog is seeded into the cache rather than fetched. See docs/web.md §329.
 function seededQueryClient(): QueryClient {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } }

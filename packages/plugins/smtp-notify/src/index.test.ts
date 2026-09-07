@@ -1,12 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 
-// These SMTP-PROTOCOL tests reach a loopback fake server (127.0.0.1), which the real internal-IP
-// egress guard (egress.ts, MAJOR #6) would block — so bypass the guard HERE. The guard itself is
-// tested directly in egress.test.ts, and its wiring into send() in index.egress.test.ts (no mock).
-// The stand-in returns the address send() must dial: the guard's answer is the ONLY thing that
-// chooses the socket's peer now (DNS-rebinding pin — see egress.ts), which the pinning test below
-// exercises with a hostname no resolver can answer.
+// These SMTP-PROTOCOL tests reach a loopback fake server. See docs/plugins.md §535.
 vi.mock("./egress.js", () => ({
   assertHostNotInternal: async (): Promise<string[]> => ["127.0.0.1"]
 }));
@@ -158,7 +153,7 @@ describe("@scp/plugin-smtp-notify", () => {
   });
 
   it("does NOT attempt STARTTLS when the server doesn't advertise it", async () => {
-    activeServer = await startFakeSmtpServer(); // no STARTTLS in capabilities
+    activeServer = await startFakeSmtpServer();
     const result = await smtpNotifyPlugin.send(
       testCtx({
         host: "127.0.0.1",

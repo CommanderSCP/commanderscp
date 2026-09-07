@@ -9,21 +9,7 @@ import { StatCard } from "../components/ui/stat-card";
 import { Button } from "../components/ui/button";
 import { SkeletonRows } from "../components/ui/skeleton";
 
-/**
- * `/identity` — one nav entry standing in for the four identity registries.
- *
- * Teams, groups, users and service accounts were four of the nine flat REGISTRIES nav entries, and
- * none of them is catalog: they answer "who", not "what we run". This collapses them to a single
- * destination WITHOUT duplicating `RegistryListPage` — each preview row links to that page's own
- * detail route, and "View all" links to the list itself, which still owns listing and creation.
- * Re-mounting `RegistryListPage` here was the alternative and does not work: `useBasePathParam`
- * resolves the registry from the URL's FIRST SEGMENT when there is no `$basePath` param, so anything
- * under `/identity/...` would resolve to the registry "identity" and render "Not found".
- *
- * The counts AND the first few names are the point (spec §4E) — a card that only repeats its own
- * label is what the old dashboard's registry grid was, and it carried no information the nav did not
- * already have.
- */
+/** One nav entry standing in for four identity registries. See docs/web.md §349. */
 
 const IDENTITY_BASE_PATHS = ["teams", "groups", "users", "service-accounts"] as const;
 const PREVIEW_COUNT = 5;

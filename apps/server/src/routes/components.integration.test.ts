@@ -12,19 +12,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Strict create-in-service for `component` (M12 P5a, docs/proposals/organize-after.md). This is the
- * DEDICATED acceptance suite for the invariant "a directly-created component belongs to a service"
- * — the migration proves the rest of the codebase still works through the strict route, and
- * service-contains / plans / typed-registries-cli prove the containment/IaC/CLI edges; here we pin
- * the route contract itself:
- *   - POST /components requires a service and writes the `contains` edge atomically;
- *   - the GENERIC /objects/component route refuses every write verb (403) — the strict route is the
- *     only way in;
- *   - IMPORT (discovery/accept) stays permissive — an imported component may be an orphan;
- *   - PUT is strict on create, field-only on update;
- *   - the create is authority-gated at the service (relationship:write), not just the domain.
- */
+/** Strict create-in-service for `component`. See docs/routes.md §79. */
 describe("components: strict create-in-service (M12 P5a)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -112,7 +100,6 @@ describe("components: strict create-in-service (M12 P5a)", () => {
     const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
     const urn = `urn:scp:components-strict:component:put-${randomUUID().slice(0, 8)}`;
 
-    // Create branch, no service -> 400.
     const noSvc = await server.app.inject({
       method: "PUT",
       url: `/api/v1/components/${encodeURIComponent(urn)}`,
@@ -121,7 +108,6 @@ describe("components: strict create-in-service (M12 P5a)", () => {
     });
     expect(noSvc.statusCode, noSvc.body).toBe(400);
 
-    // Create branch, with service -> 201 + edge.
     const created = await admin.components.upsertByUrn(urn, {
       name: "put-created",
       service: svc.id
@@ -257,7 +243,6 @@ describe("components: assign / atomic move into a service (M12 P5b)", () => {
     const comp = await createTestComponent(admin, { name: "typed", service: svc.id });
     const notAService = await admin.teams.create({ name: `team-${randomUUID().slice(0, 8)}` });
 
-    // service ref is a team → 400
     await expect(admin.components.setService(comp.id, notAService.id)).rejects.toMatchObject({
       status: 400
     });

@@ -4,45 +4,7 @@ import { KNOWN_EXECUTOR_MODULES } from "../coordination/executor-bindings-repo.j
 import { KNOWN_NOTIFICATION_MODULES } from "../notify/notification-bindings-repo.js";
 import { MANIFEST_BY_MODULE, hasPluginManifest, validatePluginConfig } from "./plugin-manifests.js";
 
-/**
- * THE PROPERTY: a plugin module a binding may name must have a config schema, and a module with no
- * schema must be REFUSED rather than skipped.
- *
- * `validatePluginConfig` used to open `if (!manifest) return;`, justified by a comment saying an
- * unknown module is "caught separately (the module allowlist)". True of an UNKNOWN module; silent
- * about the case that existed — a module ON the allowlist with NO manifest. Three were in that
- * state on shipped main (`fake-executor`, `pipeline-generic`, `managed-scan`), so their bindings'
- * configs were stored with no validation at all. `@scp/plugin-managed-scan` runs
- * `execFile(config.dockerBinary ?? "docker", …)`, and `dockerBinary` was not among the keys the
- * server injected either — so that was a tenant principal reaching arbitrary code execution on the
- * SCP host. (It IS injected now, as independent defence in depth; the schema refusal below is the
- * primary gate and this file is what proves the gate runs.)
- *
- * A COMMENT IS NOT THE GUARD — the comment above `MANIFEST_BY_MODULE` already reasoned about this
- * exact property for the dependency-index plugins, and `managed-scan` slipped past it anyway. Hence
- * this file, plus the module-load `assertEveryModuleHasManifest` calls beside each allowlist.
- *
- * MUTATION LOG (each applied ALONE against a green suite, then reverted):
- *  | mutation                                                    | result                          |
- *  |-------------------------------------------------------------|---------------------------------|
- *  | restore `if (!manifest) return;` in `validatePluginConfig`   | 1 failed — the fail-CLOSED test |
- *  | drop `"managed-scan"` from `MANIFEST_BY_MODULE`              | file fails to LOAD: the boot     |
- *  |                                                              | assertion throws, naming it     |
- *  | drop `additionalProperties:false` from pipeline-generic      | 2 failed — pipeline-generic AND |
- *  |                                                              | its `terraform` preset          |
- *  | drop `additionalProperties:false` from fake-executor         | 1 failed — fake-executor        |
- *  | add manifest-less `webhook-control` to the NOTIFICATION list | file fails to LOAD: that        |
- *  |                                                              | allowlist's assertion throws    |
- *  | drop `stateRefByTarget` from fake-executor's `configSchema`  | 2 failed — the hand-typed       |
- *  |                                                              | negative control (`expected 400 |
- *  |                                                              | to be undefined`) AND the       |
- *  |                                                              | derived census (`expected […5]  |
- *  |                                                              | to include 'stateRefByTarget'`) |
- *
- * A MUTATION TO A `packages/plugins/*` MANIFEST NEEDS `turbo build --force` BEFORE THIS FILE RUNS
- * (pass 11): the manifests are imported through `main: dist/index.js`, so a `src/`-only edit leaves
- * this suite green for the most misleading possible reason.
- */
+/** A module a binding may name must have a config schema. See docs/plugin-host.md §79. */
 describe("every allowlisted plugin module has a config schema", () => {
   it("KNOWN_EXECUTOR_MODULES — all of them, no exemptions", () => {
     const missing = KNOWN_EXECUTOR_MODULES.filter((module) => !hasPluginManifest(module));
@@ -84,12 +46,7 @@ describe("validatePluginConfig fails CLOSED on a module with no manifest", () =>
   });
 });
 
-/**
- * The escalation itself, per module: each server-governed key is refused, and — the control that
- * makes the refusals mean something — a legitimate config for the same module is still ACCEPTED. A
- * schema that refuses everything closes the hole and breaks the executor, and the refusal tests
- * alone cannot tell the two apart.
- */
+/** The escalation itself, per module. See docs/plugin-host.md §80. */
 describe("server-governed keys are refused; legitimate configs still work", () => {
   /** Every key `resolveExecutorPluginInstance` injects, plus the one it does NOT and the plugin
    *  `execFile`s — `dockerBinary`, the actual escalation. */
@@ -173,24 +130,7 @@ describe("server-governed keys are refused; legitimate configs still work", () =
     ).toBeUndefined();
   });
 
-  /**
-   * THE SAME PROPERTY, CENSUSED RATHER THAN LISTED — M23.0 verification pass 11.
-   *
-   * The literal above is a hand-typed restatement of "the tenant surface", and it was TWO KEYS
-   * behind when this was written: `detailByTarget` (added by pass 8) and `stateRefByTarget` (pass
-   * 10) had both reached `configSchema` without reaching this list. That is the same shape as the
-   * defect pass 8 found one level down — `@scp/plugin-fake-executor`'s own
-   * `config-schema-parity.test.ts` censuses the INTERFACE against the SCHEMA for exactly this
-   * reason — and a hand-typed list here reintroduces it at the place where the schema is actually
-   * ENFORCED.
-   *
-   * So: read the schema's own properties, build a value from each property's declared TYPE, and
-   * require the enforcement point to accept it. A key that the schema declares but the validator
-   * rejects is a tenant-facing 400 on a documented option; a key added to the schema later is
-   * covered on the day it is added. The sample builder deliberately fills one entry of an
-   * `additionalProperties` map rather than passing `{}`, so the VALUE type is exercised too — `{}`
-   * satisfies every object schema and would make this arm vacuous.
-   */
+  /** THE SAME PROPERTY, CENSUSED RATHER THAN LISTED. See docs/plugin-host.md §81. */
   it("fake-executor: EVERY key its schema declares is accepted at the enforcement point", () => {
     type Schema = {
       type?: string;

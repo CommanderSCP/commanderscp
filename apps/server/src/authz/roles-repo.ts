@@ -8,18 +8,7 @@ import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import type { BindableRole } from "./role-binding-door.js";
 
-/**
- * Reads and writes for `roles` and `role_bindings` — the storage half of role-model.md §5 step 5.
- * Deliberately dumb: every refusal lives in `authz/role-binding-door.ts` and every check runs before
- * anything here is called. This module decides nothing.
- *
- * RLS DOES THE TENANCY, NOT THIS FILE'S WHERE CLAUSES — and the two tables differ, which is the one
- * thing worth knowing here. `roles`' policy is
- * `USING (org_id = current_org OR org_id IS NULL)`, so a read sees this org's rows PLUS the shared
- * built-in singletons; `role_bindings`' policy has no NULL arm, so a read sees this org's rows and
- * nothing else (drizzle/0002 §2). The explicit `org_id` predicates below are belt-and-braces on top
- * of that, in the same style as every other repo in this codebase.
- */
+/** Reads and writes for `roles` and `role_bindings`. See docs/authz.md §72. */
 
 /** Built-ins first (the catalogue an operator recognises), then org rows; alphabetical within each,
  *  so the listing is stable across calls without a cursor. */
@@ -82,20 +71,7 @@ export async function getRoleById(tx: TenantTx, orgId: string, id: string): Prom
   };
 }
 
-/**
- * `effect` is NARROWED here rather than trusted, and the direction of the narrowing is the point.
- *
- * `role_bindings_effect_check` (drizzle/0097) constrains WRITES; PostgreSQL never re-checks a row on
- * the way out, so a database restored from a pre-0097 `pg_dump` carries the pre-0097 schema and its
- * illegal rows load intact (role-model.md §8.3). The response enum is closed at two values, so a
- * third string has to become one of them.
- *
- * `x === "allow" ? "allow" : "deny"` — not `x === "deny" ? "deny" : "allow"`. `hasPermission`
- * classifies by exact string equality and treats a malformed row as NEITHER: it grants nothing and
- * denies nothing. Of the two available lies, reporting it as the BLOCKING effect is the one that
- * cannot make an operator believe authority exists where it does not, and it is the one that makes
- * such a row look wrong in a listing instead of looking like a working grant.
- */
+/** `effect` is narrowed on read rather than trusted. See docs/authz.md §73. */
 function toRoleBinding(row: {
   id: string;
   subjectId: string;
@@ -184,17 +160,7 @@ export interface InsertRoleBindingInput {
   scopeObjectId: string;
 }
 
-/**
- * Writes ONE grant, always `effect = 'allow'` (deny is not exposed on the write API — see
- * `packages/schemas/src/rbac.ts`'s module doc).
- *
- * A duplicate is a 409, not a silent success and not a second row. `role_bindings_grant_key`
- * (drizzle/0097) is the natural key `(org_id, subject_id, role_id, scope_object_id, effect)` and it
- * landed BEFORE this API deliberately: without it a write door creates duplicate grants that are
- * individually revocable and COLLECTIVELY still granting — revoke one, the other still grants, and
- * the revoke reports success. `onConflictDoNothing` would reproduce that failure from the other end
- * (a revoke against a binding the caller believes they created), so the conflict is surfaced.
- */
+/** Writes ONE grant, always `effect = 'allow'`. See docs/authz.md §74. */
 export async function insertRoleBinding(
   tx: TenantTx,
   input: InsertRoleBindingInput
@@ -236,31 +202,7 @@ export async function deleteRoleBindingById(
   await tx.delete(roleBindings).where(and(eq(roleBindings.orgId, orgId), eq(roleBindings.id, id)));
 }
 
-/**
- * ================================================================================================
- * `fromRole` AUTHORING-TIME VALIDATION — role-model.md §5 step 6, unblocked by step 10's gate
- * ================================================================================================
- *
- * A policy's `requireApprovals.fromRole` is a free-text string that `authz/resolve.ts`'s
- * `hasRoleAtScope` resolves at VOTE time, and — since the quorum-bypass fix (owner decision
- * 2026-08-27) — resolves against BUILT-IN roles only.
- *
- * WHICH CREATES A NEW WAY TO FAIL SILENTLY, and closing it is the other half of that decision. A
- * policy naming a role that is not a built-in is not merely wrong, it is UNSATISFIABLE: no
- * principal can ever hold it as far as the quorum is concerned, so the gate blocks forever and the
- * Decision record says "0 of 1 approvals" while an operator looks at a live binding of a role with
- * exactly that name and concludes the approval engine is broken. A typo (`'Onwer'`) and a
- * deliberate custom role produce the identical symptom.
- *
- * SO IT IS REFUSED WHERE IT IS WRITTEN. The refusal names the unknown role AND lists the catalogue,
- * because the failure this replaces is one where nothing anywhere states what a legal value is.
- *
- * AT THE `objects-repo.ts` CHOKE POINT, not at the route — the same placement lesson §2a paid for:
- * policies are ordinary graph objects, so `POST /objects/policy`, `PUT`, IaC apply and discovery
- * accept all reach the same two functions, and a route-level check would leave IaC apply able to
- * author an unsatisfiable policy. Federation import is exempt for the reason every guard there is:
- * a throw mid-bundle wedges a peer's whole signed journal over a row this domain does not own.
- */
+/** `fromRole` AUTHORING-TIME VALIDATION. See docs/authz.md §75. */
 export async function assertPolicyApprovalRolesExist(
   tx: TenantTx,
   properties: Record<string, unknown>
@@ -294,7 +236,7 @@ export async function assertPolicyApprovalRolesExist(
 }
 
 /** Storage for the custom-role authoring API (role-model.md §5 step 10). Decides nothing: every
- *  refusal lives in `authz/role-binding-door.ts` §9 and runs before any of these are called. */
+ *  refusal lives in `docs/authz/role-binding-door.md` §9 and runs before any of these are called. */
 export async function insertRole(
   tx: TenantTx,
   input: {

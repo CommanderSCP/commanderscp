@@ -40,49 +40,7 @@ import {
 } from "./internal-release-detection.js";
 import type { ManifestReader } from "./internal-release-version.js";
 
-/**
- * M21.4 — INTERNAL DETECTION AGAINST REAL POSTGRES (ADR-0032 §7).
- *
- * The version STRATEGY is proven without a database in `internal-release-version.test.ts`. What only
- * a real database and the real coordination tables can prove is the DERIVATION itself — that the
- * chain from an accepted change to a dependency line's head is wired to the columns it claims to
- * read, and that each of its exclusions actually excludes:
- *
- *   1. A ROLLBACK IS NOT A RELEASE, with the positive control that an otherwise identical forward
- *      accept IS. Without the control, the rollback assertion is satisfied by a derivation that
- *      never records anything at all — which is exactly what a wrong join, a wrong status filter or
- *      a missing fixture produces.
- *   2. A NON-PROD TARGET DOES NOT TRIGGER — again against the prod control, since "prod" is a
- *      deployment-target PROPERTY and not a table.
- *   3. A COMPONENT THAT DECLARES NO PRODUCED LINE IS A NO-OP — and writes no Decision, which is what
- *      keeps a per-accept Decision off every change in the org.
- *   4. THE `oci` VERSION COMES FROM `observed.images`, tag AND digest.
- *   5. A LANGUAGE VERSION COMES FROM THE PRODUCER'S MANIFEST, read at the released commit.
- *   6. AN UNDETERMINABLE VERSION RECORDS NOTHING AND SAYS WHY — the line's `latest_*` stays null and
- *      the Decision names the reason.
- *
- * FIXTURE DISCIPLINE. Every fixture that a test's conclusion depends on is READ BACK before it is
- * relied on (the change really is `accepted`, the wave target really is `succeeded`, the producer
- * link really landed). A silently-inapplicable fixture makes an absence assertion pass for the wrong
- * reason, which is this repo's second-most-common recurring test defect.
- *
- * ============================================================================================
- * MUTATION LOG — each row applied, watched fail, reverted, watched pass
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | drop the `rollbackOfObjectId` check (treat every accept as a release) | "a rollback is NOT a release" FAILS — the withdrawn version is recorded as the line's head |
- * | drop the `environment === 'prod'` filter | "a non-prod release does not move the head" FAILS |
- * | accept every wave-target status, not just `succeeded` | "a failed wave target is not a release" FAILS |
- * | fall back to the digest when the image ref carries no tag | "records NOTHING for a digest-only ref" FAILS — `latest_version` reads `sha256:…` |
- * | drop `lineAcceptsVersion` (record any determined version on any produced line) | "a release on a DIFFERENT major line" FAILS — the 2.x line's head reads 1.9.9 |
- * | `insertDecision` instead of `insertDecisionIfChanged` | "a redelivered accept appends no second Decision" FAILS with 2 rows |
- * | OMIT `latestDigest` when none was observed instead of writing an explicit null | "CLEARS a stale digest" FAILS. **This mutant SURVIVED the first version of this suite** — every other case builds a fresh line, which has no stale digest to leave behind, so the test was added for the mutant rather than the mutant found by the test |
- * | drop the subscriber gate (record for every produced line) | "no subscriber ⇒ nothing is fetched" FAILS |
- * | drop the VARIANT half of `lineAcceptsVersion` (the pre-M21.4 internal reading, which compared only the numeric core) | "does NOT take a PLAIN tag as the head of an `-alpine` VARIANT line" FAILS — the alpine line's head reads a glibc tag |
- * | make `evaluateHeadMovement` never return `behind_head` | "a HOTFIX on an older minor does not walk the head backwards" FAILS — the head reads 1.9.10 |
- * | drop the `distinctClaims.length > 1` refusal (take the first place's answer) | "REFUSES to pick when two prod places disagree" FAILS — a winner is picked by wave-target UUID order |
- */
+/** M21.4 — INTERNAL DETECTION AGAINST REAL POSTGRES. See docs/dependencies.md §220. */
 describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -147,26 +105,9 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixture builders
-  // -----------------------------------------------------------------------------------------
-
-  /** (component, deployment-target) pairs already placed — see `releaseTo`. */
   const placedPairs = new Set<string>();
 
-  /**
-   * A dependency line, its DECLARED producer, and a subscriber — the three facts the derivation
-   * needs before it will record anything.
-   *
-   * The subscriber is a SECOND component that declares the line, plus a policy enabling it at
-   * `objectRef` scope. It is not decoration: the derivation refuses to fetch or record for a line
-   * nobody subscribes to (ADR-0032 §6, "the ingestion work-list is derived from this resolution"),
-   * and `objectRef` rather than `group` because the authoring guard refuses a group-scoped
-   * `dependencySubscription` effect outright, in both directions (§6a). NOT, as this used to say,
-   * because the job runs as the system actor: group scope's owning half ignores the actor and would
-   * match here if this fixture minted an `owns` edge — which is precisely the unstated, mutable
-   * reach §6a-ii refuses to let a subscription rest on.
-   */
+  /** A line, its declared producer, and a subscriber. See docs/dependencies.md §221. */
   async function lineProducedBy(
     key: DependencyLineKey & { tagPattern?: string },
     producerComponentObjectId: string,
@@ -221,16 +162,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     return lineId;
   }
 
-  /**
-   * A component placed at `target`, released there by a change that reached `succeeded`, and then
-   * put into `accepted`.
-   *
-   * The plan is compiled directly rather than waited for from the reconcile loop — the same
-   * shortcut `component-pipeline.integration.test.ts` takes, and for the same reason: compilation is
-   * what writes the `change_wave_targets` rows this derivation reads, and the loop's own job
-   * (locking, transitions) is covered elsewhere. The topology names the PLACE, so the wave target IS
-   * the placement (`plan-service.ts:110`).
-   */
+  /** A component placed and released there by a change. See docs/dependencies.md §222. */
   async function releaseTo(
     componentObjectId: string,
     target: string,
@@ -245,11 +177,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     return releaseToMany(componentObjectId, [{ target, ...options }], options);
   }
 
-  /**
-   * ONE change releasing a component to SEVERAL prod places at once, each with its own observed
-   * images — the shape a component deployed to two regions actually has, and the one a single-target
-   * helper cannot express.
-   */
+  /** One change releasing a component to several places. See docs/dependencies.md §223. */
   async function releaseToMany(
     componentObjectId: string,
     places: { target: string; observedImages?: string[]; status?: string }[],
@@ -421,9 +349,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     };
   }
 
-  // -----------------------------------------------------------------------------------------
   // (1) A rollback is not a release — with the forward control
-  // -----------------------------------------------------------------------------------------
 
   it("records the head for a FORWARD accept, and records NOTHING for a rollback of it", async () => {
     const producer = await createOrphanComponent(server, org, `producer-${uuidv7()}`);
@@ -462,9 +388,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     ).toBe("1.2.3");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (2) prod is a deployment-target property, and only prod counts
-  // -----------------------------------------------------------------------------------------
 
   it("does NOT record a release to a non-prod deployment-target", async () => {
     const producer = await createOrphanComponent(server, org, `gamma-producer-${uuidv7()}`);
@@ -508,9 +432,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (3) no produced line ⇒ a no-op, and no Decision at all
-  // -----------------------------------------------------------------------------------------
 
   it("is a NO-OP, with no Decision written, for a component that produces no declared line", async () => {
     const producer = await createOrphanComponent(server, org, `no-producer-${uuidv7()}`);
@@ -557,10 +479,6 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (4) the oci version comes from observed.images
-  // -----------------------------------------------------------------------------------------
-
   it("takes the oci version from observed.images — tag AND digest", async () => {
     const producer = await createOrphanComponent(server, org, `oci-producer-${uuidv7()}`);
     const lineId = await lineProducedBy(
@@ -589,12 +507,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   });
 
   it("CLEARS a stale digest when the next release is observed by tag alone", async () => {
-    // The mutation this exists for survived the first version of this suite: writing
-    // `latestDigest` only when one was observed leaves the PREVIOUS release's digest sitting beside
-    // the NEW version, so the line reads "1.4.0 is these bytes" about 1.3.0's bytes — a false
-    // statement in an audit record, and one no fresh-line test can see because there is nothing
-    // stale to leave behind. `recordDependencyLineHead` distinguishes an omitted key from an
-    // explicit null precisely so a caller can choose; this asserts which one this caller chooses.
+    // The mutation this exists for survived the first version. See docs/dependencies.md §224.
     const producer = await createOrphanComponent(server, org, `stale-digest-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/stale", major: "1" },
@@ -717,12 +630,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   });
 
   it("REFUSES to pick when two prod places disagree about what was released", async () => {
-    // A component placed in two prod regions, rolled by ONE change, whose executors report different
-    // images. The previous behaviour recorded both in turn and the last writer won — ordered by
-    // wave-target UUID, so the winner could equally be the OLDER release — while the run reported
-    // "0 not recorded" and the Decision asserted two contradictory versions for one line. A line has
-    // ONE head; two places disagreeing means the org has no single answer, and inventing one is the
-    // wrong-version failure the whole module is arranged to avoid.
+    // A component in two regions, rolled by one change. See docs/dependencies.md §225.
     const producer = await createOrphanComponent(server, org, `two-regions-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/regional", major: "5" },
@@ -763,9 +671,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBe("5.3.0");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (5) a language version comes from the producer's own manifest
-  // -----------------------------------------------------------------------------------------
 
   it("reads a language version out of the producer's manifest, at the released commit", async () => {
     const producer = await createOrphanComponent(server, org, `npm-producer-${uuidv7()}`);
@@ -801,9 +707,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     ).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (6) undeterminable ⇒ record NOTHING, and say why
-  // -----------------------------------------------------------------------------------------
 
   it("records NOTHING and states the reason when the version cannot be determined", async () => {
     const producer = await createOrphanComponent(server, org, `undeterminable-${uuidv7()}`);
@@ -860,9 +764,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // Write amplification — the reason every verdict goes through insertDecisionIfChanged
-  // -----------------------------------------------------------------------------------------
 
   it("appends NO second Decision when the same accept is delivered twice", async () => {
     const producer = await createOrphanComponent(server, org, `redelivery-${uuidv7()}`);
@@ -914,9 +816,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // THE MANIFEST FETCH HOLDS NO DATABASE CONNECTION (M21.4 MINOR C)
-  // -----------------------------------------------------------------------------------------
 
   it("does its manifest reads OUTSIDE any transaction — a one-connection pool still serves the reader", async () => {
     const producer = await createOrphanComponent(server, org, `outside-tx-${uuidv7()}`);
@@ -936,20 +836,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
       sourceRef: { repo: "acme/outside-tx", ref: "refs/heads/main", commit: "beef01" }
     });
 
-    /**
-     * A POOL OF EXACTLY ONE CONNECTION IS THE WHOLE EXPERIMENT.
-     *
-     * The reader below needs a connection of its own. If the derivation were still holding a
-     * transaction open across the fetch — which is what it did, and is why a registry or a git
-     * provider taking 15s pinned an RLS-scoped pooled connection for the whole call against a 5s
-     * production `statement_timeout` — there would be none left, and `connectionTimeoutMillis`
-     * turns that into a fast, legible failure instead of a hang. With the reads moved out, the one
-     * connection is free and the read succeeds.
-     *
-     * This is the production hazard in miniature rather than an analogy for it: a bounded pool plus
-     * a held connection is exactly the shape, and the third-party poll already does the opposite
-     * ("the network call happens OUTSIDE any transaction").
-     */
+    /** A pool of exactly one connection is the experiment. See docs/dependencies.md §226. */
     const singleConnectionPool = new pg.Pool({
       connectionString: server.deps.config.runtimeDatabaseUrl,
       max: 1,
@@ -990,30 +877,9 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     }
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
   // THE WIRING (M21.4 BLOCKER A + BLOCKER B)
-  // -----------------------------------------------------------------------------------------
 
-  /**
-   * EVERY TEST ABOVE CALLS `detectInternalReleases` DIRECTLY, AND NOTHING IN PRODUCTION DID.
-   *
-   * That is the gap this block closes, and it is worth stating why the rest of the file could not
-   * catch it: a suite that drives a function directly proves the function, and says nothing about
-   * whether anything ever calls it. Measured filterlessly before this: the only references to
-   * `detectInternalReleases` in the tree were its own definition and this file, and
-   * `scp.change.transitioned` had ZERO server-side consumers — `DOMAIN_EVENTS_QUEUE`'s handler only
-   * logged. The whole internal ingress was dead code behind a green suite.
-   *
-   * So this drives the REAL PATH, from the shape the outbox relay actually puts on the domain-event
-   * queue:
-   *
-   *   domain-events job → acceptedChangeRouter → dependency-internal-release queue → the loop's
-   *   worker → detectInternalReleases → the manifest read through `host.gitFileRead` → the head.
-   *
-   * It is also the only test that exercises M21.2's `readFileAtRef` through the plugin-host client
-   * M21.4 added: the reader is no longer a parameter a test supplies, it is resolved from the
-   * released repo's OWN git binding by `manifest-reader.ts`.
-   */
+  /** Every test above calls the function directly. See docs/dependencies.md §227. */
   describe("the production path: a domain event reaches detection (BLOCKER A/B)", () => {
     let boss: Awaited<ReturnType<typeof startPgBoss>> | undefined;
     let loop: InternalReleaseLoopHandle | undefined;

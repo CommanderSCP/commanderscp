@@ -1,20 +1,4 @@
-/**
- * Wires `@scp/plugin-github` into `@scp/plugin-testkit`'s generic `ExecutorPlugin` and
- * `DiscoveryPlugin` conformance suites (BUILD_AND_TEST.md §4.2: "every shipped plugin runs the
- * relevant `@scp/plugin-testkit` suite in its own package tests"). The suites themselves live in
- * plugin-testkit and know nothing about GitHub specifics — this file is only the fixture factory,
- * same thin-wiring shape as `fake-executor.conformance.test.ts` / `webhook-control.conformance.test.ts`.
- *
- * Unlike those two, this plugin makes REAL outbound HTTP calls (`ctx.http` is not a stub), so
- * `github-test-support.ts`'s `createRealHttpClient()` + `nock` fixtures stand in for github.com.
- * The conformance suites call `factory()` fresh per `it()` but exercise trigger/status/abort/
- * observe/discover in an order this file doesn't control — so the fixtures below are `persist()`ed
- * (reusable across an unpredictable number of matching calls) rather than one-shot, and this file
- * intentionally does NOT assert `nock.isDone()`/exact call counts (that precise, single-call-proof
- * testing lives in `index.test.ts`, matching the repo's "thin conformance fixture" convention —
- * see fake-executor's/webhook-control's own conformance files, neither of which makes assertions
- * beyond wiring the factory).
- */
+/** Wires this plugin into the executor and discovery suites. See docs/plugins.md §169. */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
@@ -96,7 +80,6 @@ beforeAll(() => {
     })
     .persist();
 
-  // abort(): cancel ANY correlated run id (path regex).
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
     .post(
@@ -105,7 +88,6 @@ beforeAll(() => {
     .reply(202)
     .persist();
 
-  // observe(): commits + runs polling fallback.
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
     .get(`/repos/${executorConfig.owner}/${executorConfig.repo}/commits`)
@@ -119,7 +101,6 @@ beforeAll(() => {
     .reply(200, { workflow_runs: [] })
     .persist();
 
-  // -- Discovery suite fixtures. --
   nockInstallationToken(discoveryConfig, { persist: true });
   const discoveryAuthHeader = `Bearer ${installationTokenFor(discoveryConfig)}`;
   nock(discoveryConfig.apiBaseUrl ?? "https://api.github.com")

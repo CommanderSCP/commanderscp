@@ -11,13 +11,7 @@ import {
   type ProductEntry
 } from "./products.js";
 
-/**
- * D20's products module — "the infra pipeline's synth emits a typed products module alongside its
- * manifest... a product the infra pipeline never declared fails at compile time; the wire still
- * carries only the name/URN ref." This file covers the VALUE side (what gets collected, what text
- * comes out, determinism); `products.placeAt.typecheck.test.ts` covers the COMPILE-TIME half — the
- * actual guarantee a consuming repo relies on.
- */
+/** D20's products module. See docs/iac.md §296. */
 
 function buildInfra(stackName: string): {
   stack: Stack;
@@ -81,11 +75,7 @@ describe("@scp/iac: collectProducts (D20/D19)", () => {
   });
 
   it("throws when two products camelCase to the same identifier, naming both URNs", () => {
-    // `camelIdentifier` and `deriveConstructUrn`'s `slugify` (`urn.ts`) both normalize on the same
-    // separator/case rules, so in practice a camelCase collision IS a same-URN collision — this is
-    // that case, constructed the way it actually happens (a copy-pasted `new Cluster(...)` call
-    // whose id was never changed). The guard still fires on the identifier, not the URN equality,
-    // which is what makes it apply even if that coupling ever loosens.
+    // `camelIdentifier` and `deriveConstructUrn`'s `slugify`. See docs/iac.md §297.
     const { infra } = buildInfra("payments-infra-collide");
     const within = DeploymentTarget.fromName("commercial-amer-production");
     new Cluster(infra, "pay-blue", { name: "pay-blue", within });
@@ -227,21 +217,7 @@ describe("@scp/iac: products module determinism (fast-check) — the construct.d
     return infra;
   }
 
-  /**
-   * Runs `productsModuleSource` and returns EITHER its output or its refusal message.
-   *
-   * A REFUSAL IS PART OF THE PROPERTY, not an escape from it. The generator can produce ids that
-   * differ only in case (`"F"` and `"f"`), which is a legitimate authoring mistake the library is
-   * REQUIRED to refuse — and it did, which is how the underlying `Stack.synth()` duplicate-URN
-   * defect was found (this property failed in CI on seed 1953244992 and passed locally, because
-   * fast-check reseeds every run). Filtering those inputs out of the generator would have hidden a
-   * real bug: two constructs whose ids differ only in case derive ONE URN, and the server diffs by
-   * URN, so one of the two declared objects silently never existed. See
-   * `construct.test.ts`'s "two objects may not claim one URN".
-   *
-   * So determinism is asserted over the whole behaviour: the same tree gives the same ANSWER twice,
-   * and a refusal is reproducible byte-for-byte exactly like an output.
-   */
+  /** Runs the emitter and returns its output or its refusal. See docs/iac.md §298. */
   function sourceOrRefusal(infra: ReturnType<typeof build>): string {
     try {
       return productsModuleSource(infra);
@@ -268,11 +244,7 @@ describe("@scp/iac: products module determinism (fast-check) — the construct.d
         const reversed = [...order].reverse();
         const infraA = build(specs, order);
         const infraB = build(specs, reversed);
-        // Both were seeded with the SAME set of (id, kind) pairs, just constructed in different
-        // order — the stack NAME differs (random, for isolation), so compare the RENDERED MODULE,
-        // which never mentions the stack name (D20: the module is keyed by construct id only).
-        // …and the refusal is order-independent too, which is the sharper half: a collision must
-        // not depend on which of the two colliding constructs was declared first.
+        // Both were seeded with the same pairs, constructed differently. See docs/iac.md §299.
         expect(sourceOrRefusal(infraA)).toBe(sourceOrRefusal(infraB));
       }),
       { numRuns: 30 }

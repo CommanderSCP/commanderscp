@@ -11,22 +11,7 @@ import { ensureInstanceKey, signAttestation, type SignedAttestation } from "./at
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 
-/**
- * N-of-M approval quorum (DESIGN §10.2). SECURITY-SENSITIVE surfaces (M4 PR body flag: "approval
- * quorum integrity + N-of-M can't be forged"):
- *
- *  - **No double-voting**: `approval_votes`' unique `(org_id, approval_request_id,
- *    voter_object_id)` index (db/schema.ts) is the actual enforcement — `castApprovalVote` below
- *    just turns the resulting constraint violation into a clean 409 rather than a raw DB error.
- *    An application-layer "have they already voted" check would race a concurrent duplicate
- *    request; the DB constraint cannot.
- *  - **No non-member votes**: `castApprovalVote` calls `authz/resolve.ts`'s `hasRoleAtScope`
- *    BEFORE inserting anything — a subject who does not hold `fromRole` at-or-above the request's
- *    scope is rejected with 403, never silently accepted-but-uncounted.
- *  - **Attestation**: every accepted vote is Ed25519-signed at creation (`attestation.ts`) over a
- *    canonical record binding voter + approved object + decision id + timestamp — tamper-evident,
- *    independently verifiable, no external PKI (DESIGN §10.2).
- */
+/** N-of-M approval quorum. See docs/governance.md §1. */
 
 export interface ApprovalRequestRow {
   id: string;
@@ -55,13 +40,7 @@ export interface MaterializeApprovalRequestInput {
   scopeObjectId: string;
 }
 
-/**
- * Idempotent create-if-not-exists (DESIGN §10.2 "approval control instances materialize as
- * approval tasks") — the unique `(org, change, policy, policyVersion, effectIndex)` key means
- * calling this repeatedly for the same firing policy/effect is always safe and always returns
- * the SAME row, even under concurrent callers (route handler + reconcile's background
- * materialization both call this for the same requirement).
- */
+/** Idempotent create-if-not-exists for an approval instance. See docs/governance.md §2. */
 export async function materializeApprovalRequest(
   tx: TenantTx,
   input: MaterializeApprovalRequestInput
@@ -197,16 +176,7 @@ export interface CastApprovalVoteInput {
   requestId: string;
 }
 
-/**
- * Casts one vote: (1) eligibility check (`hasRoleAtScope` — 403 if the voter doesn't hold the
- * request's `fromRole` at-or-above its scope), (2) sign an attestation, (3) insert the vote row,
- * relying on the DB's unique constraint to reject a genuine double-vote race as a 409 rather than
- * silently overwriting — and (4) idempotently record the graph-visible `approves` relationship
- * (DESIGN §10.2 "approvals are recorded as `approves` relationships") from voter -> the CHANGE
- * object this approval request ultimately gates (upserted, since one voter may cast votes toward
- * several approval requests on the SAME change — `approves` is a coarser, per-change signal; the
- * `approval_votes` row is the fine-grained source of truth quorum counting actually uses).
- */
+/** Casts one vote: (1) eligibility check. See docs/governance.md §3. */
 export async function castApprovalVote(
   tx: TenantTx,
   input: CastApprovalVoteInput
@@ -269,17 +239,7 @@ export async function castApprovalVote(
     throw err;
   }
 
-  // M6 (DESIGN §13): approvals-as-evidence ride the journal so a Promotion Bundle exported later
-  // can carry this attestation, and so a peer syncing with a `full`/`changes_only` scope can see
-  // it happened, WITHOUT it ever becoming authority anywhere but here (§13 "approvals transfer as
-  // evidence, never as authority" — this entry is read-only history, never replayed as a vote).
-  // M20.3 (ADR-0031 §5) — ...but NOT for a domain-local change. This payload carries `changeUrn`,
-  // i.e. `urn:scp:<org>:change:<name>` — the change's NAME in plain text — plus its object id and
-  // the voter's identity, so an approval on a domain-local release would disclose both that the
-  // release exists and who signed off on it. The vote, the attestation and the local audit trail are
-  // all written unchanged: this withholds the evidence from PEERS, never from this domain, and the
-  // "approvals transfer as evidence, never as authority" property above is untouched — a domain-local
-  // change has no peer to carry evidence to.
+  // Approvals as evidence ride the journal, so exports carry. See docs/governance.md §4.
   if (!changeObject.domainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
@@ -321,17 +281,7 @@ export async function castApprovalVote(
         fromId: input.voterObjectId,
         toId: request.changeObjectId,
         properties: relProperties,
-        // ADR-0021 D4, follow-on (i) — THIS DOMAIN'S MINTED DOMAIN ID, the same value every other
-        // writer of `origin_domain_id` stamps (graph/relationships-repo.ts, graph/objects-repo.ts).
-        //
-        // It used to write the ORG id, which is a different uuid entirely: `federation_self.domain_id`
-        // is minted per org and is not derived from `org_id`. So the edge claimed an origin domain
-        // present in no `federation_self` row, and every reader that compares provenance against
-        // `self.domainId` silently declined to act on it — the federated-delete single-writer check,
-        // and (measured beyond the original report) `graph/objects-repo.ts`'s `deleteObject` cascade,
-        // which tombstones touching edges under `eq(relationships.originDomainId, self.domainId)`.
-        // The `approves` edge missed that filter, so deleting the voter or the change left it live
-        // and dangling, permanently and locally. drizzle/0110 repairs the rows already written.
+        // This domain's minted id, the same every other site uses. See docs/governance.md §5.
         originDomainId: (await ensureFederationSelf(tx, input.orgId)).domainId,
         revision: 1,
         contentHash: computeRelationshipContentHash({

@@ -24,33 +24,7 @@ import { isAbsent } from "../lib/absent";
 import { UnknownHere } from "./outposts";
 import { problemDetail } from "./outpost-settings";
 
-/**
- * M16.2 phase B (B3) — PER-OUTPOST CONFIGURATION: the `outpost` GRAPH OBJECT half of the authority
- * split (ADR-0022 clause 2). Commander-declared, journaled, and read-only at the outpost.
- *
- * FOUR THINGS LIVE HERE, AND THEY ARE NOT THE SAME KIND OF THING — which is the point:
- *
- *  1. TRUST TIER — commander-declared config that SYNCS DOWN. Editable, five members, and ABSENT
- *     until an operator sets one. There is no clear-to-unknown verb in phase A, so once set it can be
- *     changed but not un-asserted.
- *  2. POKE-MODE — a PEER-ROW flag, edited through the same keyless peer PATCH the Settings card uses,
- *     and labelled THIS SIDE ONLY. It is both-sides consent: this flag licenses the commander to
- *     SEND a wake signal; the outpost's OWN flag, set at the outpost, decides whether it accepts one
- *     and stops polling. Presenting one toggle as controlling both sides would be the fabrication.
- *  3. FREEZES / LOCAL GITEA REGISTRY / BUNDLED BACKENDS — READ-ONLY "managed elsewhere" notes (owner
- *     decision). They are named, with where they are actually configured, and offered NO edit
- *     control. FREEZES USED TO BE HERE FOR A STRONGER REASON — they were TESTED never to ride the
- *     journal — and M25.7 (owner decision D6) retracted that: an org-tier freeze declared
- *     `federate: true` now rides `object_upsert` and DOES block at the outpost. It stays a read-only
- *     note here anyway, on the reason that survives: a freeze is scoped at an object in the ORG's
- *     containment graph and there is no "the outpost this freeze belongs to", so PER-OUTPOST freeze
- *     configuration is structurally wrong rather than merely unbuilt (campaigns-rework.md
- *     "Pre-existing contradictions" #5). The note's copy below was rewritten to match.
- *  4. RECONCILE — the recovery verb for a peer wedged by duplicate config objects, including the
- *     `?keep=` form, with the two removal outcomes rendered DISTINCTLY: dropping a row THIS domain
- *     authored journals a tombstone that PROPAGATES downstream to the outpost, while dropping an
- *     unverified shadow is a silent local cleanup nothing downstream ever sees.
- */
+/** M16.2 phase B (B3) — PER-OUTPOST CONFIGURATION. See docs/web.md §366. */
 
 /** Every LIVE config object bound to this peer. Normally one; more than one is the authority conflict
  *  the reconcile verb exists for. Read from the LIST endpoint on purpose — the single-object `GET`
@@ -69,44 +43,20 @@ export function hasAuthorityConflict(
   return claimantsForPeer(configs, peerDomainId).length > 1;
 }
 
-/**
- * Is this config object one this instance may write?
- *
- * `originIsSelf` is the server's own resolved answer and is preferred; the `originDomainId` compare
- * is the fallback for a response that predates it. `undefined`/unknown is treated as NOT foreign, so
- * missing data can never fabricate a block on a write the server would accept (the
- * `replica-origin.tsx` rule — a UI that blocks an accepted write is a defect this repo has already
- * fixed once).
- */
+/** Is this config object one this instance may write? See docs/web.md §367. */
 export function isConfigForeign(config: OutpostConfig, ownDomainId: string | undefined): boolean {
   if (config.originIsSelf !== undefined) return !config.originIsSelf;
   return isForeignOriginObject(config.originDomainId, ownDomainId);
 }
 
-/** The refusal this gate MIRRORS, named so the gate can be checked against a measurement rather than
- *  against a belief. Both halves are measured on a real two-database topology:
- *  `outpost-config-sync.integration.test.ts` ("the OUTPOST's own write … is REFUSED", 409 read-only
- *  replica) and `outpost-handfill-wedge.integration.test.ts` (the same 409 when the only row is an
- *  unverified hand-filled shadow, which this domain likewise did not author). */
+/** The refusal this gate mirrors, named so it can be checked. See docs/web.md §368. */
 export const CONFIG_WRITE_REFUSAL =
   "PATCH /v1/federation/outposts/{peer} answers 409 'read-only replica' for a config object this " +
   "domain did not author.";
 
 export type RemovalOutcome = "propagates-downstream" | "local-cleanup" | "refused";
 
-/**
- * What reconciling with a given survivor would DO to each of the peer's other claimant rows —
- * derived from each row's OWN provenance, not from a guess about server internals:
- *
- *   * a row THIS DOMAIN AUTHORED → an ordinary JOURNALED TOMBSTONE. It PROPAGATES downstream to the
- *     outpost, which will drop its replica. This is the destructive case and it must be said before
- *     the button is pressed, not discovered afterwards.
- *   * an UNVERIFIED hand-filled shadow → a silent local cleanup. This domain never authored it, so
- *     its removal never rides the journal and nothing downstream sees it.
- *   * a SIGNATURE-VERIFIED REPLICA → REFUSED, unconditionally, with or without `?keep=`. Deleting one
- *     would claim authorship of a row the real authority still owns and would trade a config wedge
- *     for a sync wedge. Choosing a survivor that requires deleting one is a 409.
- */
+/** What reconciling with a survivor would do to the others. See docs/web.md §369. */
 export function removalPreview(
   claimants: OutpostConfig[],
   keepObjectId: string,
@@ -123,26 +73,13 @@ export function removalPreview(
     });
 }
 
-/**
- * The server's own authority ranking, mirrored — `outposts-repo.ts`'s `byAuthority`: a row THIS
- * DOMAIN AUTHORED outranks a signature-verified replica, which outranks an unverified hand-filled
- * shadow. Every input is already on the wire (`originIsSelf`/`originDomainId`, `provenance`).
- */
+/** The server's own authority ranking, mirrored. See docs/web.md §370. */
 export function authorityRank(config: OutpostConfig, ownDomainId: string | undefined): number {
   if (!isConfigForeign(config, ownDomainId)) return 0;
   return config.provenance === "manual" ? 2 : 1;
 }
 
-/**
- * Which row a reconcile with NO `keep` would leave standing — or `null` when this side cannot know.
- *
- * DELIBERATELY REFUSES TO GUESS. The server breaks a tie inside one authority class by `(created_at,
- * id)`, which is its list order and not something a client should reconstruct and present as a
- * prediction. So a determinate answer means EXACTLY ONE row holds the top rank; two rows of equal
- * authority return `null`, and the panel then declines to offer the default at all rather than
- * preview a survivor it is guessing at. A preview that might be wrong is worse than no default
- * button, because the whole point of the preview is that it is what will happen.
- */
+/** Which row a reconcile with NO `keep` would leave standing. See docs/web.md §371. */
 export function defaultSurvivor(
   claimants: OutpostConfig[],
   ownDomainId: string | undefined
@@ -208,13 +145,7 @@ const selectClass = cn(
   focusRing
 );
 
-/**
- * TRUST TIER — owner-ENTERED, five members, ABSENT UNTIL SET.
- *
- * The select's members come from `OutpostTrustTierSchema.options` at runtime, so the control cannot
- * drift from the API's enum. When no tier has been asserted, the select shows an unselectable
- * placeholder and the unknown marker sits beside it — never a blank that reads as `commercial`.
- */
+/** TRUST TIER — owner-ENTERED, five members, ABSENT UNTIL SET. See docs/web.md §372. */
 export function TrustTierCard({
   config,
   ownDomainId,
@@ -232,34 +163,9 @@ export function TrustTierCard({
 }): React.JSX.Element {
   const [tier, setTier] = useState<string>(config.trustTier ?? "");
   const foreign = isConfigForeign(config, ownDomainId);
-  // `?? []` — `unknownFields` is required-not-optional by `OutpostConfigSchema`, and BEFORE ADR-0023
-  // the generated SDK validated NO response, so a server that omitted the key made this dereference
-  // throw a TypeError and BLANK THE WHOLE PANEL. Under the very response shape the guard below
-  // exists for, that is worse than the unknown it was meant to render: fail loud beats fail
-  // dishonest, but a white screen is neither. SINCE ADR-0023 that body is rejected at the SDK
-  // boundary instead and the page's `isError` branch names the operation and the field; the guard
-  // stays because "nothing declared" is the same reading `isPeerUnknown` gives an older server, for
-  // any source of a config that is not this query.
+  // That field is required by the schema, so the fallback is. See docs/web.md §373.
   const tierUnknown = (config.unknownFields ?? []).includes("trustTier");
-  // TWO INDEPENDENT SIGNALS FOR ONE FACT, OR'd — the same fix `outposts.tsx`'s `TrustTierCell` got,
-  // applied to the file whose own commit is titled "guard both, everywhere" and which had been given
-  // only the ownDomainId-load half of it.
-  //
-  //   * `provenance === "manual"` ALONE, not `foreign && …`. A `"manual"` row IS an unverified
-  //     hand-filled shadow by the schema's own definition — its origin adds nothing. Worse,
-  //     `isConfigForeign` answers FALSE while `ownDomainId` is still loading and the server omitted
-  //     `originIsSelf`: deliberately the right answer for a WRITE gate (never fabricate a block on a
-  //     write the server would accept) and the wrong one for a DISPLAY discriminator.
-  //   * A TIER THAT RIDES THE WIRE WHILE THE SERVER DECLARES IT UNOBSERVABLE. `toOutpostConfig`
-  //     pushes `"trustTier"` into `unknownFields` in exactly two cases: no tier at all, or
-  //     `provenance === "manual"`. So a config that HAS a tier and declares it unknown IS the shadow
-  //     case — with the OPTIONAL `provenance` key merely omitted. ADR-0023 does NOT close this one:
-  //     `provenance` is `.nullable().optional()`, so an omitted key is CONTRACT-LEGAL and passes
-  //     response validation untouched. MEASURED: keyed on provenance alone, such a row rendered
-  //     BYTE-IDENTICAL to a signature-verified replica of the same tier — `data-tier-unverified="false"`,
-  //     no shadow notice. `!isAbsent(config.trustTier) &&` is load-bearing and is what keeps this from
-  //     over-blocking: an ordinary locally-authored config with NO tier yet also declares `trustTier`
-  //     unknown, and must stay fully editable — that is the whole declare-then-set flow.
+  // TWO INDEPENDENT SIGNALS FOR ONE FACT, OR'd. See docs/web.md §374.
   const declaredUnverifiedTier = !isAbsent(config.trustTier) && tierUnknown;
   const unverifiedShadow = config.provenance === "manual" || declaredUnverifiedTier;
   // …and the edit control follows, for the same row, on a MEASURED refusal rather than on caution:
@@ -383,34 +289,13 @@ export function TrustTierCard({
   );
 }
 
-/** The select value → the request field. `""` (the leave-unset option) becomes an ABSENT `trustTier`,
- *  never an empty string: `CreateOutpostConfigRequestSchema` is a `z.strictObject` whose `trustTier`
- *  is the five-member enum, so `""` is a 400 — and a value silently coerced to a member would be the
- *  invented posture this milestone exists to prevent. Absent is the only honest encoding of "the
- *  operator has not decided yet", which is exactly why the create body makes the field optional. */
+/** The select value → the request field. See docs/web.md §375. */
 export function declaredTierOf(selectValue: string): OutpostTrustTier | undefined {
   return selectValue === "" ? undefined : (selectValue as OutpostTrustTier);
 }
 
-/** No config object exists for this peer yet. `POST /federation/outposts` binds only to a peer whose
- *  role is `outpost` — a `retrans` peer is a MEASURED 400 (`outpost-object.integration.test.ts`), so
- *  the create control is not offered for one rather than offered and refused — OR (§10.5) to THIS
- *  instance's own trust domain, the HQ outpost (formerly "co-located" — GLOSSARY, ADR-0021 D7;
- *  the `coLocated` prop and test ids keep the older spelling): `coLocated` renders that case, for which
- *  there is no peer row; the role checked is THIS instance's own (`selfRole`, `federation_self.role`),
- *  which must be `commander` — an outpost's own record is commander-declared and arrives replicated,
- *  and the server 400s the self shape on any other role (MEASURED —
- *  `outpost-config-sync.integration.test.ts`, before and after the replica arrives). */
-/**
- * THE REFUSAL `POST /federation/outposts` MIRRORS, SHARED. `outpost-binding.ts`'s
- * `REQUIRED_PEER_ROLE` refuses (400) to bind an `outpost` config object to any peer whose role is
- * not `outpost` — on CREATE (`DeclareConfigCard`, below) and, unchanged, on UPDATE of an existing
- * object (`assertOutpostPeerBinding` runs on both doors). So the same sentence covers two distinct
- * moments: no config object exists yet for a non-outpost peer, AND a config object exists but its
- * peer's role no longer is one (e.g. changed post-declare) — a stray row the edit door will 400 on
- * confusingly if offered a live Save button. One refusal, read from the same measured 400
- * (`outpost-object.integration.test.ts`; ADR-0004), rendered wherever that door would fire.
- */
+/** No config object exists for this peer yet. See docs/web.md §376. */
+/** THE REFUSAL `POST /federation/outposts` MIRRORS, SHARED. See docs/web.md §377. */
 export function ConfigRoleNotOutpostNotice({ role }: { role: string }): React.JSX.Element {
   return (
     <p className="text-sm text-slate-600" data-testid="config-role-not-outpost">
@@ -524,18 +409,7 @@ export function DeclareConfigCard({
   );
 }
 
-/**
- * POKE-MODE — THIS SIDE ONLY (owner decision).
- *
- * ADR-0009's flag is PER-SIDE. On a commander it means "this side MAY send a contentless wake signal
- * to that peer"; it does not, and cannot, set the outpost's own flag, which is what decides whether
- * the outpost accepts a poke and disables its frequent poll. A single toggle presented as controlling
- * both sides would be a claim about a database this instance cannot write.
- *
- * The UNILATERAL-SPARSE case is rendered as such: `pokeMode: true` with `lastPokeReceivedAt: null` is
- * this side opted in while the other side has never actually poked — the scheduler keeps polling
- * (`effectiveCadence: "poll"`), and this is how an operator sees it.
- */
+/** POKE-MODE — THIS SIDE ONLY. See docs/web.md §378. */
 export function isUnilateralSparse(status: FederationPeerStatus): boolean {
   return status.peer.pokeMode === true && (status.lastPokeReceivedAt ?? null) === null;
 }
@@ -608,35 +482,7 @@ export function PokeModeCard({
   );
 }
 
-/**
- * MANAGED ELSEWHERE — READ-ONLY NOTES, NO EDIT CONTROLS (owner decision).
- *
- * The proposal listed freezes, the outpost-local Gitea registry and the enabled bundled backends as
- * per-outpost configuration. None of the three has a commander-writable data model IN THIS SURFACE,
- * so they are named here, with where they are ACTUALLY configured, and offered no control at all. An
- * edit box that silently does nothing downstream would be worse than no box.
- *
- * ============================================================================================
- * THE FREEZE NOTE WAS REWRITTEN IN M25.7, AND THE RETIRED REASONING MATTERS
- * ============================================================================================
- * This copy used to tell the operator, verbatim, that a freeze is a local projection row that does
- * NOT ride the sync journal, so a freeze declared at the commander is not a freeze at the outpost.
- * That was TRUE and it was the honest correction of M16.2's "commander-origin, syncs down"
- * aspiration, which was found false at build time; it was TESTED by
- * `coordination/service-board-precedence.integration.test.ts`.
- *
- * OWNER DECISION D6 (2026-08-23) RETRACTED IT. An org-tier freeze declared `federate: true` gets a
- * `freeze` graph object, rides `object_upsert`, and is rebuilt into the outpost's own `freezes`
- * table where it BLOCKS. Leaving the old sentence would now be an operator-facing lie in the exact
- * place an operator goes to ask the question.
- *
- * WHAT DID NOT CHANGE — and why this stays a note rather than becoming a form: a freeze is scoped at
- * an object in the ORG's containment graph, and there is no "the outpost this freeze belongs to".
- * A service-scoped freeze reaches every placement under it regardless of which outpost executes
- * which region. Per-outpost freeze configuration is structurally wrong, not merely unbuilt
- * (campaigns-rework.md "Pre-existing contradictions" #5), so the honest note is WHERE freezes are
- * declared and what reaches here, not an edit box scoped to a peer.
- */
+/** MANAGED ELSEWHERE — READ-ONLY NOTES, NO EDIT CONTROLS. See docs/web.md §379. */
 export const MANAGED_ELSEWHERE = [
   {
     id: "freezes",
@@ -694,17 +540,7 @@ export function ReconcileOutcome({
 }: {
   result: OutpostConfigReconcileResult;
 }): React.JSX.Element {
-  // `isAbsent`, not `=== null` / `!== null` — the SAME schema class this file already fixed for
-  // `config.trustTier`, left half-guarded here. `adoptedObjectId` is required-nullable, and BEFORE
-  // ADR-0023 the SDK validated no response, so `undefined` was reachable through the SDK too; SINCE
-  // ADR-0023 an omitted required key rejects at the boundary and this is defence in depth for every
-  // other source of a result. MEASURED with `adoptedObjectId: undefined`:
-  // `!== null` was TRUE, so the panel emitted
-  //   `<p data-testid="reconcile-adopted">Adopted <code></code> as this domain's own configuration —
-  //    it journals down to the outpost from now on.</p>`
-  // — an EMPTY element inside a confident claim about a journaling side-effect — while the `=== null`
-  // mirror below simultaneously suppressed the honest `reconcile-removed-none` branch, so the panel
-  // reported an adoption that did not happen AND withheld the statement that nothing did.
+  // `isAbsent`, not `=== null` / `!== null`. See docs/web.md §380.
   const adopted = isAbsent(result.adoptedObjectId) ? null : result.adoptedObjectId;
   // …and the two id lists are required-not-optional, dereferenced for `.length` four times: a server
   // that omits either one threw a TypeError over the whole outcome panel, i.e. the operator saw
@@ -774,14 +610,7 @@ function RemovalPreviewAlert({
   );
 }
 
-/**
- * THE RECONCILE PANEL. Shown when the peer has more than one live claimant row (an authority
- * conflict) — and reachable from the unverified-shadow notice above, which is the single-row case
- * where adoption is the recovery.
- *
- * Every destructive choice states its consequence BEFORE it is taken, per claimant, from that
- * claimant's own provenance.
- */
+/** THE RECONCILE PANEL. See docs/web.md §381. */
 export function ReconcilePanel({
   claimants,
   ownDomainId,
@@ -798,15 +627,7 @@ export function ReconcilePanel({
   onReconcile: (keep?: string) => void;
 }): React.JSX.Element {
   const [confirmed, setConfirmed] = useState<string | null>(null);
-  // THE DEFAULT IS OFFERED ONLY WHERE IT CANNOT BE THE DESTRUCTIVE CHOICE — one rule, not a second
-  // copy of the confirmation machinery. It stands down for either reason:
-  //   * the survivor is INDETERMINATE (two rows of equal authority, tie broken server-side), so any
-  //     preview would be a guess; or
-  //   * reconciling with it would drop a row THIS DOMAIN AUTHORED, whose tombstone PROPAGATES to the
-  //     outpost. That choice must be made explicitly, per row, behind the checkbox below.
-  // As it happens the second condition is implied by the first today (a UNIQUE top-ranked survivor
-  // means every dropped row ranks strictly lower, hence is foreign, hence never propagates) — it is
-  // written out anyway so a later change to `authorityRank` cannot silently reopen the bypass.
+  // THE DEFAULT IS OFFERED ONLY WHERE IT CANNOT BE THE DESTRUCTIVE CHOICE. See docs/web.md §382.
   const candidate = defaultSurvivor(claimants, ownDomainId);
   const candidatePreview = candidate
     ? removalPreview(claimants, candidate.objectId, ownDomainId)
@@ -962,14 +783,7 @@ function isNotFound(err: unknown): boolean {
   return err instanceof ScpApiError && err.status === 404;
 }
 
-/**
- * The wired-up Configuration card — for a PAIRED PEER (`status`, the peer-status row) or, since
- * pipeline-substrate-registry-scan.md §10.5, for THIS INSTANCE'S OWN DOMAIN (`selfDomain`): the
- * HQ outpost, whose record binds `peerDomainId` = this instance's domain id and has NO peer
- * row. Exactly one of the two is given. The config half (declare / tier / reconcile) is identical
- * for both — it keys on the domain id alone; the poke-mode card is a PEER-ROW flag and is rendered
- * only for a peer (there is no peer row to flag for self, and an instance never pokes itself).
- */
+/** The wired-up Configuration card. See docs/web.md §383. */
 export function OutpostConfigurationSection({
   status,
   selfDomain
@@ -993,15 +807,7 @@ export function OutpostConfigurationSection({
   const claimants = claimantsForPeer(configsQuery.data, peerDomainId);
   const conflict = claimants.length > 1;
   const config = claimants[0];
-  /**
-   * HAZARD, CLOSED — the tier editor used to be gated only on a config OBJECT existing, never on the
-   * PEER's own role. `assertOutpostPeerBinding` refuses (400) an UPDATE against a peer whose role is
-   * not `outpost` exactly as it refuses a CREATE (`outpost-binding.ts`, ADR-0004) — so a STRAY
-   * config object bound to a retrans peer (role changed post-declare; nothing deletes the row when
-   * that happens) rendered a live, clickable Save button the server would refuse confusingly. The
-   * self/HQ path (`status` absent) carries no peer role at all and is untouched — this guards only
-   * the peer path, on the SAME role the create door already checks.
-   */
+  /** Hazard closed: the editor was gated on existence alone. See docs/web.md §384. */
   const peerConfigRoleOk = status === undefined || status.peer.role === "outpost";
 
   const invalidate = async (): Promise<void> => {
@@ -1009,18 +815,7 @@ export function OutpostConfigurationSection({
     await queryClient.invalidateQueries({ queryKey: federationStatusKey() });
   };
 
-  /**
-   * THE SAME PREMISE THE RECONCILE MUTATION ATTACHES, ON THIS PANEL'S OTHER WRITE DOOR (R2, PR
-   * #156 residual). The operator reads a tier off `config` and edits it — a prediction from the
-   * row on screen, exactly like reconcile's claimant preview — but until this fix the call carried
-   * no `expectedVersion`, so a concurrent edit (another operator, or this same peer's `keep`
-   * reconcile) was silently overwritten: `updateObject` has always accepted the precondition
-   * (`packages/schemas/src/federation.ts`'s `UpdateOutpostConfigRequestSchema`), the PATCH route
-   * has always declared its 412, and NOTHING on the write path needed to change — only this call
-   * site was leaving its premise unstated. `config.version` is read from the same query result the
-   * rendered form derives from, so the request cannot be checked against a different world than
-   * the one on screen.
-   */
+  /** The same premise the reconcile attaches, on the other door. See docs/web.md §385. */
   const tierMutation = useMutation({
     mutationFn: (input: { tier: OutpostTrustTier; expectedVersion: number }) =>
       client.federation.updateOutpost(peerDomainId, {
@@ -1046,26 +841,7 @@ export function OutpostConfigurationSection({
     mutationFn: (next: boolean) => client.federation.updatePeer(peerDomainId, { pokeMode: next }),
     onSuccess: invalidate
   });
-  /**
-   * THE PRECONDITION, ATTACHED WHERE EVERY RECONCILE THIS PANEL ISSUES PASSES THROUGH.
-   *
-   * The panel predicts an outcome from `claimants` and then asks the server to act — but the server
-   * derives that outcome from the rows it reads INSIDE its own transaction, which is a different
-   * moment. `?ifClaimant=<objectId>:<version>` is that prediction's premise, sent with the request
-   * and compared as a set, so a world that moved is a 412 that WROTE NOTHING rather than a 200 that
-   * did something else. Both failure directions are covered by this one attachment, which is why it
-   * lives on the mutation and not on a button:
-   *   * the ADOPT-SHADOW control below (`TrustTierCard`'s `onReconcile`) sends no `keep`, so the
-   *     server re-derives the survivor — a locally-authored row that appeared since this query
-   *     resolved outranks the shadow, and the operator's entered value is DROPPED while the button
-   *     promised it would be kept;
-   *   * naming the shadow with `keep` instead makes that same concurrent row surplus, and removing a
-   *     row THIS domain authored journals a tombstone that PROPAGATES to the outpost — the removal
-   *     this panel elsewhere refuses to perform without an explicit confirmation.
-   *
-   * The token is built from `claimants` — the exact array the preview above was computed from — so
-   * the request cannot be checked against a different world than the one on screen.
-   */
+  /** The precondition, attached where every reconcile passes. See docs/web.md §386. */
   const reconcileMutation = useMutation({
     mutationFn: (keep: string | undefined) =>
       client.federation.reconcileOutpost(peerDomainId, {
@@ -1077,19 +853,7 @@ export function OutpostConfigurationSection({
         ...(claimants.length > 0 ? { ifClaimants: claimants.map(formatOutpostClaimantToken) } : {})
       }),
     onSuccess: invalidate,
-    // A 412 says the claimant list on screen is stale, so REFETCH it: the refusal's own text names
-    // what moved, and the preview beside it must be the new world, not the one that was refused.
-    //
-    // R3 (PR #156 residual) — THIS PANEL REFETCHES; IT DOES NOT RE-RENDER THE CARRIED PREVIEW.
-    // `reconcileStaleClaimants(err)` is used ONLY as a 412 detector here — its return value (the
-    // fresh `claimants` the refusal carried) is discarded, and `invalidate()` opens a second round
-    // trip and a second, if narrower, staleness window instead. `scp federation outpost reconcile`
-    // (`packages/cli/src/cli.ts`) takes the other branch: it re-previews straight from the carried
-    // list, no second read. Both are correct — a second stale press here is refused again, since the
-    // refetch is what the next token derives from — but they are not the same behaviour, and the
-    // "no second round trip" rationale on `preconditionFailed` (`apps/server/src/errors.ts`) and on
-    // `OutpostReconcileStaleProblemSchema.claimants` (`packages/schemas/src/federation.ts`) describes
-    // the CLI's path, not this one.
+    // A precondition failure means the list on screen is stale. See docs/web.md §387.
     onError: (err: unknown) => {
       if (reconcileStaleClaimants(err) !== null) void invalidate();
     }

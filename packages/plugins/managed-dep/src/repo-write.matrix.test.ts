@@ -12,35 +12,7 @@ import {
   recordingCtx
 } from "./write-test-support.js";
 
-/**
- * ================================================================================================
- * THE TRAVERSAL CENSUS, ON THE ONE SURVIVING WRITE PATH
- * ================================================================================================
- * THE PROPERTY, stated once so the enumeration below is obviously an instance of it: **a
- * caller-supplied string spliced into a REST route re-targets the ROUTE, not just the resource**, and
- * `encodeURIComponent("..") === ".."` — so encoding is not the control, a validator is. M21.2 proved
- * both halves the hard way: a `ref` of `../../../../user` turned
- * `GET /repos/{o}/{r}/commits/{ref}` into `GET https://api.github.com/user`, reached with the
- * binding's credentials; and a raw `repo` of `acme/widgets?x=` terminated the route at a query
- * string, giving both re-targeting and query injection.
- *
- * IT HAS ALREADY BEEN GOT WRONG TWICE ON THIS FEATURE. The read path's fix was applied to one
- * provider and left open in the other two. The rival M21.5 branch then proved its own coverage with
- * a hand-picked set of interesting cases, and FOUR mutants survived it — deleting a single assert
- * from a single call site left every suite green. Both failures are the same failure: a fix applied
- * to an INSTANCE rather than to the class.
- *
- * SO THIS IS A MATRIX, NOT A LIST. Every caller-supplied string × every operation of the write path
- * that splices one. Enumerating it exhaustively is what makes a MISSING assert fail a test rather
- * than depend on a reviewer noticing it is missing.
- *
- * "ZERO HTTP" IS MEASURED, NOT INFERRED. Every case counts the requests the recording client
- * actually saw. For the operations that run inside a credentialled session, the assertion is on the
- * DELTA across the refusing call — the session's own mint and revoke are requests, and folding them
- * into the count would be measuring the wrong thing. For `withRunCredential` itself the count is an
- * absolute zero, which additionally proves the refusal precedes AUTH: the App-JWT → installation-token
- * exchange is the first request of any run, so an assert that ran late would show up here as a 1.
- */
+/** The traversal census, on the one surviving write path. See docs/plugins.md §316. */
 
 const { generateKeyPairSync } = await import("node:crypto");
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -52,16 +24,13 @@ const writer = createGithubAppRepoWriter({
   privateKeyPem
 });
 
-/** Route traversal that re-targets the endpoint. */
 const TRAVERSAL_REF = "../../../../user";
 const TRAVERSAL_REPO = "acme/widgets/../../..";
 const TRAVERSAL_PATH = "a/../../../../etc/passwd";
 /** Route TERMINATION — the second half of the M21.2 `repo` hole, which traversal alone misses. */
 const QUERY_REPO = "acme/widgets?x=";
 
-// -------------------------------------------------------------------------------------------
 // Before the session exists: `repo` reaches the token-mint body AND every route below it
-// -------------------------------------------------------------------------------------------
 
 describe("withRunCredential — an adversarial repo is refused before the credential is minted", () => {
   it.each([
@@ -84,9 +53,7 @@ describe("withRunCredential — an adversarial repo is refused before the creden
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // Inside the session: every remaining caller-supplied string, on every operation that splices one
-// -------------------------------------------------------------------------------------------
 
 interface SessionCase {
   label: string;
@@ -228,11 +195,7 @@ describe("the session's write operations REFUSE adversarial strings before issui
     expect(isRepoWriteRefusal(caught)).toBe(true);
   });
 
-  /**
-   * THE POSITIVE CONTROL. Without it every case above could pass by the write path being broken for
-   * all inputs — the vacuous-green shape this repository has been bitten by repeatedly. The same
-   * fixture, unpoisoned, must reach the wire and produce a pull request.
-   */
+  /** THE POSITIVE CONTROL. See docs/plugins.md §317. */
   it("the SAME fixture, unpoisoned, does reach the wire and open a pull request", async () => {
     const { ctx, calls } = recordingCtx(githubHandler());
     const result = await writer.withRunCredential(ctx, WRITE_TARGET.repo, (session) =>
@@ -243,17 +206,9 @@ describe("the session's write operations REFUSE adversarial strings before issui
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // The descriptor half — the same strings, refused a second time, one layer earlier
-// -------------------------------------------------------------------------------------------
 
-/**
- * `parseBumpDescriptor` validates the SAME strings with the SAME asserts before a provider arm is
- * even resolved. That is not belt-and-braces duplication: the descriptor arrives from the server and
- * is the earliest point at which a bad target can be named, while the session asserts guard the
- * actual splice — and only the second of those would still hold if some future caller reached the
- * writer without going through a descriptor. Both are enumerated so neither can quietly go missing.
- */
+/** The parser validates the same strings with the same asserts. See docs/plugins.md §318. */
 function intentParams(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     ecosystem: "npm",

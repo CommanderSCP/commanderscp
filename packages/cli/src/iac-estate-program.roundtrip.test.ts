@@ -3,22 +3,7 @@ import { buildEstateManifest, renderEstateProgram, type ServiceSpec } from "@scp
 import type { DesiredStateManifest } from "@scp/schemas";
 import { cleanupCompile, compileGeneratedTs } from "./test-support/ts-harness.js";
 
-/**
- * THE CENTREPIECE: export → synth → compare, executed through the REAL TypeScript compiler and the
- * REAL `@scp/iac` package (team-pipeline-iac.md §9's stated correctness property — "exported ts,
- * when synthesized, must produce a manifest equivalent to the json export of the same scope").
- *
- * `@scp/iac`'s own `estate-program.test.ts` covers the two emitters' behavior in isolation; this file
- * proves the stronger claim neither of those tests can: that the rendered TS source ACTUALLY COMPILES
- * against the published `@scp/iac` surface (not just "looks plausible"), and that RUNNING it produces
- * the same manifest `buildEstateManifest` computes directly from the same `ServiceSpec`.
- *
- * MUTATION-WATCHED (restored before commit — see each case's own note):
- *  - dropping a placement from `renderEstateProgram`'s emission turns "round-trips a full export"
- *    RED (the compared manifests stop matching);
- *  - emitting a plausible fabricated `repo` instead of the loud `undefined` placeholder turns
- *    "the placeholder case FAILS to typecheck" RED (the compile would now succeed).
- */
+/** Export, synth and compare through the real compiler. See docs/cli.md §116. */
 
 function fullSpec(): ServiceSpec {
   return {

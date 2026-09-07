@@ -15,44 +15,8 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Placement-aware executor-binding resolution (ADR-0026, amending ADR-0006).
- *
- * ============================================================================================
- * THE VACUITY THIS FILE IS BUILT AGAINST
- * ============================================================================================
- * A test asserting "resolution succeeded" passes for the wrong reason if the fixture only ever has
- * ONE placement — which is the state of all 61 placements on the estate today, and therefore the
- * state a fixture naturally falls into. It would then prove nothing about the case that actually
- * matters: TWO placements must FAIL, not resolve. This has bitten the ADR-0026 chain three times
- * (the placement race test passed with its unique index removed; the stage race test the same; the
- * cancellation-kind test examined an object that never reached the code under test), so every
- * positive case here has a two-placement sibling that asserts refusal.
- *
- * **Mutation log** (each applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | `candidates.length > 1` → `> 2` (pick the first instead of refusing) | "REFUSES two placements" fails |
- * | drop the direct-first check (always consult placements) | "direct wins over a placement" fails |
- * | `listVisibleBindingsForTarget` returns only the target's own | "case (a) does not swallow a placed binding" fails |
- * | placement lookup ignores `deleted_at` | "a withdrawn placement stops resolving" fails |
- * | fallback applied in `putExecutorBinding` too | "a write path stays literal" fails |
- */
-/**
- * ============================================================================================
- * MUTATION LOG — ADR-0027 service rung (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | return `none` at the no-placements exit instead of the service rung | the PLACEMENT-target test FAILS. This is not hypothetical — it is the bug that shipped in the first draft: the rung was added at the `candidates.length === 0` exit only, so it never fired for a placement, which is exactly what stage-shaped compilation makes every wave target |
- * | raise `MAX_ANCESTOR_HOPS` from 3 to 99 | the hop-cap test FAILS — a binding 4 levels up resolves, so without it the cap is decoration |
- * | walk ancestors farthest-first instead of nearest-first | the nearest-wins test FAILS — a component would inherit the top-level binding over its own parent's, inverting D1 |
- * | let `ambiguous` fall through to the service | 3 tests FAIL — two placements bound for one Type is a refusal, not an absence, and the service must not rescue it (ADR-0027 D2) |
- * | `viaObjectTypeId: ancestor.typeId` -> `"service"` (the shipped defect) | BOTH real-assembly tests fail — a Decision would name an assembly a service |
- * | `containsParentOf` returns `typeId: "service"` instead of the parent's | same two fail — the type must be READ, not assumed |
- * | `ancestors.reverse()` (farthest ancestor first) | three tests fail, incl. hops 2-instead-of-1 — nearest-wins is load-bearing, not incidental |
- */
+/** Placement-aware executor-binding resolution. See docs/coordination.md §24. */
+/** MUTATION LOG — ADR-0027 service rung. See docs/coordination.md §25. */
 describe("placement-aware binding resolution", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -229,11 +193,7 @@ describe("placement-aware binding resolution", () => {
   });
 
   it("resolves from a PLACEMENT target too — the shape stage-shaped compilation actually produces", async () => {
-    // THE CASE A NAIVE RUNG MISSES. `resolveBindingForTarget` has TWO exits that mean "no placement
-    // binding": a component whose placements carry none, and a target that HAS no placements —
-    // which is every placement, since a placement has none of its own. Wave targets are placements
-    // under stage-shaped compilation, so a rung written at only the first exit would never fire on
-    // the estate's real traffic.
+    // THE CASE A NAIVE RUNG MISSES. See docs/coordination.md §26.
     const { service, placements } = await servicedComponent("svc-rung-placement", [gamma]);
     await bind(service.id, "svc-infra-p", "infrastructure");
 
@@ -290,39 +250,17 @@ describe("placement-aware binding resolution", () => {
     expect(service.id).toBeTruthy();
   });
 
-  // ============================================================================================
-  // ADR-0029 — the capped CONTAINMENT-ANCESTOR ladder, generalising ADR-0027's single service rung.
-  // Infra scope IS the attachment point (intermediate-grouping D4), so resolution must find a
-  // binding at whatever level it hangs — including the org.
-  // ============================================================================================
+  // The capped containment-ancestor ladder. See docs/coordination.md §27.
 
   /** A `contains` chain of the given depth above a component, using SERVICES as the intermediate
    *  objects. The ladder is type-agnostic (ADR-0029 D4), so this exercises the walk regardless of
    *  what the `assembly` level ends up being called or typed. */
-  /**
-   * Loosens ONE registry row so `contains` accepts a service->service edge, then lets the REAL API
-   * write it.
-   *
-   * The alternative — inserting the relationship row directly — fights every integrity column the
-   * typed path fills in (`origin_domain_id`, `content_hash`, the cardinality assertion), and a
-   * fixture that hand-rolls those is testing a shape the product would never produce. Loosening the
-   * type registry instead means the edges under test are written by exactly the code that will write
-   * them once nesting is allowed, and the ONLY thing faked is the one row the pending `assembly`
-   * decision is going to change anyway.
-   *
-   * Safe to do here: integration isolation is per FILE (see #219), so this file's widened row cannot
-   * reach another suite.
-   */
+  /** Loosens one registry row, then uses the real API. See docs/coordination.md §28. */
   async function allowNestedContains() {
     const surgeon = new pg.Client({ connectionString: testDatabaseUrl() });
     await surgeon.connect();
     try {
-      // WIDEN, never REPLACE. The first form of this surgery set to_types = ['service','component']
-      // — silently DROPPING 'assembly' (migration 0055's real level) for every test that ran after
-      // it, so any later `service -> assembly` edge 400'd with "does not allow 'assembly' as the
-      // 'to' endpoint" purely as a function of test ORDER. The real-assembly tests only passed
-      // because they happened to run first. Measured 2026-08-14 when the domain-local premise test
-      // below landed after the hop-cap tests. Append 'service' to whatever the row already allows.
+      // WIDEN, never REPLACE. See docs/coordination.md §29.
       await surgeon.query(
         `UPDATE relationship_types
             SET to_types = array_append(array_remove(to_types, 'service'), 'service')
@@ -340,19 +278,7 @@ describe("placement-aware binding resolution", () => {
     const chain = [top];
     for (let i = 1; i < depth; i += 1) {
       const mid = await admin.services.create({ name: `${label}-mid${i}-${Date.now()}` });
-      // PRIVILEGED FIXTURE SURGERY, and STILL deliberate after migration 0055 — but for a different
-      // reason than when it was written, so read this rather than the history.
-      //
-      // 0055 settled the level: `assembly` is a real object type and `contains` legitimately accepts
-      // `service -> assembly -> component`. What it did NOT do is allow arbitrary depth —
-      // `assembly -> assembly` is refused outright (intermediate-grouping D2 caps the ladder at three
-      // hops, and a refusal beats a number to argue about). So the shapes DEEPER than one intermediate
-      // level, which the hop-cap tests need, cannot be built through the API at all — by design.
-      //
-      // Hence: the real-type case is tested with a REAL assembly and NO surgery (see the
-      // `viaObjectTypeId` test below), and the surgery survives only for the depths that exist to
-      // prove the CAP holds for a level nobody has added yet. ADR-0029 D4's ladder is type-agnostic,
-      // which is what makes that a meaningful thing to test ahead of the level.
+      // Privileged fixture surgery, deliberate for a new reason. See docs/coordination.md §30.
       await admin.relationships.create({ typeId: "contains", fromId: parent.id, toId: mid.id });
       chain.push(mid);
       parent = mid;
@@ -517,15 +443,7 @@ describe("placement-aware binding resolution", () => {
     await expect(admin.executors.getBinding(component.id)).rejects.toThrow(/conflict/i);
   });
 
-  // ============================================================================================
-  // THE OUTPOST'S PREMISE (outpost-ui.md §9, owner question 2026-08-14): does the outpost need
-  // service and assembly levels at all? Only if a DOMAIN-LOCAL container can carry shared domain
-  // infra/config that its components inherit — the cluster shared by a whole domain-local service.
-  // The ladder is generic on the `contains` edge and M20.5 makes locality inherit downward, so this
-  // SHOULD compose, but the exact combination (ADR-0031 local container × ADR-0027/0029 rung
-  // binding) had never been exercised. Measured here, because the whole outpost-catalog shape
-  // rests on it.
-  // ============================================================================================
+  // THE OUTPOST'S PREMISE. See docs/coordination.md §31.
 
   it("PREMISE: a DOMAIN-LOCAL service's rung-bound infra resolves for its (inheriting) components", async () => {
     const service = await admin.services.create({

@@ -3,13 +3,7 @@ import type PgBoss from "pg-boss";
 import type { Db } from "../db/client.js";
 import { INBOX_QUEUE, inboxLoopEnabled, startInboxLoop } from "./inbox-loop.js";
 
-/**
- * M13.1a — the inbox loop's OPT-IN INERTNESS, asserted (not merely inspected). The loop is
- * DEFAULT-OFF: an instance whose operator never set `SCP_INBOX_LOOP=1` must NEVER create the
- * queue, register a worker, or schedule a tick — the returned handle is inert and `stop()` is a
- * no-op. (The full ingest behaviour is proven in inbox-loop.integration.test.ts against real
- * Postgres; this unit pins the enable gate so an unconfigured instance provably does not spin.)
- */
+/** M13.1a — the inbox loop's OPT-IN INERTNESS, asserted. See docs/federation.md §280. */
 describe("M13.1a inbox loop opt-in inertness (unit)", () => {
   const savedEnv = process.env.SCP_INBOX_LOOP;
   afterEach(() => {

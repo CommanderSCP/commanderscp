@@ -8,35 +8,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { resolveRunnerImage } from "@scp/plugin-testkit";
 import { RUNNER_NETWORK_MODE } from "./index.js";
 
-/**
- * ================================================================================================
- * M21.5 — THE FOUR CHARTER CLAUSES, ASKED OF THE BUILT ARTIFACT
- * ================================================================================================
- * The `scp-managed-dep` amendment (2026-08-13, qualified 2026-08-15) says of the runner:
- *
- *   "never runs a package manager" / "never resolves or regenerates a lockfile" /
- *   "never builds, compiles, or tests" / "the runner contains no package manager"
- *
- * Every one of those is a statement about what the image CONTAINS. `runner-image.test.ts` reads the
- * Dockerfile and the shim, which is the right cheap gate and is structurally blind to the base: it
- * can say what this build ADDS and never what it INHERITED. That blindness was measured, not
- * imagined — the base used to be a build ARG holding a mutable tag, so
- * `docker build --build-arg RUNNER_DEP_BASE_IMAGE=node:22 apps/runner-dep` produced an image tagged
- * as the vetted runner with a full Node toolchain inside it, and the "is pinned" assertion passed on
- * the unchanged text.
- *
- * So this file BUILDS the image (or pulls the pre-built one in CI) and interrogates the artifact:
- * every forbidden tool is looked for on the container's PATH and across its filesystem, and the
- * shim is exercised as the orchestrator actually launches it — `--network none`, argv only, bytes in
- * and out by `docker cp`. A future edit that adds a toolchain "just for one ecosystem" fails here
- * even if it never touches the Dockerfile's text, because the base changed underneath it.
- *
- * Needs a reachable Docker daemon — excluded from `pnpm test` (vitest.config.ts), run via
- * `pnpm test:integration` in the CI integration-shard job (which pre-pulls
- * `SCP_RUNNER_DEP_IMAGE_REF`, built once per content change by ci.yml's `runner-images` job).
- * SKIPS CLEANLY, and loudly, when no daemon is present — the same shape `tools/helm-verify` uses,
- * so a laptop without Docker does not red the suite.
- */
+/** The four charter clauses, asked of the built artifact. See docs/plugins.md §347. */
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -56,16 +28,7 @@ async function dockerAvailable(): Promise<boolean> {
   }
 }
 
-/**
- * Run a shell command INSIDE the runner image, `--network none`, and return its stdout.
- *
- * A SENTINEL is appended and asserted, and that is not belt-and-braces: this image deliberately
- * contains only seven applets, so a script reaching for an eighth (`ls`, `find`, `grep`) does not
- * fail the test — the missing command writes to stderr, the pipeline yields nothing, and an
- * assertion of the form "nothing forbidden was found" passes for the wrong reason. The first draft
- * of the filesystem scan below did exactly that. Requiring the last line to arrive means a script
- * that died half way through is a failure rather than a clean bill of health.
- */
+/** Runs a command inside the image with no network. See docs/plugins.md §348. */
 async function inImage(script: string): Promise<string> {
   const sentinel = "__scp_runner_dep_script_completed__";
   const { stdout } = await execFileAsync(
@@ -87,13 +50,7 @@ async function inImage(script: string): Promise<string> {
   return stdout.split(sentinel)[0]!;
 }
 
-/**
- * Paths the docker DAEMON injects into every container it creates, whatever the image holds. They
- * are not image content and are subtracted below.
- *
- * Enumerated rather than pattern-matched, so a NEW injected path fails the exact-set assertion and
- * gets looked at — an `/etc/**` filter would swallow a real addition just as happily.
- */
+/** Paths the Docker daemon injects into every container. See docs/plugins.md §349. */
 const DAEMON_INJECTED = [
   ".dockerenv",
   "dockerenv",
@@ -106,15 +63,7 @@ const DAEMON_INJECTED = [
   "etc/resolv.conf"
 ];
 
-/**
- * Every path the runtime IMAGE contributes: the container filesystem exported to the HOST, minus
- * {@link DAEMON_INJECTED}. Files only — directories are structure, not content.
- *
- * Nothing inside the image is used to answer this, which matters more here than usual: the image
- * deliberately contains no `find`, `ls` or `grep`, so an in-container scan does not fail loudly, it
- * produces NO OUTPUT — and "nothing forbidden was found" then passes for the wrong reason. The first
- * draft of the scan below did exactly that.
- */
+/** Every path the runtime IMAGE contributes. See docs/plugins.md §350. */
 async function imagePaths(): Promise<string[]> {
   const scratch = await mkdtemp(join(tmpdir(), "scp-runner-dep-export-"));
   const tarball = join(scratch, "rootfs.tar");
@@ -158,11 +107,7 @@ beforeAll(async () => {
 }, 600_000);
 
 describe("scp-runner-dep, as built", () => {
-  /**
-   * Every executable name that would mean a package manager, a build tool or a language runtime is
-   * IN the image. Two of these are worth naming: `go` is both a language runtime and the resolver
-   * for one of the five ecosystems, and `node` is what the ARG-override defect actually put here.
-   */
+  /** Every executable name that would mean a toolchain. See docs/plugins.md §351. */
   const FORBIDDEN = [
     "npm",
     "npx",
@@ -217,17 +162,7 @@ describe("scp-runner-dep, as built", () => {
     expect(found, `the runner image carries: ${found.join(", ")}`).toEqual([]);
   }, 180_000);
 
-  /**
-   * THE STRONG FORM, and the one the others are a convenience over: the ENTIRE contents of the
-   * runtime image, read by exporting the container filesystem to the HOST. Nothing inside the image
-   * answers this question, which matters here more than usual — the image contains seven applets, so
-   * an in-container `find` does not exist, and the first draft of this test scanned with one and
-   * passed by producing no output at all.
-   *
-   * Asserted as an exact set rather than as a denylist. A denylist can only refuse what somebody
-   * thought of, and the two package managers this image actually shipped (`dpkg` and `rpm`, applets
-   * of a stock BusyBox) were ones nobody had.
-   */
+  /** The strong form the others are a convenience over. See docs/plugins.md §352. */
   it("contains EXACTLY the expected tree — one binary, seven applet names, and the shim", async () => {
     if (!dockerReady) return expectSkipped();
     const files = await imagePaths();
@@ -270,17 +205,7 @@ describe("scp-runner-dep, as built", () => {
     expect(present.sort()).toEqual([...needed].sort());
   }, 180_000);
 
-  /**
-   * THE RESIDUAL, PINNED RATHER THAN LEFT AS PROSE. BusyBox is a MULTI-CALL binary: the code behind
-   * `dpkg` and `rpm` is still inside `/bin/busybox`, and `busybox dpkg` still dispatches to it even
-   * though no such NAME exists in the image. Removing that needs a custom-compiled BusyBox — a C
-   * toolchain in the build of the one image whose whole argument is that it has no toolchain — which
-   * is a strictly worse trade.
-   *
-   * The bound is asserted so nobody reads the exact-tree test above as more than it is, and so the
-   * day BusyBox drops those applets (or the base is swapped for one without them) this comment is
-   * updated deliberately rather than silently becoming false.
-   */
+  /** THE RESIDUAL, PINNED RATHER THAN LEFT AS PROSE. See docs/plugins.md §353. */
   it("states its own bound: the multi-call binary still IMPLEMENTS applets no name reaches", async () => {
     if (!dockerReady) return expectSkipped();
     const list = (await inImage("busybox --list")).split("\n").map((l) => l.trim());
@@ -310,12 +235,7 @@ describe("scp-runner-dep, as built", () => {
     expect(banner).toContain(`v${numeric}`);
   }, 180_000);
 
-  /**
-   * THE SHIM, AS THE ORCHESTRATOR ACTUALLY LAUNCHES IT. `runner-shim.test.ts` runs `run.sh` with the
-   * host's `sh`, which proves the AWK program and is blind to whether the image can host it (a
-   * BusyBox `awk` is not GNU awk). This runs the real ENTRYPOINT in the real image, with the real
-   * `--network none`, and moves bytes the only way the orchestrator does: `docker cp` in and out.
-   */
+  /** THE SHIM, AS THE ORCHESTRATOR ACTUALLY LAUNCHES IT. See docs/plugins.md §354. */
   it("edits one declared version, offline, with bytes arriving and leaving by `docker cp`", async () => {
     if (!dockerReady) return expectSkipped();
     const scratch = await mkdtemp(join(tmpdir(), "scp-runner-dep-it-"));
@@ -351,17 +271,7 @@ describe("scp-runner-dep, as built", () => {
     }
   }, 180_000);
 
-  /**
-   * M21.7 — THE ANCHORED PATH, IN THE REAL IMAGE'S OWN awk.
-   *
-   * `runner-shim.test.ts` proves the anchored program against the HOST's awk (BWK awk on a Mac, GNU
-   * awk in CI). BusyBox awk is a third implementation, and the two things this rule leans on that the
-   * unanchored one did not are exactly where implementations differ: an integer compared against
-   * `NR`, and a NUMERIC value used as an array subscript (`lines[anchor_nr]`, which converts through
-   * CONVFMT in some awks and as `%d` in others). If BusyBox rendered `5` as `5.00000`, the anchor
-   * would address nothing, every split-shape bump would refuse in production, and every unit test
-   * would stay green. So the claim is measured against the artifact rather than reasoned about.
-   */
+  /** M21.7 — THE ANCHORED PATH, IN THE REAL IMAGE'S OWN awk. See docs/plugins.md §355. */
   it("applies an ANCHORED split-shape edit in the built image, and refuses a stale anchor", async () => {
     if (!dockerReady) return expectSkipped();
     const scratch = await mkdtemp(join(tmpdir(), "scp-runner-dep-anchor-it-"));

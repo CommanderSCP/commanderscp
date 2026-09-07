@@ -1,49 +1,11 @@
-/**
- * What the four LANGUAGE index plugins in this package share: one config shape, one HTTP call, and
- * — the part that carries the weight — one classifier turning a `ScopedHttpClient` failure into an
- * operator-legible {@link DependencyIndexUnavailableReason}.
- *
- * The classifier exists because of two hazards MEASURED IN THIS REPO, each of which otherwise
- * surfaces as an indistinguishable "the fetch blew up":
- *
- *  1. REDIRECTS ARE HARD-DISABLED on the plugin HTTP client. `plugin-host/subprocess-entry.ts`
- *     passes `redirect: "error"` on the one fetch every plugin request goes through, with the
- *     reason stated inline: "a 3xx could re-point the request at an internal host AFTER the
- *     pre-flight egress check". Public package registries redirect
- *     ROUTINELY — `registry.npmjs.org` and `pypi.org` both serve some paths through a CDN 301, and
- *     `repo1.maven.org` redirects bare-directory paths. So a perfectly reachable index fails, and
- *     it must not be reported as "unreachable": the remedy is "configure the FINAL url", which is
- *     an entirely different action from "open the firewall". Hence its own reason,
- *     {@link DependencyIndexUnavailableReason} `redirected`.
- *  2. THE HELM CHART'S EGRESS IS DEFAULT-DENY. `deploy/helm/templates/networkpolicy.yaml` installs
- *     a `policyTypes: [Ingress, Egress]` policy with no egress list (the default-deny base) and
- *     `values.yaml`'s `networkPolicy.executorEgress` is `[]` by default, so a chart-deployed
- *     instance reaches NOTHING but DNS and Postgres. A registry poll from such a pod fails at
- *     connect time — i.e. it arrives here as a PLUGIN HTTP ERROR, not as a configuration error,
- *     and an operator reading the Decision would otherwise conclude the registry is down. The
- *     `unreachable` detail below names the NetworkPolicy explicitly, because that is where the
- *     operator has to go.
- *
- * Everything here is pure except {@link fetchIndexDocument}, and that one takes its transport from
- * `ctx.http` — so the whole module is testable with `nock` fixtures over a real `node:https`-backed
- * `ScopedHttpClient` (nock@13 does NOT intercept `fetch`; see this package's tests).
- */
+/** What the four LANGUAGE index plugins in this package share. See docs/plugins.md §42. */
 import type {
   DependencyIndexResult,
   DependencyIndexUnavailableReason,
   PluginContext
 } from "@scp/plugin-api";
 
-/**
- * Every language index plugin's config. `baseUrl` is OPERATOR-supplied, never tenant-supplied: the
- * server resolves it from its own env (`apps/server/src/dependencies/version-index.ts`) and passes
- * it as the plugin instance's config, alongside an `allowedHosts` entry derived from that same URL.
- *
- * THERE IS NO DEFAULT URL, ON PURPOSE. An unset `baseUrl` makes this ecosystem report
- * `not_configured`, which is the AIR-GAP DEFAULT (charter principle 5: "no runtime network calls to
- * the outside world" — a shipped default of `proxy.golang.org` would make every fresh install phone
- * home on its first daily tick). An operator opts a public index in explicitly.
- */
+/** Every language index plugin's config. See docs/plugins.md §43. */
 export interface DependencyIndexHttpConfig {
   baseUrl?: string;
   /** Extra request headers (a mirror's auth token, a corporate proxy's header). */
@@ -79,15 +41,7 @@ export function unavailable(
   return { status: "unavailable", reason, detail };
 }
 
-/**
- * Does this thrown value — or anything in its `cause` chain — say "redirect"?
- *
- * The chain walk is the whole point. Node's `fetch` with `redirect: "error"` rejects with a bland
- * `TypeError: fetch failed` and puts the real diagnosis (`unexpected redirect`) in `err.cause`;
- * undici's own `fetch` nests it one deeper again. Matching only `err.message` therefore classifies
- * every redirect as `unreachable` and hands the operator the wrong remedy — which is precisely the
- * silent failure hazard 1 above describes.
- */
+/** Does this thrown value. See docs/plugins.md §44. */
 export function isRedirectError(err: unknown): boolean {
   let cursor: unknown = err;
   for (let depth = 0; depth < 8 && cursor !== null && cursor !== undefined; depth += 1) {
@@ -150,15 +104,7 @@ export function classifyTransportError(
 export type IndexDocument =
   { status: "ok"; body: unknown } | (DependencyIndexResult & { status: "unavailable" });
 
-/**
- * One GET through the host-mediated, egress-guarded `ctx.http`, with every failure mode mapped.
- *
- * A 3xx STATUS IS CHECKED EXPLICITLY as well as caught. `redirect: "error"` turns a redirect WITH a
- * `Location` into a throw, but a 3xx without one (a bare 304, a 300 with no Location) is delivered
- * as an ordinary response — and treating that as a document would hand a parser an empty body and
- * report `malformed_response`, sending the operator to the wrong place. Both routes converge on
- * `redirected`.
- */
+/** One guarded GET, with every failure mode mapped. See docs/plugins.md §45. */
 export async function fetchIndexDocument(
   ctx: PluginContext,
   url: string,

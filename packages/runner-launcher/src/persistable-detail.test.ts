@@ -1,45 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RUNNER_DETAIL_MAX_CHARS, RUNNER_DETAIL_TAIL_CHARS, boundDetail } from "./index.js";
 
-/**
- * HIGH REGRESSION — `boundDetail` CUT SURROGATE PAIRS, POSTGRES REFUSED THE ROW, AND THE WAVE NEVER
- * TERMINALISED (M23.0 verification pass 7, fixed pass 8).
- *
- * THE MECHANISM, END TO END. `boundDetail` slices at UTF-16 CODE-UNIT offsets. An astral character
- * (any emoji, any CJK extension, any of the mathematical alphanumerics a Terraform provider is
- * perfectly capable of printing) occupies TWO code units, so either cut — the head at `headShare`
- * or the tail at `length - RUNNER_DETAIL_TAIL_CHARS` — can land between them and leave a LONE
- * SURROGATE. The result is an ill-formed string. `jsonb` refuses it. The refusal is thrown by the
- * `insertDecision` inside `reconcileExecutingChange`'s `withTenantTx`, which ALSO holds that tick's
- * `updateWaveTargetObserved` — so the whole transaction rolls back:
- *
- *   [reconcile] … poll failed (will retry next tick):
- *     DrizzleQueryError: Failed query: insert into "decisions" (…, "input_context", …) values …
- *       detail: 'Unicode low surrogate must follow a high surrogate.'
- *
- * No Decision, no `observed_state`, no terminal wave — every tick, forever, behind a green health
- * check and a single `console.error`. That is the shape of this repository's own worked example
- * (BUILD_AND_TEST.md §4.4a), where 231 changes went unevaluated for 13 days.
- *
- * WHAT THE DATABASE ACTUALLY REFUSES — measured against a real `postgres:16`, not modelled:
- *
- *   lone high surrogate  -> jsonb FAIL "invalid input syntax for type json"     | text OK
- *   lone low surrogate   -> jsonb FAIL "invalid input syntax for type json"     | text OK
- *   U+0000               -> jsonb FAIL "unsupported Unicode escape sequence"    | text FAIL
- *   U+FFFD, U+FFFF, C0, DEL, combining marks, astral pairs -> OK everywhere
- *
- * NOTE THE SECOND ROW OF THAT TABLE, because it is the reason this file does not simply assert
- * `isWellFormed()`. `String.prototype.isWellFormed()` returns TRUE for a string carrying `U+0000`,
- * and `jsonb` refuses it anyway. `isWellFormed()` is a MODEL of what Postgres rejects and it is an
- * incomplete one; the database is the authority. So every arm here asserts BOTH halves, and
- * `reconcile-decision-detail-bound.integration.test.ts` drives the astral case through a real
- * `insert` so the model is checked against the authority at least once.
- *
- * AND IT IS A PROPERTY, NOT A STRING. A hand-picked input pins the offset it happens to produce; the
- * defect is about WHERE THE CUT LANDS, so the arms below sweep the cut across every alignment by
- * shifting a single-code-unit pad in front of an adversarial alphabet. One example would have been
- * green against a `boundDetail` that repaired only the head cut, which was the first fix tried.
- */
+/** The bound cut surrogate pairs and Postgres refused. See docs/runner-launcher.md §340. */
 
 /** V8's own answer, reached through a cast because this repository compiles against `lib: ES2023`
  *  and `isWellFormed` is ES2024. Using the ENGINE's implementation rather than re-deriving the
@@ -57,11 +19,7 @@ function isPersistable(s: string): boolean {
   return isWellFormed(s) && !s.includes(NUL);
 }
 
-/**
- * Adversarial alphabets. Each is a repeating unit; `unitLength` is deliberately NOT all 1, because
- * an alphabet of single-code-unit characters can never expose the defect — that is exactly why the
- * round's own 100 000-character `"x".repeat(...)` fixture was green.
- */
+/** Adversarial alphabets, each a repeating unit. See docs/runner-launcher.md §341. */
 const ALPHABETS: ReadonlyArray<{ name: string; unit: string }> = [
   // Two code units each. The headline case: any emoji in a `tofu`, Trivy or npm error.
   { name: "astral (emoji, 2 code units)", unit: "\u{1F600}" },
@@ -82,19 +40,10 @@ const ALPHABETS: ReadonlyArray<{ name: string; unit: string }> = [
   { name: "mixed adversarial", unit: `x\u{1F600}${NUL}y\uD83Dz\u{20000}\uDE00é` }
 ];
 
-/**
- * Pads shift the whole payload by 0..5 single code units, which walks BOTH cuts across every
- * alignment relative to a two-unit character. Six is enough to cover a width-2 alphabet several
- * times over and is not a multiple of any unit length above.
- */
+/** Pads shift the payload so both cuts walk across. See docs/runner-launcher.md §342. */
 const PADS = [0, 1, 2, 3, 4, 5] as const;
 
-/**
- * Lengths chosen to exercise the three regimes separately: comfortably under the cap (no slice at
- * all — the pass-through the short path used to be), straddling the cap by a few units, and far
- * over it (both cuts active, middle elided). Expressed in COPIES of the unit, so each alphabet
- * lands at its own set of code-unit lengths.
- */
+/** Lengths chosen to exercise the three regimes separately. See docs/runner-launcher.md §343. */
 function copyCountsFor(unitLength: number): number[] {
   const atCap = Math.ceil(RUNNER_DETAIL_MAX_CHARS / unitLength);
   return [
@@ -140,11 +89,7 @@ describe("HIGH: every bounded detail is something Postgres will accept, at every
   }
 
   it("NON-VACUITY: the unfixed bound really does fail these inputs", () => {
-    // The control. If this assertion ever goes red, the sweep above is no longer testing anything —
-    // it would mean a code-unit slice of these inputs is well-formed by accident, and every arm
-    // would be green for the wrong reason. This is the exact slice `boundDetail` performed before
-    // the fix, reproduced here rather than referenced, so the control survives refactors of the
-    // product.
+    // The control: if this reddens, the sweep tests nothing. See docs/runner-launcher.md §344.
     const input = `HEAD${"\u{1F600}".repeat(10_000)}TAIL`;
     const marker = ` …[${input.length} characters elided]… `;
     const headShare = RUNNER_DETAIL_MAX_CHARS - RUNNER_DETAIL_TAIL_CHARS - marker.length;
@@ -153,22 +98,11 @@ describe("HIGH: every bounded detail is something Postgres will accept, at every
     expect(isWellFormed(unrepaired), "the pre-fix slice was well-formed — sweep is vacuous").toBe(
       false
     );
-    // …and the real function is not.
     expect(isWellFormed(boundDetail(input))).toBe(true);
   });
 
   it("BOTH cuts are repaired — the head one AND the tail one, each proved on its own", () => {
-    // A HEAD-ONLY REPAIR WAS THE FIRST FIX TRIED, AND THE OBVIOUS FIXTURE CANNOT TELL. With a body
-    // of nothing but emoji, the TAIL cut is aligned no matter what: the cut sits at
-    // `len - RUNNER_DETAIL_TAIL_CHARS`, the reserve is EVEN, so the cut's parity always equals the
-    // body's start parity and never lands inside a pair. Shifting a leading pad moves the HEAD cut
-    // and leaves the tail cut aligned every time — a 2x2 with an empty column.
-    //
-    // So the alignment of each cut is steered independently: `headPad` (leading single-unit
-    // characters) moves the head cut, and an ODD-length trailing run moves the tail cut, because
-    // the tail offset shifts by the trailing run's length mod 2. Each of the four cells asserts the
-    // two halves separately, split AT the elision marker so `head` ends exactly where the head cut
-    // landed and `tail` begins exactly where the tail cut landed.
+    // A head-only repair was tried first, and this catches it. See docs/runner-launcher.md §345.
     const emoji = "\u{1F600}";
     const seen: string[] = [];
     for (const headPad of [0, 1]) {
@@ -189,11 +123,7 @@ describe("HIGH: every bounded detail is something Postgres will accept, at every
     }
     expect(seen.length).toBe(4);
 
-    // AND THE 2x2 HAS NO EMPTY CELL — asserted, not assumed. This recomputes, from the raw slice
-    // offsets alone, which cut each cell actually misaligns, and requires that across the four
-    // cells the head cut is misaligned at least once and the tail cut is misaligned at least once.
-    // Without this the block above is satisfiable by a fixture where neither cut ever splits a
-    // pair, which is precisely the state it was written in and shipped in.
+    // AND THE 2x2 HAS NO EMPTY CELL. See docs/runner-launcher.md §346.
     let headMisaligned = 0;
     let tailMisaligned = 0;
     for (const headPad of [0, 1]) {

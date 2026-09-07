@@ -2,36 +2,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildTestServer, testDatabaseUrl, type TestServer } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * EVERY INSTANCE-SCOPED TABLE HAS A WRITE PRINCIPAL — role-model.md §5 step 9, drizzle/0102
- * ================================================================================================
- *
- * THE PROPERTY. An instance-scoped table here is tenant-READ (a `tenant_read` policy,
- * `FOR SELECT USING (true)`) and operator-WRITE (the `scp_operator` role, drizzle/0076). Under
- * FORCE ROW LEVEL SECURITY both halves are required: the GRANT alone is denied by the absent
- * policy, and the POLICY alone is denied by the absent grant.
- *
- * IT SHIPPED WRONG THREE TIMES, WHICH IS WHY THIS IS A CENSUS AND NOT TWO ASSERTIONS.
- * 0029/0035/0036/0074 created four such tables with no write principal and 0076 came back for them;
- * 0083 §2 then created `governance_move_instance_rung` without one — 0086's comment records this as
- * having happened "AGAIN" — and 0062 had already done the same for
- * `dependency_subscription_unlock`. Each time the noticed instances were fixed and the CLASS was
- * left open. So this test does not name tables: it DERIVES the population from `pg_policies` and
- * requires the write principal for every member. A table added tomorrow with a `tenant_read` policy
- * and no operator write fails here, which is the only version of this check that stops the
- * recurrence.
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THIS READS THE CATALOG INSTEAD OF ATTEMPTING A WRITE
- * ------------------------------------------------------------------------------------------------
- * The obvious test — write the row and see it land — CANNOT detect this defect in this suite. The
- * integration harness's `DATABASE_URL` is the Testcontainers SUPERUSER, and a superuser bypasses
- * both grants and row-level security outright. That is precisely why two of these survived a fully
- * green suite for as long as they did, and it generalises: **a passing integration run here is not
- * evidence that a grant exists.** The catalog is the only instrument in this environment that can
- * see the thing being asserted.
- */
+/** EVERY INSTANCE-SCOPED TABLE HAS A WRITE PRINCIPAL. See docs/db.md §7. */
 describe("every tenant-read instance table has an operator write principal (drizzle/0102)", () => {
   let server: TestServer;
   let admin: pg.Client;

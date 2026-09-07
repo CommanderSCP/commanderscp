@@ -7,23 +7,17 @@ import { SectionLabel } from "./section-label";
 
 type RouterLinkProps = React.ComponentProps<typeof Link>;
 
-/**
- * §2.5 — one stat tile for dashboard registry tiles, identity count cards, and the service-board
- * summary stats. `value` is optional on purpose: a count that was never fetched shows a tile
- * without a number, not a fabricated "0" (§4A).
- */
+/** One stat tile, shared by every counting surface. See docs/web.md §111. */
 export interface StatCardProps {
   /** Eyebrow label (§1.3). */
   label: React.ReactNode;
   /** Emphasis value (§1.3, `tabular-nums`). Omit when the figure is not known. */
   value?: React.ReactNode;
-  /** Lucide icon at `size-5 text-slate-400`, top-right. */
   icon?: LucideIcon;
   /** Route path — makes the whole card a Link with hover + focus treatments. */
   to?: RouterLinkProps["to"];
   /** Path params for `to` when the route has dynamic segments. */
   params?: Record<string, string>;
-  /** Optional Badge slot under the value. */
   badge?: React.ReactNode;
   /** Caption-type footnote (§1.3). */
   hint?: React.ReactNode;

@@ -1,12 +1,7 @@
 import { z } from "zod";
 import { cursorPageResponseSchema } from "./common.js";
 
-/**
- * Hash-chained append-only audit log wire contract (DESIGN.md §4.3) — the Zod schemas/types
- * only. The hashing/canonicalization/verification algorithm (which needs `node:crypto`, so it
- * can't be part of this package's browser-importable default entry) lives in
- * `audit-chain.ts`/the `@scp/schemas/audit-chain` subpath instead — see that file's module doc.
- */
+/** Hash-chained append-only audit log wire contract. See docs/schemas.md §5. */
 
 export const AuditEventSchema = z.object({
   id: z.string().uuid(),

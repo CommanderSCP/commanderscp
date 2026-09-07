@@ -42,57 +42,9 @@ import {
   type ReadTreeAtRefResult
 } from "@scp/git-provider-core";
 
-/**
- * `@scp/plugin-gitlab` — the GitLab `ExecutorPlugin` + `DiscoveryPlugin` (M15.3b, the third git
- * provider after github and gitea). Like both, this is a **thin GitLab ADAPTER** over the same
- * provider-neutral `@scp/git-provider-core`: everything provider-neutral (idempotency/dedup cache,
- * observe cursor protocol, correlation-hint normalization, the `ExecutorPlugin` assembly) lives in
- * the core; everything GitLab-wire-specific lives here as a `GitProviderAdapter`. The gitea adapter
- * (`@scp/plugin-gitea`) is the closest reference — GitLab, like Gitea, is commonly SELF-HOSTED, so
- * it reuses the shared `serverUrl` base-URL fallback so a Mode-A "import an EXISTING GitLab" binding
- * reaches it.
- *
- * GITLAB-SPECIFIC WIRE FACTS (how this differs from github/gitea — the reason a separate adapter
- * exists rather than reusing either):
- *   - AUTH is a Personal Access Token sent `PRIVATE-TOKEN: <PAT>` — NOT github's App-JWT, NOT a
- *     `Bearer`/`token` scheme. (GitLab's own documented header for PAT auth.) The token is resolved
- *     via `ctx.secrets.get(tokenSecretKey)`.
- *   - BASE REST URL is `<instance>/api/v4` (a self-hosted instance host; GitLab.com is just one
- *     such host, `https://gitlab.com`). No fixed default — same as gitea, unlike github.
- *   - PROJECT ADDRESSING keys on a project id: the GitLab REST API accepts the URL-ENCODED project
- *     path (`owner%2Frepo`) as the `:id` path segment. Config accepts either an explicit `projectPath`
- *     or `owner`+`repo` (joined to `owner/repo`); `encodeURIComponent` produces the `:id`.
- *   - triggerCI CREATES A PIPELINE via `POST /projects/:id/pipeline` and — UNLIKE github/gitea's
- *     dispatch-204-then-poll-the-runs-list-to-correlate dance — GitLab returns the created pipeline
- *     object (with its `id`) SYNCHRONOUSLY, so `triggerCI` returns the `ExternalRunRef` DIRECTLY off
- *     that response. The core lets the adapter OWN `triggerCI`, so this simply skips the poll.
- *   - STATUS is a single pipeline `status` enum (`created|waiting_for_resource|preparing|pending|
- *     running|success|failed|canceled|skipped|manual|scheduled`) — `mapGitlabStatusToPhase` folds it
- *     to an `ExecutionPhase`. abort is `POST /projects/:id/pipelines/:pipeline_id/cancel`.
- *   - WEBHOOKS carry `X-Gitlab-Token: <secret>` as a PLAINTEXT shared-secret token — NOT an HMAC
- *     signature (github's `sha256=<hex>`, gitea's bare-hex). So `verifyGitlabWebhookToken` does a
- *     TIMING-SAFE PLAINTEXT EQUALITY compare of the header against the configured secret; it never
- *     hashes the body. The event name arrives in `X-Gitlab-Event` (`Push Hook`|`Merge Request Hook`|
- *     `Pipeline Hook`|`Tag Push Hook`|…) and GitLab payload field paths differ (`object_kind`,
- *     `project.path_with_namespace`, `checkout_sha`, `object_attributes.*`).
- *
- * LOAD-BEARING ASSUMPTIONS — CONFIRM WITH A LIVE DRILL (honest coverage note, same split gitea's
- * package documents): every request/response shape below is exercised deterministically against
- * `nock` fixtures built from GitLab's PUBLISHED REST API docs — this package never talks to a real
- * GitLab in its own suite. The auth header (`PRIVATE-TOKEN`), `/api/v4` base, the URL-encoded
- * `owner%2Frepo` project id, the create-pipeline synchronous-object return, the single pipeline
- * `status` enum, the `X-Gitlab-Token` PLAINTEXT-token webhook scheme, and the `repository/tree` +
- * `repository/commits` + `pipelines` list shapes are all from GitLab's documented, stable API. The
- * shapes marked `ASSUMED (GitLab)` inline are the ones whose exact field NAMES are the most
- * version/edition-dependent and MUST be confirmed against a real running GitLab before this executor
- * is trusted in production — specifically the pipeline-webhook `object_attributes` field names and
- * the merge-request webhook `last_commit`/`iid` paths. Nothing here is fabricated; where a shape is
- * uncertain it is flagged as an assumption rather than invented.
- */
+/** The GitLab executor and discovery plugin. See docs/plugins.md §227. */
 
-// -------------------------------------------------------------------------------------------
 // Config + auth (Personal Access Token — `PRIVATE-TOKEN: <PAT>`)
-// -------------------------------------------------------------------------------------------
 
 export interface GitlabConfig {
   /** The GitLab instance base URL, e.g. `https://gitlab.example.com` (NO trailing slash, NO
@@ -107,10 +59,8 @@ export interface GitlabConfig {
   /** The project's full path (`owner/repo` or `group/subgroup/repo`). Either this OR `owner`+`repo`
    *  must be present; when both are given, `projectPath` wins. URL-encoded to the REST `:id`. */
   projectPath?: string;
-  /** Convenience alternative to `projectPath`, joined as `owner/repo`. */
   owner?: string;
   repo?: string;
-  /** `SecretsAccessor` key holding the Personal Access Token. */
   tokenSecretKey?: string;
   /** Fallback for tests/fixtures only — a plaintext PAT in config (never used in production; real
    *  deployments must use `tokenSecretKey`). */
@@ -190,12 +140,7 @@ async function gitlabApiHeaders(
   };
 }
 
-/**
- * `maxResponseBytes` defaults to {@link DEFAULT_API_RESPONSE_MAX_BYTES} — bounding EVERY call
- * through this function, not just `readFileAtRef`'s (M21.2 review MAJOR 5's fix, applied to the
- * one funnel every GitLab REST call in this adapter goes through). `readGet`'s file fetch
- * overrides it with the tighter, decode-bound-derived ceiling from `resolveMaxResponseBytes`.
- */
+/** The response ceiling defaults so every call is bounded. See docs/plugins.md §228. */
 async function api(
   ctx: PluginContext,
   config: GitlabConfig,
@@ -218,19 +163,9 @@ async function api(
   return { status: response.status, body: response.body, headers: response.headers ?? {} };
 }
 
-// -------------------------------------------------------------------------------------------
 // Webhook verification (fail-closed) — GitLab's PLAINTEXT X-Gitlab-Token shared secret.
-// -------------------------------------------------------------------------------------------
 
-/**
- * GitLab authenticates webhook deliveries with a PLAINTEXT shared-secret TOKEN carried verbatim in
- * the `X-Gitlab-Token` header — NOT an HMAC signature over the body (github's `sha256=<hex>`, gitea's
- * bare-hex). So verification is a TIMING-SAFE PLAINTEXT EQUALITY compare of the header against the
- * configured secret; the raw body is NOT hashed and plays no part (it is accepted only to satisfy the
- * shared `verifyWebhook(rawBody, header, secret)` adapter shape). `timingSafeEqual` throws on a length
- * mismatch, which we guard against and treat as "no match" — fail-closed either way. A missing header
- * is rejected.
- */
+/** GitLab authenticates with a plaintext shared-secret token. See docs/plugins.md §229. */
 export function verifyGitlabWebhookToken(
   _rawBody: Buffer,
   tokenHeader: string | undefined,
@@ -247,16 +182,9 @@ export function verifyGitlabWebhookToken(
   }
 }
 
-/** GitLab's populated shape of the provider-neutral `GitProviderEventHint`. */
 export type GitlabEventHint = GitProviderEventHint;
 
-/**
- * Maps a GitLab webhook event name (the `X-Gitlab-Event` header value) + payload to a correlation
- * hint (null = ignore). GitLab payload paths differ from github/gitea: the project's full path is
- * `project.path_with_namespace`, a push carries `checkout_sha` + `ref`, and MR/pipeline events nest
- * their fields under `object_attributes`. Only the events a `source_mappings` correlation cares about
- * are recognized; anything else yields `null` (ignored, not an error).
- */
+/** Maps a GitLab webhook event name. See docs/plugins.md §230. */
 export function mapGitlabWebhookEventToHint(
   eventName: string,
   payload: unknown
@@ -306,12 +234,7 @@ export function mapGitlabWebhookEventToHint(
 // normalization, and verb assembly are provided by `@scp/git-provider-core`.
 // -------------------------------------------------------------------------------------------
 
-/**
- * A GitLab pipeline as returned by create-pipeline / single-pipeline / pipelines-list. The
- * load-bearing fields this adapter reads are `id`, `status`, `sha`, `ref`, `web_url`, and a
- * timestamp (`created_at`/`updated_at`). GitLab's pipeline `status` is a SINGLE enum (no separate
- * conclusion), documented + stable.
- */
+/** A GitLab pipeline, as the three endpoints return it. See docs/plugins.md §231. */
 interface GitlabPipeline {
   id: number;
   status: string;
@@ -410,7 +333,6 @@ async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<Execu
   };
 }
 
-/** Adapter `abortRun` hook — cancels a pipeline. */
 async function abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult> {
   const config = asConfig(ctx.config);
   if (!ref.externalId.startsWith("pipeline::")) {
@@ -445,7 +367,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("since", sinceIso);
@@ -474,7 +396,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
       });
     }
     if (commits.length < servedPageSize) break; // shorter than the SERVED page — the last page.
-    if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
+    if (sinceMs === undefined) break;
     const last = commits[commits.length - 1];
     const oldest = last?.created_at ?? last?.committed_date;
     if (oldest && new Date(oldest).getTime() <= sinceMs) break;
@@ -482,17 +404,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   return events;
 }
 
-/**
- * Page size and per-poll page ceiling for the list resources `observe()` polls, mirroring the
- * github adapter's constants of the same name (the defect and its bound are identical; each adapter
- * keeps its own copy because the query parameter NAMES differ per provider).
- *
- * POLL_PAGE_SIZE is what we ASK for, never what we get: GitLab clamps every list to the instance's
- * `max_page_size` application setting, so a hardened instance answers `per_page=100` with fewer.
- * Ending on a page shorter than the REQUESTED size would then stop on page 1 and silently drop the
- * rest — the defect pagination was added to close — so each loop learns the SERVED page size from
- * page 1 and ends on a page shorter than that (or empty, or at the budget).
- */
+/** Page size and per-poll page ceiling for the polls. See docs/plugins.md §232. */
 const POLL_PAGE_SIZE = 100;
 const MAX_POLL_PAGES = 5;
 
@@ -503,7 +415,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("updated_after", sinceIso);
@@ -549,32 +461,7 @@ function gitlabCapabilities(): ExecutorCapabilities {
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)) — reading a file BODY. `discover()` below
-// walks `repository/tree` and reads only `name`/`type`; it never fetches a blob.
-//
-// GITLAB IS THE ONE THAT IS *NOT* GITHUB-COMPATIBLE HERE. Three concrete differences, each of which
-// would be a bug if this had been copied from the github/gitea adapters:
-//
-//  1. DIFFERENT ENDPOINT. There is no `contents/` route. The file lives at
-//     `GET /api/v4/projects/:id/repository/files/:file_path?ref=:ref`, returning
-//     `{ file_name, file_path, size, encoding: "base64", content, content_sha256, ref, blob_id,
-//        commit_id, last_commit_id, execute_filemode }`.
-//  2. DIFFERENT PATH ENCODING. `:file_path` is a SINGLE route parameter, so it must be encoded
-//     WHOLE with slashes turned into `%2F` (`encodeURIComponent`) — NOT per-segment like github's
-//     and gitea's routes. This is why the core's `encodePathSegments` is deliberately unused here;
-//     using it would produce `repository/files/svc/api/go.mod`, which GitLab reads as a different
-//     (non-existent) route rather than as a nested file.
-//  3. ONE CALL, NOT TWO. `commit_id` in that same response IS the commit the ref resolved to, so
-//     GitLab needs no separate resolve step — and, unlike the two-call providers, there is no
-//     branch-moves-between-calls window to close at all.
-//
-// One consequence of (3) is that a 404 covers both "no such file" and "no such ref/project", and
-// GitLab distinguishes them ONLY in a human-readable `message` ("404 File Not Found" vs "404 Commit
-// Not Found"). That message is not a structured discriminator, and a label derived from prose goes
-// false the moment the prose changes — the provenance-label lesson — so this reports
-// `missing: "unknown"` and carries GitLab's own message through in `detail` rather than inferring.
-// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)). See docs/plugins.md §233.
 
 /** GitLab's repository-file response (documented, stable field names). `blob_id` is the blob sha;
  *  `commit_id` is the commit the requested ref resolved to; `last_commit_id` is the last commit that
@@ -589,13 +476,7 @@ interface GitlabRepositoryFile {
   last_commit_id?: string;
 }
 
-/** A single authenticated GET on the read path, with the same two folded-in failure modes as the
- *  github/gitea adapters: a 3xx arriving as a STATUS is refused with an explanation by
- *  `assertNoRedirect`, and anything thrown by `ctx.http.request` is re-thrown by
- *  `wrapProviderRequestError` naming whether it was a refused redirect (`redirect: "error"`,
- *  subprocess-entry.ts:285,295) or an egress-guard denial. As with gitea, the egress case is the
- *  live one — a self-hosted GitLab at a private address is blocked for every tenant-configurable
- *  plugin (subprocess-entry.ts:210-215) and this only explains that, never relaxes it. */
+/** One authenticated GET, with the same two failure modes. See docs/plugins.md §234. */
 async function readGet(
   ctx: PluginContext,
   config: GitlabConfig,
@@ -612,13 +493,7 @@ async function readGet(
   }
 }
 
-/**
- * The single-call read shared by `readFileAtRef` (`refQuery` = the caller's own `ref`) and
- * `readFilesAtRef` (`refQuery` = an already-resolved commit sha, `requestedRef` = the ORIGINAL
- * `ref` the caller asked for — see `resolveGitlabRefToCommit` for why the batch path resolves
- * once and pins every file read to that one commit, the same discipline github/gitea's two-step
- * flow already has and gitlab's own single-call `readFileAtRef` does not need for ONE file).
- */
+/** The single-call read shared by `readFileAtRef`. See docs/plugins.md §235. */
 async function readGitlabFileAt(
   ctx: PluginContext,
   config: GitlabConfig,
@@ -715,25 +590,7 @@ async function readFileAtRef(
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads.
-//
-// GITLAB IS THE ONE PROVIDER THAT GENUINELY PAGINATES HERE. Unlike github/gitea's recursive tree
-// call (one response, `truncated: true` past an internal ceiling, no `page` parameter for that
-// mode), GitLab's `repository/tree?recursive=true` is standard GitLab REST pagination
-// (`per_page`/`page`, a short/empty page means "done") — so this is the one adapter whose
-// `maxEntriesScanned` bound is enforced across MULTIPLE round trips, not inside one already-
-// arrived response. Each page is still transport-bounded (`DEFAULT_TREE_RESPONSE_MAX_BYTES`), and
-// `createTreeScanAccumulator.addPage` is called once per page — a repo whose match set is decided
-// long before its last page is never walked to completion, because `addPage` throws the instant
-// either bound is exceeded and the loop below never issues the next page's request.
-//
-// GitLab's tree listing also carries no commit identity (unlike a single `readFileAtRef` call,
-// whose ONE response includes `commit_id`), so this resolves `ref` to a commit sha FIRST (the
-// same two-step shape github/gitea already have) and reads every matched file at that pinned
-// commit sha — ADR-0030's "read at commit X" discipline, extended to the one provider whose
-// single-file path did not previously need it.
-// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12). See docs/plugins.md §236.
 
 /** A GitLab repository-tree entry, as `repository/tree` returns it (`type` is `tree`|`blob`). */
 interface GitlabRepoTreeEntry {
@@ -882,20 +739,7 @@ export function createGitlabExecutorPlugin(): ExecutorPlugin {
   return gitlabExecutorPlugin;
 }
 
-// -------------------------------------------------------------------------------------------
-// DiscoveryPlugin (M15.3b — port of gitea's discover(); DESIGN §11/§12 — "repo/topology scan
-// proposing Service/Component objects and source_mappings"; NEVER auto-commits, only proposes).
-// GitLab's repo tree API is `GET /projects/:id/repository/tree?path=&per_page=` (entries carry
-// `name`/`path`/`type` where type is `tree` (dir) | `blob` (file)) — the marker-file topology walk is
-// the same shape as github/gitea, only the endpoint + the tree/blob type literals differ. The
-// discovered `sourceMapping.sourceKind` is `'gitlab'` — matching the gitlab EXECUTOR's `source_kind`
-// (the `gitlabAdapter.sourceKind` above) so an accepted component's `source_mappings` row actually
-// correlates observed gitlab events (push/pipeline). Without a gitlab-kinded source_mapping, pulled
-// gitlab events correlate against nothing.
-//
-// NOTE (follow-up): like github/gitea, `sourceMapping.type` is omitted → defaults to `'configuration'`
-// server-side; inferring `'image'` from a Dockerfile marker is a deliberate LATER increment.
-// -------------------------------------------------------------------------------------------
+// Discovery: a port of the Gitea adapter's scan. See docs/plugins.md §237.
 
 /** A GitLab repository-tree entry — `type` is `tree` (dir) | `blob` (file). */
 interface GitlabTreeEntry {
@@ -985,16 +829,7 @@ export function createGitlabDiscoveryPlugin(): DiscoveryPlugin {
   return gitlabDiscoveryPlugin;
 }
 
-// -------------------------------------------------------------------------------------------
-// Manifest
-// -------------------------------------------------------------------------------------------
-
-// `baseUrl` is intentionally NOT in `required` (M15.3b): a Mode-A `kind=gitlab` execution-system
-// binding supplies the base URL as the injected `serverUrl` fallback instead. Neither `projectPath`
-// nor `owner`/`repo` is individually required in the schema (either addressing form is valid); the
-// "at least one addressing form + at least one of baseUrl/serverUrl" invariants are enforced at
-// resolve time in `asConfig` (a JSON-Schema `anyOf`-of-required is more than a config form should
-// have to render).
+// `baseUrl` is intentionally NOT in `required` (M15.3b). See docs/plugins.md §238.
 const gitlabConfigSchema = {
   type: "object",
   properties: {

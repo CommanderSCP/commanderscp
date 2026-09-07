@@ -47,13 +47,7 @@ async function snapshot(client: ScpClient): Promise<Snapshot> {
   };
 }
 
-/**
- * Idempotency is non-negotiable (M2 seed spec, BUILD_AND_TEST.md §5.3): running the seed logic
- * twice in a row (mirroring "boot the server twice against the same volume") must be a true
- * no-op the second time — same object/relationship ids, no duplicates, no errors. Exercises
- * `seedDemoData` directly (not `loginAndSeedDemoData`/the standalone CLI) against a real listening
- * test server, per this file's own module doc on why that split exists.
- */
+/** Idempotency is non-negotiable. See docs/server.md §87. */
 describe("seedDemoData: idempotent re-runs", () => {
   let server: ListeningTestServer;
   let client: ScpClient;

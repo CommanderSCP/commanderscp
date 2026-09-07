@@ -25,23 +25,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `pipeline_hooks` / `pipeline_evidence` (migration 0096) against REAL PostgreSQL.
- *
- * Every claim this file makes is one the storage layer could get wrong SILENTLY, so each is proved
- * by executing a query rather than by reading the code that builds one:
- *
- *   - the identity UNIQUE constraint is proved by making PostgreSQL REJECT a duplicate tuple, from a
- *     raw insert that bypasses `upsertHook` entirely. Proving only that `upsertHook` avoids a
- *     duplicate would prove a property of `upsertHook`, not of the table — and the table is what the
- *     next write door will meet.
- *   - RLS isolation is proved by SELECTing with NO org filter at all from a second tenant's
- *     transaction. A query that filtered by `org_id` would pass whether or not RLS existed, which is
- *     the whole class of test that makes a missing policy invisible.
- *   - the round-trip test feeds a row written by `recordAlarmEvidence` straight into
- *     `evaluateBakeGate`. Two shapes that "look the same" are how a repo and its consumer drift; the
- *     only check that catches it is running one into the other.
- */
+/** `pipeline_hooks` / `pipeline_evidence`. See docs/coordination.md §643. */
 describe("pipeline hooks + evidence storage", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -102,10 +86,6 @@ describe("pipeline hooks + evidence storage", () => {
     windowEnd: windowEnd.toISOString(),
     alarms
   });
-
-  // -------------------------------------------------------------------------------------------
-  // Identity
-  // -------------------------------------------------------------------------------------------
 
   it("the (org, component, kind, hookId) UNIQUE constraint REJECTS a duplicate tuple — proved by making Postgres refuse a raw insert, not by trusting upsertHook", async () => {
     const { componentObjectId } = await subject(admin, "identity");
@@ -185,10 +165,6 @@ describe("pipeline hooks + evidence storage", () => {
     );
     expect(again).toBeUndefined();
   });
-
-  // -------------------------------------------------------------------------------------------
-  // RLS
-  // -------------------------------------------------------------------------------------------
 
   it("RLS: a second org reads NEITHER the first org's hooks NOR its evidence — proved by an UNFILTERED select under the other tenant", async () => {
     const mine = await subject(admin, "rls");
@@ -285,10 +261,6 @@ describe("pipeline hooks + evidence storage", () => {
     );
     expect(landed).toHaveLength(0);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // The two write semantics
-  // -------------------------------------------------------------------------------------------
 
   it("test-run evidence SUPERSEDES: two records for one key leave exactly ONE row, the newer — including a newer FAIL displacing an older pass", async () => {
     const s = await subject(admin, "supersede");
@@ -403,9 +375,7 @@ describe("pipeline hooks + evidence storage", () => {
     expect(rows).toHaveLength(2);
   });
 
-  // -------------------------------------------------------------------------------------------
   // Window queries and the round trip into the verdict function
-  // -------------------------------------------------------------------------------------------
 
   it("alarmReportsInWindow returns OVERLAPPING reports and excludes non-overlapping ones", async () => {
     const s = await subject(admin, "window");

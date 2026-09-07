@@ -5,108 +5,7 @@ import { hasPermission } from "../authz/resolve.js";
 import { badRequest, conflict, ProblemError } from "../errors.js";
 import { containmentChain } from "../graph/containment.js";
 
-/**
- * `governance:move` — THE OPT-IN SECOND BAR ON A CONTAINMENT MOVE, resolved in exactly one place.
- * (docs/proposals/governance-reach-on-containment-move.md §9.2; owner ruling 2026-08-18; drizzle/0083.)
- *
- * ## What the lattice is
- *
- * Enforcement is a set of enabled RUNGS. A rung is either THE INSTANCE (a deployment-wide singleton,
- * operator-authored) or ONE CONTAINER OBJECT (org root, containment domain, service, assembly).
- * Enforcement APPLIES TO A MOVE iff the instance rung is enabled, or any object on the MOVED
- * object's containment chain, or any object on the DESTINATION container's chain, carries a rung.
- * That OR is the monotone half of the owner's ruling — *"if enabled there, orgs can't disable it;
- * same with the next layer … if an org enables it, a service can't disable it"* — and the DELETE
- * verb enforces the other half by refusing 409 while an upper rung is enabled, rather than reporting
- * a disable that leaves the state enforced anyway.
- *
- * When enforcement applies, the actor must hold `governance:move` AT-OR-ABOVE the moved object AND
- * AT-OR-ABOVE the destination — the deliberate mirror of #244's `object:write` pair, so an operator
- * learns ONE rule about moves rather than two.
- *
- * ## There is no computed trigger, and that is the design
- *
- * Whether a move needs the permission depends ONLY on which rungs are set — never on which policies
- * happen to match the object, and never on whether the move would drop a policy. §4(a) of the same
- * proposal argues that at length: a bar that appears and disappears as unrelated governance is
- * authored elsewhere is unpredictable to the person being refused, and un-explainable in a refusal
- * sentence. Predictability over precision (charter priority 1: simplicity).
- *
- * ## THE ORG ROOT IS NOT EXEMPT HERE — the one place this check DIFFERS from #244's pair
- *
- * `graph/containment-parent-authz.ts` exempts the org root at BOTH ends, and both exemptions are
- * proved there: the org root's holders already held custody of every rooted row, so a move to or out
- * of the root can only SHRINK the custodian set, and a shrinking custodian set is not the escalation
- * an `object:write` pair exists to stop.
- *
- * THAT PROOF DOES NOT TRANSFER, because this permission is not about custody. Governance REACH runs
- * with containment: the policies that match an object are the ones scoped at it or at something on
- * its chain (`governance/policy-resolve.ts`). Moving a row OUT of a governed subtree and up to the
- * org root is precisely the reach REDUCTION this permission gates — it is the archetypal case, not
- * an edge case — so exempting the root would exempt the very move the owner asked to govern. The
- * custody argument and the reach argument point in OPPOSITE directions at the root, and each check
- * follows its own. Cross-referenced in `containment-parent-authz.ts` beside its two exemptions so
- * the difference reads as deliberate rather than as one of the copies having been missed.
- *
- * ## EVERY WRITER OF A CONTAINMENT PARENT, and which of them is a door
- *
- * The first version of this header claimed the minter census was complete when it had been run only
- * over `federation` and `discovery`, and that scoped claim — stated as a conclusion about the whole
- * caller-facing surface — is precisely what hid TWO live holes (IaC apply's relationship loop, and
- * discovery accept's, both closed 2026-08-18 after review). Re-run filterless
- * (`grep -rna "'contains'\|\"contains\"" apps/server/src` plus every `updateObject`/`domainId`
- * writer); this list is the whole of it, and a new writer belongs on it BEFORE it ships:
- *
- * ROUTE 1 (`objects.domain_id`) — gated at `graph/containment-parent-authz.ts`
- *   `resolveDeclaredContainmentParent` (door (a); every typed + generic PATCH goes through it) and
- *   `iac/plans-repo.ts::prepareApplyChecks`'s object twin (door (b)).
- * ROUTE 2 (`contains` edge) — THREE caller-facing minters, all now gated:
- *   - `graph/components-repo.ts` :104 (create — not a move, no prior reach to leave) and :180/:238
- *     (`setComponentService`, door (c));
- *   - `routes/relationships.ts` :104 POST / :252 DELETE (door (c));
- *   - `iac/plans-repo.ts::prepareApplyChecks`'s RELATIONSHIP loop, which calls
- *     `createRelationship`/`deleteRelationship` at :1288/:1293 with the manifest's own `typeId`
- *     (door (b), route 2) — a manifest's `component.service` change compiles to exactly this;
- *   - `routes/executors.ts`'s `POST /discovery/accept` relationship loop, which resolves BOTH
- *     endpoints to pre-existing rows and mints with the REAL principal (door (c), third copy).
- *
- * ## What is carved out, and why the carve-out is structural rather than a flag
- *
- * Federation import, the federation OVERLAY and HAND-FILL are NOT subject to this bar, and no code
- * in them says so — because none of them can reach a door. Measured, not assumed:
- *
- *   - `federation/import-repo.ts` (:208 `upsertObjectByUrn`, :363 `updateObject`),
- *     `federation/handfill-repo.ts` (:294), `federation/overlay-repo.ts` (:188) and
- *     `federation/outposts-repo.ts` (:142/:569/:634) call the REPO directly. They never call
- *     `resolveDeclaredContainmentParent`, which is where door (a) lives, and none of them mints a
- *     `contains` edge (see the census above).
- *   - The subjects those paths carry are synthetic (`FEDERATION_IMPORT_ACTOR_ID` and friends) and
- *     hold no bindings, so running an authorization down there would abort every import rather than
- *     protect anything — the same argument `graph/containment-parent-authz.ts`'s "authorization at
- *     the door, invariant at the repo" section makes, applied unchanged.
- *
- * DISCOVERY ACCEPT IS NO LONGER ON THAT LIST. It looked like an import and is not one: it takes its
- * proposal from the REQUEST BODY under `requireAuth`, so its subject is a real principal and its
- * endpoints may be live rows. Only the objects it created IN THE SAME REQUEST are exempt there, and
- * for the create-is-not-a-move reason, not the federation reason.
- *
- * The receiver does not referee: a peer's authority already decided the move, and refusing its
- * journal would diverge the replica from the authority that owns it.
- *
- * ## Why a refusal here carries no `decision_id`
- *
- * Every door below throws from INSIDE the caller's `withTenantTx`, so a Decision written here would
- * be rolled back with the refusal it explains and the id would name a row that does not exist —
- * a dangling pointer is worse than none. The refusal instead carries the whole explanation in its
- * sentence: which rung is enabled, at which tier and name, and which END the actor lacks the
- * permission at. The out-of-band shape that WOULD persist a Decision on a refusal
- * (`federation/promotion-repo.ts`: record in a fresh committed transaction, then throw) needs a `Db`
- * handle, which no repo-level door has. OWNER RULING 2026-08-18 (ADR-0038 §3): door-level
- * AUTHORIZATION refusals are sentence-only — consistent with every other permission 403 in the
- * system (object:write, policy:write, #244's own move refusals carry none); charter principle 6's
- * `decision_id` is for ENGINE VERDICTS (gates, policies), which these are not. Not an open question
- * any more; the sentence is the record, and the audit log carries the write that was refused.
- */
+/** The opt-in second bar on a containment move. See docs/governance.md §253. */
 
 /** The tiers a rung may sit at — the literal stored at write time (drizzle/0083's CHECK). */
 export const GOVERNANCE_MOVE_TIERS = ["org", "containment_domain", "service", "assembly"] as const;
@@ -149,14 +48,7 @@ export interface GovernanceMoveEnforcement {
   rungs: GovernanceMoveRung[];
 }
 
-/**
- * THE INSTANCE RUNG — no row means DISABLED, decided here and nowhere else.
- *
- * Byte-for-byte the reasoning `dependencies/subscription-resolution.ts`'s
- * `readInstanceSubscriptionUnlock` carries: re-deriving "absent = off" in a route is how the API and
- * the doors come to disagree about a deployment nobody has configured — the loudest possible bug in
- * the safest-sounding line of code.
- */
+/** THE INSTANCE RUNG. See docs/governance.md §254. */
 export async function readInstanceMoveRung(
   tx: TenantTx
 ): Promise<{ enabled: boolean; updatedAt: string | null }> {
@@ -227,18 +119,7 @@ function toRung(row: {
   };
 }
 
-/**
- * Does the `governance:move` lattice reach this object, and why?
- *
- * Walks `containmentChain` — the SAME walk the authorization scope expansion and the policy matcher
- * use, so a rung can never describe a containment relationship the rest of the system does not
- * believe in — and joins the rung table onto it. Loud on the depth bound (ADR-0037): a chain that
- * exceeds the bound throws rather than answering "not enforced", because failing OPEN here would
- * silently un-govern exactly the deep subtrees an org bothered to put a rung on.
- *
- * The read half of the whole feature: the doors, the explain route, the CLI and the Admin page all
- * call this, so a UI verdict and a refusal cannot disagree.
- */
+/** Does the move lattice reach this object, and why. See docs/governance.md §255. */
 export async function resolveGovernanceMoveEnforcement(
   tx: TenantTx,
   orgId: string,
@@ -284,7 +165,6 @@ export interface GovernanceMoveAdmitsInput {
   orgId: string;
   /** The acting principal (the RBAC subject), NOT the object being moved. */
   subjectObjectId: string;
-  /** The object whose containment parent this write changes. */
   movedObjectId: string;
   /** The container it is moving INTO, or `null` for the org root (`DELETE /relationships` of a
    *  `contains` edge drops the child back to its `domain_id` route, i.e. the org root). */
@@ -296,14 +176,7 @@ export interface GovernanceMoveAdmitsInput {
 }
 
 /**
- * THE DOOR CHECK. Fail-closed, called AFTER the door's own `object:write`/`relationship:write` pair,
- * and a no-op — one cheap singleton read plus at most two chain walks — on every deployment with no
- * rung set, which is all of them until an operator sets one.
- *
- * ORs enforcement over the MOVED object's chain and the DESTINATION's chain (the monotone rule), then
- * demands `governance:move` at BOTH ends. The org root is NOT exempt at either end — see the module
- * header for why the custody exemption in `containment-parent-authz.ts` does not transfer.
- *
+ * THE DOOR CHECK. See docs/governance.md §256.
  * @throws 403 with the single refusal sentence of proposal §9.2.
  */
 export async function assertGovernanceMoveAdmits(
@@ -351,12 +224,7 @@ export async function assertGovernanceMoveAdmits(
   });
 }
 
-// ---------------------------------------------------------------------------------------------
-// The rung write verbs. Authorization and the Decision/audit pair live one module over
-// (`governance/move-rung-write.ts`, shared by the HTTP door and the IaC apply door — the follow-up
-// named in proposal §9.6 Q4, now built); what lives HERE is the SHAPE of an enablement and the
-// monotone refusal, so no door can disagree with another about either.
-// ---------------------------------------------------------------------------------------------
+// The rung write verbs. See docs/governance.md §257.
 
 export interface EnableGovernanceMoveRungInput {
   orgId: string;
@@ -385,17 +253,7 @@ export async function enableGovernanceMoveRung(
   `);
 }
 
-/**
- * Disable one rung — REFUSED 409 while any UPPER rung is enabled, naming it.
- *
- * "Orgs can't disable it" is the owner's monotone half, and this is where it is real. Reporting a
- * successful disable while the OR above keeps every move under this subtree enforced would be the
- * worst of both: the operator believes they turned it off, the refusals continue, and nothing in the
- * system says why. THE INSTANCE RUNG COUNTS AS AN UPPER RUNG — it is above everything by
- * construction.
- *
- * Disabling a rung that is not enabled is a 404 at the route, not here.
- */
+/** Disable one rung. See docs/governance.md §258. */
 export async function disableGovernanceMoveRung(
   tx: TenantTx,
   input: { orgId: string; subjectObjectId: string }

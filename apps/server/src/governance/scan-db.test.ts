@@ -10,16 +10,11 @@ import {
   classifyScanDbStaleness
 } from "./scan-db.js";
 
-/**
- * M13.3b-ii unit tests (ADR-0020, proposal §13.3b) — the pure staleness classifier, the schema-compat
- * assertion, and the atomic-swap install. The connected-refresh (skopeo pull) and the cosign-verify
- * load are exercised in the integration suite (they need network/cosign); here we prove the decision
- * logic + the fail-closed swap without either.
- */
+/** M13.3b-ii unit tests (ADR-0020, proposal §13.3b). See docs/governance.md §282. */
 
 const NOW = new Date("2026-07-24T00:00:00Z");
-const SOFT = 168; // 7d
-const HARD = 720; // 30d
+const SOFT = 168;
+const HARD = 720;
 
 function meta(hoursOld: number, version = EXPECTED_TRIVY_DB_SCHEMA_VERSION) {
   const updated = new Date(NOW.getTime() - hoursOld * 3_600_000).toISOString();

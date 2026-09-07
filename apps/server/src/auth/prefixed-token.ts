@@ -1,16 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { verifyPasswordHashLimited } from "./argon2-limiter.js";
 
-/**
- * The `<prefix><tokenId>.<secret>` bearer-token shape shared by PATs (`pat.ts`) and instance
- * operator credentials (`operator-auth.ts`): `tokenId` is a cleartext, indexed lookup key (argon2's
- * output is salted/non-comparable, so a presented token can't be found by hashing it and matching a
- * row directly); `secret` is the part that's argon2-hashed at rest and verified on every use.
- *
- * Extracted after `verifyPat`/`verifyOperatorCredential` and their `generate*` helpers were found
- * byte-for-byte duplicated — this is the ONE definition of the parse/verify sequence, so a future
- * fix (e.g. to the ENOENT/expiry/revocation ordering) lands for both token kinds at once.
- */
+/** The `<prefix><tokenId>.<secret>` bearer-token shape shared by PATs. See docs/auth.md §37. */
 
 export function generateTokenId(): string {
   return randomBytes(12).toString("base64url"); // 16 base64url chars
@@ -60,13 +51,7 @@ export interface VerifyPrefixedTokenParams<Row extends PrefixedTokenRow> {
   touchLastUsed: (id: string) => Promise<unknown>;
 }
 
-/**
- * Verifies a presented `<prefix><tokenId>.<secret>` token: parse, look up by `tokenId`, reject on
- * revoked/expired, argon2-verify the secret, then best-effort stamp `lastUsedAt`. Returns the row on
- * success so each caller can shape its own result (an `AuthContext` for a PAT, an
- * `OperatorAuthResult` for an operator credential) — never `null` vs. a reason, since neither caller
- * distinguishes "unknown" from "wrong secret" to the presenter.
- */
+/** Verifies a presented `<prefix><tokenId>.<secret>` token. See docs/auth.md §38. */
 export async function verifyPrefixedToken<Row extends PrefixedTokenRow>(
   params: VerifyPrefixedTokenParams<Row>
 ): Promise<Row | null> {

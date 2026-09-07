@@ -78,66 +78,17 @@ export interface ExtractedHint {
    *  `refPattern` source mapping matches against (ADR-0030 §1). Undefined for any source that has
    *  no ref (a registry/package push), which simply never matches a ref-scoped mapping. */
   ref?: string;
-  /**
-   * The SOURCE branch of a pull/merge request, fully qualified — read ONLY by the M21.5 bump
-   * correlation, never by source-mapping routing (see `GitProviderEventHint.headRef` for why it is
-   * not folded into `ref`).
-   *
-   * A `pull_request` action=opened delivery for a bump SCP authored can be processed BEFORE the
-   * authored push — the ordering is the provider's — and at that moment the bump has no recorded
-   * head commit, so neither correlation route could see it. It matched the component's ordinary
-   * source mapping and minted the second, unrelated change ADR-0032 §9 exists to prevent. The head
-   * ref is the join that was already available on the payload and was being dropped.
-   */
+  /** The source branch of a pull request, fully qualified. See docs/coordination.md §1078. */
   headRef?: string;
-  /**
-   * The COMMIT this event is about — `head_commit.id`/`after` for a push, the head sha for a PR or
-   * a workflow run. Every git-provider adapter's `mapEvent` has always returned one; until M21.2
-   * nothing on this side read it, so it was dropped at this boundary and `changes.source_ref` carried
-   * no commit AT ALL (measured filterlessly: no non-test module in the tree ever wrote
-   * `source_ref.commit`).
-   *
-   * That was not a cosmetic gap. A ref is a moving label and a commit is an identity, so every
-   * consumer that must read a repo AT THE RELEASED POINT was blocked on it: M21.4's language
-   * ecosystems refused every release with `no_released_commit`, and M21.2's inventory ingestion
-   * would otherwise read a branch head that has since moved past the release it is recording.
-   *
-   * M21.5 (the auto-merge link) is the other reader, and it is why the ADAPTER's reading has to
-   * reach this field rather than only the flat one: GitHub's `workflow_run` (the event that says a
-   * component's checks CONCLUDED) carries its commit at `workflow_run.head_sha`, which no flat key
-   * reaches, so a CI conclusion arrived at ingress with its commit unreadable. Surfacing it here is
-   * what lets `matchAuthoredBumpChange` attach a CI event to the bump change whose own head commit
-   * it names.
-   *
-   * Undefined for any event with no commit (a registry/package push, a release), which correlates
-   * exactly as it always has.
-   */
+  /** The COMMIT this event is about. See docs/coordination.md §1079. */
   commitSha?: string;
-  /** OCI/image artifact digest (`sha256:…`) for a registry/package push (harbor's `PUSH_ARTIFACT`,
-   *  gitea's `package`) — threaded into the proposed Change's `sourceRef.artifact_digest`, the
-   *  connective tissue the M17.1 scan gate binds to (ADR-0013). Additive (M15.3c): forwarded here
-   *  for the first time; git-provider correlation is unchanged (git events that set no digest leave
-   *  this undefined, and the digest was — and still is — also folded into `correlationKey` for
-   *  grouping). */
+  /** OCI/image artifact digest. See docs/coordination.md §1080. */
   artifactDigest?: string;
-  /** M17.2 — a REFERENCE to the build-time SBOM the EXECUTOR emitted and cosign-signed at origin
-   *  (ADR-0015 §5), lifted to the proposed Change's `sourceRef.sbom`. SCP never generates, signs, or
-   *  stores an SBOM document — only this reference. Carried today by the TYPED first-party report
-   *  ingress (`ChangeReportRequestSchema.sbom`); provider webhook adapters set no SBOM (a registry
-   *  push payload carries none), so this stays undefined for them. */
+  /** A reference to the SBOM the executor signed at origin. See docs/coordination.md §1081. */
   sbom?: SbomRef;
-  /** D23 (increment 8) — a REFERENCE to the TEST BUNDLE the build captured at the built commit
-   *  (`{repository, digest}`), lifted to the proposed Change's `sourceRef.testBundle`. SCP never
-   *  builds, signs or stores the bundle — only this reference, exactly as for `sbom` above. Carried
-   *  today by the TYPED first-party report ingress (`ChangeReportRequestSchema.testBundle`); provider
-   *  webhook adapters set none (a push payload knows nothing about a capture step), so this stays
-   *  undefined for them and their behaviour is unchanged. */
+  /** A reference to the test bundle the build captured. See docs/coordination.md §1082. */
   testBundle?: TestBundleRef;
-  /** D13 (increment 8) — the artifact class the build REPORTED producing
-   *  (`ChangeReportRequestSchema.artifactClass`), verified at propose time against the class the
-   *  matched source mapping DECLARED (`source_mappings.type`). Undefined for every provider webhook
-   *  adapter — a raw push payload knows nothing about what a build produced — so their behaviour is
-   *  unchanged and their verdict is `unverified`. */
+  /** The artifact class the build reported producing. See docs/coordination.md §1083. */
   artifactClass?: ArtifactClass;
   /** M12 P4B coupled pipelines — `ChangeReportRequestSchema.provides`, read from the flat
    *  first-party report body and threaded into `proposeChange` exactly as `POST /changes` threads
@@ -147,41 +98,18 @@ export interface ExtractedHint {
   /** M12 P4B — `ChangeReportRequestSchema.requires`. `at` is an id-or-URN here, resolved by
    *  `proposeChange` (an unresolvable one is refused — see `processChangeSourceEvents`). */
   requires?: { key: string; at: string }[];
-  /** M12 P4B fail-closed: set (verbatim) when the body carried a `requires` that does NOT parse as
-   *  `{key, at}[]`. NOT dropped-and-proceed (that would execute a release whose author declared a
-   *  prerequisite — the exact fail-open P4B closes) and NOT quarantined-but-proposed like `sbom`
-   *  (an SBOM reference is metadata; `requires` is an execution precondition): the processor
-   *  REFUSES the event, recording a Decision + audit. The typed `/report` route's Zod validation
-   *  makes this unreachable for SDK/CLI reporters — it exists for hand-crafted raw-`/webhook`
-   *  payloads. */
+  /** M12 P4B fail-closed. See docs/coordination.md §1084. */
   requiresInvalid?: unknown;
   /** ADR-0028 — `ChangeReportRequestSchema.stageDependencies`. `dependsOn` and each `atTargets`
    *  entry are ids-or-URNs here, resolved by `proposeChange` (an unresolvable one is refused — see
    *  `processChangeSourceEvents`). Provider webhook payloads carry none: like a coupling key, a raw
    *  push webhook cannot declare a dependency, so the CI report step is THE channel. */
   stageDependencies?: StageDependency[];
-  /** ADR-0028 fail-closed, the SAME reasoning as `requiresInvalid` above: set (verbatim) when the
-   *  body carried a `stageDependencies` that does NOT parse. Dropping it would fail OPEN — the
-   *  release would execute as if it were free to deploy ahead of everything its author named, which
-   *  is precisely the harm the coupling exists to prevent — so the processor REFUSES the event with
-   *  a recorded Decision instead. The typed `/report` route's Zod validation makes this unreachable
-   *  for SDK/CLI reporters; it exists for hand-crafted raw-`/webhook` payloads. */
+  /** Fail-closed, set verbatim when the body cannot be read. See docs/coordination.md §1085. */
   stageDependenciesInvalid?: unknown;
 }
 
-/**
- * The FLAT first-party shape (`scp change-source report`'s typed body, or a hand-crafted
- * `{repo, correlationKey}` test/curl payload). Reads the fields a first-party reporter sends at the
- * TOP LEVEL of its body.
- *
- * M17.2 fixed a latent gap here: this used to read ONLY `repo`/`path`/`correlationKey`, so the typed
- * report route's `artifactDigest` was NEVER lifted to the canonical `sourceRef.artifact_digest` — it
- * survived purely as a raw camelCase key that `federation/promotion-repo.ts` and
- * `governance/gate-orchestrator.ts` happened to also accept as a fallback. Both of those still read
- * BOTH key shapes (legacy rows written before this fix must keep resolving), but a NEWLY reported
- * change now gets the same canonicalization the harbor/git adapters get, so there is exactly one
- * documented place a digest lives on new data.
- */
+/** The FLAT first-party shape. See docs/coordination.md §1086. */
 function genericHint(payload: unknown): ExtractedHint {
   if (!payload || typeof payload !== "object") return {};
   const p = payload as Record<string, unknown>;
@@ -190,18 +118,9 @@ function genericHint(payload: unknown): ExtractedHint {
   // and quarantined by `canonicalizeSourceRef`, never thrown. It is metadata about which tests were
   // captured, not an execution precondition, so it sits with `sbom` and not with `requires`.
   const testBundle = TestBundleRefSchema.safeParse(p.testBundle);
-  // D13 — best-effort like `sbom`/`testBundle`: an UNRECOGNISED class is dropped here and
-  // quarantined on `sourceRef` rather than thrown. Dropping fails to `unverified`, which HOLDS
-  // NOTHING and blocks nothing — it is the same behaviour as a report that never carried a class,
-  // so a typo cannot become an outage. The refusal is reserved for a class that parses and
-  // DISAGREES, which is a real contradiction rather than an unreadable field.
+  // D13 — best-effort like `sbom`/`testBundle`. See docs/coordination.md §1087.
   const artifactClass = parseReportedArtifactClass(p.artifactClass);
-  // M12 P4B — the coupling declaration, validated against the SAME shapes `POST /changes` uses.
-  // `provides`: a malformed value is dropped like `sbom` (fail-CLOSED for the coupling: a dropped
-  // `provides` releases nobody; waiters keep waiting and their wait-status names the gap).
-  // `requires`: a malformed value is the OPPOSITE case — dropping it would fail OPEN (the release
-  // executes as if uncoupled), so it is carried under `requiresInvalid` and the processor refuses
-  // the event with a recorded Decision.
+  // The coupling declaration, validated against the same shapes. See docs/coordination.md §1088.
   const provides = z.array(z.string().min(1)).safeParse(p.provides);
   const requires = z.array(ChangeRequirementSchema).safeParse(p.requires);
   // ADR-0028: `stageDependencies` sits with `requires`, not with `provides`. Dropping a malformed
@@ -217,24 +136,9 @@ function genericHint(payload: unknown): ExtractedHint {
     paths: Array.isArray(p.paths)
       ? p.paths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
       : undefined,
-    // The flat generic shape carries a ref too, so a hand-crafted raw `/webhook` payload can drive
-    // a ref-scoped mapping with no provider adapter in the path. The TYPED `/report` ingress needed
-    // more than this line: `ChangeReportRequestSchema` is a `strictObject`, so until `ref` was
-    // declared there a CI step sending one got a validation REFUSAL, not a route — reading it here
-    // would have been necessary and not sufficient.
+    // The flat shape carries a ref, so it can drive ref routing. See docs/coordination.md §1089.
     ref: typeof p.ref === "string" && p.ref.length > 0 ? p.ref : undefined,
-    // The SAME reader that records the commit onto an authored bump change, so the flat shape's
-    // notion of "which commit" has exactly one definition (`commitShaFromPayload`, including its
-    // all-zero branch-delete rejection) — that function already covers `commitSha`, the spelling
-    // `observe()` writes into the flat payload it correlates from (`coordination/observe.ts`).
-    //
-    // `commit` is read here and NOT added to that function's key set, deliberately: those keys are
-    // pinned to what `governance/gate-orchestrator.ts`'s `resolveChangeCommitSha` reads back out of
-    // `source_ref`, and `commit` is not one of them. But a hand-crafted `/webhook` body and the
-    // canonical `source_ref` both spell it `commit` (it is the key `canonicalizeSourceRef` mints
-    // below), and accepting one spelling and not the other would make the poll-vs-push equivalence
-    // DESIGN §12 claims false for this field. Last, so a payload carrying both keeps the pinned set
-    // authoritative.
+    // The same reader that records the commit on a bump. See docs/coordination.md §1090.
     commitSha:
       commitShaFromPayload(payload) ??
       (typeof p.commit === "string" && p.commit.length > 0 ? p.commit : undefined),
@@ -270,19 +174,11 @@ function genericHint(payload: unknown): ExtractedHint {
 /** Exported for unit testing — the pure hint-extraction half of ingress (see `canonicalizeSourceRef`). */
 export function extractHint(sourceKind: string, headers: unknown, payload: unknown): ExtractedHint {
   const generic = genericHint(payload);
-  // Provider-specific parsing is resolved through the per-sourceKind webhook ADAPTER REGISTRY
-  // (`webhook-adapters.ts`, M15.1b) — github reads its nested payload via `x-github-event`, gitea
-  // via `x-gitea-event`, each using its own `GitProviderAdapter.mapEvent` (the SAME mapper that
-  // plugin's `observe()` polling fallback uses — DESIGN §12 "poll-vs-push equivalence"). A source
-  // kind with no adapter (a generic/first-party reporter) keeps the flat generic shape unchanged.
+  // Provider parsing is resolved through the adapter registry. See docs/coordination.md §1091.
   const adapter = webhookAdapterForSourceKind(sourceKind);
   if (!adapter) return generic;
 
-  // Resolve the event NAME. HEADER-DRIVEN for adapters that name their event in an HTTP header
-  // (github/gitea/gitlab — behavior UNCHANGED: a non-string header still yields the generic shape).
-  // BODY-DERIVED for an adapter that declares no `eventHeaderName` (harbor, M15.3c — its event type
-  // is in `payload.type`, not a header); without this the header-only path would read `undefined`
-  // and silently drop every harbor event before ever calling `mapEvent`.
+  // Resolve the event NAME. See docs/coordination.md §1092.
   let eventName: string | undefined;
   if (adapter.eventHeaderName) {
     const headerMap = (headers ?? {}) as Record<string, unknown>;
@@ -311,11 +207,7 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     // Adapter-only: no flat-payload shape carries a pull request's head branch, and nothing in the
     // generic hint should start inventing one.
     headRef: providerHint.headRef,
-    // Same adapter-wins precedence as every field above. Carried through EXPLICITLY because this
-    // branch reconstructs field-by-field rather than spreading `generic` — the omission of this one
-    // line is what dropped every provider's commit sha at this boundary until M21.2. It is also the
-    // field that carries a CI conclusion's commit: only the adapter can read `workflow_run.head_sha`
-    // / `object_attributes.sha`, and the flat shape never reaches them — see `ExtractedHint.commitSha`.
+    // Same adapter-wins precedence as every field above. See docs/coordination.md §1093.
     commitSha: providerHint.commitSha ?? generic.commitSha,
     correlationKey: providerHint.correlationKey ?? generic.correlationKey,
     // Additive forwarding (M15.3c): git-provider hints that don't set a digest leave this undefined,
@@ -326,11 +218,7 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     // No provider webhook payload carries an SBOM reference — it arrives only on the typed
     // first-party report body, which the generic shape reads.
     sbom: generic.sbom,
-    // D23: same story, same one line. A test-bundle reference arrives only on the typed report body,
-    // and this branch reconstructs the hint FIELD BY FIELD rather than spreading `generic` — omitting
-    // this line would silently drop the bundle from any first-party report whose `sourceKind` also
-    // resolves an adapter (a `scp change-source report` for sourceKind `github`, the common case),
-    // and the loss would surface only as `no_captured_workflow` on every hook run of that change.
+    // D23: same story, same one line. See docs/coordination.md §1094.
     testBundle: generic.testBundle,
     artifactClass: generic.artifactClass,
     // M12 P4B: no provider webhook payload carries a coupling declaration either (§6#1) — like
@@ -349,49 +237,15 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
   };
 }
 
-/**
- * Build the Change's canonical `sourceRef` from the raw delivery payload plus whatever the hint
- * extracted. The raw payload is kept VERBATIM (DESIGN §8 — replayable/auditable ingress); canonical
- * keys are ADDED alongside it:
- *   - `artifact_digest` — the artifact this release promotes, the connective tissue the M17.1 scan
- *     gate binds to (`governance/gate-orchestrator.ts`, ADR-0013).
- *   - `sbom` — a REFERENCE to the build-time SBOM (M17.2, ADR-0015 §5). Reference ONLY: `{format,
- *     digest, location, signatureRef, …}`. SCP never generates, signs, or stores the document.
- *   - `testBundle` — a REFERENCE to the D23 test bundle captured at the built commit. Reference
- *     ONLY: `{repository, digest}`. SCP never builds, signs, or stores the bundle, and lifting the
- *     reference mints NOTHING (ADR-0045 D2 — an `artifact` object means SCP attested it, and the
- *     attestation happens at promotion export/import). This is the key
- *     `coordination/pipeline-hook-runs.ts` reads to pin a hook run's `captured_workflow`, and the
- *     key `coordination/artifact-facts.ts` reads to put the bundle in the promotion manifest.
- *
- * Exported for unit testing: this is the one place canonical `source_ref` keys are minted, so it is
- * the one place worth pinning with a test.
- */
+/** Builds the canonical source ref from the raw payload. See docs/coordination.md §1095. */
 export function canonicalizeSourceRef(
   rawPayload: unknown,
   hint: ExtractedHint
 ): Record<string, unknown> {
   const raw = ((rawPayload as Record<string, unknown>) ?? {}) as Record<string, unknown>;
-  // The SERVER-OWNED stamps (`boundaryBundleChecksums`, `promotionExports` — what the exporter
-  // signed, rendered as fact by the component pipeline) are never a delivery's to set: a payload
-  // that carries them is stripped of exactly those keys, nothing else. The delivery row itself
-  // (`change_source_events.payload`) still holds the body byte-for-byte for forensics; the
-  // untrusted `POST /changes` door refuses the same keys with a 400 (`routes/changes.ts`).
+  // The SERVER-OWNED stamps. See docs/coordination.md §1096.
   const sourceRef: Record<string, unknown> = withoutServerOwnedSourceRefKeys({ ...raw });
-  // M21.2 — THE TWO KEYS THAT NAME *WHERE* AND *WHICH POINT*, lifted for the first time.
-  //
-  // `internal-release-detection.ts` and `inventory-ingestion-loop.ts` both read `source_ref` as
-  // flat `{repo, ref, commit}`, and until now that read found almost nothing: a GitHub push nests
-  // its repo at `repository.full_name` and its commit at `head_commit.id`, so `repo` was absent for
-  // every provider webhook and `commit` was absent for EVERY driver in the tree, `observe()`
-  // included (it writes `commitSha`). The measured downstream cost was two hard refusals —
-  // `manifest-reader.ts` throws when `repo` is empty and `internal-release-version.ts` refuses with
-  // `no_released_commit` when `commit` is — so three of the five ecosystems could not resolve a
-  // released version on ANY real delivery, and nothing could read a manifest at the released point.
-  //
-  // Lifted here rather than defended in each reader for the reason `artifact_digest` is: this is the
-  // one place canonical `source_ref` keys are minted, and a reader that dug into a provider's own
-  // payload shape would be a per-provider parser in a module that must stay provider-neutral.
+  // The two keys naming where and which point, lifted here. See docs/coordination.md §1097.
   if (hint.repo) sourceRef.repo = hint.repo;
   if (hint.ref) sourceRef.ref = hint.ref;
   if (hint.commitSha) sourceRef.commit = hint.commitSha;
@@ -404,11 +258,7 @@ export function canonicalizeSourceRef(
       digest: normalizeSbomDigest(hint.sbom.digest) ?? hint.sbom.digest
     };
   } else if ("sbom" in raw) {
-    // The body carried an `sbom` that did NOT validate as a reference. The CONTRACT M17.3 reads is
-    // "`sourceRef.sbom`, when present, IS a valid `SbomRef`" — so an invalid one must not sit under
-    // that key masquerading as a real reference. Quarantine it under `sbom_invalid` instead: nothing
-    // is lost for forensics (DESIGN §8 keeps the delivery auditable), but no downstream reader can
-    // mistake garbage for an attested supply-chain reference.
+    // The body carried an SBOM that did not validate. See docs/coordination.md §1098.
     delete sourceRef.sbom;
     sourceRef.sbom_invalid = raw.sbom;
   }
@@ -419,21 +269,12 @@ export function canonicalizeSourceRef(
     // in the promotion manifest and against a `CapturedWorkflowRef.bundle.digest`.
     sourceRef.testBundle = { ...hint.testBundle };
   } else if ("testBundle" in raw) {
-    // The SAME quarantine `sbom` gets, for the same reason and with sharper stakes: the contract
-    // every reader downstream depends on is "`sourceRef.testBundle`, when present, IS a valid
-    // `TestBundleRef`". A malformed value left under that key would be read by
-    // `capturedWorkflowRefOf`'s caller as a real bundle pin, and a gate verdict would end up bound to
-    // bytes nobody can locate. Under `testBundle_invalid` it is preserved for forensics (DESIGN §8)
-    // and unmistakable for an attested reference.
+    // The same quarantine, with sharper stakes. See docs/coordination.md §1099.
     delete sourceRef.testBundle;
     sourceRef.testBundle_invalid = raw.testBundle;
   }
   if (hint.artifactClass) {
-    // D13 — the OBSERVED side of the artifact-class verification, kept on the change so the verdict
-    // stays re-derivable from stored data rather than existing only in the moment the event was
-    // processed. A `match` writes no Decision (see the propose path: persisting one per successful
-    // release is the unbounded-growth shape this codebase has already paid for once), so without
-    // this key a satisfied verification would leave no trace at all.
+    // The observed side of the artifact-class verification. See docs/coordination.md §1100.
     sourceRef.artifact_class = hint.artifactClass;
   } else if ("artifactClass" in raw) {
     // The SAME quarantine `sbom`/`testBundle` get. The downstream contract is
@@ -445,19 +286,7 @@ export function canonicalizeSourceRef(
   return sourceRef;
 }
 
-/**
- * The commit a push payload is at, or `undefined`.
- *
- * THE KEY SET IS NOT CHOSEN HERE — it is exactly the set `governance/gate-orchestrator.ts`'s
- * `resolveChangeCommitSha` reads back out of `source_ref` (`commit_sha`, `commitSha`, `sha`,
- * `after`, `checkout_sha`, then `head_commit.id`). That is the whole point: this function writes the
- * value that function reads, so a key one of them knows and the other does not is a control asked
- * about nothing. `bump-provenance.integration.test.ts` drives a real push payload through the
- * webhook ingress and asserts the recorded `commit_sha`, which is where a divergence would bite.
- *
- * Exported for that test. Not exported to give callers a second way to read a commit: everything
- * downstream reads `source_ref`, never a payload.
- */
+/** The commit a push payload is at, or `undefined`. See docs/coordination.md §1101. */
 export function commitShaFromPayload(payload: unknown): string | undefined {
   if (payload === null || typeof payload !== "object") return undefined;
   const p = payload as Record<string, unknown>;
@@ -472,21 +301,7 @@ export function commitShaFromPayload(payload: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * MULTI-REPLICA SINGLE-FLIGHT (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6, found during the
- * same concurrency audit as the trigger-claim and evaluated->coordinated fixes): without `FOR
- * UPDATE SKIP LOCKED` here, two concurrent ticks (two worker replicas' overlapping reconcile
- * loops) each run this ENTIRE function in their own transaction, and BOTH could `SELECT` the SAME
- * unprocessed `change_source_events` row before either commits (plain READ COMMITTED — nothing
- * about a bare `SELECT ... WHERE processed_at IS NULL` prevents a second transaction from reading
- * the identical "still unprocessed" snapshot). Each would then call `proposeChange` for that SAME
- * webhook delivery — creating TWO SEPARATE Change objects for one real-world event, which could
- * go on to independently gate/approve/accept/execute as if they were unrelated changes. `FOR
- * UPDATE SKIP LOCKED` is the standard job-queue claim pattern: a row already locked by another
- * in-flight transaction is silently EXCLUDED from this transaction's result set (not waited on),
- * so two concurrent ticks always get disjoint row sets — provably no double-processing, and no
- * added latency (never blocks).
- */
+/** Multi-replica single-flight on the processor. See docs/coordination.md §1102. */
 export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Promise<void> {
   const rows = await tx
     .select()
@@ -499,22 +314,10 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
   for (const row of rows) {
     const hint = extractHint(row.sourceKind, row.headers, row.payload);
 
-    // M21.5 THE PROVENANCE LOOP (ADR-0032 §9) — BEFORE source-mapping correlation, because a bump SCP
-    // authored WOULD match the component's ordinary mapping and would then be proposed as a second,
-    // unrelated change for a release that already has one. Attaching here is what makes the returning
-    // event the originating change's own rather than a duplicate of it.
-    //
-    // Deliberately NOT a filter on `sourceKind` or on the mapping: the push arrives through the
-    // component's own git provider, so it is indistinguishable from any other push except by the ref
-    // SCP chose and the change that claims it. See `correlation.ts`'s `matchAuthoredBumpChange` for
-    // why BOTH halves of that claim are required.
+    // M21.5 THE PROVENANCE LOOP. See docs/coordination.md §1103.
     const authoredChangeId = await matchAuthoredBumpChange(tx, orgId, {
       repo: hint.repo,
-      // THE PULL REQUEST'S OWN SOURCE BRANCH counts as "the ref this event is about" for the
-      // provenance join, and only for it: a `pull_request` opened delivery that beats the authored
-      // push has no recorded commit to join on, and would otherwise mint a second change for a
-      // release that already has one. `hint.ref` still wins where a provider set one (a push), so
-      // no existing event changes route.
+      // A pull request's source branch counts as its ref. See docs/coordination.md §1104.
       ref: hint.ref ?? hint.headRef,
       // M21.5 auto-merge link: a CI-conclusion event (GitHub's `workflow_run`) names no ref, only the
       // commit it ran on. `matchAuthoredBumpChange`'s second route joins that to the bump change that
@@ -523,33 +326,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       commitSha: hint.commitSha
     });
     if (authoredChangeId) {
-      // WHICH COMMIT THE AUTHORED BRANCH IS NOW AT — recorded onto the change, not merely observed.
-      //
-      // This is what makes the charter's auto-merge clause enforceable. `dependencies/bump-actuator.ts`
-      // grants `auto_merge` only on a control run that evidences the component's own checks passed FOR
-      // THIS BUMP'S OWN COMMIT, and until this event there is no such commit anywhere: the change is
-      // recorded before the branch exists, so `@scp/plugin-github-check` would fall back to its
-      // operator-pinned `expectedRef` and could report CI green for the BASE branch — green on `main`
-      // used as proof that the edit to `main` is safe.
-      //
-      // WHERE IT IS WRITTEN, and why it is written twice:
-      //
-      //   1. `dependency_bump_authorships.head_commit` — THE AUTHORITY. Server-owned storage
-      //      (migration 0063) that no tenant-facing write path can reach. Everything that leads to a
-      //      merge reads it: the delivery grant's "which commit", the merge precondition sent to the
-      //      provider, and the correlation route that attaches a ref-less CI event to this bump.
-      //   2. `changes.source_ref.commit_sha` — THE READABLE LIFT, because that is what
-      //      `governance/gate-orchestrator.ts`'s `resolveChangeCommitSha` reads to tell a control
-      //      WHICH commit this change is about, and it is the same key every other change uses. Note
-      //      what that does and does not buy: forging it changes which commit a control is ASKED
-      //      about, and the grant then refuses because the control's evidence names a commit that is
-      //      not the recorded head. The authority is (1); this is the question, not the answer.
-      //      `scp_authored.headCommit` rides along beside it as the human-readable statement.
-      //
-      // A LATER PUSH TO THE SAME BRANCH OVERWRITES BOTH, deliberately: the bump's head IS the newest
-      // commit on its branch, and leaving the first one standing would let evidence about a superseded
-      // commit authorise merging a different tree. Idempotent under redelivery — the same push writes
-      // the same value.
+      // Which commit the authored branch is now at, recorded. See docs/coordination.md §1105.
       const observedCommit = commitShaFromPayload(row.payload);
       if (observedCommit) {
         await recordBumpHeadCommit(tx, orgId, authoredChangeId, observedCommit);
@@ -563,28 +340,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
            WHERE org_id = ${orgId} AND object_id = ${authoredChangeId}
         `);
       }
-      // ============================================================================================
-      // AND THIS IS WHERE AUTO-MERGE BECOMES REACHABLE (M21.5, ADR-0032 §8c)
-      // ============================================================================================
-      // Something observable happened to a bump SCP authored. That is the ONLY trigger under which
-      // the delivery question is worth asking a second time, and until this line nothing asked it:
-      // §8c recorded `auto_merge` as resolved, recorded and downgraded forever precisely because no
-      // producer of a re-evaluation existed.
-      //
-      // EMITTED AT THE CHOKE POINT, NOT PER EVENT KIND, for the same reason the head-advance event is
-      // emitted at the one head write door (ADR-0032 §8a clause 1): the two events that reach here
-      // today are the authored push and the CI conclusion that names its commit, and a third that
-      // correlates to a bump re-evaluates it by construction rather than by somebody remembering to
-      // add a case.
-      //
-      // IT IS NOT A VERDICT AND CARRIES NONE. The consumer (`dependencies/bump-gate.ts`) re-reads the
-      // change, runs the EXISTING governance gate for it, and re-asks
-      // `resolveEffectiveDelivery` — so a redelivery, an out-of-order arrival, or an event about a
-      // commit that has since been superseded all reach the same answer as a first delivery. The
-      // subject is the CHANGE; nothing downstream trusts this payload for anything but a lookup key.
-      //
-      // Rides the ordinary outbox in the ingress transaction (DESIGN §8), so an event that attached
-      // cannot fail to notify and a notification cannot name an attachment that rolled back.
+      // AND THIS IS WHERE AUTO-MERGE BECOMES REACHABLE. See docs/coordination.md §1106.
       await writeOutboxEvent(tx, {
         orgId,
         type: BUMP_OBSERVED_EVENT,
@@ -599,18 +355,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       continue;
     }
 
-    // ADR-0046 §2 — THE CONFIG-SOURCE TRIGGER. A push to a registered config repo enqueues a sync.
-    //
-    // AN ADDITIONAL EFFECT OF THIS EVENT, NOT AN ALTERNATIVE TO CORRELATION: a repo can be both a
-    // team's config source AND a component's release source, so this runs BEFORE the
-    // `matchComponentForSource` branch and does not `continue`. Making it exclusive would mean a
-    // repo that gained a config-source registration silently stopped proposing changes.
-    //
-    // IT ONLY ENQUEUES. Reading the manifest is an out-of-process RPC and applying it writes the
-    // graph; neither belongs in this transaction, whose other work is correlating unrelated events.
-    // A failure here would abort the tx — and a try/catch would not save it, because a caught
-    // Postgres error leaves the tx aborted and the next statement dies somewhere unrelated. So the
-    // only thing done here is the one cheap, safe write. See `config-source/sync-queue-repo.ts`.
+    // ADR-0046 §2 — THE CONFIG-SOURCE TRIGGER. See docs/coordination.md §1107.
     if (hint.repo && hint.commitSha) {
       const registry = await listConfigSourceRegistrations(tx, orgId);
       // `matched` is impossible here (no stack name to match on) — what this asks is the narrower
@@ -640,11 +385,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     });
 
     if (!match) {
-      // No `source_mappings` row matched — nothing to correlate against, so there's no target to
-      // propose a Change for. Marked processed anyway: persist-then-process's "replayable"
-      // promise covers retrying TRANSIENT failures, not waiting forever for a mapping that may
-      // never be added — an operator who adds the missing mapping later is covered by the NEXT
-      // webhook delivery, not a replay of this one.
+      // No `source_mappings` row matched. See docs/coordination.md §1108.
       await tx
         .update(changeSourceEvents)
         .set({ processedAt: new Date() })
@@ -652,32 +393,14 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       continue;
     }
 
-    // Each unprocessed `change_source_events` row is one distinct real-world event — redeliveries
-    // of the SAME provider delivery are already collapsed to one row at ingest by the
-    // `(org_id, source_kind, dedupe_key)` unique index (schema.ts), so every row that reaches here
-    // is a genuinely separate release. Each therefore becomes its OWN Change (`correlationKey` then
-    // GROUPS related changes via `linkToCoordinatedChange` — it does NOT dedupe them: for a GitHub
-    // push it is the branch ref, identical for every commit on that branch).
-    //
-    // The human-readable NAME stays repo-scoped and thus SHARED across a repo's events, but the URN
-    // must be unique per event or `createObject`'s `(org_id, urn)` unique constraint rejects the
-    // second same-repo event of a batch as a `Conflict` — which rolls back the whole tick and wedges
-    // the queue forever (a monorepo backlog guarantees several same-repo events per tick). Suffixing
-    // the derived URN with the row id (a per-event UUIDv7) makes it collision-free while keeping the
-    // name informative. Concurrent double-processing of the SAME row is separately prevented by the
-    // `FOR UPDATE SKIP LOCKED` claim above, so two ticks never both mint a change for one row.
+    // Each unprocessed row is one distinct real-world event. See docs/coordination.md §1109.
     const name = `${row.sourceKind}${hint.repo ? `: ${hint.repo}` : ""}`;
     // `sourceRef` is the raw delivery payload kept verbatim (DESIGN §8) plus canonical keys lifted
     // from the hint — `artifact_digest` (M15.3c/M17.1) and `sbom` (M17.2). See
     // `canonicalizeSourceRef`. Additive: a delivery with neither is passed through byte-identical.
     const sourceRef = canonicalizeSourceRef(row.payload, hint);
     try {
-      // SAVEPOINT (nested transaction) around the propose: this ingress is persist-then-PROCESS, so
-      // a caller-shaped defect in the payload (M12 P4B: an unresolvable `requires[].at`, a malformed
-      // `requires`) surfaces HERE, not as a 4xx on the report/webhook request. Without the
-      // savepoint, that defect would poison the whole tick's transaction and the row would retry —
-      // and refail — forever, wedging every event queued behind it. With it, the failed propose
-      // rolls back cleanly and the refusal is recorded in the OUTER transaction below.
+      // SAVEPOINT (nested transaction) around the propose. See docs/coordination.md §1110.
       await tx.transaction(async (inner) => {
         if (hint.requiresInvalid !== undefined) {
           throw badRequest(
@@ -689,19 +412,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
             `report carried a malformed \`stageDependencies\` — each entry must be {dependsOn, minWeight?, atTargets?} (got ${JSON.stringify(hint.stageDependenciesInvalid)})`
           );
         }
-        // D13 (increment 8) — the artifact-class verification, at the one point where BOTH sides are
-        // in hand: `match.type` is the declaration the journey is about to be shaped by, and
-        // `hint.artifactClass` is what the build said it produced.
-        //
-        // MISMATCH REFUSES THE RELEASE, and refusing is the whole point rather than an escalation of
-        // it: the declared class selects the journey template, so letting a disagreeing release
-        // through produces a journey shaped for bytes it does not have in which every individual step
-        // still "succeeds". A refusal here is loud, recorded, and fixable; the alternative is silent
-        // and is discovered in an environment.
-        //
-        // `unverified` and `match` BOTH proceed untouched — the additive property. Only a parsed
-        // class that DISAGREES stops anything, so every reporter that never heard of this field, and
-        // every provider webhook adapter, is byte-for-byte unaffected.
+        // The verification, where both sides are finally in hand. See docs/coordination.md §1111.
         const artifactClassVerification = verifyArtifactClass(match.type, hint.artifactClass);
         if (artifactClassVerification.verdict === "mismatch") {
           throw badRequest(artifactClassMismatchReason(artifactClassVerification));
@@ -729,16 +440,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
           // report --stage-depends-on`), threaded the same way — same propose-time resolution of
           // `dependsOn`/`atTargets`, same storage under `properties.stageDependencies`.
           stageDependencies: hint.stageDependencies,
-          // WHO DECLARED IT. The CHANGE stays the system actor's — nobody asked for it, a push
-          // happened — but the `depends_on` edges the declaration mints are a deliberate,
-          // authorized graph write by the REPORTING PRINCIPAL, and the route that authorized it
-          // (`routes/change-sources.ts`, `relationship:write` at both endpoints) is the only place
-          // that principal exists. Carried on the event row since 0054 so it survives to here.
-          // Without it the edge's audit event, journal entry and emitted event all name the system
-          // actor, leaving "who declared that A depends on B?" unanswerable — for a write that
-          // changes `graph.dependentIds`, a live CEL policy input for the depended-on component.
-          // NULL (an observe()-driven row, or one written before 0054) falls back to the change's
-          // own actor, which is the system actor and is the honest answer there.
+          // WHO DECLARED IT. The CHANGE stays the system actor's. See docs/coordination.md §1112.
           declarationActorObjectId: row.reportedByObjectId ?? undefined
         });
 
@@ -758,13 +460,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
           .where(eq(changeSourceEvents.id, row.id));
       });
     } catch (err) {
-      // The REFUSAL surface for a caller-shaped defect (a 4xx `ProblemError` thrown by our own
-      // validation — e.g. M12 P4B's unresolvable `requires[].at`, which `POST /changes` turns into
-      // a 404 but this async path cannot). The event is marked processed WITH NO resulting change,
-      // and the refusal is recorded as a Decision + audit event (charter principle 6 — never a
-      // silent drop, and never the infinite retry a permanent defect would otherwise cause).
-      // Anything else (DB failure, transient error) still rethrows: the row stays unprocessed and
-      // persist-then-process's replayability retries it next tick, exactly as before.
+      // The REFUSAL surface for a caller-shaped defect. See docs/coordination.md §1113.
       if (!(err instanceof ProblemError) || err.status >= 500) throw err;
       const reason = err.detail ?? err.message;
       const decision = await insertDecision(tx, {
@@ -779,12 +475,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
           path: hint.path ?? null,
           provides: hint.provides ?? null,
           requires: hint.requires ?? hint.requiresInvalid ?? null,
-          // D13 — the verification RECORD, not just the message. `ArtifactClassVerificationSchema`
-          // exists so a refusal carries its own inputs (charter principle 6: every verdict persists
-          // the inputs it was reached from), which is what makes "why was this release refused"
-          // answerable from the Decision alone rather than by re-deriving it from a sentence.
-          // Recomputed from the same two values the refusal was reached from, and `null` for every
-          // refusal that has nothing to do with artifact class.
+          // D13 — the verification RECORD, not just the message. See docs/coordination.md §1114.
           artifactClassVerification: verifyArtifactClass(match.type, hint.artifactClass),
           error: reason
         },

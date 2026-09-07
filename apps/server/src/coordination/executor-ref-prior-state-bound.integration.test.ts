@@ -17,74 +17,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changeWaveTargets } from "../db/schema.js";
 
-/**
- * HIGH (M23.0 verification pass 12) — THE OTHER TWO PLUGIN-SUPPLIED `jsonb` COLUMNS, DRIVEN END TO
- * END FOR THE FIRST TIME.
- *
- * `wave-targets-repo.ts`'s census names three columns that take arbitrary plugin JSON through
- * `boundPluginJson`: `observed_state`, `executor_ref` and `prior_state_ref`. EVERY end-to-end
- * fixture in this repository drove the first one. Passes 7 to 11 each found a real defect in that
- * bound under a fully green suite, and the other two columns were asserted about only in unit
- * tests over a value handed straight to `boundPersistedJson` — never through a real plugin, a real
- * subprocess host, a real reconcile tick and a real Postgres row.
- *
- * ================================================================================================
- * WHY `executor_ref` IS THE WORST OF THE THREE — pass 9's census called it "Instance 3"
- * ================================================================================================
- * `trigger()`'s whole `ExternalRunRef` is written to `change_wave_targets.executor_ref`, and
- * `reconcile.ts` addresses every subsequent poll with it: `client.status(target.executorRef)`. ALL
- * NINE executor plugins read `ref.externalId` out of it. A ref the executor can no longer interpret
- * is an error NOWHERE — fake-executor answers `pending` ("unknown run"), Argo CD answers 404 — so
- * reconcile writes `observing` and polls that target as an unknown run FOREVER. No exception, no
- * failed change, no red health check: the wave simply never finishes. That is the same failure
- * SHAPE as the 13-day stall in BUILD_AND_TEST.md §4.4a, reached by a different route.
- *
- * `PluginHost.executor()` types the JSON-RPC response with a BARE CAST, so at runtime the ref is
- * whatever the plugin serialised — a real executor returns its own vendor fields beside the two
- * `ExternalRunRef` names, in whatever order its serialiser chose, and `externalId` is not
- * guaranteed to be first. `fake-executor` returned exactly `{externalId, url}`, both short, so no
- * fixture in this repository could reach the branch that decides whether `externalId` survives.
- * THAT IS THE FINDING, and `runRefExtrasByTarget` (packages/plugins/fake-executor) is the seam,
- * mirroring what pass 10 added for `observed_state.revision`.
- *
- * ================================================================================================
- * WHY `prior_state_ref` NEEDED A SEAM TOO
- * ================================================================================================
- * It is what a rollback restores. `reconcile.ts`'s rollback branch reads the ORIGINAL target's
- * `prior_state_ref` and hands it to `trigger()` as `intent.priorStateRef`; the executor interprets
- * it. `ExecutionStatus.stateRef` is typed `unknown` precisely so an executor whose state is not one
- * string can return an object — a Terraform serial and lineage, an Argo CD revision per source —
- * and a structured value is the shape whose LOAD-BEARING LEAF a bound can drop while leaving the
- * column populated and entirely plausible. `stateRefByTarget` was `Record<string, string>` and
- * `coercePriorStateRef` read strings only, so the harness could put nothing in that column that a
- * wrong answer would be VISIBLE in. Both are widened here.
- *
- * ================================================================================================
- * WHAT EACH ARM ASSERTS THROUGH, AND WHY IT IS NOT A ROW LENGTH
- * ================================================================================================
- * A length assertion is what let three of these defects ship. So:
- *
- *   arm 1  the change REACHES `succeeded`. That happens only if `status(executor_ref)` recognised
- *          the run, i.e. only if `externalId` survived the bound — `parseTargetRef(ref.externalId)`
- *          and `target.externalId !== ref.externalId` are the leaf's real readers.
- *   arm 2  the target reaches `triggered` AT ALL. A NUL in that write throws inside
- *          `markWaveTargetTriggered`'s transaction, the row stays `triggering`, and the next tick
- *          re-fires the trigger — forever.
- *   arm 3  the fake executor's own state file says the rollback restored version 7. That number
- *          comes out of `coercePriorStateRef` reading a leaf off the bounded column; if the leaf
- *          was elided the coercion falls back to 0 and the rollback restores the WRONG state.
- *
- * ================================================================================================
- * MUTATION LOG — applied, watched fail, reverted, watched pass. `pnpm exec turbo build --force`
- * between every edit and run: `@scp/runner-launcher` and `@scp/plugin-fake-executor` both resolve
- * through `main: dist/index.js`, so a mutation applied to `src/` alone is a NO-OP here (pass 11).
- * ================================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `admissionCost(entryValue, depth + 1)` -> `PERSISTED_JSON_MIN_LEAF` in `walkObjectFields` phase 1 — the flat rule passes 10 and 11 shipped | ARM 1 FAILS `expected 'undefined' to be 'string'`: `externalId` is key 201 of a ref whose first 200 are vendor fields, a flat 96 seats 70 of them, and the leaf is gone. What follows in the log is WORSE than the silent unknown-run this file predicted — `parseTargetRef(undefined)` throws, so reconcile prints `plugin 'fake-executor' RPC error: Cannot read properties of undefined (reading 'lastIndexOf')` ONCE A TICK, FOREVER, and the change never terminalises. ARM 3 FAILS `the leaf a rollback reads was elided: expected undefined to be 'v7'`. ARM 2 STAYS GREEN — its ref has three keys |
- * | `runRefExtrasByTarget` dropped from the fake executor's `trigger()` | ARM 1 FAILS `expected 2 to be greater than 50`, ARM 2 FAILS `the hostile payload never reached the column: expected 'undefined' to be 'string'` — the seam's own non-vacuity guards. ARM 2 STAYED GREEN under this mutation until its payload guard was added, because the hostile string rides on the same seam: without it the arm asserted that an ordinary two-key ref is persistable |
- * | U+0000 removed from `NOT_PERSISTABLE` in `@scp/runner-launcher` | ARM 2 FAILS after 30s: no `executor_ref` ever appears. `markWaveTargetTriggered` throws `error: unsupported Unicode escape sequence` inside its transaction once a tick — `[reconcile] … trigger failed (retry in ~2s): DrizzleQueryError: Failed query: update "change_wave_targets" set … "executor_ref" = $2 …` — so the row stays `triggering` and the trigger is re-fired forever. A SECOND instance of the BUILD_AND_TEST.md §4.4a stall, on a write no fixture reached before |
- */
+/** HIGH (M23.0 verification pass 12). See docs/coordination.md §470. */
 
 /** The vendor fields a real executor returns beside the two `ExternalRunRef` names. Small, many,
  *  and — the point — emitted BEFORE `externalId`, because insertion order is what the bound seats
@@ -133,18 +66,7 @@ describe("executor_ref and prior_state_ref: the two bounded columns nothing drov
     expect(HOSTILE_URL.length).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS);
     expect(Object.keys(structuredPriorState).at(-1)).toBe("version");
 
-    // OUR OWN state file, so arm 3 can read what `coercePriorStateRef` actually decided rather
-    // than inferring it. `fakeExecutorConfig` is spread last in the harness, so this wins.
-    //
-    // `mkdtempTrackedForFile`, NOT `mkdtempTracked` — this is a `beforeAll` fixture shared by all
-    // three arms, and the per-test allocator shipped here first. Measured 2026-08-23: its
-    // `afterEach` deleted this directory (and the fake executor's live state file inside it) the
-    // moment ARM 1 finished; `fake-executor`'s next persist re-created the directory via its
-    // `mkdir(dirname(statePath), { recursive: true })`, so the tmpdir-leak gate found it on disk
-    // after a fully green run — and arms 2 and 3 had been running against an executor whose
-    // durable run registry had just been wiped, i.e. the exact "unknown run ⇒ pending forever"
-    // branch this file exists to rule out. @scp/test-tmpdir now REFUSES the per-test pair outside
-    // a running test, so this line cannot regress silently.
+    // Our own state file, so the arm reads what was decided. See docs/coordination.md §471.
     const stateDir = await mkdtempTrackedForFile(join(tmpdir(), "scp-test-exec-ref-"));
     statePath = join(stateDir, "fake-executor-state.json");
 
@@ -195,14 +117,7 @@ describe("executor_ref and prior_state_ref: the two bounded columns nothing drov
     );
   }
 
-  /**
-   * WAITS FOR THE CHANGE TO LEAVE `proposed` AND ACCEPTS IT ONLY IF IT IS STILL WAITING FOR A
-   * HUMAN. Written this way deliberately: the usual `waitUntil(state === "validating")` treats one
-   * transient state as if it were a resting one, and a change that has already moved past it makes
-   * that wait hang for its whole deadline — a test that fails on its own polling window rather than
-   * on the property it names. Measured while mutating the bound for the log above: the arm below
-   * reddened at "reaches 'validating'" instead of at the stranded target it exists to catch.
-   */
+  /** Waits to leave proposed, and only if still waiting. See docs/coordination.md §472. */
   async function proposeAndAccept(name: string, targetObjectId: string): Promise<string> {
     const change = await admin.changes.propose({ name, targets: [targetObjectId] });
     const state = await waitUntil(

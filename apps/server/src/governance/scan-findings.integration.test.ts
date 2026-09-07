@@ -36,54 +36,7 @@ import { upsertControlBinding } from "./controls-repo.js";
 import { ensureControlRun } from "./control-runner.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 
-/**
- * M22.1b — `scan_findings` PERSISTED, AND WIRED AT BOTH VERDICT PRODUCERS (ADR-0033 §7/§7a,
- * migration 0065).
- *
- * M22.1a made both Trivy parse sites derive their counts from one shared `parseTrivyFindings`, so
- * findings finally EXIST at parse time — and nothing wrote them anywhere. Every rule in ADR-0033 is
- * a rule about a FINDING, so a table nobody fills is the whole milestone stalled. The failure mode
- * this file exists to refuse is this repo's dominant one: a component built, tested green against
- * itself, and installed nowhere.
- *
- * SO EVERY TEST HERE DRIVES A PRODUCTION ENTRY POINT. Nothing calls `persistScanFindings` directly:
- *
- *   - `runPromotionScanStep(...)` — the commander's own managed scan (`federation/`).
- *   - `ensureControlRun(...)`     — the ControlPlugin path (`governance/`), where the plugin has no
- *                                   `DATABASE_URL` and hands its findings to the server on the
- *                                   outcome's evidence.
- *
- * MUTATIONS RUN against this file (2026-08-17) — the MEASURED result of each, reverted by an exact
- * inverse edit. Baseline: 14 passed.
- *
- *   M-A  DELETE the `persistScanFindings(...)` call in `governance/control-runner.ts`
- *          -> 3 failed (A1, A2, A3). The plugin-side wiring is INSTALLED, not merely built.
- *   M-B  DELETE the `persistScanFindings(...)` call in `federation/promotion-scan-step.ts`
- *          -> 5 failed (P1, P3, P5, R1, R3). The managed-scan wiring is INSTALLED.
- *             P2 and P4 survive this one BY DESIGN — both assert an ABSENCE of rows, so neither can
- *             ever witness the writer disappearing. That is why M-D exists.
- *   M-C  DELETE the `takeScanFindingsFromTransport` strip in `control-runner.ts` (persist the raw
- *        outcome evidence)
- *          -> 2 failed (A3, A4): the transport key survives onto `control_runs.evidence`, which
- *             federation copies VERBATIM into a promotion bundle. This is the mutation that would
- *             have federated accepted-risk detail ADR-0033 §8 confines to grants.
- *   M-D  `scanMethodCarriesFindings("openscap")` returning `true`
- *          -> 1 failed (P2): an OpenSCAP verdict gains a finding set. The refusal is by METHOD,
- *             which is why P2 hands the openscap runner a NON-EMPTY findings array — a refusal
- *             keyed on "there were no findings to exclude" would pass a broken build.
- *
- *          THIS MUTATION SURVIVED ON ITS FIRST RUN, and the reason is worth writing down: the server
- *          resolves `@scp/schemas` to `dist/`, not `src/`, so editing the source and re-running the
- *          integration suite tests the OLD compiled function. It only went red after
- *          `pnpm --filter @scp/schemas build`. An integration mutation that lives in a workspace
- *          PACKAGE is not applied until that package is rebuilt — a green run after mutating `src`
- *          is green for the wrong reason, not evidence of coverage.
- *   M-E  drop `ON DELETE CASCADE` from `scan_findings_control_run_fk` (migration 0065)
- *          -> 1 failed (R3): findings outlive the verdict they explain.
- *
- * Real PostgreSQL 16 via Testcontainers, in its OWN database (`createIsolatedDomain`), so the RLS
- * probes can hold a raw `scp_app` connection without touching any other file's data.
- */
+/** Findings persisted, and wired at both verdict producers. See docs/governance.md §339. */
 
 const IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
 const RPM_DIGEST = `sha256:${"b".repeat(64)}`;
@@ -139,10 +92,6 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
   afterAll(async () => {
     await domain?.close();
   });
-
-  // -------------------------------------------------------------------------------------------
-  // Fixtures
-  // -------------------------------------------------------------------------------------------
 
   async function proposeArtifactChange(
     digest: string,
@@ -201,9 +150,7 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
     );
   }
 
-  // ===========================================================================================
   // PRODUCER B — the commander's own managed scan (federation/promotion-scan-step.ts)
-  // ===========================================================================================
 
   it("P1: a managed trivy verdict PERSISTS its findings, class O, and says so in evidence", async () => {
     const { changeId } = await proposeArtifactChange(IMAGE_DIGEST, "image");
@@ -262,11 +209,7 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
 
   it("P2: an OpenSCAP verdict can NEVER carry findings — refused by METHOD, not by an empty array", async () => {
     const { changeId } = await proposeArtifactChange(RPM_DIGEST, "rpm");
-    // The runner deliberately returns findings ALONGSIDE `openscap`. XCCDF rule-results have no
-    // package, purl, `FixedVersion` or `Class`, so this can never happen for real — which is exactly
-    // why it is injected here. ADR-0033's consequences list requires this be refused explicitly "and
-    // tested, not left to 'there were no findings to exclude'"; a refusal keyed on an empty array
-    // would let this through.
+    // The runner deliberately returns findings ALONGSIDE `openscap`. See docs/governance.md §340.
     const runner = fixedRunner((req) => {
       expect(req.method).toBe("openscap");
       return {
@@ -387,7 +330,6 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
     expect(outcome.refused, outcome.refused ? outcome.reason : "expected export").toBe(false);
     if (outcome.refused) throw new Error(outcome.reason);
 
-    // The findings ARE on disk locally...
     const run = await managedRunFor(changeId);
     expect(await findingsOf(run.id)).toHaveLength(1);
 
@@ -410,13 +352,7 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
     });
   });
 
-  // ===========================================================================================
-  // PRODUCER A — the ControlPlugin path (governance/control-runner.ts)
-  //
-  // The plugin runs in the subprocess plugin host with no `DATABASE_URL`. It transports its capped
-  // findings out on the outcome's evidence and the SERVER persists them; the fake host below stands
-  // in for that subprocess and returns exactly the record `scan-result-control` builds.
-  // ===========================================================================================
+  // PRODUCER A — the ControlPlugin path. See docs/governance.md §341.
 
   function hostReturning(outcome: ControlOutcome): PluginHost {
     return {
@@ -626,11 +562,7 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
     expect(await findingsOf(run.id)).toHaveLength(0);
   });
 
-  // ===========================================================================================
-  // TENANCY — ordinary tenant data under RLS (ADR-0033 §7a), NOT the instance-scoped exception
-  // M22.2's admission rows are. Probed with a RAW `scp_app` connection: the database's own
-  // defenses, independent of whether the repo layer remembers to filter.
-  // ===========================================================================================
+  // TENANCY — ordinary tenant data under RLS. See docs/governance.md §342.
 
   describe("tenancy and referential barriers", () => {
     let raw: pg.Client;

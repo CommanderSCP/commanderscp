@@ -96,21 +96,7 @@ describe("parseJsonRejectingPrototypePoisoning", () => {
   });
 });
 
-/**
- * TOTALITY OVER GRAPHS `JSON.parse` CANNOT PRODUCE.
- *
- * `assertNoPrototypePoisoning` is EXPORTED, so its callers are not limited to the two doors that
- * hand it fresh `JSON.parse` output. Before the visited set, a single cyclic argument made it spin
- * forever — measured: still running at 20 s, hard-killed — which is the guard becoming the denial
- * of service it exists to prevent, inside the process that serves every route.
- *
- * A NON-TERMINATING WALK CANNOT BE CAUGHT BY A TEST TIMEOUT: it is synchronous, so it blocks the
- * event loop and vitest never gets to fire one. (Measured: with the visited set deleted, this file
- * ran past 300 s and had to be killed — it does not fail, it hangs, and a hang that wedges CI is a
- * bad gate even though it is a loud one.) So the cases below count node VISITS through an
- * enumerable getter and trip a budget instead. With the visited set each node is examined once;
- * delete it and the budget throws in milliseconds and the named test fails cleanly.
- */
+/** TOTALITY OVER GRAPHS `JSON.parse` CANNOT PRODUCE. See docs/util.md §2. */
 describe("assertNoPrototypePoisoning — terminates on graphs JSON.parse cannot produce", () => {
   /** An enumerable accessor property that counts how often the walk reads it, and refuses to be a
    *  hang: past `budget` reads it throws, turning non-termination into a fast, named failure. */
@@ -183,12 +169,7 @@ describe("assertNoPrototypePoisoning — terminates on graphs JSON.parse cannot 
   });
 });
 
-/**
- * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
- * that three named keys are absent only proves those three are absent; this proves NOTHING was
- * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
- * so it is checked rather than assumed.
- */
+/** Snapshot every Object.prototype key, not three named ones. See docs/util.md §3. */
 const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
 
 describe("safe-json — global prototype hygiene", () => {

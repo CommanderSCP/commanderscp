@@ -30,64 +30,7 @@ import { buildLineWorkList } from "../dependencies/version-poll.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import { PRODUCER_DECISION_KIND } from "./dependency-producers.js";
 
-/**
- * THE PRODUCER DECLARATION'S AUTHORING SURFACE, END TO END (ADR-0032 §7e,
- * `routes/dependency-producers.ts`).
- *
- * ============================================================================================
- * WHAT THIS FILE HAS TO PROVE, AND WHY EACH GATE IS THE ONE IT IS
- * ============================================================================================
- * The defect being fixed is "a function with no caller": `declareDependencyLineProducer` existed,
- * was correct, was covered by its own repo tests, and NOTHING IN PRODUCTION CALLED IT — so
- * `produced_by_object_id` was never set, `isInternalDependencyLine` was always false, and the
- * internal half of dependency subscriptions could not fire at all. Four gates, and none of them is
- * satisfied by asserting a row exists:
- *
- *  1. **WIRING.** Deleting `registerDependencyProducerRoutes(app, deps)` from `app.ts` must turn
- *     "(1) WIRING …" RED. Shipping a second uncalled function to fix an uncalled function would be
- *     absurd, so this is the first case in the file. MEASURED: with the registration commented out,
- *     that case fails with a 404 and the rest of the file fails with it.
- *  2. **CAPABILITY, END TO END.** Declare through the ROUTE, then drive the REAL internal-release
- *     detection path — an accepted change reaching a `prod` deployment-target with an observed image
- *     — and assert a SUBSCRIBED component comes out of `runBumpDispatchJob` as a candidate. Before
- *     this change that sequence is IMPOSSIBLE BY CONSTRUCTION, which is what makes it the honest
- *     acceptance test. Asserting the row exists is not enough: the column was always writable.
- *  3. **DECLARED, NEVER INFERRED.** No ingestion path may set a producer as a side effect. Pinned as
- *     a SOURCE-LEVEL CENSUS over the ingestion modules plus a behavioural check that a full
- *     ingestion run leaves `dependency_line_producers` empty — because the property is an ABSENCE,
- *     and an absence is what nobody notices regressing.
- *  4. **NEW MAJOR.** Declare, then have ingestion mint a BRAND-NEW major line for that coordinate,
- *     and assert the version poll does not hand it to a public index. This is the entire reason the
- *     grain is per COORDINATE: under the retired per-line column that new row's producer was NULL
- *     because nobody had re-declared it, and the poll fetched the org's own package from a stranger.
- *
- * ============================================================================================
- * MUTATION LOG — each applied, watched fail, reverted, watched pass
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | remove `registerDependencyProducerRoutes` from `app.ts` | 13 of 14 FAIL, "(1) WIRING" first, with a 404 (re-measured after the two cases below were added) |
- * | `listThirdPartyDependencyLinesByIds` drops its `NOT EXISTS` anti-join (`sql\`TRUE\``) | "(5) … is NOT handed to a public index" FAILS — the freshly minted major reaches the poll's work-list |
- * | BOTH producer verbs stop calling `resetLineHead` | 3 FAIL: "(3) CLEARS a poisoned public head", "(4) CLEARS the internal head", and "(7) CAPABILITY" — the last because the retraction in its negative control no longer clears `1.1.0` |
- * | `authorize`'s scope becomes the producer component instead of the org root | "(2) REFUSES an author whose `policy:write` is bound to the producing component" FAILS |
- * | the request schema ACCEPTS `declaredByObjectId` and the route reads it | "(2) the declaring principal is the AUTHENTICATED SUBJECT" FAILS — the impostor id is stored |
- * | `assertDeclarableProducer` drops its `service` arm | "(2) REFUSES a producer that is not a live in-org COMPONENT" FAILS |
- *
- * TWO SURVIVORS, both fixed here rather than recorded and left:
- *
- *  - **the `service` arm, deleted, left the whole file GREEN.** The case asserted only
- *    `400` + `/service/i`, and the generic wrong-type arm answers `400` with a message that also
- *    contains the word "service" ("… is a service"). The two arms were indistinguishable to the
- *    test. Fixed by pinning the two phrases the owner's ruling actually requires — that the refusal
- *    is FIRST-CUT and that it is about POLLING — which is the one place in this file where wording
- *    is asserted, and it is asserted because the wording IS the requirement.
- *  - **reading `declaredByObjectId` from `request.body` alone left the file GREEN**, because the
- *    request schema is a plain `z.object()` and this repo's `z.toJSONSchema()` emits
- *    `additionalProperties: false`, so fastify strips the key before the handler sees it. The
- *    property survives on TWO independent legs, which is the right shape; the mutation that breaks
- *    both at once (add the field to the schema AND read it) is the one in the table above, and it
- *    fails.
- */
+/** THE PRODUCER DECLARATION'S AUTHORING SURFACE, END TO END. See docs/routes.md §100. */
 describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -214,11 +157,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
   } as unknown as PluginHost;
 
   beforeAll(async () => {
-    // `federationRole: "commander"` DECLARES the posture. The writes are commander-only and
-    // fail-closed on an UNDECLARED deployment (ADR-0032 §7d); the harness leaves
-    // `SCP_FEDERATION_ROLE` unset by default, which yields a DEFAULTED commander
-    // (`federationRoleDeclared: false`) under which every declare below would answer 409. The
-    // refusal gets its own server in "(6)".
+    // `federationRole: "commander"` DECLARES the posture. See docs/routes.md §101.
     server = await listenTestServer({ federationRole: "commander" });
     org = await createTestOrg(server, "dep-producer");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -237,19 +176,11 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (1) WIRING — the gate that exists because the bug WAS a function with no caller
-  // -----------------------------------------------------------------------------------------
 
   describe("(1) WIRING", () => {
     it("the declare route is REGISTERED — delete the registration in app.ts and this goes red", async () => {
-      // THE WHOLE POINT. `declareDependencyLineProducer` was correct, tested, and unreachable. This
-      // case asserts REACHABILITY and nothing else, so that "the route file exists" can never again
-      // be mistaken for "the capability is installed".
-      //
-      // A 404 here means the path is not mounted. Any other status — including a 400 or a 403 —
-      // means the route IS mounted and something further in is refusing, which is a different bug
-      // and belongs to a different case.
+      // THE WHOLE POINT. See docs/routes.md §102.
       const producer = await createOrphanComponent(server, org, `wiring-producer-${uuidv7()}`);
       const response = await post(declareUrl(), org.adminToken, {
         ecosystem: "npm",
@@ -269,9 +200,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (2) THE VERB: authority, the FK constraint, and the provenance that must not be forgeable
-  // -----------------------------------------------------------------------------------------
 
   describe("(2) the declare verb", () => {
     it("the declaring principal is the AUTHENTICATED SUBJECT, and a body field cannot forge it", async () => {
@@ -325,12 +254,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
         producerIdOrUrn: service.id
       });
       expect(refusedService.status).toBe(400);
-      // THE WORDING IS PINNED HERE, DELIBERATELY, and only here. The owner's ruling is "refuse a
-      // service-valued producer IN THE FIRST CUT, with a message saying so" — the explanation IS the
-      // requirement, because both this arm and the generic wrong-type arm return 400 and both
-      // mention the word "service". A test matching only /service/i cannot tell them apart:
-      // MEASURED — deleting the service arm entirely left the whole file green. These two phrases
-      // are the ones an operator acts on (this is temporary; declaring the component instead).
+      // THE WORDING IS PINNED HERE, DELIBERATELY, and only here. See docs/routes.md §103.
       expect(JSON.stringify(refusedService.json)).toMatch(/first cut/i);
       expect(JSON.stringify(refusedService.json)).toMatch(/polling/i);
 
@@ -373,11 +297,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
 
     it("REFUSES an author whose `policy:write` is bound to the producing component — custody is not jurisdiction", async () => {
-      // `governance/policy-scope-authz.ts` is the precedent and the reason: the declaration changes
-      // behaviour for every OTHER component in the org that depends on the coordinate, and
-      // `scopeExpandCte` expands strictly UPWARD — so a component-bound principal reaches its
-      // siblings not at all. Custody of the producing component was never evidence of jurisdiction
-      // over its consumers.
+      // The policy scope guard is the precedent, and the reason. See docs/routes.md §104.
       const producer = await createOrphanComponent(server, org, `authz-producer-${uuidv7()}`);
       // `Administrator` at the PRODUCER's own scope: the built-in role that DOES hold `policy:write`
       // (drizzle/0010), bound narrowly. So this author fails on SCOPE and not on permission — which
@@ -493,11 +413,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       expect(lines[0]?.headCleared).toBe(true);
       expect(response.json.decisionId).toBeNull();
 
-      // NO PROJECTED DECLARATION, and the empty string is the reason it went. The dry run used to
-      // return a `DependencyLineProducer` with `declaredAt: previous?.declaredAt ?? ""` — and `""`
-      // is not a timestamp, not "never", and not a value any client can render or parse as a date.
-      // The whole object is `null` now, exactly as a dry-run RETRACT already answers, so "no
-      // declaration was created" is STATED rather than approximated with an unfillable field.
+      // No projected declaration, and the empty string is why. See docs/routes.md §105.
       expect(response.json.declaration).toBeNull();
 
       // NOTHING WAS WRITTEN — neither the declaration nor the head clearing it previewed.
@@ -516,17 +432,11 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (3) DECLARING CLEARS THE HEAD — the direction that undoes a poisoning
-  // -----------------------------------------------------------------------------------------
 
   describe("(3) declaring clears the observed head", () => {
     it("CLEARS a poisoned public head, so the declaration actually undoes the confusion it exists to prevent", async () => {
-      // The failure without this: the third-party poll has already written a stranger's `9.9.9` as
-      // this line's head. The operator declares the producer to stop the poll — and the poisoned
-      // head SURVIVES, because `recordDependencyLineHead` refuses backward movement, so internal
-      // detection can never bring the head down to the org's real `2.1.0`. The coordinate is left
-      // permanently wedged at a version that exists in no registry of the org's.
+      // The third-party poll has already written a stranger's. See docs/routes.md §106.
       const producer = await createOrphanComponent(server, org, `clear-producer-${uuidv7()}`);
       const coordinate = `@acme/poisoned-${uuidv7()}`;
       const line = await inOrg((tx) =>
@@ -576,33 +486,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       expect(typeof response.json.decisionId).toBe("string");
     });
 
-    /**
-     * ONE OPERATOR ACT, ONE DECISION, ONE AUDIT EVENT — persist-on-change does not apply to these
-     * verbs, and the audit chain is what proves it must not.
-     *
-     * THE DEFECT. Both verbs used `insertDecisionIfChanged`, which keys on `(subject_id, kind)`, and
-     * the subject here is the PRODUCER — so the comparison asked "is this the last thing this
-     * COMPONENT was said to produce?", a question about the wrong noun. Both verbs also append their
-     * hash-chained audit event UNCONDITIONALLY, and `insertDecisionIfChanged`'s own header states the
-     * rule that makes that combination incoherent: "a caller that pairs the Decision with a
-     * hash-chained audit event must suppress that event on the same condition (`created === false`)".
-     * The audit event is the one that is right — the operator really did call the verb — so the
-     * suppression is what goes, and the counts below are the pairing asserted rather than described.
-     *
-     * WHY NOT "PUT THE COORDINATE IN THE IDENTITY". The only identity columns are `subject_id` (a
-     * `uuid`, and a coordinate is not one) and `kind` — documented in `decisions-repo.ts` as "the
-     * caller's own constant, never user input", with an exact-match operator filter and a b-tree over
-     * it. And it would not have been sufficient: an identity of `(producer, coordinate)` still finds
-     * P's own earlier row for this same coordinate and still compares equal, which is the P -> Q -> P
-     * transfer below.
-     *
-     * MUTATION LOG — each applied, run, reverted:
-     * | Mutation | Result |
-     * |---|---|
-     * | `insertDecision` -> `insertDecisionIfChanged` in both verbs | FAILS at (b): three identical re-declares write 3 audit events and only 2 Decisions ("expected 2 to be 3") |
-     * | drop `displacedProducerObjectId` from the declare's `inputContext` | FAILS at (a): "the first declare displaced nobody: expected undefined to be null". It does NOT restore the suppression on its own while `insertDecision` stands — measured, and recorded because the two changes fix different halves: the field makes a transfer READABLE, the removal makes every act RECORDED |
-     * | BOTH together — the true pre-fix state | FAILS at (a) on the defect verbatim: the third declare's `decisionId` IS the first declare's row id, so a transfer between two teams is reported as the original declaration |
-     */
+    /** ONE OPERATOR ACT, ONE DECISION, ONE AUDIT EVENT. See docs/routes.md §107. */
     it("every declare and retract records its OWN Decision — one per audit event, transfers included", async () => {
       const p = await createOrphanComponent(server, org, `xfer-p-${uuidv7()}`);
       const q = await createOrphanComponent(server, org, `xfer-q-${uuidv7()}`);
@@ -643,11 +527,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
         "the third declare took the coordinate back from Q"
       ).toBe(q.id);
 
-      // (b) THE PAIRING, which is the half the transfer alone does not pin. Three IDENTICAL
-      // re-declares in a row: nothing about the world changes after the first, so this is precisely
-      // the sequence persist-on-change was suppressing — while the audit chain recorded all three.
-      // A Decision log that is missing an act the audit chain asserts happened is principle 6
-      // failing on the quiet side.
+      // The pairing, which the transfer alone does not pin. See docs/routes.md §108.
       const idempotent = await createOrphanComponent(server, org, `xfer-idem-${uuidv7()}`);
       const idemCoordinate = `@acme/idempotent-${uuidv7()}`;
       for (let i = 0; i < 3; i += 1) {
@@ -678,20 +558,11 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (4) RETRACTING — the direction that is a SECURITY fix, not a wedge fix
-  // -----------------------------------------------------------------------------------------
 
   describe("(4) the retract verb", () => {
     it("CLEARS the internal head, because a stale head is an input to a security gate and not merely a wedge", async () => {
-      // TWO reasons, and the second is why this is not cosmetic:
-      //   - the WEDGE: the coordinate returns to third-party polling carrying `2.7.0` that the org's
-      //     own releases put there, so the poll refuses every real public version until upstream
-      //     passes it — and refuses it as `behind_head`, which reads as normal operation.
-      //   - the GATE: `latest_version` is an input to the M22 vendor rule, which grants a scan PASS
-      //     when a component is on the latest of its major line. A head left over from the internal
-      //     era, on a coordinate that is third-party again, can grant a vendor-pass against a
-      //     version NO REGISTRY EVER PUBLISHED.
+      // TWO reasons, and the second is why this is not cosmetic. See docs/routes.md §109.
       const producer = await createOrphanComponent(server, org, `retract-producer-${uuidv7()}`);
       const coordinate = `@acme/retract-${uuidv7()}`;
       const line = await inOrg((tx) =>
@@ -760,19 +631,11 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (5) NEW MAJOR — the whole reason the grain is the COORDINATE
-  // -----------------------------------------------------------------------------------------
 
   describe("(5) a brand-new major of a declared coordinate", () => {
     it("is NOT handed to a public index — the hole per-line grain re-armed at every major bump", async () => {
-      // THE FAILURE THIS PINS, in full. X publishes `@acme/lib` and an operator declares it. X then
-      // cuts `3.0.0`; the first consumer moves to `^3`; ingestion mints a NEW `dependency_lines` row
-      // for major `3`. Under the retired per-line column that row's `produced_by_object_id` is NULL
-      // — honestly so, because nobody had re-declared — and `buildLineWorkList` therefore hands
-      // `@acme/lib` to a PUBLIC INDEX PLUGIN, where a stranger's package answering `9.9.9` bumps
-      // every subscriber onto it. Both barriers built against that read the column, and a column
-      // nobody filled in is NULL, so neither fires.
+      // THE FAILURE THIS PINS, in full. See docs/routes.md §110.
       const producer = await createOrphanComponent(server, org, `major-producer-${uuidv7()}`);
       const consumer = await createOrphanComponent(server, org, `major-consumer-${uuidv7()}`);
       const coordinate = `@acme/newmajor-${uuidv7()}`;
@@ -897,9 +760,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (6) DECLARED, NEVER INFERRED — an absence, pinned as one
-  // -----------------------------------------------------------------------------------------
 
   describe("(6) declared, never inferred", () => {
     it("NO ingestion module can write a producer — a source-level census, because the property is an ABSENCE", async () => {
@@ -917,12 +778,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
         "observing a manifest must never conclude a coordinate is ours"
       ).toBeNull();
 
-      // AND A SOURCE-LEVEL CENSUS, because behaviour alone cannot pin an absence in code that does
-      // not run in this test. The capability must be MISSING from the ingestion modules rather than
-      // guarded inside them: none of them may so much as name the table or the verb.
-      //
-      // `readFile` with an explicit utf8 read rather than `grep -r`, which was measured in this repo
-      // to SILENTLY SKIP files carrying NUL bytes — a census with a hole is worse than none.
+      // A source census, because behaviour cannot pin an absence. See docs/routes.md §111.
       const { readFile } = await import("node:fs/promises");
       const here = new URL(".", import.meta.url);
       const ingestionModules = [
@@ -959,18 +815,11 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (7) CAPABILITY, END TO END — the acceptance test that was impossible by construction
-  // -----------------------------------------------------------------------------------------
 
   describe("(7) CAPABILITY: an internal release reaches a subscriber's bump candidate", () => {
     it("declare -> real prod release -> internal head -> a subscribed component is a bump candidate", async () => {
-      // THIS IS THE TEST THE DEFECT MADE IMPOSSIBLE. Every step below existed and worked; the chain
-      // could not START, because nothing in production could declare a producer. Asserting the row
-      // exists would prove nothing — the column was always writable.
-      //
-      // `oci` deliberately: the released version comes from the wave target's `observed.images`, so
-      // the chain needs no git provider and the plugin host stays inert.
+      // THIS IS THE TEST THE DEFECT MADE IMPOSSIBLE. See docs/routes.md §112.
       const producer = await createOrphanComponent(server, org, `cap-producer-${uuidv7()}`);
       const consumer = await createOrphanComponent(server, org, `cap-consumer-${uuidv7()}`);
       const coordinate = `registry.internal/acme/cap-${uuidv7()}`;
@@ -1059,10 +908,6 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (8) The read
-  // -----------------------------------------------------------------------------------------
-
   describe("(8) the list read", () => {
     it("returns this org's declarations, narrows VERBATIM, and carries the dependencyManagement envelope", async () => {
       const producer = await createOrphanComponent(server, org, `list-producer-${uuidv7()}`);
@@ -1116,24 +961,9 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixture: the real prod release path
-  // -----------------------------------------------------------------------------------------
-
   const placedPairs = new Set<string>();
 
-  /**
-   * A component placed at the prod target, released there by a change whose wave target reached
-   * `succeeded`, then put into `accepted` — the exact coordination state `internal-release-detection`
-   * reconstructs a release from.
-   *
-   * The plan is compiled directly rather than waited for from the reconcile loop, the same shortcut
-   * `internal-release-detection.integration.test.ts` takes: compilation is what writes the
-   * `change_wave_targets` rows the derivation reads, and the loop's own job is covered elsewhere.
-   *
-   * EVERY FIXTURE HALF IS READ BACK. A fixture that did not apply turns the absence assertion in
-   * (7)(f) into a tautology.
-   */
+  /** A component placed at prod and released there. See docs/routes.md §113. */
   async function releaseToProd(
     componentObjectId: string,
     observedImages: string[]

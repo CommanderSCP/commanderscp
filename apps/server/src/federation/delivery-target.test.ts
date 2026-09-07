@@ -21,13 +21,7 @@ import {
 } from "./delivery-target.js";
 import { deliveryTargetSecretKey, parseDeliveryS3Credential } from "./retrans-relay.js";
 
-/**
- * M13.2a — DeliveryTarget VIEW resolution (proposal §13.2), unit-proven per gap:
- * per-peer beats env, env fallback is exactly today's behavior, BOTH-absent is a named
- * fail-closed problem (never a silent default path), a hostile stored dir never resolves
- * (and never silently falls back), and the inbox listing keeps the PR #112 traversal
- * guard — names only.
- */
+/** M13.2a — DeliveryTarget VIEW resolution. See docs/federation.md §79. */
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {
@@ -121,9 +115,8 @@ describe("resolveDeliveryTarget — the validated per-peer view (M15.6 shape)", 
         { outDir: "/env/out", inDir: "/env/in" }
       );
       expect(view.valid).toBe(false);
-      expect(view.outbound.dir).toBeNull(); // no silent env fallback masking the misconfig
+      expect(view.outbound.dir).toBeNull();
       expect(view.outbound.problem).toContain("not an absolute, traversal-free");
-      // The untouched direction still resolves normally.
       expect(view.inbound.dir).toBe("/env/in");
     }
   });
@@ -156,13 +149,13 @@ describe("SCP_DELIVERY_ROOTS — the operator root bound on per-peer dirs (#110 
   it("parseDeliveryRoots: comma/colon-separated absolutes, normalized; non-absolute dropped", () => {
     expect(parseDeliveryRoots("/a,/b:/c")).toEqual(["/a", "/b", "/c"]);
     expect(parseDeliveryRoots(" /a , /b ")).toEqual(["/a", "/b"]);
-    expect(parseDeliveryRoots("/data/roots/../escape")).toEqual(["/data/escape"]); // normalized
-    expect(parseDeliveryRoots("relative,,  ")).toEqual([]); // non-absolute + empties dropped
+    expect(parseDeliveryRoots("/data/roots/../escape")).toEqual(["/data/escape"]);
+    expect(parseDeliveryRoots("relative,,  ")).toEqual([]);
     expect(parseDeliveryRoots(undefined)).toEqual([]);
   });
 
   it("isUnderDeliveryRoot: segment-safe — honors nested, rejects the /root-evil prefix trick", () => {
-    expect(isUnderDeliveryRoot("/root", ["/root"])).toBe(true); // the root itself
+    expect(isUnderDeliveryRoot("/root", ["/root"])).toBe(true);
     expect(isUnderDeliveryRoot("/root/sub/x", ["/root"])).toBe(true);
     expect(isUnderDeliveryRoot("/root-evil", ["/root"])).toBe(false); // sibling, NOT under /root
     expect(isUnderDeliveryRoot("/root-evil/x", ["/root"])).toBe(false);
@@ -310,11 +303,7 @@ describe("listInbox — the §13.1a read surface: names only, no traversal", () 
   });
 });
 
-// ===========================================================================================
-// M13.2b — the s3-compatible provider: the endpoint/bucket allowlist (ADR-0019 §4 symmetry) and
-// the fail-closed resolution. The MinIO round-trip (put/list/get + multipart) is proven in the
-// integration suite; these unit tests pin the ALLOWLIST predicate + the fail-closed resolution.
-// ===========================================================================================
+// M13.2b — the s3-compatible provider. See docs/federation.md §80.
 
 const s3Target = (t: {
   endpoint: string;
@@ -348,7 +337,7 @@ describe("SCP_DELIVERY_S3_ENDPOINTS — the endpoint/bucket allowlist (endpoint-
     expect(parseDeliveryS3Endpoints("https://MinIO.A:9000/ignored/path")).toEqual([
       { origin: "https://minio.a:9000", bucket: null }
     ]);
-    expect(parseDeliveryS3Endpoints("not-a-url, ,  ")).toEqual([]); // unparseable + empties dropped
+    expect(parseDeliveryS3Endpoints("not-a-url, ,  ")).toEqual([]);
     expect(parseDeliveryS3Endpoints(undefined)).toEqual([]);
   });
 
@@ -361,7 +350,6 @@ describe("SCP_DELIVERY_S3_ENDPOINTS — the endpoint/bucket allowlist (endpoint-
 
   it("isDeliveryS3EndpointAllowed: origin EQUALITY (never string-prefix), bucket-pin honored", () => {
     const allow = parseDeliveryS3Endpoints("https://minio:9000, https://pinned:9000+only");
-    // Allowed: endpoint with no bucket-pin → any bucket.
     expect(isDeliveryS3EndpointAllowed("https://minio:9000", "anything", allow)).toBe(true);
     // Prefix-trick: a look-alike host must NOT match by string prefix.
     expect(isDeliveryS3EndpointAllowed("https://minio:9000.evil.net", "b", allow)).toBe(false);
@@ -477,17 +465,7 @@ describe("assertDeliveryTargetRooted — the pair-time gate, s3 sibling", () => 
   });
 });
 
-// ===========================================================================================
-// M13.1b — `resolveOnwardDeliveryDir`, the ONE onward-drop resolution shared by the M13.1a inbox
-// loop's validate-and-forward and the M13.1b auto-relay (the two halves of the same hop).
-//
-// `strict` exists because the two callers have different tolerances for a config gap. The inbox
-// loop is REACTIVE — a file arrived, and deferring it is visibly a stall an operator is already
-// looking at. The auto-relay is a TIMER: falling through to the instance-wide env dir would perform
-// the very action the operator-invoked route explicitly 400s on (`requireOutboundDir` refuses an s3
-// target), mark the build done, and leave the bytes in a directory the s3-expecting CDS never
-// watches — a silent boundary misdelivery nobody is watching a terminal for.
-// ===========================================================================================
+// The one onward-drop resolution both paths share. See docs/federation.md §81.
 
 describe("resolveOnwardDeliveryDir — the shared onward drop (M13.1a forward + M13.1b auto-relay)", () => {
   const peerId = (n: number) => asTrustDomainId(`00000000-0000-4000-8000-00000000000${n}`);
@@ -572,13 +550,7 @@ describe("resolveOnwardDeliveryDir — the shared onward drop (M13.1a forward + 
     ).toEqual({ dir: "/env/out" });
   });
 
-  /**
-   * THE REGRESSION (cd1bf1c): strict may only flag peers that CONFIGURED a target. A peer with no
-   * delivery target of its own is not a misconfiguration — it simply is not the boundary peer, and
-   * the normal CDS topology has exactly one of each. Flagging it refuses the drop on account of a
-   * peer that was never a candidate, which silently kills auto-relay in the standard two-peer
-   * deployment (upstream commander + downstream boundary peer, no instance env dir at all).
-   */
+  /** THE REGRESSION (cd1bf1c). See docs/federation.md §82. */
   it("STRICT: the normal two-peer topology resolves — a target-LESS upstream peer never blocks the boundary peer's dir", () => {
     const resolved = resolveOnwardDeliveryDir(
       [fsPeer("commander-a", 1), fsPeer("high-side", 2, "/roots/high/out")],

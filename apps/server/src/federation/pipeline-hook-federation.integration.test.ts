@@ -18,38 +18,7 @@ import { exportSyncBundle } from "./export-repo.js";
 import { importSyncBundle } from "./import-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * OUTPOST-RUN PROBES, THE DOWNWARD HALF — a hook declared at the commander REACHES the outpost that
- * will run it, and a retraction removes it there.
- *
- * ============================================================================================
- * WHY THIS EXISTS
- * ============================================================================================
- * Probes cannot run at the commander: it does not reach into a domain, and the digest-pinned test
- * bundle lives in the DOMAIN's own Gitea (D23). So the outpost runs them, which requires the
- * declaration to travel — and `pipeline_hooks` federated nowhere. A filterless census of
- * `apps/server/src/federation` for `pipeline_hooks` returned nothing before this change.
- *
- * The journal is the transport rather than the graph because a hook row is deliberately a SIDE
- * TABLE whose ownership derives from `component_object_id` (migration 0096's header, which
- * explicitly declines a `managed_by_stack` column). Making hooks graph objects to ride
- * `object_upsert` for free would reverse that decision to dodge a process step.
- *
- * ============================================================================================
- * WHAT IS ASSERTED, AND WHY EACH IS NOT THE OBVIOUS ONE
- * ============================================================================================
- *   - THE ROW AT THE OUTPOST (case 1), not "the bundle contained an entry". An entry that exports
- *     and then fails to apply is the shape this whole session has been finding: emitted, carried,
- *     and installed nowhere.
- *   - NO ECHO (case 2). The receiver must not re-journal what it was told, or two peers paired both
- *     ways loop forever. Asserted by exporting FROM the outpost afterwards and finding nothing —
- *     the only check that distinguishes "did not echo" from "echoed and we did not look".
- *   - A RETRACTION REMOVES IT (case 3). "Until they hear otherwise" is the tombstone; without it a
- *     probe deleted at the commander keeps running in the domain forever.
- *   - A MALFORMED ENTRY IS DROPPED, NOT THROWN (case 4). A throw mid-bundle wedges a peer's ENTIRE
- *     signed journal — the failure mode `import-repo.ts` warns about repeatedly. This is the case
- *     that makes the tolerance real rather than intended.
- */
+/** OUTPOST-RUN PROBES, THE DOWNWARD HALF. See docs/federation.md §369. */
 describe("pipeline hook federation: commander declares, outpost receives", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
@@ -222,16 +191,7 @@ describe("pipeline hook federation: commander declares, outpost receives", () =>
   });
 
   it("4. a TAMPERED hook entry is refused before it is ever parsed", async () => {
-    // WHAT I SET OUT TO TEST AND WHAT IS ACTUALLY TRUE — recorded because the difference matters.
-    // The intent was to prove the import's malformed-payload branch drops one bad entry without
-    // wedging the bundle (the failure `import-repo.ts` warns about throughout). It cannot be
-    // reached that way: mutating an entry invalidates the bundle's signature, and import REFUSES
-    // the whole thing with 409 before any payload is parsed. Measured, not assumed.
-    //
-    // That is the stronger property, so it is what this asserts. The malformed-payload branch
-    // remains as defence in depth for an entry a peer produces legitimately but this version cannot
-    // understand — a downgrade, or a future kind — and it is deliberately NOT reachable by
-    // tampering, which the signature already covers.
+    // WHAT I SET OUT TO TEST AND WHAT IS ACTUALLY TRUE. See docs/federation.md §370.
     const componentObjectId = await replicatedComponent();
     const cursor = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       getCursor(tx, outpost.orgId, commanderSelf.domainId, commanderSelf.domainId)
@@ -321,11 +281,7 @@ describe("pipeline hook federation: commander declares, outpost receives", () =>
     );
     expect(row, "the probe result never reached the gate that needs it").toBeTruthy();
     expect(row!.hookId).toBe("canary");
-    // PROVENANCE IS STAMPED BY THE RECEIVER. The outpost recorded this as `executor_observed`; the
-    // commander records what IT knows — that a peer reported it. Asserting the source is what makes
-    // that rule testable rather than aspirational: a receiver that trusted the payload would show
-    // `executor_observed` here and be claiming the commander observed a run in someone else's
-    // domain.
+    // PROVENANCE IS STAMPED BY THE RECEIVER. See docs/federation.md §371.
     expect(row!.source).toBe("peer_reported");
     expect(row!.producerSubjectId).toBeNull();
     // The evidence itself survives intact — it is what the gate parses.

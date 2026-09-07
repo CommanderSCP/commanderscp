@@ -9,30 +9,7 @@ import {
   replicaGuard
 } from "./replica-origin";
 
-/**
- * M16.3 P2 (REMEASURED) — the primitives behind the TWO write-control gates that survive, both of
- * which mirror a refusal MEASURED in `apps/server/src/federation/foreign-origin-writes.integration.
- * test.ts`: MOVE across a foreign-origin `contains` edge (`deleteRelationship` 409s) and MERGE with
- * a foreign-origin LOSER (`deleteObject` 409s). Everything else the first cut gated —
- * Detach/Repurpose/Bind, ASSIGN, MOVE across a local edge, merge into a foreign SURVIVOR, and
- * Accept/Rollback/Cancel — the server measurably ACCEPTS, so those gates are gone.
- *
- * `replicaGuard`'s mandatory `refusal: string` parameter is a WEAKER guarantee than an earlier
- * commit on this PR claimed ("gated on the wrong row is now a type error" — it is not): TypeScript
- * requires a second argument at every call site, but does not check that its CONTENT names a real,
- * measured refusal — `replicaGuard(true, "")` compiles cleanly, and `isMoveBlocked`/
- * `isMergeLoserBlocked`'s `{ originDomainId: string }` parameter types accept any object with that
- * shape, including a full `GraphObject` for the WRONG row (a component instead of its `contains`
- * edge) — structural typing plus no excess-property check on a passed variable means `tsc
- * --noEmit` is clean either way. What actually keeps each gate honest is this file: every
- * `disabled`/`title` assertion below is pinned to the SPECIFIC measured case it names, so a gate
- * rekeyed onto the wrong row breaks a test here, not a compile. `refusal` is good, enforced-by-
- * convention documentation, not a compile-time guarantee.
- *
- * No jsdom, no QueryClientProvider — plain vitest + `renderToStaticMarkup`, so this runs in the
- * existing "4. Unit tests" job (transitively required on every PR), same as service-board-
- * honesty.test.tsx.
- */
+/** The primitives behind the two write-control gates. See docs/web.md §129. */
 describe("replica-origin (M16.3 P2): measured foreign-origin write-control gating", () => {
   const OWN_DOMAIN = "2c1d3e4f-5a6b-4c8d-9e0f-1a2b3c4d5e6f";
   const OTHER_DOMAIN = "5f6b4a2c-1d3e-4f8a-9b0c-2d4e6f8a0b1c";

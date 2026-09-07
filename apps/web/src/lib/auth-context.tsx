@@ -13,13 +13,7 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-/**
- * Root-level session provider (BUILD_AND_TEST.md §8 M2 item 2's "small root-level provider that
- * calls GET /auth/me once on load"). The SPA can't read the httpOnly `scp_session` cookie
- * itself, so this is the ONLY way it learns whether/who it's logged in as — every route-guard
- * (components/RequireAuth.tsx) and the nav (components/AppShell.tsx) reads from here rather than
- * each firing its own `/auth/me` request.
- */
+/** Root-level session provider. See docs/web.md §115. */
 export function AuthProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({

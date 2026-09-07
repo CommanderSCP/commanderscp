@@ -1,21 +1,9 @@
 export type OutputFormat = "json" | "table";
 
-/** A row is whatever a mapper hands us — API objects arrive with numbers, booleans, nulls and
- *  nested objects, not just strings — so the TABLE printer owns the string coercion, not 100+
- *  callers. (Before this, `printTable` typed rows as `Record<string, string>` and every caller that
- *  passed an API object straight through lied about it with a cast; the first numeric field —
- *  `scp federation import`'s `appliedEntries` — crashed the printer with `v.padEnd is not a
- *  function` AFTER the import had already applied.) */
+/** A row is whatever a mapper hands us. See docs/cli.md §133. */
 export type OutputRow = Record<string, unknown>;
 
-/**
- * Render one table cell as text. Kept deliberately plain:
- *  - string → as is
- *  - number / bigint / boolean → their canonical text (`0` and `false` are VALUES, not absences)
- *  - null / undefined → blank (the printer's long-standing convention for an absent field; row
- *    mappers that want `—` or `?` say so themselves — see cli-absent-formatters.test.ts)
- *  - object / array → compact JSON, so a nested field never prints as `[object Object]`
- */
+/** Render one table cell as text. Kept deliberately plain. See docs/cli.md §134. */
 export function cellText(value: unknown): string {
   if (value === null || value === undefined) return "";
   switch (typeof value) {

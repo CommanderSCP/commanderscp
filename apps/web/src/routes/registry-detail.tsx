@@ -52,11 +52,7 @@ import {
 } from "../components/ui/select";
 import { queryErrorMessage } from "../components/query-error";
 
-/**
- * `/{basePath}/{idOrUrn}` (BUILD_AND_TEST.md §8 M2 item 2) — object properties/labels, owners
- * (if ownable), consumes/depends-on edges (services/components), and a link into the graph
- * explorer rooted at this object. No Decision/"Why?" UI — explicitly deferred to M4.
- */
+/** `/{basePath}/{idOrUrn}` (BUILD_AND_TEST.md §8 M2 item 2). See docs/web.md §450. */
 export function RegistryDetailPage(): React.JSX.Element {
   const basePath = useBasePathParam();
   const idOrUrn = useIdOrUrnParam();
@@ -130,13 +126,7 @@ export function RegistryDetailPage(): React.JSX.Element {
   }
 
   const object = objectQuery.data;
-  // M16.3 P2 (REMEASURED): is THIS object a read-only replica of another domain's config? It is
-  // used ONLY to render the provenance badge below — NOT to gate the cards. Measurement
-  // (`apps/server/src/federation/foreign-origin-writes.integration.test.ts`) showed the server
-  // accepts every write those cards offer against a foreign-origin object; the two writes it does
-  // refuse are keyed on a DIFFERENT row's origin (the `contains` edge, the merge loser), so each
-  // card derives its own gate from the row the server actually guards. See
-  // `lib/replica-origin.tsx`'s module doc for the full measured table.
+  // Is this object a read-only replica of another domain's. See docs/web.md §451.
   const foreign = isForeignOriginObject(object.originDomainId, ownDomainId);
 
   return (
@@ -316,11 +306,7 @@ export function RegistryDetailPage(): React.JSX.Element {
   );
 }
 
-/**
- * Properties, type-aware (spec §4E): scalar values (string/number/boolean/null) render plainly in a
- * KeyValueList; nested objects/arrays collapse behind one "view raw" toggle rather than always
- * dumping the whole bag as JSON. No default JSON dump for an object with only scalar properties.
- */
+/** Properties, type-aware (spec §4E). See docs/web.md §452. */
 function PropertiesView({
   properties
 }: {
@@ -367,13 +353,7 @@ function PropertiesView({
   );
 }
 
-/**
- * Owners/consumes/depends-on, resolved to name + type badge + link (spec §4E) — driven by
- * `client.graph.traverse`'s resolved neighbor objects rather than bare relationship rows. An edge
- * `traverse` could not resolve to an object (its endpoint exists but was not returned — e.g. a
- * foreign domain that does not replicate it here) falls back to the raw id in mono, per spec, rather
- * than silently dropping the edge.
- */
+/** Owners/consumes/depends-on, resolved to name + type badge + link. See docs/web.md §453. */
 function RelatedObjectList({
   query,
   selfId,
@@ -436,11 +416,7 @@ function RelatedObjectList({
   );
 }
 
-/**
- * The component's owning service (M12 P5b) — shows the current `contains` parent (or "unassigned"
- * for an imported orphan) and a selector to assign or atomically move it. `setService` is
- * idempotent, so re-selecting the same service is a no-op.
- */
+/** The component's owning service (M12 P5b). See docs/web.md §454. */
 function ComponentServiceCard({
   componentId,
   detailKey
@@ -464,15 +440,7 @@ function ComponentServiceCard({
   const currentEdge = containsQuery.data?.items[0];
   const currentServiceId = currentEdge?.fromId;
   const currentService = servicesQuery.data?.items.find((s) => s.id === currentServiceId);
-  // M16.3 P2 (REMEASURED) — the ONE gate here, and it is keyed on the `contains` EDGE, not on the
-  // component. `components-repo.ts`'s `setComponentService` soft-deletes the current edge before
-  // creating the new one, and `deleteRelationship` refuses a foreign-origin edge (409). An ASSIGN
-  // (no current edge) is a pure `createRelationship`, which never consults its endpoints' origins:
-  // `foreign-origin-writes.integration.test.ts` measures BOTH "ASSIGN ... SUCCEEDS even when the
-  // COMPONENT is foreign-origin" and "MOVE across a LOCALLY-originated contains edge SUCCEEDS even
-  // when the COMPONENT is foreign-origin", against "MOVE across a FOREIGN-ORIGIN contains edge
-  // 409s". Gating on the component's own origin (the first cut) blocked two writes the server
-  // accepts and missed the one it refuses.
+  // The one gate here, keyed on the containment edge. See docs/web.md §455.
   const moveBlocked = isMoveBlocked(currentEdge, ownDomainId);
   const moveGuard = replicaGuard(
     moveBlocked,
@@ -560,24 +528,7 @@ function ComponentServiceCard({
   );
 }
 
-/**
- * A target's executor bindings (M12 P5c) — one per pipeline (infra/software). Lists each binding
- * with its module/instance and lets an operator DETACH it or RELABEL which pipeline it drives. This
- * is the UI half of the P5c binding primitives; creating a binding still lives on the Plugins page.
- *
- * DELIBERATELY UNGATED ON FEDERATION ORIGIN (M16.3 P2, remeasured). An executor binding is
- * per-(org, target, type) LOCAL operational config: `db/schema.ts`'s `executor_bindings` has no
- * `origin_domain_id` column, it is never carried in a federation journal, and
- * `routes/executors.ts`'s PUT/DELETE/PATCH handlers check only `object:write` RBAC on the target —
- * they never read the target's `originDomainId`. `apps/server/src/federation/
- * foreign-origin-writes.integration.test.ts` measures all three SUCCEEDING against a genuinely
- * foreign-origin target. Disabling them (the first cut of this milestone) broke the documented
- * multi-region workflow — DESIGN.md §12.6 / BUILD_AND_TEST.md M15.6: "a region is a
- * deployment-target ... its per-region Argo CD is an ordinary per-region executor binding", i.e. an
- * outpost binding its OWN local Argo CD to a target that is commander-origin from where it sits.
- * It was also internally inconsistent with `plugins.tsx`'s bind form, which creates bindings against
- * any target with no origin gating at all: bind-but-never-detach.
- */
+/** A target's executor bindings (M12 P5c). See docs/web.md §456. */
 function TargetBindingsCard({
   targetId,
   detailKey
@@ -673,12 +624,7 @@ function TargetBindingsCard({
   );
 }
 
-/**
- * Merge another component into this one (M12 P5d) — the driving-case fold of a freshly-imported,
- * binding-only duplicate. Picks a LOSER component; on merge, its executor bindings move here and it
- * is soft-deleted. The server rejects a binding-type collision (relabel one first) or an in-flight
- * change, surfaced inline.
- */
+/** Merge another component into this one (M12 P5d). See docs/web.md §457. */
 function MergeComponentCard({
   survivorId,
   detailKey
@@ -704,14 +650,7 @@ function MergeComponentCard({
     }
   });
 
-  // M16.3 P2 (REMEASURED) — the ONE gate here, and it is keyed on the LOSER. `mergeComponents`
-  // soft-deletes the loser via `deleteObject`, whose single-writer guard 409s on a replica:
-  // `foreign-origin-writes.integration.test.ts`'s "merge 409s when the LOSER is foreign-origin".
-  // The SURVIVOR's origin is NOT gated — the only write against it is `repointExecutorBindingTarget`,
-  // an unguarded UPDATE of `executor_bindings`, and the same test measures "merge SUCCEEDS when the
-  // SURVIVOR is foreign-origin". A foreign-origin loser is rendered DISABLED + EXPLAINED rather than
-  // silently dropped from the list (the first cut filtered it out), so an operator can see the
-  // candidate and learn why it can't be folded in here.
+  // The one gate here, and it is keyed on the loser. See docs/web.md §458.
   const candidates = (componentsQuery.data?.items ?? [])
     .filter((c) => c.id !== survivorId)
     .map((c) => ({
@@ -786,9 +725,7 @@ function MergeComponentCard({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // Governed-here line (governance-reach-on-containment-move.md §9.4 Q4 follow-up).
-// -------------------------------------------------------------------------------------------
 
 /** Sentence-case labels for the rung tiers a UI ever needs to name (admin-governance.tsx's
  *  `CONTAINER_TIERS` covers the same three plus its own "Org root" spelling for the switch; this is
@@ -800,16 +737,7 @@ const GOVERNANCE_MOVE_TIER_LABELS: Record<GovernanceMoveTier, string> = {
   assembly: "assembly"
 };
 
-/**
- * The rendered line itself — pure, off an already-resolved `GovernanceMoveEnforcement`. Exported for
- * the test: given `enforced: true`, names the NEAREST rung on this object's chain (rungs arrive
- * org-root-first per the schema doc, so the last entry is nearest — "+N more" in the tooltip names
- * the rest); given `enforced: true` with an EMPTY rungs array (the instance rung alone is doing the
- * work — see `GovernanceMoveEnforcement`'s own doc on the OR), names the instance level instead of a
- * rung that does not exist. Callers must not invoke this when `enforced` is false — there is nothing
- * honest to say short of "not enforced here", which is not what this line is for (silence already
- * says that).
- */
+/** The rendered line itself. See docs/web.md §459. */
 export function GovernedHereLine({
   enforcement
 }: {
@@ -845,16 +773,7 @@ export function GovernedHereLine({
   );
 }
 
-/**
- * Wires the explain read (`GET /objects/{type}/{idOrUrn}/governance-move-enforcement`) to
- * `GovernedHereLine`, provider-free (`fetchEnforcement` threaded in) so it is testable off a spy
- * with no route/client mocking. `queryKeyExtra` is the page's own `detailKey` — keying the read off
- * it (rather than off nothing) is what makes the fetch happen exactly ONCE per object shown, cached
- * by TanStack Query like every other read on this page.
- *
- * Pending, errored, or a successful `enforced: false` all render NOTHING — the line makes a claim
- * only when it has one to make; absence here is never itself a claim.
- */
+/** Wires the explain read. See docs/web.md §460. */
 export function GovernedHereLineForObject({
   typeId,
   objectId,
@@ -874,15 +793,9 @@ export function GovernedHereLineForObject({
   return <GovernedHereLine enforcement={query.data} />;
 }
 
-// -------------------------------------------------------------------------------------------
 // Delete… (owner decision 2026-08-18: every registry type, confirm + rendered refusal).
-// -------------------------------------------------------------------------------------------
 
-/** Verbatim server sentence for a delete refusal — the container-delete guard's 409 (children,
- *  placements, named with a remedy) or a plain 403 both carry the whole explanation in
- *  `problem.detail`; `.message` is only the RFC 9457 `title` ("Conflict", "Forbidden"), which is why
- *  this reads `.problem?.detail` first, exactly `admin-governance.tsx`'s
- *  `governanceMoveWriteRefusal` does for the sibling refusal class. */
+/** Verbatim server sentence for a delete refusal. See docs/web.md §461. */
 export function deleteRefusalMessage(error: unknown): string {
   if (error instanceof ScpApiError) {
     return error.problem?.detail ?? error.message;
@@ -890,14 +803,7 @@ export function deleteRefusalMessage(error: unknown): string {
   return queryErrorMessage(error);
 }
 
-/**
- * The confirm dialog's body, portal-free — exported for the test. Requires the object's OWN NAME
- * typed back (destructive-act gate, the `outposts.tsx`/`component-pipeline.tsx` precedent this
- * feature has no direct sibling for yet); Delete stays disabled until it matches EXACTLY. A refusal
- * (409 container-delete guard, 403) renders the server's sentence verbatim and the dialog stays
- * open — no navigation, no optimistic removal. Success calls `onDeleted`, which the card below turns
- * into invalidate-and-navigate.
- */
+/** The confirm dialog's body, portal-free. See docs/web.md §462. */
 export function DeleteObjectDialogBody({
   typeLabel,
   name,
@@ -978,11 +884,7 @@ export function DeleteObjectDialogBody({
   );
 }
 
-/**
- * The card + dialog trigger, threaded provider-free (`runDelete`/`onDeleted`) so the whole flow is
- * testable without a router. Danger-styled per the design system's `destructive` Button variant;
- * placed as the LAST card on the page, since it acts on the whole object every card above describes.
- */
+/** The card + dialog trigger, threaded provider-free. See docs/web.md §463. */
 export function DeleteObjectCard({
   typeLabel,
   name,

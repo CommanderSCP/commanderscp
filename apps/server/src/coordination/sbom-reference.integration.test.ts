@@ -13,26 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M17.2 (ADR-0015 §5) — BUILD-TIME SBOM, stored as a REFERENCE on the promotion, proven END TO END
- * through the REAL typed ingress: the generated SDK's `changeSources.report(...)` (a real HTTP call
- * against a real server on a real Postgres) → the real route → the real reconcile-tick processor →
- * the persisted `changes.source_ref` row.
- *
- * WHAT THIS IS NOT: there is no SBOM-generation path, no SBOM upload path, and no SBOM-bytes column
- * anywhere in this system, and this test asserts that positively. Charter coordinate-not-execute:
- * the EXECUTOR's coordinated Trivy pass emits the SBOM at BUILD time and cosign-signs it at ORIGIN;
- * SCP persists `{format, digest, location, signatureRef, …}` and nothing more. `signatureRef` is
- * the executor's own signature — SCP never signs an SBOM.
- *
- * Transport is the TYPED first-party report route (not the raw `/webhook` `z.record`, not the scan
- * control's pull-fetch, not `control_runs.evidence`): it is the only ingress that generates a real
- * SDK contract (charter principle 3), it is PAT-authed, and it already carries the artifact digest
- * this SBOM describes — so the artifact and its SBOM arrive on ONE atomic report.
- *
- * Storage is `changes.sourceRef.sbom` — a jsonb column, so this whole capability costs ZERO
- * migration.
- */
+/** Build-time SBOM, stored as a reference on the promotion. See docs/coordination.md §847. */
 describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto the change's sourceRef", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

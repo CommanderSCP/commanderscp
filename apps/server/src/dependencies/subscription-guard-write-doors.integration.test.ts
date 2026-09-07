@@ -28,55 +28,7 @@ import {
   type IsolatedDomain
 } from "../federation/test-support/isolated-domain.js";
 
-/**
- * ADR-0032 §6a AT THE CHOKE POINT — EVERY LOCAL WRITE DOOR, AND THE ONE EXEMPTION.
- *
- * ================================================================================================
- * THE HOLE
- * ================================================================================================
- * M21.3 installed the group-scoped-opt-out refusal in ONE place: the composed `validateWrite` of the
- * typed `/policies` routes. Its SIBLING in that same composition, `assertPolicyScopeWithinAuthority`,
- * was installed in THREE (that config plus `iac/plans-repo.ts`'s create and update branches) — the
- * tell that the typed route was never the boundary. Censusing the sibling turned up three doors that
- * reach `createObject` with a free-form `typeId` and free-form `properties` and never pass through
- * `typed-registries.ts` at all. Each was REPRODUCED with the exact document the typed route answers
- * 400 to, before the fix:
- *
- *   1. IaC — `POST /plans` + `POST /plans/{id}/apply` applied a manifest declaring
- *      `{typeId:"policy", properties:{scope:{group:"team-platform"}, effects:[{dependencySubscription:
- *      {enabled:false, coordinate:"acme-lib"}}]}}`, and the object read back. `routes/plans.ts`
- *      claims IaC enforces "the exact same governance gates the typed /policies routes enforce";
- *      M21.3 made that comment false.
- *   2. HAND-FILL — `POST /api/v1/federation/hand-fill`, free-form `typeId` + `properties`, any
- *      `federation:write` holder.
- *   3. OVERLAY — `POST /api/v1/federation/overlays` with `typeId: "policy"`, authorized with plain
- *      `object:write`.
- *
- * The fix is NOT three more calls — that is the same rake, and the fourth door would miss it again
- * (BUILD_AND_TEST.md §4.4). It moved to `graph/objects-repo.ts`'s `createObject`/`updateObject`, the
- * one choke point every local write door funnels through, following the M16.2 clause-(4) precedent
- * that already lives there.
- *
- * ================================================================================================
- * WHAT THIS FILE ASSERTS, AND WHY THE LAST CASE IS THE IMPORTANT ONE
- * ================================================================================================
- * Each door refuses AND writes nothing — a refusal that still stored the row would satisfy a status
- * assertion. Then the negative control: a policy carrying the IDENTICAL document, arriving over a
- * genuinely signed federation bundle, is ACCEPTED and does not abort its bundle.
- *
- * That exemption is narrow and deliberate. `federation/import-repo.ts`'s `object_upsert` branch has
- * NO try/catch, so a throw there aborts the WHOLE bundle and wedges the channel (proposal §10 Q6);
- * the authoring instance is where an authoring-time refusal belongs. But `federationImport` is set by
- * TWO modules, not one — `import-repo.ts` and `federation/handfill-repo.ts` (census re-run filterless
- * for this change; there is no third) — and hand-fill is a local operator action with no channel to
- * wedge. So hand-fill calls the guard for itself, and case 2 below is what proves the exemption did
- * not swallow it.
- *
- * ================================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ================================================================================================
- * See the PR body. Every case here was watched fail against the pre-fix tree.
- */
+/** ADR-0032 §6a AT THE CHOKE POINT. See docs/dependencies.md §370. */
 describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -149,10 +101,6 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
     );
   }
 
-  // -------------------------------------------------------------------------------------------
-  // DOOR 1 — IaC plan + apply.
-  // -------------------------------------------------------------------------------------------
-
   it("DOOR 1a: IaC apply refuses a manifest that CREATES the refused policy, and writes nothing", async () => {
     const stackName = `dep-sub-${randomUUID().slice(0, 8)}`;
     const urn = `urn:scp:${stackName}:policy:smuggled`;
@@ -209,9 +157,7 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
     ).toEqual(clean.effects);
   });
 
-  // -------------------------------------------------------------------------------------------
   // DOOR 2 — hand-fill. The one that the `federationImport` exemption would otherwise swallow.
-  // -------------------------------------------------------------------------------------------
 
   it("DOOR 2: hand-fill refuses it — a local operator action does not get the import exemption", async () => {
     const peer = await pairCommanderPeer();
@@ -253,10 +199,6 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
     expect(await policyRowsByUrn(urn)).toHaveLength(1);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // DOOR 3 — federation overlay.
-  // -------------------------------------------------------------------------------------------
-
   it("DOOR 3: the overlay route refuses it, and creates neither the overlay nor its `annotates` edge", async () => {
     const base = await admin.services.create({ name: `svc-overlay-${randomUUID().slice(0, 8)}` });
     const urn = `urn:scp:${org.orgId}:policy:overlay-opt-out`;
@@ -280,9 +222,7 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
     expect(merged.overlays).toHaveLength(0);
   });
 
-  // -------------------------------------------------------------------------------------------
   // DOOR 4 — the generic `/objects/{type}` route. VERIFIED, not assumed.
-  // -------------------------------------------------------------------------------------------
 
   it("DOOR 4: the generic /objects/policy route still refuses the TYPE outright, before any document check", async () => {
     // `routes/objects-generic.ts`'s `assertNotGovernanceManagedObjectType` is the pre-existing
@@ -300,20 +240,7 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
   });
 });
 
-/**
- * THE EXEMPTION, AND ITS EXACT WIDTH — a REAL federation import of the very same document.
- *
- * This is the negative control for everything above: if the choke-point guard had been installed
- * without the `federationImport` skip, this bundle would abort at `import-repo.ts`'s `object_upsert`
- * branch (which has no try/catch) and wedge the channel for every later entry too — proposal §10 Q6.
- * If the skip had instead been made blanket, DOOR 2 above would be green-by-accident.
- *
- * The exporter plants the entry with `appendJournalEntry` rather than through a route, because the
- * commander's OWN guard refuses to author this document — which is the point of the whole clause.
- * What arrives is therefore exactly what a peer running a build without the guard (or a future build
- * with a different rule) would ship: a properly chained, properly signed `policy_upsert` carrying a
- * group-only opt-out.
- */
+/** THE EXEMPTION, AND ITS EXACT WIDTH. See docs/dependencies.md §371. */
 describe("ADR-0032 §6a: a federation-IMPORTED policy carrying the same document is ACCEPTED", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;

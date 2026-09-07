@@ -11,121 +11,9 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * RBAC ACROSS AN ASSEMBLY — the two-hop `contains` chain (role-model.md §1.4, build step 2)
- * ================================================================================================
- *
- * THE CLAIM THIS FILE PINS. `scopeExpandCte` (`authz/resolve.ts`) walks the `contains` edge with
- * **no predicate on either endpoint's type**, and migration 0055 registered `contains` as
- * `from_types = ['service','assembly']`, `to_types = ['assembly','component']`. Those two facts
- * together mean `service -> assembly -> component` chains for free, at depths 1 AND 2. That is why
- * 0055 shipped no edit to the resolver at all, and it is why role-model.md §7.1's ruling that
- * *"assembly & component share a role"* (ComponentAdmin, `bindable_at: assembly, component`) costs
- * nothing structurally: bound at an assembly, the role reaches that assembly's components through
- * this walk and no new code.
- *
- * A role design resting on a behaviour that was never asserted is a role design resting on a
- * reading of a SQL fragment. This file makes the behaviour a gate.
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THIS WAS NOT ALREADY COVERED — the exact shape of a vacuous test
- * ------------------------------------------------------------------------------------------------
- * A filterless census (`grep -rna`, per CLAUDE.md) of every role binding in any assembly-bearing
- * test found ONE, and it was checked at the assembly ITSELF — a **depth-0 self-match**, which the
- * seed row of `scope_expand` satisfies before the recursive term runs even once. Such a test passes
- * with the entire `contains` arm deleted from the LATERAL. It reads as coverage of the `contains`
- * route and is coverage of nothing but the seed.
- *
- * That is not a hypothetical failure mode here. `graph/containment.ts`'s header records that two
- * hand-synced copies of this same walk DID drift, and the two symptoms were opposite — a
- * service-scoped freeze that failed **OPEN** and a service-scoped `requireApprovals` that failed
- * **CLOSED** — from one root cause. `scopeExpandCte` is still hand-synced with that file on routes
- * 1 and 2 by design (it is a fragment composed into a larger query and cannot consume row output).
- * So the only thing standing between a future edit and a silent authority change is a test that
- * fails when the arm goes away. Every assertion below was measured against exactly that mutation —
- * see the MUTATION LOG.
- *
- * ------------------------------------------------------------------------------------------------
- * WHAT THIS FILE ADDS OVER THE TWO NEIGHBOURS THAT ALSO TOUCH `contains`
- * ------------------------------------------------------------------------------------------------
- * - `authz/service-scope.integration.test.ts` — the ONE-hop `service -> component` grant, at the
- *   real doors. It has no assembly anywhere: every chain in it is a single edge, so a walk bounded
- *   at depth 1 passes it entirely.
- * - `authz/inverse-walk-drift.integration.test.ts` — has a `route 2 … TWO HOPS` case over a
- *   generated estate, and it is the closest thing in the tree to this file. It asserts the two-hop
- *   grant at the **primitive** (`hasPermission`) and at the **downward filter**
- *   (`readableObjectFilterFor`), because its subject is the INVERSE-WALK INVARIANT
- *   (`hasPermission(S,O) ⟺ O ∈ readableSet(S)`), not the chain. Its only HTTP door is the LIST
- *   pagination case.
- *
- *   This file is deliberately the other half: the two-hop chain **through the real get-by-id and
- *   PATCH doors**, plus the two asymmetries that neighbour does not build a fixture for — a
- *   **SIBLING ASSEMBLY** under the same service (it has one sibling *service* and no sibling
- *   assembly), and a **component-bound** subject failing to reach the assembly above it (it checks
- *   assembly-bound -> service, one rung higher).
- *
- *   Overlap is real and is not a reason to drop either: the two-hop primitive assertion appears in
- *   both. Deleting it here would leave the door cases resting on a claim proved in a file whose
- *   fixture is regenerated from `SCP_DRIFT_SEED` and whose stated purpose is a different invariant.
- *
- * ------------------------------------------------------------------------------------------------
- * THE ASYMMETRY IS THE SECURITY PROPERTY, NOT AN IMPLEMENTATION DETAIL
- * ------------------------------------------------------------------------------------------------
- * `contains` is registered service -> component and walked BACKWARDS here (`r.to_id` is the object
- * being checked, `r.from_id` its parent). So authority flows DOWN and only down:
- *
- *   - a binding at a service reaches every assembly and component beneath it;
- *   - a binding at an assembly reaches its own components and **nothing sideways** — not a sibling
- *     assembly, not a sibling assembly's components;
- *   - a binding at a component reaches **nothing upward** — not its assembly, not its service.
- *
- * If the walk were ever "fixed" to be symmetric, the component's own operator would inherit the
- * service, and every ComponentAdmin in the estate would silently become a ServiceAdmin. The
- * negative cases below are therefore not padding; they are the half that cannot be recovered by
- * re-reading the code, because a too-permissive walk still passes every positive assertion.
- *
- * ------------------------------------------------------------------------------------------------
- * THE FIXTURE — built through the REAL API (every object has a door, so nothing is hand-inserted)
- * ------------------------------------------------------------------------------------------------
- *
- *   org root
- *   └── domain D                                   (route 1: objects.domain_id)
- *       ├── service S      --contains-->  assembly A1  --contains-->  component C1
- *       │                                                             └── placement P1 (at target T)
- *       │                  --contains-->  assembly A2  --contains-->  component C2
- *       └── service S2     --contains-->  assembly A3  --contains-->  component C3
- *
- * Assemblies, components and placements take no `domainId`, so `objects-repo.ts` roots them at the
- * ORG ROOT — route 1 gives them the org root and nothing else. Their only path to S, D or each
- * other is the `contains` edge under test. That is deliberate: if the fixture parented C1 under D
- * via `domainId`, a service binding could reach it by route 1 and the `contains` mutation below
- * would not go red.
- *
- * The MUTATION LOG below records what each of those assertions was measured against.
- */
+/** RBAC ACROSS AN ASSEMBLY. See docs/authz.md §33. */
 
-/**
- * MUTATION LOG — each applied ALONE to `authz/resolve.ts`, measured 2026-08-26, then reverted.
- *
- * A test that survives mutation 1 is measuring the seed row of `scope_expand` and nothing else. A
- * test that survives mutation 2 is measuring the PRESENCE of the arm rather than the DEPTH of the
- * walk — the subtler failure, and the one the depth-0 self-match described above hides behind. Both
- * were run; the second is the one that shaped this file's structure.
- *
- * | # | Mutation applied to `scopeExpandCte` | Measured result |
- * |---|---|---|
- * | 1 | DELETE the `contains` arm (`SELECT r.from_id … type_id = 'contains'`) from the LATERAL | **9 of 13 fail.** Headline: `AssertionError: the SERVICE binding must reach the component two hops down, under an assembly: expected false to be true`. Every positive case goes with it — one-hop, two-hop, three-hop, and all four doors (`ScpApiError: Forbidden`). The four NEGATIVE tests stay GREEN, which is exactly why they are here and also exactly why they can never be the proof: a walk that grants nothing satisfies every "must not reach" claim ever written. |
- * | 2 | BOUND the `contains` walk at ONE hop (`AND se.depth = 0` on that arm) | **4 fail, and precisely the right 4.** Red: the two-hop primitive, the three-hop placement case, `DOOR (read, TWO HOPS)` and `DOOR (write) … two hops up`. GREEN: `ONE HOP from the service`, `ONE HOP: a binding at the ASSEMBLY …`, and `DOOR (read, ONE HOP)`. That green/red split is the proof the assertions measure DEPTH. |
- *
- * ⚠️ MUTATION 2 WAS FIRST ATTEMPTED THE OBVIOUS WAY AND THAT WAY IS USELESS HERE. Setting
- * `scopeExpandCte`'s shared bound to 1 outright (`maxDepth: number = 1`) does not fail these tests
- * — it fails `beforeAll`, at `relationships.create`, with all 13 SKIPPED. The org bootstrap admin
- * is bound at the ORG ROOT, and a service sits two hops below it (`service -> domain -> org root`),
- * so a globally-bounded walk stops the FIXTURE from being built through the real API and the suite
- * reports a red that says nothing about the property. Anyone re-running this log should mutate the
- * ARM, not the shared bound; a "13 skipped" run is that mistake, not a discovery.
- */
+/** Mutation log: each applied alone, measured, then reverted. See docs/authz.md §34. */
 
 describe("RBAC across an assembly: `service -> assembly -> component` (role-model.md §1.4)", () => {
   let server: ListeningTestServer;
@@ -250,13 +138,7 @@ describe("RBAC across an assembly: `service -> assembly -> component` (role-mode
   // 1. THE HEADLINE — two hops, at the primitive.
   // ---------------------------------------------------------------------------------------------
 
-  /**
-   * Hop 1 and hop 2 are SEPARATE tests on purpose, and the separation is what makes the depth
-   * mutation legible. Asserted together in one `it`, the hop-1 `expect` short-circuits the hop-2
-   * one, so a walk bounded at depth 1 would report "must reach the assembly one hop down" — a
-   * message that names the assertion that STILL HOLDS. Split, the failing test names the hop that
-   * actually broke, and the pair reads as a measurement of depth rather than of presence.
-   */
+  /** Hops are separate tests so a depth mutation stays legible. See docs/authz.md §35. */
   it("ONE HOP from the service: the SERVICE binding reaches the assembly it contains", async () => {
     const { objectId: subject } = await principal("Viewer", tree.service);
     expect(await can(subject, tree.service), "at its own scope, depth 0").toBe(true);
@@ -361,13 +243,7 @@ describe("RBAC across an assembly: `service -> assembly -> component` (role-mode
     expect(await can(atDomain, tree.otherService)).toBe(true);
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // 4. THE REAL DOORS — the layer that actually decides what a caller gets.
-  //
-  // `hasPermission` is the primitive; a door is where it is (or is not) called with the right
-  // scope. CLAUDE.md's "component built, never installed" class lives exactly in that gap, so the
-  // property is pinned at BOTH layers or it is pinned at neither.
-  // ---------------------------------------------------------------------------------------------
+  // 4. THE REAL DOORS. See docs/authz.md §36.
 
   it("DOOR (read, ONE HOP): `GET /assemblies/{id}` admits a SERVICE-scoped Viewer", async () => {
     // Split from the two-hop case below for the same reason the primitive pair is split: this half

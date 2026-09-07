@@ -12,21 +12,9 @@ import type { PlaceableTarget } from "./infra.js";
 import { productsModuleSource } from "./products.js";
 import { normalizeWaveItems, type WaveItem, type WaveTarget } from "./waves.js";
 
-/**
- * Typed pipeline-kind constructs (team-pipeline-iac.md D15/D16/D17/D18/D8, round B). A "pipeline" is
- * DERIVED, never a new manifest collection (main doc §2): every `Pipeline` construct below
- * synthesizes into the SAME collections round A's `Stack` already exposes — a `release-topology`
- * object, a `releases_via` relationship, `sourceMappings`, and `placements` — which is exactly why
- * this file needs no schema change and no codegen.
- */
+/** Typed pipeline-kind constructs. See docs/iac.md §281. */
 
-// ---------------------------------------------------------------------------------------------
-// `ExecutionSystem` — reference-only (§12: "`ExecutionSystem.fromName()` remains reference-only —
-// creation stays an operator act — credentials"). No owned-construction form exists here on
-// purpose: connecting a real execution system holds credentials, which stays a `scp connect` /
-// `POST /executors` operator ceremony (main doc §1's worked example), never something a component's
-// own committed manifest can conjure.
-// ---------------------------------------------------------------------------------------------
+// `ExecutionSystem` — reference-only. See docs/iac.md §282.
 
 export type IExecutionSystem = IResourceRef<"execution-system">;
 
@@ -63,26 +51,10 @@ export const ExecutionSystem = {
 // (`repos('payments/payments-api')`)".
 // ---------------------------------------------------------------------------------------------
 
-/**
- * Keeps a pipeline's `repo:` prop to the org-relative slug (`repos("payments/payments-api")`) —
- * D18's helper. THIS FUNCTION DELIBERATELY DOES NOT PREPEND A HOST: `@scp/iac` is org-agnostic (it
- * ships to every org on the platform, DESIGN.md's air-gap/self-hosting principle), so it has no
- * single git host to default to, and the worked examples show the org's OWN standards package
- * (`@corp/scp-standards`) re-exporting a host-aware `repos()` for its fleet (main doc D10, examples
- * §5: "import { waves, repos } from '@corp/scp-standards'"). This identity function is what a
- * standards package wraps — it exists in `@scp/iac` so a repo that has not yet grown a standards
- * package can still write `repos("payments/payments-api")` and get useful type-checked call-site
- * documentation ("this is the org-relative part"), not an unlabeled string literal. Where the host
- * ultimately comes from (a config-source's own `repo` pattern-match, §4) is unaffected either way —
- * the config source matches by GLOB, not by this function's output.
- */
+/** Keeps a pipeline's `repo:` prop to the org-relative slug. See docs/iac.md §283. */
 export function repos(orgRelativePath: string): string {
   return orgRelativePath;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Props
-// ---------------------------------------------------------------------------------------------
 
 export interface PipelineSourceProps {
   /** The repo this pipeline releases from. REQUIRED — synth refuses a pipeline without one (D18:
@@ -104,29 +76,12 @@ export interface PipelineSourceProps {
 }
 
 export interface PipelineWavesProps {
-  /** The wave topology (§8) — `waves.linear(...)`/`waves.widening(...)`/`waves.byDomain(...)`, or a
-   *  plain array in the same relaxed shape (`waves.ts`'s `WaveItem`). Placements are INFERRED from
-   *  every stage these waves name (D8) — synth-time only; the synthesized manifest carries every
-   *  inferred placement as an explicit entry, and an explicit `component.placeAt(...)` declaration
-   *  for the same pair is never duplicated. */
+  /** The wave topology (§8). See docs/iac.md §284. */
   readonly waves: readonly WaveItem[];
   /**
-   * AN ADOPTION AFFORDANCE, not a greenfield-authoring prop: overrides this pipeline's
-   * auto-created `release-topology` object's URN with an EXISTING one (team-pipeline-iac.md §9/D5).
-   *
-   * Without this, the topology object is ALWAYS a fresh, synth-derived URN
-   * (`deriveConstructUrn(stack, "release-topology", "${id}-topology")`) — correct for a program
-   * authoring a topology for the first time, but WRONG for `scp iac export`: applying an exported
-   * program against an estate whose component already has a live `release-topology` would create a
-   * SECOND topology object beside the original, repoint `releases_via` at the new one, and leave
-   * the real object unmanaged — a plan that *looks* like a clean set of creates while silently
-   * duplicating the very thing export exists to bring under management (D5: "a manifest entry
-   * matching an existing object by URN that is unmanaged becomes an `adopt` plan action").
-   *
-   * A hand-authored program has no existing topology to name, so this stays `undefined` in every
-   * ordinary case — `scp iac export` is the one caller that sets it, using the live topology's own
-   * URN so `scp apply` adopts it instead of creating a duplicate.
-   * @default undefined — a fresh, synth-derived URN (ordinary authoring). */
+   * AN ADOPTION AFFORDANCE, not a greenfield-authoring prop. See docs/iac.md §285.
+   * @default undefined — a fresh, synth-derived URN (ordinary authoring).
+   */
   readonly adoptTopologyUrn?: string;
 }
 
@@ -181,12 +136,7 @@ export type RootPipelinePropsFor<K extends ExecutorType> = RootPipelineProps & M
 export type NestedPipelinePropsFor<K extends ExecutorType> = NestedPipelineProps &
   MaybePublishProps<K>;
 
-// ---------------------------------------------------------------------------------------------
-// Constructor-argument resolution (root vs. nested), computed as a pure step before any `super()`
-// call — same technique `construct.ts`'s `resolveComponentCtorArgs` uses, and for the same reason:
-// the root form must create exactly ONE `Stack`/`Component` pair, so the resolution can only run
-// once.
-// ---------------------------------------------------------------------------------------------
+// Constructor-argument resolution, as a pure step. See docs/iac.md §286.
 
 interface ResolvedPipelineCtorArgs<K extends ExecutorType> {
   readonly stack: Stack;
@@ -267,11 +217,7 @@ function lastUrnSegment(ref: IResourceRef | string): string {
   return parts[parts.length - 1] ?? urn;
 }
 
-// ---------------------------------------------------------------------------------------------
-// `PipelineBase` — the shared synth logic every generated pipeline-kind class runs. Extends
-// `Construct` (not `ResourceConstruct`): a pipeline is not itself one manifest object, it is several
-// (main doc §2's "derived, not a table"), so it has no single `.urn`/`.typeId` of its own.
-// ---------------------------------------------------------------------------------------------
+// The shared synth logic every generated pipeline class uses. See docs/iac.md §287.
 
 export abstract class PipelineBase<K extends ExecutorType> extends Construct {
   readonly stack: Stack;
@@ -279,29 +225,13 @@ export abstract class PipelineBase<K extends ExecutorType> extends Construct {
   /** What the `releases_via` edge hangs off (D8: component by default, service at the shared-rung
    *  exception). */
   readonly attachedTo: Component | ResourceConstruct<"service">;
-  /**
-   * The pipeline's own source repo and branch, re-exposed because THE SCOPE CHAIN CARRIES CONTEXT
-   * (D15(b) as amended by D17): a `Workflow` declared under this pipeline inherits both rather than
-   * repeating them, which is also what stops a hook's workflow ref from drifting away from the
-   * source mapping this same pipeline declares — they are read from one place.
-   *
-   * `repo` is always present (D18 makes it a required prop and the constructor refuses without it).
-   */
+  /** The pipeline's own repo and branch, re-exposed. See docs/iac.md §288. */
   readonly repo: string;
   readonly branch?: string;
   private readonly isComponentScoped: boolean;
   private readonly topology: ReleaseTopology;
 
-  /**
-   * The component every behaviour declared under this pipeline is ABOUT, or `undefined` at D8's
-   * shared rung.
-   *
-   * `undefined` is not a gap to fill in later: the contract keys every hook and rollout on a
-   * `componentUrn`, and which components inherit a SERVICE-rung pipeline is resolved at read time
-   * (the nearest-rung ladder), not at this program's synth time — the identical reason source
-   * mappings and placements are skipped for a shared-rung pipeline a few lines below. The L2
-   * constructs refuse rather than guess, naming that reason.
-   */
+  /** The component every behaviour here is about, or undefined. See docs/iac.md §289. */
   get componentUrn(): string | undefined {
     return this.isComponentScoped ? this.attachedTo.urn : undefined;
   }
@@ -335,15 +265,7 @@ export abstract class PipelineBase<K extends ExecutorType> extends Construct {
 
     this.stack.addRelationship("releases_via", resolved.attachedTo, this.topology, { type: kind });
 
-    // Source mapping + placement inference (D8) apply only at the COMPONENT rung. A pipeline scoped
-    // at the shared-rung exception (D8: a `Pipeline` scoped to a `Service`) attaches `releases_via`
-    // from the service, but `source_mappings.componentUrn` and `placements.componentUrn` are BOTH
-    // required fields (`@scp/schemas/iac.ts`) — there is no component here for this program to name,
-    // because pipeline resolution decides WHICH components inherit a service-rung pipeline at READ
-    // time, not at this program's synth time. So a shared-rung `Pipeline` declares the topology and
-    // its attachment only; per-component source mapping / placements remain each component's own
-    // declaration (its own `Pipeline`, or `Component.mapsSource`/`.placeAt`), exactly as the worked
-    // example's comment says: "components that declare their own pipeline still win by rung."
+    // Source mapping + placement inference. See docs/iac.md §290.
     if (this.isComponentScoped) {
       this.stack.addSourceMapping(resolved.attachedTo, {
         sourceKind: resolved.props.sourceKind ?? "gitea",
@@ -386,78 +308,25 @@ export abstract class PipelineBase<K extends ExecutorType> extends Construct {
     }
   }
 
-  /**
-   * Declares a `depends_on` edge from this pipeline's component to `target` — sugar over
-   * `Stack.addRelationship`, matching `ResourceConstruct.dependsOn`'s shape so `image.dependsOn(...)`
-   * reads the same as `component.dependsOn(...)` (D14: a target that doesn't exist yet becomes a
-   * pending dependency rather than a refusal).
-   */
+  /** Declares a dependency edge from this component to a target. See docs/iac.md §291. */
   dependsOn(target: IResourceRef | string, properties?: Record<string, unknown>): this {
     this.stack.addRelationship("depends_on", this.attachedTo, target, properties);
     return this;
   }
 
-  /**
-   * Declares which infra product (D19/D24) this pipeline's artifact deploys onto —
-   * `image.placeAt(products.payBlue)`. TYPE-CHECKED: `K`'s `PlaceableTarget<K>` (`infra.ts`,
-   * derived from the shared `PLACEMENT_MATRIX`) is `never` for a kind that cannot legally land on
-   * any infra kind (`npm`/`maven`/`python`/`go`/`infrastructure`), which makes THIS METHOD
-   * UNCONSTRUCTABLE for those kinds — a compile error at the call site (D24's compile rung), not a
-   * runtime check. `RpmPipeline.placeAt(anICluster)` fails to type-check for the same reason:
-   * `PlaceableTarget<"rpm">` is `IInstanceGroup` only.
-   *
-   * ============================================================================================
-   * A REAL `placements` ENTRY — AN INFRA PRODUCT IS A `deployment-target` OBJECT (see `infra.ts`)
-   * ============================================================================================
-   * An earlier version of this method emitted a bespoke `deploys_to` relationship instead, to route
-   * around what looked like a type mismatch: `Cluster`/`InstanceGroup`/… carried their OWN `typeId`
-   * (`"cluster"`, …), and `apps/server/src/graph/placements-repo.ts`'s `createPlacement` refuses any
-   * placement target whose `typeId !== "deployment-target"`. That workaround was itself broken,
-   * MEASURED on `main`: `deploys_to`'s registered relationship type excludes every infra kind as a
-   * `to` endpoint (`apps/server/drizzle/0002_rls_rbac_seed.sql`: `to_types = ['deployment-target']`
-   * only), and `deploys_to` is explicitly legacy on the component path
-   * (`apps/server/drizzle/0055_assembly_object_type.sql`: "ADR-0026 made the component/target pair a
-   * `placement`, so this edge is legacy on the component path already") — so the edge would have
-   * synthesized cleanly and then failed apply for a DIFFERENT reason than the one it was dodging.
-   *
-   * The real fix is `infra.ts`'s own premise correction: `docs/GLOSSARY.md` already defines
-   * "deployment target" as *"the graph object type an executor acts on (cluster, host, environment,
-   * region) — deliberately broad,"* naming *cluster* as an example. D24's infra kinds are SUBTYPES
-   * of `deployment-target`, not a parallel type — so every `Cluster`/`InstanceGroup`/… synthesizes
-   * with `typeId: "deployment-target"` and its kind riding as `properties.kind` (an already-open
-   * property schema, `apps/server/drizzle/0081_target_facet_and_publishes_to.sql`). `createPlacement`
-   * therefore accepts it exactly as it accepts any other deployment-target — no server change needed,
-   * no migration, and D19's "the graph object and the real infrastructure share one managing
-   * pipeline" holds through `managed_by_stack` unchanged.
-   */
+  /** Declares which infra product. See docs/iac.md §292. */
   placeAt(target: PlaceableTarget<K>): this {
     this.stack.addPlacement(this.attachedTo, target as unknown as IResourceRef);
     return this;
   }
 
-  /**
-   * D20's products module, for THIS pipeline's own owned infra products (`Cluster`/`InstanceGroup`/
-   * …, `infra.ts`) — pure TypeScript source text, exactly like `stack.synth()` is a pure manifest
-   * (no I/O here); `synthProductsModuleToFile` (`index.ts`) is the impure sibling that writes it to
-   * disk, the same split `synthToFile` already makes for the manifest itself. Every `PipelineBase`
-   * can call this (not just `InfrastructurePipeline`/`ConfigurationPipeline`) because nothing stops
-   * an infra product from being scoped to a build-kind pipeline that also manages its own substrate
-   * — it is simply empty (`renderProductsModule([])`) for the common case of a pipeline that owns
-   * none.
-   */
+  /** The products module for this pipeline's own owned infra. See docs/iac.md §293. */
   synthProducts(): string {
     return productsModuleSource(this);
   }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The 11 typed pipeline-kind classes — GENERATED from the closed `ExecutorTypeSchema` vocabulary
-// (D17), never hand-copied. `definePipelineConstruct` is the one class body; `PIPELINE_CLASSES`'s
-// `satisfies Record<ExecutorType, unknown>` is what makes a future `ExecutorTypeSchema` member with
-// no row here a COMPILE ERROR — the same totality trick `@scp/schemas`'s own
-// `ARTIFACT_INFRA_COMPATIBILITY` uses, applied to "does every kind have a class" instead of "does
-// every kind have a placement row".
-// ---------------------------------------------------------------------------------------------
+// The 11 typed pipeline-kind classes. See docs/iac.md §294.
 
 export interface PipelineConstructStatics<K extends ExecutorType> {
   new (name: string, props: RootPipelinePropsFor<K>): PipelineBase<K>;

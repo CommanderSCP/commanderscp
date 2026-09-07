@@ -5,13 +5,7 @@ import { Bucket, Cluster, Database, InstanceGroup, PLACEMENT_MATRIX, Queue } fro
 import { ConfigurationPipeline, InfrastructurePipeline } from "./pipeline.js";
 import { DeploymentTarget, Service, Stack } from "./construct.js";
 
-/**
- * D24's compile-rung derivation has two layers (see `infra.ts`'s module doc for the full reasoning):
- * a TYPE-level `PLACEMENT_MATRIX` (checked by the compile-fail cases in
- * `pipeline.placeAt.typecheck.test.ts`) and this VALUE-level parity check, which is what actually
- * proves the two matrices cannot drift — `@scp/schemas`'s own export is the authority, and this test
- * is deliberately the kind of guard that goes RED the instant `infra.ts`'s copy disagrees with it.
- */
+/** D24's compile-rung derivation has two layers. See docs/iac.md §267. */
 describe("@scp/iac: PLACEMENT_MATRIX parity with @scp/schemas's ARTIFACT_INFRA_COMPATIBILITY", () => {
   it("is byte-for-byte the same rows, for every ExecutorType", () => {
     const schemaEntries = Object.entries(ARTIFACT_INFRA_COMPATIBILITY) as [

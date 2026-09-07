@@ -3,65 +3,7 @@ import type { ComponentPipelineObservedRun } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, objects } from "../db/schema.js";
 
-/**
- * THE `observedRun` FIELD OF A COMPONENT'S PIPELINE (component-journey-view.md §3 Segment 2 —
- * "upstream build"): "no binding: draw a single 'built upstream' marker carrying what SCP *did*
- * observe … it reads 'GitHub Actions · CI · run 30858160395 ↗', not 'build: unknown'." Nothing reads
- * the run fields out of `changes.source_ref` anywhere else in the tree; this module is the one place
- * that does.
- *
- * ## The writer shapes this module traces (every one, before coding)
- *
- * `changes.source_ref` is either hand-set through `POST /changes` (untyped, whatever the caller
- * sends) or minted by `coordination/webhook-processor.ts#canonicalizeSourceRef`, which starts from
- * the RAW delivery payload kept VERBATIM (DESIGN §8) and layers a few canonical keys on top
- * (`repo`/`ref`/`commit`/`artifact_digest`/`sbom` — never a run id/url/name/path). "Raw" itself
- * differs by how the event arrived:
- *
- *   - **OBSERVED (poll)** — `coordination/observe.ts#ingestObservedEvents` persists
- *     `{repo, path, ref, commitSha, kind: ev.kind, observedAt, _observed: true, raw: ev.raw, ...}` as
- *     the delivery `payload`; `canonicalizeSourceRef` spreads that WHOLE object onto `sourceRef`
- *     verbatim. So a polled event's run object sits NESTED under `sourceRef.raw`, discriminated by
- *     `sourceRef.kind === "workflow_run"` (the event kind `pollRuns()` emits) — `sourceRef._observed`
- *     is checked alongside it as a belt-and-suspenders marker no real provider payload sets.
- *     `ev.raw` is:
- *       - **github** (`packages/plugins/github/src/index.ts#pollRuns`) — the FULL GitHub
- *         "list workflow runs" API run object: `id`, `name`, `html_url`, `path`, `head_sha`,
- *         `workflow_id`, `repository.full_name`, … (only `id`/`status`/`conclusion`/`html_url`/
- *         `head_sha`/`created_at`/`workflow_id` are typed locally as `WorkflowRun`, but the object at
- *         runtime carries the rest — `name`/`path` are read here too).
- *       - **gitea** (`packages/plugins/gitea/src/index.ts#pollRuns`) — `GiteaActionRun`, whose own
- *         doc comment names ONLY `id`/`status`/`head_sha`/`html_url`/`created_at` as load-bearing
- *         ("the EXACT field set is version-dependent"). No workflow name/path is cited, so those stay
- *         null for gitea rather than guessed.
- *       - **gitlab** (`packages/plugins/gitlab/src/index.ts#pollRuns`) — `GitlabPipeline`, whose doc
- *         comment cites ONLY `id`/`status`/`sha`/`ref`/`web_url`. A pipeline has no workflow name or
- *         path at all.
- *
- *   - **WEBHOOK (github only)** — `route.body` (the FULL provider delivery) becomes `sourceRef`
- *     verbatim, so a `workflow_run` GitHub webhook's run object sits NESTED at
- *     `sourceRef.workflow_run` (GitHub's own envelope: `{action, workflow_run: {...}, repository,
- *     sender}` — see `mapGithubWebhookEventToHint`'s `case "workflow_run"`). Read with the SAME
- *     field set as the observed github shape (both are the identical GitHub run object, just nested
- *     one level differently).
- *     Gitea's webhook adapter (`giteaAdapter.mapEvent`) maps only push/pull_request/release/package
- *     — no run-completion event — so a gitea WEBHOOK delivery never carries run identity; only its
- *     OBSERVED shape does.
- *     GitLab's "Pipeline Hook" webhook nests `id`/`sha`/`ref` under `sourceRef.object_attributes`
- *     (`mapGitlabWebhookEventToHint`'s `case "Pipeline Hook"` cites exactly those three keys — no
- *     url). Requiring all three together (not `id` alone) matters: a GitLab "Merge Request Hook"
- *     delivery ALSO nests a real `object_attributes.id` (the MR's own internal id, a genuine GitLab
- *     field, not a pipeline id) but carries no sibling `sha`/`ref` there — reading `id` alone would
- *     misread an MR webhook as a pipeline run.
- *
- * A change proposed directly through `POST /changes` with a hand-crafted `sourceRef` that happens to
- * match one of these shapes is read exactly the same way (nothing here distinguishes how a change
- * arrived) — which is also how the HTTP-layer test drives this without needing the whole webhook
- * pipeline standing up.
- *
- * Every reader below is defensive: a key that is absent, the wrong type, or empty yields `null`
- * fields, never a thrown error and never a fabricated value.
- */
+/** THE `observedRun` FIELD OF A COMPONENT'S PIPELINE. See docs/coordination.md §575. */
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -116,12 +58,7 @@ export interface RunIdentity {
   url: string | null;
 }
 
-/**
- * THE PREDICATE ("a change's `sourceRef` carries run identity") applied to ONE change's
- * `(sourceKind, sourceRef)` — see the module doc for every shape traced. Returns the identity when
- * the predicate holds: a citable run id AND at least one of `url`/`repo` (a bare run id names a
- * number nobody could act on or place, so it alone does not count). Exported for unit testing.
- */
+/** The predicate applied to one change's source ref. See docs/coordination.md §576. */
 export function runIdentityOfSourceRef(
   sourceKind: string | null | undefined,
   sourceRef: unknown
@@ -179,18 +116,10 @@ interface ObservedRunChangeCandidate {
   createdAt: Date;
 }
 
-/** Bounded newest-first scan size — same shape as `artifact-facts.ts#pickArtifactChange`'s fallback
- *  page: the predicate spans three providers' writer shapes and cannot be expressed as one portable
- *  SQL prefilter, so a page of candidates is read and reduced in JS. component-journey-view.md §1
- *  measured 336 of 343 changes on the estate as carrying run identity, so this is not a starvation
- *  risk in practice. */
+/** Bounded newest-first scan size. See docs/coordination.md §577. */
 const OBSERVED_RUN_SCAN_LIMIT = 50;
 
-/**
- * THE PICK — the MOST RECENT change of the component (newest `created_at`, object-id tiebreak, the
- * same deterministic ordering `artifact-facts.ts` uses) whose `sourceRef` carries run identity. Null
- * when none of the scanned page does.
- */
+/** THE PICK — the MOST RECENT change of the component. See docs/coordination.md §578. */
 async function pickObservedRunChange(
   tx: TenantTx,
   orgId: string,

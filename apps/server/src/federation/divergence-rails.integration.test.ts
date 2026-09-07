@@ -14,12 +14,7 @@ import { permitCursorReanchor, FEDERATION_DIVERGENCE_DECISION_KIND } from "./cur
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * DIVERGENCE RAILS 1/2/4/5 (multi-region-instance-resilience.md §7.2) — the fork/rollback detection
- * that turns a lost tail after an async-replication failover from silent divergence into a named,
- * fail-closed `journal_divergence`. Two GENUINELY separate databases (isolated-domain.ts), the same
- * topology M6's own suite uses. A = commander/exporter, B = full-scope outpost/importer.
- */
+/** DIVERGENCE RAILS 1/2/4/5. See docs/federation.md §99. */
 describe("divergence rails: export-side tail/anchor checks, tail attestation, reanchor refusal", () => {
   let domainA: IsolatedDomain;
   let domainB: IsolatedDomain;
@@ -53,7 +48,6 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     );
     await pair(domainA, domainB, "outpost");
     await pair(domainB, domainA, "commander");
-    // Some journal on A to export.
     for (const name of ["svc-1", "svc-2", "svc-3"]) {
       await withTenantTx(domainA.db, domainA.orgId, (tx) =>
         createObject(tx, {
@@ -159,7 +153,7 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       importSyncBundle(tx, domainB.orgId, older)
     );
-    expect(result.appliedEntries).toBe(0); // all already applied
+    expect(result.appliedEntries).toBe(0);
     expect(await highWaterSeq()).toBe(recorded); // mark neither regressed nor advanced
   });
 
@@ -176,7 +170,7 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
       })
     );
     const recorded = await highWaterSeq();
-    const fresh = await exportFromA(); // throughSequence now beyond B's cursor
+    const fresh = await exportFromA();
     const regressed = withAttestation(fresh, recorded - 1, "deadbeef".repeat(8));
     await expect(
       withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -240,7 +234,6 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     );
     expect(permitted).toBeGreaterThan(0);
 
-    // Now stand a divergence verdict for this peer.
     await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       insertDecision(tx, {
         orgId: domainB.orgId,

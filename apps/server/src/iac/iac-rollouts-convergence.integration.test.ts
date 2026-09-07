@@ -11,28 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ROLLOUTS AND CONVERGENCE SURVIVE APPLY (D12, D25(b); migration 0106).
- *
- * ============================================================================================
- * THE DEFECT THIS CLOSES, AND WHY A SHAPE ASSERTION WOULD NOT HAVE CAUGHT IT
- * ============================================================================================
- * `@scp/iac` has emitted both collections since the L1 doors and the `CanaryRollout` /
- * `RollingRollout` constructs shipped. `plans-repo.ts` projected NEITHER — its own comment said so
- * ("not projected at all yet") — so a team could declare a canary, watch `scp plan` return a clean
- * diff, apply it, and have the server discard it without a word. Every existing test still passed,
- * because nothing asked what happened to the collection AFTER apply.
- *
- * So the assertions here are on the DATABASE, through the real `POST /plans` + apply route.
- *
- * MUTATION LOG — each applied, watched fail, reverted, watched pass (MEASURED)
- * | Mutation | Result |
- * |---|---|
- * | remove the `rollouts` apply writer | 2 FAIL — (1) and (2). The plan still shows a create and the row is absent: the pre-0106 behaviour exactly, and note the PLAN was never wrong, only the write. |
- * | remove the `convergence` apply writer | 2 FAIL — (3) and (4) |
- * | the snapshot never reads the rollout pool | (2) FAILS — with an empty pool every apply reads as a `create` and no retraction prunes |
- * | `converge: false` is stored as `true` | (4) FAILS — the opt-out is silently inverted |
- */
+/** ROLLOUTS AND CONVERGENCE SURVIVE APPLY. See docs/iac.md §50. */
 describe("IaC: rollouts and convergence reach the database", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -67,12 +46,7 @@ describe("IaC: rollouts and convergence reach the database", () => {
     const suffix = randomUUID().slice(0, 8);
     const service = await admin.object("service").create({ name: `svc-${label}-${suffix}` });
     const product = await admin.deploymentTargets.create({ name: `prod-${label}-${suffix}` });
-    // THE COMPONENT MUST BE DECLARED BY THIS STACK, not created beside it. The diff's pool is
-    // "rows on components this stack owns" (`managed_by_stack`), so a component created through the
-    // typed route is invisible to matching AND pruning — every apply then reads as a `create` and
-    // no retraction ever prunes. Measured: the first version of this fixture used
-    // `components.create` and case (2) failed with `create` where `update` belonged, which is the
-    // ownership rule announcing itself rather than a bug in the diff.
+    // THE COMPONENT MUST BE DECLARED BY THIS STACK, not created beside it. See docs/iac.md §51.
     const componentName = `cmp-${label}-${suffix}`;
     const componentUrn = `urn:scp:${stackName}:component:${componentName}`;
     await applyManifest({

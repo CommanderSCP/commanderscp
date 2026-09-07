@@ -7,98 +7,10 @@ import type { DependencyEcosystem } from "@scp/schemas";
 import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
 import { isPersistedJsonEntriesElision } from "@scp/runner-launcher";
 
-/**
- * M21.4 — WHICH VERSION DID THIS RELEASE PUBLISH? (ADR-0032 §7)
- *
- * ============================================================================================
- * THE QUESTION THE ADR DOES NOT ANSWER, AND WHY IT NEEDS ONE FUNCTION WITH FIVE STRATEGIES
- * ============================================================================================
- * ADR-0032 §7 defines internal detection as a DERIVATION — an accepted change, its wave targets,
- * a `prod` deployment-target, the component placed there, the lines that component is declared to
- * produce. It says nothing about what VERSION that release put on those lines, and the derivation
- * does not carry one:
- *
- *   - `scp.change.transitioned` publishes `{fromState, toState, trigger}` and a subject that is the
- *     change object id (`coordination/transition.ts:361-368`). No component, no target, no version.
- *   - `changes.source_ref` carries `{repo, ref, commit, run_url, artifact_digest, sbom}`
- *     (`db/schema.ts:423-437`). A commit and a digest are IDENTITIES; neither is a version.
- *   - `change_wave_targets.observed.images` carries the deployed image refs — `ghcr.io/x/y:1.2.3`
- *     or `...@sha256:...` (`packages/schemas/src/changes.ts:264-272`, ADR-0008 decision 1/2). That
- *     IS a version signal, and it is the only one in the coordination record.
- *
- * So the answer is per-ecosystem, and this module is ONE function with an explicit strategy per
- * ecosystem rather than five scattered lookups, so that "which signal did we use, and why is that
- * signal trustworthy" is answerable by reading {@link resolveReleasedVersion} instead of inferred
- * from whichever branch happened to run. Each strategy names its signal in the result
- * ({@link ReleasedVersion.signal}), and that label is READ FROM THE STRATEGY THAT RAN — never
- * derived from the shape of the answer, which is the provenance-label failure this repo has already
- * shipped once (a Decision whose label named the branch that matched, and went false the moment the
- * branch covered a second kind).
- *
- * ============================================================================================
- * NEVER GUESS A VERSION. NOT ONCE, NOT AS A FALLBACK (ADR-0032 §7)
- * ============================================================================================
- * Every path here ends in either a version this code can point at a source for, or
- * `{determined: false}` with a reason. There is no default, no "best effort", and in particular:
- *
- *   - a DIGEST IS NOT A VERSION. `ghcr.io/x/y@sha256:ab…` identifies bytes and answers "which
- *     bytes", never "which release". Recording a digest in `latest_version` would make
- *     `dependency_lines` read as though the line had a head when nobody knows what it is.
- *   - a COMMIT SHA IS NOT A VERSION, for the same reason and with the extra hazard that a sha is
- *     often numerically PARSEABLE (`1a2b3c4d` parses as major 1 — see `version.ts`'s note), so a
- *     careless parse produces a confident wrong answer rather than an error.
- *   - a BRANCH NAME IS NOT A VERSION. `refs/heads/main` is where the release came from, not what it
- *     was called.
- *
- * The cost of refusing is a missed bump, which is visible: `latest_version` stays null, which
- * ADR-0032's schema already defines as "not yet observed" and explicitly NOT as "no newer version
- * exists". The cost of guessing is a component that LOOKS up to date at a version that was never
- * published — invisible, and it silences the whole feature for that line. That asymmetry is why
- * every refusal below is a named reason rather than a fallback.
- *
- * ============================================================================================
- * THE LINE GUARD IS PART OF THE ANSWER, NOT A SEPARATE NICETY
- * ============================================================================================
- * A dependency line is `(ecosystem, coordinate, MAJOR)` — one component legitimately produces
- * several lines at once (a `1.x` maintenance line and a `2.x` line). A released `1.9.9` recorded
- * against the `2` line is not merely a wrong version, it is a version on the wrong line, and it
- * would make every `2.x` subscriber look ahead of a head that is behind them. So
- * {@link lineAcceptsVersion} refuses the pair unless the line's own major is a PREFIX of the
- * released version's numeric core AT THE LINE'S OWN PRECISION — `3.18` accepts `3.18.4` and refuses
- * `3.19.0`, `v2` accepts `v2.1.0` and refuses `1.9.9`. A major line the version grammar cannot
- * compare is refused too, never assumed to match.
- */
+/** M21.4 — WHICH VERSION DID THIS RELEASE PUBLISH? See docs/dependencies.md §250. */
 
-// -------------------------------------------------------------------------------------------
-// The manifest-read port
-// -------------------------------------------------------------------------------------------
-
-/**
- * Reading ONE file out of a user repo at a ref — the ingress M21.2 built as the `readFileAtRef`
- * `GitProviderAdapter` hook (`packages/plugins/git-provider-core/src/read-file.ts`), taken here as
- * an injected port rather than reached for directly.
- *
- * WHY A PORT, STATED RATHER THAN DISCOVERED: `readFileAtRef` is an ADAPTER hook and is deliberately
- * NOT surfaced on `ExecutorPlugin` (ADR-0032 §9 — the four verbs ARE the structural enforcement of
- * charter principle 1). Measured at HEAD: nothing under `apps/server/src` calls it, and the
- * subprocess plugin host exposes no RPC for it either — NOT ONE of `plugin-host/contract.ts`'s
- * per-kind client shapes carries a file-read method (stated as a property of the whole set rather
- * than as a count of it, because a count goes stale the next time a plugin kind is added). So the
- * server-side route from "a component's git binding" to "this hook, in its subprocess, under the
- * egress guard" DOES NOT EXIST YET; building it means changing `rpc-protocol.ts`,
- * `subprocess-entry.ts`, `contract.ts` and `host.ts`, which is a plugin-host change, not a
- * dependency-detection one.
- *
- * Taking it as a port keeps that gap HONEST instead of hidden: with no reader wired, every language
- * ecosystem resolves to `manifest_reader_unavailable` and records NOTHING, which is exactly the
- * behaviour this module promises for anything it cannot determine — rather than a silent
- * never-detects-anything that reads like "no releases happened".
- */
+/** Reading ONE file out of a user repo at a ref. See docs/dependencies.md §251. */
 export type ManifestReader = (request: ReadFileAtRefRequest) => Promise<ReadFileAtRefResult>;
-
-// -------------------------------------------------------------------------------------------
-// Result vocabulary
-// -------------------------------------------------------------------------------------------
 
 /** WHICH signal answered — set by the strategy that ran, never inferred from the answer's shape. */
 export type ReleaseVersionSignal =
@@ -184,7 +96,6 @@ export type ReleasedVersion =
       /** `oci` only, and `null` rather than absent when the observed ref carried none. See
        *  {@link resolveReleasedVersion} for why an ABSENT digest must still be written. */
       readonly digest: string | null;
-      /** Human-readable provenance — what was read, and where. */
       readonly why: string;
     }
   | {
@@ -193,10 +104,6 @@ export type ReleasedVersion =
       readonly detail: string;
     };
 
-// -------------------------------------------------------------------------------------------
-// Image refs
-// -------------------------------------------------------------------------------------------
-
 /** One `observed.images` entry, split into the three things a ref can carry. */
 export interface ParsedImageRef {
   readonly repository: string;
@@ -204,15 +111,7 @@ export interface ParsedImageRef {
   readonly digest?: string;
 }
 
-/**
- * Split `ghcr.io/acme/api:1.2.3`, `ghcr.io/acme/api@sha256:ab…` and
- * `ghcr.io/acme/api:1.2.3@sha256:ab…` into repository / tag / digest.
- *
- * The digest is split off FIRST, then the tag — and the tag search starts after the last `/`,
- * because a registry host may carry a PORT (`registry.internal:5000/acme/api:1.2.3`) and a naive
- * "split on the last colon" reads `5000/acme/api` as the tag on a ref with no tag at all. That is a
- * silently wrong parse, which is the class of bug this whole module exists to refuse.
- */
+/** Splits an image reference in each of its three forms. See docs/dependencies.md §252. */
 export function parseImageRef(ref: string): ParsedImageRef | null {
   const trimmed = ref.trim();
   if (trimmed === "") return null;
@@ -243,32 +142,9 @@ export function parseImageRef(ref: string): ParsedImageRef | null {
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// The line guard
-// -------------------------------------------------------------------------------------------
-
-/**
- * WHICH LINE A RELEASE LANDS ON IS NOT DECIDED IN THIS FILE — it is `line-head.ts`'s
- * `lineAcceptsVersion`, the SAME function the third-party poll's ranking uses, re-exported here so
- * this module's callers keep one import.
- *
- * It used to be a second implementation living here, and the two disagreed in a way no type could
- * catch: this one compared only the numeric core, so an `oci` line declared as the `-alpine` VARIANT
- * took a plain glibc tag as its head, while the poll — reading the same `tag_pattern` as the literal
- * variant suffix — would never have offered one. `tag_pattern` had two meanings; it now has one, in
- * one place, and this file has no reading of its own left to drift.
- *
- *     line `1`                  accepts 1.2.3, 1.0.0      refuses 2.0.0
- *     line `v2`                 accepts v2.1.0, 2.1.0     refuses 1.9.9
- *     line `3.18`               accepts 3.18.4            refuses 3.19.0
- *     line `3.18` + `-alpine`   accepts 3.18.4-alpine     refuses 3.18.4 and 3.18.4-slim
- */
+/** WHICH LINE A RELEASE LANDS ON IS NOT DECIDED IN THIS FILE. See docs/dependencies.md §253. */
 export { lineAcceptsVersion } from "./line-head.js";
 export type { LineAcceptance, LineAcceptanceReason } from "./line-head.js";
-
-// -------------------------------------------------------------------------------------------
-// The strategy
-// -------------------------------------------------------------------------------------------
 
 /** Which dependency-manifest filename states the PROJECT's own version, per ecosystem. Used to
  *  pick candidates out of the component's ALREADY-RECORDED manifest paths — never to guess a path
@@ -292,7 +168,6 @@ function projectVersionEcosystem(
 }
 
 export interface ResolveReleasedVersionInput {
-  /** The line the release might have moved. */
   readonly line: { readonly ecosystem: DependencyEcosystem; readonly coordinate: string };
   /** `changes.source_ref`'s canonical keys, as far as they were populated. */
   readonly sourceRef: {
@@ -316,23 +191,7 @@ export interface ResolveReleasedVersionInput {
  *  them is neither cheap nor more correct — the disagreement check below already refuses to pick. */
 const MAX_CANDIDATE_MANIFESTS = 4;
 
-/**
- * THE one entry point. Given a line and everything the coordination record knows about the release
- * that just happened, return the version it published — or the reason there is none.
- *
- * The switch below IS the per-ecosystem strategy table, and each arm states its own signal:
- *
- *   `oci`                  the deployed image ref (`observed.images`). Records the TAG as the
- *                          version and the DIGEST alongside it, because a mutable tag is not an
- *                          identity (ADR-0032 §7).
- *   `go`                   the git TAG in `source_ref.ref`. `go.mod` declares a module PATH and no
- *                          version — a Go module's version IS its tag — so a non-tag ref yields
- *                          nothing rather than a guess.
- *   `npm`/`python`/`maven` the producing component's OWN manifest, read at the released COMMIT.
- *                          This is the same "formulated via the users' code" ingress the inventory
- *                          itself is built from (M21.2's `readFileAtRef`), so it inherits its
- *                          decode bound, its URL-safety asserts and its egress guard.
- */
+/** THE one entry point. See docs/dependencies.md §254. */
 export async function resolveReleasedVersion(
   input: ResolveReleasedVersionInput
 ): Promise<ReleasedVersion> {
@@ -355,20 +214,7 @@ export async function resolveReleasedVersion(
   return resolveFromProducerManifest(input, ecosystem);
 }
 
-/**
- * `oci` — the version signal that already exists in the coordination record.
- *
- * `observed.images` is what the executor reported it actually deployed (ADR-0008 decision 1/2), so
- * for an internal release it is a first-hand statement about bytes that reached prod, not a
- * registry ranking. Matching is by REPOSITORY, compared VERBATIM against the line's coordinate —
- * the same rule the whole inventory keys on (`DependencyCoordinateSchema`: `@acme/lib`, `acme/lib`
- * and `acme-lib` collapse under slugification and must not be merged here either).
- *
- * A digest-only ref determines NOTHING. It is the single most tempting place in this file to fall
- * back — the digest is right there, it is unambiguous, and it would make the line look observed —
- * and it is exactly the fallback ADR-0032 §7 forbids: `latest_version` is a version, and a digest
- * answers a different question.
- */
+/** The version signal already in the coordination record. See docs/dependencies.md §255. */
 function resolveFromObservedImages(input: ResolveReleasedVersionInput): ReleasedVersion {
   if (input.observedImages.length === 0) {
     return {
@@ -451,11 +297,7 @@ function resolveFromObservedImages(input: ResolveReleasedVersionInput): Released
     // "1.2.4 is these bytes" about bytes that are 1.2.3's. The version and its digest are written
     // together by `recordDependencyLineHead`, which is why this field cannot be omitted.
     digest: distinctDigests[0] ?? null,
-    // A MATCH IN A TRUNCATED LIST STILL DETERMINES, and says so. Refusing would silence the feature
-    // for exactly the large applications the truncation happens to; but the checks above —
-    // "observed at more than one tag", "at more than one digest" — could only see the refs that were
-    // recorded, so the `why` states the limit of what was compared rather than implying a whole-list
-    // agreement nobody verified.
+    // A MATCH IN A TRUNCATED LIST STILL DETERMINES, and says so. See docs/dependencies.md §256.
     why: elided
       ? `observed image ref '${input.line.coordinate}:${tag}' on the succeeded prod wave target — ` +
         `the recorded image list was truncated by the persisted-JSON bound, so the disagreement ` +
@@ -464,16 +306,7 @@ function resolveFromObservedImages(input: ResolveReleasedVersionInput): Released
   };
 }
 
-/**
- * `go` — the git tag, and only a git tag.
- *
- * There is no version in `go.mod` to read: it declares the module PATH, and the Go toolchain
- * resolves a version from the repository's tags. So `source_ref.ref` is the whole signal, and it
- * determines a version only when it IS a tag. `refs/heads/main` is where the release came from, not
- * what it was called — and a bare commit sha parses as a version (`1a2b3c4d` → major 1; see
- * `version.ts`), so accepting anything but an explicit `refs/tags/` ref would produce confident
- * nonsense rather than an error.
- */
+/** `go` — the git tag, and only a git tag. See docs/dependencies.md §257. */
 function resolveFromSourceRefTag(input: ResolveReleasedVersionInput): ReleasedVersion {
   const ref = input.sourceRef.ref?.trim() ?? "";
   const TAG_PREFIX = "refs/tags/";
@@ -496,24 +329,7 @@ function resolveFromSourceRefTag(input: ResolveReleasedVersionInput): ReleasedVe
   };
 }
 
-/**
- * `npm` / `python` / `maven` — the producing component's own manifest at the released commit.
- *
- * WHERE the manifest is comes from the component's OWN INVENTORY (`component_dependencies`'s
- * `manifest_path`, written by M21.2 ingestion), never from a convention: a monorepo component's
- * `package.json` is at `services/api/package.json` and guessing the repo root would read a
- * different package's version and be confidently wrong. A component whose inventory records no
- * manifest of the right kind yields `no_manifest_path_known` — a legible "we have never seen this
- * component's manifest", which is true.
- *
- * WHICH COMMIT is `source_ref.commit`, not a branch: `readFileAtRef` returns the commit a ref
- * RESOLVED to precisely because a branch name is not an identity, and reading at a branch would
- * report whatever HEAD says now rather than what was released.
- *
- * TWO CANDIDATES THAT DISAGREE REFUSE. A component with a root and a workspace `package.json` in
- * its inventory has two plausible identities; picking the first would make the answer depend on
- * sort order.
- */
+/** `npm` / `python` / `maven`. See docs/dependencies.md §258. */
 async function resolveFromProducerManifest(
   input: ResolveReleasedVersionInput,
   ecosystem: ProjectVersionEcosystem

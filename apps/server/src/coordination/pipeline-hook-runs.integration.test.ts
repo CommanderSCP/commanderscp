@@ -26,39 +26,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `pipeline_hook_runs` (migration 0097) and its claim/trigger/poll driver, against REAL PostgreSQL.
- *
- * ============================================================================================
- * WHAT EACH CLAIM IS PROVED **WITH**, BECAUSE THE METHOD IS THE POINT HERE
- * ============================================================================================
- * Every property below is one that a test can appear to check while checking something else, so the
- * instrument is chosen per claim rather than by habit:
- *
- *   - THE TRIGGER GUARD is proved by making PostgreSQL REJECT a RAW insert that bypasses
- *     `claimHookRun` entirely, and by asserting the SQLSTATE-backed CONSTRAINT NAME. Asserting that
- *     `ensureHookRunTriggered` checks-before-inserting would prove a property of that function; the
- *     race it exists to stop happens between two callers of it, where no amount of checking helps.
- *     Only the table can refuse that, so only the table is asked.
- *
- *   - THE NULL `wave_index` CASE gets its own test for the same tuple, because that is the one a
- *     plain UNIQUE silently lets through: `NULL <> NULL` under the default `NULLS DISTINCT`, so a
- *     `postMerge` run would duplicate freely while every other hook kind stayed guarded. A test that
- *     only exercised a numeric wave index would be green on the broken schema.
- *
- *   - RLS is proved by an UNFILTERED `select()` under a second tenant. A query with a `where
- *     org_id = ...` passes identically with and without a policy, which is the whole class of test
- *     that makes a missing policy invisible — and the owning tenant runs the SAME unfiltered query
- *     and DOES see rows, so an empty result cannot be an empty table mistaken for isolation.
- *
- *   - THE TERMINAL EDGE is driven THROUGH THE RECONCILE LOOP, not by calling the poll inline. The
- *     loop is a live competitor for exactly this work, so an inline call under a running loop proves
- *     nothing about what the loop does — and it is the loop that runs in production.
- *
- *   - THE ROUND TRIP feeds the evidence row this path produced into `evaluatePostDeployGate`
- *     UNRESHAPED. Two shapes that "look the same" is how a producer and its consumer drift; the only
- *     check that catches it is running one into the other, with no adapter in between.
- */
+/** The hook-run table and its driver, against real Postgres. See docs/coordination.md §612. */
 describe("pipeline hook runs", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -67,14 +35,7 @@ describe("pipeline hook runs", () => {
   let otherAdmin: ScpClient;
 
   beforeAll(async () => {
-    // The reconcile loop is ON: the terminal-edge tests below are driven by it, because it is the
-    // thing that actually runs `pollNonTerminalHookRuns` in production.
-    //
-    // `withEventRelay` IS REQUIRED, not decorative — the harness nests the reconcile-loop start
-    // INSIDE the relay block (it is the relay's pg-boss the loop schedules its tick on). Omitting it
-    // starts no loop and no error: the trigger still fires, nothing ever polls, and every
-    // loop-driven assertion below fails as a 15s timeout that reads like a slow engine rather than
-    // an absent one.
+    // The reconcile loop is on: it drives the terminal edges. See docs/coordination.md §613.
     server = await listenTestServer({ withEventRelay: true, withReconcileLoop: true });
     org = await createTestOrg(server, "hook-runs");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -91,26 +52,7 @@ describe("pipeline hook runs", () => {
   const inOrg = <T>(fn: Parameters<typeof withTenantTx<T>>[2], orgId = org.orgId) =>
     withTenantTx(server.deps.db, orgId, fn);
 
-  /**
-   * A component + the deployment target a hook run is ABOUT + a real proposed Change.
-   *
-   * ============================================================================================
-   * THE CHANGE DELIBERATELY NAMES A **DIFFERENT** TARGET THAN THE HOOK RUN DOES
-   * ============================================================================================
-   * This is a fixture constraint, not a product one, and it cost a debugging round to find because
-   * it fails SILENTLY. The reconcile loop is live in this suite, so a proposed Change is really
-   * coordinated: `advanceExecutingChanges` triggers each of its wave targets through THAT target's
-   * executor binding. `@scp/plugin-fake-executor` keys its state by `targetRef` and keeps ONE run per
-   * target, so a wave-target trigger on the same binding SUPERSEDES the hook run's `externalId` — and
-   * `status()` for a superseded ref returns `phase: "pending"`, by design, rather than throwing.
-   *
-   * The result is a hook run that never terminalizes, with no error anywhere: the poll runs, the
-   * executor answers, and the answer is "still pending" forever. Separating the two targets keeps the
-   * engine's own deploys off the binding this suite's runs are polled through.
-   *
-   * A real executor does not behave this way — Argo Workflows tracks runs by id, not one-per-target —
-   * so nothing here is compensating for a defect in the driver.
-   */
+  /** A component, a target, and a real proposed change. See docs/coordination.md §614. */
   async function subject(client: ScpClient, orgLabel: string) {
     const component = await createTestComponent(client, { name: `comp-${orgLabel}-${label()}` });
     const target = await client.object("deployment-target").create({
@@ -566,10 +508,6 @@ describe("pipeline hook runs", () => {
     }
   }, 60_000);
 
-  // -------------------------------------------------------------------------------------------
-  // 5. RLS
-  // -------------------------------------------------------------------------------------------
-
   it("RLS: a second org reads NONE of the first org's hook runs — proved by an UNFILTERED select under the other tenant, with the owner running the same query and seeing rows", async () => {
     const mine = await subject(admin, "rls");
     await rawInsert(mine, { hookId: `secret-${label()}`, waveIndex: 1 });
@@ -639,7 +577,7 @@ describe("pipeline hook runs", () => {
     const refusal = await rawInsert(s, { hookId: "bad-status", waveIndex: 1 })
       .then(() => null)
       .catch(() => null);
-    expect(refusal).toBeNull(); // the control: a legal status inserts.
+    expect(refusal).toBeNull();
 
     const bad = inOrg((tx) =>
       tx.insert(pipelineHookRuns).values({

@@ -7,43 +7,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE REST OF THE CENSUS: the doors `containment-move-authz.integration.test.ts` does not name.
- *
- * That file pins the two defects (a move authorized only at the source; a wire `null` written
- * through as a detach) on five doors. It is not the whole census. The property is "a door that
- * accepts a caller-supplied `domainId` for an object write", and enumerating it filterlessly turns
- * up three more:
- *
- *  - `PUT /components/{urn}` — BOTH branches. Measured: deleting this door's call to
- *    `resolveDeclaredContainmentParent` broke NOTHING in the sibling file. A door with the same
- *    defect and no test is how a fix ships inert.
- *  - `POST /components` and the other create doors — the create half of the `null` question. Two
- *    create doors already coerced `null` to the org root by hand and four did not; this file pins
- *    the agreed meaning on both kinds so the asymmetry cannot come back through whichever door was
- *    not looked at.
- *
- *  - the three coordination create doors (`/campaigns`, `/changes`, `/placements`; `/initiatives` is gone — ADR-0036)
- *    and `POST /plans/{id}/apply`, whose update entries authorized the object and never the
- *    destination.
- *
- * Plus the two refusals the fix ADDS rather than restores, both of which are the SAME PROPERTY as
- * the `null` detach — "a row whose scope expansion cannot reach the org root" — reached through a
- * different value:
- *
- *  - a row may not become its own containment parent. Reachable the moment `null` started
- *    resolving to the org root: `PATCH <org-root> {domainId: null}` would otherwise write a
- *    self-loop, and a cycle has no org-root ancestor. NOTE the refusal is no longer the depth-1
- *    test these two cases exercise — a two-hop loop walked straight past that one. It is now a full
- *    chain walk (`graph/containment.ts`'s `assertRootedContainmentParent`), pinned at every depth,
- *    on both containment routes and on both doors by
- *    `containment-move-cycle-and-source-authz.integration.test.ts`.
- *  - a SOFT-DELETED object may not be a containment parent. `authz/resolve.ts` joins
- *    `parent_o.deleted_at IS NULL` on every hop of the scope walk, so parenting under a tombstone
- *    detaches exactly as `null` did. Measured, not reasoned: before the fix, `DELETE /domains/{d}`
- *    then `PATCH /services/{s} {domainId: d}` answered 200 and the org-root admin's own next GET of
- *    that service answered 403, permanently.
- */
+/** THE REST OF THE CENSUS. See docs/routes.md §88. */
 describe("every door that writes a caller-supplied containment parent", () => {
   let server: TestServer;
 
@@ -79,9 +43,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     return (res.json() as { domainId: string | null }).domainId;
   }
 
-  // -----------------------------------------------------------------------------------------
   // PUT /components/{urn} — the door the sibling file misses, on both branches
-  // -----------------------------------------------------------------------------------------
 
   it("PUT /components/{urn} — the update branch — refuses a move into a domain the actor holds nothing at", async () => {
     const org = await createTestOrg(server, "put-cmp-move");
@@ -100,7 +62,6 @@ describe("every door that writes a caller-supplied containment parent", () => {
     const componentUrn = component.json().urn as string;
     const victimDomainId = victim.json().id as string;
 
-    // Authority over the component itself, and nowhere else.
     const mover = await createTestUser(server, org, [
       { role: "Administrator", scope: componentId }
     ]);
@@ -139,9 +100,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(await readComponentDomainId(org, componentId)).toBe(org.orgId);
   });
 
-  // -----------------------------------------------------------------------------------------
   // The create doors — `null` means the same thing at every one of them
-  // -----------------------------------------------------------------------------------------
 
   it("POST /components {domainId: null} creates an org-root child, not an orphan", async () => {
     const org = await createTestOrg(server, "post-cmp-null");
@@ -187,12 +146,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(typed.status, typed.body).toBe(201);
     expect(typed.json().domainId).toBe(org.orgId);
 
-    // `/objects/service` is NOT the generic door. Fastify prefers the literal static route over the
-    // parametric `/objects/:type` for that exact path, and `services/objects-service.ts` says so in
-    // as many words: "this is the ONLY handler that ever runs for that path". A case aimed there
-    // exercises the M0 shadow handler and reports on a door it never touched — the census's own
-    // failure mode. `team` has no static shadow and is refused by none of the generic route's type
-    // guards, so it genuinely lands in `routes/objects-generic.ts`'s handler.
+    // `/objects/service` is NOT the generic door. See docs/routes.md §89.
     const shadowed = await post(org.adminToken, "/api/v1/objects/service", {
       name: "shadow-null-service",
       domainId: null
@@ -208,9 +162,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(generic.json().domainId).toBe(org.orgId);
   });
 
-  // -----------------------------------------------------------------------------------------
   // The COORDINATION create doors — same wire `null`, four more handlers
-  // -----------------------------------------------------------------------------------------
 
   async function readObjectDomainId(
     org: TestOrg,
@@ -271,9 +223,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     );
   });
 
-  // -----------------------------------------------------------------------------------------
   // IaC apply — the ninth door, and the only one that authorizes through a drained check list
-  // -----------------------------------------------------------------------------------------
 
   it("POST /plans/{id}/apply refuses a manifest that re-parents an object into a domain the actor holds nothing at", async () => {
     const org = await createTestOrg(server, "iac-move");
@@ -325,9 +275,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect((after.json() as { domainId: string | null }).domainId).toBe(homeDomainId);
   });
 
-  // -----------------------------------------------------------------------------------------
   // A soft-deleted container is the same unreachable row, reached through a different value
-  // -----------------------------------------------------------------------------------------
 
   it("a SOFT-DELETED domain is refused as a containment parent — moving under a tombstone is the same detach", async () => {
     const org = await createTestOrg(server, "deleted-parent");
@@ -363,7 +311,6 @@ describe("every door that writes a caller-supplied containment parent", () => {
     });
     expect(read.statusCode, read.body).toBe(200);
 
-    // The create half of the same door agrees.
     const created = await post(org.adminToken, "/api/v1/services", {
       name: "born-under-a-tombstone",
       domainId
@@ -371,9 +318,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(created.status, created.body).toBe(400);
   });
 
-  // -----------------------------------------------------------------------------------------
   // The new refusal: a containment cycle has no org-root ancestor
-  // -----------------------------------------------------------------------------------------
 
   it("an object cannot be made its own containment parent", async () => {
     const org = await createTestOrg(server, "self-parent");

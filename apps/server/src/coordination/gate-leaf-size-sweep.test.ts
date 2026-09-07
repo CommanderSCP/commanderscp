@@ -5,49 +5,13 @@ import { observedStateForRow } from "./wave-targets-repo.js";
 import type { WaveTargetObservedState } from "./wave-targets-repo.js";
 import { resolveReleasedVersion } from "../dependencies/internal-release-version.js";
 
-/**
- * ==================================================================================================
- * M23.1f CLAUSE 5 — EVERY GATE LEAF SURVIVES AT EVERY SIZE, **THROUGH THE READER**
- * ==================================================================================================
- *
- * WHAT THE CLAUSE IS ABOUT, AND WHY "THROUGH THE READER" IS THE WHOLE OF IT. M23.1f's second defect
- * was the bound dropping `rollout` first, which silently disabled ADR-0028's `minWeight` gate at 73
- * image refs. That is not a bound-arithmetic failure — the row fitted, the truncation was reported,
- * every assertion about SIZE stayed true. It is a failure that only exists at the READER: the gate
- * asked for a weight, the weight was gone, and the verdict degraded to the universal succeeded-test
- * with nobody the wiser.
- *
- * WHAT THE REPO ALREADY HAD, AND WHY IT COULD NOT SEE THIS. `persisted-json-budget-sweep.test.ts`
- * sweeps 116,850 (shape, budget) pairs and asserts row size, backstop firings and truncation
- * reports — plus ONE direct `stored.rollout?.weight` read. It never calls a gate. The four
- * reader-level assertions that do exist are at FOUR HAND-PICKED FIXTURE SIZES, and the defect this
- * clause names appeared at 73.
- *
- * SO THIS FILE SWEEPS SIZE AND CALLS THE REAL READERS. `observedStateForRow` is the production
- * composition — the bound, the truncation report and the `observedAt` stamp — extracted from
- * `updateWaveTargetObserved` so that this sweep drives it rather than a copy of it. The `observedAt`
- * stamp is load-bearing and was the first thing this sweep got wrong: omitting it makes
- * `weightUnreadableCause` report `not_observed` for every row, i.e. a 401-of-401 failure that is an
- * artefact of the fixture and not of the bound.
- *
- * WHAT IT DOES NOT DO, SAID PLAINLY. It does not traverse Postgres or HTTP; the row is composed in
- * memory exactly as the repository composes it, and `observed-state-gate-critical-leaf.integration.
- * test.ts` is what drives the same property through a real database at one size. "Every size" here
- * means every size of ONE shape family — a growing image list, and a growing revision string — not
- * every size of every shape.
- */
+/** Every gate leaf survives at every size, via the reader. See docs/coordination.md §528. */
 
 const NOW = new Date("2026-08-21T09:00:00.000Z");
 const COORDINATE = "ghcr.io/acme/widget";
 const MIN_WEIGHT = 50;
 
-/**
- * The image list a real reading carries: MANY DISTINCT REPOSITORIES, one of which is the dependency
- * line being resolved. Repeating one repository at N tags is not a bigger version of this shape — it
- * is `ambiguous_image_refs`, which is the reader refusing correctly and would make the sweep a test
- * of that refusal instead. `at` places the line's own ref, so the sweep can ask the question from
- * both ends of a list the bound cuts from the tail.
- */
+/** The image list a real reading carries. See docs/coordination.md §529. */
 function imageList(size: number, at: "head" | "tail"): string[] {
   const padding = Array.from(
     { length: Math.max(0, size - 1) },
@@ -122,13 +86,7 @@ describe("M23.1f clause 5: the minWeight gate is readable at EVERY payload size"
   });
 
   it("THE INSTRUMENT IS NOT BLIND: at a punitive budget the same sweep goes RED", () => {
-    /**
-     * The control the audit that produced this file insisted on. Every assertion above is "the leaf
-     * was readable", which is also what a sweep that never pressured the bound would report, and
-     * what a `verdictFor` that always answered `min_weight` would report. Here the SAME shapes are
-     * bound to a budget small enough that `rollout` cannot be seated, and the sweep must find the
-     * failures it is looking for.
-     */
+    /** The control the audit that produced this insisted on. See docs/coordination.md §530. */
     const starved: string[] = [];
     for (let size = 0; size <= 400; size += 40) {
       const images = imageList(size, "head");
@@ -168,23 +126,7 @@ describe("M23.1f clause 5: the released-version reader survives the same sweep",
   });
 
   it("A REF IN THE TRUNCATED TAIL IS `observed_images_elided`, NOT `no_matching_image_ref`", async () => {
-    /**
-     * THIS CASE WAS WRITTEN EXPECTING A DEFECT AND FOUND A CORRECT ANSWER, and it is kept in that
-     * shape because the wrong answer is the one worth pinning against.
-     *
-     * `boundPersistedJson` cuts an array from the TAIL, so a dependency line whose image ref sits
-     * past the cut is not in the stored list. The tempting report is `no_matching_image_ref` — "the
-     * executor deployed these images and none of them was yours" — which is a statement about the
-     * EXECUTOR and is false: the platform stopped writing the list down. `resolveFromObservedImages`
-     * reads the elision marker the bound leaves behind, BEFORE judging the match loop, and reports
-     * `observed_images_elided` instead. The remedies differ (look at what the pipeline pushed, vs
-     * raise the bound or narrow the reading), which is why the distinction is worth a reason code.
-     *
-     * What this sweep adds is the SIZE: nothing previously measured where the cut starts, so
-     * nothing would have noticed the honest reason becoming unreachable because the marker stopped
-     * being emitted. If this case ever reports `no_matching_image_ref`, the elision marker is gone
-     * and every large reading is quietly blaming the executor.
-     */
+    /** Written expecting a defect, and it found none. See docs/coordination.md §531. */
     let firstLost = -1;
     for (let size = 1; size <= 400; size += 1) {
       const stored = observedStateForRow(reading(imageList(size, "tail"), "9f2c1ab"), NOW)!;

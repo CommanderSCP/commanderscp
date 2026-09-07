@@ -18,16 +18,7 @@ import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { PageHeader } from "../components/ui/page-header";
 
-/**
- * `/graph` landing — the discoverable entry point for the graph explorer (previously reachable
- * only by already knowing an object id). Provides two ways in:
- *
- *  1. An object picker (registry + type-ahead over that registry's objects) that navigates to the
- *     object-scoped explorer at `/graph/{id}`.
- *  2. A default at-a-glance SERVICE-level org map — every service plus the real `depends_on`/
- *     `consumes`/… edges among them — so the page is never empty. Nodes are clickable (they route
- *     to the object's registry-detail page, same as inside the explorer).
- */
+/** The discoverable entry point for the graph explorer. See docs/web.md §348. */
 export function GraphLandingPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [registryPath, setRegistryPath] = useState<string>("services");

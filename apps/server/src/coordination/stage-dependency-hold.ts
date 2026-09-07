@@ -9,85 +9,9 @@ import {
 import type { ResolvedStageDependency } from "./changes-repo.js";
 import type { DependsOnEdge } from "./plan-compiler.js";
 
-/**
- * ADR-0028 increment 3 — THE HOLD.
- *
- * The guarantee, stated so it can be kept: *A's deploy at stage S is not TRIGGERED until, for every
- * declared dependency B of A that applies at S, B's deploy at S is satisfied.*
- *
- * TWO SOURCES FEED ONE DEPENDENCY SET, and the second is not an extension — it is the domain of the
- * check ADR-0028 decision 6 removed from `plan-compiler.ts`, landing where the duty went:
- *
- *   1. the change's own DECLARED `stageDependencies`, carrying the `minWeight`/`atTargets`
- *      qualifiers; and
- *   2. plain `depends_on` EDGES with BOTH endpoints among this change's own targets — no
- *      qualifiers, the universal `succeeded` test only.
- *
- * (2) exists because the removed compiler check keyed on the EDGE, not on a declaration: it refused
- * (400) any plan putting two edge-joined targets in one wave, whatever wrote the edge — a seed, an
- * IaC manifest, an operator, or an EARLIER change's declaration. Keying the hold only on this
- * change's own declarations would have left that set ordering nothing at all, which is a silent
- * regression rather than a design choice. The scope is deliberately not one inch wider: an edge with
- * an endpoint OUTSIDE this change's target set ordered nothing before and orders nothing now, so a
- * bulk edge import cannot turn the org's whole graph into a release gate (`graph.dependentIds` is a
- * live CEL policy input — ADR-0028 decision 6 cautions about exactly that blast radius).
- *
- * This module is the PREDICATE only; `reconcile.ts`'s per-target loop is the seam that acts on it.
- * The split is deliberate — the predicate is a pure-ish read that a test can drive directly, and the
- * seam is three lines whose two invariants (the target counted as in flight before the `continue`,
- * and the skip happening before the advisory trigger-claim lock) are copied verbatim from the
- * backoff gate beside it. With ONE thing the backoff gate never needed: a held target must not keep
- * an already-failed wave alive, so the seam's terminalization asks whether every target still in
- * flight is a held one rather than whether any is (reconcile.ts, end of the per-target loop).
- *
- * WHAT THIS IS NOT: it is not a rollout-step hold. `ExecutorPlugin` is exactly `observe`/`trigger`/
- * `status`/`abort`/`describeCapabilities`; there is no advance/pause/resume verb to withhold once a
- * Rollout is running, and ADR-0008 forbids adding one. SCP declines to make a call it was always
- * free not to make yet — the same authority ADR-0006's binding gate and freezes already exercise.
- * The finest grain enforceable here is therefore "is A triggered at this place at all".
- */
+/** ADR-0028 increment 3 — THE HOLD. See docs/coordination.md §949. */
 
-/**
- * FRESHNESS BOUND for the optional `minWeight` qualifier — how old the dependency's last observed
- * rollout snapshot may be before it stops counting as "currently observed at >= N".
- *
- * A bound is REQUIRED, not defensive: `updateWaveTargetObserved` overwrites `observed_state` in
- * place (there is no time series — ADR-0008 decision 1 deferred one), so a snapshot's age is
- * UNBOUNDED. TWO DIFFERENT WAYS a reading goes stale, and the second is why the bound is measured
- * off the reading's own `observedAt` rather than off `last_observed_at`:
- *
- *  * THE TARGET STOPS BEING POLLED. Reconcile skips a target the moment it terminalizes
- *    (`if (target.status === "succeeded") continue;`). The specific way that bites: a paused Argo
- *    Rollout can aggregate to Application health `Suspended`, which the argocd plugin maps to
- *    `succeeded` — so a dependency parked at 10% reads as done and its stored weight stays 10%
- *    forever, even after a human promotes it to 100%.
- *  * THE TARGET IS STILL POLLED AND THE POLLS SAY NOTHING. `updateWaveTargetObserved` refreshes
- *    `last_observed_at` on every poll but writes `observed_state` only when `observedStateFrom`
- *    returned something, and that returns `undefined` for a status with no stateRef, no images and
- *    no rollout — the argocd plugin's shape for an Application that has been deleted or renamed.
- *    The weight then freezes while its poll timestamp keeps moving, so a bound read off
- *    `last_observed_at` NEVER fires and the hold keeps releasing dependants against a world that no
- *    longer exists.
- *
- * Either way, trusting that number later would be asserting a fact about the world from a reading
- * nobody has taken since.
- *
- * TEN MINUTES, chosen from the two pressures that actually bound it:
- *
- *  * LOWER BOUND — it must never call a normally-polled in-flight target stale. The tick is 1 s and
- *    an `observing` target is polled on every tick its change is served, but `listChangeRowsInStates`
- *    serves oldest-first capped at `BATCH_LIMIT` (25) per state per tick, so a busy instance can
- *    legitimately go many ticks between two polls of the same change. Ten minutes is ~600 ticks of
- *    slack — far past any scheduling delay that is not itself an outage. (A live target restamps
- *    its reading on every poll: a real Argo Application reports a stateRef, so `observedStateFrom`
- *    returns a payload and `updateWaveTargetObserved` writes it.)
- *  * UPPER BOUND — it must reject a frozen snapshot in human time. A weight left over from a
- *    terminalized (or `Suspended`) target, or from an Application that has since been deleted, goes
- *    unreadable within one coffee break rather than being believed for days.
- *
- * Stale does NOT mean "satisfied" and does not mean "hold" either: it makes the WEIGHT unreadable,
- * which degrades that dependency to the universal `status = 'succeeded'` test (ADR-0028 decision 4).
- */
+/** FRESHNESS BOUND for the optional `minWeight` qualifier. See docs/coordination.md §950. */
 export const OBSERVED_WEIGHT_FRESHNESS_MS = 10 * 60_000;
 
 /**
@@ -156,36 +80,20 @@ export type WeightUnreadableCause =
   /** The reading is older than {@link OBSERVED_WEIGHT_FRESHNESS_MS}. */
   | "stale";
 
-/** One dependency's verdict at one place. Every field is DISCRETE and slow-moving on purpose: this
- *  is what lands in a Decision's `inputContext`, and a field that changes every tick would re-open
- *  the 1.44 GB/day write amplification of ADR-0024. Note in particular what is ABSENT — the observed
- *  weight itself. A dependency walking 10 -> 20 -> 30 below a `minWeight` of 50 would otherwise
- *  write a new Decision per weight change, which is the same bug wearing a different hat. The
- *  qualitative branch is what explains the hold; the number is live telemetry and belongs on the
- *  observe surface, not in the audit record. */
+/** One dependency's verdict at one place. See docs/coordination.md §951. */
 export interface StageDependencyVerdict {
   /** The component object id depended on. For an `undeclarable` entry this is the raw stored entry
    *  rendered as JSON, because there was no parseable id to name. */
   dependsOn: string;
   branch: StageDependencyBranch;
   satisfied: boolean;
-  /** `"edge"` when this dependency came from a plain `depends_on` edge between two of this change's
-   *  own targets rather than from the change's own declaration — the domain of the compile-time
-   *  check ADR-0028 decision 6 replaced. ABSENT for a declared dependency, deliberately: the
-   *  overwhelmingly common case keeps writing the Decision it already wrote, so no existing hold's
-   *  `inputContext` changes shape and none of them re-write once for the upgrade. An operator seeing
-   *  a hold naming a dependency their CI never declared needs this field to know where it came
-   *  from. */
+  /** `edge` when the dependency came from a plain edge. See docs/coordination.md §952. */
   source?: "edge";
   /** The status of the dependency's most recent wave target at this place, when it had one. */
   dependencyStatus?: string;
   /** Echoed only when the declaration carried the qualifier. */
   minWeight?: number;
-  /** Set when the declaration's `minWeight` was NOT applied because the pair also carries a plain
-   *  `depends_on` edge between two targets of this change, which asserts the stricter universal
-   *  `succeeded` test. `minWeight` is still echoed beside it: the record has to say what was asked
-   *  for as well as what was enforced, or "why did my minWeight not let this through?" has no
-   *  answer. Discrete and slow-moving like every other field here. */
+  /** Set when the declared weight was not applied. See docs/coordination.md §953. */
   minWeightSupersededByEdge?: true;
   /** Set whenever `minWeight` was declared and the weight could not be read — INCLUDING on a verdict
    *  that went on to be satisfied by the universal `succeeded` test. That is the "record a warning"
@@ -200,33 +108,19 @@ export interface StageDependencyEvaluation {
   /** The (component, place) pair this wave target resolves to, or `null` when it resolved to no
    *  placement at all (legacy-shaped target — see the `unscopeable` branch). */
   stage: { componentObjectId: string; deploymentTargetObjectId: string } | null;
-  /** One verdict per declared dependency that APPLIES here, in declaration order, then one per
-   *  edge-derived dependency (sorted, since edge rows arrive in no meaningful order), then one per
-   *  malformed stored entry. Dependencies excluded by `atTargets` produce no verdict at all —
-   *  they were never in scope, and listing them would make the Decision's inputs churn with
-   *  irrelevance. Empty when nothing was declared. */
+  /** One verdict per applying dependency, then per edge. See docs/coordination.md §954. */
   verdicts: StageDependencyVerdict[];
 }
 
 const NOT_DECLARED: StageDependencyEvaluation = { held: false, stage: null, verdicts: [] };
 
-/**
- * Evaluates every declared stage dependency of a change against ONE of its wave targets.
- *
- * INERT WHEN NOTHING IS DECLARED, and structurally so: the caller's parse happens in memory and this
- * returns before issuing a single query. The overwhelming majority of changes declare nothing, and
- * they must not pay a graph read per pending target per tick for a feature they do not use.
- *
- * Takes a `TenantTx` and reads only — the caller decides what to persist, and does it in its own
- * transaction, so a hold evaluation can never half-commit anything.
- */
+/** Evaluates every declared dependency against one target. See docs/coordination.md §955. */
 export async function evaluateStageDependencies(
   tx: TenantTx,
   input: {
     orgId: string;
     /** The wave target's `target_object_id` — a PLACEMENT in stage mode, a component in legacy. */
     waveTargetObjectId: string;
-    /** Already parsed off the change's properties by `stageDependenciesOf`. */
     stageDependencies: readonly ResolvedStageDependency[];
     /** Stored entries that did not parse. Each becomes one `undeclarable` (holding) verdict. */
     malformed: readonly unknown[];
@@ -259,17 +153,7 @@ export async function evaluateStageDependencies(
   const stage = await resolvePlacementPair(tx, orgId, waveTargetObjectId);
 
   if (!stage) {
-    // LEGACY-SHAPED WAVE TARGET — it names a component, and a component is not a place. The
-    // guarantee is not lost here, it was never this mechanism's to keep: `plan-compiler.ts`'s legacy
-    // path STILL refuses to schedule two components joined by a `depends_on` edge into one wave
-    // (only the STAGE path's copy of that check was replaced by this hold, ADR-0028 decision 6).
-    // Recorded as a verdict rather than skipped so that a change which declared a coupling and got
-    // none is VISIBLE: `reconcile.ts` collects these separately from the holds and writes them as a
-    // `warn` Decision of their own, whether or not anything else about the same target holds.
-    //
-    // EDGE-DERIVED dependencies produce no verdict at all here, unlike declared ones. There is
-    // nothing to report: legacy mode's compile-time check is still enforcing that exact edge set, so
-    // an edge-joined pair never reaches this loop in one wave to begin with.
+    // LEGACY-SHAPED WAVE TARGET. See docs/coordination.md §956.
     for (const dep of stageDependencies) {
       verdicts.push({ dependsOn: dep.dependsOn, branch: "unscopeable", satisfied: true });
     }
@@ -305,42 +189,7 @@ export async function evaluateStageDependencies(
       .map((e) => e.to)
   );
 
-  // ==========================================================================================
-  // COMPOSING THE TWO HALVES FOR A PAIR THAT HAS BOTH. THE RULE: A DECLARATION MAY ADD TO ITS OWN
-  // COUPLING, OR NARROW WHERE IT APPLIES — IT MAY NEVER MAKE THE PAIR'S EDGE-ASSERTED ORDERING
-  // WEAKER (ADR-0028 decision 6's corollary, both halves of it).
-  //
-  // The two sources are not symmetric, and the asymmetry is the whole point. The EDGE asserts the
-  // universal test: `succeeded` at this place. A DECLARATION's `minWeight` is a RELAXATION of that
-  // test — "you may go once it reaches N%" — and `atTargets` is a narrowing of where its own
-  // declaration applies. So for a pair carrying both, the STRICTEST applicable constraint wins,
-  // which is always the edge's plain `succeeded`:
-  //
-  //   * `atTargets` elsewhere -> the declaration does not apply here at all, and the edge speaks
-  //     for the pair (one verdict, `source: "edge"`). Keyed on `applicable`, the atTargets-filtered
-  //     set, not on everything declared — that is what stops a prod-scoped declaration silencing
-  //     the pair's edge at gamma.
-  //   * declaration applies here with NO `minWeight` -> the same constraint from both sources, so
-  //     it is ONE verdict attributed to the declaration; the edge adds nothing.
-  //   * declaration applies here WITH `minWeight` -> the qualifier is dropped for this pair and the
-  //     edge's plain `succeeded` test is what runs, recorded as `minWeightSupersededByEdge`.
-  //
-  // Without that last case the feature SUBTRACTS an ordering somebody else wrote: an operator, a
-  // seed or an earlier change mints app -> dep, and the party being ordered then neutralises it for
-  // free by adding `minWeight: 1` to its own declaration — deploying in parallel with a dependency
-  // sitting at 5%, on an input that was a loud 400 before decision 6. The whole authority story
-  // around minting these edges (`relationship:write` at BOTH endpoints) would be pointless if a
-  // declaration could weaken one without any authority at all.
-  //
-  // WHAT THIS DOES NOT COST: the edge set is only ever non-empty when BOTH endpoints are targets of
-  // this same change (`loadDependsOnEdges`), so the 277-of-281 single-target release — the shape
-  // `minWeight` exists for, "hold A at gamma until B is 10% there" across two separate pushes —
-  // never reaches this rule at all. Only a pair travelling in ONE change does, and that pair used
-  // to be refused outright.
-  //
-  // SORTED, because rows come back in no meaningful order and the resulting verdict list lands in a
-  // Decision's `inputContext` — an unsorted list would make an unchanged situation look new on the
-  // tick a row order changed, and `insertDecisionIfChanged` would write again.
+  // COMPOSING THE TWO HALVES FOR A PAIR THAT HAS BOTH. See docs/coordination.md §957.
   const declaredHere = new Set(applicable.map((dep) => dep.dependsOn));
   for (const dependsOn of [...edgeAsserted].sort()) {
     if (declaredHere.has(dependsOn)) continue;
@@ -387,16 +236,7 @@ export async function evaluateStageDependencies(
   return finish(stage, verdicts, malformedVerdicts);
 }
 
-/**
- * The universal test, then the optional qualifier, then the reason it held — the whole branch matrix
- * of ADR-0028 decision 4 for ONE dependency against ONE stored row.
- *
- * EXPORTED FOR DIRECT UNIT TESTING, on the same reasoning `decisions-repo.ts` exports
- * `restatesDecision`: this is the entire decision content of the feature, and its most plausible
- * failure mode — an unreadable weight quietly counting as satisfied, or as a weight of zero — is
- * invisible from the outside because both produce a plausible-looking verdict. Everything around it
- * (which rows are read, what is persisted) is pinned by the integration suite instead.
- */
+/** The universal test, the qualifier, then why it held. See docs/coordination.md §958. */
 export function stageDependencyVerdict(
   dep: ResolvedStageDependency,
   latest:
@@ -483,21 +323,7 @@ export function stageDependencyVerdict(
   };
 }
 
-/**
- * Reads `observed_state.rollout.weight` and dates it. Returns the cause when it cannot be believed,
- * or the number when it can. Callers must treat `cause !== undefined` as UNREADABLE, never as a
- * weight of zero — the two are different claims and only one of them is true.
- *
- * THE AGE IS THE READING'S OWN (`observed_state.observedAt`), NEVER `last_observed_at`. The column
- * beside it is the obvious-looking choice and is wrong: `updateWaveTargetObserved` refreshes
- * `last_observed_at` on EVERY poll while writing `observed_state` only when the poll returned
- * something storable, and `observedStateFrom` returns `undefined` for a status carrying no stateRef,
- * no images and no rollout — which is exactly the argocd plugin's 404 shape for an Application that
- * has been deleted or renamed mid-canary. Dating the snapshot by the poll would then leave the last
- * weight frozen in place while every subsequent tick refreshed its timestamp: the reading is
- * arbitrarily old, `stale` never fires, and the hold keeps RELEASING dependants against a world that
- * no longer exists. Fail-open in the branch ADR-0028 calls the owner's headline requirement.
- */
+/** Reads `observed_state.rollout.weight` and dates it. See docs/coordination.md §959. */
 function weightUnreadableCause(
   latest: { observedState: unknown },
   now: number
@@ -517,16 +343,7 @@ function weightUnreadableCause(
   return { cause: undefined, weight };
 }
 
-/** The wave target's object row, reduced to the pair a stage-scoped hold needs. `null` for anything
- *  that is not a live placement — a legacy-shaped wave target naming a component, or a placement
- *  whose stored pair is unusable (which `plan-service.ts` skips for the same reason).
- *
- *  EXPORTED for `coordination/freeze-hold.ts` (M25.2), which needs the identical projection for the
- *  identical purpose: naming the (component, place) a held target sits at, in the hold's Decision.
- *  Shared rather than copied, because two readings of "which pair is this wave target?" that could
- *  disagree is the same class of drift `graph/containment.ts` was written to end — and the ONE
- *  reading here already encodes two non-obvious decisions (a non-placement is `null` rather than an
- *  error, and a placement with an unusable stored pair is `null` too, matching `plan-service.ts`). */
+/** The target's row, reduced to the pair a hold needs. See docs/coordination.md §960. */
 export async function resolvePlacementPair(
   tx: TenantTx,
   orgId: string,
@@ -571,11 +388,7 @@ function safeJson(value: unknown): string {
   }
 }
 
-/**
- * One line per held target, for the Decision's `reasonTree` and the operator-facing log. Built from
- * ids and branch names only — no timestamps, no weights — so the sentence is byte-stable for as long
- * as the situation is, which is what lets `insertDecisionIfChanged` suppress the restatement.
- */
+/** One line per held target, for the reason tree and log. See docs/coordination.md §961. */
 export function describeStageDependencyHold(verdict: StageDependencyVerdict): string {
   // WHERE THE DEPENDENCY CAME FROM, on every edge-derived line. An operator reading "held behind X"
   // for a coupling their CI never declared has no way to act on it without this: the remedy is to

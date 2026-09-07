@@ -25,47 +25,9 @@ import {
   resolveDeclaredComponentLines
 } from "./subscription-resolution.js";
 
-/**
- * M21.6 — THE READ SURFACE over the dependency inventory and the bump history, for ONE component
- * (docs/proposals/dependency-subscription-ui.md §3.1/§3.2, owner decisions §8 Q1/Q4).
- *
- * Two assemblers, both READ-ONLY, both scoped to one component, both paged. They exist so that the
- * route handlers in `routes/dependency-subscriptions.ts` stay thin and so that the joins are
- * testable through the same functions the routes call.
- *
- * THE ONE RULE THIS MODULE MUST NOT BREAK: IT WRITES THE AND ZERO TIMES, AND IT HAS NO
- * GATHER-AND-MERGE LOOP OF ITS OWN. Every per-row `subscription` comes from
- * `resolveDeclaredComponentLines(..., { includeDisabled: true })` — THE SAME function the ingestion
- * work-list is the enabled-only projection of, one gather + one unlock read per request — and the
- * component gate comes from `mergeComponentIngestionGate` over the candidates and instance THAT call
- * returned. Nothing here tests `enabled`, filters on it, or infers a tier. That is what makes
- * `rows[].subscription` byte-equal to the resolution GET for the same actor and line (pinned in
- * `dependency-inventory-routes.integration.test.ts`), and what would silently stop being true the
- * day someone "optimised" the per-row merge into a local predicate — or copied the work-list's loop
- * "minus its filter" into this file (the M21.7 review note on the proposal, §3.4, names exactly that
- * fork as the thing a fix round would have to undo).
- *
- * THE ACTOR IS THE CALLER. Both assemblers take `actorObjectId` and thread it exactly as the
- * resolution GET does (`auth.subjectObjectId`), so a human reading their component's page sees the
- * same enablement the resolution GET would report to them — and, as documented on
- * `GatherSubscriptionCandidatesInput.actorObjectId`, that can differ from what the SYSTEM actor's
- * jobs see for a `scope.group` policy. This module reports; it does not reconcile the two.
- *
- * DIRECT DECLARATIONS ONLY, NO TRAVERSAL, NO RELATIONSHIP — the inventory repo's boundary
- * (ADR-0032 §3/§4/§5) holds here: one keyset page of `component_dependencies`, one batched line
- * hydration, one batched producer-declaration lookup (by coordinate — ADR-0032 §7e) plus one
- * batched producer-name lookup, one batched Decision lookup per kind. Nothing walks.
- */
+/** The read surface over the inventory and bump history. See docs/dependencies.md §204. */
 
-// -------------------------------------------------------------------------------------------
-// The inventory
-// -------------------------------------------------------------------------------------------
-
-/**
- * The inventory page cursor — the last row's `(lineId, manifestPath)`, which is the tail of the
- * `component_dependencies` primary key and therefore a total order over one component's rows.
- * Opaque on the wire (base64url JSON), like every other cursor in this codebase.
- */
+/** The inventory page cursor. See docs/dependencies.md §205. */
 function encodeInventoryCursor(row: { lineId: string; manifestPath: string }): string {
   return Buffer.from(
     JSON.stringify({ lineId: row.lineId, manifestPath: row.manifestPath })
@@ -102,13 +64,7 @@ function stringArrayOf(value: unknown): string[] {
   return value.filter((v): v is string => typeof v === "string");
 }
 
-/**
- * The newest `dependency_inventory_ingestion` Decision about this component, projected LENIENTLY —
- * `inputContext.manifestPathsRead/Absent` and `reasonTree.skipped[{path, reason}]` are read as
- * written by `inventory-ingestion.ts` and anything malformed reads as empty rather than throwing.
- * `null` when no such Decision exists (never ingested, OR refused as not-enabled / not-addressable /
- * superseded — none of which write one).
- */
+/** The newest ingestion Decision about this component. See docs/dependencies.md §206. */
 export async function readLastIngestionDecision(
   tx: TenantTx,
   orgId: string,
@@ -206,13 +162,7 @@ export async function readComponentDependencyInventory(
   const lines = await listDependencyLinesByIds(tx, input.orgId, lineIds);
   const lineById = new Map(lines.map((l) => [l.id, l]));
 
-  // The DECLARED producers, one batched lookup on `dependency_line_producers` — keyed by
-  // (ecosystem, coordinate), the COORDINATE grain ADR-0032 §7e moved the declaration to (0071/0072
-  // dropped `dependency_lines.produced_by_*`): every major line of a declared coordinate is
-  // internal, so a row's producer is its coordinate's declaration. Then the producers' names, one
-  // more lookup. `producerObjectId` carries a foreign key, so a declaration always names an object;
-  // a producer that has since been soft-deleted still resolves here (the declaration is a stored
-  // fact and the name is what it was).
+  // The declared producers, in one batched lookup. See docs/dependencies.md §207.
   const producers = await listDependencyLineProducersForKeys(
     tx,
     input.orgId,
@@ -280,10 +230,6 @@ export async function readComponentDependencyInventory(
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// The bumps
-// -------------------------------------------------------------------------------------------
-
 export interface ReadComponentDependencyBumpsInput {
   orgId: string;
   componentObjectId: string;
@@ -291,11 +237,7 @@ export interface ReadComponentDependencyBumpsInput {
   cursor?: string | undefined;
 }
 
-/**
- * The newest Decision of one `kind` for EACH of a set of subjects, in ONE query — `DISTINCT ON
- * (subject_id)` over the `decisions_org_subject_kind_created` index. The per-change join the bump
- * list needs, written once and used for both the dispatch and the merge Decision.
- */
+/** The newest Decision of a kind per subject, one query. See docs/dependencies.md §208. */
 async function newestDecisionsBySubject(
   tx: TenantTx,
   orgId: string,
@@ -319,13 +261,7 @@ async function newestDecisionsBySubject(
   return out;
 }
 
-/**
- * One page of the bumps SCP authored for a component, newest first, each joined to its change's
- * name, its line's major, the newest `dependency_bump_dispatch` Decision (delivery + reason) and
- * the newest `dependency_bump_merge` Decision (the second look). `pullRequestUrl` is the
- * provider-returned URL the authorship row stores (`pull_request_url`, M21.7) when one was
- * recorded, else `null` — never composed from `repo` + number.
- */
+/** One page of the bumps authored for a component. See docs/dependencies.md §209. */
 export async function readComponentDependencyBumps(
   tx: TenantTx,
   input: ReadComponentDependencyBumpsInput

@@ -31,21 +31,7 @@ import {
 } from "./scan-requirements.js";
 import type { EffectiveScanExclusions, EffectiveScanThreshold } from "@scp/schemas";
 
-/**
- * The orchestrator every gate check (lifecycle-edge AND wave-boundary) funnels through — where
- * freezes, policy resolution, control outcomes, and approval quorum all come together into ONE
- * verdict. `coordination/gates.ts` (M3's seam) is the thin adapter that calls this with the
- * (fromState/toState) or (waveIndex/topologyObjectId) framing the guarded transition
- * function/reconcile loop already speak.
- *
- * **Host-optional by design** (DESIGN §16's api/worker split — a `role=api` process has no
- * `PluginHost`, per `control-runner.ts`'s module doc): pass `host: null` from a call site that
- * cannot run a control inline (the lifecycle-edge gate, called from an HTTP route handler); pass
- * a real `PluginHost` from a call site that can (the wave-boundary gate, called from
- * `coordination/reconcile.ts`, which always has one). With `host: null`, a required control with
- * no existing outcome is simply treated as unsatisfied (blocks) rather than attempted — never a
- * silent pass, and never a synchronous plugin call from the request-serving tier.
- */
+/** The orchestrator every gate check. See docs/governance.md §100. */
 
 export interface GateContext {
   orgId: string;
@@ -55,22 +41,9 @@ export interface GateContext {
   emergency: boolean;
   gateKind: "lifecycle_edge" | "wave_boundary";
   gateRef: Record<string, unknown>;
-  /** Set when the caller is attempting an explicit freeze override (mandatory reason —
-   *  DESIGN §10.3). Every ACTIVE freeze over the change's scope must be individually overridden by
-   *  an actor holding `freeze:override` at THAT freeze's own scope (CRITICAL #2). A rejected
-   *  override (missing reason, or unauthorized for some active freeze) is NOT thrown — it becomes a
-   *  "block" verdict so `coordination/transition.ts` writes the Decision + audit with a resolvable
-   *  `decision_id`, exactly like every other block path (MAJOR #6). */
+  /** Set when the caller attempts an explicit override. See docs/governance.md §101. */
   overrideFreeze?: { reason: string } | undefined;
-  /** M25.2 / owner decision D7 — this Change IS a rollback, so an active freeze does not block it.
-   *  NARROW BY CONSTRUCTION: it lifts the FREEZE check and nothing else. Policies, controls and
-   *  approvals are evaluated for a rollback's wave exactly as before, because a rollback can still
-   *  be the wrong thing to ship and those mechanisms have humans behind them; a freeze is a calendar
-   *  window, and holding a rollback behind one pins a broken release in place until it closes.
-   *
-   *  Only ever set on the `wave_boundary` path. The `lifecycle_edge` path never sees a rollback at
-   *  all — `coordination/gates.ts` returns an unconditional allow for one BEFORE calling this
-   *  orchestrator (DESIGN §9.4). */
+  /** This change is a rollback, so a freeze does not hold. See docs/governance.md §102. */
   isRollback?: boolean | undefined;
 }
 
@@ -90,30 +63,11 @@ export interface GateOutcome {
    *  one mandatory high-severity audit event each (DESIGN §10.3). Empty/undefined when nothing was
    *  overridden. */
   freezeOverrides?: FreezeOverride[] | undefined;
-  /** M25.2 — per-target freeze coverage, POPULATED ONLY AT `wave_boundary`.
-   *
-   *  Present (and possibly all-empty) when the gate ran the per-target resolution; absent on the
-   *  `lifecycle_edge` path, which deliberately keeps any-target-frozen => block. A non-empty
-   *  `freezes` on an entry means that target is covered; the wave gate may still ALLOW, because
-   *  M25.2 moved ENFORCEMENT to `coordination/reconcile.ts`'s per-target trigger loop and left only
-   *  the all-frozen case as a whole-wave block.
-   *
-   *  AN INTERNAL TS TYPE, never a wire schema: no codegen, no OpenAPI surface, no oasdiff exposure.
-   *  If this ever needs to reach an operator it goes through a derived read-model field computed
-   *  from the standing `freeze_admission` Decision, not through this. */
+  /** Per-target freeze coverage, populated only at the wave. See docs/governance.md §103. */
   frozenTargets?: TargetFreezes[] | undefined;
 }
 
-/**
- * CRITICAL #2 / MAJOR #6: the change proceeds only if EVERY active freeze over its scope is
- * INDIVIDUALLY overridden by an actor holding `freeze:override` at THAT freeze's own scope, with a
- * non-empty reason. `activeFreezesForScopes` has no ORDER BY and can return several — checking only
- * `active[0]` let a narrow-scope override holder slip a change past a broader freeze they had no
- * authority over. Never throws: a rejected override (no override requested, missing reason, or
- * unauthorized for some freeze) returns `blocked` so the caller writes a Decision + audit with a
- * resolvable `decision_id` (the freeze-block Decision), instead of a raw `forbidden()` that rolls
- * that record back.
- */
+/** CRITICAL #2 / MAJOR #6. See docs/governance.md §104. */
 async function checkFreeze(
   tx: TenantTx,
   ctx: GateContext,
@@ -122,22 +76,7 @@ async function checkFreeze(
   | { blocked: null; overrides: FreezeOverride[] }
   | { blocked: { freeze: EffectiveFreeze; reason: string }; overrides: null }
 > {
-  // M25.2: `unionFreezes(byTarget)` REPLACES `activeFreezesForScopes(containmentScopeIds(...))`,
-  // and the two are set-equal by construction — `containmentScopeIds` IS the union of the
-  // per-target `containmentChain` walks `freezesByTarget` performs, and exact-set membership
-  // distributes over that union (`freeze-scope.ts`, pinned by a test). Both walks reach BOTH
-  // containment routes (domain_id AND the `contains` edge, plus a placement's component and
-  // deployment-target), which is what makes a freeze declared at a SERVICE block a change targeting
-  // that service's component. A domain_id-only walk here failed OPEN: membership is EXACT, so a
-  // service id absent from the set is a service-scoped freeze silently not found.
-  //
-  // WHY THIS FUNCTION TAKES THE FLAT LIST AND NEVER THE MAP. Everything below is CRITICAL #2 —
-  // EVERY active freeze individually overridden by an actor holding `freeze:override` at THAT
-  // freeze's own scope. Checking only `active[0]` was a shipped bug. Handing this function a flat,
-  // deduped list means a per-target early return, or a `byTarget[0]` degradation, is not
-  // EXPRESSIBLE here: the per-target dimension does not exist at this call site. That is the
-  // structural preservation of the invariant, chosen deliberately over extracting the quantifier
-  // into something a caller could accidentally narrow. The loop's text below is unchanged.
+  // The union of per-target freezes replaces the scope query. See docs/governance.md §105.
   const active = unionFreezes(byTarget);
   if (active.length === 0) return { blocked: null, overrides: [] };
 
@@ -150,22 +89,7 @@ async function checkFreeze(
   for (const freeze of active) {
     const label = freezeLabel(freeze);
 
-    // ==========================================================================================
-    // M25.3 — THE PLATFORM TIER'S OVERRIDE RULING (proposal §2.2, owner decision D1)
-    // ==========================================================================================
-    // AN INSTANCE-TIER FREEZE IS NOT OVERRIDABLE BY ANY TENANT ROLE, HOWEVER PRIVILEGED — not by
-    // an org-root Owner, not by anyone. It was declared by this deployment's OPERATOR, about the
-    // deployment, binding every org on it; the whole authority argument for the operator door
-    // (ADR-0033 §7a: "no RBAC permission can grant this") collapses if a tenant admin can step
-    // past it.
-    //
-    // This branch is INSIDE the universal quantifier rather than a pass ahead of it, and that is
-    // the point: CRITICAL #2 is "EVERY active freeze individually satisfied", and `active` is now
-    // the UNION OF BOTH TIERS. A change covered by an org freeze AND a platform freeze must
-    // satisfy both, and neither tier can short-circuit the other, because there is only one loop
-    // and it returns on the first freeze it cannot satisfy. A separate "platform pass first" —
-    // which is what the proposal sketched — would have re-created the `active[0]` shape the loop
-    // exists to make inexpressible, one tier up.
+    // M25.3 — THE PLATFORM TIER'S OVERRIDE RULING. See docs/governance.md §106.
     if (freeze.tier === "platform" && !freeze.overridable) {
       return {
         blocked: {
@@ -192,13 +116,7 @@ async function checkFreeze(
         overrides: null
       };
     }
-    // WHERE `freeze:override` IS CHECKED. Org tier: the freeze's OWN scope, unchanged since
-    // CRITICAL #2 — a narrow-scope holder must not slip a change past a broader freeze. Platform
-    // tier, and only once the operator has set `overridable`: the ORG ROOT, the widest scope a
-    // tenant has, because the freeze binds the whole org and there is no narrower object it could
-    // honestly be checked at. Note the two authorities stay independent and BOTH are required —
-    // the operator admits the override by setting the bit, the tenant must still hold the
-    // permission at its root and still must supply a reason.
+    // WHERE `freeze:override` IS CHECKED. Org tier. See docs/governance.md §107.
     if (freeze.tier === "platform" && orgRootObjectId === null) {
       orgRootObjectId = await getOrgRootObjectId(tx, ctx.orgId);
     }
@@ -257,35 +175,7 @@ function freezeMatchOf(
   };
 }
 
-/**
- * The object a CEL condition should see as `subject`, and whose graph facts it should read, for a
- * given gate target (ADR-0026).
- *
- * A wave target is a COMPONENT under legacy compilation and a PLACEMENT under stage-shaped
- * compilation. `containmentChain` now walks from a placement up through its component, so every
- * SCOPE question (policy match, freeze, approval scope, scan tiers) is answered identically for
- * both shapes — but two things in this file read the target OBJECT rather than its chain, and they
- * do not follow:
- *
- *   - `subject` in the CEL context — a placement's `typeId` is `"placement"` and it carries the
- *     pair's labels, not the component's. `subject.typeId == "component"` or a
- *     `subject.labels.tier` condition would silently evaluate FALSE, so the policy stops firing and
- *     the gate allows. A condition that stops matching is indistinguishable, from the verdict, from
- *     a condition that was never meant to match.
- *   - `graph.ownerIds` / `graph.dependentIds` — `owns` and `depends_on` edges attach to the
- *     component. A placement has neither, so an ownership- or blast-radius-conditioned policy sees
- *     an empty set and stops firing too.
- *
- * The subject of a placement is the component it places: the software being released is the same
- * software wherever it runs, and every one of those facts is deliberately stored once on the
- * component (ADR-0026 §3's split table). WHERE it is being released stays visible — the gate's
- * `targetObjectIds`, its Decision and its control context still name the placement itself, so
- * explainability keeps the place and only the subject-shaped questions hop.
- *
- * A non-placement id is returned unchanged, so this is a pure extension: legacy compilation, the
- * lifecycle-edge gate and campaign waves (which never compile stage-shaped) all resolve to exactly
- * what they resolved before.
- */
+/** The object a condition should see as its subject. See docs/governance.md §108. */
 async function governanceSubjectOf(
   tx: TenantTx,
   orgId: string,
@@ -296,16 +186,7 @@ async function governanceSubjectOf(
       andOp(eqOp(t.orgId, orgId), eqOp(t.id, targetObjectId), isNullOp(t.deletedAt))
   });
   if (row?.typeId !== "placement") return targetObjectId;
-  // Read from the PROPERTIES — the source of truth for the pair (ADR-0026 D17), the same half
-  // `binding-resolution.ts`, `plan-service.ts` and `graph/containment.ts`'s route 3 read.
-  //
-  // The UUID SHAPE CHECK is the same guard, for the same reason, as route 3's `CASE`: journal replay
-  // calls `createObject` directly and never passes the typed `/placements` route, so a corrupt or
-  // hostile peer can ship a placement whose `componentId` is not a UUID. Returning it would hand a
-  // non-UUID straight to `graphFactsFor`'s parameterised `to_id` comparison, and Postgres throws
-  // `invalid input syntax for type uuid` — turning one bad row into an ERRORING gate for every change
-  // that touches it. This was NOT reasoned out; the malformed-pair test found it after the route-3
-  // guard was already in place, which is the whole argument for writing that test.
+  // Read from the PROPERTIES. See docs/governance.md §109.
   const componentId = (row.properties as { componentId?: unknown } | null)?.componentId;
   return typeof componentId === "string" && UUID_PATTERN.test(componentId)
     ? componentId
@@ -317,11 +198,7 @@ async function governanceSubjectOf(
 const UUID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-/** Every graph fact `governance/evaluate.ts`'s context carries beyond the target itself — MVP
- *  keeps this cheap (direct `owns`/`depends_on` edges only, not transitive closures) since the
- *  named `impact-of`/`owners-of` queries already cover the deep-traversal case for humans; policy
- *  conditions needing more can call those via a future CEL custom function without a context
- *  shape change. */
+/** Every graph fact the context carries beyond the target. See docs/governance.md §110. */
 async function graphFactsFor(tx: TenantTx, orgId: string, targetObjectId: string) {
   const owners = await tx.query.relationships.findMany({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
@@ -348,27 +225,7 @@ async function graphFactsFor(tx: TenantTx, orgId: string, targetObjectId: string
   };
 }
 
-/** Scope-KIND keyword → the `object_types.id` an ancestor of that kind carries. `organization`
- *  is special-cased to the org root object below (whose id === orgId).
- *
- *  `assembly` ADDED 2026-08-17 (M22.0, ADR-0033 §5). It is a real container rung (migration 0055,
- *  `CONTAINER_TYPES = ["service","assembly"]`, legal chain `service -> assembly -> component`) that
- *  shipped AFTER this map was written. `containmentChain` walks it for free — it matches on the
- *  `contains` EDGE, never on the parent's type — but `nearestAncestorOfKind` below can only find a
- *  kind this map names, so `requireApprovals: {scope: "assembly"}` resolved to `null` and became a
- *  PERMANENTLY UNSATISFIABLE required approval: fail-closed, but silently inexpressible, and
- *  prewarm never materialized the request so no human could vote it through either.
- *
- *  THIS ENTRY IS A LOOSENING FOR EXISTING DATA, and is the one line in M22.0 that is not
- *  behaviour-neutral. Any `requireApprovals: {scope: "assembly"}` authored before today blocks
- *  unconditionally; afterwards it becomes satisfiable by the authored quorum. That is the author's
- *  declared intent finally taking effect rather than a regression — but an operator whose change has
- *  been parked behind an inexpressible approval will see it become approvable, so it is called out
- *  here and in the PR rather than shipped quietly.
- *
- *  WALKING a rung is edge-generic and free; NAMING one is not. This map and
- *  `governance/scan-requirements.ts`'s `tierForObjectType` are the two hardcoded rung lists that
- *  migration 0055 silently missed. A third container level must revisit both. */
+/** Scope keyword to the object type an ancestor carries. See docs/governance.md §111. */
 const APPROVAL_SCOPE_KEYWORDS: Record<
   string,
   "organization" | "domain" | "service" | "assembly" | "component"
@@ -381,19 +238,7 @@ const APPROVAL_SCOPE_KEYWORDS: Record<
   component: "component"
 };
 
-/**
- * Resolves a `requireApprovals.scope` value (MAJOR #5). DESIGN §10.1's own example writes a scope
- * KIND keyword (`"scope":"service"`), meaning "someone holding `fromRole` at the change target's
- * containing object of that kind"; an author may equally pass a literal object id/urn. Returns the
- * concrete object id the approval quorum's `hasRoleAtScope` check will run against, or `null` when
- * the scope can't be resolved (unknown keyword, a keyword with no ancestor of that kind on the
- * target's chain, or a literal ref that doesn't resolve) — the caller treats `null` as an
- * UNSATISFIABLE required approval (fail closed), never a raw `::uuid` cast crash and never a pass.
- *
- * `hasRoleAtScope` (authz/resolve.ts) expands the SAME two containment routes from whatever id this
- * returns, so an Approver bound at the org root is eligible for a service-resolved scope too — the
- * keyword picks the scope, it does not narrow who may vote to exactly-that-object bindings.
- */
+/** Resolves a `requireApprovals.scope` value. See docs/governance.md §112. */
 export async function resolveApprovalScope(
   tx: TenantTx,
   orgId: string,
@@ -404,12 +249,7 @@ export async function resolveApprovalScope(
   if (keyword) {
     if (keyword === "organization") return orgId; // org root object id === orgId (bootstrap invariant)
     if (!primaryTargetId) return null;
-    // The target's containment chain, walked by BOTH routes (`graph/containment.ts`) — then the
-    // NEAREST ancestor carrying the requested kind. A domain_id-only walk here failed CLOSED for
-    // the `"scope":"service"` keyword DESIGN §10.1 itself gives as the example: services and
-    // components are siblings under a domain, so no ancestor of kind 'service' was ever found, the
-    // required approval became permanently unsatisfiable, and prewarm skipped materializing the
-    // request — so no human could vote it through either.
+    // The target's containment chain, walked by BOTH routes. See docs/governance.md §113.
     const chain = await containmentChain(tx, orgId, primaryTargetId);
     return nearestAncestorOfKind(chain, keyword)?.id ?? null;
   }
@@ -422,19 +262,7 @@ export async function resolveApprovalScope(
   }
 }
 
-/**
- * The digest the change is PROMOTING — its own tracked artifact digest, read from the change row's
- * `sourceRef.artifact_digest` (DESIGN §9.1's projection jsonb: `{repo, ref, commit, run_url,
- * workspace, artifact_digest, …}`). Threaded into every control-run context as
- * `context.artifactDigest` so a digest-binding control (scan-result-control, ADR-0013 "nothing
- * slipped in") binds its verdict to the CHANGE's REAL artifact — not to an operator-typed value on
- * the control binding, which the same `policy:write` author configures alongside the scan source
- * (a tautology). When the change tracks NO digest this returns `undefined`: leave
- * `context.artifactDigest` unset (never invent one) so the control falls back to its own
- * operator-pinned `config.expectedDigest`, a documented degraded/override path. Best-effort — a
- * missing change row or malformed `sourceRef` yields `undefined`, never a throw (this only ENRICHES
- * the gate context; it must never itself turn a gate into an error).
- */
+/** The digest the change is PROMOTING. See docs/governance.md §114. */
 async function resolveChangeArtifactDigest(
   tx: TenantTx,
   orgId: string,
@@ -444,34 +272,12 @@ async function resolveChangeArtifactDigest(
   return artifactDigestOfSourceRef(row?.sourceRef ?? {});
 }
 
-/** The row-free half of {@link resolveChangeArtifactDigest} — the SHARED reader
- *  (`coordination/artifact-facts.ts`), the same keys in the same order the export projection and
- *  the pipeline tile read (`artifact_digest` / `artifactDigest` / the importer's
- *  `artifactDigests[]`); the FIRST non-empty digest is the one a single-digest binding uses.
- *
- *  EXPORTED so `coordination/pipeline-hook-gate.ts` binds its `postDeploy` / `bakeAlarms` evidence
- *  lookups to the SAME digest a control context binds to. Two readings of "which artifact is this
- *  change about" is how a gate ends up asking about different bytes than the control beside it. */
+/** The row-free half of {@link resolveChangeArtifactDigest}. See docs/governance.md §115. */
 export function artifactDigestOfSourceRef(sourceRef: unknown): string | undefined {
   return ociDigestsOfSourceRef(sourceRef ?? {}).find((d) => d.length > 0);
 }
 
-/**
- * M10.4 (`github-check` ControlPlugin) — the commit SHA the change originated from, threaded into
- * every control-run context as `context.commitSha` exactly like `resolveChangeArtifactDigest`
- * threads `context.artifactDigest`: so a commit-binding control (github-check, "CI green for THIS
- * change's commit") binds its verdict to the change's REAL source commit, not to an
- * operator-typed value on the control binding alone.
- *
- * Unlike `artifact_digest`/`sbom`, `webhook-processor.ts`'s `canonicalizeSourceRef` lifts no
- * canonical `commit_sha` key today — `sourceRef` is the raw delivery payload verbatim (DESIGN §8),
- * whose shape differs per source kind. This reads the handful of field names the in-tree git
- * providers' raw payloads actually use for the commit that triggered the change: `sha`/
- * `commit_sha`/`commitSha` (the flat first-party report shape), GitHub push's `after` or
- * `head_commit.id`, and GitLab's `checkout_sha`. Best-effort, exactly like
- * `resolveChangeArtifactDigest`: a missing/malformed field yields `undefined` (never a throw), so
- * a control this enriches simply falls back to its own operator-pinned config.
- */
+/** M10.4 (`github-check` ControlPlugin). See docs/governance.md §116. */
 async function resolveChangeCommitSha(
   tx: TenantTx,
   orgId: string,
@@ -481,14 +287,7 @@ async function resolveChangeCommitSha(
   return commitShaOfSourceRef(row?.sourceRef ?? {});
 }
 
-/** The row-free half of {@link resolveChangeCommitSha}, and the ONE definition of "which commit is
- *  this change about" that reads a `source_ref`.
- *
- *  EXPORTED so `coordination/pipeline-hook-gate.ts` binds `postMerge` evidence to the same commit a
- *  `github-check` control binds to — `postMerge` runs before any artifact exists, so the COMMIT is
- *  its only binding (`pipeline_evidence.artifact_digest`'s column doc). The key list is pinned to
- *  what `webhook-processor.ts`'s `commitShaFromPayload` WRITES; a key one of them knows and the
- *  other does not is a gate asked about nothing. */
+/** The row-free half, and the one definition of which sha. See docs/governance.md §117. */
 export function commitShaOfSourceRef(sourceRefValue: unknown): string | undefined {
   const sourceRef = (sourceRefValue ?? {}) as Record<string, unknown>;
   const direct =
@@ -504,17 +303,7 @@ export function commitShaOfSourceRef(sourceRefValue: unknown): string | undefine
   return undefined;
 }
 
-/** The single control-run context shape both gate sites (prewarm + evaluate) build, so they agree
- *  on what a control sees. `artifactDigest` is included ONLY when the change tracks one — its
- *  absence is meaningful (the control then uses its operator-pinned fallback), so it is never keyed
- *  to `undefined`. M10.4 threads `commitSha` the same way, for `github-check`.
- *
- *  M17.5 (ADR-0016) threads `scanThreshold` through the SAME conditional-context mechanism, on
- *  purpose: the resolved most-restrictive-wins ceiling across the six scan-requirement tiers is
- *  another gate-computed FACT the control needs, exactly like the change's real artifact digest, and
- *  ADR-0016 §4 names this shipped pattern as the one design (A) reuses rather than inventing a
- *  second mechanism. Absent when NO tier contributes a ceiling — the control then falls back to its
- *  per-binding `config.threshold`, the unchanged M17.1 behaviour. */
+/** The single control-run context shape both gate sites. See docs/governance.md §118. */
 function buildControlContext(input: {
   changeId: string;
   targetObjectIds: string[];
@@ -535,24 +324,7 @@ function buildControlContext(input: {
   };
 }
 
-/**
- * M22.2 (ADR-0033 §11) — the resolved exclusion set, shaped for the gate's DECISION `inputContext`.
- *
- * The RULE and the EXCEPTION TO IT belong in the same Decision. M22.0 put the ceiling there
- * precisely so no exception could later hide inside evidence; landing the exclusion dimension
- * without also landing it here would re-open that hole one increment after closing it.
- *
- * This records what the gate ADMITTED, not what was ultimately APPLIED — the application happens
- * inside the control, against findings this function has never seen, and lands in
- * `control_runs.evidence.exclusions`. Both halves are needed: "which loosenings were in force" is a
- * governance fact about the change, "which findings they touched" is a fact about one scan.
- *
- * SAME DETERMINISM RULE AS `scanThresholdForDecision`, and for the same measured reason:
- * `restatesDecision` canonicalises key order but PRESERVES array order, so an unsorted array defeats
- * `insertDecisionIfChanged` and re-opens the 1.44 GB/day write amplification. The resolver already
- * returns `clauses` sorted by content; every entry here is rebuilt with a FIXED key order and
- * carries no timestamp, no row id, and nothing else that varies between two identical evaluations.
- */
+/** The resolved exclusion set, shaped for the Decision. See docs/governance.md §119. */
 function scanExclusionsForDecision(
   resolved: EffectiveScanExclusions | undefined
 ): { scanExclusions: Record<string, unknown> } | undefined {
@@ -570,12 +342,7 @@ function scanExclusionsForDecision(
         ...(c.clause.reason ? { reason: c.clause.reason } : {}),
         admittedBy: c.admittedBy.map((a) => ({ tier: a.tier, source: a.source }))
       })),
-      // M22.4 — the FACTS the vendor rule was resolved against, not just the clause that invoked it.
-      // "Passed because the component is on the latest of that major line" is only auditable if the
-      // Decision says WHICH lines were at their head when the gate looked; a clause alone would say
-      // that a rule was in force and nothing about what it found. Present only when a
-      // `vendor_latest` clause survived, and already content-sorted by the resolver — no timestamp
-      // and no row id, so two identical evaluations still compare equal.
+      // The facts the vendor rule was resolved against. See docs/governance.md §120.
       ...(resolved.vendorLatest
         ? {
             vendorLatest: {
@@ -584,12 +351,7 @@ function scanExclusionsForDecision(
             }
           }
         : {}),
-      // M22.5 (ADR-0033 §6 guard 2) — THE DECLARED VALUE, VERBATIM. This is the guard that makes
-      // D2's accepted escalation seam auditable: a reader of this Decision sees "component X
-      // asserted `egress: none`", not merely that a `declared_fact` clause was in force. It is also
-      // the only defence available against the residual hazard D2 cannot remove — the declaration is
-      // read live from a tenant-writable bag and can be flipped for the duration of one gate — since
-      // pinning the value here makes the flip visible after the fact.
+      // M22.5 (ADR-0033 §6 guard 2) — THE DECLARED VALUE, VERBATIM. See docs/governance.md §121.
       ...(resolved.declaredFacts && resolved.declaredFacts.declarations.length > 0
         ? {
             declaredFacts: resolved.declaredFacts.declarations.map((d) => ({
@@ -598,11 +360,7 @@ function scanExclusionsForDecision(
             }))
           }
         : {}),
-      // M22.6 (ADR-0033 §11) — every applied exclusion must name "its clause, admitting tier,
-      // AUTHORITY and EXPIRY". The clause and the admitting tier are above; the authority and the
-      // expiry are here, and they are facts about the grant rather than about the policy that
-      // admitted its class. `expiresAt` is a STORED value, so two identical evaluations still
-      // compare equal and write suppression holds.
+      // Every applied exclusion must name its clause and tier. See docs/governance.md §122.
       ...(resolved.approvedOverrides && resolved.approvedOverrides.grants.length > 0
         ? {
             approvedOverrides: resolved.approvedOverrides.grants.map((g) => ({
@@ -641,29 +399,7 @@ function scanExclusionsForDecision(
   };
 }
 
-/**
- * M22.0 (ADR-0033 §11; charter principle 6) — the resolved scan ceiling, shaped for the gate's
- * DECISION `inputContext`.
- *
- * WHY THIS EXISTS. Until now the effective threshold and its contributing tiers went ONLY into
- * `control_runs.evidence`. ADR-0016 §5 promised that "a blocked promotion can show which tier set
- * the binding severity floor", and that promise was honoured in evidence and BROKEN in the Decision
- * an operator actually resolves by `decision_id`. ADR-0033 adds a way to EXCLUDE findings from that
- * comparison, so the rule has to be in the Decision BEFORE any exception can hide inside it —
- * otherwise a verdict explains neither the rule nor the exception to it.
- *
- * DETERMINISM IS LOAD-BEARING, NOT TIDINESS. `decisions-repo.ts`'s `restatesDecision` canonicalises
- * object KEY order but deliberately PRESERVES array order, and `matchPoliciesForTargets` returns
- * contributors in unordered-scan insertion order — which can differ between two evaluations that
- * resolved identically. An unsorted array here would therefore defeat `insertDecisionIfChanged` and
- * re-open the measured 1.44 GB/day Decision write amplification (ADR-0024 §D0) on the busiest path
- * in the system. So: every entry is built with a FIXED key order and the array is sorted by its own
- * serialization, giving a total order that depends only on content.
- *
- * FOR THE SAME REASON, NOTHING HERE MAY CARRY A TIMESTAMP, a duration, a row id, or any other value
- * that varies between two evaluations of the same inputs. If you add a field, ask first whether two
- * identical gate evaluations would produce it identically.
- */
+/** M22.0 (ADR-0033 §11; charter principle 6). See docs/governance.md §123. */
 function scanThresholdForDecision(
   resolved: EffectiveScanThreshold | undefined
 ): { scanThreshold: Record<string, unknown> } | undefined {
@@ -681,33 +417,7 @@ function scanThresholdForDecision(
   return { scanThreshold: { effective: resolved.threshold, contributors } };
 }
 
-/**
- * M22.2 — WHICH POLICIES FIRE FOR A CHANGE'S TARGETS, as a callable, for the ONE consumer outside
- * this file that needs it: the commander's promotion scan step.
- *
- * WHY IT EXISTS. `federation/promotion-scan-step.ts` resolved its scan ceiling with
- * `firedPolicies: []` — a hardcoded empty firing set, which admits the instance floors and NOTHING
- * from org, containment domain, service, assembly or component. Its own comment called that a
- * documented follow-on, and it was defensible while the only dimension was a TIGHTENING (the
- * fail-closed 0/0 default already refuses any Critical or High). It stops being defensible the
- * moment a LOOSENING exists: an exclusion admitted by the lifecycle gate would be invisible to the
- * commander's managed scan, so the two paths would disagree about the same artifact at exactly the
- * boundary where evidence is FROZEN into a signed bundle.
- *
- * WHAT IT SHARES, AND WHAT IT IS NOT. Every step below is the same function `evaluateGovernanceGate`
- * calls, in the same order — `matchPoliciesForTargets`, `resolvePolicies`, the emergency-policy
- * substitution, `governanceSubjectOf`/`graphFactsFor`, `buildCelContext`, `resolveFiredPolicies`.
- * Nothing is reimplemented. It is deliberately NOT a gate: it evaluates no controls, materializes no
- * approvals, checks no freeze, and writes no Decision. It answers one question — "which contributors
- * are in force for these targets right now" — so a non-gate consumer can resolve scan requirements
- * against the same firing set the gate would.
- *
- * THE SANDBOX IS LAZY BY CONTRACT. `resolveFiredPolicies` takes `Pick<CelSandbox, "evaluate">` and
- * calls it ONLY for a contributor that actually carries a `condition`, so a caller may pass a thunk
- * that constructs the shared sandbox on first use. That matters: `new CelSandbox()` spawns its
- * worker pool EAGERLY in the constructor, and the promotion scan step must not spin up worker
- * threads for an org whose policies carry no conditions at all.
- */
+/** Which policies fire for a change's targets, callable. See docs/governance.md §124. */
 export async function resolveFiredPoliciesForTargets(
   tx: TenantTx,
   sandbox: Pick<CelSandbox, "evaluate">,
@@ -772,19 +482,7 @@ export async function resolveFiredPoliciesForTargets(
   return { matches, fired };
 }
 
-/**
- * Runs (never blocks, never writes a Decision) every required control a change's targets'
- * effective policies reference, and — unless `materializeApprovals: false` — materializes every
- * requireApprovals effect's approval request — so that by the time a HUMAN calls `POST /changes/{id}/accept` (the host-less
- * lifecycle-edge gate, `coordination/gates.ts`'s module doc), the outcomes it needs to READ
- * already exist. Called by `coordination/reconcile.ts` once per tick for every change sitting in
- * `validating` (the only state a required-control-bearing policy could otherwise starve forever,
- * since nothing else ever calls `evaluate()` for those controls). Deliberately does NOT insert a
- * Decision on every tick — that's reserved for an actual gate verdict a transition attempt
- * consulted (module doc's "never a silent pass" applies to CONTROL OUTCOMES, not to this
- * warm-up's own bookkeeping) — a change sitting in `validating` for hours would otherwise pollute
- * the Decision log with one redundant "still blocked" entry per ~1s tick.
- */
+/** Runs every required control without blocking or writing. See docs/governance.md §125. */
 export async function prewarmGovernanceForChange(
   tx: TenantTx,
   sandbox: CelSandbox,
@@ -794,18 +492,7 @@ export async function prewarmGovernanceForChange(
     changeObjectId: string;
     targetObjectIds: string[];
     actorObjectId: string;
-    /**
-     * Materialize firing policies' `requireApprovals` effects as approval requests. DEFAULT TRUE —
-     * the behaviour every existing caller has, and the reason this function exists for a change on
-     * its way through the lifecycle.
-     *
-     * `dependencies/bump-gate.ts` passes FALSE, and that is not an optimisation. It runs this
-     * function for a bump change that is DELIBERATELY NEVER ADVANCED (a bump is a proposed edit to a
-     * manifest, not a deployment), so nothing will ever consult — or clear — an approval request
-     * materialized for it. Every bump would leave one permanently-pending approval task per firing
-     * policy in somebody's queue, forever. Only the CONTROLS are evidence, and only the controls are
-     * what that job needs.
-     */
+    /** Materialize firing policies' approval requests. See docs/governance.md §126. */
     materializeApprovals?: boolean;
   }
 ): Promise<void> {
@@ -817,17 +504,9 @@ export async function prewarmGovernanceForChange(
   const effectivePolicies = resolvePolicies(matches);
   if (effectivePolicies.length === 0) return;
 
-  // Determine the FIRING set (each contributor's own condition, independently — evaluate.ts's
-  // `resolveFiredPolicies`), then pre-run/materialize only what firing policies actually require.
-  // Uses the SAME subject + graph facts the real gate does (graphFactsFor) so prewarm and the
-  // eventual host-less lifecycle gate agree on which conditions fired — otherwise a control the
-  // real gate needs but prewarm never ran would starve the accept gate (which only READS).
+  // Determine the FIRING set. See docs/governance.md §127.
   const primaryTarget = input.targetObjectIds[0];
-  // ADR-0026: a placement's SUBJECT is the component it places — see `governanceSubjectOf`. Applied
-  // in prewarm as well as in the gate, not because a prewarm target is ever a placement today (it
-  // reads the change's own targets, which are always components) but because prewarm exists to make
-  // the two agree on which conditions fired; a subject resolved one way here and another way there
-  // is exactly how a control the gate needs but prewarm never ran starves the accept gate.
+  // ADR-0026: a placement's SUBJECT is the component it places. See docs/governance.md §128.
   const primarySubject = primaryTarget
     ? await governanceSubjectOf(tx, input.orgId, primaryTarget)
     : undefined;
@@ -879,13 +558,7 @@ export async function prewarmGovernanceForChange(
       // cannot tighten anything here either.
       firedPolicies: fired
     });
-    // M22.2 — the exclusion dimension, threaded through the SAME conditional-context mechanism.
-    //
-    // THIS SITE IS THE ONE THAT MATTERS MOST and it is easy to miss: the prewarm's run is the one
-    // that gets CACHED and later READ by the host-less accept edge (`readExistingControlOutcomes`).
-    // Threading exclusions only at the evaluate site below would leave the accept edge consuming a
-    // verdict computed without them — the loosening would appear to work at a wave boundary and
-    // silently not exist at the edge a human actually clicks.
+    // The exclusion dimension, through the same mechanism. See docs/governance.md §129.
     const scanExclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
       orgId: input.orgId,
       targetObjectIds: input.targetObjectIds,
@@ -895,11 +568,7 @@ export async function prewarmGovernanceForChange(
       // exclusion (ADR-0033 §4 — the opposite sign from `ceilingContributorKeys`).
       firedPolicies: fired
     });
-    // M22.7 (ADR-0033 §10) — THE ACTUATOR, at the site whose run is CACHED and later read by the
-    // host-less accept edge. Without it a grant approved after this change's controls first ran is
-    // inert on this change forever: `ensureControlRun` returns the cached outcome and the plugin is
-    // never asked again. Re-resolving is not enough on its own — the resolved set has to be able to
-    // INVALIDATE the cached verdict, which is what `force` does.
+    // The actuator, at the site whose run is cached and reread. See docs/governance.md §130.
     const gateRef = { fromState: "validating", toState: "accepted" };
     const force = await scanExclusionSetChangedForGate(tx, {
       orgId: input.orgId,
@@ -954,65 +623,18 @@ export async function evaluateGovernanceGate(
 ): Promise<GateOutcome> {
   const now = new Date();
 
-  // ============================================================================================
-  // M25.2 — PER-TARGET FREEZE ADMISSION (docs/proposals/campaigns-rework.md §1.1(c))
-  // ============================================================================================
-  // Resolved ONCE, per target, and consumed two ways: `checkFreeze` gets the flat union (CRITICAL
-  // #2's quantifier, structurally unable to see the per-target dimension) and `partiallyFrozen`
-  // gets the map. One resolution, so the two can never disagree about what is frozen.
+  // M25.2 — PER-TARGET FREEZE ADMISSION. See docs/governance.md §131.
   const byTarget = await freezesByTarget(tx, ctx.orgId, ctx.targetObjectIds, now);
   const frozenIds = byTarget.filter((e) => e.freezes.length > 0).map((e) => e.targetObjectId);
 
-  // PARTIAL ADMISSION — some targets covered, some not, and no covering freeze declared itself
-  // `atomic`. In that case the wave gate stands aside and `coordination/reconcile.ts`'s per-target
-  // trigger loop withholds exactly the covered targets while their siblings ship. Four conjuncts,
-  // each doing work:
-  //
-  //  * `gateKind === "wave_boundary"`. `lifecycle_edge` KEEPS any-target-frozen => block,
-  //    deliberately: accepting a change is ONE atomic state change of ONE `changes` row, and there
-  //    is no such thing as accepting three quarters of a change. Partial admission is meaningful at
-  //    a wave boundary and only there. This conjunct also covers `POST /policy-evaluate`
-  //    (routes/governance.ts, `lifecycle_edge`) for free.
-  //  * `frozenIds.length > 0`. Nothing frozen is not a partial freeze; `checkFreeze` allows anyway.
-  //  * `frozenIds.length < targetObjectIds.length`. ALL-FROZEN STAYS A WHOLE-WAVE BLOCK — today's
-  //    `gate`/`block` Decision written exactly as now, the wave stays `pending`, `started_at` stays
-  //    null, and today's tick-by-tick re-evaluation lifts it when the window closes. Dropping this
-  //    guard would transition a totally-frozen wave to `running` with nothing running and delete
-  //    the surface an operator resolves with `scp change explain`.
-  //  * no covering freeze is `atomic` (owner decision D5, drizzle/0084). One `atomic` freeze
-  //    anywhere in the coverage restores the union — the incident freeze, where half-applied is
-  //    worse than not-applied. The predicate is DATA-DRIVEN rather than call-site-driven, so the
-  //    person with the context decides, not this file.
+  // Partial admission: some targets covered, some not. See docs/governance.md §132.
   const partiallyFrozen =
     ctx.gateKind === "wave_boundary" &&
     frozenIds.length > 0 &&
     frozenIds.length < ctx.targetObjectIds.length &&
     byTarget.every((e) => e.freezes.every((f) => !f.atomic));
 
-  // THE ROLLBACK EXEMPTION (owner decision D7) — the ALL-frozen half of it. `partiallyFrozen` above
-  // only stands the gate aside when some sibling is still admissible; a rollback whose every target
-  // is frozen has no admissible sibling and would be refused here, which is precisely the case D7 is
-  // about. `evaluateLifecycleGate` has exempted rollbacks since M4 and the wave boundary never
-  // learned the same fact — an oversight, not a decision, and the one that left `scp change
-  // rollback` as the documented exit from a stuck release while a freeze closed that exit.
-  //
-  // NARROW: it lifts the FREEZE block and nothing else. Execution continues into policy matching,
-  // controls and approvals below, all of which still apply to a rollback's wave.
-  // QUALIFIED ON `wave_boundary`, exactly like `partiallyFrozen` above, and not merely on
-  // `isRollback`. Today `isRollback` is set only by `evaluateWaveGate`, so the conjunct is inert —
-  // but `isRollback` lives on the SHARED `GateContext`, and one future caller setting it on the
-  // lifecycle path would silently lift the freeze at `validating -> accepted` AND on
-  // `POST /policy-evaluate`. `lifecycle_edge` keeps any-target-frozen => block by design (there is
-  // no such thing as accepting three quarters of a change), and D7 is a WAVE-boundary decision.
-  //
-  // AND TIER-AWARE (M25.3 review finding 1). `rollbackExemptible` is the ONE definition of "may D7
-  // stand this covering set aside", shared verbatim with `reconcile.ts`'s per-target seam: a
-  // PLATFORM freeze is never stood aside for a rollback. Shipped tier-blind, this conjunct handed
-  // any principal holding `object:write` (all `POST /v1/changes/{id}/rollback` requires — no
-  // `freeze:override`, no reason, no operator token) a route past the freeze `checkFreeze`'s block
-  // sentence promises "no tenant role can override, however privileged", and a CHEAPER one than the
-  // override it was contrasted with. The full reasoning, including why `overridable` is deliberately
-  // NOT consulted and what this narrows, is on `rollbackExemptible`.
+  // THE ROLLBACK EXEMPTION. See docs/governance.md §133.
   const freezeExemptRollback =
     ctx.gateKind === "wave_boundary" &&
     ctx.isRollback === true &&
@@ -1027,17 +649,7 @@ export async function evaluateGovernanceGate(
       verdict: "block",
       ...(ctx.gateKind === "wave_boundary" ? { frozenTargets: byTarget } : {}),
       inputContext: {
-        // M25.3: `tier` and `match` ARE ADDITIVE and both are load-bearing for principle 6.
-        // `scopeObjectId` is null for a platform freeze because that tier has no object id in any
-        // org's containment chain — `match` carries what it actually matched instead, and `tier`
-        // tells a reader WHICH SURFACE resolves `id`: `GET /v1/freezes/{id}` for `org`,
-        // `GET /v1/instance/freezes` for `platform`. Without `tier` the id in this record would
-        // resolve to a 404 on the only surface a reader would think to try.
-        //
-        // NOTHING HERE IS DERIVED FROM A CLOCK — `endsAt` is read straight off the row, exactly as
-        // before, so a re-evaluated block is byte-identical on every tick and
-        // `insertDecisionIfChanged` suppresses it. That is ADR-0024's 1.44 GB/day contract and it
-        // survives this change unchanged.
+        // Tier and match are additive, both load-bearing. See docs/governance.md §134.
         freeze: {
           id: freeze.id,
           tier: freeze.tier,
@@ -1070,14 +682,7 @@ export async function evaluateGovernanceGate(
   });
   let effectivePolicies = resolvePolicies(matches);
 
-  // Emergency changes follow a CONFIGURED emergency policy instead of the normal required set
-  // (DESIGN §10.3) — never a blanket bypass. If the org has configured no `emergencyPolicy: true`
-  // document, an emergency change proceeds ungated (verdict allow) but this is fully visible in
-  // the reason tree/Decision either way — "everything still audited, retrospective Decision
-  // trail produced" doesn't depend on something having blocked.
-  // VISIBLE, not silent (charter principle 6). A freeze that DID cover this wave and was stood
-  // aside is exactly the kind of thing an operator reading `scp change explain` must find, and a
-  // permit that leaves no trace is indistinguishable from a freeze that never matched.
+  // Emergency changes follow a configured policy instead. See docs/governance.md §135.
   const freezeNote =
     freezeExemptRollback && freezeCheck.blocked
       ? `rollback exempt from ${frozenIds.length} ORG-tier frozen target(s): ${freezeCheck.blocked.reason} (DESIGN §9.4 / owner decision D7 — holding a rollback pins a broken release in place for the whole window; a PLATFORM freeze is never stood aside this way, see rollbackExemptible)`
@@ -1097,11 +702,7 @@ export async function evaluateGovernanceGate(
   }
 
   const primaryTarget = ctx.targetObjectIds[0];
-  // ADR-0026 — a wave target may be a PLACEMENT, whose subject is the component it places. The
-  // containment chain already reaches the component (graph/containment.ts route 3); these two reads
-  // go at the object itself and would otherwise see `typeId: "placement"` with no owners and no
-  // dependents, silently falsifying every subject- or ownership-conditioned policy. See
-  // `governanceSubjectOf`.
+  // A wave target may be a placement, whose subject differs. See docs/governance.md §136.
   const primarySubject = primaryTarget
     ? await governanceSubjectOf(tx, ctx.orgId, primaryTarget)
     : undefined;
@@ -1143,26 +744,7 @@ export async function evaluateGovernanceGate(
   const allControlIds = [
     ...new Set(fired.filter((fp) => fp.fired).flatMap((fp) => fp.requireControls))
   ];
-  // M17.5 — the six-tier most-restrictive-wins scan ceiling, resolved from the SAME `matches` this
-  // gate already computed (ADR-0016 §4 design A), and from the FIRED set only: a contributor whose
-  // condition evaluated false contributes no ceiling, exactly as it contributes no requireControls.
-  //
-  // M22.0 — HOISTED so it can be used TWICE: threaded to the scan control exactly as before, AND
-  // recorded in this gate's Decision below.
-  //
-  // RESOLVED UNCONDITIONALLY, not just when a plugin host is present. The first cut of this kept it
-  // inside the `host` ternary, reasoning that this added no work to the per-tick reconcile path.
-  // The reasoning was right and the placement was wrong, and a mutation-tested suite caught it: the
-  // `validating -> accepted` edge runs with `host: null` (routes/changes.ts), so a change BLOCKED AT
-  // THE ACCEPT EDGE by a failed scan control got a Decision carrying no ceiling at all — which is
-  // precisely the operator-facing surface ADR-0016 §5's promise is about. Half-kept, on the half
-  // that matters most.
-  //
-  // The cost objection does not survive contact with where the two paths actually run. The host-ful
-  // path (the wave-boundary gate) is the per-tick one and resolved this already, so it is unchanged.
-  // The host-less paths are the accept edge and `POST /policy-evaluate` — both driven by an API
-  // call, neither on a reconcile tick. So this buys back the promise for one resolution per accept
-  // attempt, and adds nothing to the path that produced the 1.44 GB/day incident.
+  // The six-tier most-restrictive-wins scan ceiling. See docs/governance.md §137.
   const effectiveScanThreshold = await resolveEffectiveScanThreshold(tx, {
     orgId: ctx.orgId,
     targetObjectIds: ctx.targetObjectIds,
@@ -1183,15 +765,7 @@ export async function evaluateGovernanceGate(
     firedPolicies: fired
   });
 
-  // M22.7 — the actuator at the EVALUATE site. This is a SECOND call site, not a duplicate: the
-  // prewarm's run authorizes the host-less accept edge, this one authorizes a wave boundary, and
-  // M22.0a keys them separately on purpose — so a wave parked for days behind a failing scan is
-  // exactly the case where a grant approved in the meantime has to take effect. Wiring only one of
-  // the two is the precise mistake M22.2's measured mutation M-2 found in the threading itself.
-  //
-  // Resolved even when `host` is null (it costs one indexed read per accept attempt and nothing on a
-  // reconcile tick) so the `force` below is computed from the same expression on both branches; the
-  // host-less branch cannot run a control at all, so it simply never uses it.
+  // M22.7 — the actuator at the EVALUATE site. See docs/governance.md §138.
   const scanExclusionsChanged = host
     ? await scanExclusionSetChangedForGate(tx, {
         orgId: ctx.orgId,
@@ -1262,12 +836,7 @@ export async function evaluateGovernanceGate(
   // firing set (no second CEL eval — no race where a re-eval fires differently).
   const result = evaluateFiredPolicies(fired, { controlOutcomes, approvals });
 
-  // `?? []` IS THE PARTIAL-ADMISSION PATH, not defensiveness. `checkFreeze` returns
-  // `overrides: null` exactly when it BLOCKED, and M25.2 lets one blocked outcome through: the
-  // partially-frozen wave boundary, which falls past the block return above and evaluates policy
-  // normally. Nothing was overridden there and nothing should be audited as overridden — the wave
-  // path carries no `overrideFreeze` at all (`EvaluateWaveGateContext` has no such field and
-  // `gates.ts` passes none), so an override on this path is not merely absent, it is unreachable.
+  // That fallback is the partial-admission path, not defence. See docs/governance.md §139.
   const freezeOverrides = freezeCheck.overrides ?? [];
   return {
     verdict: result.verdict === "block" ? "block" : "allow",

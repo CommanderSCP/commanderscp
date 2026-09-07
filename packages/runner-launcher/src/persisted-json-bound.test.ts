@@ -8,37 +8,13 @@ import {
   isPersistedJsonEntriesElision
 } from "./index.js";
 
-/**
- * THE VALUE ALONE. `boundPersistedJson` returns `{ value, truncation }` since M23.1g — deliberately
- * inseparable, so no caller can obtain the bounded value without being handed the report — and
- * every arm below this line is about the VALUE. The report has its own file,
- * `persisted-json-truncation.test.ts`, because it is a different property: these arms measure what
- * survives, those measure whether we say what did not.
- */
+/** THE VALUE ALONE. See docs/runner-launcher.md §347. */
 const boundPersistedJson = (value: unknown, maxChars?: number): unknown =>
   maxChars === undefined
     ? boundPersistedJsonWithReport(value).value
     : boundPersistedJsonWithReport(value, maxChars).value;
 
-/**
- * MEDIUM (M23.0 verification pass 7, findings M2 and M3) — BOUND THE STRUCTURE, NOT A LIST OF ITS
- * FIELDS.
- *
- * WHY THIS FUNCTION EXISTS RATHER THAN FOUR MORE `boundDetail` CALLS. The previous round bounded
- * `ExecutionStatus.detail` and missed `stateRef` and `observed.images` — the same untrusted object,
- * three lines away, on a write that runs EVERY tick rather than only on failure. Measured through
- * an unmodified test seam: 500 093 bytes of plugin-chosen text, verbatim, in
- * `change_wave_targets.observed_state`. `ExecutionStatus.observed` is documented as "optional and
- * additive", so a per-field patch list is a list that goes stale on the next signal an executor
- * contributes. The guarantee here is therefore about the WHOLE VALUE and is stated in the unit the
- * column is measured in:
- *
- *   JSON.stringify(boundPersistedJson(v)).length <= PERSISTED_JSON_MAX_CHARS,  for every v
- *
- * The sweep below is the evidence for "every v" that a hand-picked object cannot be. Note the last
- * two arms in particular: a REALISTIC reading has to come back byte-identical, and the internal
- * overflow fallback must never fire — either would make the guarantee true for a useless reason.
- */
+/** MEDIUM (M23.0 verification pass 7, findings M2 and M3). See docs/runner-launcher.md §348. */
 
 /** An escape, not a literal: a NUL byte in a tracked source file is dropped by every
  *  recursive search this repository runs (CLAUDE.md). */
@@ -49,23 +25,10 @@ function isWellFormed(s: string): boolean {
   return (s as unknown as { isWellFormed(): boolean }).isWellFormed();
 }
 
-/**
- * THE TABLE MOVED TO `adversarial-corpus.ts`, AND IT GAINED A SECOND LAYER (M23.1f clause 4).
- * This file asserts the PROXIES — well-formed, no NUL, under budget — which is all a pure unit test
- * can ask. `apps/server`'s `persisted-json-postgres-corpus.integration.test.ts` reads the SAME table
- * and asks a real PostgreSQL whether it accepts the row, with the PRE-BOUND shape as the control.
- * One table, because two copies of a hostile-input corpus diverge in the direction that matters: a
- * new shape is added by whoever was thinking about it, in the file they were looking at.
- */
+/** The table moved out, and it gained a second layer. See docs/runner-launcher.md §349. */
 const ADVERSARIAL = ADVERSARIAL_ALL;
 
-/**
- * THE CYCLE GUARD. `adversarial-corpus.ts` cannot import `PERSISTED_JSON_ELIDED_KEY` from
- * `./index.js` — `index.ts` re-exports the corpus, and the cycle resolves to `undefined` at
- * module-evaluation time, which silently turns `ADVERSARIAL_ALL` into an empty array for every
- * consumer that imports it through the package entry. So the corpus spells the marker as a literal,
- * and this is what stops the literal drifting from the constant.
- */
+/** THE CYCLE GUARD. See docs/runner-launcher.md §350. */
 const markerShape = ADVERSARIAL.find((c) => c.name === "the bound's own markers as data")!;
 if (Object.keys(markerShape.value as object)[0] !== PERSISTED_JSON_ELIDED_KEY) {
   throw new Error(
@@ -173,16 +136,7 @@ describe("MEDIUM: boundPersistedJson bounds a whole plugin-supplied value, not a
     }
   });
 
-  /**
-   * SMALL (M23.0 verification pass 9) — THE OVERFLOW FALLBACK WAS THE ONE VALUE THIS FUNCTION
-   * RETURNED WITHOUT MEASURING IT.
-   *
-   * "The guarantee is CHECKED, not argued" is the function's own headline, and the escape hatch out
-   * of the check was itself unchecked: at `maxChars = 0` the diagnostic object rendered to 140
-   * characters. Latent today — `boundPluginJson` always passes 8 000 — but an unmeasured branch
-   * inside a measured function is where the next one lives. Swept down to and past the stated
-   * precondition.
-   */
+  /** SMALL (M23.0 verification pass 9). See docs/runner-launcher.md §351. */
   it("EVERY budget down to 1 is honoured, fallback included — no unmeasured escape hatch", () => {
     for (let max = 4; max <= 400; max++) {
       const rendered = JSON.stringify(boundPersistedJson({ images: ["x".repeat(5_000)] }, max));
@@ -206,29 +160,7 @@ describe("MEDIUM: boundPersistedJson bounds a whole plugin-supplied value, not a
   });
 });
 
-/**
- * MEDIUM (M23.0 verification pass 8) — THE BUDGET USED TO BE SPENT IN INSERTION ORDER, SO THE FIELD
- * A GATE READS WAS DECIDED BY SOURCE-LINE ORDER IN AN UNRELATED FUNCTION.
- *
- * `observedStateFrom` composes `{revision, images, rollout}` in that order. The walk charged each
- * field as it went and, once the remainder fell under the per-leaf minimum, replaced EVERY
- * still-unwalked field with `__scpElided` — so `rollout`, always last, was always the first thing
- * dropped. Measured end to end against real Postgres through the ordinary fake-executor seam, with
- * 80 image refs of the shape an Argo CD Application actually reports:
- *
- *   before  images, rollout, revision, observedAt   weight 60     min_weight         satisfied TRUE
- *   after   images, revision, observedAt, __scpElided  undefined  weight_unreadable  satisfied FALSE
- *
- * `rollout.weight` is the leaf ADR-0028's `minWeight` gate reads (`stage-dependency-hold.ts`), and
- * losing it degrades the dependency to the universal `succeeded` test — fail-CLOSED, so nothing
- * wrong ships, but a correct configuration holds indefinitely and the recorded cause (`no_weight`)
- * blames the executor for what the bound did.
- *
- * THE ARMS BELOW ARE ORDER-INDEPENDENT ON PURPOSE. A test that only pinned `{revision, images,
- * rollout}` would be satisfied by the alternative fix — reordering the composition — which makes
- * source-line order a load-bearing contract that the next person reorders innocently. The property
- * is about the WALK: no key is lost because a SIBLING was large, whatever order they arrive in.
- */
+/** MEDIUM (M23.0 verification pass 8). See docs/runner-launcher.md §352. */
 describe("MEDIUM: one large field may not spend a sibling's budget", () => {
   /** The shape an Argo CD Application reports: `status.summary.images` is the image list across
    *  every managed resource, uncapped, and 73 of these already exceed the whole-value budget. This
@@ -273,7 +205,7 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
 
   /** All six permutations of the three fields `observedStateFrom` composes. */
   const ORDERS = [
-    ["revision", "images", "rollout"], // <- what `observedStateFrom` actually produces
+    ["revision", "images", "rollout"],
     ["revision", "rollout", "images"],
     ["images", "revision", "rollout"],
     ["images", "rollout", "revision"],
@@ -309,23 +241,7 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
     }
   });
 
-  /**
-   * HIGH (M23.0 verification pass 9) — WHICH KEYS SURVIVE IS NOT THE WHOLE PROPERTY. HOW MUCH OF
-   * EACH SURVIVES IS PART OF IT.
-   *
-   * The allocator's doc (on `PERSISTED_JSON_SHARE_ROUNDS`) rejects the reorder alternative (order
-   * `rollout` before `images` in `observedStateFrom`) because it "makes source-line order in an
-   * unrelated function a load-bearing contract". Pass 8's own design had that disease on a different
-   * observable: every arm above was green while the same three fields kept
-   *
-   *   revision, images, rollout (SHIPPED)  ->  39 refs, row 4 065
-   *   revision, rollout, images            ->  77 refs, row 7 864
-   *   images, revision, rollout            ->  26 refs, row 2 765
-   *
-   * — a 3x spread decided by nothing but insertion order. A rejection argument the chosen design
-   * also fails is not a rejection argument, so the property is pinned here rather than asserted in a
-   * comment: retention is IDENTICAL, not merely "nonzero", across all six permutations.
-   */
+  /** HIGH (M23.0 verification pass 9). See docs/runner-launcher.md §353. */
   it("ORDER-INDEPENDENT RETENTION: all six permutations keep the SAME number of entries", () => {
     const source: Record<string, unknown> = {
       revision: REVISION,
@@ -354,20 +270,7 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
     }
   });
 
-  /**
-   * HIGH (M23.0 verification pass 9) — THE SHARE IS A FLOOR, NOT A CEILING; UNSPENT BUDGET COMES
-   * BACK.
-   *
-   * Pass 8 handed each field `floor(left / unwalkedSiblings)` as a CAP and never returned the
-   * remainder to a field already walked. `images` sits in the MIDDLE of `{revision, images, rollout}`,
-   * so it was capped at ~1/2 the budget while `revision` + `rollout` spent ~110 of the ~3 950 they
-   * were handed. Utilisation fell from 99.4 % to 50.6 %, and end to end that turned
-   * `resolveReleasedVersion` from `determined` into `observed_images_elided` for every list of
-   * 35…69 refs — a window that had never been broken.
-   *
-   * DELETE-THE-WIRING for pass 2: remove the redistribution loop in `walkObjectFields` and this arm
-   * fails at n = 40 (34 of 40 kept) and on utilisation (~50 %).
-   */
+  /** HIGH (M23.0 verification pass 9). See docs/runner-launcher.md §354. */
   it("NO TRUNCATION AT ALL while the whole value fits — the 35…69 window pass 8 broke", () => {
     for (let n = 30; n <= 69; n++) {
       const value = { revision: REVISION, images: imageRefs(n), rollout: ROLLOUT };
@@ -399,11 +302,7 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
   });
 
   it("THE SAME PROPERTY ON `executor_ref`, where losing a leaf strands the target for good", () => {
-    // `markWaveTargetTriggered` bounds `trigger()`'s whole `ExternalRunRef`, and reconcile polls
-    // with it verbatim — `client.status(target.executorRef)`. Every executor plugin reads
-    // `ref.externalId` out of it. A chatty plugin that puts a big field FIRST used to take that
-    // leaf with it, and a target whose ref can no longer be interpreted is polled as an unknown run
-    // forever, on every tick, with nothing in the row to say why.
+    // The whole external run reference is bounded. See docs/runner-launcher.md §355.
     const ref = {
       logs: Array.from({ length: 500 }, (_, i) => `worker ${i} said something at length. `),
       externalId: "run-42",
@@ -415,19 +314,7 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
     expect(out[PERSISTED_JSON_ELIDED_KEY]).toBeUndefined();
   });
 
-  /**
-   * THE ARM THAT SHOULD HAVE CAUGHT PASS 8's DEFECT AND DID NOT, now expressed in the field order
-   * production actually produces — AT EVERY ORDER, so it cannot go blind that way again.
-   *
-   * It used to build `{revision, rollout, images}` with `images` LAST. That is the ONE permutation
-   * where the old per-field share short-circuited (`if (unwalkedSiblings <= 1) return walk(...)` —
-   * the last field was handed the whole remainder) and no share was ever applied, so the arm
-   * measured the one layout that could not fail. Against its own 0.8 threshold, on pass 8's code:
-   *
-   *   alone (images only)                        : 79
-   *   this arm's old order {revision,rollout,images}: 78   ratio 0.987  PASSED
-   *   PRODUCTION order {revision,images,rollout}    : 39   ratio 0.494  FAILS
-   */
+  /** The arm that should have caught it and did not. See docs/runner-launcher.md §356. */
   it("a field that is SMALL costs a large sibling nothing — AT EVERY ORDER, production's included", () => {
     const alone = boundPersistedJson({ images: imageRefs(400) }) as Reading;
     const source: Record<string, unknown> = {
@@ -458,51 +345,13 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
   });
 });
 
-/**
- * MEDIUM (M23.0 verification pass 10) — THE PER-STRING BOUND HALVED ON A TWO-CHARACTER OVERSHOOT,
- * AND EVERY ARM THAT COULD HAVE SEEN IT WAS SHAPED LIKE AN ARRAY.
- *
- * `boundText` bounds a CHARACTER count; the budget is measured in RENDERED characters, and the
- * difference for an unescaped string is exactly the two quotes `JSON.stringify` adds. The old loop
- * recovered those two characters by HALVING the width, so every plain-ASCII string — every image
- * ref, digest, revision, URL and branch name a real executor reports — stored half of what it was
- * given:
- *
- *   share    stored   rendered   utilisation
- *     400      200       202       50.5 %
- *    2634     1317      1319       50.1 %   <- one field's share of the 8 000 budget
- *    3900     1950      1952       50.1 %
- *
- * WHY NO EXISTING ARM SAW IT, AND WHY THAT IS STRUCTURAL. Every fixture in this file whose field is
- * large enough to be cut is an ARRAY (`images`), and an array is cut by dropping ENTRIES — the
- * halving never runs on the array itself, only on entries that individually fit. The integration
- * harness could not reach it either: the fake executor's only free-form `observed` field was
- * `imagesByTarget`, an array. So the one shape the defect lives in was unreachable end to end BY
- * CONSTRUCTION, in the unit tests and in the integration tests alike. The arms below are the
- * string-shaped half of every property this file already states about arrays.
- *
- * MUTATION LOG — applied, watched fail, reverted, watched pass.
- *
- * | Mutation | Result |
- * |---|---|
- * | The pass-9 HALVING restored in `boundStringToCost` (`width = Math.floor(width / 2)`) | 5 of the 6 arms below fail: `budget - 96` at its first budget (`{budget: 400, row: 160}`), every escape density at 0.40, string-shaped utilisation at 0.497, key seating, and the elision residue at 0.43 |
- * | The pass-9 IN-LOOP KEY CHARGING restored in `walkObjectFields` (each field walked against `floor(budget.left / unwalkedSiblings)` as the loop decrements `budget.left`, the last field handed the remainder) | 3 arms fail: order-independence with 3 distinct payloads, key seating (200 keys all seated at a one-character sliver), and the elision residue (`expected 792 to be 0` — 792 fields whose stored value is the empty string) |
- *
- * The two mutations redden DIFFERENT arms, with the seating arms overlapping: order-independence is
- * blind to the halving and the utilisation arms are blind to the allocation. Two defects, two
- * levers.
- */
+/** MEDIUM (M23.0 verification pass 10). See docs/runner-launcher.md §357. */
 describe("MEDIUM: a string field spends its share, not half of it", () => {
   /** Longer than any share this file can hand out, so it ALWAYS overflows and the arms are never
    *  measuring a string that simply fitted. */
   const OVERFLOWING = "r".repeat(50_000);
 
-  /**
-   * `boundPersistedJson` reserves PERSISTED_JSON_MIN_LEAF = 96 characters of the budget up front,
-   * and that reserve is the whole of the `O(small)`. Written as the literal 96 rather than imported,
-   * for the reason the magnitude arms in this repository exist: an assertion against the constant
-   * that defines the bound cannot notice the constant moving.
-   */
+  /** The bound reserves a minimum for each leaf. See docs/runner-launcher.md §358. */
   const MIN_LEAF_RESERVE = 96;
 
   it("A SINGLE STRING FIELD STORES `budget - 96` AT EVERY BUDGET 400…3 900, never `budget / 2`", () => {
@@ -557,25 +406,7 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
     }
   });
 
-  /**
-   * THE STRING-SHAPED HALF OF "BUDGET UTILISATION", which the array fixture cannot express.
-   *
-   * `{revision, images, rollout}` with a big `images` is the only overflowing composition this file
-   * had, and an array overflows by dropping whole entries — a path the per-string bound never
-   * touches. Two truncated STRINGS beside two small fields is the same property in the shape the
-   * defect lives in. Measured: 7 904 of 8 000 (98.8 %); under the halving, 3 976 (49.7 %).
-   *
-   * WHY THE STRINGS ARE 50 000 CHARACTERS AND NOT 4 000, which took a mutation run to discover.
-   * At 4 000 the halving DOES NOT FIRE at this budget, and the arm would have been green under the
-   * defect. The elision marker is sized against the widest count it could ever carry
-   * (`text.length`), so when the ACTUAL dropped count has fewer digits the result comes back a
-   * character or two under the requested width — and at a share of 3 931, dropping 97 of 4 000
-   * leaves exactly the two characters the quotes need. At 50 000 the dropped count has the same
-   * five digits as the length, there is no slack, and the first attempt misses by two. A
-   * utilisation arm that cannot see the defect is the "green for the wrong reason" mode this
-   * repository keeps shipping, so the fixture is chosen against the MEASURED mutation, not by
-   * eye.
-   */
+  /** The string-shaped half of budget utilisation. See docs/runner-launcher.md §359. */
   it("BUDGET UTILISATION, STRING-SHAPED — the composition the array fixture cannot express", () => {
     const out = boundPersistedJson({
       a: "a".repeat(50_000),
@@ -595,33 +426,7 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
     expect((out as { phase: string; step: number }).step).toBe(3);
   });
 
-  /**
-   * HIGH (M23.0 verification pass 10) — PROPERTY (2), ON STRING CONTENTS, WHERE PASSES 8 AND 9 BOTH
-   * STILL FAILED IT.
-   *
-   * The allocator's doc rejects "reorder the composition" as an alternative BECAUSE it makes
-   * source-line order a load-bearing contract. Pass 8 failed that test on array contents and pass 9
-   * fixed it there; pass 9 then failed it on STRING contents, because it computed each field's share
-   * from the budget REMAINING mid-loop and handed the LAST field the entire remainder. All 24
-   * permutations of the fixture above, on pass 9 plus this round's width search:
-   *
-   *   a 3 858 / b 4 000    4 orders     row 7 904
-   *   a 3 929 / b 3 929   16 orders     row 7 904   <- the fair answer
-   *   a 4 000 / b 3 858    4 orders     row 7 904
-   *
-   * THE ROW IS THE SAME SIZE IN ALL THREE. No length assertion, and no utilisation assertion,
-   * can see this — which is why it is asserted on the PAYLOAD, byte for byte.
-   *
-   * AND WHY THIS FIXTURE IS 4 000 CHARACTERS WHERE THE UTILISATION ARM ABOVE IS 50 000. The spread
-   * exists because one of the two strings can be SATISFIED — handed the whole remainder as the last
-   * field, it fits entirely and keeps its spend out of the redistribution pool. A string long
-   * enough never to be satisfied (50 000) makes every order agree even on pass 9, so the arm would
-   * have been green under the defect. Each fixture is sized against the mutation it has to see.
-   *
-   * DELETE-THE-WIRING: move the key charging back inside the value loop in `walkObjectFields` (so
-   * phase 2's pool is read from a `budget.left` the walk is still decrementing) and this arm fails
-   * with 3 distinct payloads.
-   */
+  /** HIGH (M23.0 verification pass 10). See docs/runner-launcher.md §360. */
   it("ORDER-INDEPENDENT RETENTION, TWO TRUNCATED STRINGS: 24 orders, one byte-identical answer", () => {
     const source: Record<string, unknown> = {
       a: "a".repeat(4_000),
@@ -659,22 +464,7 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
     expect(JSON.stringify(source).length).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS);
   });
 
-  /**
-   * PROPERTY (1), AS PASS 10 STATED IT AND AS PASS 12 MEASURED IT.
-   *
-   * Pass 10 charged the keys before any value is walked, so the seating decision read KEY COSTS
-   * ONLY, and it pinned exactly that here: "a value's size changed which keys were seated" was the
-   * failure message. The property was true. What it did not ask is what a KEY COSTS TO SEAT — a
-   * flat {@link PERSISTED_JSON_MIN_LEAF}, whatever was behind it — and that is what the first arm
-   * measures now: 200 keys whose every value is `"v"` hold 4 091 characters and were seated 71 at
-   * a budget of 8 000, the other 129 replaced by a marker. The seat is now priced at what the
-   * field needs, so all 200 seat and the value comes back byte-identical.
-   *
-   * WHAT THAT COSTS IN STRICTNESS, STATED RATHER THAN GLOSSED. The rule now reads values, so pass
-   * 10's absolute form is gone: a sibling large enough to need the whole floor CAN be the reason a
-   * later key is elided. It can only ever go one way — `admissionCost <= PERSISTED_JSON_MIN_LEAF`
-   * by construction — so the seated set is a SUPERSET of the flat rule's, which is the third arm.
-   */
+  /** The property as stated, then as measured. See docs/runner-launcher.md §361. */
   it("WHAT A FIELD NEEDS, NOT A FLAT 96, decides which keys are seated", () => {
     const keys = Array.from({ length: 200 }, (_, i) => `key-number-${i}`);
     const tinyValued = Object.fromEntries(keys.map((k) => [k, "v"]));
@@ -695,11 +485,7 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
     // NON-VACUITY, AND THE UNCHANGED HALF: values too big to price still reserve the whole floor,
     // so 200 of THEM is still the elision regime and still seats roughly the flat rule's 71.
     expect(withHugeValues).toContain(PERSISTED_JSON_ELIDED_KEY);
-    // 69 fields plus the marker. It was 70 + the marker until pass 14 made the object BUY its
-    // elision entry before phase 1 seats anything (see `fieldsElisionCost`): those 30 characters
-    // used to be spent out of the row's backstop cushion, and one seat is exactly what they buy.
-    // The measurement that says the trade is worth making is in that comment — 15 982 whole-value
-    // discards over a 145 048-pair budget sweep, gone above a budget of 31.
+    // 69 fields plus the marker. See docs/runner-launcher.md §362.
     expect(withHugeValues.length).toBe(70);
 
     // ONE-WAY: every key the large-valued object seated is seated by the small-valued one too.
@@ -718,19 +504,7 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
     expect(Object.keys(longLast)).toEqual(["s1", "s2", PERSISTED_JSON_ELIDED_KEY]);
   });
 
-  /**
-   * THE PRICE OF THE FLOOR, PINNED AS A FLOOR OF ITS OWN.
-   *
-   * Phase 1 seats a key only while PERSISTED_JSON_MIN_LEAF of budget remains for it AND for every
-   * key already seated. A field that then wants less than 96 characters leaves the difference
-   * unspent, so in the ELISION regime — and only there — utilisation drops. Pass 9's sliver rule
-   * scored higher on this number and lower on every other: 5 000 fields of `"v".repeat(50)` seated
-   * 792 fields, EVERY ONE OF THEM THE EMPTY STRING, for a row of 7 844. An empty value in a governed
-   * row reads as an observation, not as a cut (charter principle 6).
-   *
-   * Property (3) in the allocator's doc is narrowed to say so. This arm is what stops the residue
-   * growing quietly afterwards.
-   */
+  /** THE PRICE OF THE FLOOR, PINNED AS A FLOOR OF ITS OWN. See docs/runner-launcher.md §363. */
   it("THE ELISION REGIME'S UTILISATION RESIDUE, pinned as a floor so it cannot silently grow", () => {
     const longKeys = Object.fromEntries(
       Array.from({ length: 50 }, (_, i) => [`${"k".repeat(5_000)}${i}`, "v"])
@@ -760,12 +534,7 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
   });
 });
 
-/**
- * A CUT LIST AND A COMPLETE ONE MUST BE TELLABLE APART. `internal-release-version.ts` scans
- * `observed_state.images` for the ref whose repository is a dependency line's coordinate; after a
- * cut, a miss is not evidence of absence, and reporting it as `no_matching_image_ref` blames the
- * executor for what this file did (charter principle 6).
- */
+/** A CUT LIST AND A COMPLETE ONE MUST BE TELLABLE APART. See docs/runner-launcher.md §364. */
 describe("MEDIUM: the array elision marker is recognisable by the readers that scan the array", () => {
   it("what the walk emits is what the recogniser matches — one fact, pinned from both ends", () => {
     const out = boundPersistedJson({
@@ -792,45 +561,7 @@ describe("MEDIUM: the array elision marker is recognisable by the readers that s
   });
 });
 
-/**
- * ================================================================================================
- * MEDIUM (M23.0 verification pass 11) — WHAT THE WALK CHARGES MUST BE WHAT IT RENDERS, AND IN TWO
- * PLACES IT WAS NOT. BOTH ENDED IN THE SAME LOSS: THE WHOLE ROW.
- * ================================================================================================
- * `boundPersistedJson` measures its own output and, when the walk's accounting turns out to be
- * wrong, replaces the payload with a diagnostic sentence. Every round so far has read that as a
- * safety net and asserted only that the ROW stays inside the budget. It does. What it costs when it
- * fires had never been asked: `revision`, `images` and `rollout.weight` all disappear TOGETHER,
- * silently, on a write that runs every tick — strictly worse than the truncation
- * {@link isPersistedJsonEntriesElision} exists to make legible, and the exact fail-silent shape
- * this whole file was written to prevent.
- *
- * Measured over 12 000 random mixed shapes at budgets 100…8 000, the backstop fired for pass 7 on
- * 697, for pass 9 on 30 and for pass 10 on 238 — the redistribution rounds pass 10 added made the
- * total-loss case EIGHT TIMES more likely than the round before it, which no assertion in this file
- * could see because each one only ever asked whether the row fitted.
- *
- * THE TWO CAUSES, BOTH "a leaf/marker rendered characters nobody charged for":
- *
- *   1. `null`, `undefined` and a function/symbol all render as the four characters `null`. The
- *      non-finite-number branch charged for that; the other two charged NOTHING. A `null` in a list
- *      therefore cost 1 (its comma) and rendered 5, and since an array element is admitted while
- *      the budget is merely non-trivial, free elements DEFEAT the array guard outright: 1 599 of
- *      them overflow the 8 000 budget with nothing else in the value.
- *
- *   2. An array's tail marker was charged after the elements had already spent everything. The
- *      element admitted at exactly `PERSISTED_JSON_MIN_LEAF` may take all of it — a string is
- *      bounded to whatever is left, by construction — so EVERY CUT ARRAY overspent by exactly the
- *      marker, and four of them anywhere in one value put the row past the single reserve
- *      `boundPersistedJson` holds back. `PERSISTED_JSON_MIN_LEAF`'s own comment claims the opposite
- *      in as many words ("so the elision itself can never be what pushes the row over") — a
- *      well-written comment naming a hazard is a signal to sweep, not evidence it was handled.
- *
- * WHY THE CORPUS ABOVE COULD NOT SEE EITHER. Every array in it holds strings or integers, both
- * charged exactly, and every value in it is cut at most once. A fixture cannot witness a defect in
- * a branch it never reaches — the same mechanical blindness that hid the string-shaped defects for
- * three rounds, one shape further along.
- */
+/** MEDIUM (M23.0 verification pass 11). See docs/runner-launcher.md §365. */
 describe("MEDIUM: what the walk charges is what it renders — every leaf, and every marker", () => {
   /** Did the measured backstop replace the payload? That is the loss, not the row length. */
   function wasDiscarded(bounded: unknown): boolean {
@@ -942,22 +673,7 @@ describe("MEDIUM: what the walk charges is what it renders — every leaf, and e
     }
   });
 
-  /**
-   * THE SWEEP THAT WOULD HAVE CAUGHT BOTH, AND WHICH THE HAND-PICKED CORPUS ABOVE CANNOT BE.
-   * Deterministic (a fixed seed, no `Math.random`), so a failure is reproducible and a green is not
-   * luck. It asserts the two facts every hand-picked arm asserts — the row fits, and the backstop
-   * did not fire — over shapes nobody chose.
-   *
-   * SIZED DELIBERATELY, AND SMALLER THAN THE FIRST DRAFT. 2 000 shapes with 6 000-character strings
-   * ran for 5.5 SECONDS, which is not free in a suite whose slowest FILE (`whole-run-budget.ts`,
-   * 9.9s) measures real subprocess deadlines in a sibling worker — a CPU-bound arm is a
-   * wall-clock hazard to a timing arm running beside it, which is a bad trade for a property test.
-   * 800 shapes with 2 500-character strings runs in ~0.7s and still reddens on both pass-11
-   * defects: removing the tail reserve fails it at `case 9 at budget 6000`, removing the `null`
-   * charge fails four other arms in this file. Raise the count when hunting, not in the committed
-   * suite; 30 000-case sweeps over five seeds were run out of tree for this round and found nothing
-   * this one does not.
-   */
+  /** The sweep the hand-picked corpus above cannot do. See docs/runner-launcher.md §366. */
   it(
     "800 GENERATED SHAPES: the row fits AND the payload is never discarded",
     { timeout: 60_000 },
@@ -1029,27 +745,7 @@ describe("MEDIUM: what the walk charges is what it renders — every leaf, and e
     }
   );
 });
-/**
- * HIGH (M23.0 verification pass 12) — WHAT A REFUSAL HOLDS BACK MUST BE WHAT THE CONTENT COSTS.
- *
- * Two places decided whether to keep the next thing, and both reserved a flat
- * `PERSISTED_JSON_MIN_LEAF` (96) for it without asking what it was worth: `walkObjectFields` phase
- * 1 seating a key, and the array loop admitting an element. A third — pass 11's tail reserve — took
- * the marker's price out of every list, including the ones that demonstrably never need a marker.
- *
- * NONE OF IT IS VISIBLE IN THE ROW'S LENGTH, which is why eleven passes did not find it: the row
- * comes out THOUSANDS OF CHARACTERS SHORT of the budget while content is being thrown away, and in
- * the worst cases LARGER than the value it damaged, because `__scpElided: "1 more fields"` is 30
- * characters and `"version":"v1.4.2"` is 18. Measured before the fix, at the production budget:
- *
- *   {resources: {30 x {status, health, version}}}   input 2 495 -> stored 2 825, LOSSY
- *   the same at 80 resources                        input 6 645 -> stored 3 684, LOSSY (54 % of
- *                                                   the column abandoned)
- *   {svc-i: {c-k: {ready, restarts, image}}} 8 x 4  input 1 553 -> stored 2 097, LOSSY
- *   {a: ["a"]}                                      eleven characters, cut at every budget to 133
- *
- * The unit each arm asserts in is therefore RETENTION, never length.
- */
+/** HIGH (M23.0 verification pass 12). See docs/runner-launcher.md §367. */
 describe("HIGH: a refusal must be priced at what the content costs, not at a flat 96", () => {
   const resources = (n: number) =>
     Object.fromEntries(
@@ -1099,77 +795,9 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
     expect(cut).toContain(PERSISTED_JSON_ELIDED_KEY);
   });
 
-  /**
-   * THE LAW'S DOMAIN, WHICH PASS 13 FOUND MISSING AND PASS 14 MEASURED.
-   *
-   * "L + 96 IS THE WHOLE LAW" was pinned over atoms whose largest string is 300 characters, so it
-   * sampled only where the claim happens to hold. It is FALSE for a string past
-   * {@link RUNNER_DETAIL_MAX_CHARS}, and false for four other reasons the atoms never reached. The
-   * law is not wrong — it has a DOMAIN, and an unstated domain is a law that goes false silently
-   * the first time somebody writes a fixture outside it. Measured, `{a: <atom>}`, searching every
-   * budget to 60 000 for the first at which the value comes back byte-identical:
-   *
-   *     atom                              L      verbatim at
-   *     string of 4 000                4 008    L + 96
-   *     string of 4 001                4 009    NEVER          <- boundStringToCost caps at 4 000
-   *     key of 126 characters            140    L + 96
-   *     key of 127 characters            141    NEVER          <- the 128 is a RENDERED cost, and
-   *                                                               two quotes leave room for 126
-   *     seven levels of nesting           54    L + 96
-   *     eight levels of nesting           60    NEVER          <- PERSISTED_JSON_MAX_DEPTH
-   *     "a\u{1F600}b"                      12    L + 96
-   *     a string carrying U+0000          16    NEVER          <- sanitised to U+FFFD
-   *     a lone surrogate                  16    NEVER          <- sanitised to U+FFFD
-   *     a function-valued field            2    NEVER          <- stored as null, omitted by
-   *                                                               JSON.stringify
-   *     a `__proto__` key                 27    NEVER          <- refused, see isUnsafePersistedKey
-   *
-   * AND THE DOMAIN IS ABOUT THE ATOMS, NOT THE TOTAL, which is the half pass 13's wording missed.
-   * Two 4 000-character strings side by side are 8 021 characters and obey the law exactly; 400
-   * image refs are 35 897 characters and obey it exactly. "False past 4 008 characters" is not the
-   * boundary — "false past a 4 000-character STRING" is.
-   */
-  /**
-   * WHAT THE WATER-FILLING CAP IS WORTH, AND WHY IT IS FIVE — M23.0 verification pass 14.
-   *
-   * `PERSISTED_JSON_SHARE_ROUNDS` was 4, and pass 13 recorded that 3 and 8 both SURVIVED the whole
-   * suite: a constant nothing could distinguish in either direction. Neither survives measurement.
-   * Instrumenting the loop over 182 365 (shape, budget) pairs found 5 290 that run four rounds and
-   * 527 that run FIVE, so 4 was truncating real work; and against a 64-round ceiling the retention
-   * cost of each cap is 1: -29.04 %, 2: -0.60 %, 3: -0.047 %, 4: -0.0028 %, 5 and above: zero.
-   *
-   * FIVE IS THE FIXED POINT — the smallest cap at which raising it changes no output anywhere. The
-   * shape below is the witness the round-demand instrument found, and it separates every cap from
-   * 1 to 5, which is what makes an exact byte count here a gate rather than a golden:
-   *
-   *     ladder n=10 base=4 delta=40, L = 1 921, at a budget of 1 978
-   *         1 round  1 401     3 rounds  1 855     5 rounds  1 882
-   *         2 rounds 1 777     4 rounds  1 881     8 and 64  1 882
-   *
-   * WHY THE LADDER. Rounds are demanded only when exactly ONE field becomes satisfied per round —
-   * fields whose sizes are close enough together that a share satisfies one at a time. Geometric
-   * sizes (the family the constant's own comment names) satisfy several at once and never reach
-   * round four; this is the shape eleven passes' corpora did not contain.
-   */
-  /**
-   * THE TWO MARKER CHARGES, PRICED TO THE CHARACTER — M23.0 verification pass 14, and the two
-   * mutations pass 13 recorded as surviving all 227 tests.
-   *
-   * `tailMarkerCost` reserves `jsonCost(marker) + 1`; `fieldsElisionCost` reserves
-   * `jsonCost(marker) + jsonCost(__scpElided) + 2`. The trailing terms are PUNCTUATION — the comma
-   * that separates an array's marker from the entries before it, and the `:` and comma that attach
-   * an object's elision entry — and punctuation is the kind of term a reader deletes as noise. A
-   * reserve short by N is not "N characters of retention"; it is a container that spends N more
-   * than it was allocated, and those overspends COMPOUND across siblings until the row's own
-   * 96-character cushion is gone and the backstop discards the whole reading.
-   *
-   * NEITHER IS PINNED BY A BYTE COUNT HERE, because a byte count says nothing about WHY. A reserve
-   * short by N shifts the budget at which the next thing becomes affordable by EXACTLY N, and that
-   * is both a sharper statement and a two-sided one. Measured over every budget 4…400:
-   *
-   *     list(3) of list(3), first sub-list survives at   base 138    with `+ 1` deleted  137
-   *     3 fields x list(2), first field seated at        base 142    with `+ 2` deleted  140
-   */
+  /** The law's domain, found missing and then measured. See docs/runner-launcher.md §368. */
+  /** What the water-filling cap is worth, and why. See docs/runner-launcher.md §369. */
+  /** THE TWO MARKER CHARGES, PRICED TO THE CHARACTER. See docs/runner-launcher.md §370. */
   it("THE ARRAY'S TAIL MARKER COSTS ITS COMMA: one character of budget, exactly", () => {
     const value = [
       ["e", "e", "e"],
@@ -1215,12 +843,7 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
     expect(JSON.stringify(boundPersistedJson(value, 140))).toBe('{"__scpElided":"3 more fields"}');
     expect(JSON.stringify(boundPersistedJson(value, 142))).toBe(JSON.stringify(value));
 
-    // AND THE CONSEQUENCE, WHICH IS NOT TWO CHARACTERS. An object's overspend happens once per
-    // ELIDING OBJECT, and at depth 6 width 3 there are 1 093 of them, so two characters each is
-    // 2 186 — past the row's 96-character cushion many times over. Measured with the `+ 2` deleted:
-    // this 9 103-character value is DISCARDED WHOLE at 2 062 budgets, the lowest 3 907; the current
-    // build discards it at none. This band is the cheap part of that measurement (300 budgets,
-    // ~0.4 s) rather than the whole of it.
+    // AND THE CONSEQUENCE, WHICH IS NOT TWO CHARACTERS. See docs/runner-launcher.md §371.
     const deep = (k: number): unknown =>
       k === 0
         ? "l"
@@ -1355,16 +978,7 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
   });
 
   it("L + 96 IS THE WHOLE LAW: a value of L characters survives verbatim at L + 96, and not before", () => {
-    // ONE LAW FOR EVERY SHAPE. `boundPersistedJson` reserves PERSISTED_JSON_MIN_LEAF from the row
-    // as its overspend backstop and the walk gets the rest, so a field that costs L wants exactly
-    // L + 96 — and that was true of scalars and objects while ARRAYS wanted `L + 96 + the tail
-    // marker's price`, a marker the complete list never stores. Measured before the fix:
-    //
-    //     {a: ["a"]}          L 11    verbatim from 134, not 107
-    //     {a: [40 entries]}   L 237   verbatim from 361, not 333
-    //
-    // Stated as a two-sided law so it cannot be satisfied by simply reserving more: verbatim at
-    // L + 96, and NOT verbatim at L + 95.
+    // ONE LAW FOR EVERY SHAPE. See docs/runner-launcher.md §372.
     const atoms: [string, unknown][] = [
       ["the empty string", ""],
       ["a 200-character string", "x".repeat(200)],
@@ -1512,35 +1126,7 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
   });
 });
 
-/**
- * HIGH (M23.0 verification pass 13) — A SEAT PHASE 1 PAID FOR IS A SHARE PHASE 2 MUST HONOUR.
- *
- * A REGRESSION IN PASS 12'S OWN FIX, not a pre-existing defect. Pass 12 replaced a flat
- * `PERSISTED_JSON_MIN_LEAF` seat price with the value's exact cost and argued the change was safe
- * because it "can only admit content the old rule refused" — a statement about the seated SET. The
- * flat 96 was also the guarantee that a seated field would be HANDED 96 characters, which is what
- * that constant's own comment says it is for ("enough for a short marker and its punctuation").
- * Phase 2 kept dividing the pool equally, so a field could be offered less than the value it was
- * seated for costs, and the value then emitted a marker nobody had costed:
- * `[elided: N more entries]` is 26 rendered characters where the list it replaced was 5.
- *
- * Measured on the shipped build, over 197 934 (shape, budget) pairs:
- *
- *   pass 11        0 / 197 934 whole values discarded by the backstop
- *   pass 12 pre    0 / 197 934
- *   pass 12 as shipped   34 900 / 197 934, at budgets up to 13 981 — INCLUDING the production
- *                        8 000 with no explicit budget argument
- *
- * THE UNIT HERE IS THE BACKSTOP, not the row length. Every arm below is green on a function that
- * stores nothing at all; the last one is the counter-arm for that.
- *
- * WHY IT IS A DENSE BUDGET SWEEP AND NOT A RANDOM CORPUS. The trigger is an arithmetic coincidence
- * — phase 1 must refuse exactly enough fields for the `__scpElided` charge to push the pool under
- * what the survivors were seated for. 6 000 random shapes (widths to 25 x 60, depth 10, arrays to
- * 120, bigints, functions, over-long and colliding keys) found ZERO instances against the broken
- * build; this sweep finds 49 518 of 335 496. Random shape generation is the wrong instrument, and
- * that is the reason eleven passes of it went past this.
- */
+/** HIGH (M23.0 verification pass 13). See docs/runner-launcher.md §373. */
 describe("HIGH: a seat phase 1 paid for is a share phase 2 must honour", () => {
   const DIAGNOSTIC = "a plugin-supplied value rendered";
   /** The backstop threw the payload away — the loss this whole file exists to prevent. */
@@ -1582,21 +1168,7 @@ describe("HIGH: a seat phase 1 paid for is a share phase 2 must honour", () => {
   });
 
   it("AND THE COUNT THAT SURVIVES IS THE LAW'S, NOT THE CUSHION'S — pass 14", () => {
-    // WHAT MOVED AND WHY IT IS THE RIGHT DIRECTION. Pass 13 asserted four of the five lists survive
-    // at 143. One does now, and the four were being paid for out of the row's backstop cushion: the
-    // walk is handed `143 - PERSISTED_JSON_MIN_LEAF` = 47 characters, and four lists plus their keys
-    // plus a 30-character elision entry is 75. Pass 14 made the object BUY that entry before phase 1
-    // seats anything (`fieldsElisionCost`), so the walk now spends what it was given. Measured over
-    // every budget in 100…175, both builds:
-    //
-    //     budget   108   119   130   141   149   152
-    //     pass 13    1     2     3     4     4     5   <- borrowing from the cushion
-    //     pass 14    0     0     0     1     2     5
-    //
-    // The borrowing is what produced 15 982 whole-value discards over the pass-14 sweep, five of
-    // which are CLIFFS: one more character of budget took `depth 5 width 3` from 2 539 stored
-    // characters to 145 of apology. Nine cliffs remain in the fixed build and NOT ONE of them lands
-    // on the backstop.
+    // WHAT MOVED AND WHY IT IS THE RIGHT DIRECTION. See docs/runner-launcher.md §374.
     const value = wide(5, () => ["a"]);
     const L = JSON.stringify(value)!.length;
     expect(L).toBe(56);

@@ -2,11 +2,7 @@ import * as React from "react";
 import { Check, CircleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 
-/**
- * §2.11 — one-line MUTATION feedback (approve flows, dialog submits). Query failures always use
- * `QueryErrorNotice`, never this component: a failed read carries a diagnosis, a failed mutation
- * carries a sentence.
- */
+/** §2.11 — one-line MUTATION feedback. See docs/web.md §110. */
 export interface NoticeProps extends React.HTMLAttributes<HTMLParagraphElement> {
   tone: "success" | "danger";
 }

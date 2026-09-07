@@ -3,11 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import type { LucideIcon } from "lucide-react";
 import { cn, focusRing } from "../../lib/utils";
 
-/**
- * `default` is the army-olive accent (design spec §2.12; olive since 2026-08-11) — it lands on every primary action (Sign in,
- * New, Create Campaign, Accept). Status colors never appear here; `destructive` is the only
- * exception and stays red. Every variant carries the shared focus ring (§2.10).
- */
+/** `default` is the army-olive accent. See docs/web.md §107. */
 const buttonVariants = cva(
   cn(
     "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",

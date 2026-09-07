@@ -3,42 +3,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, relationships } from "../db/schema.js";
 import { getOrgRootObjectId } from "../graph/objects-repo.js";
 
-/**
- * Pipeline resolution — which release topology does a change inherit, and FROM WHERE
- * (ADR-0026, post-import-configuration.md §5, owner decisions D4/D12-as-amended/D15).
- *
- * ============================================================================================
- * WHY THIS IS A DEDICATED WALK AND NOT `containmentChain` (D15) — READ BEFORE "SIMPLIFYING" IT
- * ============================================================================================
- * D12 originally said resolution "reuses the existing ladder rather than inventing one", on the
- * grounds that `containmentChain` "already encodes service-beats-domain precedence". That second
- * claim is FALSE, and `graph/containment.ts`'s own docblock says so: it walks two axes per hop
- * (the `contains` edge AND `domain_id`), and when a component's `domain_id` differs from its
- * service's the two are "each exactly ONE hop from C and TIE … no ordering of these two routes is
- * obviously 'correct'". It then says, in as many words:
- *
- *     "DO NOT write code that assumes a strict org < domain < service < component ordering across
- *      DIFFERENT kinds … if you are about to write that, fix this first."
- *
- * "Walk the chain and take the nearest match" is exactly that code. So this module walks three
- * NAMED rungs instead, each answering a question with one unambiguous answer, and
- * `containmentChain` is left untouched — modifying it would move RBAC scope, policy resolution,
- * freeze scope and approval scope, four security-relevant consumers, for a feature none of them
- * needs.
- *
- * The org rung is reached DIRECTLY rather than via `domain_id`, which is the axis D15 dropped. That
- * matters: the org root is normally reached through that axis, so dropping it without rung 3 would
- * have silently dropped the org default too.
- *
- * ============================================================================================
- * WHY THE RUNG IS RETURNED, NOT JUST THE TOPOLOGY (principle 6)
- * ============================================================================================
- * "Why did this change get this pipeline?" has four possible answers — an explicit flag, the
- * component's own edge, its service's, or the org default. Only the rung distinguishes them. A
- * Decision naming the topology alone cannot explain an inheritance surprise, which is the failure
- * an operator actually hits: someone attaches a pipeline to a service and every component in it
- * silently changes how it releases.
- */
+/** Which release topology a change inherits, and from where. See docs/coordination.md §661. */
 
 /** Which rung of the walk supplied the topology. `explicit` never reaches this module. */
 export type PipelineRung = "component" | "service" | "organization";
@@ -67,18 +32,7 @@ export interface PipelineResolution {
   }[];
 }
 
-/**
- * The live `releases_via` edge hanging off `fromId`, with its topology's current version, or null.
- *
- * `many_to_one` (migration 0049) plus its partial unique index guarantee AT MOST ONE such edge, so
- * this needs no tie-break and must not grow one — a `limit(1)` over an unordered set would be a
- * silent arbitrary choice. If that cardinality ever changes, this returns a nondeterministic answer
- * and the fix is the cardinality, not a sort here.
- *
- * The join to `objects` is what makes a dangling or soft-deleted topology read as NO pipeline
- * rather than as a topology id that later fails to load: a change must not be born pointing at a
- * tombstone.
- */
+/** The live attachment edge and its version, or null. See docs/coordination.md §662. */
 async function attachedTopology(
   tx: TenantTx,
   orgId: string,
@@ -105,21 +59,7 @@ async function attachedTopology(
 }
 
 /** The component's owning service, via the `contains` edge walked INBOUND (`to_id` = component). */
-/**
- * The CONTAINER ANCESTORS of a component, nearest first — its assembly, then that assembly's
- * service (migration 0055, `intermediate-grouping.md` D1 "walk up, nearest wins").
- *
- * Before the `assembly` level this read exactly one edge, because a component's parent could only be
- * a service. With an optional level in between, reading one edge would mean a component under an
- * assembly does NOT inherit a topology attached to its service — silently releasing as a single
- * anonymous wave. That is one of the three one-hop sites `intermediate-grouping.md` §3 names, and it
- * is the one whose failure is quietest.
- *
- * Each hop is at most one edge, guaranteed by `contains`'s `one_to_many` plus migration 0022's
- * partial unique index — the invariant RBAC and policy scope also depend on — so there is no
- * ambiguity rule to write. Capped at D2's depth, and `assembly -> assembly` is refused at write time,
- * so in practice this yields at most `[assembly, service]`.
- */
+/** The CONTAINER ANCESTORS of a component, nearest first. See docs/coordination.md §663. */
 async function containerAncestorIds(
   tx: TenantTx,
   orgId: string,
@@ -149,13 +89,7 @@ async function containerAncestorIds(
 /** `intermediate-grouping.md` D2 — the depth cap, in `contains` hops. */
 const MAX_CONTAINER_HOPS = 3;
 
-/**
- * Resolves ONE target's pipeline by walking the three rungs, nearest first.
- *
- * The rungs are tried in order and the FIRST hit wins — that is what "walk past the owning service"
- * (D4) means concretely: a component with no edge of its own does not stop at its service having
- * none either, it continues to the org default.
- */
+/** Resolves one target's pipeline, nearest rung first. See docs/coordination.md §664. */
 export async function resolvePipelineForTarget(
   tx: TenantTx,
   orgId: string,
@@ -186,25 +120,7 @@ export async function resolvePipelineForTarget(
   return null;
 }
 
-/**
- * Resolves the pipeline for a change's whole target set.
- *
- * **Every target must resolve to the SAME topology, or nothing is inherited.** Applying one
- * target's pipeline to a change that touches others is precisely the inheritance surprise the rung
- * exists to explain, and there is no non-arbitrary way to pick a winner. A target that resolves to
- * NOTHING counts as a disagreement for the same reason: inheriting a pipeline on its behalf would
- * order a release for an object nobody attached one to.
- *
- * This costs almost nothing in practice and is not the guard being weakened: `matchComponentForSource`
- * returns exactly one component, so an automatically created change has exactly ONE target (277 of
- * 281 measured), and every same-service multi-target change resolves uniformly through rung 2
- * anyway. Only a hand-assembled change spanning differently-piped components declines to inherit —
- * and it declines LOUDLY, on the Decision, rather than silently picking one.
- *
- * The RUNG may legitimately differ while the topology agrees (one component has its own edge to T,
- * another reaches the same T through its service). That is not a disagreement — the answer is
- * unambiguous — so it resolves, and `perTarget` carries the detail for the Decision.
- */
+/** Resolves the pipeline for a change's whole target set. See docs/coordination.md §665. */
 export async function resolvePipelineForTargets(
   tx: TenantTx,
   orgId: string,

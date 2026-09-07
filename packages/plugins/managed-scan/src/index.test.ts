@@ -4,14 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 
-/**
- * Unit tests (no Docker — every `docker` invocation is mocked, so these run on every PR under
- * `pnpm test`). They assert the SECURITY-critical properties the ADR-0020 / managed-iac model
- * demands: the container always launches with `--network none`, NO bind mount, NO docker.sock; the
- * scan subject is copied IN and evidence copied OUT rather than mounted; an unsupported method or
- * missing server-controlled dirs fail CLOSED WITHOUT touching docker; and a non-zero scanner run is
- * reported failed (so a broken scan never masquerades as clean).
- */
+/** Unit tests with every Docker invocation mocked. See docs/plugins.md §465. */
 
 interface DockerCall {
   file: string;
@@ -144,7 +137,6 @@ describe("@scp/plugin-managed-scan: container isolation", () => {
     );
     expect(cpIn).toBeDefined();
     expect(cpOut).toBeDefined();
-    // Container destroyed unconditionally.
     expect(dockerCalls.some((c) => c.args[0] === "rm" && c.args.includes("-f"))).toBe(true);
     expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
   });
@@ -334,20 +326,7 @@ describe("@scp/plugin-managed-scan: fail-closed", () => {
   });
 });
 
-/**
- * ================================================================================================
- * MEDIUM (verification pass 5) — A FAILED SCAN'S RECORDED REASON IS NEVER THE EMPTY STRING
- * ================================================================================================
- *
- * This plugin built its failure detail as `managed-scan: <method> scan FAILED — ${result.stderr}`.
- * `promisify(execFile)` always attaches `stderr` as a string, so for a scan WE killed on the budget
- * and for a `docker` that never spawned that expression produced the literal `scan FAILED — ` and
- * stopped — and `status().detail` is what `reconcile.ts` copies into a `block` Decision's
- * `inputContext`, and what E6 quotes when it refuses a promotion for want of evidence. An operator
- * chasing a blocked release got a sentence that ends in an em dash.
- *
- * `runnerOutcomeDetail` is the wiring; these are the arms that die when it is removed.
- */
+/** MEDIUM (verification pass 5). See docs/plugins.md §466. */
 describe("MEDIUM (pass 5): a failed scan records WHY, not an empty string", () => {
   async function scanAndRead(key: string): Promise<{ phase: string; detail: string }> {
     const plugin = createManagedScanExecutorPlugin();

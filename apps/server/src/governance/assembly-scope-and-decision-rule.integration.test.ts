@@ -27,54 +27,7 @@ import { reconcileOrgTick } from "../coordination/reconcile.js";
 import { castApprovalVote, listApprovalRequestsForChange } from "./approvals-repo.js";
 import { mergeScanThresholds } from "./scan-requirements.js";
 
-/**
- * M22.0 — THE TWO HARDCODED RUNG LISTS MIGRATION 0055 MISSED, AND THE DECISION THAT DID NOT EXPLAIN
- * ITS OWN RULE (ADR-0033 §5/§11; charter principle 6).
- *
- * Migration 0055 added the optional `service -> assembly -> component` rung. `containmentChain`
- * walks it for free because it matches on the `contains` EDGE and never on the parent's TYPE — which
- * is why 0055 shipped no resolver edit at all. But WALKING a rung is edge-generic and NAMING one is
- * not, and two hardcoded lists were left behind:
- *
- *   * `gate-orchestrator.ts`'s `APPROVAL_SCOPE_KEYWORDS` had no `assembly` entry, so
- *     `requireApprovals: {scope: "assembly"}` resolved to `null` and became a PERMANENTLY
- *     unsatisfiable required approval — fail-closed, but silently inexpressible, and no approval
- *     REQUEST was ever materialized, so no human could vote it through either. Pinned by A1/A2 here.
- *   * `scan-requirements.ts`'s `tierForObjectType` fell `assembly` through to `component`. Pinned by
- *     `scoped-scan-requirements.integration.test.ts` (a2), at the real scan gate, where the ceiling
- *     it reports can be read back out of the persisted control-run evidence.
- *
- * And the resolved scan ceiling went only into `control_runs.evidence`, never into the Decision an
- * operator resolves by `decision_id`. D1/D2 pin that it is now in the Decision, and that putting it
- * there did NOT re-open the measured 1.44 GB/day write amplification (ADR-0024 §D0) on the busiest
- * path in the system.
- *
- * ---------------------------------------------------------------------------------------------
- * WHY THIS FILE DRIVES `reconcileOrgTick` DIRECTLY
- * ---------------------------------------------------------------------------------------------
- * The scan ceiling reaches a Decision only from the WAVE-BOUNDARY gate: `evaluateGovernanceGate`
- * resolves it inside its `host` condition, and the lifecycle-edge gate runs with `host: null` on the
- * API tier. So every test here parks a change at a pending wave and ticks the reconciler by hand —
- * "N ticks" is then exactly N (the same discipline, and the same reason, as
- * `coordination/decision-write-amplification.integration.test.ts`), which is what makes D2's row
- * counts mean anything at all.
- *
- * ONE ORG PER TEST, deliberately: `matchPoliciesForTargets` scans every policy in the org, so an
- * org-scoped scan floor authored by one test would silently join another test's contributor list and
- * make D1's exhaustive tier assertion pass or fail for reasons that have nothing to do with it.
- *
- * ---------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied ALONE, run, watched fail, then reverted. Measured 2026-08-17.
- * ---------------------------------------------------------------------------------------------
- *
- * | Mutation | Result |
- * |---|---|
- * | drop `assembly: "assembly"` from `APPROVAL_SCOPE_KEYWORDS` | **A1 FAILS** at the request count (`expected [] to have a length of 1`) — the pre-M22.0 defect exactly: no request row, so no vote was ever possible. A2/D1/D2 stay green |
- * | make the keyword lookup TOTAL (`… ?? "organization"`) | **A2 FAILS** (`expected [ {…} ] to have a length of 0`) while A1 stays green — the negative control does its job: naming one more rung must not make every string a keyword |
- * | delete the `scanThresholdForDecision(...)` spread from `inputContext` | **D1 FAILS** (`expected undefined to be defined`); D2's precondition fails with it. A1/A2 stay green |
- * | remove the `.sort(...)` from `scanThresholdForDecision` | **D2 (b) FAILS** — persisted order came out `org, containment_domain, service, assembly, component`, i.e. verbatim authoring order. **D2 (a) did NOT fail**, exactly as this test's header predicts: the order was stably unsorted, so the rows still collapsed to one. That is why (b) exists |
- * | `insertDecisionIfChanged` -> `insertDecision` at reconcile.ts's wave gate | **D2 (a) FAILS** — 9 new rows over 9 ticks, one per tick: the 1.44 GB/day flood, reproduced |
- */
+/** The two hardcoded rung lists the migration missed. See docs/governance.md §7. */
 
 /** The blocking policy's condition. Real — and, because a contributor `condition` is what makes
  *  `resolveFiredPolicies` call the sandbox, it doubles as the observable per-tick EVALUATION COUNTER
@@ -117,10 +70,6 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     await sandbox.stop();
     await server?.close();
   });
-
-  // -------------------------------------------------------------------------------------------
-  // Fixture builders
-  // -------------------------------------------------------------------------------------------
 
   async function newOrg(label: string): Promise<{ org: TestOrg; admin: ScpClient }> {
     const org = await createTestOrg(server, label);
@@ -171,11 +120,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     });
   }
 
-  // M22.8 — `governance/scan-rule-authoring-guard.ts` refuses a `scanThreshold` rule that requires no
-  // control. This suite creates no control and runs no plugin host, so it names a control REFERENCE
-  // rather than a bound control — the same non-uuid form the rest of this file already uses. The
-  // guard reads that as "cannot be PROVEN inert" and passes, which is its documented sign: an absent
-  // or unresolvable binding is never evidence that a document does nothing.
+  // The guard refuses a scan-threshold rule of that shape. See docs/governance.md §8.
   /** A policy whose effect set is a scan ceiling plus the control that ceiling constrains, scoped at one object — the org-and-below
    *  authoring surface the six-tier MIN reads (ADR-0016). */
   async function scanFloorPolicy(
@@ -196,12 +141,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     });
   }
 
-  /**
-   * Walks a change to `executing` with wave 0 still `pending`, by hand. Every edge used here is one
-   * `gates.ts` documents as always-allow (`proposed -> evaluated -> coordinated -> executing`), so
-   * the FIRST `tick()` below is the first thing that has ever evaluated this wave's gate — which is
-   * what lets D2 count rows against ticks.
-   */
+  /** Walks a change to executing with wave zero still pending. See docs/governance.md §9. */
   async function parkAtWaveGate(org: TestOrg, componentId: string, label: string): Promise<Parked> {
     const gateDeps: GateDeps = { sandbox, host };
     const changeObjectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
@@ -291,15 +231,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     return (inputContext as { scanThreshold?: DecisionScanThreshold }).scanThreshold;
   }
 
-  // -------------------------------------------------------------------------------------------
-  // A1 — `requireApprovals: {scope: "assembly"}` is SATISFIABLE.
-  //
-  // Before M22.0 `resolveApprovalScope` returned `null` for it, so the gate marked the approval
-  // unsatisfied and `continue`d — no request row, nothing in anyone's queue, and no possible vote.
-  // The change was parked forever behind an effect its author had legitimately expressed.
-  //
-  // MUTATION: delete the `assembly: "assembly"` entry from `APPROVAL_SCOPE_KEYWORDS`.
-  // -------------------------------------------------------------------------------------------
+  // A1 — `requireApprovals: {scope: "assembly"}` is SATISFIABLE. See docs/governance.md §10.
 
   it("A1: an Approver bound at the ASSEMBLY satisfies requireApprovals {scope: 'assembly'} — and the wave proceeds", async () => {
     const { org, admin } = await newOrg("approval-assembly");
@@ -349,16 +281,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     expect(await waveStatus(parked.waveId, org)).not.toBe("pending");
   });
 
-  // -------------------------------------------------------------------------------------------
-  // A2 — THE NEGATIVE CONTROL. Naming one more keyword must not make every string a keyword.
-  //
-  // This is the arm that keeps A1 from being satisfied by a "fix" that resolves anything to
-  // something. An unknown keyword is not an object id or urn either, so it must still resolve to
-  // `null`, still block, and still materialize NOTHING.
-  //
-  // MUTATION: make `APPROVAL_SCOPE_KEYWORDS` a total function (e.g. default the lookup to
-  // `"organization"`) and this test goes red while A1 stays green.
-  // -------------------------------------------------------------------------------------------
+  // A2 — THE NEGATIVE CONTROL. See docs/governance.md §11.
 
   it("A2: an UNKNOWN scope keyword still resolves to null — it blocks, and no approval request is materialized", async () => {
     const { org, admin } = await newOrg("approval-unknown");
@@ -390,19 +313,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     expect(effect?.satisfied).toBe(false);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // D1 — THE DECISION EXPLAINS THE RULE (ADR-0016 §5, charter principle 6).
-  //
-  // Until M22.0 the resolved ceiling and its contributing tiers lived ONLY in
-  // `control_runs.evidence`. An operator handed a `decision_id` could read the verdict and not the
-  // rule it was measured against. ADR-0033 then adds a way to EXCLUDE findings from that comparison
-  // — so the rule has to be in the Decision before any exception can hide inside it.
-  //
-  // Read out of the persisted `decisions` row, never out of a hand-built merge input.
-  //
-  // MUTATION: delete the `...(scanThresholdForDecision(effectiveScanThreshold) ?? {})` spread from
-  // `evaluateGovernanceGate`'s `inputContext`.
-  // -------------------------------------------------------------------------------------------
+  // D1 — THE DECISION EXPLAINS THE RULE. See docs/governance.md §12.
 
   it("D1: the gate's Decision carries the resolved ceiling and names EVERY contributing tier", async () => {
     const { org, admin } = await newOrg("decision-rule");
@@ -442,11 +353,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
       "a gate Decision must state the scan ceiling it was measured against (ADR-0016 §5)"
     ).toBeDefined();
 
-    // (a) THE EFFECTIVE CEILING — the per-severity MIN over all five tiers:
-    //     maxCritical: org 90, component 4                  -> 4
-    //     maxHigh:     org 90, service 70, assembly 5        -> 5
-    //     maxMedium:   org 90, domain 6, service 60          -> 6
-    //     maxLow:      org 7, domain 80                      -> 7
+    // (a) THE EFFECTIVE CEILING. See docs/governance.md §13.
     expect(st!.effective).toEqual({ maxCritical: 4, maxHigh: 5, maxMedium: 6, maxLow: 7 });
 
     // (b) EVERY CONTRIBUTING TIER IS NAMED — including `assembly`, which before M22.0 would have
@@ -466,49 +373,14 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     expect(mergeScanThresholds(st!.contributors).threshold).toEqual(st!.effective);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // D2 — DETERMINISM, AND THE WRITE AMPLIFICATION IT PROTECTS.
-  //
-  // `restatesDecision` canonicalises object KEY order but deliberately PRESERVES array order, and
-  // `matchPoliciesForTargets` returns contributors in unordered-scan insertion order. So an unsorted
-  // `contributors` array in the Decision would defeat `insertDecisionIfChanged` and re-open the
-  // measured 1.44 GB/day flood (ADR-0024 §D0) on the busiest path in the system.
-  //
-  // WHAT THIS TEST CAN AND CANNOT PROVE — stated plainly rather than implied:
-  //
-  //   * (a) is the property that matters and it is directly asserted: N ticks over an unchanged
-  //     parked gate append ZERO further rows.
-  //   * (a) alone, however, is NOT a reliable detector of a missing `.sort(...)`. The unordered scan
-  //     `matchPoliciesForTargets` reads from is a seq scan over a small, never-updated table, so
-  //     within ONE run it returns the same physical order every tick; the contributor array would be
-  //     unsorted but STABLY unsorted, and the rows would still collapse. The order only diverges
-  //     across a rewrite (VACUUM FULL, an UPDATE moving a row, a plan flip) — which a single test
-  //     run cannot force.
-  //   * so (b) asserts the SORTED INVARIANT DIRECTLY, on the array the gate actually persisted. That
-  //     is the assertion the `.sort(...)` mutation fails, deterministically: the fixture authors its
-  //     floors in an order whose tier labels are not ascending, so "sorted" and "as matched" cannot
-  //     coincide.
-  //   * what is NOT observable here at all: the FIXED KEY ORDER each contributor object is built
-  //     with. `jsonb` does not preserve the author's key order (it stores keys by length, then
-  //     bytewise), so the persisted row cannot witness it. (b) therefore rebuilds the sort key from
-  //     the read-back values instead of comparing raw serializations. Key order still matters for
-  //     the same reason the sort does — it is what makes the sort key content-only — but it is
-  //     provable only in-process, not from the record.
-  //
-  // MUTATIONS: remove the `.sort(...)` from `scanThresholdForDecision` -> (b) fails, (a) does not.
-  //            replace `insertDecisionIfChanged` with `insertDecision`   -> (a) fails.
-  // -------------------------------------------------------------------------------------------
+  // D2 — DETERMINISM, AND THE WRITE AMPLIFICATION IT PROTECTS. See docs/governance.md §14.
 
   it("D2: re-evaluating the same gate writes ZERO further Decisions, and the persisted contributor list is deterministically ordered", async () => {
     const { org, admin } = await newOrg("determinism");
     const chain = await buildChain(org, admin, "determinism");
     await requireApprovalPolicy(admin, org, "determinism", chain.component.id, "organization");
 
-    // AUTHORING ORDER IS THE POINT. `matchPoliciesForTargets` yields matches in policy-row order, so
-    // these arrive as org -> containment_domain -> service -> assembly -> component. Sorted by their
-    // own serialization (which begins `{"tier":"…"`) they must come out
-    // assembly -> component -> containment_domain -> org -> service. The two orders share no prefix,
-    // so an unsorted array cannot pass for a sorted one here by luck.
+    // AUTHORING ORDER IS THE POINT. See docs/governance.md §15.
     await scanFloorPolicy(admin, org, "floor-org", org.orgId, { maxHigh: 9 });
     await scanFloorPolicy(admin, org, "floor-domain", chain.domain.id, { maxHigh: 8 });
     await scanFloorPolicy(admin, org, "floor-service", chain.service.id, { maxHigh: 7 });
@@ -527,13 +399,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     const TICKS = 9;
     await tick(org, TICKS);
 
-    // (a) ZERO NEW ROWS ON EVERY SUBSEQUENT PASS.
-    //
-    // Stated as a bound rather than a bare count for the reason
-    // `counting-cel-sandbox.ts`'s `partitionConditionErrors` documents and measured: a CEL wall-clock
-    // miss on a loaded box makes the production code CORRECTLY write a fail-closed condition-error
-    // row, and then an ordinary row again on the next tick. Both writes are right. On a healthy run
-    // `conditionErrors` is empty and this reads exactly "not one row was appended".
+    // (a) ZERO NEW ROWS ON EVERY SUBSEQUENT PASS. See docs/governance.md §16.
     const after = await gateDecisionRows(org, parked.changeObjectId);
     const { ordinary, conditionErrors } = partitionConditionErrors(after);
     const firstPassIds = new Set(firstPass.map((r) => r.id));

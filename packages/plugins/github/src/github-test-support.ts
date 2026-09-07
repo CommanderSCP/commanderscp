@@ -1,18 +1,4 @@
-/**
- * Test-only support code shared by `github.conformance.test.ts` and `index.test.ts`. NOT part of
- * this package's public surface (never re-exported from `index.ts`) — exists purely so this
- * package's own tests can fixture every HTTP call with `nock` and prove the GitHub App auth flow
- * (JWT -> installation token -> API call) works end to end, deterministically, without ever
- * touching a real network (CLAUDE.md: "Tests never touch the internet").
- *
- * IMPORTANT, EMPIRICALLY VERIFIED: `nock@13.5.6` (the version pinned in this repo's
- * `package.json` — NOT the `nock@beta` channel) does **not** intercept the global `fetch`
- * (undici) client. A quick spike (`fetch()` against a `nock`-mocked URL) proved the request
- * sailed straight past `nock` to the real network. `nock` only patches Node's `http`/`https`
- * core modules. So the `ScopedHttpClient` built here uses `node:https`/`node:http` directly
- * (never `fetch`) — that's the mechanism that actually makes `nock` fixtures effective; a
- * fetch-based client would silently defeat every fixture in this package's test suite.
- */
+/** Test-only support, not part of this package's surface. See docs/plugins.md §165. */
 import { generateKeyPairSync, createVerify, randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -26,21 +12,7 @@ import type {
 import { scopedHttpResponseTooLargeError } from "@scp/plugin-api";
 import type { GithubConfig } from "./index.js";
 
-// -------------------------------------------------------------------------------------------
-// Real (nock-interceptable) ScopedHttpClient
-// -------------------------------------------------------------------------------------------
-
-/**
- * Builds a `ScopedHttpClient` backed by Node's `http`/`https` core modules — see module doc for
- * why this, and not `fetch`, is what makes `nock` fixtures actually apply.
- *
- * Honors `ScopedHttpRequest.maxResponseBytes` the SAME way the production client
- * (`apps/server/src/plugin-host/subprocess-entry.ts`'s `scopedFetchHttpClient`) does — bound
- * checked DURING accumulation, in the `data` handler itself, not after `end` — so this package's
- * own bound tests exercise the real transport-level enforcement over a real (loopback) HTTP
- * connection, not a mock of it. `res.destroy()` on the incoming message aborts the read at the
- * socket the moment the bound trips, mirroring the production client's `reader.cancel()`.
- */
+/** An HTTP client backed by Node's core modules. See docs/plugins.md §166. */
 export function createRealHttpClient(): ScopedHttpClient {
   return {
     request(req: ScopedHttpRequest): Promise<ScopedHttpResponse> {
@@ -103,9 +75,7 @@ export function createRealHttpClient(): ScopedHttpClient {
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // Test RSA keypair (memoized — generated once per test-file process, not per test) + JWT check
-// -------------------------------------------------------------------------------------------
 
 let cachedKeyPair: { privateKeyPem: string; publicKeyPem: string } | undefined;
 
@@ -155,20 +125,7 @@ export function isValidTestAppJwt(headerValue: string | undefined, expectedAppId
   }
 }
 
-// -------------------------------------------------------------------------------------------
-// Config / ctx builders
-// -------------------------------------------------------------------------------------------
-
-/** Fresh appId/installationId by default (unless overridden) — index.ts's installation-token
- *  cache is keyed module-wide by `appId:installationId`, so reusing the SAME identity across
- *  tests in one file would silently serve a cached token and skip the token-exchange HTTP call
- *  the test wants to assert on. Callers that WANT to reuse a cached token across two calls (none
- *  of this package's tests currently do) can pass explicit `appId`/`installationId` overrides.
- *
- *  `defaultWorkflowId` uses `"defaultWorkflowId" in overrides` (property-presence), NOT `??` —
- *  a caller that explicitly passes `{ defaultWorkflowId: undefined }` (to test the "no workflowId
- *  at all" error path) means it, and `??` would silently paper over that with the "ci.yml"
- *  fallback, defeating the whole point of the override. */
+/** Fresh appId/installationId by default (unless overridden). See docs/plugins.md §167. */
 export function buildGithubConfig(overrides: Partial<GithubConfig> = {}): GithubConfig {
   const unique = randomUUID().slice(0, 8);
   return {
@@ -208,23 +165,13 @@ export function buildTestCtx(
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// Nock fixture helpers
-// -------------------------------------------------------------------------------------------
-
 /** The deterministic installation token this helper's token-exchange fixture always issues for a
  *  given config, so callers can assert later API calls carry EXACTLY this token. */
 export function installationTokenFor(config: GithubConfig): string {
   return `installation-token-${config.installationId}`;
 }
 
-/** Nock-fixtures `POST {apiBaseUrl}/app/installations/{installationId}/access_tokens`, asserting
- *  the request carries a validly-signed App JWT (see `isValidTestAppJwt`) — the concrete proof
- *  that `signAppJwt`/`getInstallationToken` in index.ts are exercised for real. Returns the scope
- *  so callers that want strict single-call assertions can `.done()`/check `isDone()` themselves;
- *  `persist` (default false) allows repeat matches for suites that trigger multiple times against
- *  the SAME identity (e.g. the conformance suite, which calls `factory()` fresh per `it()` but
- *  reuses one fixed config for the whole file). */
+/** Fixtures the installation access-token exchange. See docs/plugins.md §168. */
 export function nockInstallationToken(
   config: GithubConfig,
   opts: { persist?: boolean; expiresInMs?: number } = {}

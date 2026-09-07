@@ -3,13 +3,7 @@ import type { ArtifactRef, PromotionBundle } from "@scp/schemas";
 import { computeBundleChecksum } from "@scp/schemas/federation-journal";
 import { promotionChecksumPayload } from "./promotion-repo.js";
 
-/**
- * M17.3 (E3) CHECKSUM-INVARIANCE unit test — the crux of the EXPAND phase: the TYPED `artifacts[]`
- * set is EXCLUDED from the Ed25519 checksum, so adding it to a bundle must not change the checksum
- * by a single byte. This pins that the checksum payload is exactly
- * `{header, change, controlOutcomes, approvals, artifactDigests}` and never `artifacts`, and that
- * `artifactDigests` (which IS in the payload) stays fully sensitive to tampering (fail-closed).
- */
+/** M17.3 (E3) CHECKSUM-INVARIANCE unit test. See docs/federation.md §385. */
 
 const header: PromotionBundle["header"] = {
   formatVersion: 1,

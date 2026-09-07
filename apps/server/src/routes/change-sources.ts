@@ -42,30 +42,8 @@ import { resolveWebhookSecret, verifierForSourceKind } from "../coordination/web
 import { putSecret } from "../secrets/secrets-repo.js";
 import { and, eq } from "drizzle-orm";
 
-/**
- * Change sources: webhook ingress (persist-then-process, DESIGN.md §8) + `source_mappings` CRUD
- * (DESIGN §9.2 correlation). BUILD_AND_TEST.md §8 M3/M7.
- *
- * **Authentication:** every call still goes through `requireAuth` (Bearer/PAT) — M3's "a
- * source-specific adapter forwards actual provider webhooks here with a configured PAT" posture
- * (a real GitHub App / TFC webhook sender carries no PAT of its own) is UNCHANGED in this
- * milestone; direct, PAT-free provider-to-SCP webhook delivery is documented follow-up work, not
- * this milestone's scope. What M7 DOES add: real, fail-closed HMAC SIGNATURE verification
- * (`coordination/webhook-signature.ts`) layered ON TOP of that PAT auth, for any org+sourceKind
- * pair that has configured a webhook secret (`PUT .../webhook-secret` below). A configured secret
- * makes verification MANDATORY: a missing/invalid signature is REJECTED (401) and the delivery is
- * never persisted at all — no half-measure "persist as unverified and hope". An org/sourceKind
- * with NO secret configured keeps M3's original behavior (`signature_verified: false`, honestly
- * reflecting that no verification happened, never silently defaulted to `true`).
- */
-/**
- * MAJOR #5 — the replay/redelivery dedupe key for one webhook delivery. Provider delivery
- * identifiers (stable across a redelivery of the SAME event, distinct for genuinely different
- * events) are strongly preferred; the raw-body hash is the fallback for sources that send no such
- * header (it dedupes byte-identical payloads, which is the best available signal absent a delivery
- * id). Hashing the RAW bytes (`request.rawBody`, captured pre-JSON-parse by app.ts) — not a
- * re-serialized `JSON.stringify(body)` — keeps the fallback stable against key-order/whitespace.
- */
+/** Change sources: webhook ingress. See docs/routes.md §31. */
+/** The replay and redelivery dedupe key for one delivery. See docs/routes.md §32. */
 function computeDedupeKey(
   headers: Record<string, unknown>,
   rawBody: Buffer | undefined,
@@ -79,13 +57,7 @@ function computeDedupeKey(
   return `payload-sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-/**
- * Persist ONE source event (persist-then-process), shared by the raw `/webhook` ingress and the
- * typed `/report` ingress so the dedupe + conflict-resolution lives in exactly one place. The unique
- * index on (org_id, source_kind, dedupe_key) makes a redelivery of the same key a no-op that returns
- * the FIRST event's id, so a replay never creates a second Change (MAJOR #5). Both callers do their
- * own auth/authorization BEFORE this; this function only writes.
- */
+/** Persist ONE source event. See docs/routes.md §33. */
 async function persistSourceEvent(
   tx: TenantTx,
   args: {
@@ -137,27 +109,7 @@ async function persistSourceEvent(
   return existing[0]?.id ?? id;
 }
 
-/**
- * THE WRITE BAR FOR THE THREE `source_mappings` MUTATION DOORS below (pause switch, scope label,
- * delete-by-tuple): `object:write` at the ORG ROOT **or** at the mapping's own COMPONENT.
- *
- * ONE definition of that disjunction serves every door 2.5a re-scoped —
- * {@link checkAtOrgRootOrScopes} in `authz/org-root-arm.ts`, which is where the argument for the
- * arm and for its ORDER lives. Restated here only in the part that is specific to this family:
- *
- * THE ORG-ROOT ARM IS LOAD-BEARING FOR EXACTLY THE ROWS THE DELETE DOOR EXISTS FOR. A component
- * merge (M12 P5d, `docs/proposals/organize-after.md` §2.4/§4 — implemented in
- * `coordination/component-merge-repo.ts`, whose header records that the general graph rewrite,
- * `source_mappings` included, is deliberately out of scope) soft-deletes the loser component and
- * leaves its mappings pointing at it. `deleteObject`'s orphan guard counts children with
- * `isNull(objects.deletedAt)` (`graph/objects-repo.ts`), so the loser's containment parents, having
- * no LIVE children left, are then perfectly deletable. A couple of ordinary API calls later the
- * stranded mapping's component has an upward chain that dead-ends at a tombstone, `scope_expand`
- * collapses to the seed alone, and a component-only check would lock the org-root Owner out of the
- * one door that can clean it up.
- *
- * The 403 names both arms, so an operator reading it can tell which authority they are missing.
- */
+/** The write bar for the three mapping mutation doors. See docs/routes.md §34. */
 async function assertSourceMappingWritable(
   tx: TenantTx,
   input: { orgId: string; subjectObjectId: string; componentObjectId: string }
@@ -234,18 +186,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           signatureVerified = true;
         }
 
-        // ADR-0028 — the SECOND door to a materialised `depends_on` edge, and the one a census by
-        // route name misses: `webhook-processor.ts`'s `genericHint` lifts a top-level
-        // `stageDependencies` straight off this raw body and threads it into `proposeChange`. The
-        // processor itself runs as SYSTEM_ACTOR_ID, so the check cannot live there and be anything
-        // other than vacuous — the reporting PRINCIPAL only exists HERE. Checked against exactly
-        // what the processor will lift (same `extractHint`, same headers, same payload), so the two
-        // cannot drift. The edge's `from` endpoint is deliberately NOT passed: it is chosen at
-        // correlation time from an operator-configured `source_mappings` row, not by this caller.
-        //
-        // This is not vacuous just because `object:write` at the org root is already required above:
-        // that is a DIFFERENT permission, and a custom role granting `object:write` without
-        // `relationship:write` would otherwise mint edges here that `POST /relationships` refuses.
+        // The second door to a materialised dependency edge. See docs/routes.md §35.
         await assertStageDependenciesWithinAuthority(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
@@ -253,12 +194,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
             .stageDependencies
         });
 
-        // MAJOR #5 — dedupe redeliveries/replays. Prefer the provider's own delivery identifier
-        // (GitHub `X-GitHub-Delivery`, or a generic `X-SCP-Delivery` an adapter can set), which is
-        // stable across a redelivery of the SAME event; fall back to a hash of the raw body when no
-        // delivery header exists. The unique index on (org_id, source_kind, dedupe_key) makes a
-        // second delivery of the same key a no-op (returns the FIRST event's id), so a replayed —
-        // even validly-signed — webhook never creates a second Change / fires a second real trigger.
+        // MAJOR #5 — dedupe redeliveries/replays. See docs/routes.md §36.
         const dedupeKey = computeDedupeKey(request.headers, request.rawBody, request.body);
         return persistSourceEvent(tx, {
           orgId: auth.orgId,
@@ -274,22 +210,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     }
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Typed first-party report ingress (DESIGN §12 Mode 1). `scp change-source report <sourceKind>`
-  // — a one-line CI step that reports a plan/apply result — POSTs a TYPED body here instead of the
-  // raw `/webhook` shape. Two reasons this is its own route, not the webhook with a schema:
-  //   1. Contract (charter principle 3): the webhook body is `z.record` by necessity (it accepts
-  //      arbitrary provider payloads), so it cannot carry a typed SDK. A report is first-party and
-  //      CAN, so the SDK/CLI get a real generated contract instead of a hand-cast `Record`.
-  //   2. Auth model: the webhook does HMAC verification when the org+sourceKind has a secret
-  //      configured — which would REJECT a report (it carries no HMAC signature), so an org that set
-  //      a `terraform` webhook secret could not `scp change-source report terraform` at all. A report
-  //      is authenticated by its PAT (`requireAuth`), the same trusted-first-party stance
-  //      `observe.ts` takes, so it skips HMAC and sets `signatureVerified: true`.
-  // Same persist-then-process path otherwise: it writes a `change_source_events` row that the next
-  // reconcile tick correlates (repo/path/correlationKey are read from the top-level payload by
-  // `webhook-processor.ts`'s `genericHint`).
-  // -----------------------------------------------------------------------------------------
+  // Typed first-party report ingress. See docs/routes.md §37.
   typed.route({
     method: "POST",
     url: "/api/v1/change-sources/:sourceKind/report",
@@ -350,12 +271,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     }
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Webhook signing secret configuration (M7) — an org points its GitHub App / TFC / Atlantis /
-  // custom-adapter webhook config at whatever HMAC secret it registers here; the secret's
-  // PLAINTEXT is encrypted at rest (secrets/crypto.ts) and referenced by key from
-  // `change_source_webhook_secrets`, never stored twice.
-  // -----------------------------------------------------------------------------------------
+  // Webhook signing secret configuration (M7). See docs/routes.md §38.
 
   typed.route({
     method: "PUT",
@@ -379,11 +295,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // `secret:write` at the org root, NOT `object:write` — role-model.md §1.3d, drizzle/0099.
-        // The third credential door, and the one whose blast radius is least obvious: this secret
-        // is what `POST /change-sources/{kind}/webhook` verifies inbound signatures against, so
-        // whoever SETS it can thereafter FORGE signed source events into the estate. The scope
-        // stays the org root (§8.6's no-sweep list); only the permission changes.
+        // `secret:write` at the org root, NOT `object:write`. See docs/routes.md §39.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -475,14 +387,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     }
   });
 
-  /**
-   * PATCH a source_mapping's ONE mutable field — the pause switch (migration 0063, owner ask
-   * 2026-08-14: "each [source] should have its own arrow so I can enable and disable each as
-   * needed"). Addressed by id, unlike POST/DELETE above which use the identity tuple: this is a
-   * genuine in-place update of one specific row, so an id is both correct and necessary — the
-   * identity tuple can be shared by several byte-identical rows, and toggling one must never touch
-   * its siblings. Same auth/tenant-tx idiom as the routes above.
-   */
+  /** PATCH a source_mapping's ONE mutable field. See docs/routes.md §40. */
   typed.route({
     method: "PATCH",
     url: "/api/v1/change-sources/:sourceKind/mappings/:id",
@@ -508,15 +413,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const mapping = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // READ THE ROW, THEN BAR AT ITS COMPONENT (or the org root — `assertSourceMappingWritable`
-        // is a disjunction, and its docblock is where the reasoning lives). A source mapping has no
-        // containment scope of its own; the authority that governs it is authority over the
-        // component it binds a repo/path pattern to, which is only knowable once the row is loaded.
-        // Reading first is also what keeps an unknown id answering 404 (`getSourceMapping` throws
-        // it) instead of the 403 that scoping at an id naming nothing would produce for every
-        // caller, org-root Owner included. `component_object_id` is immutable (the setter below
-        // writes `enabled`/`disabled_until` only), so there is nothing for the second statement to
-        // have moved out from under.
+        // READ THE ROW, THEN BAR AT ITS COMPONENT. See docs/routes.md §41.
         const existing = await getSourceMapping(
           tx,
           auth.orgId,
@@ -541,13 +438,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     }
   });
 
-  /**
-   * PATCH a source_mapping's declared SCOPE (migration 0066, §10.6) — a SIBLING of the pause switch
-   * above rather than a field on it, so `setSourceMappingEnabled`'s contract stays byte-identical
-   * and a caller labelling a mapping never has to restate (and never clobbers) its pause state. Same
-   * by-id addressing (one row, never its byte-identical siblings), same auth/tenant-tx idiom. A
-   * label only: nothing here changes what a push correlates to.
-   */
+  /** PATCH a source_mapping's declared SCOPE. See docs/routes.md §42. */
   typed.route({
     method: "PATCH",
     url: "/api/v1/change-sources/:sourceKind/mappings/:id/scope",
@@ -599,21 +490,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     }
   });
 
-  /**
-   * DELETE a source_mapping. The first operator-facing delete this table has had — before it, the
-   * only way to remove a mapping was an IaC apply's prune, so a mapping created by
-   * `discovery accept` or by hand could never be taken back through the API.
-   *
-   * That gap has a cost beyond inconvenience. A component merge (M12 P5d,
-   * `docs/proposals/organize-after.md` §2.4) soft-deletes the absorbed component and STRANDS its
-   * mappings; they are neutralised at read time (they no longer match a
-   * dead component) but they stay in the table, keep appearing in `GET /mappings`, and cannot be
-   * cleaned. On the live homelab that is 5 rows from three merges.
-   *
-   * Matches the full IDENTITY TUPLE rather than an id — see `DeleteSourceMappingRequestSchema` for
-   * why (duplicates exist; deleting one leaves the survivor correlating). Reports the row COUNT so
-   * a no-op is visible instead of looking like success.
-   */
+  /** DELETE a source_mapping. See docs/routes.md §43. */
   typed.route({
     method: "DELETE",
     url: "/api/v1/change-sources/:sourceKind/mappings",
@@ -638,23 +515,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const deleted = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // Resolved with `includeDeleted`: the mappings most in need of deleting belong to a
-        // SOFT-DELETED component (a merged-away pair half), and refusing to resolve it would make
-        // exactly those rows undeletable — the gap this route exists to close.
-        //
-        // RESOLVED BEFORE THE BAR, AND THE BAR IS SCOPED AT IT. This door addresses rows by the
-        // identity tuple, whose component is the object that carries the authority over every row
-        // the tuple can reach — so that component is one arm of the check. Resolving first also
-        // keeps an unresolvable `component` a 404 rather than the 403 that scoping at a
-        // caller-supplied string would produce for everyone.
-        //
-        // THE ORG-ROOT ARM IS LOAD-BEARING PRECISELY HERE, and the reason is subtle enough that it
-        // is written out in full in `assertSourceMappingWritable`'s docblock: a soft-deleted
-        // component still SEEDS the scope walk (the seed row is unfiltered), but `scopeExpandCte`
-        // joins each ANCESTOR `deleted_at IS NULL`, so once the merge loser's domain has itself
-        // been deleted — which the orphan guard permits, because its only children are already
-        // tombstones — the walk from the component reaches nothing, and a component-only check
-        // would refuse the org-root Owner the exact rows this route was built to remove.
+        // Resolved with `includeDeleted`. See docs/routes.md §44.
         const component = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.component, {
           includeDeleted: true
         });

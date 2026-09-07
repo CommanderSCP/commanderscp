@@ -1,47 +1,4 @@
-/**
- * M16.1 — THE UNIVERSAL BOUNDARY SEGMENT read model (ADR-0011; vocabulary fixed by ADR-0021 D6).
- *
- * A boundary SEGMENT composed of two boundary PHASES — *transferred* and *validated*. It is not a
- * "stage" (a deployment PLACE) and not a "wave" (the set of stages advanced at once). It DRIVES
- * NOTHING: this module only reads two ledgers this instance already writes and reports what it
- * genuinely observed, plus an explicit unknown for everything it did not.
- *
- * ## The two inputs
- *
- * 1. TRANSFER — `bundle_transfers`, joined to this change by the bundle checksum stamped on its
- *    `sourceRef` (M16.1 I1, `federation/boundary-bundle-ref.ts`; the ledger itself has no change
- *    column).
- * 2. VALIDATE — this instance's own M17.4(b) pre-deploy artifact-verify Decisions for the change
- *    (`pre-deploy-artifact-verify`). Since M16.1 I2 a PASSING verify persists an `allow` Decision,
- *    which is what makes `verified` truthfully renderable at all.
- *
- * ## The three honesty rules this file exists to enforce
- *
- * **R1 — an exporting instance can only ever say "exported".** `bundle_transfers` is INSERT-only:
- * no production path `update`s a transfer row (the only `update(bundleTransfers)` in the tree is a
- * test fixture backdating `confirmed_at` in `service-board-staleness.integration.test.ts`), and
- * every `submitted`/`confirmed` row is written by a *later hop's own database* (a retrans's onward
- * drop writes `submitted`; a receiver's import writes `confirmed`). So in the COMMANDER's own
- * database an export row is and stays `created`. Rendering "submitted" or "confirmed" from the
- * exporting side would be fabrication; the handoff is declared unknown instead
- * (`transfer.handoff`).
- *
- * **R2 — the exporting instance has NO data path to the receiver's validation outcome.** Federation
- * journal entry kinds are graph/lifecycle-shaped and none is verification-shaped; `change_status`
- * payloads carry lifecycle + the change's opaque `sourceRef` (`changes-repo.ts`'s propose-time
- * payload passes `sourceRef` verbatim — the leak this branch's own B6 note documents), and no field
- * of either is verification-shaped; and imported `audit_segment` entries are discarded. Adding a
- * verification-outcome journal kind was REJECTED (it is a bundle-format change). The commander
- * therefore reports `not_reported` — "outcome not reported back" — and names `validate.state` in
- * `unknownFields`. {@link buildBoundarySegment} makes `verified` STRUCTURALLY UNREACHABLE on that
- * side rather than merely unlikely.
- *
- * **R3 — silence is never a pass.** A received change with no verdict is `not_yet_verified`, and a
- * change that never crossed a boundary yields `null` (no segment) rather than an empty green one.
- * In particular a metadata-only promotion records no verdict by design (the pre-deploy gate's
- * vacuous exits write nothing — see `pre-deploy-gate.ts`), and that absence surfaces here as
- * `not_yet_verified`, never as `verified`.
- */
+/** M16.1 — THE UNIVERSAL BOUNDARY SEGMENT read model. See docs/coordination.md §49. */
 import type {
   BoundarySegment,
   BoundaryTransferHop,
@@ -75,25 +32,13 @@ function changeObjectIdOf(change: BoundarySegmentChange): string {
   return id;
 }
 
-/** How many artifacts the verdict's AUTHORIZED SET held, read defensively out of the Decision's
- *  opaque `inputContext`. `null` — never 0 — when the shape is not what we expect, so a client can
- *  tell "no count available" from "a verdict over zero artifacts".
- *
- *  Note what this is NOT: on a `block` Decision the authorized set is the set the gate was ASKED to
- *  check, and it still contains the artifacts that failed. Hence the name, and hence the caller
- *  reports it only on `verified` — see the `refused` branch below. */
+/** How many artifacts the authorized set held. See docs/coordination.md §50. */
 function authorizedArtifactCount(decision: Decision): number | null {
   const raw = decision.inputContext.authorizedArtifacts;
   return Array.isArray(raw) ? raw.length : null;
 }
 
-/**
- * The boundary segment for one change, or `null` when the change never crossed a domain boundary
- * (a domain-local change — ADR-0013's exemption; the proposal's "domain-local changes have a
- * shorter pipeline"). `null` means ABSENT, deliberately not a fabricated empty pass.
- *
- * Reads only; writes nothing; drives nothing.
- */
+/** The boundary segment, or null if no boundary was crossed. See docs/coordination.md §51. */
 export async function buildBoundarySegment(
   tx: TenantTx,
   orgId: string,
@@ -112,9 +57,6 @@ export async function buildBoundarySegment(
     listDecisionsForSubject(tx, orgId, changeObjectId)
   ]);
 
-  // ---------------------------------------------------------------------------------------------
-  // Phase 1 — TRANSFERRED.
-  // ---------------------------------------------------------------------------------------------
   const hops: BoundaryTransferHop[] = transfers.map((t) => ({
     direction: t.direction,
     status: t.status,
@@ -141,9 +83,6 @@ export async function buildBoundarySegment(
   // that also imported it, whose ONWARD hop is just as unobservable as a commander's.
   if (exportHops.length > 0) unknownFields.push(TRANSFER_HANDOFF_UNKNOWN);
 
-  // ---------------------------------------------------------------------------------------------
-  // Phase 2 — VALIDATED.
-  // ---------------------------------------------------------------------------------------------
   let validate: BoundaryValidatePhase;
   if (!isReceivingSide) {
     // R2 — STRUCTURAL. This branch is taken for every change this instance did not receive from a
@@ -179,13 +118,7 @@ export async function buildBoundarySegment(
         state: verified ? "verified" : "refused",
         decisionId: latest.id,
         observedAt: latest.createdAt,
-        // ONLY on a pass. The count comes from `inputContext.authorizedArtifacts` — the set the
-        // gate was ASKED to check — and on a `block` Decision that set still contains the artifacts
-        // that failed (absent bytes, bad signature). Reporting it on a refusal states a number of
-        // artifacts next to a refusal, which reads as "n verified anyway" while nothing may have
-        // verified at all. On `verified` the two sets coincide by construction: the gate returns
-        // `ok` only when EVERY authorized artifact passed. A refusal's artifact story is the block
-        // Decision's `failing` list, reachable via `decisionId`.
+        // ONLY on a pass. See docs/coordination.md §52.
         authorizedArtifactCount: verified ? authorizedArtifactCount(latest) : null
       };
     }

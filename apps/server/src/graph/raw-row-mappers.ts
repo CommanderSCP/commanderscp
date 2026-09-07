@@ -1,14 +1,6 @@
 import type { GraphObject } from "@scp/schemas";
 
-/**
- * `tx.execute(sql\`...\`)` (used by the recursive-CTE named queries and traversal — drizzle's
- * query builder can't express those) returns *raw* pg driver rows: literal snake_case column
- * names, and `bigint` columns (`revision`, `version`) come back as strings (node-postgres's
- * default int8 handling, to avoid precision loss) rather than the numbers drizzle's query
- * builder would produce via its `bigint({ mode: 'number' })` column type. `objects-repo.ts`'s
- * `toGraphObject` assumes the query-builder shape, so raw-SQL call sites map through here
- * instead — same public `GraphObject` shape, correct field names and types either way.
- */
+/** Raw `execute` returns untyped rows, so map them here. See docs/graph.md §161. */
 export type RawObjectRow = {
   id: string;
   org_id: string;
@@ -21,11 +13,7 @@ export type RawObjectRow = {
   origin_domain_id: string;
   revision: string | number;
   provenance: string | null;
-  /** M20.1 (ADR-0031). Plain `boolean` with no string variant, unlike the bigints above: pg returns
-   *  bool as a JS boolean, and the column is NOT NULL so every `SELECT *` row carries one. All four
-   *  raw call sites (`named-queries.ts` ×3, `traverse.ts` ×1) select `*`/`o.*`, so it arrives
-   *  without touching their SQL — but a future raw query that enumerates columns must include it,
-   *  or this mapper would emit `undefined` for a field the wire schema requires. */
+  /** A plain boolean, unlike the bigints above. See docs/graph.md §162. */
   domain_local: boolean;
   /** M20.7 (ADR-0031 §6c). Both nullable and written together; all four raw call sites `SELECT *`. */
   domain_local_inherited_from: string | null;

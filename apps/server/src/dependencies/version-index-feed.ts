@@ -6,37 +6,7 @@ import { verifyBlobDetached } from "@scp/cosign";
 import type { DependencyIndexEcosystem } from "@scp/plugin-api";
 import { boundText } from "@scp/runner-launcher";
 
-/**
- * M21.4 — THE AIR-GAP VERSION FEED (ADR-0032 §7, charter principle 5).
- *
- * A disconnected commander cannot reach `proxy.golang.org`, and it must not pretend otherwise. The
- * ONLY external-feed pattern this platform has ever shipped is the Trivy scanner DB
- * (`governance/scan-db.ts`, migrations 0035/0036), and this module copies its shape deliberately
- * rather than inventing a second one:
- *
- *  | Trivy DB (shipped)                       | dependency version feed (here)                  |
- *  |------------------------------------------|-------------------------------------------------|
- *  | operator-invoked connected refresh        | {@link buildDependencyIndexFeed} at the connected side |
- *  | cosign detached-signature operator-load   | {@link loadDependencyIndexFeedBlob}             |
- *  | digest binding over the signature         | `expectedDigest`, same defence in depth         |
- *  | atomic install, never a partial cache     | staging file + `rename`                         |
- *  | fail-closed staleness policy              | {@link readDependencyIndexFeed}'s `hard` class  |
- *  | no cache ⇒ no scan ⇒ E6 refuses           | no feed ⇒ `unavailable`, never "no new version" |
- *
- * WHY FAIL-CLOSED STALENESS IS THE LOAD-BEARING PART. A stale feed does not merely miss a bump: it
- * ASSERTS a head that has since moved, and every subscriber then looks up to date against a version
- * that is months old. That is the "wrong version is worse than no version" rule (ADR-0032 §7) in its
- * air-gap form, so a feed past the operator's hard bound is REFUSED, not used with a warning.
- *
- * WHAT THIS IS NOT. It is not a mirror, not a cache of a live index, and not something SCP fetches.
- * The bytes are produced at the connected side, signed there, carried across the CDS by an operator,
- * and loaded here — the same walk the scanner DB blob makes, for the same reason: an air-gapped
- * domain has no other honest way to learn a fact about the outside world.
- *
- * SCOPE, STATED RATHER THAN DISCOVERED: this feed is INSTANCE-scoped operator infrastructure on
- * disk, exactly as the Trivy cache is. It is not a graph object, does not federate, and carries no
- * org data — it is a list of public version strings.
- */
+/** M21.4 — THE AIR-GAP VERSION FEED. See docs/dependencies.md §403. */
 
 /** One coordinate's published versions, as the connected side observed them. */
 export interface DependencyIndexFeedEntry {
@@ -99,15 +69,7 @@ export type FeedRead =
       hardMaxAgeHours: number;
     };
 
-/**
- * Parse and VALIDATE a feed document. Throws on anything it cannot fully understand.
- *
- * Strict on purpose, and this is the same argument `@scp/dependency-manifests`'s parsers make for
- * themselves: "this feed lists no versions for X" and "I could not read this feed" produce identical
- * downstream behaviour (no bump) and mean opposite things. A tolerant parser that dropped malformed
- * entries would turn a corrupted transfer into a silently smaller feed, and the estate would look
- * up to date on every coordinate that fell out.
- */
+/** Parse and VALIDATE a feed document. See docs/dependencies.md §404. */
 export function parseDependencyIndexFeed(text: string): DependencyIndexFeedDocument {
   let doc: unknown;
   try {
@@ -140,15 +102,7 @@ export function parseDependencyIndexFeed(text: string): DependencyIndexFeedDocum
       !Array.isArray(entry.versions) ||
       entry.versions.some((v) => typeof v !== "string")
     ) {
-      // `boundText`, NOT `.slice(0, 120)` (HIGH class, M23.0 verification pass 8). This message
-      // reaches a DATABASE ROW: `readDependencyIndexFeed` turns the throw into
-      // `FeedRead.detail` -> `unavailableOutcome(...).detail` -> `decisionFor`'s `reasonTree.detail`
-      // -> a `Decision`'s jsonb. A slice at a UTF-16 CODE-UNIT offset can land inside a surrogate
-      // pair, and `jsonb` refuses an ill-formed string. `JSON.stringify` escapes lone surrogates
-      // and NUL to ASCII, so the ONLY way through is a well-formed astral pair straddling the cut —
-      // and that is reachable: measured, a `coordinate` of 86 characters followed by an emoji makes
-      // `.slice(0, 120)` ill-formed. A malformed feed entry would then take the poll's Decision
-      // with it instead of being reported.
+      // `boundText`, NOT `.slice(0, 120)`. See docs/dependencies.md §405.
       throw new Error(
         `dependency version feed carries a malformed entry (${boundText(JSON.stringify(raw), 120, 0)})`
       );
@@ -197,18 +151,7 @@ export function readDependencyIndexFeed(
   return { status: "present", document, ageHours, staleness, softMaxAgeHours, hardMaxAgeHours };
 }
 
-/**
- * The versions this feed carries for one coordinate, or `null` when it carries the coordinate not
- * at all.
- *
- * `null` VERSUS `[]` IS THE WHOLE POINT, and it is the same distinction `ManifestParseError` draws:
- * an empty array is "the connected side looked and this package has published nothing", while `null`
- * is "nobody looked" — which the caller reports as unavailable rather than as up-to-date.
- *
- * Comparison is VERBATIM (`===`), never normalised: `graph/urn.ts`'s slug would collapse
- * `@acme/lib`, `acme/lib` and `acme-lib` into one key, so a normalising lookup could answer one
- * package's question with another package's versions.
- */
+/** The versions this feed carries for one coordinate. See docs/dependencies.md §406. */
 export function lookupFeedVersions(
   document: DependencyIndexFeedDocument,
   ecosystem: DependencyIndexEcosystem,
@@ -220,14 +163,7 @@ export function lookupFeedVersions(
   return null;
 }
 
-/**
- * Serialize a feed at the CONNECTED side — the bytes an operator then `cosign sign-blob`s and
- * carries across the CDS.
- *
- * Keys are emitted in a fixed order and entries are sorted on their natural key, so re-generating a
- * feed over an unchanged estate produces BYTE-IDENTICAL output. That is not cosmetic: it lets an
- * operator diff two feeds, and it means a re-signed feed with no changes has the same digest.
- */
+/** Serialize a feed at the CONNECTED side. See docs/dependencies.md §407. */
 export function buildDependencyIndexFeed(
   entries: readonly DependencyIndexFeedEntry[],
   generatedAt: Date = new Date()
@@ -270,16 +206,7 @@ function normalizeSha256(raw: string): string | null {
   return /^[0-9a-f]{64}$/.test(hex) ? `sha256:${hex}` : null;
 }
 
-/**
- * AIR-GAP OPERATOR-LOAD — verify a cosign-signed feed, then install it. `loadScanDbBlob`'s shape,
- * clause for clause.
- *
- * ORDER IS THE SECURITY PROPERTY: digest cross-check, then signature verification, then PARSE, and
- * only then the atomic install. Nothing is written until all three pass, so a tampered, wrongly
- * signed, or malformed feed leaves the previously installed one untouched — a failed load must never
- * be able to empty the feed, because an empty feed would make every coordinate look unlisted while
- * looking like a successful operation.
- */
+/** Air-gap operator load: verify a signed feed, then install. See docs/dependencies.md §408. */
 export async function loadDependencyIndexFeedBlob(
   input: LoadDependencyIndexFeedInput
 ): Promise<DependencyIndexFeedDocument> {

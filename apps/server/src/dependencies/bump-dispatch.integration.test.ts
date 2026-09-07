@@ -61,61 +61,7 @@ import { DEPENDENCY_DELEGATION_DECISION_KIND } from "./delegation-detection.js";
 import { BUMP_SOURCE_KIND } from "./bump-actuator.js";
 import { readBumpAuthorship } from "./bump-authorship-repo.js";
 
-/**
- * M21.5 — THE BUMP IS ACTUALLY DISPATCHED, THROUGH THE REAL PATH (ADR-0032 §8/§9).
- *
- * ================================================================================================
- * WHY THIS FILE EXISTS, AND WHY THE REST OF M21.5's SUITE COULD NOT CATCH WHAT IT CATCHES
- * ================================================================================================
- * `recordBumpChange`, `resolveEffectiveDelivery` and `buildBumpIntentParameters` were built, tested
- * and correct, and NOTHING constructed a `managed-dep` `TriggerIntent`: no job, no route, no loop.
- * A suite that drives a function proves the function and says nothing about whether anything calls
- * it — which is how the same failure landed four times in M21. So every test below enters through
- * the PRODUCTION SEAM and never through the function under test:
- *
- *   recordDependencyLineHead (the ONE head write door)
- *     -> an `scp.dependency.line_head_advanced` OUTBOX row, in the head write's own transaction
- *     -> the domain-event job shape the outbox relay actually sends
- *     -> advancedLineHeadRouter (registered WITH pg-boss, because `boss.work()` is a competing
- *        consumer and a second worker on `domain-events` would steal M21.4's events)
- *     -> the `dependency-bump` queue
- *     -> startBumpDispatchLoop's worker
- *     -> a bump change, and a `trigger()` on the `managed-dep` plugin instance.
- *
- * DELETE ANY LINK OF THAT CHAIN AND THESE TESTS FAIL. Removing the outbox emit fails the first
- * block; removing the router registration or the loop fails the second; removing the dispatch fails
- * the trigger assertions.
- *
- * ================================================================================================
- * AND THE SAME DISCIPLINE FOR THE AUTO-MERGE LINK (block 2b, ADR-0032 §8c)
- * ================================================================================================
- * `resolveEffectiveDelivery` was the FIFTH instance of the same failure: correct, tested, and
- * unreachable — no control ever ran on a bump change (they sit at `proposed`, and governance prewarm
- * only sweeps `validating`), nothing re-evaluated a bump after its pull request opened, and there
- * was no merge anywhere in the tree. So block 2b enters through the webhook ingress too:
- *
- *   a raw github `push` / `workflow_run` row in `change_source_events`
- *     -> the REAL `processChangeSourceEvents` -> `matchAuthoredBumpChange` (branch route, then the
- *        HEAD-COMMIT route a ref-less CI event needs)
- *     -> an `scp.dependency.bump_observed` OUTBOX row, in the ingress transaction
- *     -> observedBumpRouter -> the `dependency-bump-gate` queue -> startBumpGateLoop's worker
- *     -> `prewarmGovernanceForChange` (the EXISTING gate) -> a real `control_runs` row
- *     -> `resolveEffectiveDelivery` -> a `managed-dep` MERGE intent.
- *
- * Nothing in that block calls `runBumpGateJob`, `prewarmGovernanceForChange` or
- * `resolveEffectiveDelivery` directly.
- *
- * ================================================================================================
- * AND THE DELEGATION REFUSAL IS PROVEN WITH A REAL PROBE, NOT A PLANTED VERDICT
- * ================================================================================================
- * `bump-provenance.integration.test.ts` plants the `dependency_delegation` Decision with
- * `insertDecision` — correct for testing the READERS, and it would pass unchanged with no writer
- * anywhere in the tree, which is exactly the state M21.5 was in. Here the verdict is written by the
- * dispatch job READING A `renovate.json` OUT OF THE REPOSITORY through the plugin host's
- * `readFileAtRef` client, and the enablement refusal is then driven through the AUTHORING CHOKE
- * POINT — the typed `/policies` route AND a free-form-`typeId` door — because
- * `subscription-authoring-guard.ts`'s header measured that the route was never the boundary.
- */
+/** The bump is actually dispatched, through the real path. See docs/dependencies.md §29. */
 /** M25.8 — the operator credential the PLATFORM-tier freeze fixture authenticates with. The org
  *  Administrator token every other fixture in this file uses cannot write that surface at all,
  *  which is the tier boundary M25.3 built and this file now depends on. */
@@ -131,29 +77,14 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
 
   /** Every `trigger()` that reached the plugin host, with the instance it was addressed to. */
   const triggers: { instanceId: string; intent: TriggerIntent }[] = [];
-  /** Every `evaluate()` the governance gate performed, with the CHANGE it was about and the commit
-   *  it was asked about — which is the field the whole auto-merge grant turns on.
-   *
-   *  THE CHANGE ID IS RECORDED, and that is not cosmetic. Every test in the auto-merge block uses
-   *  the same `BUMP_COMMIT` constant, and these accumulators were module-level and never reset — so
-   *  `expect(controlEvaluations.map(e => e.commitSha)).toContain(BUMP_COMMIT)`, written to prove a
-   *  control ran for THIS change, was satisfied forever by the first test that ran one. It could not
-   *  fail. The `beforeEach` below resets them and the assertions now name the change. */
+  /** Every gate evaluation, with the change it was about. See docs/dependencies.md §30. */
   const controlEvaluations: { instanceId: string; changeId: unknown; commitSha: unknown }[] = [];
   /** The pull request the fake provider reports the authoring run opened, per change — the number
    *  AND the URL `status().stateRef` carries back and the server records. `undefined` for a change
    *  the fixture wants to leave with no recorded pull request. */
   const openedPullRequests = new Map<string, { number: number; url: string }>();
   let nextPullRequestNumber = 100;
-  /**
-   * The web URL the fixture PROVIDER hands back for a pull request it opened.
-   *
-   * DELIBERATELY NOT A GITHUB URL, and that is the whole point of the column it feeds
-   * (migration 0066): this is an outpost-local Gitea (M15), so it is a different HOST and it spells
-   * the path `/pulls/` where github.com spells `/pull/`. A consumer composing a link from `repo` +
-   * `pull_request_number` would emit `https://github.com/<repo>/pull/<n>`, which 404s here — so an
-   * assertion that this exact string reached the database cannot be satisfied by a synthesiser.
-   */
+  /** The URL the fixture provider hands back, deliberately. See docs/dependencies.md §31. */
   const providerPullRequestUrl = (repo: string, number: number): string =>
     `https://gitea.dc1.internal/${repo}/pulls/${number}`;
   /** What the fixture `github-check` control answers. Mutable so a test can say what "the
@@ -162,7 +93,6 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
   /** What `status()` reports for a merge run — the honest outcome the gate job records rather than
    *  assuming a dispatch means a merge. */
   let mergeRunPhase: "succeeded" | "failed" = "succeeded";
-  /** Every `readFileAtRef` the delegation probe performed. */
   const fileReads: { instanceId: string; repo?: string; path: string }[] = [];
   /** repo -> (path -> content). A path absent from the map answers `not_found`, which is what makes
    *  "this repository delegates" a property of the fixture repository rather than of a flag. */
@@ -179,20 +109,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
   const inOrg = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> =>
     withTenantTx(server.deps.db, org.orgId, fn);
 
-  /**
-   * ACCUMULATORS ARE RESET PER TEST, and this is a correctness fix rather than tidiness.
-   *
-   * They were module-level and never cleared, so any assertion of the form `toContain(<a constant
-   * every test in the file uses>)` was satisfied by whatever an earlier test had already pushed.
-   * `expect(controlEvaluations.map(e => e.commitSha)).toContain(BUMP_COMMIT)` — written into the
-   * "checks passed for a DIFFERENT commit" test to prove a control HAD run for this bump — CANNOT
-   * FAIL under those conditions: the first test in the block runs a control for `BUMP_COMMIT` and
-   * every later one inherits its evidence. That is this repo's own recurring "green for the wrong
-   * reason" shape.
-   *
-   * `openedPullRequests` and `relayed` are deliberately NOT reset: they are per-change state the
-   * fixture keeps for the lifetime of the changes themselves, not per-test observations.
-   */
+  /** Accumulators are reset per test, a correctness fix. See docs/dependencies.md §32. */
   beforeEach(() => {
     triggers.length = 0;
     controlEvaluations.length = 0;
@@ -227,11 +144,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
               changeObjectId?: string;
               repo?: string;
             };
-            // AN AUTHORING RUN OPENS A PULL REQUEST, and this run's outcome is the only place its
-            // number and its URL exist. The server reads both back off `status().stateRef` and
-            // records them: the merge is ADDRESSED to the number rather than found by listing (so a
-            // fixture reporting no number would make every merge below unreachable), and the URL is
-            // unrecoverable afterwards because nothing on the row says which provider this was.
+            // An authoring run opens a pull request. See docs/dependencies.md §33.
             if (params.action !== "merge" && params.changeObjectId) {
               if (!openedPullRequests.has(params.changeObjectId)) {
                 const number = nextPullRequestNumber++;
@@ -398,19 +311,8 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     instanceId: string;
   }
 
-  /**
-   * A subscribed component that declares `@acme/lib@^1.2.3` from `package.json` in its own
-   * repository, with the git binding that names that repository — the binding is what chooses the
-   * credential, so without it there is no repository to author into.
-   *
-   * `lineId` and `manifestPaths` are options rather than constants BECAUSE THE ABSENCE OF THEM IS
-   * WHAT LET A BLOCKER SHIP. Every fixture in the first cut of this file minted its own line with a
-   * coordinate unique to itself and declared it from exactly one manifest, so the suite could not
-   * see that `findOpenBumpChange` keyed on (coordinate, toVersion) alone: a second component on the
-   * same line, and a second manifest in the same component, both collapsed onto one bump change.
-   */
+  /** A subscribed component declaring that range. See docs/dependencies.md §34. */
   async function subscribedComponent(options?: {
-    /** Files the fixture repository contains, e.g. a `renovate.json`. */
     files?: Record<string, string>;
     /** What `readFileAtRef` THROWS for this repository — an unreadable repository, not an empty one. */
     readFailure?: string;
@@ -653,21 +555,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     expect(verdicts[0]?.verdict).toBe("dispatched");
   }, 120_000);
 
-  /**
-   * ==============================================================================================
-   * THE LINK IS CAPTURED HERE OR NOWHERE (migration 0066, M21.7 item C)
-   * ==============================================================================================
-   * 0064 recorded `repo` and `pull_request_number` and no URL, on the reasoning that the two
-   * compose one. They compose one for github.com. They compose a 404 for an outpost-local Gitea
-   * (M15) — a different host, and `/pulls/` rather than `/pull/` — and for GitHub Enterprise, and
-   * nothing on the authorship row records which provider authored the bump. So the URL the provider
-   * itself returned has to be persisted at the one moment it exists: the authoring run's outcome.
-   *
-   * This test enters through the SAME production seam as the rest of the file — head write door ->
-   * outbox -> router -> queue -> loop -> dispatch -> phase 5 -> `recordBumpPullRequest` — and never
-   * calls the repo function. Delete the URL from phase 5's read of `status().stateRef`, or delete
-   * the phase-5 write entirely, and this goes red.
-   */
+  /** THE LINK IS CAPTURED HERE OR NOWHERE. See docs/dependencies.md §35. */
   it("records the pull request URL THE PROVIDER RETURNED, on the real authoring path", async () => {
     const fixture = await subscribedComponent();
     await advanceHead(fixture.lineId, "1.4.0");
@@ -809,20 +697,9 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     expect(await bumpChangesFor(repo)).toHaveLength(0);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // 2b. ONE BUMP CHANGE PER (COMPONENT, MANIFEST) — the fixture whose absence hid a blocker
-  // ---------------------------------------------------------------------------------------------
 
-  /**
-   * A dependency LINE EXISTS TO BE DECLARED BY MANY COMPONENTS — that is the entire point of the
-   * M21.3 reverse index — so "two subscribed components on one line" is the ordinary case, not an
-   * edge one. It had no fixture, and `findOpenBumpChange` accepted a `componentObjectId` it never
-   * compared: the second component to reach the lookup reused the FIRST one's change, so it got no
-   * change, no branch, no dispatch and no bump, silently and forever. Worse, ADR-0032 §9's
-   * provenance loop then inverted — the returning push correlated to a change that was not about
-   * this component, and every component after the first minted the second, unrelated change §9
-   * exists to prevent.
-   */
+  /** A dependency line exists to be declared by many. See docs/dependencies.md §36. */
   it("two components subscribed to the SAME line each get their OWN change and their OWN dispatch", async () => {
     const first = await subscribedComponent();
     const second = await subscribedComponent({ lineId: first.lineId });
@@ -872,13 +749,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     );
   }, 120_000);
 
-  /**
-   * The other half of the same key, and it is not a defensive extra: `component_dependencies` is
-   * unique on `(org, component, line, manifest_path)`, so ONE component legitimately declares one
-   * line from two manifests — a workspace root and a service's own `package.json`. A bump change
-   * declares exactly ONE `manifestPath`, so two manifests must be two changes; keyed without it, one
-   * file was edited and the other silently was not.
-   */
+  /** The other half of the same key, not a defensive extra. See docs/dependencies.md §37. */
   it("one component declaring the SAME line from two manifests gets a change per manifest", async () => {
     const fixture = await subscribedComponent({
       manifestPaths: ["package.json", "services/api/package.json"]
@@ -912,26 +783,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     ).toEqual(new Set(["package.json", "services/api/package.json"]));
   }, 120_000);
 
-  /**
-   * ==============================================================================================
-   * THE FIRST DISPATCH OF AN `auto_merge` SUBSCRIPTION IS ALWAYS A PULL REQUEST (ADR-0032 §8c)
-   * ==============================================================================================
-   * This test was originally written as a record that auto-merge did nothing at all, with a note
-   * saying it was EXPECTED TO FAIL once something re-enqueued the bump after the component's checks
-   * concluded. That link is now built (`bump-gate.ts`), so the note is gone — but the behaviour it
-   * pins is not, and it is the more important half of the charter clause:
-   *
-   *   at the FIRST dispatch the branch does not exist, no push has returned, no commit is recorded
-   *   and no control has run — so `auto_merge` is refused and delivery is a pull request, whatever
-   *   the subscription asked for.
-   *
-   * "The bump merges on its second look, never on its first" is the property, and this is where it
-   * is pinned. The block below ("the auto-merge link") is where the SECOND look is proven.
-   *
-   * The downgrade is also RECORDED with its reason, which is the difference between an operator who
-   * can see why the privileged option was declined and one who wonders whether they mis-authored the
-   * policy.
-   */
+  /** An auto-merge's first dispatch is still a pull request. See docs/dependencies.md §38. */
   it("a subscription asking for auto_merge is DOWNGRADED to a pull request on its FIRST dispatch", async () => {
     const fixture = await subscribedComponent({ delivery: "auto_merge" });
     await advanceHead(fixture.lineId, "1.4.0");
@@ -954,37 +806,11 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     expect(String(authored.deliveryReason)).toMatch(/auto_merge was asked for/);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // 2b. THE AUTO-MERGE LINK — the SECOND look, driven through the real ingress and the real gate
-  // ---------------------------------------------------------------------------------------------
 
-  /**
-   * ==============================================================================================
-   * EVERY LINK OF THE CHAIN, AND DELETING ANY ONE OF THEM FAILS THIS BLOCK
-   * ==============================================================================================
-   *   a provider webhook row (github `push`, then github `workflow_run`)
-   *     -> the REAL `processChangeSourceEvents`
-   *     -> `matchAuthoredBumpChange` (branch route for the push, HEAD-COMMIT route for the CI event)
-   *     -> the `scp.dependency.bump_observed` OUTBOX row, in the ingress transaction
-   *     -> the domain-event job shape the outbox relay actually sends
-   *     -> `observedBumpRouter` (registered WITH pg-boss)
-   *     -> the `dependency-bump-gate` queue
-   *     -> `startBumpGateLoop`'s worker
-   *     -> `prewarmGovernanceForChange` — the EXISTING gate — which runs the component's own
-   *        required control against the bump's OWN commit and deposits a real `control_runs` row
-   *     -> `resolveEffectiveDelivery` grants
-   *     -> a `managed-dep` MERGE intent.
-   *
-   * Nothing below calls `runBumpGateJob`, `prewarmGovernanceForChange` or `resolveEffectiveDelivery`
-   * directly. That is the point: M21's standing failure is components that are correct and have no
-   * caller, and a suite that drives the component proves the component.
-   */
+  /** Every link of the chain; deleting any one fails this. See docs/dependencies.md §39. */
   describe("the auto-merge link (ADR-0032 §8c)", () => {
-    /** A `control` bound to `github-check` PLUS a required policy naming it — which together are
-     *  what makes the governance gate run anything at all for this component. The module matters:
-     *  `bump-actuator.ts` grants only on modules that answer "did THIS CHANGE'S OWN commit pass the
-     *  component's OWN CI?", so a `scan-result-control` binding here would (correctly) grant
-     *  nothing. */
+    /** A bound control plus a policy naming it, together. See docs/dependencies.md §40. */
     async function requireOwnChecks(
       componentObjectId: string,
       module = "github-check"
@@ -1120,11 +946,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(fromPush.length, "the authored push must emit an observed-bump event").toBeGreaterThan(
         0
       );
-      // It is then CONSUMED WITHOUT BEING RELAYED. In production that evaluation runs and refuses
-      // (`github-check` answers `expired` — CI has not concluded on the commit the push just
-      // announced), which is the FIRST-dispatch behaviour already pinned above. Relaying it here
-      // would re-prove that and make every assertion below race a second, identical gate job for the
-      // same change, so each test drives exactly one evaluation: the one triggered by CI.
+      // It is then CONSUMED WITHOUT BEING RELAYED. See docs/dependencies.md §41.
       for (const row of fromPush) relayed.add(row.id);
 
       return { fixture, changeObjectId: change.objectId, authoredRef };
@@ -1150,11 +972,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     it("runs the EXISTING governance gate for the bump change, against the bump's OWN commit, and merges", async () => {
       const { fixture, changeObjectId } = await authoredAndPushed();
       await requireOwnChecks(fixture.componentObjectId);
-      // The component's checks went green FOR THE BUMP'S OWN COMMIT.
-      // EVIDENCE NAMES THE COMPONENT'S OWN REPOSITORY as well as the bump's own commit — the URL
-      // `@scp/plugin-github-check` records is the only field that says which repository a verdict is
-      // about, and a commit id travels between repositories freely (a fork, a mirror, a vendored
-      // copy), so the module name alone bound the evidence to nothing.
+      // The checks went green for the bump's own commit. See docs/dependencies.md §42.
       controlOutcome = {
         status: "pass",
         evidence: { url: ownChecksUrl(fixture.repo), ref: BUMP_COMMIT, checkRuns: [] }
@@ -1173,11 +991,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         intervalMs: 200
       });
 
-      // (1) A REAL CONTROL RAN, and it was asked about the bump's own commit — not the base branch,
-      //     which is what `github-check` would have fallen back to before the push was recorded.
-      // BOUND TO THIS CHANGE, not merely to the shared commit constant: every test in this block
-      // uses the same `BUMP_COMMIT`, so an assertion over the commit alone was satisfied by any
-      // earlier test's evaluation.
+      // A real control ran, asked about the bump's own commit. See docs/dependencies.md §43.
       expect(
         controlEvaluations.filter((e) => e.changeId === changeObjectId).map((e) => e.commitSha)
       ).toContain(BUMP_COMMIT);
@@ -1199,12 +1013,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(Object.keys(merge.intent.parameters ?? {})).not.toContain("headBranch");
       expect(merge.intent.idempotencyKey).toBe(`${changeObjectId}:merge:${BUMP_COMMIT}`);
 
-      // (3) THE VERDICT IS EXPLAINABLE (charter principle 6).
-      // WAITED FOR, not read straight after the merge intent. `recordMergeVerdict` is deliberately
-      // written AFTER the provider attempt and in its OWN transaction (bump-gate.ts — "a Decision
-      // that recorded 'merge authorised' and then [failed] ... leaves the merge unrecorded"), so the
-      // intent appearing does NOT imply the Decision has landed. Reading it synchronously passed on
-      // timing and failed on a loaded CI shard.
+      // (3) THE VERDICT IS EXPLAINABLE. See docs/dependencies.md §44.
       const verdicts = await waitUntil(
         async () => {
           const found = await decisionsOfKind(DEPENDENCY_BUMP_MERGE_DECISION_KIND, changeObjectId);
@@ -1278,17 +1087,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(mergeIntentsFor(changeObjectId)).toHaveLength(0);
     }, 180_000);
 
-    /**
-     * ============================================================================================
-     * "THE COMPONENT'S OWN CHECKS" MUST BE BOUND TO THE COMPONENT'S OWN REPOSITORY
-     * ============================================================================================
-     * The grant used to be enforced as a MODULE-NAME STRING plus a commit id, and neither binds the
-     * evidence to this component: a `github-check` control an operator configured against a DIFFERENT
-     * repository that happens to contain the same commit object — a fork, a mirror, a vendored copy;
-     * commit ids are content hashes and travel freely — reported green for exactly the commit the
-     * bump is at, and the merge was granted. The code comment asserted the opposite while nothing
-     * enforced it.
-     */
+    /** The checks must bind to the component's repository. See docs/dependencies.md §45. */
     it("REFUSES to merge when the passing own-check evidence names a DIFFERENT repository", async () => {
       const { fixture, changeObjectId } = await authoredAndPushed();
       await requireOwnChecks(fixture.componentObjectId);
@@ -1398,23 +1197,14 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     }, 180_000);
 
     it("REFUSES to merge when NO conclusive delegation probe is on record — absence is not evidence", async () => {
-      // STRICTER HERE THAN AT THE AUTHORING SEAM, and deliberately. `assertComponentNotDelegated`
-      // refuses only when a verdict SAYS delegated, because the authoring path is what PRODUCES the
-      // verdict. An INCONCLUSIVE probe (a bad credential, a provider 5xx, an egress refusal) records
-      // no verdict at all — so "no verdict" is byte-identical to "we could not read the repository",
-      // and merging is a bigger thing to do on that than opening a pull request is.
+      // Stricter here than at the authoring seam, deliberately. See docs/dependencies.md §46.
       const { fixture, changeObjectId } = await authoredAndPushed();
       await requireOwnChecks(fixture.componentObjectId);
       controlOutcome = {
         status: "pass",
         evidence: { url: ownChecksUrl(fixture.repo), ref: BUMP_COMMIT }
       };
-      // Erase the `allow` verdict the dispatch job's own probe recorded — which is exactly the state
-      // an inconclusive probe leaves behind, since `recordDelegationProbe` refuses to write one.
-      //
-      // Over the ADMIN connection, because `decisions` is append-only to the tenant role (no DELETE
-      // grant) — a property worth noticing rather than working around: the state under test is one
-      // production reaches by a probe never CONCLUDING, never by a verdict being removed.
+      // Erase the allow verdict the probe itself recorded. See docs/dependencies.md §47.
       await eraseDelegationVerdict(fixture.componentObjectId);
 
       await deliverCiConclusion(fixture.repo);
@@ -1432,25 +1222,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(mergeIntentsFor(changeObjectId)).toHaveLength(0);
     }, 180_000);
 
-    /**
-     * ============================================================================================
-     * A FABRICATED "BUMP" NAMING SOMEBODY ELSE'S REPOSITORY MERGES NOTHING (ADR-0032 §8f)
-     * ============================================================================================
-     * THE CONFUSED DEPUTY THIS CLOSES. Every input that decided whose credential merged what was
-     * read from `changes.source_ref.scp_authored` — a field `POST /api/v1/changes` writes VERBATIM
-     * for any authenticated principal — and the event that starts the gate is producible through
-     * `POST /change-sources/{kind}/report`. So an ordinary tenant could declare a bump against a
-     * repository they do not own and have SCP merge into it with SCP's installation credential.
-     *
-     * This test is the forgery itself, through the PUBLIC API, with a `source_ref` that names every
-     * field the old merge path read and names them correctly. What stops it is not a validation of
-     * that field — validating an attacker-writable field yields a well-formed attacker-supplied
-     * answer — but that the merge path reads `dependency_bump_authorships`, which no route can
-     * write, and a change with no row there is not a bump change.
-     *
-     * IT ENTERS THROUGH THE GATE JOB ITSELF rather than through the webhook, so the assertion is
-     * about the decision and not about whether an event happened to correlate.
-     */
+    /** A bump naming another repository merges nothing. See docs/dependencies.md §48. */
     it("a FORGED bump change written through POST /changes merges nothing, whatever its source_ref claims", async () => {
       const victim = await subscribedComponent({ delivery: "auto_merge" });
       // THE FORGER CHOOSES THE ID, because `POST /api/v1/changes` accepts one — which is what lets
@@ -1503,17 +1275,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(triggers).toHaveLength(0);
     }, 180_000);
 
-    /**
-     * ============================================================================================
-     * THE AUDIT TRAIL MUST NOT LIE ABOUT THE ONE IRREVERSIBLE ACTION (principle 6)
-     * ============================================================================================
-     * A merge produces its OWN provider events — the merge commit's push, whatever CI runs after —
-     * which correlate straight back to this bump and re-run the gate. That second run found no OPEN
-     * pull request, dispatched a doomed merge and recorded `withheld / merge_refused`, so the LATEST
-     * Decision for a bump that DID merge said it did not.
-     *
-     * Driven the way production reaches it: the same CI conclusion delivered TWICE.
-     */
+    /** The audit trail must not lie about the one merge. See docs/dependencies.md §49. */
     it("a SECOND observed event after a successful merge does not overwrite the merged verdict", async () => {
       const { fixture, changeObjectId } = await authoredAndPushed();
       await requireOwnChecks(fixture.componentObjectId);
@@ -1554,17 +1316,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(latest?.verdict).toBe("merged");
     }, 180_000);
 
-    /**
-     * ============================================================================================
-     * TWO CONCURRENT JOBS, TWO PLUGIN-INSTANCE NAMESPACES (ADR-0032 §7c clause 4)
-     * ============================================================================================
-     * `bump-dispatch.ts` (authoring) and `bump-gate.ts` (merging) both act on the SAME component
-     * binding, both start a `managed-dep` instance for it, and both tear it down in a `finally`.
-     * The id used to be `managed-dep:<bindingId>` for both — one shared subprocess — so whichever
-     * job finished first killed the other's in flight, including a `status()` call issued AFTER the
-     * provider had already merged. A head advance and a CI conclusion are unrelated events; nothing
-     * orders them.
-     */
+    /** TWO CONCURRENT JOBS, TWO PLUGIN-INSTANCE NAMESPACES. See docs/dependencies.md §50. */
     it("the authoring job and the merge job do NOT share a plugin-instance id", async () => {
       const { fixture, changeObjectId } = await authoredAndPushed();
       await requireOwnChecks(fixture.componentObjectId);
@@ -1592,36 +1344,8 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(new Set(dep.map(bindingOf)).size).toBe(1);
     }, 180_000);
 
-    /**
-     * ============================================================================================
-     * THE OPERATOR'S CONTAINER RUNTIME REACHES THE RUNNER THIS PATH STARTS (2026-08-16)
-     * ============================================================================================
-     * `@scp/plugin-managed-dep` runs `execFile(config.dockerBinary ?? "docker", …)`, and
-     * `SCP_MANAGED_RUNNER_DOCKER_BINARY` is how an operator points that at podman — the sanctioned
-     * runtime on the RHEL/air-gapped estates this class ships into (docs/container-runtimes.md).
-     *
-     * ASSERTED HERE, SEPARATELY FROM THE BINDING PATH, because this class has two ways of being
-     * constructed and this is the one that runs. `routes/executors.integration.test.ts` covers
-     * `resolveExecutorPluginInstance`, the path taken only for a `managed-dep` binding an operator
-     * makes BY HAND; ordinary dispatch never touches it — `managed-dep-instance.ts` builds the
-     * instance itself from `managedDepServerSettings()`. When the runtime knob was first wired,
-     * both of this class's paths were missed while its two sibling classes were wired correctly, so
-     * an operator on podman got a silent hardcoded `docker` for every ordinary bump. A test on the
-     * binding path alone would have stayed green through exactly that.
-     *
-     * The value is deliberately NOT `"docker"`: asserting the fallback would pass whether or not
-     * anything was injected at all.
-     */
-    /**
-     * M23.2 WIDENS THIS CASE FROM ONE FIELD TO THE WHOLE LAUNCHER SLICE, and the widening is not
-     * housekeeping — it is the same defect one level up. The adapter SELECTION
-     * (`SCP_MANAGED_RUNNER_LAUNCHER`) travels the identical route and has a larger blast radius:
-     * omitted from THIS path, the ordinary bump dispatch would keep shelling out to `docker` on a
-     * Kubernetes deployment while every bound executor moved to Jobs — i.e. M21's actuator would
-     * remain exactly as dead as M23 exists to fix, on the path that actually runs. The unit-level
-     * `managed-runner-selection.test.ts` covers `managedDepServerSettings()`; only THIS test can see
-     * what `managed-dep-instance.ts` puts in the instance config it starts.
-     */
+    /** The operator's container runtime reaches this runner. See docs/dependencies.md §51. */
+    /** Widened from one field to the whole launcher slice. See docs/dependencies.md §52. */
     it("hands the operator's container runtime AND launcher selection to the runner it starts", async () => {
       const saved = {
         binary: process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY,
@@ -1668,16 +1392,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       }
     }, 180_000);
 
-    /**
-     * ============================================================================================
-     * A REFUSAL RAISED IN PHASE 4 CARRIES A `decision_id` LIKE EVERY OTHER ONE (principle 6)
-     * ============================================================================================
-     * "Every blocked response carries a `decision_id`." A throw out of the dispatch itself — the
-     * runner image not configured on this deployment, an unresolvable binding, an unreachable plugin
-     * host — was the one class of merge refusal that left NO Decision at all: the job logged and
-     * moved on, and an operator had nowhere to see that a merge had been authorised and had not
-     * happened.
-     */
+    /** A refusal raised in phase four carries a decision id. See docs/dependencies.md §53. */
     it("records a Decision when the merge DISPATCH itself fails, not just when the provider refuses", async () => {
       const { fixture, changeObjectId } = await authoredAndPushed();
       await requireOwnChecks(fixture.componentObjectId);
@@ -1743,25 +1458,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(event?.processedAt).not.toBeNull();
     }, 180_000);
 
-    // =========================================================================================
-    // M25.8 — THE FREEZE, AND THE ONE ACT THAT MERGES INTO A TENANT REPOSITORY (owner decision D8)
-    // =========================================================================================
-    // WHAT WAS TRUE BEFORE, MEASURED RATHER THAN ASSERTED: `grep -rna "freeze"` over
-    // `apps/server/src/dependencies/` returned four hits, every one an unrelated comment about an
-    // inventory "freezing"; the same grep over `apps/server/src/governance/` returns 512, which is
-    // the known-positive control that makes the first number evidence instead of an empty result.
-    // The actuator entered no governance gate at all, so a declared change freeze did not stop SCP
-    // from opening AND auto-merging a version bump into the frozen org's repositories.
-    //
-    // D8's boundary is narrower than "refuse the bump": a freeze blocks AUTO-MERGE and does NOT
-    // block PR authoring. So the cases below are paired that way — the merge is withheld, and the
-    // pull request is asserted to be open and to stay open in the same breath.
-    //
-    // EVERY CASE DRIVES `runBumpGateJob` DIRECTLY, which is the exact function the gate worker runs
-    // (`gateDeps()` exists for this). It is not a shortcut past the production seam: `authoredAndPushed`
-    // deliberately consumes the authored push's observed-bump event without relaying it, so no gate
-    // job is queued and there is no loop to race. That determinism is what makes the dedup case
-    // below able to count Decisions at all.
+    // The freeze, and the one act that merges into a repo. See docs/dependencies.md §54.
     describe("M25.8 a change freeze and the dependency actuator (owner decision D8)", () => {
       const runGate = (changeObjectId: string) =>
         runBumpGateJob(gateDeps(), { orgId: org.orgId, changeObjectId });
@@ -1792,15 +1489,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
           })
         );
 
-      /**
-       * A bump that is authored, pushed, and EVIDENCED GREEN — every input the auto-merge grant
-       * reads is in place and satisfied.
-       *
-       * That is the whole point of the fixture: after this, the only thing in the world that can
-       * withhold the merge is a freeze. A case built on a bump that could not merge anyway would
-       * pass against an implementation that reads no freeze at all, which is this repo's recurring
-       * "green for the wrong reason" shape.
-       */
+      /** A bump that is authored, pushed, and EVIDENCED GREEN. See docs/dependencies.md §55. */
       async function greenBump() {
         const { fixture, changeObjectId } = await authoredAndPushed();
         await requireOwnChecks(fixture.componentObjectId);
@@ -1843,11 +1532,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         const opened = openedPullRequests.get(changeObjectId);
         expect(opened, "the authoring run must have opened a pull request").toBeDefined();
 
-        // DECLARED AT THE ORG ROOT, NOT AT THE COMPONENT, and that is the assertion inside the
-        // assertion. A freeze above the component reaches it only through `containmentChain`; the
-        // hand-rolled `domain_id`-only walk `freeze-scope.ts`'s header records made exactly this
-        // shape fail OPEN, silently, because a freeze that stops matching produces the same `allow`
-        // a freeze that never existed would. A component-scoped fixture would pass against that bug.
+        // Declared at the org root, not at the component. See docs/dependencies.md §56.
         const rootId = await inOrg((tx) => getOrgRootObjectId(tx, org.orgId));
         const freeze = await orgFreeze(rootId, "m25-8-org-root");
         try {
@@ -1904,11 +1589,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
 
           // THE BOUNDARY, NOT THE CLOCK — spelled against the freeze's OWN `ends_at`.
           expect(recorded!.endsAt).toBe(freeze.endsAt.toISOString());
-          // …and stated the other way too, because the assertion above is also satisfied by a
-          // context that records `endsAt` AND a timestamp beside it. Nothing anywhere in this
-          // context may be an instant from around the moment the verdict was taken: that is the
-          // property that makes the row dedup, and recording the clock instead is what produced a
-          // measured 1.44 GB/day in production (ADR-0024).
+          // Stated the other way too, for the same reason. See docs/dependencies.md §57.
           const window = { from: before.getTime() - 5_000, to: Date.now() + 5_000 };
           for (const value of JSON.stringify(rows[0]!.inputContext).match(
             /"[^"]*\d{4}-\d{2}-\d{2}T[^"]*"/g
@@ -1952,11 +1633,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         const { changeObjectId } = await greenBump();
         const key = `m25-8-bump-${randomUUID().slice(0, 8)}`;
 
-        // DEPLOYMENT-WIDE, and that is FORCED rather than preferred. The freeze is resolved against
-        // the COMPONENT whose dependency is being bumped; a component is not a placement and
-        // declares no stage coordinate, so `readStageCoordinate` answers null and an
-        // environment-addressed platform freeze covers nothing here. `bump-merge-freeze.ts` states
-        // that consequence in prose; this is the case that makes the statement checkable.
+        // Deployment-wide, and that is forced rather than chosen. See docs/dependencies.md §58.
         await admin.instanceFreezes.put(
           key,
           {
@@ -2019,12 +1696,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       }, 240_000);
 
       it("the AUTHORING dispatch is DOWNGRADED, not refused: the pull request is still authored and the auto-merge TAIL is withheld", async () => {
-        // THE OTHER ACT NAMED "MERGE", and the one that does not live in a file called
-        // `bump-gate.ts`. `@scp/plugin-managed-dep`'s `publishBump` returns early after opening the
-        // pull request ONLY when `delivery === "pull_request"`; otherwise it falls through to its
-        // step 6 auto-merge tail, reaching the provider through the same call the standalone merge
-        // action uses. So guarding the gate alone would have guarded one of the two and left the
-        // other open — an instance fixed rather than a class.
+        // The other act named merge, in a different file. See docs/dependencies.md §59.
         const { fixture, changeObjectId } = await greenBump();
         const bumpIntents = () =>
           triggers.filter(
@@ -2037,11 +1709,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         const rootId = await inOrg((tx) => getOrgRootObjectId(tx, org.orgId));
         const freeze = await orgFreeze(rootId, "m25-8-dispatch");
 
-        // The gate runs and refuses — but it DEPOSITS the `control_runs` row on its way through,
-        // which is exactly what makes the next dispatch's `resolveEffectiveDelivery` able to GRANT
-        // auto_merge. That grant is the precondition of this case: before it, a first dispatch has
-        // no evidence and resolves to `pull_request` for reasons that have nothing to do with a
-        // freeze, and the assertion below would pass against no freeze check at all.
+        // The gate runs and refuses. See docs/dependencies.md §60.
         expect((await runGate(changeObjectId)).refusal).toBe("frozen");
         const runs = await inOrg((tx) => listControlRunsForChange(tx, org.orgId, changeObjectId));
         expect(
@@ -2082,19 +1750,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         expect(whenClear.expectedHeadCommit).toBe(BUMP_COMMIT);
       }, 240_000);
 
-      // -----------------------------------------------------------------------------------------
-      // M25.8b — THE PRODUCER OF "THE NEXT ATTEMPT"
-      //
-      // Every case above drives the gate by CALLING `runGate` — including "when the freeze is
-      // LIFTED, the very next attempt MERGES", which is why that case, though correct, is
-      // structurally incapable of seeing the defect these three close: it PERFORMS BY HAND the
-      // attempt production never scheduled. The only producer of gate jobs is `observedBumpRouter`,
-      // driven by a provider webhook about the bump's branch; a freeze expiring, being lifted or
-      // being shortened touches no repository and produces no such event; and `runBumpGateJob`
-      // returns normally on a `frozen` refusal, so pg-boss never retries it. The three cases below
-      // therefore go through `runBumpFreezeRedriveSweep` — the thing that did not exist — and never
-      // through `runGate`.
-      // -----------------------------------------------------------------------------------------
+      // The producer of the next attempt, driven differently. See docs/dependencies.md §61.
 
       it("the LIFT alone MERGES it: the SWEEP schedules the attempt no provider event would", async () => {
         const { changeObjectId } = await greenBump();
@@ -2125,12 +1781,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
           ).toContain(changeObjectId);
           expect(outcome.enqueued).toContain(changeObjectId);
 
-          // AND THE ENQUEUE IS REAL WORK, NOT A RETURN VALUE. The job lands on the same
-          // `dependency-bump-gate` queue `observedBumpRouter` uses and is drained by the REAL
-          // `startBumpGateLoop` worker this file started in `beforeAll` — so what is asserted here
-          // is the merge itself, reached with no test in the path between the sweep and the
-          // provider. `merged_at` is the engine's own durable write (`markBumpMerged`), polled for
-          // rather than slept on.
+          // AND THE ENQUEUE IS REAL WORK, NOT A RETURN VALUE. See docs/dependencies.md §62.
           const merged = await waitUntil(
             async () => {
               const row = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
@@ -2179,11 +1830,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       }, 240_000);
 
       it("a bump refused for a NON-freeze reason is never re-driven — the key is `frozen`, not `open`", async () => {
-        // No `requireOwnChecks`, so the governed gate names no control for this component and grants
-        // nothing: `not_evidenced`. The bump is open, has a recorded pull request, and NO freeze
-        // stands over it — so the ONLY thing keeping it off the work-list is the refusal it carries.
-        // A sweep keyed on "open bump" instead would re-drive every dependency pull request anybody
-        // has left waiting on CI, and the gate's PHASE 2 deposits `control_runs` rows each time.
+        // With no required checks, the gate names no control. See docs/dependencies.md §63.
         const { changeObjectId } = await authoredAndPushed();
         expect((await runGate(changeObjectId)).refusal).toBe("not_evidenced");
 
@@ -2305,20 +1952,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     expect(verdicts[0]?.verdict).toBe("allow");
   }, 120_000);
 
-  /**
-   * ==============================================================================================
-   * AN UNREADABLE REPOSITORY IS NOT A REPOSITORY WITH NOTHING IN IT
-   * ==============================================================================================
-   * `probeDependencyUpdateDelegation` used to swallow every read failure into `unreadable` and
-   * return `delegated: false`, which is byte-identical to a clean repository — so a bad credential
-   * produced an `allow` Decision and an authored commit, and the `delegation_probe_failed` branch
-   * this asserts was UNREACHABLE. It is the one refusal standing between SCP and two actuators
-   * editing one file, so "we could not check" must never resolve to "go ahead and write to it".
-   *
-   * Driven through `runBumpDispatchJob` — the exact function the worker runs — because the outcome
-   * this needs to assert (the NAMED skip) is that function's return value, and the loop swallows it
-   * into a log line.
-   */
+  /** An unreadable repository is not an empty repository. See docs/dependencies.md §64. */
   it("a repository whose configs cannot be READ is SKIPPED by name, and nothing is authored", async () => {
     const fixture = await subscribedComponent({
       readFailure: "github readFileAtRef: HTTP 401 (bad credentials)"
@@ -2349,14 +1983,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     ).toHaveLength(0);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // 4. THE REFUSALS THAT KEEP THE CLASS OFF, AND OFF THE PROVIDERS IT MAY NOT USE
-  //
-  // Each of the three below survived DELETION with both the unit suite and this integration suite
-  // green — including the one that keeps the whole class off by default. They are the seam between
-  // "an operator enabled managed execution" and "a container ran with a repository-write credential",
-  // so each gets an assertion of its own rather than a comment claiming it is there.
-  // ---------------------------------------------------------------------------------------------
+  // The refusals that keep the class off unusable providers. See docs/dependencies.md §65.
 
   it("REFUSES to author when the operator has named no runner image — managed execution is never a default", async () => {
     const fixture = await subscribedComponent();
@@ -2374,13 +2001,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     expect(outcome.dispatched).toHaveLength(0);
     const skipped = outcome.skipped.find((s) => s.componentObjectId === fixture.componentObjectId);
     expect(skipped?.detail).toMatch(/SCP_MANAGED_DEP_RUNNER_IMAGE/);
-    // The refusal lands BEFORE anything is started, which is the whole shape of ADR-0006: no
-    // container could have been launched and no credential minted.
-    //
-    // ASSERTED AS AN EMPTY SET, not as "does not contain `managed-dep:<pluginInstanceId>`". That
-    // form CANNOT FAIL: the id this code builds is `managed-dep:<bindingRowId>:<runToken>`, so the
-    // string it asserted the absence of is one nothing has ever produced — with the accumulator
-    // module-level and never reset, it was a negative assertion about a value from no code path.
+    // The refusal lands before anything is started. See docs/dependencies.md §66.
     expect(startedInstances.filter((id) => id.startsWith("managed-dep:"))).toEqual([]);
     expect(
       triggers.filter(
@@ -2390,11 +2011,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
   }, 120_000);
 
   it("REFUSES a component served by a non-GitHub binding — only an App can mint a per-run, single-repo credential", async () => {
-    // The charter clause this enforces is a CREDENTIAL clause, not a provider preference: Gitea and
-    // GitLab tokens are standing credentials scoped to a user or a group, and the amendment
-    // authorising this class requires "issued per run, scoped to the single repository under change".
-    // `repo-write.ts`'s `resolveRepoWriter` refuses them too; refusing HERE is what makes the message
-    // name the binding and the component rather than surfacing as a plugin error with neither in it.
+    // The clause is about credentials, not provider preference. See docs/dependencies.md §67.
     const fixture = await subscribedComponent({ pluginModule: "gitea" });
     await advanceHead(fixture.lineId, "1.4.0");
 
@@ -2415,15 +2032,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
   }, 120_000);
 
   it("REFUSES a component whose due declarations were observed on DIFFERENT branches", async () => {
-    // THE BUG THIS PINS. `baseBranch` came from `dueDeclarations[0].observedRef` and was then
-    // applied to EVERY due declaration, so the second manifest here was edited on `main` although
-    // it was only ever read at `dev`. The module's own comment states the invariant it broke — "a
-    // bump composed against `main` but observed on another ref would be built on a file this
-    // component may not have there" — and enforced it for one declaration out of two.
-    //
-    // A REFUSAL RATHER THAN A PER-BRANCH DISPATCH, deliberately: the `dependency_delegation`
-    // verdict is keyed on the COMPONENT, so probing two sources in one run would write two verdicts
-    // under one subject and let an `allow` earned by one stand as the answer for the other.
+    // THE BUG THIS PINS. See docs/dependencies.md §68.
     const fixture = await subscribedComponent({ manifestPaths: ["package.json"] });
     await inOrg((tx) =>
       upsertComponentDependency(tx, org.orgId, {
@@ -2467,12 +2076,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
   }, 120_000);
 
   it("REFUSES to resolve a hand-created managed-dep BINDING while the class is off — the other door to the same class", async () => {
-    // `startManagedDepInstance` is not the only way a `managed-dep` plugin instance can come into
-    // being: an operator can create an `executor_bindings` row for it by hand, and that path goes
-    // through `resolveExecutorPluginInstance` instead. Two doors, one class, so the off-by-default
-    // refusal has to be on both — and the SIBLING classes' identical refusals in that same function
-    // (`managed-iac`, `managed-scan`) are asserted beside it, because a refusal with no test is what
-    // this block exists to stop being normal.
+    // That helper is not the only way the instance can arise. See docs/dependencies.md §69.
     const component = await createTestComponent(admin, {
       name: `dep-binding-${randomUUID().slice(0, 8)}`
     });

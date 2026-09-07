@@ -4,44 +4,9 @@ import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { continuousProbeRetractions } from "../db/schema.js";
 
-/**
- * THE RETRACTION QUEUE (migration 0111) — schedules a deleted `continuous` hook still owes its
- * executor a `removeSchedule` for.
- *
- * `deleteHook` enqueues here inside its own transaction and the probe driver drains it on the next
- * tick. The migration header carries the full argument; the short form is that `removeSchedule` is
- * an out-of-process RPC, `deleteHook` runs inside a tenant transaction, and a retraction that threw
- * there would abort the IaC apply or federation import that removed the row AND be lost — the row
- * is gone, so nothing would know to try again.
- *
- * THIS MODULE OWNS `probeScheduleId` so that neither side has to import the other. The driver
- * DECLARES ids and this queue RETRACTS them; putting the derivation in the driver would make
- * `pipeline-hooks-repo.ts` import it, closing a cycle through `pipeline-hook-runs.ts`.
- */
+/** THE RETRACTION QUEUE. See docs/coordination.md §340. */
 
-/**
- * The schedule id a hook owns in the executor. Derived, never stored at declare time: the same
- * inputs must produce the same id on every tick and in every replica, or a re-declaration would
- * create a second schedule beside the first instead of updating it. A RETRACTION stores it, for the
- * opposite reason — see {@link enqueueProbeScheduleRetraction}.
- *
- * IT USED TO BE `componentObjectId.slice(0, 8)` PLUS THE HOOK ID, AND THAT COLLIDED. Object ids are
- * uuidv7: the first 12 hex characters are the 48-bit millisecond timestamp, so the first EIGHT are
- * its top 32 bits and change only once every 2^16 ms — about 65 seconds. Measured, not reasoned:
- * 1000 ids minted in a burst produced ONE distinct 8-character prefix. Every component created in
- * the same minute therefore shared a prefix, so two components each declaring a `canary` probe —
- * the ordinary shape of one IaC apply — got the SAME schedule id. One overwrote the other's cadence
- * and target, and a retraction of either removed both.
- *
- * A 48-bit hash of the FULL identity replaces the prefix, keeping the readable hook segment so an
- * operator looking at a cron in Argo can still tell what it is. The component id is fixed-length, so
- * concatenation needs no delimiter to be unambiguous; the `:` is for legibility only.
- *
- * ON UPGRADE, a schedule declared under the old id is re-declared under the new one and the old
- * cron is left behind, once. That is deliberate and is the smaller of two bad options — the
- * alternative is keeping a derivation under which two components silently share a probe — and it is
- * bounded: the retraction sweep this module feeds is what stops it ever happening again.
- */
+/** The schedule id a hook owns in the executor. See docs/coordination.md §341. */
 export function probeScheduleId(componentObjectId: string, hookId: string): string {
   // Executor resource names are DNS-ish, and a DNS label is 63 characters: 10 + 24 + 1 + 12 = 47.
   const safeHook = hookId
@@ -64,18 +29,7 @@ export interface ProbeRetraction {
   attempts: number;
 }
 
-/**
- * Records that a deleted `continuous` hook's schedule is owed a retraction.
- *
- * THE ID IS FROZEN HERE rather than re-derived at drain time. `probeScheduleId` is derived on
- * purpose, but the retraction has to name the id that was ACTUALLY declared: change that derivation
- * later and a re-deriving drain would retract an id the executor never heard of while the real cron
- * kept firing — silently, which is the exact failure the queue exists to end.
- *
- * `ON CONFLICT DO NOTHING` on the identity index: a hook deleted, re-created and deleted again
- * while the first retraction is still pending is the SAME work, because the id derives from the
- * same two inputs.
- */
+/** Records a retraction owed; the id is frozen here. See docs/coordination.md §342. */
 export async function enqueueProbeScheduleRetraction(
   tx: TenantTx,
   orgId: string,

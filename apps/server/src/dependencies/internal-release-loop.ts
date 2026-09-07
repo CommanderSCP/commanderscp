@@ -14,107 +14,7 @@ import {
   type CommanderOnlyVerdict
 } from "./commander-only.js";
 
-/**
- * M21.4 — THE PRODUCTION CALLER FOR INTERNAL RELEASE DETECTION (ADR-0032 §7).
- *
- * ============================================================================================
- * WITHOUT THIS FILE, HALF THE FEATURE NEVER RAN
- * ============================================================================================
- * `detectInternalReleases` is the whole internal ingress: it is what puts a head on a line the org
- * PRODUCES, and it is what the third-party poll is forbidden to touch (§7b clause 1). It was built
- * with no caller. Measured filterlessly at the time: the only references to it in the tree were its
- * own definition and its own test, and `scp.change.transitioned` — the event it derives from — had
- * ZERO server-side consumers, because `DOMAIN_EVENTS_QUEUE`'s handler only logged. A subscriber to
- * an internal line would have waited forever, with `latest_version` null and no error anywhere.
- *
- * ============================================================================================
- * THE SHAPE: ROUTE ON THE SHARED STREAM, WORK ON THIS CAPABILITY'S OWN QUEUE
- * ============================================================================================
- * `boss.work()` is a competing consumer, so this cannot be a second worker on the domain-event
- * queue (see `events/pgboss.ts`'s `DomainEventRouter`). Instead:
- *
- *   outbox → domain-events → {@link acceptedChangeRouter} (one cheap predicate + one enqueue)
- *          → {@link INTERNAL_RELEASE_QUEUE} → this file's worker → detectInternalReleases
- *
- * which is exactly the one-queue-per-capability pattern reconcile/observe/watchdog/inbox/auto-relay
- * and the dependency version poll already use in `main.ts` — the difference being that those are
- * self-rescheduling TIMERS and this one is EVENT-DRIVEN, because a release is an event and a daily
- * sweep over every accepted change would be both slower and heavier.
- *
- * ============================================================================================
- * IDEMPOTENT UNDER REDELIVERY, AT EVERY HOP
- * ============================================================================================
- * The outbox→pg-boss path is AT-LEAST-ONCE, and there are now two hops that can each redeliver. It
- * does not matter, because nothing on this path appends:
- *
- *  - the head write goes through `recordDependencyLineHead`, which re-reads `FOR UPDATE` and
- *    DECIDES — a restatement of the same version is a no-op write of the same values;
- *  - the verdict goes through `insertDecisionIfChanged`, whose inputs are stable facts only (no
- *    timestamps, everything sorted), so a second derivation of the same accept compares equal and
- *    writes NO new row;
- *  - the state is re-READ rather than trusted from the event, so a change that has since moved on
- *    yields `not_applicable` instead of a stale derivation.
- *
- * A permanent test drives the same change twice and asserts the second run creates nothing.
- *
- * ============================================================================================
- * THE ROLE REASONING — COMMANDER-ONLY (ADR-0032 §7d, owner decision 2026-08-17)
- * ============================================================================================
- * The version poll is guarded on TWO axes (`dependencyVersionPollRoleGuard`): the PROCESS split
- * (`SCP_ROLE`) and the DEPLOYMENT's declared federation role (`SCP_FEDERATION_ROLE` — commander
- * only, and explicitly declared). BOTH apply here too.
- *
- * This paragraph previously argued the opposite — at length, citing ADR-0032 §3 clause 3, and
- * concluding that "restricting to a commander would break the feature". That argument is WRONG. It
- * is restated and answered here rather than deleted, because it is persuasive and the next reader
- * of this file is exactly the person who could remove the guard on the strength of it; ADR-0032 §7d
- * preserves the original clause verbatim beside the reasoning that overturned it.
- *
- *  - THE PROCESS AXIS APPLIES UNCHANGED. This is background work; an `api` process must stay a
- *    request server. Same rule, same reason, and `main.ts` additionally only reaches this inside its
- *    `runsBackgroundWork` branch — the guard is what makes that a property of the job rather than of
- *    where someone happened to call it.
- *
- *  - THE FEDERATION AXIS APPLIES TOO: commander only, fail-closed on an undeclared role. THE
- *    OWNER'S REASON is not about egress at all. The point of dependency automation is to PULL FROM
- *    PUBLIC REPOSITORIES — Python library versions, CDK versions, base-image versions — which is
- *    not needed from a FIELD outpost's standpoint, because the resulting change GETS PUSHED DOWN
- *    THE GLOBAL PIPELINE THE COMMANDER MANAGES. A field outpost never ORIGINATES a dependency bump;
- *    it RECEIVES the resulting change through the ordinary promotion path. So a field outpost
- *    derives no inventory and detects no releases for this feature, and what it used to derive fed
- *    nothing: the only consumer is a bump, and `bumpDispatchRoleGuard` has been commander-only since
- *    M21.5.
- *
- *    "FIELD" IS LOAD-BEARING HERE, NOT DECORATION (GLOSSARY `HQ outpost` / `field outpost`, ADR-0021
- *    D7; ADR-0032 §7d's vocabulary note). An HQ outpost — the outpost in the commander's own trust
- *    domain — is not a deployment this guard could refuse: `SCP_FEDERATION_ROLE` is one value per
- *    process (`config.ts`), and this guard reads THAT, never an `outpost` graph object — an
- *    `outpost` object CAN name the commander's own domain (the commander-declared HQ outpost record,
- *    pipeline-substrate-registry-scan.md §10.5, `federation/outpost-binding.ts`), but that record
- *    describes which outpost, not what this deployment is. A release into the HQ domain is therefore
- *    detected by THIS loop, in this process, and needs no exemption from the rule above.
- *
- *    THE OLD ARGUMENT'S MEASUREMENT SURVIVES AND BECOMES THE STATED COST. It is true that a FIELD
- *    outpost is where the evidence LIVES: `change_wave_targets.status`/`observed_state.images` are
- *    written where the change executed, while a commander receives only `change_status` journal
- *    entries (`{objectId, fromState, toState, trigger}` — no wave targets, no images). So an
- *    internal line whose component releases to prod only at a FIELD outpost keeps a NULL
- *    `latest_version`. ADR-0032 §7's schema note already defines NULL as "not observed" and
- *    explicitly NOT "nothing newer exists", so a subscriber sees an honest absence rather than a
- *    wrong version — which is the ordering §7a rule 1 fixes. This is a real reduction in reach and
- *    is recorded as ADR-0032 §7d clause 2, not papered over. It does NOT apply to a component that
- *    releases to prod in the HQ domain: that evidence is written locally and the derivation runs.
- *
- *    THE OTHER ACCEPTED CONSEQUENCE: dependencies declared in DOMAIN-SPECIFIC repositories —
- *    FIELD-outpost-only IaC/CaC the commander never sees — are OUT OF SCOPE for dependency
- *    subscriptions. The owner accepted that explicitly; there is no workaround, and the shape that
- *    would be one is a field-outpost-side job. A repository specific to the HQ domain is in scope
- *    like any other the commander can see.
- *
- * Scope of the reversal: the SUBSCRIPTION still federates (a `dependencySubscription` effect on an
- * ordinary `policy` object, ADR-0032 §3a) and still reaches a field outpost. Only the JOBS and the
- * projection tables they write are commander-only.
- */
+/** The production caller for internal release detection. See docs/dependencies.md §243. */
 
 export const INTERNAL_RELEASE_QUEUE = "dependency-internal-release";
 
@@ -126,12 +26,7 @@ export const ACCEPTED_STATE = "accepted";
 
 export type InternalReleaseRoleVerdict = CommanderOnlyVerdict;
 
-/**
- * MAY THIS PROCESS DERIVE INTERNAL RELEASES? See the module doc for why this asks the poll's two
- * questions and now keeps BOTH of them, and `commander-only.ts` for why the predicate is SHARED
- * rather than re-spelled here — the fail-closed undeclared branch has five callers and is the one
- * that regresses invisibly.
- */
+/** MAY THIS PROCESS DERIVE INTERNAL RELEASES? See docs/dependencies.md §244. */
 export function internalReleaseDetectionRoleGuard(
   config: CommanderOnlyConfig
 ): InternalReleaseRoleVerdict {
@@ -153,12 +48,7 @@ export interface InternalReleaseJob {
   changeObjectId: string;
 }
 
-/**
- * The fan-out point on the shared domain-event stream: one predicate, one enqueue, no work.
- *
- * The subject of `scp.change.transitioned` IS the change object id (`coordination/transition.ts`),
- * which is the only identifier this capability needs — it re-derives everything else from the row.
- */
+/** The fan-out point on the shared domain-event stream. See docs/dependencies.md §245. */
 export function acceptedChangeRouter(): DomainEventRouter {
   return {
     name: "dependency-internal-release",
@@ -209,16 +99,7 @@ export async function runInternalReleaseJob(
   });
 }
 
-/**
- * Register the capability's worker. The ROUTER half is registered separately, by
- * `events/domain-event-registry.ts` under this module's own guard, so the two halves are wired
- * without either knowing about the other's internals.
- *
- * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE — the same shape the version
- * poll, the inbox loop and the auto-relay loop use, and for the same reason: a process that merely
- * skipped the work inside the handler would still hold a pg-boss worker for a queue it will never
- * act on.
- */
+/** Register the capability's worker. See docs/dependencies.md §246. */
 export async function startInternalReleaseLoop(
   boss: PgBoss,
   deps: InternalReleaseLoopDeps

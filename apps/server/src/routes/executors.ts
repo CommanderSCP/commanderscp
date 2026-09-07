@@ -72,13 +72,7 @@ const KNOWN_DISCOVERY_MODULES: PluginModule[] = [
   "argocd-discovery"
 ];
 
-/**
- * Bind a target object to a registered `execution-system` (Mode A). Loads the system, derives the
- * plugin module from its `kind` (allowlist-checked) + a shared instance id, and upserts the binding
- * — serverUrl/token are resolved from the system at dispatch, never stored on the binding. Shared by
- * `PUT /binding` (executionSystemId path). `POST /discovery/accept` was the other caller until
- * increment 6 removed it (ADR-0047 — discovery scaffolds, it does not write).
- */
+/** Bind a target object to a registered `execution-system`. See docs/routes.md §170. */
 async function bindTargetToExecutionSystem(
   tx: TenantTx,
   orgId: string,
@@ -90,20 +84,7 @@ async function bindTargetToExecutionSystem(
   type?: ExecutorType
 ) {
   const sys = await getObjectByIdOrUrnAnyType(tx, orgId, executionSystemId);
-  // Authorize FIRST — before the typeId check below — so an unauthorized caller can't use the
-  // "'x' is a 'y', not an execution-system" error as a type/existence oracle for objects they may
-  // not read.
-  //
-  // `object:WRITE`, not object:read: referencing a system makes SCP dispatch with that system's
-  // DECRYPTED token (and, if both egress layers agree, its internal-egress reach) — a use-of-
-  // credentials capability, not a read. object:read would be no bar at all: the built-in Viewer role
-  // (auto-assigned at org root to every first-time login) holds object:read, and authz walks
-  // containment to the org root, so every org member would pass. object:write matches the bar this
-  // same route already requires on the binding TARGET.
-  //
-  // Known trade (ADR-0003): a system shared by many teams must grant them object:write on it, which
-  // also lets them modify its serverUrl. A distinct "use" capability would be the finer answer, but
-  // that means new RBAC; revisit if shared-system delegation becomes real.
+  // Authorize first, so an unauthorized caller learns nothing. See docs/routes.md §171.
   await authorize(tx, {
     orgId,
     subjectObjectId,
@@ -122,18 +103,11 @@ async function bindTargetToExecutionSystem(
   });
 }
 
-/**
- * M7 plugin-configuration surface (BUILD_AND_TEST.md §8 M7 item 5: "plugin config schemas
- * surfaced as validated config forms in UI/CLI"): executor/notification bindings, encrypted
- * secrets (write-only), the static plugin-manifest catalog a config form is generated FROM, and
- * `DiscoveryPlugin` run/accept (never auto-commits — DESIGN §11).
- */
+/** M7 plugin-configuration surface. See docs/routes.md §172. */
 export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
-  // -----------------------------------------------------------------------------------------
   // Plugin manifests (static catalog — no runtime hot-loading, DESIGN §11)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "GET",
@@ -153,9 +127,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // Secrets (write-only — encrypted at rest, secrets/crypto.ts; never readable back)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "PUT",
@@ -175,14 +147,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // `secret:write` at the org root, NOT `object:write` — role-model.md §1.3d, drizzle/0099.
-        // The permission SUBSTITUTES the generic write verb here; the SCOPE is unchanged and stays
-        // one of §8.6's deliberate escalation bars, because these are the tokens SCP uses to reach
-        // GitHub/ArgoCD/Terraform and no narrower binding should ever reach them.
-        //
-        // BREAKING, DELIBERATELY: an org-root `object:write` holder who does not also hold
-        // `secret:write` is now 403 here. drizzle/0099 grants it to Owner, Administrator and
-        // OrgAdmin, so the built-in ladder is unaffected.
+        // `secret:write` at the org root, NOT `object:write`. See docs/routes.md §173.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -241,11 +206,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // `secret:write`, the same substitution `PUT` above takes and for a strictly larger reason:
-        // DELETING an execution-system credential is an availability kill switch for all
-        // coordination on this deployment (role-model.md §1.3d). Symmetry with `PUT` is also the
-        // point — a permission that could store a credential but not remove it would make rotation
-        // harder than creation.
+        // The same substitution the write above takes. See docs/routes.md §174.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -258,9 +219,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // Executor bindings (DESIGN §12 — a Component/DeploymentTarget bound to a plugin instance)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "PUT",
@@ -550,14 +509,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Multi-region Argo CD config surface (M15.6, ADR-0017 §3) — a READ + VALIDATE view of one prod
-  // environment's per-region Argo CD set: `prod env -> {region -> argocd binding}`. Additive; adds
-  // no new object type (a region is a `deployment-target` with properties.environment/region, its
-  // Argo CD an ordinary per-region binding). The operator still declares each region by binding it
-  // via `PUT /executors/:idOrUrn/binding` — this route surfaces the whole set coherently and flags a
-  // region with no Argo CD of its own instead of silently deploying it against nothing.
-  // -----------------------------------------------------------------------------------------
+  // Multi-region Argo CD config surface (M15.6, ADR-0017 §3). See docs/routes.md §175.
   typed.route({
     method: "GET",
     url: "/api/v1/environments/:environment/regional-executors",
@@ -707,32 +659,9 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Discovery (DESIGN §11 — "proposed objects + relationships, reviewed/accepted into the
-  // graph, never auto-committed"). `/run` executes discover() live via the in-process PluginHost,
-  // which `main.ts` constructs for every role including a pure api process (AppDeps.pluginHost's
-  // doc comment records why it used not to); `/accept` is the ONLY path that ever writes what a
-  // discovery scan found into the graph.
-  // -----------------------------------------------------------------------------------------
+  // Discovery: proposed objects and relationships, reviewed. See docs/routes.md §176.
 
-  /**
-   * `POST /discovery/scaffold` (ADR-0047) — a discovery proposal in, IaC SOURCE out.
-   *
-   * THE REPLACEMENT FOR `accept`, and a different shape on purpose: it writes nothing, reads
-   * nothing from the graph, and returns text. Accept's defect was that it wrote — bypassing strict
-   * create and leaving components with no owning service. This asks the grouping question instead
-   * and hands back code for a human to commit, so the graph write happens through `POST /plans`
-   * with every ordinary door in the way.
-   *
-   * PURE TRANSFORM, BUT STILL AUTHENTICATED AND AUTHORIZED: a proposal describes an org's estate,
-   * and the emitted code names its services and repos. `object:read` at the org root is the same bar
-   * `POST /plans` uses for diff computation, which is the closest analogue — a read-shaped request
-   * whose body the caller supplied.
-   *
-   * IT EXISTS AT ALL because `apps/web` may import only `@scp/sdk` and `@scp/schemas` — never
-   * `@scp/iac` (eslint `no-restricted-imports`, the API -> SDK -> CLI -> IaC -> UI chain). The
-   * wizard gets the emitter's output the way it gets everything else: through the API.
-   */
+  /** `POST /discovery/scaffold` (ADR-0047). See docs/routes.md §177. */
   typed.route({
     method: "POST",
     url: "/api/v1/discovery/scaffold",
@@ -809,11 +738,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       const auth = await requireAuth(deps, request);
       const host = deps.pluginHost;
       if (!host) {
-        // Reachable only when `buildApp` was handed deps with no host (tests, `openapi:emit`) —
-        // `main.ts` gives every ROLE one, so a deployed process always has it. The old message said
-        // "run SCP_ROLE=all", which was both wrong for a split deployment (it would start a SECOND
-        // reconcile/watchdog/observe loop set beside the worker's) and unactionable, since api is
-        // the only process serving HTTP.
+        // Reachable only when `buildApp` was handed deps with no host. See docs/routes.md §178.
         throw badRequest(
           "this process has no plugin host, so a live discovery scan cannot be dispatched"
         );
@@ -838,14 +763,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           permission: "object:read",
           scopeObjectId: auth.orgId
         });
-        // Execution-system-backed discovery (e.g. argocd-discovery names its system in
-        // `config.executionSystemId`): the PERSISTED system — not the request — is the source of truth
-        // for where this plugin may talk, with what token, and whether internal egress is permitted.
-        // Mirrors executor-bindings-repo.ts's resolveExecutorPluginInstance discipline ("tenant config
-        // first, server-governed fields LAST — they win", CRITICAL #1 / MAJOR #4): a caller may NAME a
-        // system, never supply its serverUrl/token/egress allowance. Without this, an internal-egress
-        // grant on system X would authorize egress to an arbitrary caller-supplied `config.serverUrl` in
-        // the SAME request — a tenant-controlled SSRF into loopback/RFC1918 (egress-guard.ts, MAJOR #6).
+        // Execution-system-backed discovery names its own system. See docs/routes.md §179.
         let allowInternalEgress = false;
         let effectiveConfig = request.body.config;
         let effectiveAllowedHosts = request.body.allowedHosts;
@@ -854,11 +772,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           ?.executionSystemId;
         if (typeof execSysRef === "string" && execSysRef.length > 0) {
           const sys = await getObjectByIdOrUrnAnyType(tx, auth.orgId, execSysRef);
-          // Authorize at the REFERENCED SYSTEM's own scope (and BEFORE the typeId check, so the error
-          // isn't a type oracle). object:WRITE for the same reason as bindTargetToExecutionSystem:
-          // naming a system here dispatches a plugin with its decrypted token, and the handler's
-          // org-root object:read above is satisfied by every org member (the Viewer role holds
-          // object:read), so an object:read check here would be effectively no gate at all.
+          // Authorize at the REFERENCED SYSTEM's own scope. See docs/routes.md §180.
           await authorize(tx, {
             orgId: auth.orgId,
             subjectObjectId: auth.subjectObjectId,
@@ -901,27 +815,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           // anywhere else — this, not the permission gate, is what makes the grant narrow.
           effectiveAllowedHosts = [systemHost];
         }
-        // ==========================================================================================
-        // VALIDATE THE EFFECTIVE CONFIG, NOT THE REQUEST BODY.
-        //
-        // This used to run on `request.body.config` before the block above, which made the
-        // execution-system-backed path IMPOSSIBLE TO USE. `argocd-discovery`'s manifest requires
-        // `serverUrl`, and the whole point of naming a system is that the caller does NOT supply one
-        // — the comment above says so in as many words ("a caller may NAME a system, never supply
-        // its serverUrl/token/egress allowance"), and the merge below stamps the persisted value as
-        // server-governed. So the documented call was rejected for missing exactly the field the
-        // server was about to provide, and the only way through was to send a dummy `serverUrl` that
-        // is then overwritten — a required field whose value is ignored.
-        //
-        // Measured on the live homelab 2026-08-02, immediately after the plugin-host fix (#200) made
-        // this route reachable at all: `{executionSystemId}` alone answered 400 "must have required
-        // property 'serverUrl'".
-        //
-        // Validating the EFFECTIVE config is strictly stronger, not weaker. The inline path is
-        // unchanged (no system named -> effectiveConfig IS the body). The system-backed path is now
-        // checked against what the plugin will actually receive, which is the document that matters —
-        // and it still runs BEFORE `host.start`, so nothing is dispatched unvalidated.
-        // ==========================================================================================
+        // VALIDATE THE EFFECTIVE CONFIG, NOT THE REQUEST BODY. See docs/routes.md §181.
         validatePluginConfig(request.body.pluginModule, effectiveConfig);
 
         const resolvedSecrets = await resolveSecretRefs(

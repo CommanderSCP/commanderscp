@@ -21,50 +21,7 @@ import {
 } from "./campaign-deadline-lock.js";
 import type { CampaignDeadline, CampaignDeadlineOverride, CampaignRecipe } from "@scp/schemas";
 
-/**
- * ================================================================================================
- * M25.6b — THE PER-TARGET DEADLINE WAIVER, END TO END AGAINST REAL POSTGRES
- * ================================================================================================
- *
- * THE GUARANTEE UNDER TEST, in one sentence: *one laggard can be excused from a campaign's deadline
- * without clearing that deadline for anybody else — by an actor holding the Owner-only
- * `campaign:deadline-override` AT THE CAMPAIGN plus `object:write` at the target, and by nobody
- * else.*
- *
- * THE AUTHORIZATION CASES ARE THE POINT OF THIS FILE, not a formality around the effect case. §4.5's
- * two-check design exists because each check alone is wrong in a specific way, and each 403 below
- * names which:
- *
- *   * NO `campaign:deadline-override` (an org-root Administrator, who holds `object:write` on
- *     everything) => 403. Borrowing `object:write` would make the Owner-only grant decorative. That
- *     case ALSO now asserts the same subject cannot CLEAR the deadline outright: until the
- *     2026-08-25 D1 ruling it could, which made this narrow door's guard decorative in the other
- *     direction — a strictly wider act was available beside it for less.
- *   * THE PERMISSION, BUT NO `object:write` AT THE TARGET (an Owner bound at the campaign object
- *     ALONE) => 403. This is the case that proves the second check is wired at all, and it is the
- *     one that would silently pass if the target loop were ever deleted.
- *
- * The mirror-image case — a target-scoped check letting the laggard waive itself — is not
- * expressible as a test here BECAUSE the check is at the campaign: an actor holding everything at
- * the component and nothing at the campaign fails the FIRST check. That is the design working, and
- * `L: an operator with full authority over the TARGET and none over the campaign cannot self-excuse`
- * pins it.
- *
- * DRIVES `reconcileCampaignsOrgTick` DIRECTLY — never `withReconcileLoop`. A live loop is a
- * COMPETING CONSUMER of the rows these cases read back (`SKIP LOCKED` makes an inline call a silent
- * no-op), and "one tick" must mean exactly one tick for "no member change was minted" to be an
- * assertion rather than a race. The plugin host is the in-memory fake, exactly as
- * `campaign-deadline.integration.test.ts` uses it.
- *
- * NO FIXED SLEEPS, AND NONE ARE POSSIBLE. Every deadline here is a YEAR out and every wait is a tick
- * count against an INJECTED clock (`opts.now`). `until`-expiry is likewise tested by moving the
- * tick's clock past a stored boundary, never by waiting for one — which is the only way to test the
- * year-out deadline a real migration campaign carries.
- * `test-support/integration-sleep-census.test.ts` is the CI gate that keeps this true.
- *
- * A FRESH ORG PER CASE: `reconcileCampaignsOrgTick` serves every campaign in the org and several
- * cases assert org-wide counts ("exactly one Change exists").
- */
+/** The per-target deadline waiver, end to end. See docs/coordination.md §110. */
 
 /** Adoption evidence NOTHING in these fixtures can satisfy — no inventory is ever seeded, so every
  *  target resolves `unknown` and is locked from the first tick past the deadline. `unknown`, not
@@ -206,11 +163,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     return deadline?.overrides ?? [];
   };
 
-  /**
-   * A DEADLINE A YEAR OUT, and three instants around it that no test could ever reach by waiting:
-   * `after` is a week past it, `lapsed` a day past it (so a waiver expiring at `lapsed` is already
-   * six days dead when the `after` tick runs).
-   */
+  /** A deadline a year out, and three instants around it. See docs/coordination.md §111. */
   function futureDeadline(): {
     deadline: CampaignDeadline;
     before: Date;
@@ -259,23 +212,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     };
   }
 
-  // ===========================================================================================
-  // O — THE EFFECT. THE MUTATION TARGET.
-  // ===========================================================================================
-
-  /**
-   * THE CASE THE WHOLE INCREMENT EXISTS FOR: two locked siblings, one waived, and the waiver's
-   * entire observable consequence is that ONE member Change gets minted and the other does not.
-   *
-   * DRIVEN THROUGH THE RECONCILER, not the predicate. A predicate-level assertion would prove the
-   * branch computes the right answer and prove nothing about whether anything READS it — the
-   * component-built-never-installed failure this repo keeps meeting. What is asserted here is a row
-   * in `changes` that exists only because `campaign-reconcile.ts` did not `continue`.
-   *
-   * MUTATION-PROVEN: delete the override branch — `if (findEffectiveDeadlineOverride(...)) continue;`
-   * — from `evaluateCampaignDeadlineLock` and this fails with
-   *   `AssertionError: the waived target must get its member Change minted: expected +0 to be 1`.
-   */
+  /** Two locked siblings, one waived: the whole increment. See docs/coordination.md §112. */
   it("O: a waived target gets its member Change on the next tick — its unwaived sibling does not", async () => {
     const { org, componentIds, campaignId, after } = await lockedCampaign("override-effect", 2);
     const [waived, sibling] = componentIds as [string, string];
@@ -285,7 +222,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(await changeCount(org), "both targets start out locked by the deadline").toBe(0);
     expect(await decisionsOfKind(org, campaignId, CAMPAIGN_DEADLINE_DECISION_KIND)).toHaveLength(1);
 
-    // ---- THE WAIVER, for exactly one of them.
     const updated = await post(org, `/api/v1/campaigns/${campaignId}/deadline-override`, {
       targets: [waived],
       reason: "the vendor has not shipped a 3.x base image for this component yet"
@@ -315,12 +251,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(siblingRow.status).toBe("pending");
   });
 
-  /**
-   * READ-TIME EXPIRY, DRIVEN THROUGH THE RECONCILER. An `until` already past when the tick runs is
-   * stored, audited, and NOT effective — with no job to un-flip it and nothing rewriting the
-   * document as it lapses. Then re-waiving the same target REPLACES the dead entry rather than
-   * appending beside it, and the campaign fans out.
-   */
+  /** READ-TIME EXPIRY, DRIVEN THROUGH THE RECONCILER. See docs/coordination.md §113. */
   it("U: an `until` in the PAST is stored and audited but NOT effective — and re-waiving replaces it", async () => {
     const { org, componentIds, campaignId, after, lapsedAt } =
       await lockedCampaign("override-until");
@@ -343,7 +274,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
       "a waiver whose `until` has passed must withhold nothing from the deadline"
     ).toBe(0);
 
-    // ---- RE-WAIVE, with no expiry this time.
     const renewed = await post(org, `/api/v1/campaigns/${campaignId}/deadline-override`, {
       targets: [component],
       reason: "the vendor slipped again; excused indefinitely"
@@ -369,16 +299,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     ]);
   });
 
-  /**
-   * THE READ SURFACE HONOURS THE WAIVER TOO, so the page and the engine cannot disagree about who is
-   * being withheld from. `getCampaignStatus` runs the SAME predicate — one resolution core, one
-   * answer — which is what makes this an assertion about wiring rather than a duplicate of case O.
-   *
-   * THE DEADLINE HERE IS IN THE REAL PAST, deliberately, and for the reason `campaign-deadline`'s
-   * case E records: an HTTP read has no tick and therefore no injected clock, so it reads the real
-   * one. A year-out fixture would leave this case asserting `not blocked` against a deadline that was
-   * never due — green for the wrong reason.
-   */
+  /** The read surface honours the waiver too. See docs/coordination.md §114. */
   it("V: the campaign stops reporting `blocked` once its only locked target is waived", async () => {
     const { org, componentIds } = await fixture("override-view");
     const [component] = componentIds as [string];
@@ -418,18 +339,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect((await read()).deadline!.at).toBe(deadline.at);
   });
 
-  // ===========================================================================================
-  // THE RECORD
-  // ===========================================================================================
-
-  /**
-   * ONE DECISION UNDER ITS OWN KIND, AND ONE HIGH-SEVERITY AUDIT EVENT **PER TARGET**.
-   *
-   * The `inputContext` key census is exact rather than a "does not contain `now`" check: a census
-   * fails when a NEW clock-shaped key is added, which is how ADR-0024's measured 1.44 GB/day defect
-   * actually arrives. `at` and `actorId` are deliberately absent — they are clock- and
-   * identity-shaped and their home is the audit event and the stored waiver.
-   */
+  /** One Decision, and one audit event per target. See docs/coordination.md §115. */
   it("R: one `campaign_deadline_override` Decision (sorted targets, `until` as a boundary) and one audit event per target", async () => {
     const { org, componentIds, campaignId } = await lockedCampaign("override-record", 3);
     const [a, b, c] = componentIds as [string, string, string];
@@ -475,10 +385,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(stored.every((o) => o.actorId.length > 0 && o.at.length > 0)).toBe(true);
   });
 
-  // ===========================================================================================
-  // THE DOOR — 400s
-  // ===========================================================================================
-
   it("B1: the reason is MANDATORY — an absent or empty one is a 400", async () => {
     const { org, componentIds, campaignId } = await lockedCampaign("override-reason");
     const [component] = componentIds as [string];
@@ -494,11 +400,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(await storedOverrides(org, campaignId)).toHaveLength(0);
   });
 
-  /**
-   * A WAIVER OVER A NON-TARGET IS DEAD DATA in a permanent governance record, and a campaign with no
-   * deadline has nothing to waive. Both are refused at the door rather than written and ignored: an
-   * operator who believes they excused something is worse off than one who got an error.
-   */
+  /** A waiver over a non-target is dead data. See docs/coordination.md §116. */
   it("B2: refuses a target the campaign does not declare, and a campaign with no deadline", async () => {
     const { org, componentIds, campaignId } = await lockedCampaign("override-nontarget", 1);
     const [component] = componentIds as [string];
@@ -524,29 +426,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(nothingToWaive.statusCode).toBe(400);
   });
 
-  // ===========================================================================================
-  // THE DOOR — 403s. THE SUBSTANCE.
-  // ===========================================================================================
-
-  /**
-   * NO `campaign:deadline-override` => 403, and the subject chosen is the sharpest available: an
-   * ADMINISTRATOR AT THE ORG ROOT. That role holds `object:write` over every object in the org, and
-   * drizzle/0088 grants the new permission to Owner ALONE. A Viewer would have failed this for the
-   * boring reason; an Administrator fails it for the designed one.
-   *
-   * ===========================================================================================
-   * THIS CASE'S CONTROL USED TO BE THE BUG (owner ruling 2026-08-25, decision D1 b-i)
-   * ===========================================================================================
-   * It asserted that the SAME Administrator could CLEAR the whole deadline through
-   * `POST /campaigns/{id}/deadline` — 200 — as the control proving the 403 above was about the
-   * missing permission rather than about authority over the campaign. That assertion was true, and it
-   * was the vulnerability, written down and guarded: clearing excuses EVERY target permanently, with
-   * no `until` and no per-target check, so the subject refused a ONE-TARGET waiver here had a
-   * strictly wider act available one route up for less. The clear now demands
-   * `campaign:deadline-override` too, so the old control asserts the opposite of the rule and is
-   * REPLACED rather than relaxed: the control is now a TIGHTENING through the same verb, which is
-   * still open at `object:write` and still proves exactly what the control existed to prove.
-   */
+  /** No override permission means 403, sharpest subject. See docs/coordination.md §117. */
   it("A1: an org-root ADMINISTRATOR cannot waive this deadline per target — nor, since the D1 ruling, clear it outright", async () => {
     const { org, componentIds, campaignId, deadline } =
       await lockedCampaign("override-authz-admin");
@@ -595,18 +475,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(tightened.statusCode, tightened.body).toBe(200);
   });
 
-  /**
-   * THE PERMISSION AT THE CAMPAIGN, BUT NO `object:write` AT THE TARGET => 403.
-   *
-   * The subject is an OWNER BOUND AT THE CAMPAIGN OBJECT ALONE. `hasPermission` expands the checked
-   * scope UPWARD, so that binding satisfies `campaign:deadline-override` at the campaign and reaches
-   * NOTHING under the components (a component's chain runs component -> service -> org root, and the
-   * campaign is on none of it).
-   *
-   * THE CASE THAT PROVES CHECK 2 IS WIRED AT ALL, and mutation-proven as such: delete the per-target
-   * `authorize` block from `routes/campaigns.ts` and this fails with
-   *   `AssertionError: expected 200 to be 403`.
-   */
+  /** The permission at the campaign, but not at the target. See docs/coordination.md §118. */
   it("A2: holding `campaign:deadline-override` at the campaign is not enough without `object:write` at the target", async () => {
     const { org, componentIds, campaignId } = await lockedCampaign("override-authz-target");
     const [component] = componentIds as [string];
@@ -637,13 +506,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(await storedOverrides(org, campaignId)).toHaveLength(1);
   });
 
-  /**
-   * THE INVERSION §4.5 EXISTS TO PREVENT, asserted directly. An operator with FULL authority over
-   * the component — Owner at the component, which is more than the deploying team normally has —
-   * and none over the campaign cannot excuse their own component. If this check were ever moved to
-   * the target, the deadline would coerce only the teams that did not think to opt out, which is
-   * worse than not having it.
-   */
+  /** THE INVERSION §4.5 EXISTS TO PREVENT, asserted directly. See docs/coordination.md §119. */
   it("L: an operator with full authority over the TARGET and none over the campaign cannot self-excuse", async () => {
     const { org, componentIds, campaignId } = await lockedCampaign("override-self-excuse");
     const [component] = componentIds as [string];
@@ -659,16 +522,9 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(await storedOverrides(org, campaignId)).toHaveLength(0);
   });
 
-  // ===========================================================================================
   // THE BROAD FORM, AND WHAT A MOVE DOES TO WAIVERS ALREADY IN FORCE
-  // ===========================================================================================
 
-  /**
-   * OMITTING `targets` WAIVES EVERY DECLARED TARGET — and it is still not `deadline --clear`: the
-   * deadline stands on the campaign, each waiver is recorded per target with its own audit event,
-   * and the act cost the Owner-only permission at the campaign PLUS `object:write` at every one of
-   * them, where clearing costs `object:write` at the campaign alone.
-   */
+  /** OMITTING `targets` WAIVES EVERY DECLARED TARGET. See docs/coordination.md §120. */
   it("W: omitting `targets` waives every declared target, one audit event each, deadline still standing", async () => {
     const { org, componentIds, campaignId, deadline, after } = await lockedCampaign(
       "override-all",
@@ -690,18 +546,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     );
   });
 
-  /**
-   * A MOVE MUST NOT SILENTLY DROP WAIVERS ALREADY IN FORCE.
-   *
-   * `POST /campaigns/{id}/deadline` runs at plain `object:write` and its request body CANNOT express
-   * `overrides` (that is the authority split). So an author moving the date has said NOTHING about
-   * the waivers, and dropping them would be an unexpressed act — a silent TIGHTENING, re-locking
-   * targets an Owner deliberately excused, performed by someone who never held the permission to
-   * un-excuse them. Carrying them forward is the reading that matches what a waiver means.
-   *
-   * A CLEAR takes them with it, and that is not an inconsistency: there is then nothing left to be
-   * excused from.
-   */
+  /** A MOVE MUST NOT SILENTLY DROP WAIVERS ALREADY IN FORCE. See docs/coordination.md §121. */
   it("M: a MOVE preserves waivers already in force; a CLEAR takes them with the deadline", async () => {
     const { org, componentIds, campaignId } = await lockedCampaign("override-move");
     const [component] = componentIds as [string];
@@ -730,12 +575,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(await storedOverrides(org, campaignId)).toHaveLength(0);
   });
 
-  /**
-   * THE AUTHORING DOORS CANNOT MINT A WAIVER. Both run at plain `object:write`; if either accepted
-   * `overrides` it would be the Owner-only permission's bypass. `CampaignDeadlineInputSchema` is
-   * strict, so the attempt is a 400 rather than a key silently dropped — which matters, because a
-   * dropped key leaves an operator believing they excused a target that is still locked.
-   */
+  /** THE AUTHORING DOORS CANNOT MINT A WAIVER. See docs/coordination.md §122. */
   it("S: neither `POST /campaigns` nor `POST /campaigns/{id}/deadline` accepts an `overrides` key", async () => {
     const { org, componentIds, campaignId, deadline } = await lockedCampaign("override-doors");
     const [component] = componentIds as [string];

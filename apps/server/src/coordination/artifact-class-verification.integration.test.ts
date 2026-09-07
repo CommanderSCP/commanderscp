@@ -13,63 +13,14 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * D13 (increment 8) — THE ARTIFACT-CLASS VERIFICATION, END TO END: a pipeline declares the class it
- * produces, a build reports what it actually produced, and a DISAGREEMENT refuses the release with a
- * Decision that carries both sides.
- *
- * ============================================================================================
- * WHAT WAS BROKEN, AND WHY A COMMENT WOULD NOT HAVE CLOSED IT
- * ============================================================================================
- * `ArtifactClassVerificationSchema` shipped with the increment 8 contract and then sat with ZERO
- * consumers repo-wide — no server module, not even a test — while the `buildReport` evidence source
- * it named DID NOT EXIST ON THE WIRE: `ChangeReportRequestSchema` carried `artifactDigest` but no
- * artifact class, so no build had any way to say it produced an RPM. The schema's own doc described,
- * in detail, a check that nothing performed. That is this repo's dominant defect class, and the
- * standing rule it violates is the sharper one: a well-written comment naming a hazard is a signal
- * to SWEEP, not evidence the hazard was handled.
- *
- * So the property under test is not "the verdict function returns the right string" — that is the
- * unit file next door. It is "a disagreement between the two declarations STOPS A RELEASE", proved
- * through the real typed ingress and the real processor.
- *
- * ============================================================================================
- * WHAT EACH CASE IS PROVED **WITH**
- * ============================================================================================
- *   - Every case goes through the GENERATED SDK's `changeSources.report(...)` — a real PAT-authed
- *     HTTP call, the real route, the real `strictObject` body. This is not incidental: case 4 exists
- *     because that strictness is exactly why `artifactClass` had to be DECLARED on the schema rather
- *     than merely read by the processor's generic hint extractor. A processor-level unit test would
- *     pass on a build where every real reporter received a 400.
- *
- *   - The REFUSAL (case 2) asserts three things together, because each alone is satisfiable by a
- *     broken build: NO change object was produced, the event was still marked PROCESSED (a permanent
- *     defect must not retry forever on a persist-then-process ingress), and a Decision exists whose
- *     `inputContext` carries the verification RECORD with both sides. Asserting only "no change"
- *     would also pass if the processor had simply crashed.
- *
- *   - The UNCHANGED BEHAVIOUR (cases 3a/3b) is the additive property, and it is the case most worth
- *     protecting: every reporter in the estate predates this field. A report that omits the class
- *     must produce a byte-identical outcome to before, which is asserted as "the change is created
- *     AND `sourceRef` carries no artifact-class key at all" rather than merely "it did not refuse".
- *
- * ============================================================================================
- * MUTATIONS RUN (2026-08-27) — four, each applied ALONE against a passing suite and reverted by an
- * exact inverse edit. One of them (M-a) SURVIVED every case in this file; the table at the bottom
- * records that and says why, rather than quietly claiming the coverage. Measured, not predicted.
- * ============================================================================================
- */
+/** Artifact-class verification, end to end. See docs/coordination.md §3. */
 describe("D13 artifact-class verification (integration)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
   let admin: ScpClient;
 
   beforeAll(async () => {
-    // BOTH flags are required and neither is optional decoration: the reconcile loop is what runs
-    // `processChangeSourceEvents`, and it schedules its tick on the RELAY's pg-boss. With only the
-    // relay, every report below persists an event nothing ever processes and each assertion becomes
-    // a 15s timeout that reads like a slow processor rather than an absent one — measured, not
-    // guessed; that is exactly how this file first failed.
+    // BOTH flags are required and neither is optional decoration. See docs/coordination.md §4.
     server = await listenTestServer({ withEventRelay: true, withReconcileLoop: true });
     org = await createTestOrg(server, "artifact-class");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -232,39 +183,4 @@ describe("D13 artifact-class verification (integration)", () => {
   });
 });
 
-/*
- * ============================================================================================
- * MUTATION TABLE — measured 2026-08-27. Each applied ALONE against a passing suite and reverted by
- * an exact inverse edit; baseline restored to 17/17 afterwards and re-run to confirm. Baseline:
- * 6 (this file) + 11 (`artifact-class-verification.test.ts`) = 17. Nothing below is a prediction.
- * ============================================================================================
- *
- *  M-a  `artifact-class-verification.ts`: return `verdict: "match"` instead of `"unverified"` when
- *       no class was reported — the inversion that would silently turn "we never checked" into
- *       "we checked and it was fine"
- *         -> 3 unit failed. THE 6 INTEGRATION CASES ALL SURVIVED, and this file says so rather than
- *            claiming a coverage it does not have: `unverified` and `match` BOTH proceed to a
- *            created change with no artifact-class key written, so the two are INDISTINGUISHABLE at
- *            this layer by construction. The distinction is only observable in the verdict record,
- *            which integration sees only on the refusal path. The unit file carries this property
- *            alone, deliberately — not by oversight.
- *
- *  M-b  `webhook-processor.ts`: delete the `verdict === "mismatch"` refusal block entirely, leaving
- *       the verification computed and never acted on — the EXACT "built, tested, installed nowhere"
- *       shape this whole increment exists to close
- *         -> 2 failed here (cases 2 and 5); all 11 unit passed, correctly — the pure function is
- *            untouched by this mutation, which is precisely why a unit test could never have caught
- *            it and why the integration file exists.
- *
- *  M-c  `webhook-processor.ts`: drop `artifactClassVerification` from the refusal Decision's
- *       `inputContext`, keeping the refusal itself intact
- *         -> 2 failed here (cases 2 and 5). Confirms the cases assert the RECORD and not merely that
- *            something was blocked — a refusal without its inputs is not Decision-backed.
- *
- *  M-d  `executors.ts`: remove `artifactClass` from `ChangeReportRequestSchema`, WITH a
- *       `@scp/schemas` rebuild (without the rebuild the server keeps resolving the old `dist/` and
- *       the mutation is not applied at all — the false-green trap D23 measured and recorded)
- *         -> 3 failed here (cases 1, 2 and 5), each a 400 at the strict door rather than a wrong
- *            verdict. That is the trap case 4 pins from the other side: the field must be DECLARED,
- *            not merely read, or every real reporter is refused before the processor ever runs.
- */
+// MUTATION TABLE — measured 2026-08-27. See docs/coordination.md §5.

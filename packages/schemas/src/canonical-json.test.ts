@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJson, canonicalizeDeep } from "./canonical-json.js";
 
-/**
- * The implementation this module replaces, copied VERBATIM from `origin/main`'s
- * `federation-journal.ts` (identical bytes in four other files). It is here as the differential
- * oracle for the compatibility guarantee: for input with no own `__proto__` key the new
- * canonicalizer must agree with it to the byte, because live estates hold `row_hash` /
- * `content_hash` values computed by it.
- */
+/** The implementation this module replaces, copied verbatim. See docs/schemas.md §49. */
 function legacySortKeysDeep(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(legacySortKeysDeep);
   if (value !== null && typeof value === "object") {
@@ -68,11 +62,7 @@ describe("canonicalJson — compatibility with the five implementations it repla
 });
 
 describe("canonicalJson — totality over __proto__ (the integrity bug)", () => {
-  /**
-   * THE assertion that had to flip. On `origin/main` these two produced the byte-identical string
-   * `{"ok":1}`, so a peer could append an arbitrarily large subtree to a signed payload without
-   * changing its `rowHash` or its Ed25519 signature.
-   */
+  /** THE assertion that had to flip. See docs/schemas.md §50. */
   it("gives two payloads differing only by a __proto__ subtree DIFFERENT canonical strings", () => {
     const clean = JSON.parse('{"ok":1}') as unknown;
     const poisoned = JSON.parse(
@@ -94,7 +84,7 @@ describe("canonicalJson — totality over __proto__ (the integrity bug)", () => 
   it("distinguishes two DIFFERENT __proto__ subtrees from each other", () => {
     const a = JSON.parse('{"__proto__":{"role":"viewer"}}') as unknown;
     const b = JSON.parse('{"__proto__":{"role":"admin"}}') as unknown;
-    expect(legacyCanonicalJson(a)).toBe(legacyCanonicalJson(b)); // oracle: indistinguishable
+    expect(legacyCanonicalJson(a)).toBe(legacyCanonicalJson(b));
     expect(canonicalJson(a)).not.toBe(canonicalJson(b));
   });
 
@@ -132,12 +122,7 @@ describe("canonicalJson — totality over __proto__ (the integrity bug)", () => 
   });
 });
 
-/**
- * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
- * that three named keys are absent only proves those three are absent; this proves NOTHING was
- * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
- * so it is checked rather than assumed.
- */
+/** Snapshot every Object.prototype key, not three named ones. See docs/schemas.md §51. */
 const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
 
 describe("canonicalJson — global prototype hygiene", () => {

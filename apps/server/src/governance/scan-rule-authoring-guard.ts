@@ -9,113 +9,9 @@ import { controlBindings } from "../db/schema.js";
 import { badRequest } from "../errors.js";
 import { isUuid } from "../graph/objects-repo.js";
 
-/**
- * M22.8 (BUILD_AND_TEST.md §8 M22.8) — A SCAN RULE THAT REQUIRES NO SCAN IS REFUSED AT AUTHORING
- * TIME.
- *
- * TWO REFUSALS LIVE HERE, and the header below is about the first. The second
- * ({@link assertDeclaredFactClauseIsNarrowed}) refuses a `declared_fact` clause that narrows nothing;
- * it has its own docblock. They share this file because both are authoring-time refusals of a scan
- * rule that says something other than what its author believes — one that constrains nothing, and one
- * that constrains everything — and both are installed at the same two choke points for the same
- * `federationImport` reasons.
- *
- * ================================================================================================
- * THE MEASURED DEFAULT EXPERIENCE THIS ENDS
- * ================================================================================================
- * A first-time SecOps author writes the obvious document:
- *
- *     {"scope": {"objectRef": "<service>"}, "effects": [{"scanThreshold": {"maxHigh": 0}}]}
- *
- * It is accepted, it is versioned, it appears in the policy list, and it constrains NOTHING.
- *
- * BE PRECISE ABOUT WHERE, because the two gate sites differ and a guard whose stated reason is only
- * half true is the provenance-label defect this repo has already paid for:
- *
- *   - `prewarmGovernanceForChange` computes `allControlIds` from the fired set's `requireControls`
- *     and only then, INSIDE `if (allControlIds.length > 0)`, resolves the six-tier ceiling and the
- *     exclusion set at all. With no control required, neither is ever resolved on that path — the
- *     one whose run is CACHED and later read by the host-less accept edge.
- *   - `evaluateGovernanceGate` resolves both UNCONDITIONALLY (M22.0 hoisted them out of the `host`
- *     ternary on purpose), so the ceiling does reach the Decision at a wave boundary. It still
- *     constrains nothing: no scan control is required, so no scan verdict is ever produced for the
- *     ceiling to be compared against or for a clause to act on.
- *
- * Either way the rule does not bind, and the failure is FAIL-CLOSED in the narrow sense (nothing
- * passes that would otherwise have failed — with no scan control there is no scan at all), which is
- * exactly why it never surfaces as an incident. It surfaces as a rule that mysteriously does not
- * fire, with no error, no log and no way for the author to discover why. That is the same harm
- * `component-declaration-guard.ts` names for a misspelled declaration, and it gets the same remedy:
- * refuse at the door, where a 400 costs one round-trip and leaves nobody with a false belief.
- *
- * ================================================================================================
- * THE DOCUMENT MUST BE SELF-CONTAINED, AND THAT IS THE PRECISE CLAIM
- * ================================================================================================
- * The refusal does NOT claim "this ceiling can never apply". `resolveEffectiveScanThreshold` reads
- * every matched policy, not just the one carrying `requireControls`, so a bare ceiling authored
- * beside SOME OTHER policy that requires a scan control genuinely would apply. The refusal is
- * narrower and stronger than that: a scan RULE must, in its own document, require the scan it
- * constrains.
- *
- * That is not tidiness. Depending on a sibling policy makes the constraint conditional on that
- * sibling's continued existence, its scope still covering this target, and — worst — its own CEL
- * condition still firing, because a group whose condition is false contributes no `requireControls`
- * and `allControlIds` collapses to empty. The ceiling then evaporates for exactly the changes the
- * sibling's condition excluded, silently. Requiring the document to carry its own requirement is
- * what makes M22's stated invariant — "fail-closed universality survives: a missing scan still
- * refuses exactly like a failed one" — a property of the rule rather than of the estate around it.
- *
- * A LOCAL, DETERMINISTIC CHECK IS ALSO THE ONLY KIND THAT CAN LIVE AT A CHOKE POINT. A guard that
- * consulted other policies would accept a document today and refuse the identical document tomorrow
- * because an unrelated policy was deleted — and because the UPDATE half checks `nextProperties`
- * (the value about to be STORED, see `objects-repo.ts`), that would make an untouched, already-valid
- * policy un-editable as a side effect of somebody else's delete.
- *
- * ================================================================================================
- * AN `admit`-ONLY `scanExclusion` IS EXEMPT, DELIBERATELY
- * ================================================================================================
- * `{"scanExclusion": {"admit": ["no_fix_available"]}}` is an ADMISSION — one rung of ADR-0033 §1's
- * monotone AND stating that a class of loosening MAY have effect beneath it. It produces no verdict,
- * constrains no scan, and is authored at the top of the chain (platform, trust domain, org) where
- * naming a specific component's scan control would be meaningless. Refusing it would demand that
- * every org-wide admission enumerate scan controls it has no business knowing about.
- *
- * An `exclude` clause is the opposite: it is a rule about a finding in a scan, and a clause with no
- * scan required is inert for the same reason a ceiling is. Both halves can ride in one effect, so
- * the test is on `exclude`'s presence, never on the effect kind.
- *
- * ================================================================================================
- * "NAMES NO SCAN CONTROL" — AND WHY AN UNBOUND CONTROL IS NOT PROOF OF ONE
- * ================================================================================================
- * Naming any control is not enough: `requireControls: ["<a webhook control>"]` makes
- * `allControlIds` non-empty, so the ceiling resolves and lands in the Decision, and still no scan
- * ever runs for it to constrain. So the check resolves the named controls' bindings and requires at
- * least one bound to a scan-verdict module.
- *
- * BUT AN ABSENT BINDING IS REFUSED FROM BEING EVIDENCE, in the same "a miss yields nothing" spirit
- * ADR-0033 §1 applies to a matcher. A control object and its binding are two API calls; refusing a
- * policy because the binding has not been created YET would make policy authoring order-dependent,
- * and — through the `nextProperties` update rule again — would make an already-valid policy
- * un-editable the moment somebody re-pointed or dropped a binding. So the refusal fires only when
- * every named control is BOUND and none of them is bound to a scan-verdict module: exactly when the
- * document can be PROVEN inert, never when it merely cannot be proven live.
- */
+/** M22.8 (BUILD_AND_TEST.md §8 M22.8). See docs/governance.md §391. */
 
-/**
- * The control plugin modules that produce a SCAN VERDICT — the evidence a `scanThreshold` is
- * compared against and a `scanExclusion` clause acts on.
- *
- * CENSUS, not a guess: `plugin-host/subprocess-entry.ts`'s `loadPlugin` switch and
- * `plugin-host/contract.ts`'s `PluginHostInstanceConfig["module"]` union are the authority on which
- * modules exist, and `control-runner.ts`'s `KNOWN_CONTROL_MODULES` lists the three that are
- * ControlPlugins (`webhook-control`, `scan-result-control`, `github-check`). Exactly one of the
- * three emits `ScanEvidence`. `federation/promotion-scan-step.ts` is the OTHER verdict producer in
- * the system and is deliberately absent: it is a server-side step, not a control binding, and no
- * `requireControls` entry can ever name it.
- *
- * If a second scan-verdict ControlPlugin is ever added, it belongs here — and the failure mode of
- * forgetting is a FALSE REFUSAL (a legitimate policy rejected), which is loud, not a false accept.
- */
+/** The control plugin modules that produce a SCAN VERDICT. See docs/governance.md §392. */
 const SCAN_VERDICT_CONTROL_MODULES: readonly string[] = ["scan-result-control"];
 
 interface EffectBag {
@@ -124,11 +20,7 @@ interface EffectBag {
   requireControls?: unknown;
 }
 
-/** True when this effect sets a ceiling the gate would actually read — the same test
- *  `scan-requirements.ts`'s `parseScanThresholdEffect` applies, expressed against the same schema so
- *  the two cannot drift into disagreeing about what a ceiling is. A malformed or empty
- *  `scanThreshold` contributes nothing to the MIN, so it is not a rule and is not refused here (it
- *  is already inert for a reason this guard does not own). */
+/** True when this effect sets a ceiling the gate would read. See docs/governance.md §393. */
 function carriesCeiling(effect: EffectBag): boolean {
   const raw = effect.scanThreshold;
   if (!raw || typeof raw !== "object") return false;
@@ -152,50 +44,7 @@ function carriesExclusionClause(effect: EffectBag): boolean {
   return parsed.success && parsed.data.exclude !== undefined;
 }
 
-/**
- * A `declared_fact` CLAUSE THAT NARROWS NOTHING IS REFUSED — the write half of a pair whose read half
- * is `declaredFactPredicate` in `@scp/schemas`.
- *
- * ================================================================================================
- * THE SHAPE, AND WHY IT IS NOT MERELY BROAD
- * ================================================================================================
- * `{"scanExclusion": {"exclude": {"class": "declared_fact", "declaredFact": "egress",
- *   "declaredValue": "none"}}}` carries none of `vulnerabilityId`/`pkgName`/`purl`/`findingClass`.
- * The class's predicate is finding-INDEPENDENT once the declaration holds — it has nothing about a
- * finding to test — so with no narrowing matcher the clause excludes EVERY finding at EVERY severity
- * for every target that declared the pair. It turns the scan gate off, and it reads like an exception.
- *
- * ADMISSION CANNOT SEE IT, which is what makes this worth a door rather than a lint. ADR-0033 §1's
- * AND is per CLASS: the tiers above consent to "`declared_fact` may be used beneath me", never to a
- * particular clause, and they are not shown the clauses a lower tier subsequently writes. So one
- * service-tier `policy:write` holder plus the component owner's own `object:write` on
- * `properties.security` — the weaker permission ADR-0033 §6 names as the accepted seam — is the whole
- * escalation. The seam is bounded by the CLAUSE's matchers; a clause with none has no bound.
- *
- * ================================================================================================
- * WHY THE READ-TIME REFUSAL IS NOT ENOUGH ON ITS OWN, AND VICE VERSA
- * ================================================================================================
- * The predicate already returns `undefined` for this shape, so nothing is excluded even if such a
- * clause is stored. That is the reach the door cannot have: a clause authored before this guard
- * existed, or one arriving over federation import — which every guard at this choke point
- * deliberately skips, because a throw on that path aborts a whole signed bundle and wedges the
- * channel. Conversely the door is the reach the predicate cannot have: silently ignoring an authored
- * rule leaves the author believing the exception is in force, which is the exact "rule that
- * mysteriously does not fire" this module's header exists to end. Two halves, one property, neither
- * redundant.
- *
- * ONLY THIS CLASS. The property is "a class predicate that does not itself narrow per finding", and
- * a filterless read of all four cases in `scanExclusionClassPredicate` finds exactly one:
- * `no_fix_available` tests the finding's own `fixedVersion`; `vendor_latest` joins its class, purl,
- * name and installed version against resolved facts; `approved_override` joins its `vulnerabilityId`
- * against a specific grant. An unnarrowed clause of those three excludes what the class name says and
- * no more — a reach an admitting tier CAN predict from the class alone. This one collapses to a
- * constant, so it alone carries the extra requirement, and widening the refusal to all four would
- * refuse the ordinary org-wide `{"class": "no_fix_available"}` that ADR-0033 §1 uses as its example.
- *
- * PURE AND SYNCHRONOUS, unlike its neighbour: it reads only the document. That is why it is installed
- * AHEAD of the awaited refusals at both choke points — a bad write must not pay for a round trip.
- */
+/** A `declared_fact` CLAUSE THAT NARROWS NOTHING IS REFUSED. See docs/governance.md §394. */
 export function assertDeclaredFactClauseIsNarrowed(args: {
   typeId: string;
   properties: Record<string, unknown>;

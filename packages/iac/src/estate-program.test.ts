@@ -6,16 +6,7 @@ import {
   type ServiceSpec
 } from "./estate-program.js";
 
-/**
- * Unit-level coverage for the shared `scp iac export`/`scp iac scaffold` emitter
- * (team-pipeline-iac.md §9/§7). The stronger, whole-file proofs — "the rendered TS actually
- * compiles against the real `@scp/iac` package" and "export → synth → compare" executed through a
- * real `tsc` — live in `@scp/cli`'s `iac-estate-program.roundtrip.test.ts`, because only a package
- * that already depends on `@scp/iac` (a real `node_modules` symlink, not a source-relative import)
- * can compile generated code AGAINST the published surface the way a real team's repo would. This
- * file covers the two pure functions' own behavior in isolation: what they build/render for a given
- * `ServiceSpec`, and the placeholder count they agree on.
- */
+/** Unit coverage for the shared export and scaffold emitter. See docs/iac.md §254. */
 
 function completeSpec(): ServiceSpec {
   return {
@@ -134,11 +125,7 @@ describe("PipelineSpec.topologyUrn — the D5 adoption affordance (never duplica
     };
   }
 
-  // MUTATION-WATCHED (restored before commit): removing the `adoptTopologyUrn` spread from
-  // `buildEstateManifest`'s `props` object makes this case go red — the synthesized topology's URN
-  // reverts to a fresh, derived one instead of the live URN `spec` supplied, which is exactly the
-  // silent-duplication hazard this prop closes (applying the exported manifest would then CREATE a
-  // second `release-topology` object beside the real one and repoint `releases_via` at it).
+  // MUTATION-WATCHED (restored before commit). See docs/iac.md §255.
   it("buildEstateManifest: the synthesized topology carries the LIVE urn, not a derived one", () => {
     const { manifest } = buildEstateManifest(specWithLiveTopology());
     const topology = manifest.objects.find((o) => o.typeId === "release-topology");
@@ -192,11 +179,7 @@ describe("renderEstateProgram", () => {
     );
   });
 
-  // MUTATION-WATCHED: if the `repo:` branch below were changed to emit a plausible fabricated string
-  // (e.g. `${slug}/${component}`) instead of the `undefined` placeholder constant, this case goes red
-  // (the marker text and `TODO_MISSING_REPO_1` both vanish) — and `@scp/cli`'s
-  // `iac-estate-program.roundtrip.test.ts` placeholder case goes red too, because the emitted file
-  // would then typecheck when it must not. Restoring the `undefined` constant turns both green again.
+  // Mutation-watched: a plausible alternative would be caught. See docs/iac.md §256.
   it("emits a loud, unmissable placeholder block — never a plausible-looking invented repo", () => {
     const { source, placeholderCount } = renderEstateProgram(specMissingSourceMapping());
     expect(placeholderCount).toBe(1);

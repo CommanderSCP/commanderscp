@@ -1,11 +1,7 @@
 import * as React from "react";
 import { cn } from "../../lib/utils";
 
-/**
- * §2.12 table treatment: the wrapper carries the surface (`rounded-lg border`) and horizontal
- * scrolling, the header row is a `bg-army-50` band of eyebrow-type `th`s, rows divide with
- * `divide-y` and hover `bg-army-50/60`. Routes never restyle these pieces individually.
- */
+/** §2.12 table treatment. See docs/web.md §112. */
 export function Table({ className, ...props }: React.TableHTMLAttributes<HTMLTableElement>) {
   return (
     <div className="w-full overflow-x-auto rounded-lg border border-slate-200">

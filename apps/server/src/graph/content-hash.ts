@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 
-/**
- * `content_hash = sha256(canonical row content)` (DESIGN.md §4.1) — used for federation
- * change-detection (a peer can tell a row changed without comparing every column) and recomputed
- * on every write. Field order is fixed so identical logical content always hashes identically.
- */
+/** `content_hash = sha256(canonical row content)` (DESIGN.md §4.1). See docs/graph.md §44. */
 export function computeObjectContentHash(input: {
   id: string;
   orgId: string;
@@ -51,18 +47,7 @@ export function computeRelationshipContentHash(input: {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-/**
- * A declared pipeline hook's canonical hash (outpost-run probes). Same fixed-field-order discipline
- * as the two above: the hash is what lets an outpost tell "this hook changed" from "this hook was
- * re-journalled" without diffing every column, and it is the value a tombstone carries so a delete
- * references the exact content it removes.
- *
- * IDENTITY FIELDS ONLY PLUS THE DECLARATION. `id` is deliberately ABSENT — a hook's identity is
- * `(orgId, componentObjectId, kind, hookId)` (migration 0096's unique constraint), and the row's
- * uuid is local to whichever instance minted it. Including it would make the commander's row and
- * the outpost's copy of the same declaration hash differently, which is exactly the comparison this
- * exists to support.
- */
+/** A declared pipeline hook's canonical hash. See docs/graph.md §45. */
 export function computePipelineHookContentHash(input: {
   orgId: string;
   componentObjectId: string;

@@ -6,23 +6,7 @@ import type { Db } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { instanceCosignKeys } from "../db/schema.js";
 
-/**
- * The org's cosign MANIFEST-SIGNING keypair (M17.3 E4) — the cosign analogue of
- * `governance/attestation.ts`'s `ensureInstanceKey` (Ed25519), and DELIBERATELY MODELLED ON IT:
- * lazy first-use provisioning, race-safe convergence on one row, ORG-SCOPED + RLS-protected, no
- * committed-SQL seed. E6 signs each org's promotion manifests with this key; E5 distributes the
- * PUBLIC half to outposts for verification.
- *
- * WHY A DEDICATED TABLE (`instance_cosign_keys`), NOT the `secrets` vault (owner decision, M17.3
- * grounding Area C): `secrets/secrets-repo.ts` `resolveSecretRefs` can resolve any
- * `executor_bindings.secretRefs` entry into a `secrets` row and `plugin-host/host.ts` injects that
- * plaintext into a plugin subprocess. A dedicated table is STRUCTURALLY unreachable by that path —
- * `resolveSecretRefs` queries `secrets` only and has no code path here — so the SCP signing key
- * can never be exfiltrated into a plugin (proven by cosign-keys.integration.test.ts).
- *
- * KEY MANAGEMENT ONLY. This module does NOT sign any manifest and does NOT touch export/gate
- * behaviour — those are E6. It manages the keypair and exposes accessors for E5/E6 to build on.
- */
+/** The org's cosign MANIFEST-SIGNING keypair (M17.3 E4). See docs/governance.md §58. */
 
 /** The full keypair — INTERNAL to the server. `privateKey` (cosign's empty-password encrypted PEM)
  *  is never returned over any HTTP API or SDK type; E6 materializes it to an ephemeral tmpfile at
@@ -59,17 +43,7 @@ function toPair(row: typeof instanceCosignKeys.$inferSelect): InstanceCosignKeyP
   };
 }
 
-/**
- * Read this org's cosign keypair, generating and persisting one on first use (no migration seed —
- * key material must never live in committed SQL). This IS the internal private-key accessor E6's
- * signing path uses.
- *
- * RACE-SAFE, mirroring `ensureInstanceKey`: the cosign key is generated OUTSIDE any DB transaction
- * (never hold a tx open across the cosign subprocess), then inserted with
- * `ON CONFLICT (org_id) DO NOTHING` and re-SELECTed, so concurrent first-use callers for the SAME
- * org converge on whichever single row won — `instance_cosign_keys_org_id_key` (unique on org_id)
- * guarantees at most one keypair per org.
- */
+/** Reads the org's cosign keypair, generating on first use. See docs/governance.md §59. */
 export async function ensureInstanceCosignKey(
   db: Db,
   orgId: string,
@@ -114,11 +88,7 @@ export async function ensureInstanceCosignKey(
   return toPair(row);
 }
 
-/**
- * The PUBLIC-key accessor (E5's distribution seam). Ensures the keypair exists, then returns ONLY
- * the non-secret half — the return type structurally omits the private key, so nothing that goes
- * over an API can carry it.
- */
+/** The PUBLIC-key accessor. See docs/governance.md §60. */
 export async function getInstanceCosignPublicKey(
   db: Db,
   orgId: string,

@@ -1,25 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/**
- * ================================================================================================
- * TS/JS SOURCE — enumeration, and reading with `//` and slash-star comments removed
- * ================================================================================================
- * For `.ts`/`.tsx`/`.js`/`.mjs`/`.cjs`. For Dockerfiles, shell, YAML and `pin.env` see `./hash.ts`
- * — `#` is not a comment here and slash-slash is not a comment there, and using the wrong one
- * strips nothing (silently, which is how this class of bug survives).
- *
- * The limits of ALL of this are in the package's `index.ts`. Read them before believing a result.
- */
+/** TS and JS source: enumeration, read with comments removed. See docs/source-census.md §34. */
 
-/**
- * Every `.ts` file under `dir` that is not a test and not a declaration file.
- *
- * `test-support/*.ts` IS included, deliberately: a census exists to find the instance that does not
- * look like the others, and a fixture parked in `test-support` that declares a router or a loop
- * should fail loudly rather than teach the filter to hide the next real one. `node_modules` and
- * `dist` are skipped because they are copies of the tree, not the tree.
- */
+/** Every non-test source file under a directory. See docs/source-census.md §35. */
 export function productionSourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -38,29 +22,7 @@ export function productionSourceFiles(dir: string): string[] {
   return out;
 }
 
-/**
- * The start of an exported function declaration, up to and including its opening parenthesis.
- *
- * DECLARATION FORMS THIS HAS TO SURVIVE — censused across `apps/server/src` rather than assumed,
- * because the first version of this regex used `\([^)]*\)` and therefore recognised exactly one
- * form. Forms in use in this tree today:
- *   - `export function name(…): T` on one line, and split across lines (399 of them);
- *   - a parameter that is ITSELF a function — `rand: () => number` (`load-test/stats.ts`), a
- *     dependency-injected clock, `fn: () => Promise<T>` — which `[^)]*` cannot cross, so a router
- *     factory written `export function subscriptionDriftRouter(clock: () => Date): DomainEventRouter`
- *     was invisible to the old census;
- *   - a default value that calls something: `now: Date = new Date()` (`federation/crl-parse.ts`);
- *   - a generic: `export function sampleDistinct<T>(…)` (`load-test/stats.ts`).
- * `export const name = (…) =>` is NOT used for exported functions anywhere in this tree; it is
- * matched anyway, because the point of a census is to find the instance that does not look like
- * the others. `export async function` is matched too — whether an async declaration counts is the
- * CALLER's decision, made on {@link ExportedDeclaration.tail} (a router factory returning
- * `Promise<DomainEventRouter>` does not qualify; a loop starter returning `Promise<XLoopHandle>`
- * does).
- *
- * The parameter list is not matched by this regex at all — {@link matchingParen} walks it — which
- * is what makes the nested-paren forms work.
- */
+/** The start of an exported function declaration. See docs/source-census.md §36. */
 const DECLARATION_START = new RegExp(
   [
     String.raw`export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*(?:<[^(]*?>\s*)?\(`,
@@ -83,7 +45,6 @@ export function matchingParen(source: string, open: number): number {
 }
 
 export interface ExportedDeclaration {
-  /** The exported name, as declared. */
   name: string;
   /** Everything after the parameter list's closing `)` — where the return type is, and therefore
    *  what a caller matches on to decide whether this declaration is of the kind it is counting. */
@@ -105,17 +66,7 @@ export function exportedDeclarations(source: string): ExportedDeclaration[] {
   return found;
 }
 
-/**
- * Source with COMMENTS REMOVED — both `//` and block comments, and neither inside a string or
- * template literal, where those character pairs are data. The predecessor of this function handled
- * `//` only while its own comment claimed a commented-out registration would not count: a
- * registration inside a block comment still counted as registered, which is precisely the "comment
- * asserting a protection that does not exist" M21.7 was cleaning up.
- *
- * NOT TRACKED: regular-expression literals, so a regex containing a block-comment opener would
- * start a spurious comment. The failure direction is a false RED (text removed, the caller's checks
- * fail loudly), never a silent pass.
- */
+/** Source with COMMENTS REMOVED. See docs/source-census.md §37. */
 export function stripComments(source: string): string {
   let out = "";
   let i = 0;
@@ -153,11 +104,7 @@ export function stripComments(source: string): string {
   return out;
 }
 
-/**
- * Read + strip in one step. Use this, never a bare `readFileSync`, for any census over TS/JS
- * source — see the package doc for the seven censuses that were measured false-green without it,
- * and for the six things stripping still does NOT prove.
- */
+/** Read + strip in one step. See docs/source-census.md §38. */
 export function readStripped(file: string): string {
   return stripComments(readFileSync(file, "utf8"));
 }

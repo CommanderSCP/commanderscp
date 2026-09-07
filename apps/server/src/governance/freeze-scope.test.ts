@@ -9,28 +9,7 @@ import {
   type EffectiveFreeze
 } from "./freeze-scope.js";
 
-/**
- * THE TWO PROPERTIES `freeze-scope.ts` DECLARES, measured without a database.
- *
- * The set-equality property needs real containment walks and lives in
- * `coordination/freeze-admission.integration.test.ts`. What lives HERE is everything that can be
- * measured by counting: the INERTNESS short-circuit (a claim about how many queries are issued,
- * which no assertion on a return value can see — the function returns the same empty answer either
- * way) and `unionFreezes`'s dedupe/ordering (pure).
- *
- * THE FAKE `tx` IS THE INSTRUMENT, not a convenience. `containmentChain` is the only thing in this
- * module that calls `tx.execute`, and the two window reads are the only things that call
- * `tx.select` without a `.limit()`, so counting the calls distinguishes "walked nothing" from
- * "walked and found nothing" — which is exactly the distinction the inertness claim is about and
- * exactly the one a real database would hide.
- *
- * M25.3 ADDED A THIRD AND FOURTH QUERY SHAPE and the fake counts them separately, because the
- * whole point of the inertness property is arithmetic: the instance-tier window read (`selects`,
- * now 2 per call) and `readStageCoordinate`'s two `.limit(1)` lookups (`coordinateReads`, which
- * must stay 0 unless a coordinate-ADDRESSED instance freeze is live). A fake that answered both
- * window reads from one counter would report the post-M25.3 cost as unchanged, which is the
- * vacuous version of this test.
- */
+/** The two properties this declares, measured without a db. See docs/governance.md §75. */
 
 /** The ORG arm of `EffectiveFreeze` — narrowed, so `filterFreezesByScopes` keeps its tag. */
 type OrgTierFreeze = Extract<EffectiveFreeze, { tier: "org" }>;
@@ -92,14 +71,7 @@ function instanceFreeze(
   };
 }
 
-/**
- * A `tx` that answers the two queries this module can issue and counts each one.
- *
- * `selects` counts `activeFreezesInWindow`'s window read; `executes` counts `containmentChain`'s
- * recursive CTE, one per target walked. `chains` supplies the ancestor ids each successive walk
- * reports, IN THE ORDER `freezesByTarget` walks its targets — which the loop guarantees, and which
- * also means a fake that runs out of chains is a walk the test did not expect.
- */
+/** A transaction that answers two queries and counts them. See docs/governance.md §76. */
 function countingTx(
   windowRows: EffectiveFreeze[],
   chains: string[][] = [],
@@ -154,18 +126,13 @@ describe("freezesByTarget: INERTNESS (property 1)", () => {
 
     const byTarget = await freezesByTarget(tx, "org", ["t1", "t2", "t3", "t4"], new Date());
 
-    // The answer is right...
     expect(byTarget).toEqual([
       { targetObjectId: "t1", freezes: [] },
       { targetObjectId: "t2", freezes: [] },
       { targetObjectId: "t3", freezes: [] },
       { targetObjectId: "t4", freezes: [] }
     ]);
-    // ...and it cost ONE org-wide indexed read and not a single graph traversal. This is the
-    // assertion the 1s tick depends on: move a containment walk above the short-circuit, or fold
-    // the window read into the loop, and `executes` becomes 4.
-    // ...and it cost TWO org-wide indexed reads — one per tier, the instance one over a table that
-    // ships empty — and not a single graph traversal or coordinate lookup.
+    // One org-wide indexed read, and no graph traversal. See docs/governance.md §77.
     expect(counts.selects).toBe(2);
     expect(counts.executes).toBe(0);
     expect(counts.coordinateReads).toBe(0);
@@ -219,7 +186,7 @@ describe("freezesByTarget: INERTNESS (property 1)", () => {
     const { tx } = countingTx(
       [f],
       [
-        ["org", "svc-a", "t1"], // covered by f1's scope
+        ["org", "svc-a", "t1"],
         ["org", "svc-b", "t2"] // not covered
       ]
     );

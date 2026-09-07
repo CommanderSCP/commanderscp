@@ -10,51 +10,7 @@ import { DEFAULT_EXECUTOR_INSTANCE_ID } from "../coordination/executor-config.js
 import type { SubprocessPluginHost } from "./host.js";
 import type { AppDeps } from "../types.js";
 
-/**
- * A PURE `role=api` PROCESS MUST BE ABLE TO DISPATCH A DISCOVERY SCAN.
- *
- * ============================================================================================
- * THE PROPERTY
- * ============================================================================================
- * `main.ts` used to construct the `SubprocessPluginHost` inside its `role === "all" || "worker"`
- * guard. That guard exists to stop TWO processes running the reconcile/watchdog/observe loops; it
- * has nothing to say about whether a process may host a plugin for the duration of one request.
- *
- * Conflating them broke discovery in the deployment shape the Helm chart actually ships. On a split
- * api/worker install the api process — the only one serving HTTP — had no host, so
- * `POST /discovery/run` answered 400 for every caller, and the message told the operator to set
- * `SCP_ROLE=all`, which would have started a second set of loops beside the worker's. Measured on
- * the live homelab on 2026-08-02: the route was unreachable there, which is what blocked the
- * post-import-configuration.md §6 migration's required verification step (re-resolving a moved
- * binding against the real Argo CD).
- *
- * ============================================================================================
- * WHAT IS ASSERTED, AND WHY IT IS THE FAILURE MODE RATHER THAN A SUCCESS
- * ============================================================================================
- * A genuinely successful scan needs a reachable Argo CD, which an offline test must not require
- * (CLAUDE.md: tests never touch the internet). So the measurement is that the request gets PAST the
- * host check and fails later, for a reason that can only be reached once a host exists. `400 unknown
- * discovery plugin module` is that reason: it is evaluated immediately after the host guard, and it
- * was unreachable on an api process before this change.
- *
- * That is a real distinction, not a semantic one — before the fix EVERY body produced the same
- * "no plugin host" answer, so a caller could not tell a misconfigured request from a misconfigured
- * deployment.
- *
- * NOTE on `test-support/harness.ts`: it mirrors the OLD coupling, creating a host only under
- * `withReconcileLoop`. That is why no existing test caught this — the harness reproduced the bug
- * faithfully. These tests therefore call the PRODUCTION wiring (`startPluginHostForRole`) directly
- * rather than relying on the harness.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `host-bootstrap.ts`: assign `deps.pluginHost` only for all/worker (the old behaviour) | BOTH the deps test and the api-dispatch test FAIL — the route answers "no plugin host" again |
- * | `host-bootstrap.ts`: drop the role check in `sharedPluginInstancesForRole` so api also starts the shared fake-executor | the instance-gating test FAILS (an api process would run a coordination singleton it does not own) |
- * | `host-bootstrap.ts`: have `sharedPluginInstancesForRole` return `[]` for every role | the worker test FAILS — the coordination loops would lose the shared instance they depend on |
- */
+/** A pure API process must be able to dispatch a scan. See docs/plugin-host.md §42. */
 describe("the plugin host is available to every role, the shared instance only to background roles", () => {
   let server: TestServer;
   let org: TestOrg;

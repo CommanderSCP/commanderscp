@@ -10,7 +10,6 @@ export interface PageHeaderProps {
   title: React.ReactNode;
   /** §1.3 page-description type, under the title. */
   description?: React.ReactNode;
-  /** Right-aligned action slot (primary Buttons live here). */
   actions?: React.ReactNode;
   /** Route path for the back link above the title — replaces every `← X` literal (§2.1). */
   backTo?: RouterLinkProps["to"];

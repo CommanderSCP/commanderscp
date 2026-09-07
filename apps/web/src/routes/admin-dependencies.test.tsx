@@ -18,34 +18,7 @@ import {
   verbResponseFixture
 } from "../test-support/dependency-fixtures";
 
-/**
- * ADMIN › DEPENDENCIES — the wired-up page against a stubbed SDK
- * (docs/proposals/dependency-subscription-ui.md §12.5).
- *
- * What is pinned, and the mutation each pin exists to catch:
- *   - the ROLE GATE: any non-commander role renders the pointer and issues ZERO SDK calls (spy);
- *     mutation: issue the list read regardless of role → RED;
- *   - the WIRE gate: `dependencyManagement.managedHere: false` on a commander → pointer, no table;
- *   - the empty state renders ONLY after a successful zero-row read — never while pending or after
- *     an error; mutation: paint it during pending → RED;
- *   - the Declare dialog runs `dryRun: true` BEFORE the write and the Declare button is disabled
- *     until a preview exists for the SAME values; mutation: drop the preview gate → RED (the
- *     "disabled before preview" assertion and the "no non-dry-run call before preview" spy);
- *     invalidation is pinned PER FIELD — ecosystem, coordinate AND producer each re-disable Declare
- *     (mutation: drop any one of the three from the preview key → that field's case goes RED);
- *   - the picker's components.list query stays inside ObjectListQuerySchema (limit max 100 — a
- *     larger value is a 400 on the real server, invisible behind a mocked SDK); mutation: 200 → RED;
- *   - PICKER PAGING (§12.7): past 100 components, "Load more" fetches the next page via the
- *     SERVER's `nextCursor` and appends it — never a client-guessed offset, never more than one read
- *     in flight; mutation: drop the cursor from the second read → the schema-validity assertion and
- *     the exact-cursor assertion both go RED; mutation: fire the fetch twice per click → the
- *     "exactly one more read" count assertion goes RED;
- *   - every refusal status renders the server sentence; the retract dialog renders the real
- *     response's open bumps and stays open on them.
- *
- * The SDK, the auth context and `@tanstack/react-router`'s Link are stubbed; everything else is
- * the real component tree (Radix dialogs included) in a real DOM.
- */
+/** ADMIN › DEPENDENCIES. See docs/web.md §169. */
 
 type ProducersList = ListDependencyLineProducersResponse;
 
@@ -266,8 +239,6 @@ function problem(status: number, title: string, detail: string, decisionId?: str
   });
 }
 
-// -------------------------------------------------------------------------------------------
-
 describe("Admin › Dependencies is a COMMANDER-site page", () => {
   it.each(["outpost", "retrans", undefined] as const)(
     "instanceRole %s → the 'managed at the commander' pointer renders and ZERO SDK calls are issued",
@@ -336,7 +307,6 @@ describe("the producers table", () => {
     const rows = allInDocument("producer-row");
     expect(rows).toHaveLength(2);
     expect(inDocument("producers-empty")).toBeNull();
-    // Row 1: named producer.
     const first = rows[0]!;
     expect(first.querySelector('[data-testid="producer-ecosystem"]')?.textContent).toBe("npm");
     expect(first.querySelector('[data-testid="producer-coordinate"]')?.textContent).toBe(
@@ -389,7 +359,6 @@ describe("the producers table", () => {
     expect(pointer).toContain("scp dependency-subscriptions set-unlock --unlocked");
     expect(pointer).toContain("Dependency subscriptions are enabled per component");
     expect(pointer).not.toMatch(/(^|[^y] )Subscriptions are/);
-    // The chips filter client-side.
     clickInDocument("ecosystem-chip-oci");
     expect(allInDocument("producer-row")).toHaveLength(1);
     expect(inDocument("producer-coordinate")?.textContent).toBe("ghcr.io/acme/base");
@@ -445,15 +414,11 @@ describe("the producers table", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-
 async function openDeclareAndFill(coordinate = "@acme/newlib") {
   clickInDocument("declare-open");
   await waitUntil(() => inDocument("declare-confirm") !== null, "the declare dialog to open");
-  // The picker's components read lands.
   await waitUntil(() => inDocument("declare-producer-match") !== null, "the picker's list");
   typeInto(inDocument("declare-coordinate") as HTMLInputElement, coordinate);
-  // Pick checkout-api by name.
   typeInto(inDocument("declare-producer-search") as HTMLInputElement, "checkout");
   const match = allInDocument("declare-producer-match").find(
     (m) => m.getAttribute("data-id") === COMPONENT.id
@@ -786,8 +751,6 @@ describe("Declare… — dry run FIRST, then the write, and never the write with
     view.unmount();
   });
 });
-
-// -------------------------------------------------------------------------------------------
 
 describe("Retract… — preview, then the write; open bumps rendered and the dialog stays open on them", () => {
   it("opens with a dryRun preview, Retract sends the real call, the REAL response's openBumpAuthorships render as 'still in flight' with PR links only when present, plus the decision id; the list is re-read; the dialog stays until Done", async () => {

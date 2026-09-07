@@ -12,12 +12,7 @@ import { authorize } from "../authz/resolve.js";
 import { getObjectByIdOrUrn } from "../graph/objects-repo.js";
 import { buildServiceBoard } from "../coordination/service-board.js";
 
-/**
- * Service-scoped read projections (docs/proposals/coordination-ui-views.md Phase 2). Distinct from the
- * generic typed-registry `/services` CRUD (routes/typed-registries.ts) — this file adds the release
- * board, a cross-object aggregation the templated registry routes can't express. The path carries an
- * extra `/board` segment, so it never collides with the registry's `/:idOrUrn` detail route.
- */
+/** Service-scoped read projections. See docs/routes.md §411. */
 export function registerServiceRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 

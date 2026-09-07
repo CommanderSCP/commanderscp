@@ -1,24 +1,4 @@
-/**
- * Wires `@scp/plugin-argocd` into `@scp/plugin-testkit`'s generic `ExecutorPlugin` conformance
- * suite (BUILD_AND_TEST.md §4.2: "every shipped plugin runs the relevant `@scp/plugin-testkit`
- * suite in its own package tests"). The suite itself lives in plugin-testkit and knows nothing
- * about ArgoCD specifics — this file is only the fixture factory.
- *
- * Unlike the other conformance fixtures in this repo (fake-executor, webhook-control), which
- * stub `ctx.http` directly with an in-memory function, this fixture wires a REAL
- * `ScopedHttpClient` (`./test-node-http-client.ts` — node:http/https, not `fetch`; see that
- * file's doc comment for why) so the suite's calls travel through `index.ts`'s actual
- * `apiRequest()` HTTP path and get intercepted by `nock`, exercising the real wire format rather
- * than only in-process logic.
- *
- * The conformance suite calls trigger/status/abort/observe in varying combinations, and with
- * varying target names per `it()` (e.g. "conformance-target" for most assertions,
- * "conformance-idempotency-target" for the idempotencyKey test), without this fixture knowing
- * ahead of time which name a given test will use. Every interceptor below therefore matches by
- * path REGEX (any application name) and is `.persist()`-ed rather than tied to one literal name
- * or a fixed call count — the equivalent of webhook-control's conformance fixture always
- * returning the same well-formed response regardless of how many times `evaluate()` is called.
- */
+/** Wires this plugin into the generic executor conformance suite. See docs/plugins.md §11. */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll } from "vitest";
@@ -59,7 +39,6 @@ nock(SERVER_URL)
     return genericApplication(name);
   });
 
-// abort(): DELETE .../applications/{name}/operation — any application name.
 nock(SERVER_URL)
   .persist()
   .delete(/^\/api\/v1\/applications\/[^/]+\/operation$/)

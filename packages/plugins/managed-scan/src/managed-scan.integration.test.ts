@@ -10,52 +10,7 @@ import { resolveRunnerImage } from "@scp/plugin-testkit";
 import { resolveSkopeo } from "@scp/cosign";
 import { createManagedScanExecutorPlugin, __resetManagedScanOutcomes } from "./index.js";
 
-/**
- * ================================================================================================
- * REAL-DOCKER PLUGIN-LEVEL INTEGRATION TEST — closes the M13.3 DEBT named in
- * `@scp/source-census`'s `test-script-census.test.ts` (`INTEGRATION_FLAG_ALLOWLIST` /
- * `KNOWN_EMPTY_INTEGRATION_SUITES`, both entries for `@scp/plugin-managed-scan`): this package had a
- * `vitest.integration.config.ts` and a `test:integration` script with ZERO `*.integration.test.ts`
- * files, so `pnpm test:integration` reported SUCCESS for this package having run nothing, in every
- * shard. Delete both of those source-census entries when this file merges.
- *
- * SCOPE SPLIT FROM `apps/server/src/federation/promotion-scan-step.integration.test.ts` — READ THAT
- * FILE'S HEADER FIRST. That suite is the M13.3a/b DoD's real end-to-end proof: the SERVER pulls a
- * real subject by digest, launches this same plugin's REAL container for trivy/openscap/trivy-vm,
- * and the UNMODIFIED E6 gate consumes the evidence — exhaustively, calibrated clean/dirty per
- * method. This file does NOT re-run that; scan-correctness-by-method is already proven there against
- * the same container. What is NOT proven there is the PLUGIN'S OWN CONTRACT IN ISOLATION FROM THE
- * SERVER — the launcher wiring actually runs a REAL container end to end (create -> copy-in ->
- * start -> copy-out -> rm) and returns real evidence at the path this plugin promises, and an
- * unsupported method fails closed WITHOUT touching docker at all.
- *
- * NO DEDUP LEVER HERE, UNLIKE MANAGED-IAC — VERIFIED, NOT ASSUMED. This file's first draft carried
- * over managed-iac's "broken dockerBinary on a same-key retry still returns the cached success"
- * lever by pattern-matching its shape without reading THIS plugin's `trigger()`. Running it against
- * a real container red-lit immediately: managed-scan's `outcomes` map (module doc, `index.ts`) is
- * explicitly "no cross-restart idempotency to preserve" — every `trigger()` call re-runs the
- * container regardless of `idempotencyKey`, because a scan is a fresh, stateless, read-only
- * analysis with no dangerous side effect a dedup would be protecting against (unlike an `apply`).
- * The retry test below asserts the ACTUAL contract instead: a same-key retry is SAFE and produces a
- * stable `externalId`, but it is a REAL second invocation — a broken `dockerBinary` on the retry
- * surfaces as a real failure, not a cache hit.
- *
- * Trivy is exercised (not openscap/trivy-vm — those methods' correctness is the server suite's job;
- * this file's job is the launcher contract, and trivy is the cheapest real method to prove it with).
- *
- * SUBJECT, DELIBERATELY VIA `SCP_TEST_SUBJECT_REGISTRY` (mirrors
- * `promotion-scan-step.integration.test.ts` and `scan-db-preload.integration.test.ts`): a literal
- * `docker.io/library` here would be a live, unauthenticated Docker Hub pull on the required
- * integration gate — the exact failure mode documented in those two files' headers. Unset (local
- * dev) this is upstream Docker Hub; in CI it is the GHCR mirror `scripts/ci-mirror.sh seed` exports,
- * already covering `alpine:3.20` for the two scan suites above.
- *
- * NO REGISTRY CONTAINER NEEDED. The server-side test pushes subjects into a local `registry:2` and
- * pulls them back because it is proving the SERVER's own `docker://` pull-by-digest channel. This
- * plugin never talks to a registry — `trigger()`'s `inputDir` is already a pulled OCI layout on
- * disk — so this file produces that layout directly with one `skopeo copy … oci:<dir>:scan`, the
- * exact command `promotion-scan-step.ts`'s server-side pull runs.
- */
+/** REAL-DOCKER PLUGIN-LEVEL INTEGRATION TEST. See docs/plugins.md §493. */
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));

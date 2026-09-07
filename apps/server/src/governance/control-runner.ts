@@ -18,18 +18,7 @@ import { persistScanFindings } from "./scan-findings-repo.js";
 import { scanExclusionSetHashOfContext } from "./scan-exclusion-actuator.js";
 import { getObjectByIdOrUrnAnyType, isUuid } from "../graph/objects-repo.js";
 
-// `control_bindings.plugin_module` is a free-form string at the schema layer
-// (CreateControlBindingRequestSchema — z.string().min(1)), so THIS check is the only thing
-// standing between an attacker-controlled binding and `host.start()` provisioning an arbitrary
-// module. Deliberately just the real ControlPlugin modules — "fake-executor" is an
-// ExecutorPlugin (subprocess-entry.ts's `loadPlugin`), not a ControlPlugin, so accepting it here
-// would only ever produce a safe-but-confusing RPC "unknown method 'evaluate'" failure; excluding
-// it keeps this allowlist an honest description of what a control binding can actually reach.
-// M17.1 adds "scan-result-control" (a ControlPlugin sibling of webhook-control that turns a
-// coordinated Trivy scan verdict into gate evidence). M10.4 adds "github-check" (a third
-// ControlPlugin sibling: turns a GitHub Check Run/status verdict for the change's own commit into
-// gate evidence — the concrete "CI green for digest X" wave-gate control, BUILD_AND_TEST.md §8
-// M10.4).
+// The module is free-form at the schema layer, checked here. See docs/governance.md §42.
 const KNOWN_CONTROL_MODULES: PluginHostInstanceConfig["module"][] = [
   "webhook-control",
   "scan-result-control",
@@ -40,14 +29,7 @@ function isKnownPluginModule(value: string): value is PluginHostInstanceConfig["
   return (KNOWN_CONTROL_MODULES as string[]).includes(value);
 }
 
-/**
- * Actually RUNS a control (DESIGN §10.2) via the subprocess plugin host — the one piece of
- * governance evaluation that needs `PluginHost`, and therefore only ever runs on a process that
- * has one (the `role=worker`/`role=all` reconciliation loop — DESIGN §16's api/worker split means
- * a pure `role=api` process has no plugin host at all). See `coordination/gates.ts`'s module doc
- * for how the lifecycle-edge (human-route) gate avoids needing this: it only ever READS
- * already-persisted `control_runs`, never triggers one inline.
- */
+/** Actually RUNS a control. See docs/governance.md §43. */
 
 export interface EnsureControlRunInput {
   orgId: string;
@@ -62,50 +44,17 @@ export interface EnsureControlRunInput {
   force?: boolean;
 }
 
-/**
- * M10.4 — how long a cached `"expired"` outcome is treated as still-fresh before `ensureControlRun`
- * calls the plugin again. `"expired"` is `github-check`'s "CI has not concluded yet, please
- * re-check later" signal: a wave gate is often asked before CI on the target commit has even
- * started, and returning `"fail"` for that would be WRONG — `"fail"`/`"pass"`/every other status
- * below is cached FOREVER (this function's own doc comment: "a control result is a historical
- * fact, not continuously re-polled"), which would PERMANENTLY deadlock the wave the instant this
- * control was ever asked before CI concluded.
- *
- * Without this cooldown, exempting `"expired"` from caching entirely would re-run the plugin (and
- * insert a new `control_runs` row) on EVERY reconcile tick — the exact unbounded-growth pattern
- * `coordination/reconcile.ts`'s wave-gate Decision persistence already hit and fixed
- * (`insertDecisionIfChanged`: 1.44 GB/day from a byte-identical row every ~2s tick). This bounds
- * both the `control_runs` growth rate and the external API call rate to at most once per interval
- * per pending change, while still eventually noticing CI concluding. Every OTHER status
- * (`pass`/`fail`/`warning`/`skipped`/`timed_out`) is unaffected — cached forever, unchanged from
- * M4/M17.1, since only `github-check` ever produces `"expired"`.
- */
+/** How long a cached expired outcome is still treated fresh. See docs/governance.md §44. */
 const EXPIRED_RECHECK_INTERVAL_MS = 30_000;
 
-/**
- * Ensures a `control_runs` row exists for (changeObjectId, controlObjectId) — running it via its
- * bound ControlPlugin instance if no run exists yet (or `force`, or a cached `"expired"` outcome
- * older than `EXPIRED_RECHECK_INTERVAL_MS`). Never throws for a plugin-side failure: an
- * unreachable/erroring binding produces a `fail` outcome (with the error captured in evidence)
- * rather than propagating, so one bad control binding can't abort an entire gate evaluation the
- * way an uncaught exception would.
- */
+/** Ensures a run row exists for that change and control. See docs/governance.md §45. */
 export async function ensureControlRun(
   tx: TenantTx,
   host: PluginHost,
   input: EnsureControlRunInput
 ): Promise<ControlOutcomeStatus> {
   if (!isUuid(input.controlObjectId)) {
-    // A policy's `requireControls` entry that isn't even a well-formed object id (a stale
-    // reference, a hand-authored-JSON typo — `control_bindings`/`control_runs` both key on a
-    // `uuid` column, so this could never correspond to a real binding or a real graph object
-    // either way) must fail closed exactly like "no binding configured" below, NOT reach the
-    // database with a value Postgres will reject as 22P02 (invalid input syntax for type uuid).
-    // Before this check, that raw DB error propagated out of `evaluateWaveGate` uncaught, which
-    // wedged the offending change's wave-boundary gate every reconcile tick forever (caught only
-    // by reconcile.ts's outermost per-change try/catch, which just logs and retries — the SAME
-    // crash, forever). No `control_runs` row is written here (unlike "no binding configured") —
-    // there is no valid uuid to write one under.
+    // An entry that is not even a well-formed object id. See docs/governance.md §46.
     return "fail";
   }
 
@@ -180,21 +129,7 @@ export async function ensureControlRun(
     detail = `control plugin call failed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
-  // M22.1b (ADR-0033 §7) — TAKE the plugin's transported findings OFF the evidence before anything
-  // persists it. A ControlPlugin has no `DATABASE_URL` and cannot write `scan_findings` itself, so
-  // `scan-result-control` hands its capped findings back on the outcome's evidence record; this is
-  // the server-side half of that seam.
-  //
-  // THE STRIP IS NOT OPTIONAL AND IT IS NOT COSMETIC. `federation/promotion-repo.ts` projects
-  // `{controlUrn, status, evidence, detail}` for every control run and copies `evidence` VERBATIM
-  // into the signed promotion bundle. Findings left on that column would both bloat every bundle and
-  // federate accepted-risk detail that ADR-0033 §8 confines to grants — the bundle keeps counts.
-  // `takeScanFindingsFromTransport` extracts and strips in ONE call precisely so a caller cannot
-  // obtain the findings and forget the strip. It also RE-VALIDATES and re-caps the payload: the
-  // producer is a separate process and must not be able to steer what lands in the database.
-  //
-  // Runs for EVERY control, not just scan controls: a transport key must never survive onto a
-  // persisted row, whichever plugin put it there.
+  // Take the plugin's transported findings off the evidence. See docs/governance.md §47.
   const taken = takeScanFindingsFromTransport(evidence);
   evidence = taken.evidence;
   // WHAT SCANNED decides whether findings may be recorded at all, so the method is read from the
@@ -212,20 +147,7 @@ export async function ensureControlRun(
   // says otherwise" unreachable.
   const findingsRecord = scanMethod ? scanFindingsRecordFor(scanMethod, capped) : undefined;
   if (findingsRecord) evidence = { ...evidence, findingsRecord };
-  // M22.7 (ADR-0033 §10) — STAMP THE EXCLUSION SET THIS RUN WAS PRODUCED UNDER, so the next
-  // evaluation can tell whether the cached outcome is still current. Written by the SERVER, from the
-  // context it actually threaded, for the same reason `findingsRecord` above is: the producer is a
-  // separate process and this is a statement about what the GATE resolved, not about what the plugin
-  // did with it.
-  //
-  // Gated on `scanMethod` exactly like `findingsRecord`: only a scan verdict can have exclusions
-  // applied to it, and only a scan verdict is compared by `scanExclusionSetChangedForGate`. Stamping
-  // a webhook control's evidence with a hash nothing ever reads would be noise; failing to stamp a
-  // scan verdict's would make it look permanently stale and re-run it every tick.
-  //
-  // An `openscap` verdict IS stamped, and that is deliberate: its exclusions are refused for a
-  // structural reason (`unsupported`), not because no set was in force, and leaving it unstamped
-  // would force a pointless re-scan on every set change forever.
+  // Stamp the exclusion set this run was produced under. See docs/governance.md §48.
   const exclusionSetHash = scanMethod ? scanExclusionSetHashOfContext(input.context) : undefined;
   if (exclusionSetHash) evidence = { ...evidence, exclusionSetHash };
 
@@ -238,11 +160,7 @@ export async function ensureControlRun(
     status,
     evidence,
     detail,
-    // WHAT ACTUALLY RAN, stamped on the run (0063). Taken from the binding THIS call resolved, not
-    // looked up later: a binding re-pointed afterwards must not be able to re-narrate what this row
-    // evidenced. Recorded even on the catch path above — a `fail` from `github-check` is still a
-    // `github-check` verdict, and dropping the module there would turn an own-check objection into
-    // an unattributable one.
+    // WHAT ACTUALLY RAN, stamped on the run. See docs/governance.md §49.
     pluginModule: binding.pluginModule
   });
   // Same transaction as the verdict they explain. Skipped only when there is no scan verdict here at
@@ -277,14 +195,7 @@ export async function ensureControlRuns(
     gateKind: "lifecycle_edge" | "wave_boundary";
     gateRef: Record<string, unknown>;
     context: Record<string, unknown>;
-    /** M22.0a — re-run every named control even if a run already exists for THIS gate.
-     *
-     *  This parameter did not exist before: `ensureControlRun` (singular) had always declared
-     *  `force`, but the plural entry point every production call site actually uses could not
-     *  express it, so nothing in the tree could ever request a re-evaluation. That is what made the
-     *  re-evaluation story a signal with no lever — ADR-0033 §10's actuator has to pass this when
-     *  the resolved exclusion set no longer matches the hash recorded in the cached run's evidence,
-     *  or a revoked/expired grant is never noticed. */
+    /** Re-run every named control even if a run exists. See docs/governance.md §50. */
     force?: boolean;
   }
 ): Promise<Record<string, ControlOutcomeStatus>> {
@@ -312,14 +223,7 @@ export async function readExistingControlOutcomes(
   orgId: string,
   changeObjectId: string,
   controlObjectIds: string[],
-  /** M22.0a — the gate crossing being decided. Host-less callers (the read-only
-   *  `POST /policy-evaluate` preview and the accept edge, which has no plugin host of its own) must
-   *  read the run made FOR THIS CROSSING, for the same reason `ensureControlRun` now does: a run
-   *  made during `validating` is not evidence that a production wave boundary was authorized.
-   *
-   *  Optional, and gate-agnostic when omitted, so a caller that genuinely wants "the newest outcome
-   *  for this control on this change, wherever it came from" still has that — but every
-   *  authorization path passes it. */
+  /** M22.0a — the gate crossing being decided. See docs/governance.md §51. */
   gate?: { gateKind: "lifecycle_edge" | "wave_boundary"; gateRef: Record<string, unknown> }
 ): Promise<Record<string, ControlOutcomeStatus>> {
   const outcomes: Record<string, ControlOutcomeStatus> = {};

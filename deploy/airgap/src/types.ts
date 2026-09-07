@@ -1,8 +1,4 @@
-/**
- * Shared types for the air-gap bundle builder/verifier (DESIGN.md §16 "Air-gapped bundle",
- * BUILD_AND_TEST.md §8 M8). Kept dependency-free so it can be imported from both the CLI
- * entrypoints and the pure-logic modules under test.
- */
+/** Shared types for the air-gap bundle builder/verifier. See docs/airgap.md §58. */
 
 /** One image the bundle carries, in OCI layout, alongside its pinned content digest. */
 export interface BundleImage {
@@ -10,7 +6,6 @@ export interface BundleImage {
   name: string;
   /** The image reference `build-bundle` was pointed at (e.g. "scp:dev", "postgres:16"). Informational — NOT trusted for verification; the digest is. */
   sourceRef: string;
-  /** Where `skopeo copy`'s source transport pulled from. */
   sourceType: "docker-daemon" | "docker";
   /** Path, relative to the bundle root, of this image's OCI-layout directory. */
   ociPath: string;

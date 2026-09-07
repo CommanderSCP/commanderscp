@@ -12,26 +12,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { auditEvents, changes, changeWaveTargets, decisions } from "../db/schema.js";
 
-/**
- * M15.6 — Multi-region Argo CD as a first-class, tested SETTING (ADR-0017 §3).
- *
- * A prod environment that spans regions binds a DISTINCT Argo CD per region. A region is an ordinary
- * `deployment-target` carrying `properties.environment` + `properties.region`; its per-region Argo CD
- * is an ordinary per-region executor binding (imported/coordinated, NOT bundled-N). Two things are
- * proven here:
- *
- *  1. The config SURFACE (`GET /environments/:env/regional-executors`, via the generated SDK only):
- *     reads `prod env -> {region -> argocd binding}` and validates that every region has its OWN
- *     Argo CD binding — a helpful `valid:false` + `problems` when one does not, so a multi-region
- *     prod env is never silently deployed against a region with no Argo CD.
- *
- *  2. Per-region FAN-OUT end to end: a change to a prod env with AMER + APAC region targets, each
- *     bound to a DISTINCT execution-system (the fake-executor standing in for two regional Argo CDs),
- *     drives the AMER wave target against the AMER system's instance and the APAC wave target against
- *     the APAC system's instance — each wave target resolves its OWN regional binding. This is the
- *     real assertion the milestone asks for, not a unit tautology: it runs the reconcile loop and
- *     reads the executor-plugin-instance id recorded on each wave target.
- */
+/** Multi-region Argo CD as a first-class tested setting. See docs/coordination.md §558. */
 describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -86,7 +67,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     const view = await admin.executors.getRegionalExecutors(env);
 
     expect(view.environment).toBe(env);
-    expect(view.type).toBe("configuration"); // Argo CD is GitOps sync
+    expect(view.type).toBe("configuration");
     expect(view.expectedModule).toBe("argocd");
     expect(view.valid).toBe(true);
     expect(view.problems).toEqual([]);
@@ -115,7 +96,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     const env = `prod-gap-${randomUUID().slice(0, 6)}`;
     const amerSys = await createRegionalArgocd("argocd", "amer");
     const amer = await createRegionTarget(env, "amer");
-    const emea = await createRegionTarget(env, "emea"); // declared, but left UNBOUND
+    const emea = await createRegionTarget(env, "emea");
     await admin.executors.putBinding(amer.id, { executionSystemId: amerSys.id });
 
     const view = await admin.executors.getRegionalExecutors(env);
@@ -134,7 +115,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
   it("config surface: a region bound to a NON-argocd module is flagged (multi-region prod expects Argo CD per region)", async () => {
     const env = `prod-wrongmod-${randomUUID().slice(0, 6)}`;
     const amerSys = await createRegionalArgocd("argocd", "amer");
-    const apacSys = await createRegionalArgocd("fake-executor", "apac"); // not argocd
+    const apacSys = await createRegionalArgocd("fake-executor", "apac");
     const amer = await createRegionTarget(env, "amer");
     const apac = await createRegionTarget(env, "apac");
     await admin.executors.putBinding(amer.id, { executionSystemId: amerSys.id });
@@ -219,14 +200,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     expect(amerInstance).not.toBe(apacInstance);
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // FAIL-CLOSED enforcement of the no-silent-deploy property (regional-executors.ts). The config
-  // surface above is READ-ONLY; the actual guarantee lives at DEPLOY time. A change targeting a
-  // DECLARED region deployment-target (properties.environment + properties.region) with NO resolvable
-  // executor binding must be REFUSED — a block Decision (decision_id) + hash-chained audit + parked
-  // change — NOT silently triggered against the shared default fake executor. SCOPED: a plain,
-  // non-region target with no binding keeps its pre-existing default-executor behaviour untouched.
-  // ---------------------------------------------------------------------------------------------
+  // FAIL-CLOSED enforcement of the no-silent-deploy property. See docs/coordination.md §559.
 
   /** The full change_wave_targets row for one target object (null until the plan materializes it). */
   async function waveTargetRow(targetId: string) {
@@ -263,7 +237,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     const env = `prod-refuse-${randomUUID().slice(0, 6)}`;
     // APAC is bound (a drivable fake-executor stand-in for its regional Argo CD); AMER is left UNBOUND.
     const apacSys = await createRegionalArgocd("fake-executor", "apac-refuse");
-    const amer = await createRegionTarget(env, "amer"); // declared region, NO binding
+    const amer = await createRegionTarget(env, "amer");
     const apac = await createRegionTarget(env, "apac");
     await admin.executors.putBinding(apac.id, { executionSystemId: apacSys.id });
 
@@ -299,13 +273,12 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
       gate: "regional_argocd_silent_deploy"
     });
 
-    // A hash-chained audit event carries that decision_id.
     const noExecEvent = (await auditFor(change.id)).find(
       (e) => e.action === "change.wave_target.no_executor"
     );
     expect(noExecEvent).toBeDefined();
     expect(noExecEvent!.decisionId).toBe(blockDecision!.id);
-    expect(noExecEvent!.rowHash).toEqual(expect.any(String)); // linked into the org's hash chain.
+    expect(noExecEvent!.rowHash).toEqual(expect.any(String));
 
     // The change is PARKED (reconcile_blocked) — never silently succeeded.
     expect((await changeRow(change.id)).reconcileBlockedAt).not.toBeNull();
@@ -334,7 +307,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
       { describe: `plain target triggered against default executor`, timeoutMs: 25_000 }
     );
 
-    expect(target.executorPluginId).toBe("fake-executor"); // DEFAULT_EXECUTOR_INSTANCE_ID — unchanged.
+    expect(target.executorPluginId).toBe("fake-executor");
     expect(target.status).not.toBe("no_executor");
 
     // No block Decision from the region gate, and the change is NOT parked.

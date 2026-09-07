@@ -49,13 +49,7 @@ interface PromotionVerdict {
   decisionId?: string;
 }
 
-// -------------------------------------------------------------------------------------------
-// Reason assembly (signal 3): the block reason is REUSED from data the view already fetches — the
-// side-effect-free `policyEvaluate` reasonTree/inputContext (identical in shape to a real block
-// Decision, governance.ts:143) plus the `explain.controlRuns[]` evidence. The Decision's opaque
-// reasonTree/inputContext are read defensively (they are typed `z.record` on the wire) — any
-// missing/oddly-shaped field just drops that fragment, it never invents one.
-// -------------------------------------------------------------------------------------------
+// Reason assembly (signal 3). See docs/web.md §203.
 
 function stringField(record: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = record?.[key];
@@ -98,11 +92,7 @@ function failingControlObjectIds(reasonTree: Record<string, unknown> | undefined
   return ids;
 }
 
-/** Assemble the one-line block "why" from real gate + control-run data. Takes reasonTree/inputContext
- *  directly so the caller can pass the PERSISTED block Decision's (accurate — real control outcomes)
- *  in preference to the side-effect-free dry-run's (whose empty controlOutcomes can over-name a
- *  control). Returns undefined when there is nothing real to show, so the arrow stays a bare colored
- *  bar rather than carrying an invented reason. */
+/** Assemble the one-line block "why" from real gate + control-run data. See docs/web.md §204. */
 function blockDetail(
   reasonTree: Record<string, unknown> | undefined,
   inputContext: Record<string, unknown> | undefined,
@@ -131,15 +121,7 @@ function approvalQuorum(approval: ApprovalRequest): string {
   return `${approval.voteCount}/${approval.requiredCount} · ${approval.fromRole}`;
 }
 
-/**
- * The change-level (final) ACCEPTANCE gate — validating → accepted (ADR-0021 D5; this is the one
- * gate that is NOT a promotion — it is a human decision about a change). Colored from REAL state the
- * change-detail page already loads: a pending ApprovalRequest (amber), a block Decision or a live
- * side-effect-free policyEvaluate `block` verdict (red, with the Decision's `decision_id` when one
- * exists — charter principle 6), else open/pending by change state. The `detail` "why" is assembled
- * ONLY from real data already on the wire (gate reasonTree summary, freeze window from inputContext,
- * joined failing control-run evidence, approval quorum) — never fabricated (ADR-0008, signal 3).
- */
+/** The change-level (final) ACCEPTANCE gate. See docs/web.md §205. */
 function finalGate(
   change: Change,
   approvals: ApprovalRequest[],
@@ -183,16 +165,7 @@ function finalGate(
   return { state: "pending", label: "not yet at final gate" };
 }
 
-/**
- * `/changes/{id}/pipeline` — the component pipeline view (coordination-ui-views.md view 2, phase 1;
- * everything rendered is real Layer A data — the "Layer A (real data only)" caveat that used to sit
- * in the subtitle lives here now, not in chrome (copy rule 2)). Renders the change's compiled plan
- * as top-to-bottom wave cards with wide promotion arrows between them colored by real gate/approval
- * state. The per-wave version renders the REAL synced revision reconcile observed from status()
- * (ADR-0008 decision 1), or an explicit placeholder until observed — never a fabricated version.
- * Other Layer B signals (canary %, scan verdicts, health) remain explicit placeholders. Reuses the
- * same `explain()` cache key as change-detail so the two views stay in sync.
- */
+/** `/changes/{id}/pipeline` — the component pipeline view. See docs/web.md §206. */
 export function ChangePipelinePage(): React.JSX.Element {
   const id = useIdParam();
 
@@ -287,14 +260,7 @@ export function ChangePipelinePage(): React.JSX.Element {
   }
 
   const { decisions, controlRuns, waitStatus } = explainQuery.data;
-  // ADR-0028 increment 4 — the LIVE stage-dependency verdict for each untriggered wave target.
-  // `undefined` from a pre-increment-4 server (the field is additive and optional), `null` from a
-  // current one meaning "this change coupled nothing at any stage"; both render as they always did.
-  //
-  // This page had the field on the wire and threw it away, which is the whole defect: a held target
-  // is `pending` in `change_wave_targets.status`, so it was indistinguishable from a target the
-  // wave has not reached. Read here rather than re-fetched — it arrives on the same `explain`
-  // response the page is already built from, so nothing about this costs a round trip.
+  // The live stage-dependency verdict for each untriggered one. See docs/web.md §207.
   const stageDependencyStatus = explainQuery.data.stageDependencyStatus ?? null;
   // M16.1 — the boundary segment. `undefined` only from a pre-M16.1 server (the field is additive
   // and optional); `null` from a current server means "this change never crossed a boundary".

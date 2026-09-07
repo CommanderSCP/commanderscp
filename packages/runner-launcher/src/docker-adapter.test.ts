@@ -10,75 +10,7 @@ import {
   type RunnerStepKind
 } from "./ordering-conformance.js";
 
-/**
- * ================================================================================================
- * M23.1 — THE DOCKER ADAPTER'S OWN CONFORMANCE SUITE
- * ================================================================================================
- *
- * WHY THIS FILE EXISTS. `packages/runner-launcher` is, since M23.1, THE ONLY PLACE IN THE PRODUCT
- * THAT SPAWNS A PROCESS. Before this file it had **no tests of its own**: every byte of its
- * behaviour was borrowed from the three plugins' `launch-argv.golden.test.ts`, and its
- * `package.json` said `vitest run --passWithNoTests`, so `turbo run test
- * --filter=@scp/runner-launcher --force` printed "No test files found" and reported SUCCESS. Those
- * two facts together were a primed time bomb: the goldens still carried M23.0's own instruction
- * that they be "deleted or superseded by the port's own conformance suite" once the port landed, so
- * a later increment could follow that instruction to the letter and take coverage of the only
- * process-spawning code in the product to zero **in one commit, with every task still green**. That
- * is exactly the vacuous-green class BUILD_AND_TEST.md §4.4 and CLAUDE.md name. This file is the
- * conformance suite that sentence promised; `--passWithNoTests` is gone from this package in the
- * same change, so an empty package now FAILS instead of reporting success.
- *
- * WHAT IT PROVES, AND WHAT IT DELIBERATELY DOES NOT.
- * It drives {@link createDockerRunnerLauncher} **directly**, over the same spec shapes the plugin
- * goldens cover (6 iac + 6 scan + 5 dep = 17 as of this writing; this comment and BUILD_AND_TEST.md
- * have each gone stale on this exact number more than once, which is why the count now lives in a
- * gate — `packages/source-census/src/golden-count-gate.test.ts` — rather than in a THIRD place prose
- * has to remember to update), and asserts the **recorded argv ARRAY** of every `execFile` — never a call
- * count, never `expect.arrayContaining`. A renamed binary, a reordered flag, a dropped operand or a
- * `cp` that lost its trailing `/.` must fail here, and must fail by printing the actual argv next to
- * the expected one.
- *
- * It does NOT prove that any plugin still hands this adapter the right `RunnerSpec` — a spec is this
- * suite's INPUT, not its subject, so a plugin that silently started passing `when: "on-success"`
- * where it used to pass `"always"` would produce a perfectly conformant launch of the wrong shape
- * and nothing here would notice. That other half is the three goldens' job, which is why M23.1 did
- * not retire them and why their headers now say so.
- *
- * WHAT IS PINNED:
- *  1. THE FULL FIVE-STEP argv — `create` (with `--network`, each `-e` pair, the image, the
- *     operands), each `cp` IN in the caller's order, `start -a`, the `cp` OUT, and `rm -f`.
- *  2. THE OPTIONS OBJECT alongside each argv, asserted with `toStrictEqual` so that the ABSENCE of
- *     `maxBuffer` on `rm` — and the absence of any `cwd`/`env` anywhere — is part of the record
- *     rather than merely untested. The three callers' pairs (10 min/16 MiB, 10 min/32 MiB,
- *     5 min/8 MiB) are driven as data: a port that collapsed them into one shared default would be
- *     a behaviour change wearing a refactor's clothes, and this is where that is caught.
- *  3. BOTH AXES OF THE COPY-OUT, independently: `when` (`always` vs `on-success`) and `onFailure`
- *     (`swallow` vs `propagate`). All FOUR combinations of the two axes are exercised — including
- *     `{on-success, swallow}`, which no real caller pairs (managed-iac is `{always, swallow}`;
- *     managed-scan and managed-dep are both `{on-success, propagate}`) and which this file left
- *     unconstructed until it was found missing: a gate keyed on the wrong axis (`onFailure` instead
- *     of `when`) passed every case that DID exist and copied evidence out of a failed run.
- *  4. THE FAILURE PATHS — a rejected `start` (captured, not rethrown), a rejected `cp` in, a
- *     rejected `rm` (swallowed), and — since M23.0's defect 1 was fixed — that a rejected `create`
- *     STILL tears down the NAME the caller chose. That last one was the opposite assertion until
- *     this milestone; it is INVERTED and renamed rather than deleted, so the invariant cannot
- *     regress in either direction unnoticed.
- *  5. WHAT HAPPENS WHEN THE LEVERS FIRE — the four shapes `promisify(execFile)` actually rejects
- *     with (timeout-kill, maxBuffer, spawn ENOENT, exit 125), on every step that can produce them.
- *     Points 2 and 4 assert that `timeout` and `maxBuffer` are PASSED; this is the only thing here
- *     that asserts what the adapter does when one of them goes off, and the shapes are measured
- *     against the running Node rather than imagined.
- *  6. THAT TWO RUNS IN FLIGHT NEVER ADDRESS EACH OTHER'S CONTAINER — in the parameterised ordering
- *     suite rather than in this file, so the M23.2 Kubernetes adapter inherits it.
- *  7. THAT NOTHING CARRYING A `secretEnv` VALUE LEAVES THIS PACKAGE — not on an argv, not in a
- *     returned `RunnerResult`, and not through any channel of a thrown `RunnerLaunchError`
- *     (`.message`, `String(err)`, `.stack`, `JSON.stringify`). The port is the only place that can
- *     assert this exactly rather than heuristically: it knows both the argv it built and which of
- *     those entries the caller declared secret.
- *
- * THE RECORDING SEAM is the one the three goldens use — `vi.mock("node:child_process")` with a
- * hand-written `execFile`. No Docker is required, so this runs on every PR under `pnpm test`.
- */
+/** The Docker adapter's own conformance suite. See docs/runner-launcher.md §4. */
 
 interface ExecFileCall {
   file: string;
@@ -89,18 +21,7 @@ interface ExecFileCall {
 /** Every `execFile` of the run, in the order the adapter issued them. */
 const calls: ExecFileCall[] = [];
 
-/**
- * WHAT THE `--env-file` LOOKED LIKE WHILE `create` WAS IN FLIGHT.
- *
- * Read by the seam, synchronously, at the moment `create` is issued — which is the only moment it
- * can be read, because the adapter unlinks the file as soon as `create` returns. Asserting on it
- * afterwards would be asserting on nothing; asserting only that it is GONE afterwards would pass for
- * an adapter that never wrote it and never passed a credential at all. Both halves are needed and
- * only the seam is standing in the right place for the first one.
- *
- * `node:fs` is NOT mocked here — only `node:child_process` is — so these are real files in a real
- * temp directory.
- */
+/** What the env file held while create was in flight. See docs/runner-launcher.md §5. */
 interface EnvFileSnapshot {
   path: string;
   content: string;
@@ -111,11 +32,7 @@ const envFileSnapshots: EnvFileSnapshot[] = [];
 
 /** What `docker create` prints. Deliberately padded — the adapter must `.trim()` it. */
 let createStdout = "  container-abc123 \n";
-/**
- * CONCURRENCY ONLY: with this set, successive `create`s print `container-1`, `container-2`, … so
- * that two runs in flight are distinguishable. Off everywhere else, where the literal
- * `container-abc123` is asserted and must stay.
- */
+/** Concurrency only: successive creates are numbered. See docs/runner-launcher.md §6. */
 let createIdSequence = false;
 /** The (trimmed) id each `create` was ALLOCATED, in issue order — the identity that call produces. */
 const createdIds: string[] = [];
@@ -125,18 +42,7 @@ const createdIds: string[] = [];
  */
 const nameToId = new Map<string, string>();
 
-// ==================================================================================================
-// M23.1 PHASE 4 — THE REAPER'S OWN SIDE CHANNEL.
-// ==================================================================================================
-// `reap()` now runs at the top of every `run()`, which means every test in this file that calls
-// `run()` ALSO issues one more `execFile` — `docker ps -a --filter label=scp.launcher.owner` — and
-// `create` now always carries two more `--label` pairs. Every existing assertion in this file pins
-// `calls` as the LITERAL create/cp/start/rm sequence, so both of those would break every one of them
-// for a reason unrelated to what each test is actually about. Both are therefore diverted into their
-// OWN side channels here, verified by their OWN dedicated describe block below, and kept out of
-// `calls` entirely — the same reasoning as `envFileSnapshots` above for the transient `--env-file`
-// path: asserting on the stripped-out value in place would be asserting on nothing, so it is
-// captured where it can still be seen and checked on its own terms.
+// M23.1 PHASE 4 — THE REAPER'S OWN SIDE CHANNEL. See docs/runner-launcher.md §7.
 
 /** `docker ps -a --filter label=...` calls issued by `reap()` — one per `run()`, none of them in
  *  `calls`. */
@@ -182,23 +88,7 @@ function popLauncherLabelsForRecording(rawArgs: string[]): string[] {
   return rest;
 }
 
-/**
- * PER-STEP FAILURE INJECTION — the very object `execFile`'s callback is handed for that step, or
- * absent for a step that succeeds.
- *
- * IT IS AN ERROR OBJECT AND NOT A BOOLEAN ON PURPOSE, and that is the whole of what this knob fixed:
- * the seam used to reject `start` with `new Error("container exited non-zero")` carrying nothing but
- * `stdout`/`stderr`, so nothing in this file could tell "the runner exited non-zero" apart from "our
- * own `timeout` fired and WE killed it" or "its output blew `maxBuffer`". Two mutations of the
- * `succeeded = false` at `index.ts:227` therefore passed all thirty tests —
- *
- *     succeeded = false;  ->  succeeded = (err as { killed?: boolean }).killed === true;
- *     succeeded = false;  ->  succeeded = (err as { code?: string }).code === MAXBUFFER_CODE;
- *
- * — which is the "verify the lever, not just the signal" class CLAUDE.md names: four tests assert
- * that `timeout` and `maxBuffer` REACH the options object, and none asserted what happens when one
- * of them FIRES. {@link NODE_FAILURE_SHAPES} fires them, on every step that can produce them.
- */
+/** PER-STEP FAILURE INJECTION. See docs/runner-launcher.md §8. */
 const stepFails: Partial<Record<RunnerStepKind, Error>> = {};
 
 /**
@@ -207,11 +97,7 @@ const stepFails: Partial<Record<RunnerStepKind, Error>> = {};
  */
 let startBehaviourOk: { stdout: string; stderr: string } | undefined;
 
-/**
- * The ordinary `start` rejection: a non-zero exit carrying the child's own output. A builder rather
- * than a literal because the absent-property arms exercise the adapter's `?? ""` / `?? e.message`
- * falls — see the measured note on those falls in the shapes table below.
- */
+/** The ordinary `start` rejection. See docs/runner-launcher.md §9. */
 function startExitFailure(payload: { stdout?: string; stderr?: string } = {}): Error {
   const err = new Error("container exited non-zero");
   if (payload.stdout !== undefined) Object.assign(err, { stdout: payload.stdout });
@@ -235,11 +121,7 @@ function fail(kind: RunnerStepKind, error: Error = defaultFailure(kind)): void {
   stepFails[kind] = error;
 }
 
-/**
- * A copy-OUT is distinguishable from a copy-IN without knowing the container id: the copy-IN's
- * DESTINATION is `<id>:<path>` and the copy-OUT's destination is a bare host directory. Every host
- * path in this file is colon-free, so this stays unambiguous.
- */
+/** A copy-out is distinguishable from a copy-in. See docs/runner-launcher.md §10. */
 function isCopyOut(args: string[]): boolean {
   return args[0] === "cp" && !String(args[2]).includes(":");
 }
@@ -375,40 +257,14 @@ const {
   whenReapSettled
 } = await import("./index.js");
 
-/**
- * THE OPTIONS, AS LITERALS. Deliberately NOT imported from `index.ts` — an expectation re-derived
- * from the code it guards cannot detect a change to that code. These three pairs are what the three
- * callers pass TODAY (managed-iac / managed-scan / managed-dep).
- */
+/** THE OPTIONS, AS LITERALS. See docs/runner-launcher.md §11. */
 const IAC_OPTS = { timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024 };
 const SCAN_OPTS = { timeout: 10 * 60_000, maxBuffer: 32 * 1024 * 1024 };
 const DEP_OPTS = { timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024 };
 /** The teardown call's own options — a shorter timeout and, notably, NO `maxBuffer`. */
 const RM_OPTS = { timeout: 30_000 };
 
-/**
- * ================================================================================================
- * THE PER-CALL `timeout` IS NO LONGER A CONSTANT, AND THAT IS THE POINT (M23.1e)
- * ================================================================================================
- * `RunnerSpec.timeoutMs` is the WHOLE-RUN budget, so each step is issued with what is LEFT of it —
- * `deadline - now`, off ONE clock read at the top of `run()`. Handing every step the full
- * `spec.timeoutMs` is exactly the defect: four sequential calls, each individually well under the
- * bound, made a run of 4 x timeoutMs, which the host budget (sized `timeoutMs + grace`) then
- * SIGKILLed mid-`tofu apply`.
- *
- * So the equality these constants used to be asserted with was pinning the DEFECT. Two facts are
- * asserted instead, and both are the property rather than a number:
- *   - NEVER ABOVE the caller's budget. A step handed more than `timeoutMs` is the old behaviour
- *     back, whatever arithmetic produced it.
- *   - NEVER MORE THAN {@link BUDGET_SLACK_MS} BELOW it in this file, where every step settles on
- *     the next tick of the loop — which is what stops a degenerate "always 1ms" from passing.
- * The strict decrease across a run, and the refusal once nothing is left, are in
- * `whole-run-budget.test.ts`, which can hold a step open for a measured duration.
- *
- * `toStrictEqual` KEEPS ITS TEETH: the asymmetric matcher substitutes for the `timeout` VALUE only.
- * The ABSENCE of `maxBuffer` on `rm`, and the absence of any other key anywhere, is still asserted
- * exactly as it was.
- */
+/** The per-call timeout is no longer a constant. See docs/runner-launcher.md §12. */
 const BUDGET_SLACK_MS = 5_000;
 function remainingBudget(budgetMs: number): unknown {
   return {
@@ -424,14 +280,7 @@ function runOpts(profile: { timeout: number; maxBuffer: number }): unknown {
   return { timeout: remainingBudget(profile.timeout), maxBuffer: profile.maxBuffer };
 }
 
-/**
- * A minimal, entirely explicit spec. Every test below overrides only what it is about.
- *
- * `runId` IS A FIXED LITERAL, and `labels` EMPTY, so that the argv assertions stay readable and so
- * that a spurious label is a visible extra pair rather than noise. The ordering substrate at the
- * bottom overrides `runId` per run — two concurrent runs must not share a container NAME any more
- * than they may share a container id, and the case that proves it needs distinct ones.
- */
+/** A minimal, entirely explicit spec. See docs/runner-launcher.md §13. */
 function spec(overrides: Partial<RunnerSpec> = {}): RunnerSpec {
   return {
     runId: "r1",
@@ -736,14 +585,7 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
   });
 
   it("`when: on-success` + `onFailure: swallow` + a FAILED start — NO copy-out; `swallow` never widens WHEN it runs", async () => {
-    // THE FOURTH COMBINATION. No real caller pairs these two — managed-iac is `{always, swallow}`,
-    // managed-scan and managed-dep are both `{on-success, propagate}` — so nothing above this test
-    // ever constructs `{on-success, swallow}`, and it was never asserted anywhere in this file.
-    // `onFailure` decides what happens to a FAILED copy-out call; `when` alone decides whether the
-    // copy is issued at all. A gate that checked `copyOut.onFailure === "swallow"` instead of
-    // `copyOut.when === "always"` would pass every other case in this describe — none of them pairs
-    // "swallow" with "on-success" — and would copy evidence out of a run this caller explicitly
-    // asked to treat as fail-closed, breaking the exact property `index.ts`'s file header names.
+    // THE FOURTH COMBINATION. See docs/runner-launcher.md §14.
     fail("start");
     const result = await createDockerRunnerLauncher("docker").run(
       spec({ copyOut: { ...OUT_PATHS, when: "on-success", onFailure: "swallow" } })
@@ -830,14 +672,7 @@ describe("M23.1 conformance: the failure paths, and the identity every one of th
   });
 
   it('A REJECTED `start` WITH NO stdout/stderr FALLS BACK TO `""` AND THE ERROR MESSAGE', async () => {
-    // THE `?? ""` / `?? e.message` FALLS, AND A CORRECTION. This test's comment used to say the fall
-    // covers the cases where "`execFile` rejects with a bare Error … (ENOENT on the binary, or the
-    // `timeout` firing)". MEASURED, that is false: `promisify(execFile)` attaches `stdout` and
-    // `stderr` to EVERY rejection it produces — including ENOENT and the timeout kill, where both are
-    // `""` — so in production these falls never fire and an operator gets an EMPTY `detail` for a
-    // runner we killed ourselves. The four arms of `NODE_FAILURE_SHAPES` below pin that consequence
-    // as it actually is; this test keeps covering the falls themselves, which remain the adapter's
-    // only defence against a rejection that did not come from `promisify(execFile)` at all.
+    // The fallbacks do fire, and this comment is a correction. See docs/runner-launcher.md §15.
     fail("start", startExitFailure());
 
     const result = await createDockerRunnerLauncher("docker").run(spec());
@@ -886,28 +721,7 @@ describe("M23.1 conformance: the failure paths, and the identity every one of th
   });
 
   it("a create that REJECTS after the daemon committed still issues rm -f for the NAME the caller chose", async () => {
-    // ================================================================================================
-    // M23.0's DEFECT 1, FIXED — AND THIS TEST IS THE INVERSION OF THE ONE THAT PINNED IT.
-    // ================================================================================================
-    // It used to be named "THE RECORDED DEFECT — a REJECTED `create` issues NO `rm`, because its
-    // await is outside the `try`", and it asserted that the ONLY call was the `create`. That was the
-    // honest record of a real bug: a `create` that times out after the daemon already made the
-    // container leaves it behind, unattributed and un-reaped. It is INVERTED rather than deleted,
-    // because the invariant it now states is the one that must not silently regress in either
-    // direction.
-    //
-    // AND IT DOES NOT INHERIT THE OLD FILE'S ADVICE. That test's comment said the right fix was to
-    // "move that `await` inside the `try`". IT IS NOT, and this file was wrong about its own subject:
-    // moving the await alone leaves `containerId` unbound when `create` rejects, so the `finally`
-    // issues `rm -f undefined` — measured against a real daemon (Docker 29.5.2), `docker rm -f` on a
-    // name that does not exist EXITS ZERO, so that call is not even a visible failure. It repairs
-    // nothing, it reaches no orphan, and it breaks this test. The fix needs BOTH halves: a name
-    // computed BEFORE `create` is issued, and `create` inside the `try`.
-    //
-    // THE DELETE-THE-WIRING CHECK FOR THAT FIX, MEASURED (each mutation applied alone, whole file
-    // re-run):
-    //   teardown addresses `containerId` again        -> RED here (a `rm -f undefined` is recorded)
-    //   `create`'s await moves back outside the `try` -> RED here (no `rm` at all is recorded)
+    // M23.0's DEFECT 1, FIXED. See docs/runner-launcher.md §16.
     fail("create");
     await expect(createDockerRunnerLauncher("docker").run(spec())).rejects.toThrow(/no such image/);
 
@@ -991,104 +805,19 @@ describe("M23.1 conformance: the failure paths, and the identity every one of th
   });
 });
 
-// ==================================================================================================
-// THE LEVERS, FIRED — what happens when `timeout` or `maxBuffer` actually goes off.
-// ==================================================================================================
-//
-// Everything above asserts that `timeout` and `maxBuffer` are ON THE OPTIONS OBJECT. That is the
-// signal, not the actuator, and CLAUDE.md names the gap: five tests (the three profile rows, "A
-// TENANT `timeoutMs` NEVER REACHES `rm`", and `RUNNER_REMOVE_TIMEOUT_MS`) assert those numbers, and
-// not one of them said what the adapter DOES when a number is exceeded. The consequence was
-// measurable: with the old boolean seam, `succeeded = false` at `index.ts:227` could be replaced by
-// `succeeded = (err as { killed?: boolean }).killed === true` and all thirty tests still passed —
-// a build in which every runner WE killed on timeout is reported to the plugin as a SUCCESS, with a
-// truncated or empty plan.json cached as evidence.
-//
-// MEASURED, each mutation applied to a clean tree and the whole file re-run:
-//
-//   succeeded = false -> `.killed === true`          CAUGHT (1/52) by the TIMEOUT-KILL `start` arm
-//                                                    — and by that arm ALONE, because the measured
-//                                                    maxBuffer error has no `killed` property.
-//   succeeded = false -> `.code === MAXBUFFER_CODE`  CAUGHT (1/52) by the MAXBUFFER `start` arm.
-//   stdout  = e.stdout ?? "" -> ""                   CAUGHT (3/52)
-//   stderr  = e.stderr ?? e.message -> e.message     CAUGHT (5/52) — all four `start` arms.
-//   `create` swallows a `killed` failure             CAUGHT (1/52) by the TIMEOUT-KILL `create` arm
-//   copy-IN swallows an ENOENT failure               CAUGHT (1/52) by the ENOENT copy-IN arm
-//   swallowed copy-OUT rethrows on ENOENT            CAUGHT (1/52) by the ENOENT copy-OUT arm
-//   teardown rethrows a `killed` failure             CAUGHT (1/52) by the TIMEOUT-KILL teardown arm
-//   NODE_FAILURE_SHAPES timeout row: killed -> false CAUGHT (1/52) by THE TABLE IS NOT FICTION —
-//                                                    the fixture itself is mutated, because a table
-//                                                    nothing checks is a fixture that never applied.
-//
-// WHAT THESE ARMS STILL CANNOT PROVE, STATED RATHER THAN IMPLIED.
-//  - That `timeout` or `maxBuffer` ever actually fires. The options object is asserted elsewhere and
-//    the CONSEQUENCE is asserted here, but nothing in this file lets a real 10-minute limit elapse;
-//    only a real Docker run can join the two halves. The seam injects the shape Node WOULD produce.
-//  - That the numbers are the right numbers. 16/32/8 MiB and 10/10/5 min are pinned as the callers'
-//    values, and no test here says whether a real `terraform plan` output fits in 16 MiB.
-//  - Anything about the runner-side truncation itself. The MAXBUFFER arms assert what the adapter
-//    reports; they do not assert that a truncated `plan.json` is REJECTED downstream — nothing in
-//    this package parses evidence, and `succeeded: false` is all the adapter offers a caller to go on.
-//  - (CLOSED — MEDIUM, verification pass 5.) This bullet read: "That an operator can tell these four
-//    apart afterwards. They cannot, today: `run()` returns the same `{ succeeded: false, stdout,
-//    stderr }` shape for all of them and drops `killed`, `signal` and `code` on the floor … pinned
-//    here as it stands rather than quietly improved." It stood for a milestone, which is what a
-//    well-written comment naming a hazard does (CLAUDE.md). `RunnerResult`'s failed arm now carries
-//    a `RunnerFailure` — the `classifiedAs` column below is per-ROW, so two rows with byte-identical
-//    `stdout`/`stderr` must still classify differently — and all three plugins record
-//    `runnerOutcomeDetail(result)` instead of `succeeded ? stdout : stderr`, so the distinction
-//    reaches the durable ledger and the Decision rather than stopping at the port.
-//    What is STILL not proven here: that a BUDGET exhaustion classifies apart from an ordinary
-//    signal. This seam settles every step on the next tick and can never reach the run deadline;
-//    `whole-run-budget.test.ts` is the seam that models duration and owns that arm.
+// THE LEVERS, FIRED. See docs/runner-launcher.md §17.
 
-/**
- * `code` on a maxBuffer overflow — THE PRODUCT'S OWN CONSTANT, imported rather than restated.
- * `classifyRunnerFailure` branches on this exact string, and "THE TABLE IS NOT FICTION" below spawns
- * a real child and compares `code` against the live Node. Importing is what joins those two: a local
- * copy would let the check verify the fixture while the classifier branched on something else.
- */
+/** `code` on a maxBuffer overflow. See docs/runner-launcher.md §18. */
 const MAXBUFFER_CODE = RUNNER_MAXBUFFER_CODE;
 
-/**
- * THE FOUR SHAPES `promisify(execFile)` ACTUALLY REJECTS WITH — MEASURED, NOT INVENTED.
- *
- * Each was captured from a real child process (`node -e …`, plus a spawn of a binary that does not
- * exist) and its own-properties printed; the objects below reproduce what came back. Three of the
- * four are things WE did rather than things the runner did, and the adapter cannot currently tell
- * them apart from a plain non-zero exit:
- *
- *   - TIMEOUT-KILL  `killed: true, signal: "SIGTERM", code: null` — OUR `timeout` fired and Node
- *                   SIGTERM'd the runner mid-flight. `stdout`/`stderr` hold what it had printed.
- *   - MAXBUFFER     a **RangeError** with `code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"` and — measured,
- *                   and load-bearing — **no `killed` property at all**, so a mutation keyed on
- *                   `killed` is caught by the timeout arm and NOT by this one. `stdout` is the
- *                   output TRUNCATED at `maxBuffer`, which is the whole hazard: it looks like data.
- *   - SPAWN ENOENT  `code: "ENOENT"` (a string) with `stdout` and `stderr` both `""` — the docker
- *                   binary is missing. The run is reported failed with NOTHING to explain it.
- *   - EXIT 125      `code: 125` (a NUMBER), `killed: false, signal: null` — docker's own "container
- *                   failed to run", the only one of the four the runner itself caused.
- *
- * `.code` IS OVERLOADED and all three of its inhabitants are in this table on purpose: `null`, a
- * string errno, and a numeric exit status. `index.ts` READS NONE OF THEM — it derives `succeeded`
- * from the fact of the rejection alone — so today there is nothing to conflate, and these arms are
- * what keeps that true: any future refactor that starts branching on `.code` (`=== 0`,
- * `typeof === "number"`, an errno allowlist) changes the outcome of at least one row and fails BY
- * NAME rather than by a diff.
- */
+/** The four shapes the promisified call rejects with. See docs/runner-launcher.md §19. */
 interface NodeFailureShape {
   name: string;
   /** A FRESH error per use — the seam hands the object itself to the adapter, and Errors are mutable. */
   make: () => Error;
   /** What `run()` must report when this shape lands on `start`. */
   startsAs: { stdout: string; stderr: string };
-  /**
-   * WHICH FAILURE KIND `classifyRunnerFailure` MUST DERIVE FROM THIS SHAPE — MEDIUM
-   * (verification pass 5). This column is the whole fix for "an operator cannot tell these four
-   * apart afterwards", which the header above pinned as a known behaviour gap. It is per-ROW rather
-   * than one assertion for all four precisely because the rows must NOT agree: two of them here
-   * report `stdout`/`stderr` that are byte-identical and must still be distinguishable.
-   */
+  /** Which failure kind must be derived from this shape. See docs/runner-launcher.md §20. */
   classifiedAs: RunnerFailureKind;
   /** How to provoke the REAL thing from the running Node, for the not-fiction guard below. */
   provoke: (
@@ -1111,11 +840,7 @@ const NODE_FAILURE_SHAPES: NodeFailureShape[] = [
         stderr: ""
       }),
     startsAs: { stdout: '{"resource_ch', stderr: "" },
-    // `signalled`, NOT `budget-exhausted`: this fixture's kill did not come from the run's own
-    // deadline (the seam settles on the next tick, so the clock never reaches it). The budget arm is
-    // in `whole-run-budget.test.ts`, which is the only seam that can model duration — and the two
-    // being DIFFERENT kinds from the same Node shape is the reason `deadlineExceeded` is tested
-    // first and is a field of its own rather than a re-reading of `killed`.
+    // `signalled`, NOT `budget-exhausted`. See docs/runner-launcher.md §21.
     classifiedAs: "signalled",
     provoke: (run) =>
       run(process.execPath, ["-e", "process.stdout.write('half');setTimeout(()=>{},5000)"], {
@@ -1185,12 +910,7 @@ const NODE_FAILURE_SHAPES: NodeFailureShape[] = [
 const PINNED_ERROR_FIELDS = ["code", "killed", "signal"] as const;
 const ABSENT = "<<no such own property>>";
 
-/**
- * The claim each row makes, reduced to something comparable. `stdout`/`stderr` are compared by TYPE
- * rather than value — their contents are the child's business — because the load-bearing fact about
- * them is that they are ALWAYS PRESENT STRINGS, which is what makes the adapter's `?? e.message`
- * fall unreachable in production.
- */
+/** Each row's claim, reduced to something comparable. See docs/runner-launcher.md §22. */
 function errorFingerprint(err: unknown): Record<string, unknown> {
   const e = err as Record<string, unknown>;
   const shape: Record<string, unknown> = {};
@@ -1202,16 +922,7 @@ function errorFingerprint(err: unknown): Record<string, unknown> {
   return shape;
 }
 
-/**
- * WHAT SURVIVES THE WRAP. Since the argv-leak fix these arms can no longer assert
- * `rejects.toBe(err)` — the adapter never rethrows the original, precisely so `err.message`'s
- * `Command failed: docker create … -e AWS_SECRET_ACCESS_KEY=…` cannot cross the plugin-host RPC
- * boundary. That makes it possible to LOSE the diagnosis while looking correct, so this asserts the
- * opposite direction: the wrapper is a `RunnerLaunchError` for the right STEP, and Node's own
- * `code`/`killed`/`signal` and the original's own words all came across. A wrapper that dropped them
- * would turn "our own timeout SIGTERM'd it" into an indistinguishable blank, which is the whole
- * reason the shapes table exists.
- */
+/** WHAT SURVIVES THE WRAP. See docs/runner-launcher.md §23. */
 function expectWrapped(err: unknown, step: string, original: Error): true {
   expect(err, "the adapter rethrew a raw execFile error, argv and all").toBeInstanceOf(
     RunnerLaunchError
@@ -1233,13 +944,7 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
   const OUT_PATHS = { containerPath: "/work/out", hostDir: "/host/out" } as const;
 
   it("THE TABLE IS NOT FICTION — the RUNNING Node still rejects with exactly these shapes", async () => {
-    // A recorded constant nobody re-derives goes stale in silence, and this table is a recording of
-    // another program's behaviour. So it is checked against that program: `importActual` reaches
-    // PAST this file's own `vi.mock` to the real `child_process`, four real children are spawned
-    // (no network, no Docker — `process.execPath` is the node running this test, and one binary that
-    // cannot exist), and the fields each row claims are compared. If a future Node renames
-    // `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, stops setting `killed`, or starts omitting `stderr`, THIS
-    // fails and names the row rather than the twenty arms below quietly testing a museum piece.
+    // A recorded constant nobody re-derives goes stale. See docs/runner-launcher.md §24.
     const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
     const { promisify } = await import("node:util");
     const realExecFileAsync = promisify(actual.execFile);
@@ -1403,26 +1108,7 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
   );
 });
 
-// ==================================================================================================
-// SECRETS — the `secretEnv` split, and the promise that nothing carrying one ever leaves this file.
-// ==================================================================================================
-//
-// WHAT THESE PROVE, AND THE MUTATION EACH ONE ANSWERS (every mutation applied alone to a clean tree,
-// the whole file re-run):
-//
-//   secretEnv goes back through `flatMap(e => ["-e", e])`   -> RED: "no value from secretEnv appears
-//                                                              anywhere in any recorded argv"
-//   the create catch rethrows the original error            -> RED: "a rejected create throws a
-//                                                              RunnerLaunchError whose message
-//                                                              contains no secret value"
-//   the wrapper keeps the original as `cause`               -> RED: the same test's `err.stack` arm
-//   the `--env-file` is never unlinked                      -> RED: "the env-file is gone by the time
-//                                                              `create` has returned"
-//   the env-file is written 0o644 instead of 0o600          -> RED: the same test's mode arm
-//   `env` is routed through `--env-file` too                -> RED: "a spec with NO secretEnv emits
-//                                                              NO --env-file"
-//
-// WHAT THEY CANNOT PROVE is stated with the rest at the bottom of this file.
+// Secrets: the split, and that none ever leaves the process. See docs/runner-launcher.md §25.
 
 describe("M23.1 conformance: secretEnv never reaches the command line, and never leaves in an error", () => {
   const SECRET = "AKIAEXAMPLE/s3cr3t+value";
@@ -1434,13 +1120,7 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
   });
 
   afterEach(() => {
-    // THE REAL HOUSEKEEPING GUARD, per case rather than as one final test. Every case in this
-    // describe is EITHER a refusal that never writes a file, OR a run whose `create` step is
-    // responsible for unlinking its own `--env-file` by the time the case's own assertions have
-    // run — so `stateDir` must already be empty of files here, before we remove it. A final
-    // "CLEANUP" test that made its OWN fresh (and therefore trivially empty) directory could never
-    // see a leak from an earlier case; this runs against THIS case's directory, immediately after
-    // THIS case, so a leak is caught by the case that caused it rather than being invisible forever.
+    // The housekeeping guard, per case not one final test. See docs/runner-launcher.md §26.
     const leftover = readdirSync(stateDir);
     rmSync(stateDir, { recursive: true, force: true });
     expect(
@@ -1551,16 +1231,7 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
   });
 
   it("a rejected create throws a RunnerLaunchError whose message contains no secret value", async () => {
-    // ================================================================================================
-    // 1d — THE HIGHER-VALUE HALF, AND THE ONE THE PRODUCT ACTUALLY LEAKED THROUGH.
-    // ================================================================================================
-    // `promisify(execFile)` rejects with `Command failed: docker create --network none -e
-    // AWS_SECRET_ACCESS_KEY=… …` as its MESSAGE. That message is what `subprocess-entry.ts` serialises
-    // across the plugin-host RPC boundary — it serialises `err.message` and nothing else — and what
-    // reaches `console.error`. So every channel that can carry it is checked, not just the one that is
-    // convenient: `.message`, `String(err)`, `.stack` (which embeds the message, and which would embed
-    // a `cause`'s stack too), and `JSON.stringify` (which sees own ENUMERABLE properties, so the
-    // wrapper's `argv`, `stdout` and `stderr` are all in scope).
+    // The higher-value half, and the one that actually leaked. See docs/runner-launcher.md §27.
     const shape = Object.assign(
       new Error(
         `Command failed: docker create --network none -e AWS_SECRET_ACCESS_KEY=${OTHER_SECRET} scp-runner-iac:vetted plan\n`
@@ -1609,14 +1280,7 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
   });
 
   it("A FAILED `start` IS CAPTURED WITH ITS SECRETS REDACTED — the run's own result is a channel too", async () => {
-    // `run()` RETURNS this one rather than throwing it, and the plugins put it straight into a
-    // Decision's `detail` (charter principle 6). managed-iac redacts it again on its own way out;
-    // that is belt-and-braces, not the control — a fourth managed plugin would inherit nothing.
-    // THE FIXTURE CARRIES THE SECRET IN ITS `message` TOO, and that is not decoration. `failure.detail`
-    // embeds `err.message` and NOT `err.stdout`/`err.stderr`, so a fixture whose message was clean
-    // would make the two `not.toContain`s below pass no matter what the classifier did with it —
-    // vacuous by construction (CLAUDE.md, "green for the WRONG REASON"). Real Node puts the child's
-    // stderr in that message: `Command failed: <cmd>\n<stderr>`. This reproduces that.
+    // Returned rather than thrown, then recorded directly. See docs/runner-launcher.md §28.
     const withSecretInMessage = startExitFailure({
       stdout: `plan wrote ${SECRET}`,
       stderr: `tofu: ${OTHER_SECRET} rejected`
@@ -1644,11 +1308,7 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
   });
 
   it("A SUCCEEDED run's stdout and stderr are redacted TOO — success is not a safe channel", async () => {
-    // FOUND BY MUTATION, NOT BY READING. Dropping `redact()` from the SUCCESS arm of `start` survived
-    // the whole suite: every secret case above drove a FAILURE, so the one path a real `tofu plan`
-    // takes every day was the one path with no assertion on it. A provider that echoes its own
-    // credential into a plan summary — or a runner that prints its environment on `--debug` — lands
-    // in `RunnerResult.stdout`, which the plugins put straight into a Decision (charter principle 6).
+    // FOUND BY MUTATION, NOT BY READING. See docs/runner-launcher.md §29.
     startBehaviourOk = { stdout: `applied with ${SECRET}`, stderr: `warning: ${OTHER_SECRET}` };
 
     const result = await createDockerRunnerLauncher("docker").run(secretSpec());
@@ -1762,77 +1422,9 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
   });
 });
 
-// ==================================================================================================
-// AWAIT ORDERING — the half of the contract the argv assertions above are structurally blind to.
-// ==================================================================================================
-//
-// Everything above records ISSUE order. Issue order is identical whether a step was awaited or
-// fired and forgotten, so two real mutations of `index.ts` used to survive all twenty of those
-// tests: `await pending.catch(() => undefined)` -> `void pending.catch(() => undefined)` (the
-// evidence copy-out), and `await execFileAsync(docker, ["rm","-f",id], …)` -> `void …` (teardown).
-// The cases below hold one step OPEN and assert that the next one has not been issued, which is the
-// only formulation that can tell the two apart. They are parameterised so the M23.2 Kubernetes
-// adapter inherits them by supplying a substrate rather than by re-deriving the race.
-//
-// THE MEASURED TABLE — EVERY `await` in `packages/runner-launcher/src/index.ts` (there are six),
-// dropped in turn and the suite re-run. RE-MEASURED against today's 52-test file; the counts and the
-// selector both moved when the LEVERS FIRE arms landed, because those arms share the "M23.1
-// conformance:" prefix the old selector used. "argv-only" is now the four pre-ordering describes,
-// selected with `-t "what the Docker adapter puts|the per-call timeout|copyOut.when|the failure
-// paths"` (20 tests); "whole file" is all 52.
-//
-//   index.ts:195  create, `const { stdout } = await execFileAsync(…)`
-//                 argv-only: CAUGHT (20/20)   whole file: CAUGHT (51/52)
-//                 Dropping it destroys the value flow too — `createOut` becomes a Promise and
-//                 `.trim()` throws — so this await cannot be dropped in an ordering-only way. The
-//                 named ordering case is "`create` IS AWAITED".
-//   index.ts:205  copy-in loop, `await execFileAsync(…)` -> `void`
-//                 argv-only: CAUGHT (1)       whole file: CAUGHT (7)
-//                 "A REJECTED COPY-IN REJECTS the run" and the four copy-IN shape arms catch the
-//                 un-awaited rejection; "THE COPY-INS ARE SEQUENTIAL" catches the ORDER (two copies
-//                 racing into one container, and `start` racing both), and "TWO RUNS AT ONCE"
-//                 catches it as a cross-run identity error.
-//   index.ts:218  start, `const r = await execFileAsync(…)`
-//                 argv-only: CAUGHT (7)       whole file: CAUGHT (21)
-//                 Value flow again (`r.stdout` undefined), plus "`start` IS AWAITED".
-//   index.ts:242  copy-out swallow arm, `await pending.catch(…)` -> `void pending.catch(…)`
-//                 argv-only: **SURVIVED**     whole file: CAUGHT (2)
-//                 THE managed-iac plan.json RACE. Measured, not assumed: against the argv-only
-//                 selection the run is "20 passed | 32 skipped" and exit 0. Caught only by "THE
-//                 SWALLOWED COPY-OUT IS AWAITED" and "A FAILING SWALLOWED COPY-OUT IS STILL
-//                 AWAITED" — the twenty LEVERS FIRE arms do NOT catch it either, because a shape
-//                 changes what the failure IS and not when it is waited for.
-//   index.ts:244  copy-out propagate arm, `await pending;` -> `void pending;`
-//                 argv-only: CAUGHT (1)       whole file: CAUGHT (6)
-//                 The argv-only catch is incidental — the rejection stops escaping `run()`.
-//                 "THE PROPAGATING COPY-OUT IS AWAITED" is what names the teardown race.
-//   index.ts:251  teardown, `await execFileAsync(… "rm","-f" …).catch(…)` -> `void …`
-//                 argv-only: **SURVIVED**     whole file: CAUGHT (2)
-//                 Also measured at exit 0 against the argv-only selection alone.
-//
-// AND THE MUTATION NO SINGLE-RUN TEST CAN SEE. Hoisting `const containerId` (index.ts:200) out of
-// the `run()` body to module scope typechecks clean and is caught by exactly ONE case in this file,
-// "TWO RUNS AT ONCE": measured at 1 failed | 51 passed, and the failure prints `container-1` having
-// been addressed by ten steps and `container-2` by two.
-//
-// NOT OBSERVABLE HERE, STATED RATHER THAN GLOSSED. The suite proves each step is awaited BEFORE THE
-// NEXT ONE IS ISSUED. It does NOT prove that the process the adapter waited on is the one that
-// finished — a substrate settles a step when the test says so, not when a container really exits;
-// only `managed-iac.integration.test.ts` (real Docker) can speak to that. It also says nothing
-// about the plugins' own awaits AROUND `run()` (writing the workspace, reading the evidence back),
-// which live in each plugin's suites, nor about WHERE `create`'s await sits relative to the `try` —
-// that has its own named test above ("a create that REJECTS after the daemon committed…"), and it is
-// a teardown-reachability property rather than an ordering one. And the
-// concurrency case runs TWO runs, not N: it would not notice a limit, a pool or a lock that only
-// misbehaves at higher concurrency, and it interleaves them at the points a test chooses rather
-// than at the points a scheduler would.
+// Await ordering, which the argv assertions cannot see. See docs/runner-launcher.md §30.
 
-/**
- * WHICH CONTAINER AN argv ADDRESSES — the Docker spelling of the port's per-run identity. Read off
- * the argv rather than tracked alongside it, so a step aimed at the wrong container is visible here
- * for the same reason it would be visible to the daemon. `create` addresses none, so it reports the
- * id it was ALLOCATED (`createdIds`, in issue order), which is what the run will go on to use.
- */
+/** WHICH CONTAINER AN argv ADDRESSES. See docs/runner-launcher.md §31. */
 function stepIdentity(args: string[], createIndex: number): string | undefined {
   const sub = args[0];
   if (sub === "create") return createdIds[createIndex];
@@ -1841,9 +1433,7 @@ function stepIdentity(args: string[], createIndex: number): string | undefined {
   // ordering suite tests is "each run tore down ITS OWN container" — and a teardown aimed at the
   // WRONG run's name now maps to the wrong id and fails, which is exactly what should happen.
   if (sub === "rm") return nameToId.get(String(args[2])) ?? String(args[2]);
-  // `start -a <id>`.
   if (sub === "start") return args[2];
-  // `cp <id>:<path>/. <hostDir>` out, `cp <hostDir>/. <id>:<path>` in.
   if (sub === "cp") return String(isCopyOut(args) ? args[1] : args[2]).split(":")[0];
   return undefined;
 }
@@ -1883,15 +1473,7 @@ runLaunchOrderingConformanceSuite(
   dockerOrderingSubstrate
 );
 
-// ====================================================================================================
-// M23.1 PHASE 4 — THE REAPER. See `RunnerLauncher.reap`'s own doc in index.ts for the defect this
-// closes, and `reaper.integration.test.ts` for why THIS suite (mocked `execFile`, no real Docker
-// daemon) cannot be the proof: it cannot show that a killed process leaves a container behind, that a
-// label survives on it, or that a real `docker ps --filter` actually finds it. What it CAN prove,
-// cheaply and on every PR, is the shape of what `reap()` sends and the LOGIC of its predicate —
-// exactly the two things a real-Docker test would be slow and awkward to drive through every branch
-// of.
-// ====================================================================================================
+// M23.1 PHASE 4 — THE REAPER. See docs/runner-launcher.md §32.
 
 describe("M23.1 phase 4: every `create` stamps the reaper's own two labels", () => {
   it("the owner is a UUID; the deadline is RFC3339 `now + timeoutMs + RUNNER_REAP_GRACE_MS`", async () => {
@@ -2046,14 +1628,7 @@ describe("M23.1 phase 4: `reap()`'s predicate — never a peer, never the future
   });
 });
 
-// ====================================================================================================
-// MEDIUM-4 — `reap()` ALSO SWEEPS A LEAKED `--env-file`, mtime-based, in the caller's OWN
-// `secretEnvDir`. This describe block is the fs-level proof of the sweep's PREDICATE (mirrors the
-// container predicate suite above, at the same altitude — no real process, no real SIGKILL). The
-// real-process proof — a genuine kill mid-`create` that really does leave the file, really does get
-// swept by a later real run() — is `reaper.integration.test.ts`'s job, for the same reason a real
-// SIGKILL cannot be produced inside this file's single-threaded mocked-`execFile` world.
-// ====================================================================================================
+// Reap also sweeps a leaked env file, by modification time. See docs/runner-launcher.md §33.
 
 describe("MEDIUM-4: reap()'s `--env-file` sweep — never a live run's file, never anything it did not name", () => {
   let secretEnvDir: string;
@@ -2063,11 +1638,7 @@ describe("MEDIUM-4: reap()'s `--env-file` sweep — never a live run's file, nev
   });
 
   afterEach(() => {
-    // REAL disk cleanup, not an assertion — unlike the secretEnv describe above, several cases HERE
-    // deliberately leave a fixture behind (a spared file, a dedup state file the sweep must never
-    // touch), so "this dir must be empty" would be a false claim about this describe's own cases.
-    // Every case already asserts what it expects to remain or be gone via `existsSync` inline; this
-    // just stops the mkdtemp'd fixture directory itself from accumulating on disk across runs.
+    // REAL disk cleanup, not an assertion. See docs/runner-launcher.md §34.
     rmSync(secretEnvDir, { recursive: true, force: true });
   });
 

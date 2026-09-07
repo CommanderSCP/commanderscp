@@ -1,22 +1,4 @@
-/**
- * `write-guard.ts` unit tests — the refusals that stand between a dependency subscription and a
- * commit in somebody else's repository (M21.5, ADR-0032 §8, PROJECT_CHARTER `scp-managed-dep`).
- *
- * RELOCATED, NOT REWRITTEN. These were built against the rival M21.5 branch's write hooks on
- * `GitProviderAdapter`. The owner's 2026-08-15 decision kept the guard layer and moved it beside its
- * one consumer, because where the HTTP happens is orthogonal to what may be written — so this file
- * moved with it, whole. What did NOT move is the composed-path section: `proposeManifestBump`
- * sequenced the three adapter hooks that no longer exist, and its property ("every refusal happens
- * before anything leaves the process") is now proven where the requests actually are, with a
- * counting client, in `repo-write.matrix.test.ts`.
- *
- * Every test here asserts the structured `RepoWriteRefusalReason`, never the message prose. That is
- * deliberate and it is what makes these mutation-proofs rather than wording pins: several refusals
- * overlap on the same input (a `go.sum` target is BOTH a lockfile and not-a-known-manifest; a
- * two-line edit is BOTH multiple-lines-changed and, usually, dependency-set-changed), so a test that
- * only asserted "it threw" would stay green with the specific control deleted. The reason code is
- * what distinguishes "the gate I am testing fired" from "some later gate caught it for me".
- */
+/** `write-guard.ts` unit tests. See docs/plugins.md §368. */
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { coordinateRuleCandidates } from "./bump-edit.js";
@@ -36,10 +18,6 @@ import {
   type ManifestEditProof,
   type RepoWriteRefusalReason
 } from "./write-guard.js";
-
-// -------------------------------------------------------------------------------------------
-// Helpers
-// -------------------------------------------------------------------------------------------
 
 /** Runs `fn` and returns the `RepoWriteRefusal` it threw, failing the test if it threw anything
  *  else — or nothing. Returning the error (rather than asserting inside) lets each test name the
@@ -85,12 +63,7 @@ const GO_MOD_BUMPED = GO_MOD_BASE.replace("v3.2.1", "v3.2.4");
 
 const GO_MOD_DECLARED = ["go.mod"];
 
-/**
- * The DESTINATION every fixture below is verified for. It is a shared constant rather than a per-test
- * literal because `repo` and `headBranch` are now bound INTO the proof (a proof states that specific
- * bytes may be written to a specific file on a specific branch of a specific repository), and the
- * tests here are about the CONTENT gates — the destination binding gets its own block at the bottom.
- */
+/** The DESTINATION every fixture below is verified for. See docs/plugins.md §369. */
 const FIXTURE_DESTINATION = { repo: "acme/widgets", headBranch: "scp/dep-bump/c1" } as const;
 
 /** `verifyManifestOnlyEdit` with this file's fixture destination filled in. Overridable, because the
@@ -116,11 +89,7 @@ function goBumpInput(
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// The happy path first — every refusal below is only meaningful against a case that is ALLOWED.
-// A suite of refusals with no negative control cannot tell "correctly strict" from "refuses
-// everything", which is the vacuous-test shape.
-// -------------------------------------------------------------------------------------------
+// The happy path first. See docs/plugins.md §370.
 
 describe("verifyManifestOnlyEdit — the negative control", () => {
   it("ACCEPTS a single declared-version change and reports exactly what moved", () => {
@@ -133,14 +102,7 @@ describe("verifyManifestOnlyEdit — the negative control", () => {
     expect(proof.signature).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  /**
-   * A real bump in EVERY ecosystem M21 parses, because the gates are shared but the manifests are
-   * not: `package.json` reports no `line` at all, `pom.xml` reports the line of the `<dependency>`
-   * OPEN TAG (several lines above the version it carries), and `Dockerfile` splits one literal
-   * `name:tag@digest` into two parsed fields. A gate tuned to one of those shapes and wrong for
-   * another would refuse a legitimate bump for a whole language — which is why the accept side is
-   * enumerated per ecosystem rather than sampled once.
-   */
+  /** A real bump in every ecosystem, since manifests differ. See docs/plugins.md §371. */
   it.each([
     [
       "npm / package.json",
@@ -237,7 +199,6 @@ describe("path gates", () => {
     expect(isLockfileName("something-lock.yaml")).toBe(true);
     expect(isLockfileName("vendor.lock")).toBe(true);
     expect(isLockfileName("packages.lock.json")).toBe(true);
-    // ...and does not over-reach onto real manifests.
     expect(isLockfileName("go.mod")).toBe(false);
     expect(isLockfileName("package.json")).toBe(false);
     expect(isLockfileName("pyproject.toml")).toBe(false);
@@ -447,11 +408,7 @@ describe("exactly ONE already-declared version may move", () => {
   });
 
   it("REFUSES a manifest that does not declare the subscribed coordinate at all", () => {
-    // Distinct from the case above, and the reason codes are what keep them distinct: there the
-    // subscribed coordinate IS declared and something else moved (`coordinate_not_expected`); here
-    // the subscribed coordinate is absent from the manifest entirely, so there is nothing to bump.
-    // Both must be reachable — an ordering that made either unreachable would be dead code
-    // masquerading as a control.
+    // The reason codes are what keep these two cases distinct. See docs/plugins.md §372.
     expectRefusal(
       () => verifyEdit(goBumpInput({ coordinate: "github.com/not/declared" })),
       "coordinate_not_declared"
@@ -495,19 +452,7 @@ describe("the change must be confined to the version text", () => {
   });
 });
 
-/**
- * ADR-0032 §8i — THE EDIT THAT IS STRUCTURALLY PERFECT AND OPERATIONALLY A NO-OP.
- *
- * Every other refusal in this file is about an edit that would change TOO MUCH. This one is about
- * an edit that changes nothing that runs: where a declaration is pinned by a tag AND a digest, the
- * runtime resolves by the digest, so moving the tag alone leaves the deployed bytes exactly where
- * they were. Nothing errors, every gate above agrees, the pull request merges, and the image never
- * moves — which is worse than a refusal, because a refusal is legible.
- *
- * The condition is "the digest did not move", never "a digest exists": the accept case directly
- * above moves both and must stay green, and it is what keeps this from being a rule that refuses
- * every digest-bearing manifest.
- */
+/** The edit that is structurally perfect and a no-op. See docs/plugins.md §373. */
 describe("a tag that moves while its digest stays", () => {
   const DIGEST_A = `sha256:${"a".repeat(64)}`;
 
@@ -562,9 +507,7 @@ describe("a tag that moves while its digest stays", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // The proof is a control, not a label
-// -------------------------------------------------------------------------------------------
 
 describe("ManifestEditProof", () => {
   it("accepts the content it was minted for", () => {
@@ -636,16 +579,7 @@ describe("ManifestEditProof", () => {
   });
 });
 
-/**
- * ================================================================================================
- * THE PROOF BINDS THE DESTINATION, NOT JUST THE CONTENT
- * ================================================================================================
- * The stated guarantee is "content that did not pass verification cannot reach a repository". Bound
- * to path + content alone, it was one field short of that: a proof minted for `acme/widgets`'s bump
- * branch verified cleanly against a publish of the same bytes at the same path to a DIFFERENT
- * repository, or to the BASE branch — the two destinations that matter, since one is somebody else's
- * repo and the other is the branch the pull request was supposed to target.
- */
+/** The proof binds the destination, not just the content. See docs/plugins.md §374. */
 describe("the proof binds WHERE the bytes may be written", () => {
   it("names the repository and the branch it was minted for", () => {
     const proof = verifyEdit(goBumpInput());
@@ -707,17 +641,7 @@ describe("the proof binds WHERE the bytes may be written", () => {
   });
 });
 
-/**
- * ================================================================================================
- * THE REFUSAL REASONS THAT HAD NO TEST
- * ================================================================================================
- * `RepoWriteRefusalReason`'s own doc says each reason is "stated as its own reason with its own test
- * rather than folded into a generic 'invalid request'". A census of the enum against the suites found
- * three with no assertion anywhere: `multiple_versions_changed`, `unbumpable_constraint` and
- * `message_too_large`. A reason nothing asserts is indistinguishable from a branch that cannot fire,
- * which is the difference between a control and a comment — so the doc is now true rather than
- * narrowed.
- */
+/** The refusal reasons that had no test. See docs/plugins.md §375. */
 describe("the three reasons that had no test", () => {
   it("REFUSES an edit that moves TWO declared versions on one line", () => {
     // Must be ONE line, or gate 3 (`multiple_lines_changed`) catches it first and this reason stays
@@ -739,12 +663,7 @@ describe("the three reasons that had no test", () => {
   });
 
   it("REFUSES bumping a declaration whose version this package refuses to resolve", () => {
-    // A `git+https://` npm specifier NAMES A LOCATION, not a registry version line, so its
-    // constraint is `unresolved` on BOTH sides — the ref inside it moved, which makes it the one
-    // changed declaration, and there is still no declared VERSION to bump. Reaching this reason
-    // needs exactly that shape: the subscribed coordinate must be the one that CHANGED (or
-    // `coordinate_not_expected` fires first) and its constraint KIND must be unchanged (or
-    // `constraint_kind_changed` does). That narrowness is why it had no test.
+    // A git specifier names a location, not a version line. See docs/plugins.md §376.
     const base = '{"dependencies":{"@acme/lib":"git+https://github.com/acme/lib#v1.2.3"}}';
     const edited = '{"dependencies":{"@acme/lib":"git+https://github.com/acme/lib#v1.2.4"}}';
     expectRefusal(
@@ -774,9 +693,7 @@ describe("the three reasons that had no test", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // URL safety on the write path — the read path's asserts, reused
-// -------------------------------------------------------------------------------------------
 
 describe("write-path URL safety inherits the read path's asserts", () => {
   it("REFUSES a traversal repo, path and base ref", () => {
@@ -801,9 +718,7 @@ describe("write-path URL safety inherits the read path's asserts", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // M21.7 — `locateVersionLine`, the anchor derivation, and the gate that catches a wrong SELECTION
-// -------------------------------------------------------------------------------------------
 
 /** The adversarial values file of `split-shape-image-bumps.md` §7, byte-identical to the one
  *  `bump-edit.test.ts` uses — the derivation and the refusal must agree about which line is line 7. */
@@ -910,18 +825,7 @@ describe("locateVersionLine — the anchor exists exactly where it is honest", (
     ).toEqual({ line: 1, text: "FROM alpine:3.18" });
   });
 
-  /**
-   * THE PER-ECOSYSTEM MAP, AS A FACT RATHER THAN AS PROSE.
-   *
-   * `bump-edit.ts` and `index.ts` both carried "…which keeps the four working ecosystems untouched
-   * BY CONSTRUCTION", and it was false of three of them: `go`, `requirements*.txt` and Dockerfile
-   * all take the anchored branch. The claim was in a comment, so nothing could contradict it — and
-   * this milestone has already paid twice for a comment asserting a property the code lacks.
-   *
-   * Enumerated here so the map is CHECKED. It goes red if a parser starts or stops reporting the
-   * line its version is written on, which is exactly the change that would silently move an
-   * ecosystem from one column to the other.
-   */
+  /** THE PER-ECOSYSTEM MAP, AS A FACT RATHER THAN AS PROSE. See docs/plugins.md §377. */
   it.each([
     [
       "go — anchors: the require line carries the version",

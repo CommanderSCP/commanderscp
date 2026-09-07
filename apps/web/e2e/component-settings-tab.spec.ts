@@ -3,22 +3,7 @@ import { expect, test } from "@playwright/test";
 import { ScpClient } from "@scp/sdk";
 import { adminCredentials, apiBaseUrl, baseUrl, loginAsAdmin } from "./fixtures.js";
 
-/**
- * THE GENERIC REGISTRY DETAIL PAGE IS REACHABLE FOR COMPONENTS.
- *
- * `/components/$idOrUrn` is a STATIC route (the pipeline) and static segments out-rank the dynamic
- * `/$basePath/$idOrUrn` that renders `RegistryDetailPage`. So the moment the pipeline shipped, that
- * page — labels, owners, "Move to service", executor-binding repurpose, component merge — became
- * UNREACHABLE for components without anything failing: no test asserted it, and the router comment
- * saying "the generic detail stays reachable for every other registry type" did not notice what
- * "every other" excluded.
- *
- * Only an end-to-end navigation can prove this. Route PRECEDENCE is the thing under test, and it is
- * decided by the real router over the real URL — a unit test that renders `RegistryDetailPage`
- * directly proves nothing about whether any URL reaches it, which is exactly how the regression got
- * in. This suite is also the only place `useBasePathParam`'s pathname fallback is exercised against
- * a route that genuinely has no `$basePath` param.
- */
+/** THE GENERIC REGISTRY DETAIL PAGE IS REACHABLE FOR COMPONENTS. See docs/web.md §2. */
 test("a component's Settings tab reaches the generic registry detail, and deep-links", async ({
   page
 }) => {

@@ -10,48 +10,11 @@ import {
   runnerOutcomeDetail
 } from "./index.js";
 
-/**
- * THE FAILURE TAIL WAS INERT IN EXACTLY THE CASE ITS DOC CLAIMED IT EXISTED FOR — HIGH, M23.0
- * verification pass 7. This file is the proof for the fix and, more importantly, the proof that the
- * MECHANISM is pinned rather than merely its output being non-empty.
- *
- * WHY THE FOUR TESTS THAT ALREADY COVERED THIS PATH DID NOT CATCH IT. Every one of them
- * (`whole-run-budget.test.ts`) pins the BUDGET-KILL arm, and that is the one path whose
- * `err.message` is REPLACED with a short synthesised string rather than being Node's
- * `Command failed: <cmd>\n<the ENTIRE stderr>`. With a short message ahead of it the appended tail
- * lands inside every consumer's front-slice, so the append looked like it worked. It did not work
- * anywhere else: `output.slice(-N)` -> `output.slice(0, N)` — head instead of tail, negating the
- * mechanism's whole purpose — SURVIVED 1542 tests. The PRESENCE of output was pinned; its TAIL-ness
- * was pinned by nothing.
- *
- * THE COMPANION NUMBER, CORRECTED — LOW, verification pass 7 finding L1, re-measured in pass 8 and
- * the disagreement turned out to be about the MUTATION, not the count. "Deleting the append
- * entirely reddened 4" was reported here; pass 7 re-measured six. Both are right, and they are
- * measurements of two different things. Re-run against `a0a3ab59^` with the round's own test files
- * removed, in the same tree so `dist` resolution is the real one:
- *
- *   suffix = "" in the TAIL BRANCH ONLY            -> 4 red  (0 launcher, 1 iac, 2 scan, 1 dep)
- *   the WHOLE suffix computation deleted           -> 6 red  (1 launcher, 1 iac, 2 scan, 2 dep)
- *
- * The extra two are not about the tail at all: they pin the `output.length === 0` arm's
- * "[the runner printed nothing on stdout or stderr]" wording, which the broader mutation also
- * removes. So the honest statement is the narrow one — FOUR tests pinned the append, none of them
- * its TAIL-ness — and the sentence now says which mutation it is talking about, because a bare
- * "deleting the append" admits both readings and they differ by 50%.
- *
- * SO EVERY ARM BELOW USES A MESSAGE OF NODE'S REAL SHAPE and puts the diagnosis at the END of the
- * output, which is where a `tofu apply`, a Trivy run and an `npm` failure all put theirs. An
- * assertion that only checks "the detail mentions the runner" passes under both slices; an
- * assertion that the LAST line survived does not.
- */
+/** The failure tail was inert in the case it claimed. See docs/runner-launcher.md §35. */
 
 const REAL_CAUSE = "Error: creating EC2 Instance: InvalidAMIID.NotFound";
 
-/**
- * A rejection shaped like the one `promisify(execFile)` actually produces for a non-zero exit:
- * `message` is the command followed by the WHOLE of stderr, and `stderr` carries it again. `noise`
- * is what the tool printed on its way to the error; `REAL_CAUSE` is its last line.
- */
+/** A rejection shaped like the one the runtime produces. See docs/runner-launcher.md §36. */
 function nodeExitRejection(noiseChars: number): RunnerLaunchError {
   const line = "module.tf: refreshing state, this is noise the tool printed\n";
   const noise = line.repeat(Math.ceil(noiseChars / line.length)).slice(0, noiseChars);
@@ -69,17 +32,7 @@ function nodeExitRejection(noiseChars: number): RunnerLaunchError {
 }
 
 describe("HIGH: the REAL CAUSE reaches the operator at every runner-output size", () => {
-  /**
-   * THE ONE THE SURVIVING MUTATION MUST REDDEN. `output.slice(-FAILURE_OUTPUT_TAIL_CHARS)` ->
-   * `output.slice(0, FAILURE_OUTPUT_TAIL_CHARS)` takes the noise the tool printed FIRST instead of
-   * the error it ended on, and at 5 KB and 50 KB the message region — front-kept and elided to what
-   * the budget leaves — no longer carries the last line either. Both larger arms go red.
-   *
-   * 1.5 KB is deliberately included and deliberately does NOT depend on the slice: at that size the
-   * output fits inside the message whole and the append is skipped as a duplicate. It is here
-   * because the property is "the real cause survives AT EVERY SIZE", and a test suite that only
-   * covered the sizes where the tail path runs would let the small-output arm rot.
-   */
+  /** THE ONE THE SURVIVING MUTATION MUST REDDEN. See docs/runner-launcher.md §37. */
   it.each([1_500, 5_000, 50_000])(
     "the last line of %i characters of runner output survives into `detail`",
     (noiseChars) => {
@@ -131,12 +84,7 @@ describe("HIGH: the REAL CAUSE reaches the operator at every runner-output size"
   });
 
   it("A SKIPPED DUPLICATE STILL SURVIVES WHEN THE MESSAGE IS WHAT OVERFLOWS", () => {
-    // Below the tail cap the output is already inside Node's message, so the append is skipped as a
-    // duplicate — and then nothing in this function is holding the cause in a reserved region. The
-    // string can still overflow on the OTHER axis: a 6 KB argv (a `-var` per resource) with only
-    // 1.5 KB of stderr. This is the arm that says the bound is a MIDDLE elision rather than a
-    // truncation: a front-slice of the composed string loses the cause here even though the tail
-    // append never ran.
+    // Below the cap the append is skipped, already inside. See docs/runner-launcher.md §38.
     const stderr = `refreshing\n${REAL_CAUSE}\n`;
     const argv = ["start", "-a", "c", ...Array.from({ length: 200 }, (_, i) => `-var=key${i}=x`)];
     const err = new RunnerLaunchError({
@@ -173,12 +121,7 @@ describe("boundDetail keeps both ends, and is the same bound wherever it is appl
     expect(bounded.length).toBeLessThanOrEqual(RUNNER_DETAIL_MAX_CHARS);
     expect(bounded.startsWith("HEAD-MARKER")).toBe(true);
     expect(bounded.endsWith("TAIL-MARKER")).toBe(true);
-    // THE ELISION SAYS HOW MUCH WENT, and the count is ARITHMETICALLY HONEST rather than merely
-    // present — a reader who cannot trust it is back to wondering whether the runner simply stopped
-    // there, which is the diagnostic hazard a bare truncation carries. Asserted as the invariant
-    // `kept head + stated drop + kept tail === the original`, NOT by recomputing the split the way
-    // `boundDetail` computes it: a test that re-derives the product's arithmetic passes whatever
-    // that arithmetic does.
+    // The elision says how much went, and the count is honest. See docs/runner-launcher.md §39.
     const marker = / …\[(\d+) characters elided\]… /.exec(bounded);
     expect(marker).not.toBeNull();
     const stated = Number(marker![1]);
@@ -225,26 +168,7 @@ describe("the durable ledger's own string is bounded, on the SUCCESS path too", 
   });
 });
 
-/**
- * THE MAGNITUDE OF THE BOUND IS A PRODUCT DECISION, PINNED HERE AGAINST ABSOLUTE LITERALS — HIGH,
- * M23.0 verification pass 7.
- *
- * WHY THIS EXISTS AT ALL. Every other length assertion in this repository reads
- * `expect(x.length).toBeLessThanOrEqual(RUNNER_DETAIL_MAX_CHARS)` — against the very constant that
- * DEFINES the bound, so it is a tautology about the magnitude and says only "the function applied
- * itself". MEASURED: with `RUNNER_DETAIL_MAX_CHARS = 4_000` mutated to `40_000`, managed-iac (29),
- * managed-scan (42) and managed-dep (247) stayed fully green and runner-launcher lost exactly one
- * test — a FIXTURE PRECONDITION, not a product assertion. At `400_000` the 432 KB end-to-end
- * integration test still passed, writing a 400 KB `Decision` row, because its only
- * non-self-referential defence was `toContain("characters elided")`, which merely needs
- * `MAX < 432_078`. The whole "1.44 GB/day" argument the bound makes for itself was defended by
- * nothing.
- *
- * SO THE NUMBERS ARE WRITTEN OUT. A `Decision` row's size is governed state, not an implementation
- * detail: changing it is a product decision that should require editing a test that says so, in a
- * file whose name says what it protects. This is the test the prompt asks to redden when someone
- * types `40_000`.
- */
+/** The magnitude of the bound, pinned against literals. See docs/runner-launcher.md §40. */
 describe("HIGH: the SIZE of the bound, not merely that a bound was applied", () => {
   it("RUNNER_DETAIL_MAX_CHARS is 4 000 characters — roughly 4 KB of governed state per Decision", () => {
     expect(RUNNER_DETAIL_MAX_CHARS).toBe(4_000);
@@ -276,9 +200,7 @@ describe("HIGH: the SIZE of the bound, not merely that a bound was applied", () 
   });
 });
 
-// ==================================================================================================
 // M23.5 VERIFICATION PASS 18 — THE KIND THAT REFUSES TO GUESS, AND THE ORDER THAT PROTECTS IT
-// ==================================================================================================
 
 describe("`outcome-unknown` is decided BEFORE every test that would infer a verdict", () => {
   const unknown = (over: { deadlineExceeded?: boolean; killed?: boolean } = {}) =>
@@ -298,11 +220,7 @@ describe("`outcome-unknown` is decided BEFORE every test that would infer a verd
     });
 
   it("AT THE DEADLINE it is `outcome-unknown`, not `budget-exhausted` — the order is the mechanism", () => {
-    // THE ARM THAT MATTERS. These runs normally end AT the whole-run deadline, so if
-    // `deadlineExceeded` were tested first every one of them would be re-labelled
-    // `budget-exhausted` — "the runner was stopped mid-flight" — which is precisely the claim the
-    // producer has just declared it cannot make. Swapping the two tests reddens here and nowhere
-    // else.
+    // THE ARM THAT MATTERS. See docs/runner-launcher.md §41.
     const failure = classifyRunnerFailure(unknown({ deadlineExceeded: true }));
     expect(failure.kind).toBe("outcome-unknown");
     // AND THE BOUND IS STILL REPORTED HONESTLY. The kind says what is KNOWN about the runner; this
@@ -328,18 +246,7 @@ describe("`outcome-unknown` is decided BEFORE every test that would infer a verd
     expect(classifyRunnerFailure(unknown({ killed: true })).kind).toBe("outcome-unknown");
   });
 
-  /**
-   * THE SECOND DECLARED CODE, AND IT IS THE SAME RULE — M23.5 verification pass 20.
-   *
-   * {@link RUNNER_NEVER_STARTED_CODE} used to reach `spawn-failed` BY BEING A STRING, through the
-   * errno test at the very bottom of the chain — which meant it only ever got there when
-   * `deadlineExceeded` happened to be `false`. It is a verdict produced almost exclusively by runs
-   * that polled to the whole-run deadline, so the flag was `true` essentially every time, and the
-   * only thing keeping "SIGTERMed mid-flight" off a Job that never started a container was the
-   * Kubernetes verdict FORCING the flag back down on the way past. That force made the durable
-   * record contradict itself: `deadlineExceeded: false` printed beside "the whole-run budget … was
-   * already spent". These two cases are what let the force be deleted.
-   */
+  /** THE SECOND DECLARED CODE, AND IT IS THE SAME RULE. See docs/runner-launcher.md §42. */
   const neverStarted = (over: { deadlineExceeded?: boolean; killed?: boolean } = {}) =>
     new RunnerLaunchError({
       step: "start",

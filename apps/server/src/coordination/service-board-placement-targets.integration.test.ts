@@ -13,33 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE SERVICE BOARD OVER A STAGE-SHAPED PLAN (ADR-0026).
- *
- * `latestChangeByComponent`'s arm 1 read `t.target_object_id AS component_id` and filtered it
- * against the service's component ids. Under stage-shaped compilation a wave target is a PLACEMENT,
- * so that filter matched nothing, arm 1 returned zero rows for every component, and the board fell
- * through to arm 2 for the whole service.
- *
- * THAT IS NOT A SMALLER ANSWER, IT IS A DIFFERENT KIND OF ANSWER, and it inverts the property the
- * two-arm shape exists to guarantee. Arm 1 is the local OBSERVATION and is authoritative; arm 2 is
- * the declared-targets fallback, an UNKNOWN, whose ordering key is fabricated for a replica. The
- * board's own header records the regression that produced the strict fallback: an honest unknown
- * displacing a real observation, dropping an outpost's `blocked` count to zero. With arm 1 dead,
- * every component is decided by arm 2 again — silently, because the board still renders.
- *
- * This test pins the PRECEDENCE, not the SQL: a component with an older PLANNED change and a newer
- * plan-less one must report the planned change, because that is the one this domain actually
- * observed. Arm 2 alone would report the newer one. So the assertion fails the moment arm 1 stops
- * covering stage-shaped plans — which is exactly the failure being fixed.
- *
- * MUTATION LOG (applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | arm 1 back to `t.target_object_id AS component_id` + `sqlIn("t.target_object_id", ...)` | "the PLANNED change wins" FAILS — the board reports the newer plan-less change, i.e. arm 2 answering for a component arm 1 must own |
- * | `COALESCE(pl.parent_id, t.target_object_id)` -> `pl.parent_id` alone | the LEGACY-shape test FAILS — a component wave target stops being covered, so the hop must be additive, not a replacement |
- */
+/** THE SERVICE BOARD OVER A STAGE-SHAPED PLAN. See docs/coordination.md §858. */
 describe("service board arm 1 over stage-shaped (placement) wave targets", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

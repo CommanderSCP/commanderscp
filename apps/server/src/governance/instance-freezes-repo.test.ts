@@ -1,21 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { instanceFreezeCovers } from "./instance-freezes-repo.js";
 
-/**
- * `instanceFreezeCovers` — the matching rule of the instance-scoped freeze tier (drizzle/0086,
- * campaigns-rework §2), measured without a database.
- *
- * IT IS PURE FOR EXACTLY THIS REASON. The integration suite proves the rule reaches a real wave
- * through a real graph; what it CANNOT cheaply enumerate is the cross product of three freeze
- * shapes against four coordinate shapes, and the two combinations a reviewer guesses wrong live in
- * that cross product:
- *
- *   * an `environment`-only freeze covers a stage that declares NO region (it is still that
- *     environment — "freeze prod" means prod, not "the parts of prod that named themselves"), and
- *   * a REGION-NARROWED freeze does NOT (that stage has not said it is that region).
- *
- * The two pull in opposite directions from the same null, which is why both are here.
- */
+/** The matching rule of the instance-scoped freeze tier. See docs/governance.md §243. */
 
 const coordinate = (environment: string, region: string | null = null) => ({
   environment,

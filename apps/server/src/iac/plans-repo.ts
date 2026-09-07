@@ -126,14 +126,7 @@ import {
 } from "./rollout-convergence-repo.js";
 import { validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 
-/**
- * Rejects (400) a diff that CREATES any component with no owning service (M12 P5a, owner ruling
- * 2026-07-16 "make IaC strict"). Called at BOTH plan-compute (so `POST /plans` fails fast, and the
- * reviewed plan is guaranteed valid) AND apply (defense-in-depth: `prepareApplyChecks` re-derives
- * every invariant from the STORED diff rather than trusting plan-compute ran — the same fail-closed
- * discipline the policy-scope / campaign-target / system-managed-type checks in this module use).
- * The message points at both the IaC ergonomics fix and the raw-manifest fix.
- */
+/** Rejects a diff creating a component with no owning service. See docs/iac.md §103. */
 function assertComponentsContained(diff: PlanDiff): void {
   const uncontained = uncontainedComponentCreates(diff);
   if (uncontained.length === 0) return;
@@ -145,16 +138,7 @@ function assertComponentsContained(diff: PlanDiff): void {
   );
 }
 
-/**
- * Rejects (400) a plan that would WRITE a `source_mappings`/`executor_bindings` row onto an object
- * this stack does not own (C1). Run at BOTH plan-compute and apply, exactly like
- * `assertComponentsContained` and for the same reason: `prepareApplyChecks` re-derives every
- * invariant from the STORED diff rather than trusting plan-compute ran.
- *
- * This is the enforcement half of the ownership-scoping decision (see
- * `plan-diff.ts`'s `unownedProjectionDeclarations` for the full rationale) — it is what makes
- * "a stack never touches another stack's rows" true for writes as well as for prunes.
- */
+/** Rejects a plan that would write such a row it may not. See docs/iac.md §104. */
 function assertProjectionsOwned(diff: PlanDiff): void {
   const unowned = unownedProjectionDeclarations(diff);
   if (unowned.length === 0) return;
@@ -166,25 +150,8 @@ function assertProjectionsOwned(diff: PlanDiff): void {
   );
 }
 
-/**
- * Rejects (400) a plan whose producer declarations this stack may not make — the producer it does
- * not own, the CURRENT producer it would displace and does not own, or a producer that is not a
- * `component` (ADR-0032 §7e). Run at BOTH plan-compute and apply, from the DIFF alone, exactly like
- * `assertProjectionsOwned` and for the same fail-closed reason.
- *
- * The displacement half has no analogue in the other collections and is the one worth pausing on: a
- * producer declaration is keyed on the COORDINATE and upserted, so it can change hands with NO row
- * deleted anywhere. Owning the destination component is therefore not sufficient to make a transfer
- * this stack's business — `invalidProducerDeclarations` carries the full argument.
- */
-/**
- * Rejects (400) a plan whose `governance:move` rung declarations this stack may not make — a rung on
- * a container it does not own, or on a type that cannot carry one. Run at BOTH plan-compute and
- * apply, exactly like the three guards around it and for the same reason: `prepareApplyChecks`
- * re-derives every invariant from the STORED diff rather than trusting plan-compute ran.
- *
- * `invalidGovernanceMoveRungDeclarations` carries the full argument for both refusals.
- */
+/** Rejects a plan whose producer declarations it may not make. See docs/iac.md §105. */
+/** Rejects a plan whose move-rung declarations it may not make. See docs/iac.md §106. */
 function assertGovernanceMoveRungsValid(diff: PlanDiff): void {
   const invalid = invalidGovernanceMoveRungDeclarations(diff);
   if (invalid.length === 0) return;
@@ -207,24 +174,8 @@ function assertProducerDeclarationsValid(diff: PlanDiff): void {
   );
 }
 
-/**
- * Rejects (400) a manifest declaring the same source mapping or the same `(target, type)` binding
- * twice. See `duplicateProjectionDeclarations` — silently preferring one is the failure mode
- * proposal §11 names explicitly.
- */
-/**
- * A manifest hook -> the flat, fully-NORMALIZED row shape the diff keys on.
- *
- * Every per-kind field is written to `null` where the kind does not carry it, rather than left
- * `undefined`. That is what makes the DESIRED side (a discriminated union whose members simply lack
- * the fields they do not use) key byte-for-byte against the ACTUAL side (rows from a table whose
- * per-kind columns are all nullable). Skip it and a `postMerge` hook keys one way from the manifest
- * and another from the database, so every plan proposes a delete plus a create for a hook nobody
- * touched — and, worse, the apply performs them.
- *
- * The per-kind reads are guarded by the discriminant rather than by optional chaining so a fifth
- * hook kind cannot be added without this function failing to compile.
- */
+/** Rejects a manifest declaring the same thing twice. See docs/iac.md §107. */
+/** A manifest hook, flattened to the row shape the diff keys on. See docs/iac.md §108. */
 function resolvePipelineHook(hook: ManifestPipelineHook): ResolvedManifestPipelineHook {
   const base = {
     componentUrn: hook.componentUrn,
@@ -259,7 +210,6 @@ function resolvePipelineHook(hook: ManifestPipelineHook): ResolvedManifestPipeli
       return {
         ...base,
         hookKind: "bakeAlarms",
-        // `bakeAlarms` triggers nothing, so it carries no workflow.
         workflow: null,
         stage: hook.stage ?? null,
         quietWindowSeconds: hook.quietWindowSeconds
@@ -278,23 +228,7 @@ function assertProjectionsUnique(manifest: ResolvedManifest): void {
   );
 }
 
-/**
- * Runs, for every INLINE binding this plan would write, the exact three checks
- * `PUT /executors/{idOrUrn}/binding` runs before storing one — module allowlist, reserved
- * instance-id namespace, and plugin config-schema validation. Called at BOTH plan-compute and apply.
- *
- * This is the census, not a nicety. IaC apply is a SECOND door into `executor_bindings`, and each of
- * these guards was written because the FIRST door needed it: an unknown/wrong-kind `pluginModule`
- * otherwise surfaces as a confusing dispatch-time failure (M8 item 6); a `pluginInstanceId` in the
- * reserved `execution-system:` namespace silently re-points a real system's coordination traffic at
- * tenant config (`assertNotReservedInstanceId`); and `managed-iac`'s `additionalProperties: false`
- * config schema is what stops a tenant setting the server-governed runnerImage/networkMode/
- * workspaceRoot (adversarial-review CRITICAL #1). A guard on one door only is not a guard.
- *
- * Execution-system-backed bindings are deliberately NOT checked here — their module and instance id
- * are derived from the system object at write time, and validating them needs a read of that object,
- * which must not happen before `authorize()` (see `executionSystemBindingIdentity`'s call-order note).
- */
+/** Runs the same three checks for every inline binding. See docs/iac.md §109. */
 function bindingTargetLabel(entry: PlanExecutorBindingDiffEntry): string {
   return entry.deploymentTargetUrn
     ? `placement ${entry.targetUrn}@${entry.deploymentTargetUrn}`
@@ -323,13 +257,7 @@ function assertInlineBindingsValid(diff: PlanDiff): void {
   }
 }
 
-/**
- * The thin DB-I/O wrapper around `iac/plan-diff.ts`'s pure diff engine, plus the `plans` table's
- * CRUD and the apply-time authorization-scope resolution + mutation execution. Everything that
- * *can* be a pure function lives in plan-diff.ts (BUILD_AND_TEST.md §4.1); this module is where
- * that meets `graph/objects-repo.ts`/`graph/relationships-repo.ts` (reused, never reimplemented —
- * per the parent task's explicit instruction).
- */
+/** The thin database wrapper around the pure diff engine. See docs/iac.md §110. */
 
 async function fetchObjectsByUrns(tx: TenantTx, orgId: string, urns: string[]) {
   if (urns.length === 0) return [];
@@ -347,16 +275,7 @@ async function fetchObjectsByIds(tx: TenantTx, orgId: string, ids: string[]) {
     .where(and(eq(objects.orgId, orgId), inArray(objects.id, ids), isNull(objects.deletedAt)));
 }
 
-/**
- * The URN of one object by id, TOMBSTONES INCLUDED — deliberately unlike every other object read in
- * this file, all of which filter `deleted_at IS NULL`.
- *
- * Used only to NAME the current holder of a producer coordinate in an apply-time refusal.
- * `dependency_line_producers` has no `deleted_at` and `deleteObject` is a soft delete, so a holder
- * may perfectly well be tombstoned while its declaration stands; a refusal that could not name it
- * would leave the operator with a coordinate, a conflict, and nothing to go and look at. Never used
- * to resolve an address — nothing is written to a tombstoned object on the strength of this.
- */
+/** The URN of one object by id, TOMBSTONES INCLUDED. See docs/iac.md §111. */
 async function objectUrnByIdIncludingTombstones(
   tx: TenantTx,
   orgId: string,
@@ -370,15 +289,7 @@ async function objectUrnByIdIncludingTombstones(
   return row?.urn ?? null;
 }
 
-/**
- * Live objects this stack OWNS — the object prune pool.
- *
- * Keyed on the server-written `managed_by_stack` column (drizzle/0068), NOT on
- * `labels @> {"scp:managed-by":"iac","scp:stack":…}` as it was until then. That containment test
- * read a map the prune target itself could write under plain `object:write`, so two label keys put
- * an arbitrary object into this delete pool — or took an object out of it, so its own stack could
- * never decommission it. `iac/stack-ownership.ts` has the full account.
- */
+/** Live objects this stack OWNS. See docs/iac.md §112. */
 async function fetchManagedObjects(tx: TenantTx, orgId: string, stackName: string) {
   return tx
     .select()
@@ -393,14 +304,7 @@ async function fetchManagedObjects(tx: TenantTx, orgId: string, stackName: strin
 }
 
 /** Live relationships this stack owns — the relationship prune pool. Same column, same reason. */
-/**
- * Bindings THIS stack owns (drizzle/0108). The `managed_by_stack` predicate is the whole safety
- * property of IaC-managed authority: a binding granted through `POST /role-bindings` carries NULL,
- * never matches, and therefore cannot be revoked by any manifest.
- *
- * Joined to `roles` for the NAME, because a manifest declares a role by name and the diff has to
- * key on the same thing the author wrote.
- */
+/** Bindings THIS stack owns. See docs/iac.md §113. */
 async function listStackManagedRoleBindings(tx: TenantTx, orgId: string, stackName: string) {
   return tx
     .select({
@@ -466,11 +370,7 @@ function toTriple(
   return { typeId: row.typeId, fromUrn: from.urn, toUrn: to.urn };
 }
 
-/**
- * Assembles a `PlanDiffSnapshot` from live graph state and runs the pure diff engine
- * (`plan-diff.ts`). Zod validation of `manifest` (400 on malformed input) happens in the route
- * handler BEFORE this is ever called — security self-check item 3 (goal statement).
- */
+/** Assembles a snapshot from live state and runs the diff. See docs/iac.md §114. */
 export async function computeDiffForManifest(
   tx: TenantTx,
   orgId: string,
@@ -495,18 +395,7 @@ export async function computeDiffForManifest(
     });
   }
 
-  // ---------------------------------------------------------------------------------------
-  // `governance:move` RUNG SUBJECTS — id-or-URN in, URN out, resolved HERE (a DB read, hence not in
-  // the pure diff engine) so every downstream stage speaks the one vocabulary the rest of the diff
-  // uses. Same shape as the `executionSystemId` resolution further down, with one addition that
-  // matters:
-  //
-  // A URN THIS MANIFEST ITSELF DECLARES IS CARRIED VERBATIM AND NOT LOOKED UP, because the subject
-  // may not exist yet — "create this service and govern moves under it" is the ordinary first
-  // manifest, and resolving it here would 404 on precisely the plan that is allowed to create it.
-  // Every other reference must already exist, and a miss is "your manifest is wrong" (400) rather
-  // than a plan that silently manages nothing.
-  // ---------------------------------------------------------------------------------------
+  // `governance:move` RUNG SUBJECTS. See docs/iac.md §115.
   const declaredObjectUrns = new Set(manifest.objects.map((o) => o.urn));
   let resolvedRungSubjectUrns: string[] | null = null;
   if (manifest.governanceMoveRungs !== undefined) {
@@ -551,11 +440,7 @@ export async function computeDiffForManifest(
   // A hook's owning object is its COMPONENT — the row hangs off it and inherits its ownership, the
   // same rule a source mapping's component and a producer's component get.
   for (const hook of manifest.pipelineHooks ?? []) referencedUrns.add(hook.componentUrn);
-  // A role binding names TWO objects and OWNS NEITHER. Unlike every collection above — where the
-  // referenced object is the row's owner and the stack declares it — a binding points at a subject
-  // and a scope that almost always live outside this stack (a user, an org root, somebody else's
-  // service). They are added here so `endpointId` can resolve them at apply; ownership is
-  // unaffected, and `computePlanDiff` never treats them as objects this stack manages.
+  // A role binding names TWO objects and OWNS NEITHER. See docs/iac.md §116.
   for (const binding of manifest.roleBindings ?? []) {
     referencedUrns.add(binding.subjectUrn);
     referencedUrns.add(binding.scopeUrn);
@@ -615,21 +500,7 @@ export async function computeDiffForManifest(
     .map((row) => toTriple(row, objectsById))
     .filter((t): t is ExistingRelationshipTriple => t !== null);
 
-  // ---------------------------------------------------------------------------------------
-  // C1 — the ownership pool for `source_mappings`/`executor_bindings`.
-  //
-  // Neither table carries an owner of its own, so a row's owner is the owner of the object it hangs
-  // off. The pool is therefore "every object this stack will own once this plan applies": the
-  // objects it ALREADY owns (`managedObjectRows` — `managed_by_stack` = this stack) UNION the live
-  // objects this manifest declares (apply stamps ownership onto each, so declaring an object
-  // adopts it).
-  //
-  // One pool serves BOTH prune detection and create/noop matching, and that union is what makes it
-  // correct. Restricting it to already-labelled objects would make the FIRST apply that adopts a
-  // discovery-imported component blind to that component's existing mapping rows — it would create
-  // a byte-identical duplicate (the table has no unique constraint to stop it) and then propose
-  // deleting it on the next plan, so the same manifest applied twice would not be a no-op.
-  // ---------------------------------------------------------------------------------------
+  // C1 — the ownership pool for `source_mappings`/`executor_bindings`. See docs/iac.md §117.
   const manifestObjectUrns = new Set(manifest.objects.map((o) => o.urn));
   const ownedObjectIds = new Set<string>();
   for (const row of managedObjectRows) ownedObjectIds.add(row.id);
@@ -646,12 +517,7 @@ export async function computeDiffForManifest(
     listPlacementsForComponents(tx, orgId, ownedIdList)
   ]);
 
-  // THE BINDING POOL SPANS OBJECTS *AND* PLACEMENTS. `executor_bindings.target_object_id` points at
-  // either, and a placement is not in `manifest.objects` (that door refuses pair-bound types, #207),
-  // so keying the pool on owned OBJECTS alone made every binding on a placement invisible to the
-  // diff: unadoptable (a re-plan proposes it forever) and unprunable. Sequenced after the placement
-  // read rather than folded into the Promise.all above, because the placement ids ARE the extra
-  // targets — the dependency is real, not incidental ordering.
+  // THE BINDING POOL SPANS OBJECTS *AND* PLACEMENTS. See docs/iac.md §118.
   const ownedBindingRows = await listExecutorBindingsForTargets(tx, orgId, [
     ...ownedIdList,
     ...ownedPlacementRows.map((row) => row.placementId)
@@ -711,7 +577,7 @@ export async function computeDiffForManifest(
     // A placement-targeted row reports as its COMPONENT narrowed by the deployment-target, which is
     // exactly how a manifest declares it — so the diff keys on one identity, not two shapes.
     const targetUrn = pair ? pair.componentUrn : urnOfOwnedId(row.targetObjectId);
-    if (!targetUrn) continue; // defensive — see above
+    if (!targetUrn) continue;
     managedExecutorBindings.push({
       targetUrn,
       deploymentTargetUrn: pair ? pair.deploymentTargetUrn : null,
@@ -726,22 +592,7 @@ export async function computeDiffForManifest(
     });
   }
 
-  // ---------------------------------------------------------------------------------------
-  // PRODUCER DECLARATIONS (ADR-0032 §7e) — TWO pools, mirroring `managedRelationships` vs
-  // `existingRelationships` rather than the projection tables' one-pool shape.
-  //
-  // The prune pool is ownership-scoped: declarations whose PRODUCER is a component this stack owns.
-  // The existence pool is NOT, and must not be — a declaration is keyed on the coordinate and
-  // upserted, so `@acme/lib` can move from stack B's component to stack A's with nothing deleted.
-  // Reading only the scoped pool would make that transfer look like a `create` and let apply perform
-  // it silently; reading the live row for each DECLARED coordinate is what turns it into an `update`
-  // naming the displaced producer, which `invalidProducerDeclarations` then refuses when the
-  // displaced producer is not this stack's.
-  //
-  // Skipped entirely when the manifest has no `producers` key: that means UNMANAGED (see
-  // `ResolvedManifest.producers`), so there is nothing to converge and nothing to prune, and reading
-  // a prune pool we must never act on would only invite a later edit to act on it.
-  // ---------------------------------------------------------------------------------------
+  // PRODUCER DECLARATIONS (ADR-0032 §7e). See docs/iac.md §119.
   let managedDependencyProducers: ResolvedManifestDependencyProducer[] = [];
   let existingDependencyProducers: ResolvedManifestDependencyProducer[] = [];
   if (manifest.producers !== undefined) {
@@ -774,24 +625,14 @@ export async function computeDiffForManifest(
     const ecosystemOf = (row: ProducerRow) =>
       row.ecosystem as ResolvedManifestDependencyProducer["ecosystem"];
 
-    // THE PRUNE POOL — DROP, and here the claim holds. This pool decides what gets RETRACTED. A
-    // declaration whose producer cannot be named is one this plan can neither honestly report a
-    // prune of (the reviewed entry names the producer LOSING the coordinate) nor prove ownership
-    // of, since ownership is inherited from a component that is no longer there. Dropping it means
-    // the retraction does not happen: inaction, and the coordinate keeps the behaviour it has today.
+    // THE PRUNE POOL. See docs/iac.md §120.
     const toManaged = (row: ProducerRow): ResolvedManifestDependencyProducer | null => {
       const producerUrn = objectsById.get(row.producerObjectId)?.urn;
       if (!producerUrn) return null;
       return { producerUrn, ecosystem: ecosystemOf(row), coordinate: row.coordinate };
     };
 
-    // THE EXISTENCE POOL — KEEP, ALWAYS. This pool answers "does this coordinate already have a
-    // holder", and the answer is YES whether or not the holder can be named: the row is live and the
-    // next declaration is an upsert straight over it. Dropping it made the diff emit a `create`,
-    // whose reason sentence tells the reviewing operator the coordinate "is polled as third-party
-    // today" — so the plan inverted its own most consequential fact and the apply performed an
-    // unreviewed overwrite. Keeping the row under {@link unresolvedProducerUrn} makes it an `update`
-    // that NAMES the situation, which `invalidProducerDeclarations` refuses in its own branch.
+    // THE EXISTENCE POOL. See docs/iac.md §121.
     const toExisting = (row: ProducerRow): ResolvedManifestDependencyProducer => ({
       producerUrn:
         objectsById.get(row.producerObjectId)?.urn ?? unresolvedProducerUrn(row.producerObjectId),
@@ -805,19 +646,7 @@ export async function computeDiffForManifest(
     existingDependencyProducers = declaredRows.map(toExisting);
   }
 
-  // ---------------------------------------------------------------------------------------
-  // `governance:move` RUNGS (ADR-0038 §2) — ONE pool, ownership-scoped, and the reason it is one
-  // rather than the two `producers` needs is on `PlanDiffSnapshot.managedGovernanceMoveRungs`.
-  //
-  // Read through `listGovernanceMoveRungs` — the same function the API list read and the Admin page
-  // use — rather than a SELECT written here, so a plan can never disagree with what an operator sees
-  // on the page they authored the rung from. The whole org's rungs is a handful of rows by
-  // construction (one per governed container), so the filter is in memory.
-  //
-  // Skipped entirely when the manifest has no `governanceMoveRungs` key: absent means UNMANAGED, so
-  // there is nothing to converge and nothing to prune, and reading a prune pool we must never act on
-  // would only invite a later edit to act on it.
-  // ---------------------------------------------------------------------------------------
+  // `governance:move` RUNGS (ADR-0038 §2). See docs/iac.md §122.
   const managedGovernanceMoveRungs: string[] = [];
   if (resolvedRungSubjectUrns !== null) {
     const owned = new Set(ownedIdList);
@@ -833,16 +662,7 @@ export async function computeDiffForManifest(
     }
   }
 
-  // ---------------------------------------------------------------------------------------
-  // PIPELINE HOOKS (D11/D21; migration 0096) — ONE pool, ownership-scoped through the COMPONENT,
-  // exactly like `source_mappings` and `executor_bindings` and for the identical reason:
-  // `pipeline_hooks` carries no owner of its own, so a row's owner is the owner of the component it
-  // hangs off. The pool therefore serves BOTH prune detection and create/noop matching.
-  //
-  // Skipped entirely when the manifest has no `pipelineHooks` key: absent means UNMANAGED (see
-  // `ResolvedManifest.pipelineHooks`), so there is nothing to converge and nothing to prune, and
-  // reading a prune pool we must never act on would only invite a later edit to act on it.
-  // ---------------------------------------------------------------------------------------
+  // PIPELINE HOOKS (D11/D21; migration 0096). See docs/iac.md §123.
   const managedPipelineHooks: ResolvedManifestPipelineHook[] = [];
   if (manifest.pipelineHooks !== undefined) {
     for (const row of await listHooksForComponents(tx, orgId, ownedIdList)) {
@@ -878,13 +698,7 @@ export async function computeDiffForManifest(
       rollout: row.rollout
     });
   }
-  // ROLE BINDINGS AND ORG ROLES (drizzle/0108). Read UNCONDITIONALLY for the reason the rollout
-  // pool gives: absent means empty for both, so a prune is always in scope and a pool we skipped
-  // reading would make every prune a silent no-op.
-  //
-  // SCOPED TO THIS STACK'S OWN ROWS. `managed_by_stack = :stackName` is the whole safety property:
-  // a binding granted through `POST /role-bindings` carries NULL, is invisible here, and therefore
-  // cannot be revoked by any manifest.
+  // ROLE BINDINGS AND ORG ROLES. See docs/iac.md §124.
   const managedRoleBindings: ResolvedManifestRoleBinding[] = [];
   const roleBindingRows = await listStackManagedRoleBindings(tx, orgId, manifest.stackName);
   // Both endpoints are raw object-id foreign-key columns, never URNs, so the id-or-urn ambiguity
@@ -1055,11 +869,7 @@ export async function computeDiffForManifest(
   // its output well-formed, which would otherwise hide the manifest bug behind a plausible plan.
   assertProjectionsUnique(resolvedManifest);
 
-  // §9 — STACK THEFT IS A 409, NOT AN INTERNAL ERROR. `computePlanDiff` throws a typed
-  // `StackOwnershipConflictError` when the manifest names an object another stack manages; without
-  // this mapping it would surface as a 500 and read as a server fault rather than the deliberate
-  // refusal it is. Adoption of an UNMANAGED object is untouched and stays legal — that is how an
-  // existing estate comes under IaC in the first place.
+  // §9 — STACK THEFT IS A 409, NOT AN INTERNAL ERROR. See docs/iac.md §125.
   const diff = computeDiffOrConflict(resolvedManifest, {
     existingObjects,
     managedRelationships,
@@ -1087,13 +897,7 @@ export async function computeDiffForManifest(
   return diff;
 }
 
-/**
- * The apply-time half of §9's stack-theft refusal, read against LIVE `managed_by_stack`.
- *
- * Every non-delete object entry is checked, not only the ones the stored diff marked `adopted`: the
- * marking is a fact about the instant the plan was computed, and trusting it here would make the
- * guard exactly as stale as the thing it is guarding against.
- */
+/** The apply-time half of the stack-theft refusal. See docs/iac.md §126. */
 async function assertNoStackTheftAtApply(
   tx: TenantTx,
   orgId: string,
@@ -1115,14 +919,7 @@ async function assertNoStackTheftAtApply(
   }
 }
 
-/**
- * `computePlanDiff` with its one typed refusal translated into an HTTP-shaped one.
- *
- * Kept as a named wrapper rather than a try/catch inline so the APPLY door can call exactly the
- * same thing (`prepareApplyChecks` re-runs the ownership check against the STORED diff, because a
- * plan is reviewed at one instant and applied at another, and the object could have been claimed by
- * another stack in between).
- */
+/** The diff, with its one typed refusal shaped for HTTP. See docs/iac.md §127. */
 function computeDiffOrConflict(
   resolvedManifest: ResolvedManifest,
   snapshot: Parameters<typeof computePlanDiff>[1]
@@ -1134,10 +931,6 @@ function computeDiffOrConflict(
     throw error;
   }
 }
-
-// -------------------------------------------------------------------------------------------
-// `plans` table CRUD
-// -------------------------------------------------------------------------------------------
 
 function toPlan(row: typeof plans.$inferSelect): Plan {
   return {
@@ -1197,12 +990,7 @@ async function lockPlan(
   return row;
 }
 
-/**
- * Loads and locks a plan for apply, rejecting anything not `pending` with 409 (goal statement:
- * "re-applying an already-applied plan should be rejected with 409" — the diff it recorded may be
- * stale; callers re-converge by POSTing a fresh `/plans`, which is also what makes "apply the same
- * manifest twice" naturally produce an all-noop second diff, DoD (b)).
- */
+/** Loads and locks a plan for apply, rejecting non-pending. See docs/iac.md §128. */
 export async function lockPendingPlan(tx: TenantTx, orgId: string, id: string): Promise<Plan> {
   const row = await lockPlan(tx, orgId, id);
   if (row.status !== "pending") {
@@ -1223,13 +1011,7 @@ export async function markPlanApplied(tx: TenantTx, orgId: string, id: string): 
   return toPlan(row);
 }
 
-// -------------------------------------------------------------------------------------------
-// Apply: per-entry authorization-scope resolution, then mutation execution. Split into two
-// functions so the route handler (routes/plans.ts) can run EVERY `authorize()` call from
-// `checks` to completion before calling `executePlanDiff` — "check every entry's permission
-// BEFORE executing any mutation" (goal statement's security note), matching every other route's
-// convention of owning the authz decision itself (objects-generic.ts, ownership.ts).
-// -------------------------------------------------------------------------------------------
+// Apply: per-entry authorization-scope resolution, then mutation execution. See docs/iac.md §129.
 
 export interface ScopeCheck {
   permission: Permission;
@@ -1242,61 +1024,20 @@ export interface ObjectResolution {
   scopeObjectId: string;
 }
 
-/** `object:write` for every ordinary type; `policy:write` for the governance-owned `policy`/
- *  `control` types — mirrors `routes/typed-registries.ts`'s `writePermission` gate so the IaC
- *  apply path can never authorize a governance-object write with a weaker permission than the
- *  typed `/policies`/`/controls` routes require (security fast-follow after PR #9).
- *
- *  M16.2 phase A (E1) adds the same treatment for the peer-bound `outpost` type: its own routes
- *  (`/api/v1/federation/outposts`) require `federation:write`, so a manifest declaring an `outpost`
- *  object must clear the SAME bar rather than the weaker `object:write` — otherwise `POST /plans` +
- *  `.../apply` would be a third door into commander-authored federation config with the wrong gate,
- *  exactly the shape the governance carve-out above was written to close. The 1:1 peer BINDING needs
- *  no work here: it is enforced inside `graph/objects-repo.ts`, which this path calls
- *  (`federation/outpost-binding.ts` explains the single-choke-point choice). */
+/** Object write for ordinary types, policy write for governed. See docs/iac.md §130. */
 function writePermissionFor(typeId: string): Permission {
   if (isGovernanceManagedObjectType(typeId)) return "policy:write";
   if (isPeerBoundObjectType(typeId)) return "federation:write";
   return "object:write";
 }
 
-/**
- * Resolves, for every non-noop diff entry, which permission + scope `authorize()` must allow.
- * Object creates check `object:write` at the resolved target domain (mirrors
- * `objects-generic.ts`'s create handler); updates/deletes check at the object's own id. Relationship
- * creates/deletes check `relationship:write` at BOTH endpoints (mirrors the M1 security review's
- * "relationship writes require write permission at both endpoints' scopes" — CRITICAL 1 — applied
- * here too, not just on the generic endpoint). An endpoint not covered by any object diff entry in
- * this plan (an "external" URN reference, or a plain pre-existing dependency) is resolved via a
- * live lookup and must already exist — `getObjectByIdOrUrnAnyType` 404s otherwise.
- *
- * **Governance carve-out (security fast-follow after PR #9's adversarial review):** a manifest can
- * declare `policy`/`control` objects like any other type — `typeId` is a free-form string
- * (`ManifestObjectSchema`), so nothing before this function stops a caller from including one. The
- * ORIGINAL code checked only `object:write` here, meaning an actor with no `policy:write` anywhere
- * could plant a `policy`/`control` object through `POST /plans` + `.../apply` even though both the
- * typed `/policies` route AND (after this fix) the generic `/objects/policy` endpoint refuse that.
- * Worse, for `policy` specifically, the DECLARED `properties.scope` was never bound to the actor's
- * own authority — a narrow-scope actor's apply could plant an org-wide `required` policy, the exact
- * CRITICAL #1b vector `assertPolicyScopeWithinAuthority` closes on the typed route. Fixed here by
- * (a) using `policy:write` instead of `object:write` for these types (`writePermissionFor`), and
- * (b) calling `assertPolicyScopeWithinAuthority` for every `policy` create/update, exactly like
- * `routes/typed-registries.ts`'s POST/PATCH/PUT handlers do. Thrown eagerly (not deferred into the
- * `checks` array the caller drains after this returns) — still fully fail-closed: an uncaught throw
- * here aborts `prepareApplyChecks` before `executePlanDiff` ever runs, inside the same transaction
- * the route handler opened, so nothing partially applies.
- */
+/** Resolves which permission and scope each entry needs. See docs/iac.md §131. */
 export async function prepareApplyChecks(
   tx: TenantTx,
   orgId: string,
   actorObjectId: string,
   diff: PlanDiff,
-  /**
-   * The stack this diff belongs to — REQUIRED, not optional, so §9's stack-theft check cannot be
-   * skipped by omission at a future call site. `PlanDiff` does not carry the name (the `plans` row
-   * does), and an optional parameter defaulting to "no check" is the shape that lets a third door
-   * quietly opt out of a guard the other two enforce.
-   */
+  /** The stack this diff belongs to, required not optional. See docs/iac.md §132. */
   stackName: string
 ): Promise<{ checks: ScopeCheck[]; objectResolutions: Map<string, ObjectResolution> }> {
   const objectResolutions = new Map<string, ObjectResolution>();
@@ -1306,40 +1047,16 @@ export async function prepareApplyChecks(
   // trusting plan-compute ran (e.g. a plan created by a pre-P5a build). Fail-closed: an uncaught
   // throw aborts before `executePlanDiff`, inside the route's transaction, so nothing applies.
   assertComponentsContained(diff);
-  // §9 STACK THEFT, RE-CHECKED AT APPLY AGAINST LIVE OWNERSHIP — and this door is the one that
-  // matters, not plan-compute's. A plan is reviewed at one instant and applied at another: an
-  // object that was unmanaged (legally adoptable) when the diff was computed may have been claimed
-  // by another stack since, and the stored diff would still say `adopted`. Reading the column here
-  // is the only check that sees the state the write will actually land on.
+  // §9 STACK THEFT, RE-CHECKED AT APPLY AGAINST LIVE OWNERSHIP. See docs/iac.md §133.
   await assertNoStackTheftAtApply(tx, orgId, diff, stackName);
-  // C1's two invariants get the same defense-in-depth treatment, and for a sharper reason: a plan
-  // stored by a pre-C1 build cannot carry these collections at all, but a plan stored between
-  // plan-compute and apply by ANY build must still be re-proved to write only onto objects this
-  // stack owns, and to carry only inline bindings whose module/config clear the same bar the
-  // typed route requires.
+  // Those two invariants get the same defence in depth. See docs/iac.md §134.
   assertProjectionsOwned(diff);
   assertProducerDeclarationsValid(diff);
   assertGovernanceMoveRungsValid(diff);
   assertInlineBindingsValid(diff);
 
   for (const entry of diff.objects) {
-    // A PAIR-BOUND type (`placement`) cannot be declared as a raw manifest object. This is the
-    // IaC-apply twin of `routes/objects-generic.ts`'s `assertNotPairBoundObjectType`, and it was
-    // missing: apply calls `createObject` DIRECTLY, so the route's refusal never ran here. A
-    // manifest declaring `typeId: "placement"` therefore wrote a row carrying two unresolved,
-    // un-type-checked UUIDs and — decisively — NO derived `places`/`placed_at` edges, leaving an
-    // island invisible to every traversal and impact query. Proven reachable on this exact code
-    // path before the guard existed, not reasoned about.
-    //
-    // `pair-bound-types.ts` names its consumers as "the generic route and the federation overlay
-    // route — both user-facing create surfaces". IaC apply is a third, and was not on the list;
-    // the same omission shape as the system-managed RELATIONSHIP refusal below, which this file
-    // already carries for exactly the same "second injection vector" reason.
-    //
-    // Refused for every non-noop action, not just `create`: an update would rewrite the pair
-    // without re-deriving the edges, and a delete would tombstone the object while leaving them.
-    // Placements are authored through `/api/v1/placements`; a stack that needs them declares them
-    // there until a typed manifest collection exists (post-import-configuration.md §8).
+    // A PAIR-BOUND type. See docs/iac.md §135.
     if (entry.action !== "noop" && isPairBoundObjectType(entry.typeId)) {
       throw forbidden(
         `object type '${entry.typeId}' is identified by a pair of objects and cannot be declared ` +
@@ -1347,23 +1064,7 @@ export async function prepareApplyChecks(
           `write the derived edges that make the pair traversable. Use /api/v1/${entry.typeId}s.`
       );
     }
-    // M25.7 — A PROJECTION-BOUND type (`freeze`) is refused for the same shape of reason one type
-    // further, and this door is the one where its absence was a live ESCALATION rather than a
-    // malformed row. `writePermissionFor` below maps every governance-managed type to
-    // `policy:write`, so adding `freeze` to that set did not close this door: it OPENED a
-    // substitution, in which `policy:write` at a narrow domain stood in for BOTH of a freeze's real
-    // gates (`freeze:write` at its own scope, `federation:write` on top to federate it), neither of
-    // which this path ever asks for. Worse, the create branch below scope-binds a declared
-    // `properties.*` for exactly `policy` and `campaign`, so the freeze's declared
-    // `scopeObjectId` was bound to nothing at all — a component-scoped actor could name the org
-    // root. And the row it produced was UNLIFTABLE AT BOTH ENDS: only `POST /v1/freezes` writes the
-    // object and its `freezes` row together, so `DELETE /v1/freezes/{id}` 404s here while the peer,
-    // which DOES rebuild the row, refuses to lift it because its origin domain is foreign.
-    //
-    // Refused for every non-noop action, like the pair-bound refusal above and for the same reason:
-    // an update re-snapshots a window that federates, and a delete tombstones the wire form while
-    // leaving every peer's enforcement row standing (`import-repo.ts`'s tombstone branch lifts the
-    // projection, but only for an object this path never should have minted).
+    // M25.7 — A PROJECTION-BOUND type. See docs/iac.md §136.
     if (entry.action !== "noop" && isProjectionBoundObjectType(entry.typeId)) {
       throw forbidden(projectionBoundRefusalDetail(entry.typeId, "an IaC plan apply"));
     }
@@ -1378,11 +1079,7 @@ export async function prepareApplyChecks(
           properties: entry.target?.properties
         });
       }
-      // M5 (BUILD_AND_TEST.md §8 M5 security note): the IaC-apply-path twin of
-      // `routes/objects-generic.ts`'s `campaign` block — a manifest declaring a `campaign` object
-      // is a free-form `typeId` just like `policy` is, so this apply path must independently bind
-      // its DECLARED `properties.targets` to the actor's own authority (same fail-closed shape as
-      // the policy-scope check right above), not rely on `POST /campaigns` having done so.
+      // M5 (BUILD_AND_TEST.md §8 M5 security note). See docs/iac.md §137.
       if (entry.typeId === "campaign") {
         await assertCampaignTargetsWithinAuthority(tx, {
           orgId,
@@ -1396,60 +1093,7 @@ export async function prepareApplyChecks(
     objectResolutions.set(entry.urn, { id: found.id, scopeObjectId: found.id });
     if (entry.action !== "noop") {
       checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: found.id });
-      // A CONTAINMENT MOVE IS A WRITE AT TWO PLACES, and IaC apply is a door like any other.
-      // `executePlanDiff` writes `target.domainId` onto the row through the same `updateObject` the
-      // HTTP doors use, so without this a manifest re-parents an object the actor holds
-      // `object:write` over into a subtree they hold nothing at — and because RBAC scope expands
-      // strictly upward (`authz/resolve.ts`), that hands the destination subtree's holders custody
-      // of it. The apply-path twin of `graph/containment-parent-authz.ts`, written as a `checks`
-      // entry rather than a call to that helper because this path authorizes through one drained
-      // list (module doc above) and because the diff engine has ALREADY decided whether the parent
-      // changes — `plan-diff.ts` records exactly that as the `domainId` changed-field. Only a real
-      // change is checked, so an unchanged re-apply demands nothing extra: the same "re-stating the
-      // current parent is not a move" rule the helper applies, for the same idempotency reason.
-      //
-      // BOTH ends, not just the destination. The entry below was only half of "a write at two
-      // places": authority expands strictly UPWARD, so holding it at the OBJECT says nothing about
-      // the container the object is being taken OUT of, and a manifest could yank a row out of a
-      // subtree the applier holds nothing at — the mirror image of the escalation the destination
-      // entry stops. The same second end `graph/containment-parent-authz.ts` now checks, and the
-      // one `graph/components-repo.ts`'s `setComponentService` has always checked ("the OLD service
-      // too on a move (it loses a child)").
-      //
-      // TWO SOURCES ARE EXEMPT. `found.domainId` is null only for the org root ITSELF, which has no
-      // source container to authorize at — and `found.domainId === orgId`, the org ROOT OBJECT, is
-      // exempt too, because the org root cannot lose custody of anything that stays inside the org:
-      // `updateObject`'s `assertRootedContainmentParent` proves on this same write that the
-      // destination reaches the root, so the root is on the row's chain after the move exactly as it
-      // was before, and the premise of this check ("its holders lose custody") is false for it.
-      //
-      // That second half was missing HERE as well as in the helper — the identical over-broad
-      // refusal, in the identical words, in the twin. It is not an edge case: `createObject` defaults
-      // an unnamed `domainId` to the org root, so MOST rows sit there, and apply refused every
-      // manifest that re-parented one of them unless the applier held ORG-ROOT authority. See
-      // `graph/containment-parent-authz.ts` for the full argument — the two copies must agree, and
-      // `routes/containment-root-source-and-create-rooting.integration.test.ts` pins both doors.
-      //
-      // AND THE DESTINATION IS EXEMPT AT THE ORG ROOT FOR THE MIRROR REASON — the half that was
-      // reasoned about at neither end. A manifest that moves a row BACK to the top level named the
-      // org root as its destination, and demanding authority there refused an applier who owns the
-      // whole subtree the row is leaving. Nobody gains custody: X's chain already terminated at the
-      // org root (the root-reachability invariant), so the org root's holders held it before the move
-      // and hold it after, while the intermediate holders LOSE it — a strictly shrinking custodian
-      // set is not the escalation the destination entry stops. Full argument, including where the
-      // proof is one step weaker than the source-side one, in `graph/containment-parent-authz.ts`;
-      // `routes/containment-root-destination-authz.integration.test.ts` pins both doors.
-      //
-      // Reachable on this path in TWO shapes, not one: an explicit `domainId` naming the org root,
-      // and — because `resolveDomainId` maps an ABSENT `domainId` to the org root — a manifest that
-      // simply omits the field for a row that currently sits inside a domain. The second is the
-      // common one and it is why this refusal bit IaC harder than it bit the HTTP doors.
-      //
-      // The CYCLE half of the same fix is deliberately NOT duplicated here: it is a subject-free
-      // invariant and lives in `graph/objects-repo.ts`'s `updateObject`, which this path writes
-      // through — see the comment there for why the repo, not the doors, owns it. The ROOT-
-      // REACHABILITY half of the CREATE branch above is subject-free for the same reason and lives
-      // in `createObject`, which `executePlanDiff` calls directly.
+      // A containment move is a write at two places. See docs/iac.md §138.
       const destination = entry.target?.domainId;
       if (entry.action === "update" && destination && destination !== found.domainId) {
         if (destination !== orgId) {
@@ -1461,23 +1105,7 @@ export async function prepareApplyChecks(
             scopeObjectId: found.domainId
           });
         }
-        // THE `governance:move` TWIN (proposal §9.2 door (b), owner ruling 2026-08-18). A door-only
-        // fix ships INERT on IaC — proven by mutation in #244 — so the second bar has to be added
-        // here as well as in `graph/containment-parent-authz.ts`, and the two must agree.
-        //
-        // Thrown EAGERLY rather than pushed onto `checks`, for the reason
-        // `assertPolicyScopeWithinAuthority` and `assertCampaignTargetsWithinAuthority` are: the
-        // demand is CONDITIONAL (it exists only where a rung is enabled) and its refusal carries a
-        // written explanation naming the rung, neither of which a `{permission, scopeObjectId}` pair
-        // can express. Still fully fail-closed: an uncaught throw aborts `prepareApplyChecks` before
-        // `executePlanDiff` runs, inside the route's transaction, so nothing partially applies.
-        //
-        // The applying principal is the REAL one (`actorObjectId`, resolved at apply time), which is
-        // what makes this path a genuine door rather than a replay of a plan-time decision.
-        //
-        // NO ORG-ROOT EXEMPTION at either end, unlike the four `object:write` entries above — see
-        // `governance/move-enforcement.ts`'s header: custody shrinks at the root, but governance
-        // REACH is exactly what a move to the root reduces.
+        // THE `governance:move` TWIN. See docs/iac.md §139.
         await assertGovernanceMoveAdmits(tx, {
           orgId,
           subjectObjectId: actorObjectId,
@@ -1526,15 +1154,7 @@ export async function prepareApplyChecks(
     return resolution;
   }
 
-  // ROLE BINDING ENDPOINTS. A binding names two objects and OWNS NEITHER — the subject and the
-  // scope almost always live outside this stack — so they are resolved here rather than falling
-  // out of the object loop above, which only walks objects the manifest DECLARES. Without this
-  // `endpointId` throws at apply and the whole plan 500s, which is exactly what it did.
-  //
-  // No authorization check is attached: writing a binding is not writing the subject or the scope,
-  // and demanding `object:write` on them would refuse every legitimate grant to a user this stack
-  // does not manage. The authority question is the subset rule, which
-  // `createStackManagedRoleBinding` asks at the moment of the write.
+  // ROLE BINDING ENDPOINTS. See docs/iac.md §140.
   for (const entry of diff.roleBindings ?? []) {
     if (entry.action === "noop") continue;
     await resolveEndpoint(entry.subjectUrn);
@@ -1542,33 +1162,11 @@ export async function prepareApplyChecks(
   }
 
   for (const entry of diff.relationships) {
-    // RESOLVED FOR EVERY NON-DELETE ENTRY, INCLUDING `noop` — checked only for the rest.
-    //
-    // `executePlanDiff` stamps relationship ownership over `action !== "delete"`, which INCLUDES
-    // noops, and `endpointId` throws an internal error for a URN this pass never resolved. So a
-    // manifest re-declaring an ALREADY-EXISTING edge between objects it does not itself declare
-    // (it only references them) produced a 500 at apply.
-    //
-    // THAT IS EXACTLY THE ADOPTION PATH, which is why no existing test caught it: an ordinary stack
-    // declares its own objects, so their URNs resolve in the object loop above. An estate exported
-    // by `scp iac export` references its service by URN (`Service.fromUrn`) and re-declares the
-    // `contains` edge that already exists — every endpoint a reference, every entry a noop.
-    // Measured end to end by `estate-migration.integration.test.ts`.
-    //
-    // Resolving is not checking: a noop changes nothing, so it demands no new permission — the same
-    // "RESOLVED BUT NOT CHECKED" split the placement loop below already makes for its target.
+    // RESOLVED FOR EVERY NON-DELETE ENTRY, INCLUDING `noop`. See docs/iac.md §141.
     await resolveEndpoint(entry.fromUrn);
     await resolveEndpoint(entry.toUrn);
     if (entry.action === "noop") continue;
-    // M5 CRITICAL (adversarial review): a manifest can declare any `typeId` on a relationship entry
-    // (`ManifestRelationshipSchema`), so this apply path — exactly like the generic
-    // `POST /relationships` endpoint (`routes/relationships.ts`) — must refuse an engine-owned
-    // system-managed type (`coordinates`/`approves`) outright. Otherwise IaC apply becomes a second
-    // injection vector for a `coordinates` membership edge that only needs `relationship:write`,
-    // bypassing the authority-checked campaign membership path
-    // (`graph/system-managed-relationships.ts` has the full rationale). Legitimate campaign IaC
-    // membership goes exclusively through the authority-checked `campaign.properties.targets`
-    // declaration (`assertCampaignTargetsWithinAuthority`, above).
+    // M5 CRITICAL (adversarial review). See docs/iac.md §142.
     if (isSystemManagedRelationshipType(entry.typeId)) {
       throw forbidden(
         `relationship type '${entry.typeId}' is system-managed and cannot be created or deleted via an IaC plan/apply — ` +
@@ -1580,36 +1178,7 @@ export async function prepareApplyChecks(
     checks.push({ permission: "relationship:write", scopeObjectId: from.scopeObjectId });
     checks.push({ permission: "relationship:write", scopeObjectId: to.scopeObjectId });
 
-    // THE `governance:move` TWIN FOR ROUTE 2 — the SECOND half of door (b), and it was missing.
-    //
-    // The twin above guards `objects[].domainId` (containment route 1). A manifest reaches the
-    // SAME move through route 2: a `contains` relationship entry. `contains` is not system-managed
-    // (`graph/system-managed-relationships.ts` lists `approves`/`coordinates`/`annotates` only), so
-    // the refusal above does not touch it, and `executePlanDiff` mints it — and prunes it — from
-    // the manifest verbatim. That is exactly what a manifest's `component.service` change compiles
-    // to (`plan-diff.ts`: a `contains` create plus a prune-delete), so without this, door (c)
-    // (`components-repo.ts::setComponentService`, `routes/relationships.ts`) shipped INERT on IaC
-    // and an Operator holding `relationship:write` could perform through `POST /plans/{id}/apply`
-    // the very move the HTTP doors refuse them. #244's lesson repeated one loop lower: the twin was
-    // added where the first hole was found rather than to the whole class.
-    //
-    // Endpoints, matching `routes/relationships.ts` exactly:
-    //   create → the child is the `to`, the destination container is the `from` (:104);
-    //   delete → the child is the `to`, the destination is the ORG ROOT (`null`), because losing a
-    //            `contains` parent drops the row back onto its `domain_id` route (:252).
-    // Thrown EAGERLY for the reason the route-1 twin above is: the demand is conditional and its
-    // refusal names a rung, neither of which a `{permission, scopeObjectId}` pair can carry.
-    // A MISSING `id` MEANS "created by THIS apply" (`ObjectResolution.id` is unset for a `create`
-    // entry until `executePlanDiff` runs it), and that decides both halves:
-    //   - `to.id` unset → the child is being created here, so there is no prior governance reach for
-    //     it to leave. A create is not a move; door (a) does not gate a create either
-    //     (`resolveDeclaredContainmentParent` runs on an object that already exists), and
-    //     `POST /discovery/accept` carves out the same shape for the same reason. Gating it would
-    //     refuse the ordinary "new service and its new components" manifest under any enabled rung.
-    //   - `from.id` unset → the destination CONTAINER is being created here; it can carry no rung of
-    //     its own yet, and its reach is exactly its declared parent's, which is what `scopeObjectId`
-    //     already holds (`entry.target?.domainId ?? orgId`). So the destination chain is checked at
-    //     that parent rather than skipped.
+    // THE `governance:move` TWIN FOR ROUTE 2. See docs/iac.md §143.
     if (entry.typeId === CONTAINS_TYPE_ID && to.id !== undefined) {
       await assertGovernanceMoveAdmits(tx, {
         orgId,
@@ -1631,32 +1200,14 @@ export async function prepareApplyChecks(
     checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
   }
 
-  // PIPELINE HOOKS (D11/D21) — `object:write` at the OWNING COMPONENT, the same per-object bar the
-  // mapping loop directly above uses, and for the same reason: a stack must not configure a
-  // component it does not own. Per-object rather than one coarse org-root check (unlike producers,
-  // whose blast radius really is org-wide): a hook's reach is exactly the component's own pipeline,
-  // and authz walks containment, so an org-wide writer still passes.
-  //
-  // `delete` is INCLUDED, deliberately — narrowing this to `create` would let a principal holding
-  // `object:write` nowhere DISARM a gate, and a gate that is off announces itself only by an
-  // absence of refusals. `noop` is exempt, matching every other loop here.
-  //
-  // The resolution is also what `executePlanDiff` needs: `deleteHook`/`upsertHook` are keyed on the
-  // component's OBJECT ID, so a prune entry has to be resolved here too, not only checked.
+  // PIPELINE HOOKS (D11/D21). See docs/iac.md §144.
   for (const entry of diff.pipelineHooks ?? []) {
     if (entry.action === "noop") continue;
     const component = await resolveEndpoint(entry.componentUrn);
     checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
   }
 
-  // ROLLOUTS (D12) and CONVERGENCE (D25(b)) — `object:write` AT THE COMPONENT, the same rule the
-  // hook loop above uses and for the same reason: ownership of both is the component's, so the
-  // component's scope is where the authority to change them lives.
-  //
-  // `delete` is included on both, matching the hook loop rather than the placement one: retracting
-  // a rollout removes a declared strategy, and retracting a convergence declaration stops a fleet
-  // self-healing. Neither is a gate, but neither is something a principal with no write authority
-  // on the component should be able to do.
+  // ROLLOUTS (D12) and CONVERGENCE (D25(b)). See docs/iac.md §145.
   for (const entry of diff.rollouts ?? []) {
     if (entry.action === "noop") continue;
     const component = await resolveEndpoint(entry.componentUrn);
@@ -1680,26 +1231,11 @@ export async function prepareApplyChecks(
     if (entry.action === "noop") continue;
     const component = await resolveEndpoint(entry.componentUrn);
     checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
-    // RESOLVED BUT NOT CHECKED. `endpointId` throws an INTERNAL error for a URN this pass did not
-    // resolve, and the deployment-target may legitimately belong to another stack — so a placement
-    // at a foreign target used to fail apply with "internal: could not resolve object id". No
-    // `object:write` is pushed for it deliberately: ownership follows the COMPONENT (decision Q4),
-    // and demanding write on the target would hand every deployment-target owner a veto.
+    // RESOLVED BUT NOT CHECKED. See docs/iac.md §146.
     await resolveEndpoint(entry.deploymentTargetUrn);
   }
 
-  // PRODUCER DECLARATIONS — `policy:write` AT THE ORG ROOT, and deliberately NOT the per-object
-  // `object:write` every other collection in this function uses.
-  //
-  // The rule is `dependencyProducerScopeCheck`'s, imported rather than restated so this door and
-  // `POST /dependencies/producers` cannot come to require different things. The reason it is not
-  // per-object is the reason the verb's is not: declaring "X produces @acme/lib" changes behaviour
-  // for every OTHER component in the org that depends on that coordinate, and RBAC scope expands
-  // strictly UPWARD — so `object:write` at X reaches none of the siblings it affects. One check for
-  // the whole plan, because the permission and scope do not vary per entry.
-  //
-  // `noop` entries are exempt, matching every other loop here: a re-apply that changes nothing must
-  // not demand authority the first apply already exercised.
+  // Producer declarations: policy write at the org root. See docs/iac.md §147.
   const producerEntries = (diff.producers ?? []).filter((entry) => entry.action !== "noop");
   if (producerEntries.length > 0) {
     checks.push(dependencyProducerScopeCheck(orgId));
@@ -1712,22 +1248,7 @@ export async function prepareApplyChecks(
     }
   }
 
-  // `governance:move` RUNGS — `policy:write` AT-OR-ABOVE THE SUBJECT, per entry.
-  //
-  // The pair is `governanceMoveRungScopeCheck`'s, imported rather than restated so this door and
-  // `PUT /governance/move-enforcement/rungs/{idOrUrn}` cannot come to require different things. It is
-  // per-subject and not one org-root check (unlike producers, whose blast radius really is org-wide):
-  // a rung's reach is exactly the subtree under its container, and `authorize` expands strictly
-  // UPWARD, so a narrowly-bound Administrator can govern their own service and an org-wide one still
-  // passes everywhere.
-  //
-  // `noop` entries are exempt, matching every other loop here: a re-apply that changes nothing must
-  // not demand authority the first apply already exercised.
-  //
-  // A `create` whose subject THIS PLAN creates resolves to the pending entry — no id yet, and
-  // `scopeObjectId` is the declared containment parent (`entry.target?.domainId ?? orgId`). That is
-  // the right scope and not a weaker one: authority expands upward, so `policy:write` at-or-above the
-  // parent is `policy:write` at-or-above a child of it.
+  // Move rungs: policy write at or above the subject, per entry. See docs/iac.md §148.
   for (const entry of diff.governanceMoveRungs ?? []) {
     if (entry.action === "noop") continue;
     const subject = await resolveEndpoint(entry.subjectUrn);
@@ -1736,26 +1257,14 @@ export async function prepareApplyChecks(
 
   for (const entry of diff.executorBindings ?? []) {
     if (entry.action === "noop") continue;
-    // A PLACEMENT-targeted binding authorizes at the COMPONENT, exactly as the placement loop above
-    // does (decision Q4) — and it must, because the placement object may not exist yet: on a first
-    // apply the same plan creates it a few steps later. Resolving the placement here would 404 on
-    // precisely the plan that is allowed to create it.
-    // `targetUrn` IS the component for a placement-targeted binding, so this one check covers both
-    // shapes — ownership follows the component (decision Q4).
+    // A placement-targeted binding authorizes at the component. See docs/iac.md §149.
     const target = await resolveEndpoint(entry.targetUrn);
     checks.push({ permission: "object:write", scopeObjectId: target.scopeObjectId });
     // Same reason as the placement loop above: `bindingTargetObjectId` hands BOTH halves to
     // `endpointId`, so both must be resolved, and the target half carries no check of its own.
     if (entry.deploymentTargetUrn) await resolveEndpoint(entry.deploymentTargetUrn);
 
-    // A system-backed binding makes SCP dispatch with THAT system's decrypted token (and, where
-    // both egress layers agree, its internal-egress reach) — a use-of-credentials capability. The
-    // typed route gates it with `object:write` at the system itself (ADR-0003); this door must too,
-    // or IaC apply is a way to borrow a system an actor may not use. The id is already resolved
-    // (plan-compute), so pushing the check needs no read — which is exactly what keeps this path
-    // from becoming the type/existence oracle `bindTargetToExecutionSystem`'s authorize-first
-    // ordering exists to prevent. The system's typeId/kind/serverUrl are validated later, in
-    // `executePlanDiff`, after every one of these checks has been authorized.
+    // A system-backed binding dispatches with that system's token. See docs/iac.md §150.
     const executionSystemId = entry.target?.executionSystemId;
     if (executionSystemId) {
       checks.push({ permission: "object:write", scopeObjectId: executionSystemId });
@@ -1780,23 +1289,7 @@ async function findLiveRelationshipId(
   return found.id;
 }
 
-/**
- * Executes an already-authorized diff, all inside the caller's transaction (transactional apply,
- * goal statement). Order matters: object creates/updates first (so relationship creates can resolve
- * freshly-created endpoints), then relationship DELETES, then relationship CREATES, then C1's
- * projection rows (mapping/binding deletes, then binding creates/updates, then mapping creates),
- * then object deletes last (so a relationship delete never races an already-gone endpoint, and no
- * projection row is orphaned behind a soft-deleted object).
- *
- * Relationship deletes run BEFORE creates so a declarative re-parent converges in one apply (M12
- * P5b): changing a component's `service` in a manifest yields a `contains` create (new service) plus
- * a prune-delete (old service) — with creates first, the new edge would trip migration 0022's
- * one-service-per-component index while the old edge is still live (a false 409). Deleting first
- * frees the component. Delete-before-create is safe generally: both endpoints are objects, which are
- * created earlier (creates loop) and deleted later (object-deletes loop), so an edge's endpoints
- * always exist during both its delete and its create; and no relationship depends on another
- * relationship existing.
- */
+/** Executes an authorized diff inside the caller's transaction. See docs/iac.md §151. */
 export async function executePlanDiff(
   tx: TenantTx,
   input: {
@@ -1851,20 +1344,7 @@ export async function executePlanDiff(
     });
   }
 
-  // OWNERSHIP, STAMPED FOR EVERY OBJECT THIS MANIFEST DECLARES (drizzle/0068). One statement, and
-  // one rule: a stack owns exactly the rows its manifest declares, plus the rows it already owned.
-  //
-  // `noop` counts, and that is the case worth stating. A declared object that happens to be
-  // byte-identical to what is stored is still an object this stack declares — skipping it because
-  // "nothing changed" would leave it undeletable by the stack that owns it, which is the escape
-  // direction of the very defect this replaces, arrived at by accident. Under the old label scheme
-  // this was accidentally handled: adopting an object rewrote its labels, so it was never a noop on
-  // the apply that adopted it. Ownership is now explicit rather than a side effect of a label merge,
-  // so it has to be said.
-  //
-  // `delete` entries are excluded by construction — they are not in this list — and ownership is
-  // never CLEARED here: a row leaves a stack by being pruned, not by being disowned into an orphan
-  // no stack could ever clean up.
+  // OWNERSHIP, STAMPED FOR EVERY OBJECT THIS MANIFEST DECLARES. See docs/iac.md §152.
   await stampObjectStackOwnership(
     tx,
     orgId,
@@ -1910,11 +1390,7 @@ export async function executePlanDiff(
     });
   }
 
-  // The relationship half of the same stamp, for the same reason, after the creates so a
-  // just-created edge is included. It also closes a gap the label scheme had: only edge CREATES were
-  // ever labelled, so an edge a manifest declared but that some other door had already written
-  // (`POST /components` writes a `contains` edge) stayed declared-but-unowned forever and could
-  // never be pruned by the stack that declared it. Objects never had that gap.
+  // The relationship half of the same stamp, after the creates. See docs/iac.md §153.
   await stampRelationshipStackOwnership(
     tx,
     orgId,
@@ -1928,19 +1404,7 @@ export async function executePlanDiff(
       }))
   );
 
-  // -----------------------------------------------------------------------------------------
-  // C1 — projection rows. These run AFTER object creates (a binding needs its deployment-target /
-  // a mapping needs its component to exist) and BEFORE object deletes. The delete ordering is
-  // load-bearing, not cosmetic: `deleteObject` is a SOFT delete, and both projection tables are
-  // keyed on the object id with no `deleted_at` of their own. Prune the object first and its rows
-  // become permanently unreachable garbage — invisible to every list query (they filter on a live
-  // target) and outside every future plan's ownership pool (which is built from LIVE labelled
-  // objects), so nothing would ever remove them.
-  //
-  // Deletes before creates/updates, mirroring the relationship ordering above and for the same
-  // reason: `UNIQUE (org_id, target_object_id, type)` means two bindings swapping Types in one plan
-  // would collide if the creates ran first.
-  // -----------------------------------------------------------------------------------------
+  // C1 — projection rows. See docs/iac.md §154.
 
   for (const entry of diff.sourceMappings ?? []) {
     if (entry.action !== "delete") continue;
@@ -1960,14 +1424,7 @@ export async function executePlanDiff(
     }
   }
 
-  /**
-   * The `executor_bindings.target_object_id` a diff entry names, whichever way it was addressed.
-   *
-   * A placement is resolved BY ITS PAIR — its URN is derived (ADR-0026 D3), so there is no stable
-   * URN to look up. It must already be live at the moment of the call, which the apply ORDER makes
-   * true in both directions: binding-prune runs BEFORE placement-prune, and binding-create runs
-   * AFTER placement-create.
-   */
+  /** The binding target a diff entry names, either way. See docs/iac.md §155. */
   const bindingTargetObjectId = async (entry: PlanExecutorBindingDiffEntry): Promise<string> => {
     if (!entry.deploymentTargetUrn) return endpointId(entry.targetUrn);
     const placement = await findLivePlacement(
@@ -2023,20 +1480,7 @@ export async function executePlanDiff(
         `no live placement '${entry.componentUrn}' @ '${entry.deploymentTargetUrn}' to prune`
       );
     }
-    // DECISION Q2 — REFUSE, naming the binding. A cascade would delete execution configuration the
-    // manifest never mentioned, and an orphaned binding fails SILENTLY (no FK, no deleted_at, and
-    // `targetObjectIsLive` hides it at read time).
-    //
-    // Q2 WAS DECIDED ON A PREMISE THAT NO LONGER HOLDS, and this is now a different guard than it
-    // was. The ruling's reasoning was "the manifest cannot even name it (its target is the
-    // placement)" — true when bindings could only be addressed by object URN. A manifest CAN now
-    // declare a binding on a placement by its pair, so a stack that wants both gone declares
-    // neither and the binding-prune above removes it first; the common case no longer reaches here.
-    //
-    // What survives is narrower and still worth having: this is the APPLY-TIME net for a binding
-    // that was NOT in the plan's prune set — most realistically one written between plan and apply,
-    // which no diff computed earlier could have known about. Refusing beats destroying it, and the
-    // message still has to name what to remove first.
+    // DECISION Q2 — REFUSE, naming the binding. See docs/iac.md §156.
     const survivingBindings = await listExecutorBindingsForTarget(tx, orgId, placement.id);
     if (survivingBindings.length > 0) {
       const named = survivingBindings.map((b) => `'${b.type}'`).join(", ");
@@ -2055,15 +1499,7 @@ export async function executePlanDiff(
     });
   }
 
-  // PLACEMENT CREATE runs BEFORE the binding creates below, because a binding may TARGET a
-  // placement — after the ADR-0026 migration most do — and its target must exist first.
-  //
-  // Goes through `createPlacement`, the same function `POST /v1/placements` uses, and NOT
-  // `createObject`. That is the whole reason this is a typed collection: `createPlacement` resolves
-  // and type-checks both endpoints, derives the URN from the pair, and writes the two derived
-  // `places`/`placed_at` edges in the SAME transaction. `createObject` does none of those, which is
-  // why the generic door refuses pair-bound types outright (#207) — and this apply path is one of
-  // the doors that refusal had to be added to.
+  // Placement creates run first, because a binding may need one. See docs/iac.md §157.
   for (const entry of diff.placements ?? []) {
     if (entry.action !== "create") continue;
     await createPlacement(tx, {
@@ -2118,11 +1554,7 @@ export async function executePlanDiff(
 
   for (const entry of diff.sourceMappings ?? []) {
     if (entry.action === "update") {
-      // §10.6 — the in-place convergence of the ONE non-identity attribute the diff manages. Every
-      // row sharing the tuple, for the same reason `deleteSourceMappingsMatching` takes them all: a
-      // byte-identical sibling left behind would re-propose this update on every plan forever. A
-      // plan stored without a scope key (`undefined`) cannot have produced an `update` verdict, so
-      // reading it as null here is unreachable rather than a silent clear.
+      // In-place convergence of the one non-identity attribute. See docs/iac.md §158.
       const converged = await setSourceMappingScopeMatching(
         tx,
         {
@@ -2162,26 +1594,7 @@ export async function executePlanDiff(
     });
   }
 
-  // -----------------------------------------------------------------------------------------
-  // PIPELINE HOOKS (D11/D21; migration 0096). Same position and same reason as the projection rows
-  // above: AFTER object creates (a hook needs its component to exist — "create this component and
-  // gate its waves" is the ordinary first manifest) and BEFORE object deletes, because
-  // `deleteObject` is a SOFT delete and `pipeline_hooks` has no `deleted_at` of its own. A hook left
-  // behind a tombstoned component is a gate nobody can see: outside every list read's join and
-  // outside every future plan's ownership pool, and it would spring back on any object restore.
-  //
-  // Deletes before creates, mirroring every other collection here — and here it CAN matter: a
-  // payload change is rendered as a delete plus a create of the SAME
-  // `(org_id, component_object_id, kind, hook_id)` row, so creates-first would upsert the new gate
-  // and the prune would then remove it.
-  //
-  // A PRUNE MISS IS NOT AN ERROR, unlike the mapping/producer/rung prunes above. `deleteHook`
-  // returns `undefined` when there was no row, and that is the honest outcome here: the plan's
-  // end state ("this gate is not armed") holds either way, and the alternative — 409ing the whole
-  // apply — would make a re-run of an interrupted apply un-runnable for no gain in safety. The
-  // direction that matters for a GATE is that a delete never silently fails to happen, and it
-  // cannot: the row is keyed on the identity this entry names.
-  // -----------------------------------------------------------------------------------------
+  // PIPELINE HOOKS (D11/D21; migration 0096). See docs/iac.md §159.
   for (const entry of diff.pipelineHooks ?? []) {
     if (entry.action !== "delete") continue;
     await deleteHook(tx, orgId, {
@@ -2191,13 +1604,7 @@ export async function executePlanDiff(
     });
   }
 
-  // ROLLOUTS AND CONVERGENCE (D12/D25(b); migration 0106) — the writes that end the drop. Deletes
-  // first, then upserts, mirroring the hook block above so a same-key delete+create in one plan
-  // cannot land in the order that leaves nothing behind.
-  //
-  // `update` IS APPLIED HERE TOO, unlike hooks, which have no update action: a rollout's identity is
-  // `(component, targetClass)` and the strategy is its VALUE, so a changed strategy is one row
-  // changing. Treating it as a delete+create would imply a window with no strategy at all.
+  // ROLLOUTS AND CONVERGENCE. See docs/iac.md §160.
   for (const entry of diff.rollouts ?? []) {
     if (entry.action !== "delete") continue;
     await deleteComponentRollout(tx, orgId, endpointId(entry.componentUrn), entry.targetClass);
@@ -2211,23 +1618,7 @@ export async function executePlanDiff(
       rollout: entry.rollout
     });
   }
-  // -----------------------------------------------------------------------------------------
-  // ROLE BINDINGS AND ORG ROLES (drizzle/0108) — through the REAL doors, never around them
-  // -----------------------------------------------------------------------------------------
-  // Every refusal the typed route enforces applies here unchanged, because this calls the same
-  // functions: the no-escalation subset rule, `bindable_at`, D5's Administrator deprecation, the
-  // administrative floor on delete, and the org advisory lock. That is deliberate and is the whole
-  // reason this is not a direct insert — an IaC path that wrote `role_bindings` itself would be a
-  // second door with its own drift, and the guard census this milestone paid for would be wrong.
-  //
-  // THE APPLYING PRINCIPAL IS `actorObjectId`, which for a config-source sync is the TEAM object
-  // (ADR-0046 §1 / D9). So a team's own repo cannot grant that team authority it does not already
-  // hold — the subset rule refuses it. Stated because the symptom (an apply refusing a line the
-  // author believes correct) is otherwise hard to attribute.
-  //
-  // ROLES BEFORE BINDINGS on the create side: a binding may name a role this same manifest
-  // authors, and `getRoleByName` has to find it. Deletes run in the opposite order for the mirror
-  // reason — the role delete door refuses while a binding still points at the role.
+  // ROLE BINDINGS AND ORG ROLES. See docs/iac.md §161.
   for (const entry of diff.roleBindings ?? []) {
     if (entry.action !== "delete") continue;
     await deleteStackManagedRoleBinding(tx, {
@@ -2311,57 +1702,9 @@ export async function executePlanDiff(
     });
   }
 
-  // -----------------------------------------------------------------------------------------
-  // PRODUCER DECLARATIONS (ADR-0032 §7e). AFTER object creates (a declaration needs its producer
-  // component to exist) and BEFORE object deletes, for the same reason the projection rows above
-  // run there: `deleteObject` is a SOFT delete and `dependency_line_producers` has no `deleted_at`
-  // of its own, so a declaration left behind a tombstoned component is unreachable garbage —
-  // invisible to the poll's internal/third-party join and outside every future plan's ownership
-  // pool, which is built from LIVE labelled objects.
-  //
-  // EACH ENTRY GOES THROUGH THE SAME FUNCTION THE VERB CALLS. A declaration is not a row write: the
-  // covered lines' observed heads must be cleared (a poisoned public head would otherwise survive
-  // the declaration meant to undo it; a stale internal head is an M22 vendor-scan-rule input on a
-  // coordinate that is third-party again), a Decision must be recorded, and an audit event
-  // appended. `dependencies/producer-declaration.ts` owns all four so this door cannot perform a
-  // fraction of the verb.
-  //
-  // Deletes before creates/updates, mirroring every other collection here — though for this one it
-  // cannot matter: identity is the coordinate, so a single plan can never both prune and declare the
-  // same key.
-  //
-  // AND EVERY NON-NOOP ENTRY RE-READS WHO HOLDS THE COORDINATE, HERE, RATHER THAN TRUSTING THE
-  // STORED DIFF — see `assertPlannedProducerHolder`.
-  // -----------------------------------------------------------------------------------------
+  // PRODUCER DECLARATIONS (ADR-0032 §7e). See docs/iac.md §162.
 
-  /**
-   * THE COORDINATE MUST STILL BE HELD BY WHOEVER THE PLAN SAID HELD IT.
-   *
-   * `plan-diff.ts` computes `create` / `update` + `displacedProducerUrn` / `delete` from a snapshot
-   * taken at `POST /plans` time, and `dependency_line_producers` is keyed on the COORDINATE and
-   * UPSERTED — so the coordinate can change hands between plan and apply with no row deleted and
-   * nothing stale-marking the plan. `displacedProducerUrn` exists precisely because a transfer is a
-   * supported act, which is the same reason one can happen inside this window. Trusting the stored
-   * answer produced three distinct wrong outcomes, all silent:
-   *
-   *  - a `create` whose coordinate was claimed in the window OVERWRITES the new holder. The
-   *    reviewed plan said "no producer is declared … it is polled as third-party today"; the apply
-   *    performs a transfer, and `invalidProducerDeclarations` cannot object because the STORED diff
-   *    carries no displacement to object to.
-   *  - an `update` whose displaced producer was itself displaced in the window takes the coordinate
-   *    from a THIRD component that the plan never named and no guard ever saw — the cross-stack
-   *    steal that refusal (2) exists to refuse, arriving through the back door.
-   *  - a `delete` whose row changed hands in the window RETRACTS SOMEBODY ELSE'S DECLARATION. The
-   *    existence check alone passes (a row is there), and the coordinate silently returns to
-   *    third-party polling for the component that just took it — a dependency-confusion re-arm
-   *    (ADR-0032 §7b) performed by a plan whose reviewed text names a different producer entirely.
-   *
-   * SO A STALE PLAN FAILS LOUDLY. The refusal is a 409 inside the apply transaction, so nothing
-   * partially applies, and the remedy is the ordinary one: re-plan against current state. The holder
-   * is compared BY URN because that is the vocabulary of the diff, and the read includes tombstones
-   * so a holder whose component was deleted is NAMED rather than reading as "nobody" — the null-drop
-   * that would otherwise let a `create` sail past a standing declaration for the second time.
-   */
+  /** The coordinate must still be held by whoever the plan said. See docs/iac.md §163. */
   const assertPlannedProducerHolder = async (
     entry: PlanDependencyProducerDiffEntry
   ): Promise<DependencyLineProducer | null> => {
@@ -2430,33 +1773,7 @@ export async function executePlanDiff(
     });
   }
 
-  // -----------------------------------------------------------------------------------------
-  // `governance:move` RUNGS (ADR-0038 §2; proposal governance-reach-on-containment-move.md §9.6 Q4).
-  //
-  // POSITION IS LOAD-BEARING AT BOTH ENDS, the same sandwich the producer block above sits in:
-  //  - AFTER object creates, because "create this service and govern moves under it" is the ordinary
-  //    first manifest and the subject has no id until then.
-  //  - BEFORE object deletes, because `deleteObject` is a SOFT delete and `governance_move_rungs` has
-  //    no `deleted_at` of its own. A rung left behind a tombstoned container is a bar nobody can see
-  //    (it is outside every list read's join and outside every future plan's ownership pool) that
-  //    would spring back to life on any object restore.
-  //
-  // EACH ENTRY GOES THROUGH THE SAME FUNCTION THE VERB CALLS
-  // (`governance/move-rung-write.ts`), so this door writes the whole act — row, Decision, audit
-  // event — or none of it. Nothing here reaches `governance_move_rungs` directly, and that is the
-  // point: a second writer that wrote only the row would make
-  // `GET /decisions?kind=governance.move_enforcement` silently false for exactly the rungs an
-  // auditor came looking for (charter principle 6).
-  //
-  // Deletes before creates, mirroring every other collection here — and unlike the producers', this
-  // ordering CAN matter: identity is the subject, and disabling a rung above before enabling one
-  // below is precisely the sequence the monotone refusal permits (the reverse order 409s).
-  //
-  // NO STALE-PLAN HOLDER CHECK. The producers' `assertPlannedProducerHolder` exists because a
-  // coordinate can change hands between plan and apply with no row deleted. A rung cannot change
-  // hands: it is enabled at its subject or it is not, both states are re-read here, and each of the
-  // two mismatches has its own honest failure below — a create finds the upsert idempotent, and a
-  // delete that lost its row 404s as a prune miss.
+  // The move rungs, and the permission each entry needs. See docs/iac.md §164.
   for (const entry of diff.governanceMoveRungs ?? []) {
     if (entry.action !== "delete") continue;
     // Resolved BY ID (`endpointId`), not by URN, so the subject's `typeId` and `name` come from the

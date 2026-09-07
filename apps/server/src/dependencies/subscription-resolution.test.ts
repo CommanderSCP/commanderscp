@@ -11,38 +11,7 @@ import {
   type PolicyEffect
 } from "../governance/policy-model.js";
 
-/**
- * M21.3 — THE ENABLEMENT MERGE, as a pure function (ADR-0032 §6).
- *
- *     effective_enabled(component, line) =
- *         instance_unlocked  AND  component_enabled  AND  NOT line_opted_out
- *
- * Every property below is a property of the ALGEBRA, not of a database, which is exactly why the
- * merge was extracted as a pure function (BUILD_AND_TEST.md §4.1). No Postgres here; the DB-backed
- * half is proven in `subscription-resolution.integration.test.ts`.
- *
- * Seven properties are load-bearing and each is asserted in the direction that can FAIL OPEN:
- *
- *   1. ABSENT NEVER MEANS ENABLED. No contributions ⇒ not enabled.
- *   2. THE INSTANCE LEVEL UNLOCKS AND NEVER ACTIVATES. `unlocked` alone enables nothing (ADR-0006:
- *      managed execution is never a default).
- *   3. A DISABLE ALWAYS WINS over any number of enables at any tier.
- *   4. ORDER-INDEPENDENCE — proven by exhausting every permutation of the contribution list, not by
- *      one hand-picked shuffle.
- *   5. MOST-RESTRICTIVE-WINS for `granularity` and `delivery`; auto-merge is never acquired by
- *      merging two policies that each meant something safer.
- *  5b. SILENCE IS A VOTE, NOT AN ABSTENTION. (5) only ever composes two DECLARED values, and the
- *      composition that can fail open is SILENT + DECLARED — a component that authored
- *      `{enabled: true}` beside an org-wide `auto_merge`. Pinned in both arrangements.
- *   6. A MISTYPED SELECTOR KEY IS REFUSED, NOT STRIPPED INTO A WILDCARD — on an enable AND on an
- *      opt-out, the two directions being loose in different senses.
- *   7. A WILDCARD IS RECORDED EXPLICITLY (`selector: {}`), so an explanation never leaves
- *      "matched everything on purpose" and "matched everything by accident" looking alike.
- *
- * Every assertion of an ABSENCE carries a NEGATIVE CONTROL in the same test — a test proving nothing
- * happened is vacuous unless it also proves the thing that SHOULD happen did. Concretely: each
- * "not enabled" case is re-run with the one blocking element removed, and must come out enabled.
- */
+/** M21.3 — THE ENABLEMENT MERGE, as a pure function. See docs/dependencies.md §375. */
 
 const LINE: DependencyLineKey = { ecosystem: "npm", coordinate: "@acme/lib", major: "1" };
 
@@ -89,9 +58,7 @@ function permutations<T>(items: T[]): T[][] {
 }
 
 describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
-  // -----------------------------------------------------------------------------------------
   // (1) ABSENT NEVER MEANS ENABLED
-  // -----------------------------------------------------------------------------------------
 
   it("(1) absent never means enabled — no contributions at all resolves NOT enabled", () => {
     const result = resolve([]);
@@ -144,26 +111,21 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
   });
 
   it("(1) selectors are ANDed — ecosystem, coordinate and major must ALL match", () => {
-    // Right coordinate, wrong major.
     expect(resolve([enable("component", { coordinate: "@acme/lib", major: "2" })]).enabled).toBe(
       false
     );
-    // Right coordinate and major, wrong ecosystem.
     expect(
       resolve([enable("component", { ecosystem: "go", coordinate: "@acme/lib", major: "1" })])
         .enabled
     ).toBe(false);
 
-    // NEGATIVE CONTROL: all three matching enables.
     expect(
       resolve([enable("component", { ecosystem: "npm", coordinate: "@acme/lib", major: "1" })])
         .enabled
     ).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (2) THE INSTANCE LEVEL UNLOCKS AND NEVER ACTIVATES (ADR-0006)
-  // -----------------------------------------------------------------------------------------
 
   it("(2) the instance level UNLOCKS and NEVER ACTIVATES — unlocked with no enabling contribution is NOT enabled", () => {
     const result = resolve([], UNLOCKED);
@@ -196,9 +158,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     expect(resolve(everyTier, UNLOCKED).enabled).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (3) A DISABLE ALWAYS WINS
-  // -----------------------------------------------------------------------------------------
 
   it("(3) one disable defeats FOUR enables, and the disable may sit at ANY tier", () => {
     const enables = [
@@ -231,16 +191,14 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     ).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (4) ORDER-INDEPENDENCE
-  // -----------------------------------------------------------------------------------------
 
   it("(4) the whole result — verdict, settings AND explanation — is identical under every permutation", () => {
     const candidates = [
       enable("org", { delivery: "auto_merge" }),
       enable("service", { granularity: "minor_and_patch" }),
       enable("component", { granularity: "patch", delivery: "pull_request" }),
-      disable("containment_domain", { coordinate: "@acme/other" }), // does not match LINE
+      disable("containment_domain", { coordinate: "@acme/other" }),
       { tier: "org" as const, source: "policy:broken@broken-id", effect: { enabled: "yes" } }
     ];
     const baseline = resolve(candidates);
@@ -258,10 +216,6 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     expect(baseline.delivery).toBe("pull_request");
     expect(baseline.contributions.filter((c) => c.contributed === "ignored")).toHaveLength(1);
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (5) MOST-RESTRICTIVE-WINS: granularity and delivery
-  // -----------------------------------------------------------------------------------------
 
   it("(5) granularity: patch beats minor_and_patch — a child may only tighten", () => {
     expect(
@@ -337,20 +291,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     ).toBe("auto_merge");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (5b) SILENCE IS A VOTE, NOT AN ABSTENTION — the silent+declared composition
-  //
-  // Every case above compares two DECLARED values, which is the composition that cannot fail open.
-  // The one that CAN is silent-plus-declared: a component team authors `{enabled: true}` and says
-  // nothing about delivery, and an ORG-WIDE policy declares `auto_merge`. If absence were "no
-  // opinion", the MIN would be taken over the declared value alone and the team would be handed the
-  // privileged option — SCP merging commits into their repo with no pull request — by a policy they
-  // do not own and never read. ADR-0032 §8 puts the choice with the TEAM; 0062's header says
-  // auto-merge is "never inherited from silence".
-  //
-  // So a silent contribution votes for the DEFAULT, and the answer to "may a broader scope grant
-  // auto-merge to a narrower one that stayed silent?" is NO, pinned in both directions below.
-  // -----------------------------------------------------------------------------------------
+  // (5b) SILENCE IS A VOTE, NOT AN ABSTENTION. See docs/dependencies.md §376.
 
   it("(5b) a SILENT enable is not an abstention — a declared auto_merge beside it resolves pull_request", () => {
     // The measured defect, in its exact shape: the component asked for a subscription and nothing
@@ -413,9 +354,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     ).toBe("auto_merge");
   });
 
-  // -----------------------------------------------------------------------------------------
   // Malformed and conditional contributions — the two "admitted to neither side" paths
-  // -----------------------------------------------------------------------------------------
 
   it("a malformed effect enables nothing, throws nothing, and is REPORTED rather than dropped", () => {
     const broken: DependencySubscriptionCandidate = {
@@ -474,7 +413,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
       effect: { enabled: false, coordinat: "@acme/lib" }
     };
     const optOutResult = resolve([enable("component"), typoOptOut], UNLOCKED, notThisLine);
-    expect(optOutResult.enabled).toBe(true); // the wildcard DISABLE did not happen
+    expect(optOutResult.enabled).toBe(true);
     expect(optOutResult.contributions).toContainEqual({
       tier: "org",
       source: "policy:typo-optout@typo-id",
@@ -552,7 +491,6 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     // NEGATIVE CONTROL for the enable half: the identical candidate WITHOUT a condition enables.
     expect(resolve([enable("component")]).enabled).toBe(true);
 
-    // The disable half: a conditional opt-out still subtracts.
     const conditionalDisable: DependencySubscriptionCandidate = {
       ...disable("org"),
       conditional: true
@@ -568,9 +506,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     expect(resolve([enable("component")]).enabled).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
   // Explainability — "WHICH level turned this off?" (charter principle 6)
-  // -----------------------------------------------------------------------------------------
 
   it("carries every level's contribution, so a caller can name the level that turned it off", () => {
     const result = resolve([
@@ -591,9 +527,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     expect(result.contributions.filter((c) => c.contributed === "enable")).toHaveLength(2);
   });
 
-  // -----------------------------------------------------------------------------------------
   // The gate is untouched (ADR-0032 §3a consequence 4)
-  // -----------------------------------------------------------------------------------------
 
   it("an unrecognised effect shape leaves gate enforcement untouched — mergeContributorEffects ignores it", () => {
     // `dependencySubscription` is deliberately NOT in `policy-model.ts`'s `PolicyEffect` union: that
@@ -644,10 +578,6 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
       }
     ]);
   });
-
-  // -----------------------------------------------------------------------------------------
-  // Totality
-  // -----------------------------------------------------------------------------------------
 
   it("is TOTAL — every input shape returns a resolution rather than throwing", () => {
     const hostile: MergeDependencySubscriptionInput["candidates"] = [

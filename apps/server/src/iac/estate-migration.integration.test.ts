@@ -13,51 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE ESTATE MIGRATION, END TO END (proposal section 9; increment 7).
- *
- * ============================================================================================
- * THE QUESTION THIS ANSWERS, WHICH NOTHING ELSE DID
- * ============================================================================================
- * Two halves were each proven and never joined. `scp iac export` round-trips through the real
- * `tsc` and compares synth output (`iac-estate-program.roundtrip.test.ts`); adoption is driven
- * through the real routes (`iac-adopt.integration.test.ts`). Neither runs the JOURNEY an org
- * actually takes:
- *
- *     an estate that already exists in SCP, unmanaged
- *       -> `scp iac export` reads it
- *       -> the emitted program synthesizes a manifest
- *       -> `POST /plans` + apply lands it
- *       -> every object is ADOPTED, and NOTHING IS DUPLICATED
- *
- * The failure this guards against is specific and was live once: export derived the release-topology
- * URN from a construct id with no override, so applying an exported estate CREATED A SECOND
- * TOPOLOGY beside the original, repointed `releases_via` at it, and orphaned the live one — while
- * the plan read as a clean set of creates. `adoptTopologyUrn` fixed that, and this is the test that
- * would have caught it from the outside.
- *
- * A DUPLICATE IS COUNTED, NOT INFERRED. Every assertion below counts live rows by type and name
- * before and after; "the plan looked right" is exactly the evidence that failed last time.
- *
- * WHAT IT FOUND ON ITS FIRST RUN — a 500, not an assertion failure
- *
- * `prepareApplyChecks` skipped `noop` relationship entries entirely, so their endpoints were never
- * resolved into `objectResolutions`. `executePlanDiff` then stamps relationship ownership over
- * every `action !== "delete"` entry — INCLUDING noops — and `endpointId` throws an internal error
- * for a URN this pass never resolved. Applying an exported estate therefore returned a 500.
- *
- * It is the adoption path specifically, which is why nothing else caught it: an ordinary stack
- * declares its own objects, so their URNs resolve in the object loop. An exported estate REFERENCES
- * its service (`Service.fromUrn`) and re-declares the `contains` edge that already exists — every
- * endpoint a reference, every entry a noop. Fixed by resolving endpoints for every non-delete
- * entry while still checking permissions only for the rest.
- *
- * MUTATION LOG - each applied, watched fail, reverted, watched pass (MEASURED)
- * | Mutation | Result |
- * |---|---|
- * | `prepareApplyChecks` goes back to skipping noop relationships before resolving | BOTH cases FAIL with the original 500 |
- * | `Pipeline` drops `adoptTopologyUrn`, so export cannot adopt the live topology | (1) FAILS with a **409 `cardinality 'many_to_one' violated`** — worth recording precisely, because it is not the silent duplicate the original defect produced: `releases_via` is one-per-component (0049), so today the second topology is refused at the edge rather than created beside the first. The defect's blast radius shrank when that index landed; the adoption path still needs the override, and this case still catches its absence. |
- */
+/** THE ESTATE MIGRATION, END TO END. See docs/iac.md §1. */
 describe("estate migration: export an unmanaged estate, apply it, adopt it", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -126,11 +82,7 @@ describe("estate migration: export an unmanaged estate, apply it, adopt it", () 
     });
     const target = await admin.deploymentTargets.create({ name: `staging-${suffix}` });
     await admin.placements.create({ component: component.id, deploymentTarget: target.id });
-    // A RELEASE TOPOLOGY AND ITS `releases_via` EDGE — without them the export emits no pipeline,
-    // and the duplication defect this test exists to catch lives precisely in the topology: export
-    // once derived the topology URN from a construct id with no override, so applying an exported
-    // estate created a SECOND topology beside the live one and repointed `releases_via` at it. An
-    // estate with no topology cannot catch that, so the fixture has one.
+    // A RELEASE TOPOLOGY AND ITS `releases_via` EDGE. See docs/iac.md §2.
     const topology = await admin.object("release-topology").create({
       name: `topo-${suffix}`,
       // `mode` is REQUIRED by the registered schema (drizzle/0007); wave targets carry URNs,
@@ -161,9 +113,6 @@ describe("estate migration: export an unmanaged estate, apply it, adopt it", () 
     expect(spec.serviceUrn).toBe(service.urn);
     expect(spec.components).toHaveLength(1);
 
-    // ---------------------------------------------------------------------------------------
-    // 3. SYNTHESIZE AND APPLY what came out.
-    // ---------------------------------------------------------------------------------------
     const built = buildEstateManifest(spec);
     const plan = await applyManifest(built.manifest);
 

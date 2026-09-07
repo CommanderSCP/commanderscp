@@ -9,20 +9,7 @@ import {
   RpmPipeline
 } from "./pipeline.js";
 
-/**
- * D24's COMPILE rung, proved the way this repo already proves compile-time guards (per this
- * increment's build instructions): `// @ts-expect-error` lines that fail the BUILD — `tsc --noEmit`,
- * the package's `typecheck` script, `tsconfig.json`'s `include: ["src"]` sweeps this file in — the
- * moment the error they name stops occurring. A RUNTIME-ONLY test proves nothing about a compile-
- * time guard; the proof here is the presence of this file passing `pnpm --filter @scp/iac
- * typecheck`, not the `it()` block below (which exists only so this is also a normal, green vitest
- * module and so the "legal pairings" section has a runtime assertion of its own).
- *
- * MUTATION-PROVED (restored before commit): commenting out any ONE `@ts-expect-error` line below and
- * running `pnpm --filter @scp/iac typecheck` makes tsc report "Unused '@ts-expect-error' directive"
- * — RED — for every line whose error stopped firing; re-adding it goes back GREEN. That is what
- * confirms each directive is load-bearing rather than decorative.
- */
+/** The compile rung, proved the way this repo already does. See docs/iac.md §279. */
 describe("@scp/iac: placeAt is kind-checked at compile time (D24)", () => {
   it("legal pairings type-check and return `this` for chaining", () => {
     const stack = new Stack("placeat-typecheck");

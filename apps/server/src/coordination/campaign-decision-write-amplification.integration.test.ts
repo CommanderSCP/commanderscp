@@ -38,25 +38,7 @@ import {
   CAMPAIGN_DEADLINE_LOCK_AUDIT_ACTION
 } from "./campaign-deadline-lock.js";
 
-/**
- * The CAMPAIGN-side half of the same unbounded-Decision-write class (see
- * `decision-write-amplification.integration.test.ts` for the production measurement that motivated
- * the fix, and `decisions-repo.ts`'s `insertDecisionIfChanged` for the shape).
- *
- * Both campaign writers carry 0 rows in the affected deployment ONLY because `campaign_plans` is
- * empty there — neither is fixed by the change-side fix, and one of them is WORSE BY CONSTRUCTION:
- *
- *  U2 the campaign WAVE GATE. Its guard is `pending || blocked` — deliberately re-including
- *     `blocked` so an operator satisfying the policy unblocks the campaign on the next tick — which
- *     means `markCampaignWaveBlocked` does NOT stop re-evaluation the way `markWaveRunning` stops
- *     it on the allow path. Same 1 s tick as the change side.
- *  U3 the `plan_diff` block written on every plan-compile failure ("record why and retry next
- *     tick"). A PERMANENT fault — an unresolvable target, a dependency cycle — re-fails identically
- *     ~43,200 times a day per campaign.
- *
- * Drives `reconcileCampaignsOrgTick` directly so "N ticks" is exactly N. Each case gets its OWN org
- * so one campaign's rows can never be mistaken for another's.
- */
+/** The campaign half of the unbounded-Decision class. See docs/coordination.md §134. */
 
 describe("Decision write amplification: the campaign reconciler persists ON CHANGE", () => {
   let server: TestServer;
@@ -89,13 +71,7 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     return res.json() as Record<string, unknown>;
   }
 
-  /**
-   * The Decisions of one `kind` for one subject, oldest first, SPLIT into the ordinary verdicts and
-   * the fail-closed condition-error statements — see `partitionConditionErrors` for the measured
-   * reason a raw row count cannot be asserted here (a CEL wall-clock miss on a loaded box makes the
-   * production code CORRECTLY write a condition-error row AND an ordinary one on the next tick; both
-   * are right). The suite's sandbox also raises that wall clock far above any scheduling hiccup.
-   */
+  /** Decisions split into ordinary verdicts and fail-closed. See docs/coordination.md §135. */
   async function decisionsOfKind(org: TestOrg, subjectId: string, kind: string) {
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
@@ -137,7 +113,7 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
   it("U2: a campaign wave parked on a requireApprovals policy writes ONE gate/block Decision over 15 ticks — while still being RE-EVALUATED every tick, and resuming the moment the approval lands", async () => {
     const org = await createTestOrg(server, "campaign-flood-gate");
     const approver = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);
-    const condition = "change.emergency == false"; // fires; also the per-evaluation counter
+    const condition = "change.emergency == false";
 
     const service = await inject(org, "/api/v1/services", { name: "svc-camp-gate" });
     const component = await inject(org, "/api/v1/components", {
@@ -293,24 +269,7 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     for (const recorded of recordedErrors) expect(recorded).not.toBe("Not Found");
   });
 
-  /**
-   * U4 — THE FAULT THE DEDUPE MADE WORSE (PR #153 review Q3).
-   *
-   * `ProblemError` (`errors.ts`) is constructed `(status, title, opts)` and passes the TITLE to
-   * `super()`, so `err.message` is `"Not Found"` / `"Bad Request"` and everything informative lives
-   * in `readonly detail`. Recording `message` therefore collapsed EVERY unresolvable-target fault
-   * to the identical `{ error: "Not Found" }` — and since `insertDecisionIfChanged` compares
-   * CONTENT, the second, genuinely different fault was suppressed as a restatement. The operator
-   * kept reading a Decision about a target that is no longer the problem, with no signal that
-   * anything had changed. The dedupe is what turned an explainability gap into a CORRECTNESS one,
-   * which is why the fix ships here rather than later.
-   *
-   * U3's second fault has a different HTTP title from its first, so it writes a row either way —
-   * this is the case that does not.
-   *
-   * MUTATION-PROVEN: reverting `campaign-reconcile.ts` to `err instanceof Error ? err.message` takes
-   * this to ONE row (`expected 1 to be 2`) — the second fault silently lost.
-   */
+  /** U4 — THE FAULT THE DEDUPE MADE WORSE. See docs/coordination.md §136. */
   it("U4: TWO DIFFERENT faults that share an HTTP title write TWO plan_diff Decisions — the title is not the record", async () => {
     const org = await createTestOrg(server, "campaign-flood-same-title");
 
@@ -357,26 +316,7 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     expect(recordedErrors[0]).not.toBe(recordedErrors[1]);
   });
 
-  /**
-   * U5 — THE OTHER PERSISTED `describeError` SITE ON THE CAMPAIGN SIDE (PR #153 review Q3):
-   * `campaign-rollback.ts`'s per-member catch.
-   *
-   * `triggerCampaignRollback` never aborts the batch — a member whose rollback is refused is
-   * recorded in `result.skipped[].reason`, which is BOTH returned to the operator by
-   * `POST /campaigns/{id}/rollback` AND persisted verbatim inside the campaign-level
-   * `rollback_trigger` Decision's `input_context.skipped`. It is the only account of why that member
-   * was not reverted. Every refusal `triggerRollback` raises is a `ProblemError` (`badRequest` for a
-   * non-rollbackable state or a change with no recorded targets, `notFound` from `getChangeRow`), so
-   * `err.message` recorded the bare HTTP title: three members skipped for three different reasons
-   * all read "Bad Request", in the returned payload and in the permanent record alike.
-   *
-   * Driven at the repo layer (the member change is walked to `executing` with the same manual
-   * transitions the rest of this suite uses) so the case is exact and needs no reconcile loop.
-   *
-   * MUTATION-PROVEN: reverting `campaign-rollback.ts`'s `describeError(err)` to
-   * `err instanceof Error ? err.message : String(err)` makes both assertions fail — the recorded
-   * reason collapses to "Bad Request".
-   */
+  /** The other persisted error site on the campaign side. See docs/coordination.md §137. */
   it("U5: a member whose rollback is REFUSED records WHY, in the returned result and in the campaign's rollback_trigger Decision", async () => {
     const org = await createTestOrg(server, "campaign-rollback-reason");
     const owner = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);
@@ -470,28 +410,7 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     expect(persisted[0]!.reason).toContain(memberChangeObjectId!);
   });
 
-  /**
-   * U6 — THE THIRD CAMPAIGN-SIDE WRITER: M25.5's adoption actuator (`campaign-adoption.ts`).
-   *
-   * It joins U2 and U3's class rather than merely resembling it. `reconcileOneCampaign`'s per-target
-   * `pending` branch runs on EVERY 1 s tick, and this writer fires from inside it, so the same
-   * arithmetic applies: one row per tick per adopted target is ~43,200 rows a day per component, and
-   * the motivating campaign has 47 of them.
-   *
-   * TWO INDEPENDENT BOUNDS ARE ASSERTED HERE, and the reason both exist is that either alone would
-   * make this test pass for the wrong reason:
-   *
-   *   (a) THE COUNT. `terminalizeAdoptedCampaignWaveTarget` is guarded on `status = 'pending'` with
-   *       RETURNING, so the write is unreachable after the first tick. That guard alone would make a
-   *       row count of 1 true even if the `inputContext` were full of timestamps.
-   *   (b) THE CONTENT. So the context is asserted as an EXACT KEY CENSUS — not "does not contain
-   *       `now`". A census fails when a NEW clock-shaped key is added, which is how this defect
-   *       actually arrives; a denylist only fails for the names somebody already thought of. Plus
-   *       the SORTEDNESS of `observations`, because `restatesDecision` canonicalizes object KEYS but
-   *       deliberately preserves array ORDER, and Postgres returns rows in no guaranteed order — an
-   *       unsorted array makes an unchanged situation look new on whichever ticks the planner felt
-   *       differently, which defeats `insertDecisionIfChanged` completely.
-   */
+  /** U6 — THE THIRD CAMPAIGN-SIDE WRITER. See docs/coordination.md §138. */
   it("U6: an already-adopted campaign target writes ONE campaign_adoption Decision over 15 ticks, carrying EVIDENCE and nothing clock-shaped", async () => {
     const org = await createTestOrg(server, "campaign-flood-adoption");
     const owner = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);
@@ -568,30 +487,7 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     expect(observations.join("\n")).toContain("3.12-slim");
   });
 
-  /**
-   * U7 — THE FOURTH CAMPAIGN-SIDE WRITER: M25.6a's deadline lock (`campaign-deadline-lock.ts`).
-   *
-   * IT IS THE WORST-SHAPED OF THE FOUR BY CONSTRUCTION, which is why it gets its own case rather
-   * than a mention. U2's gate clears when an operator approves; U3's `plan_diff` clears when someone
-   * fixes the plan; U6's adoption row is additionally bounded by a `status = 'pending'` guard that
-   * makes the write unreachable after the first tick. **A deadline lock clears when a component
-   * migrates**, which is measured in weeks — and NOTHING guards the write. Its entire bound is
-   * `insertDecisionIfChanged` comparing content. One row per tick per locked target is ~43,200 rows
-   * a day per component, and the motivating campaign has 47 of them: 2 million rows a day, from one
-   * campaign, for as long as the migration takes.
-   *
-   * THREE INDEPENDENT BOUNDS ARE ASSERTED, because any one alone would pass for the wrong reason:
-   *
-   *   (a) THE COUNT over N ticks.
-   *   (b) THE CONTENT, as an EXACT KEY CENSUS — a census fails when a NEW clock-shaped key is added,
-   *       which is how this defect actually arrives; a denylist only fails for the names somebody
-   *       already thought of. `deadlineAt` is the ONE clock-shaped value allowed, and it is a stored
-   *       BOUNDARY rather than a reading of the clock.
-   *   (c) THE AUDIT EVENT COUNT, which is the bound the Decision dedupe does NOT provide. The audit
-   *       chain asserts that something HAPPENED; appending on a tick that wrote no Decision would
-   *       make it assert an occurrence that did not occur, once a second, forever — and unlike a
-   *       duplicated Decision, a hash-chained lie cannot be pruned.
-   */
+  /** U7 — THE FOURTH CAMPAIGN-SIDE WRITER. See docs/coordination.md §139. */
   it("U7: a standing deadline lock writes ONE campaign_deadline Decision and ONE audit event over 15 ticks", async () => {
     const org = await createTestOrg(server, "campaign-flood-deadline");
     const owner = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);

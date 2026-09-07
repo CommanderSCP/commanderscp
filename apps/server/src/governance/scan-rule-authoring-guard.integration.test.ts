@@ -9,21 +9,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M22.8 — A SCAN RULE THAT REQUIRES NO SCAN IS REFUSED AT AUTHORING TIME
- * (`governance/scan-rule-authoring-guard.ts`).
- *
- * The refusal is only worth having if it is installed at the CHOKE POINT rather than at one route.
- * ADR-0032 §6a's sibling shipped at the typed `/policies` route and a filterless census then found
- * three more doors reaching `createObject` with a free-form `typeId` and free-form `properties`.
- * G2 below plants the identical refused document through IaC apply, which is one of those three, and
- * would go green against a route-only install — which is exactly why it exists.
- *
- * WHAT THE REFUSAL DOES *NOT* CLAIM matters as much as what it does, and G5/G6 pin both edges:
- * an unbound control is NOT proof that a policy is inert (bindings are a separate call and a
- * refusal there would make authoring order-dependent), and an `admit`-only `scanExclusion` is an
- * ADMISSION rather than a rule about a finding and is exempt.
- */
+/** A scan rule requiring no scan is refused at authoring. See docs/governance.md §390. */
 
 describe("M22.8 scan-rule authoring guard", () => {
   let server: ListeningTestServer;
@@ -84,10 +70,6 @@ describe("M22.8 scan-rule authoring guard", () => {
     );
   }
 
-  // -----------------------------------------------------------------------------------------
-  // G1 — the default first-time SecOps document.
-  // -----------------------------------------------------------------------------------------
-
   it("G1 refuses a scanThreshold policy that requires no control at all", async () => {
     await expectRefused(createPolicy([{ scanThreshold: { maxHigh: 0 } }]), "requires no control");
   });
@@ -99,9 +81,7 @@ describe("M22.8 scan-rule authoring guard", () => {
     );
   });
 
-  // -----------------------------------------------------------------------------------------
   // G2 — THE CHOKE-POINT PROOF. The same document, a different door.
-  // -----------------------------------------------------------------------------------------
 
   it("G2 refuses the same document through IaC apply — the door a route-level install would miss", async () => {
     const stackName = `guard-iac-${randomUUID().slice(0, 8)}`;
@@ -151,9 +131,7 @@ describe("M22.8 scan-rule authoring guard", () => {
     await expectRefused(admin.plans.apply(plan.id), "requires no control");
   }, 120_000);
 
-  // -----------------------------------------------------------------------------------------
   // G3/G4 — "names no SCAN control" is about the BINDING, not about naming something.
-  // -----------------------------------------------------------------------------------------
 
   it("G3 accepts a scanThreshold policy that requires a control bound to the scan-verdict plugin", async () => {
     const scanControlId = await control("scan", "scan-result-control");
@@ -175,9 +153,7 @@ describe("M22.8 scan-rule authoring guard", () => {
     );
   });
 
-  // -----------------------------------------------------------------------------------------
   // G5/G6 — the two deliberate NON-refusals.
-  // -----------------------------------------------------------------------------------------
 
   it("G5 accepts a policy naming an UNBOUND control — absence of a binding is never proof of inertness", async () => {
     // A control object and its binding are two API calls. Refusing here would make policy authoring
@@ -203,9 +179,7 @@ describe("M22.8 scan-rule authoring guard", () => {
     );
   });
 
-  // -----------------------------------------------------------------------------------------
   // G7 — THE UPDATE HALF. An enforceable rule must not be able to become inert by PATCH.
-  // -----------------------------------------------------------------------------------------
 
   it("G7 refuses a PATCH that strips the requireControls out from under an accepted ceiling", async () => {
     const scanControlId = await control("patch-scan", "scan-result-control");

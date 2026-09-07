@@ -7,22 +7,7 @@ import {
   type RecordIngestionStampInput
 } from "./ingestion-stamp-repo.js";
 
-/**
- * M21.7 — THE STAMP MERGE (ADR-0032 §4, drizzle/0065).
- *
- * `mergeIngestionStamp` is where the table's whole correctness argument lives, so it is pure and it
- * is asserted here without a database. The behaviour against real Postgres — that the ingestion
- * actually calls it, with the repository it read — is pinned in
- * `inventory-ingestion.integration.test.ts`; these are the rules themselves.
- *
- * TWO DEFECTS SHAPED THIS FUNCTION, both of which turned "this component's manifests could not be
- * read" into "this component genuinely declares nothing":
- *
- *  1. A refusal for a repository the component is NOT MAPPED TO overwrote a good stamp with
- *     `unreadable`. A pass that reached no provider holds no evidence about any manifest.
- *  2. The row is per COMPONENT but ingestion is per (COMPONENT, REPOSITORY). A successful
- *     `acme/charts` pass replaced the whole row and erased a failed `acme/widgets` read.
- */
+/** M21.7 — THE STAMP MERGE. See docs/dependencies.md §210. */
 describe("mergeIngestionStamp — the row is per component, the evidence is per repository", () => {
   const WIDGETS = "acme/widgets";
   const CHARTS = "acme/charts";
@@ -74,9 +59,7 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     lastAttemptAt: new Date(over.lastAttemptAt)
   });
 
-  // -------------------------------------------------------------------------------------------
   // DEFECT 1 — a pass that reached no repository may not revise the manifest verdict
-  // -------------------------------------------------------------------------------------------
   it("a refusal with NO repository writes NOTHING over the standing evidence", () => {
     // `null` is the whole answer: not a restatement of the stored row, not an advanced
     // `last_attempt_at`. The timestamp is in that list on purpose — it is what a reader means by
@@ -121,9 +104,6 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     expect(merged.detail).toBe("no repo was named");
   });
 
-  // -------------------------------------------------------------------------------------------
-  // DEFECT 2 — per-repository slices
-  // -------------------------------------------------------------------------------------------
   it("a pass over one repository replaces its OWN slice and keeps the other's", () => {
     const merged = fold(
       stored({
@@ -188,9 +168,7 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     expect(merged.outcome).toBe("ok");
   });
 
-  // -------------------------------------------------------------------------------------------
   // ORDERING — per repository for the slice, per component for the row-level fields
-  // -------------------------------------------------------------------------------------------
   it("an OLDER pass over the same repository does not replace a newer slice", () => {
     const merged = fold(
       stored({
@@ -249,9 +227,7 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     expect(merged.outcome).toBe("unreadable");
   });
 
-  // -------------------------------------------------------------------------------------------
   // `not_enabled` — a fact about the component, not about a path
-  // -------------------------------------------------------------------------------------------
   it("a closed gate overrides the computed outcome while it is the latest word", () => {
     const merged = fold(
       stored({
@@ -307,9 +283,7 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     expect(merged.detail).toBeNull();
   });
 
-  // -------------------------------------------------------------------------------------------
   // The empty readings, which are the three meanings the table exists to separate
-  // -------------------------------------------------------------------------------------------
   it("a pass that LOOKED and found nothing is `ok` + 0 — 'genuinely declares nothing'", () => {
     const merged = fold(
       stored({

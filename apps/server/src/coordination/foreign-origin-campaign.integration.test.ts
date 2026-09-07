@@ -18,53 +18,7 @@ import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 
-/**
- * THE S10 SINGLE-WRITER HOLE ON THE CAMPAIGN LOOP, and why it is WORSE here than on the change loop.
- *
- * Sibling of `foreign-origin-batch-starvation.integration.test.ts` (the change-side half, closed by
- * `b61054b`); read that file's header and `candidate-loop-registry.test.ts`'s for the class. This
- * suite measures the OTHER half, which that commit recorded and deliberately left open.
- *
- * THE ASYMMETRY IS THE WHOLE POINT — and it is why "latent" was the right word there and the wrong
- * word here:
- *
- *  - A synced CHANGE never becomes a candidate. `federation/import-repo.ts`'s `object_upsert` branch
- *    explicitly never creates a local `changes` state-machine row, and `listChangeRowsInStates`
- *    INNER JOINs that row — so a foreign-origin change was never in the change loop's candidate set
- *    to begin with (measured in `change-origin-domain.integration.test.ts`'s header).
- *  - A synced CAMPAIGN does. `object_upsert` is TYPE-AGNOSTIC (`const typeId = String(payload.typeId)`)
- *    and `graph/objects-repo.ts`'s `journalEntryKindFor` puts every non-`policy` object on that same
- *    entry kind, so a peer's campaign object rides an ordinary `full`-scope journal and lands here
- *    via `upsertObjectByUrn(..., { federationImport: { originDomainId: exporterDomainId } })` —
- *    a real local `objects` row carrying a FOREIGN `origin_domain_id`.
- *
- * And `listActiveCampaignObjectIds` had no origin predicate while `reconcileOneCampaign` had no
- * origin skip. So this instance compiled a plan for ANOTHER DOMAIN'S campaign and proposed member
- * changes from it — writes with real side effects (rows in `campaign_plans`/`campaign_waves`/
- * `campaign_wave_targets`, brand-new `changes`, a `coordinates` edge off a replica), not merely a
- * scheduling problem. It also bumped the replica's own `objects.updated_at` on every tick, via the
- * round-robin write at the bottom of `reconcileCampaignsOrgTick`.
- *
- * THE FIX IS A FILTER, NOT A MID-LOOP `continue` — the same shape `b61054b` chose for changes, and
- * for the same two reasons. (1) `listActiveCampaignObjectIds` IS capped and ordered (`ORDER BY
- * objects.updated_at ASC LIMIT 25`), so a body-level skip that did not write the row would re-create
- * the batch-starvation property that cost 13 days of production coordination. (2) The remedy used
- * for every other instance of that property — a round-robin `updated_at` bump — is ILLEGAL on a
- * replica, because it is itself a write to a row this domain does not own. Filtering removes the row
- * from the candidate set entirely: nothing is written, nothing is starved, and the campaign rejoins
- * the batch by itself the moment authority returns (the last test below).
- *
- * WHAT THIS SUITE SHOWS WITHOUT THE FIX (mutation-checked — note that it pins the end-to-end
- * outcome, NOT the query predicate specifically; see the note on the first regression test): the
- * foreign campaign compiles a plan on the very first tick and proposes a member change for its
- * target — `expected
- * null, received { id: ..., waves: [...] }`.
- *
- * THE LOCAL CONTROL CAMPAIGN IS NOT DECORATION. Every "did not happen" assertion below would pass
- * just as well if the reconciler were broken, mis-wired, or never ran — the exact "green for the
- * wrong reason" shape this codebase keeps getting burned by. The control proves the same ticks
- * drove a campaign all the way to a proposed member change.
- */
+/** The single-writer hole on the campaign loop is worse. See docs/coordination.md §478. */
 describe("S10 single-writer: this instance must not drive ANOTHER domain's campaign", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -178,13 +132,7 @@ describe("S10 single-writer: this instance must not drive ANOTHER domain's campa
     localCampaignId = local.campaignId;
     localTargetId = local.targetId;
 
-    // THE SURGERY, in its own transaction AFTER the creating one committed — the same statement
-    // `federation/foreign-origin-writes.integration.test.ts` uses, and byte-for-byte the row state
-    // `import-repo.ts`'s `object_upsert` branch produces for a peer-authored campaign object.
-    //
-    // Only the CAMPAIGN is flipped, not its target component: the target being locally replicated is
-    // exactly the shape a `full`-scope sync produces, and it keeps the fixture honest — nothing here
-    // is unreachable because a target failed to resolve.
+    // The surgery, in its own transaction after the create. See docs/coordination.md §479.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .update(objects)
@@ -199,7 +147,6 @@ describe("S10 single-writer: this instance must not drive ANOTHER domain's campa
     expect((await objectRow(foreignCampaignId)).origin).toBe(FOREIGN);
     expect((await objectRow(localCampaignId)).origin).toBe(self.domainId);
 
-    // Neither has been driven yet.
     expect(await planFor(foreignCampaignId)).toBeNull();
     expect(await planFor(localCampaignId)).toBeNull();
     expect(foreignTargetId).not.toBe(localTargetId);
@@ -224,18 +171,7 @@ describe("S10 single-writer: this instance must not drive ANOTHER domain's campa
   }, 120_000);
 
   it("THE REGRESSION: NO plan is compiled for the foreign-origin campaign", async () => {
-    // WITHOUT EITHER HALF OF THE FIX this fails: the replica was served in the same batch as the
-    // control above and `reconcileOneCampaign` compiled it a plan on tick 1 — writing
-    // `campaign_plans`, `campaign_waves` and `campaign_wave_targets` for an object this domain does
-    // not own.
-    //
-    // BE PRECISE ABOUT WHICH HALF THIS PINS, because an earlier version of this comment was wrong
-    // and a census that trusted it would have drawn the wrong conclusion. The fix has two parts: the
-    // `origin_domain_id` predicate on `listActiveCampaignObjectIds` (the starvation-SAFE remedy) and
-    // the defence-in-depth `continue` in the loop body. Removing ONLY the query predicate leaves
-    // this whole file green, because the body guard still stops the write. What pins the query
-    // predicate is `campaign-active-filter.integration.test.ts`'s S10 arm — verified by mutating
-    // each half separately. This file pins the END-TO-END outcome, which either half delivers.
+    // WITHOUT EITHER HALF OF THE FIX this fails. See docs/coordination.md §480.
     expect(await planFor(foreignCampaignId)).toBeNull();
   }, 120_000);
 

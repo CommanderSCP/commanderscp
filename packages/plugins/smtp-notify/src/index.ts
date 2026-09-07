@@ -9,34 +9,11 @@ import type {
 } from "@scp/plugin-api";
 import { assertHostNotInternal } from "./egress.js";
 
-/**
- * `@scp/plugin-smtp-notify` — the SMTP `NotificationPlugin` (M7, BUILD_AND_TEST.md §8 M7 item 4).
- *
- * DEVIATION, DELIBERATE AND FLAGGED (DESIGN.md §11 describes `PluginContext.http` as "the only
- * network path a plugin is given" — that is true for every OTHER M7 plugin, which are all HTTP
- * APIs): SMTP is not HTTP-shaped (`ScopedHttpClient`'s request/response contract has no place for
- * a stateful, multi-command, possibly-STARTTLS-upgraded protocol session), so this plugin is the
- * one place in the M7 surface that opens its own `node:net`/`node:tls` socket rather than going
- * through `ctx.http`. To keep the SAME egress-control spirit `ctx.http`'s host allowlist gives
- * every other plugin (SSRF mitigation), this plugin enforces its OWN allowlist check against
- * `ctx.config.allowedHosts` (mirroring `plugin-host/host.ts`'s `SCP_PLUGIN_ALLOWED_HOSTS_JSON`,
- * which this plugin also reads via `config.allowedHosts` — the host wires the SAME
- * `executor_bindings`/`notification_bindings.allowed_hosts` column value into both places) before
- * ever dialing out — a misconfigured or attacker-influenced `config.host` that isn't on the
- * allowlist fails closed with no connection attempt at all.
- *
- * Deliberately minimal (v1, "good enough for a common relay"): implicit TLS (port 465) or
- * STARTTLS (587/25) upgrade, `AUTH LOGIN` or `AUTH PLAIN`, single-message send with one or more
- * recipients, no connection pooling/retry — this is a notification escape hatch, not a mail
- * transfer agent. No `nodemailer`/external mail dependency: the whole point of hand-rolling this
- * against the documented, tiny subset of RFC 5321/4954 real relays actually need is to avoid a new
- * air-gap-relevant dependency for what is, after STARTTLS, about a dozen plaintext command/response
- * lines.
- */
+/** `@scp/plugin-smtp-notify` — the SMTP `NotificationPlugin`. See docs/plugins.md §536. */
 
 export interface SmtpNotifyConfig {
   host: string;
-  port?: number; // default 587
+  port?: number;
   /** `true` = implicit TLS from connect (typically port 465); `false`/omitted = plaintext then
    *  STARTTLS if the server advertises it (typically port 587/25). */
   implicitTls?: boolean;
@@ -84,15 +61,9 @@ function asConfig(config: unknown): SmtpNotifyConfig {
   };
 }
 
-/**
- * `allowedHosts` allowlist enforcement — this plugin dials a raw SMTP socket and can't go through
- * `apps/server`'s `ctx.http` egress guard, so it enforces its own allowlist AND (see `egress.ts`,
- * MAJOR #6) its own internal-range deny-list. smtp-notify is a tenant-configurable plugin, never an
- * operator-plane escape hatch, so `assertHostNotInternal` blocks EVERY non-public target
- * (metadata/link-local/loopback/private) — same class of hole as the webhook-notify one.
- */
+/** `allowedHosts` allowlist enforcement. See docs/plugins.md §537. */
 function checkAllowlist(host: string, allowedHosts: string[] | undefined): void {
-  if (!allowedHosts || allowedHosts.length === 0) return; // unscoped — see module/config doc.
+  if (!allowedHosts || allowedHosts.length === 0) return;
   if (!allowedHosts.includes(host)) {
     throw new Error(`smtp-notify: host '${host}' is not in the configured allowedHosts allowlist`);
   }
@@ -110,7 +81,7 @@ function readReply(socket: Socket | TLSSocket): Promise<{ code: number; lines: s
       const last = lines[lines.length - 1];
       if (!last) return;
       const isFinal = /^\d{3} /.test(last);
-      if (!isFinal) return; // still waiting on more continuation lines
+      if (!isFinal) return;
       cleanup();
       const code = Number(last.slice(0, 3));
       resolve({ code, lines });
@@ -162,14 +133,7 @@ function buildMessage(config: SmtpNotifyConfig, msg: NotificationMessage): strin
   return [...headers, "", ...body, "."].join("\r\n");
 }
 
-/**
- * Dials `address` — which MUST be an address `assertHostNotInternal` just verified — rather than
- * `config.host`. Passing the name would let this connect re-resolve it independently of the guard,
- * which is the DNS-rebinding window described in `egress.ts`. The name is still what TLS checks:
- * `servername` carries SNI and drives the certificate identity check (Node uses
- * `servername || host`), so pinning the address weakens no part of the handshake. It is omitted for
- * an IP-literal `config.host`, where an SNI value would be meaningless (RFC 6066).
- */
+/** Dials the address the guard just verified, not the name. See docs/plugins.md §538. */
 async function connectSocket(
   config: SmtpNotifyConfig,
   address: string
@@ -237,7 +201,7 @@ async function send(ctx: PluginContext, msg: NotificationMessage): Promise<Deliv
       throw new Error(`smtp-notify: no verified address for host '${config.host}'`);
     }
     socket = await connectSocket(config, address);
-    await readReply(socket); // server greeting (220)
+    await readReply(socket);
     let ehlo = await expect(socket, `EHLO scp-notify`, [250]);
     const capabilities = ehlo.lines.join(" ").toUpperCase();
 
@@ -248,12 +212,7 @@ async function send(ctx: PluginContext, msg: NotificationMessage): Promise<Deliv
     }
 
     if (config.username && config.passwordSecretKey) {
-      // Read the ENCRYPTION STATE OFF THE SOCKET, never off our intent to upgrade. The STARTTLS
-      // branch above is opportunistic and driven by an EHLO capability list the server sent before
-      // any encryption exists: an on-path attacker (or a hostile relay) that withholds the word
-      // STARTTLS silently skips the upgrade, and `authenticate()` used to run anyway — base64 AUTH
-      // LOGIN credentials over cleartext TCP, with no error and `delivered: true`. That is
-      // STARTTLS stripping, and refusing is the only correct answer to it.
+      // Read the encryption state off the socket, not our intent. See docs/plugins.md §539.
       if (!isEncrypted(socket) && config.allowPlaintextAuth !== true) {
         return {
           delivered: false,

@@ -12,12 +12,7 @@ function authHeader(token: string): { authorization: string } {
   return { authorization: `Bearer ${token}` };
 }
 
-/**
- * M2 typed registries (BUILD_AND_TEST.md §8 M2 item 1): thin layers over the same
- * objects/object_types substrate the generic `/objects/{type}` endpoint uses. Uses `app.inject`
- * directly (not the SDK) to exercise the real HTTP contract, mirroring
- * test-support/smoke.integration.test.ts's style.
- */
+/** M2 typed registries (BUILD_AND_TEST.md §8 M2 item 1). See docs/routes.md §416. */
 describe("typed registries: thin layers over the generic graph substrate", () => {
   let server: TestServer;
 
@@ -83,7 +78,6 @@ describe("typed registries: thin layers over the generic graph substrate", () =>
     it("create/list/get/update/delete/upsert round-trip, visible both ways through /objects/{type}", async () => {
       const org = await createTestOrg(server, `crud-${basePath}`);
 
-      // create via the typed endpoint
       const create = await server.app.inject({
         method: "POST",
         url: `/api/v1/${basePath}`,
@@ -94,7 +88,6 @@ describe("typed registries: thin layers over the generic graph substrate", () =>
       const created = create.json();
       expect(created.typeId).toBe(typeId);
 
-      // get via the typed endpoint
       const getTyped = await server.app.inject({
         method: "GET",
         url: `/api/v1/${basePath}/${created.id}`,
@@ -112,7 +105,6 @@ describe("typed registries: thin layers over the generic graph substrate", () =>
       expect(genericGet.statusCode, genericGet.body).toBe(200);
       expect(genericGet.json().id).toBe(created.id);
 
-      // list via the typed endpoint
       const list = await server.app.inject({
         method: "GET",
         url: `/api/v1/${basePath}`,
@@ -121,7 +113,6 @@ describe("typed registries: thin layers over the generic graph substrate", () =>
       expect(list.statusCode).toBe(200);
       expect(list.json().items.some((o: { id: string }) => o.id === created.id)).toBe(true);
 
-      // update via the typed endpoint
       const update = await server.app.inject({
         method: "PATCH",
         url: `/api/v1/${basePath}/${created.id}`,
@@ -171,7 +162,6 @@ describe("typed registries: thin layers over the generic graph substrate", () =>
       expect(upsertReplay.statusCode, upsertReplay.body).toBe(200);
       expect(upsertReplay.json().id).toBe(upserted.id);
 
-      // delete (soft) via the typed endpoint
       const del = await server.app.inject({
         method: "DELETE",
         url: `/api/v1/${basePath}/${created.id}`,

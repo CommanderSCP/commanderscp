@@ -22,12 +22,7 @@ import {
 import { canonicalJson } from "./canonical.js";
 import { deriveConstructUrn } from "./urn.js";
 
-/**
- * Example-based synth test for a realistic small stack (goal statement): two services, a team
- * owning both, one `depends_on` the other. The fast-check property test
- * (`construct.determinism.test.ts`) covers the general determinism guarantee; this test pins down
- * the EXACT expected manifest shape for one concrete, readable case.
- */
+/** Example-based synth test for a realistic small stack. See docs/iac.md §182. */
 describe("@scp/iac: example stack synth", () => {
   it("two services + a team owning both + one depends_on the other", () => {
     const stack = new Stack("billing-platform");
@@ -209,11 +204,7 @@ describe("@scp/iac: example stack synth", () => {
   });
 });
 
-/**
- * M5 constructs (Campaign, ReleaseTopology) — same example-based style as above: the
- * fast-check property test in `construct.determinism.test.ts` covers the general determinism
- * guarantee, this file pins down the exact expected manifest shape.
- */
+/** M5 constructs (Campaign, ReleaseTopology). See docs/iac.md §183. */
 describe("@scp/iac: campaign/release-topology synth", () => {
   it("a ReleaseTopology with a parallel wave and a sequential wave resolves construct-reference targets to URN strings", () => {
     const stack = new Stack("release-platform");
@@ -310,16 +301,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
     const svcA = new Service(stack, "svc-a", { name: "Svc A" });
     const campaignA = new Campaign(stack, "campaign-a", { name: "Campaign A", targets: [svcA] });
 
-    // `coordinates` is a system-managed relationship the server refuses on the IaC apply path
-    // (apps/server/src/graph/system-managed-relationships.ts) — an edge injected by any actor
-    // holding `relationship:write` could sweep an arbitrary Change into a victim campaign's
-    // rollback. So there is deliberately no `.coordinates()` synth method; a manifest declaring
-    // one would only ever 403 at apply. The campaign -> member-change edges are written by the
-    // reconciler's own authority-checked path instead.
-    //
-    // This guarantee used to be asserted through the removed grouping construct (ADR-0036). The
-    // property is about `coordinates`, not about what sat above a campaign, so it moved here
-    // rather than being deleted alongside it.
+    // That edge is system-managed, and the apply path refuses it. See docs/iac.md §184.
     expect((campaignA as unknown as { coordinates?: unknown }).coordinates).toBeUndefined();
 
     const manifest = stack.synth();
@@ -329,11 +311,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 });
 
-/**
- * C1 (docs/proposals/post-import-configuration.md §8) — `source_mappings` and `executor_bindings`
- * are the two configurations that had no manifest representation, breaking principle 3's
- * API → SDK → CLI → IaC → UI parity for exactly what an operator must reproduce offline.
- */
+/** C1 (docs/proposals/post-import-configuration.md §8). See docs/iac.md §185. */
 describe("@scp/iac constructs: executor bindings on a placement", () => {
   /** Local to this block: the placements suite below defines its own, and reaching across describe
    *  scopes for a helper is how a shared fixture quietly acquires a second set of requirements. */
@@ -500,14 +478,7 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
   });
 
   it("declaration ORDER never changes it for mappings differing ONLY by refPattern", () => {
-    // THE GAP THE CASE ABOVE LEAVES, and it is not a corner: the two mappings there differ by
-    // `repoPattern`, which the sort key carried, so the whole case passed with `refPattern` missing
-    // from the key entirely. Two mappings that differ in nothing else tied, `Array.prototype.sort`
-    // is stable, and the tie fell through to declaration order.
-    //
-    // This is the shape `PipelineBase` synthesizes for every multi-branch component — one repo,
-    // `refs/heads/dev` → dev and `refs/heads/main` → production (ADR-0030 §1) — so it is the common
-    // case, not a constructed one.
+    // THE GAP THE CASE ABOVE LEAVES, and it is not a corner. See docs/iac.md §186.
     function build(order: "forward" | "reverse") {
       const { stack, component } = stackWithComponent("determinism-refpattern");
       const decls: Array<() => void> = [
@@ -542,17 +513,7 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
 });
 
 describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
-  /**
-   * A placement is one component at one deployment-target. It is NOT emitted into `objects` — a
-   * pair-bound type cannot be created through a door taking free-form properties (PR #207), so it
-   * rides its own collection like a source mapping does.
-   *
-   * | Mutation | Result |
-   * |---|---|
-   * | emit `placements: []` instead of omitting it when empty | the pre-C1 shape test FAILS |
-   * | sort placements by declaration order instead of the pair | the determinism test FAILS |
-   * | have `placeAt` push a decl directly instead of constructing `Placement` | no test fails — the two forms are required to converge, so this is asserted by BOTH producing the identical manifest |
-   */
+  /** A placement is one component at one deployment-target. See docs/iac.md §187. */
   function fixture(stackName: string) {
     const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
@@ -576,7 +537,7 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
     // ever grows its own behaviour, these two diverge.
     const a = fixture("via-sugar");
     a.component.placeAt(a.prod);
-    const b = fixture("via-sugar"); // same stack name, so the URNs match
+    const b = fixture("via-sugar");
     new Placement(b.stack, b.component, b.prod);
     expect(a.stack.synth()).toEqual(b.stack.synth());
   });
@@ -612,14 +573,7 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
   });
 });
 
-/**
- * M21.6 (proposal §3.3) — a dependency subscription is a `dependencySubscription` EFFECT on an
- * ordinary `policy` object (ADR-0032 §3a); there is deliberately no bespoke construct or verb for
- * it anywhere. So the IaC door is a first-class `Policy` construct whose `properties` travel
- * VERBATIM into the manifest as a `typeId: "policy"` object — no schema change, because the
- * manifest already accepts any typeId. This is also the DELETE-THE-WIRING gate for the export: drop
- * `Policy` from index.ts and the import below is `undefined`, so `new Policy(...)` throws.
- */
+/** A dependency subscription is a policy effect, not a row. See docs/iac.md §188. */
 describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a policy effect)", () => {
   it("synthesizes a policy carrying a dependencySubscription effect as a `policy` object with the properties verbatim", () => {
     const stack = new Stack("checkout-stack");
@@ -688,24 +642,7 @@ describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a 
 });
 
 describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
-  /**
-   * A producer declaration says "this component's production releases are where this coordinate's
-   * versions come from" — the coordinate stops being polled against its public index.
-   *
-   * THE COLLECTION IS OMITTED WHEN EMPTY, exactly like the three above it — and that omission MEANS
-   * SOMETHING DIFFERENT server-side, which is the point of the last case here. For every other
-   * collection absent and empty both prune; for this one absent means UNMANAGED and prunes nothing
-   * (owner ruling 2026-08-17). The consequence a construct author hits is that deleting your only
-   * `producesDependency(...)` call retracts nothing, and that is what the last case pins so nobody
-   * "fixes" `synth()` to emit `producers: []` — which WOULD retract it, silently, on the next apply
-   * of every stack that ever declared one.
-   *
-   * | Mutation | Result |
-   * |---|---|
-   * | emit `producers: []` instead of omitting it when empty | "…omits the collection when empty…" FAILS, and so does the pre-C1 shape test above |
-   * | sort producers by declaration order instead of `(ecosystem, coordinate)` | "sorts on (ecosystem, coordinate)…" FAILS |
-   * | have `producesDependency` push a decl directly instead of delegating to the stack | no test fails — the two spellings are required to converge, which the sugar-equivalence case asserts |
-   */
+  /** A producer declaration says where this line comes from. See docs/iac.md §189. */
   function fixture(stackName: string) {
     const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
@@ -739,7 +676,7 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
   it("the sugar and the stack-level form produce the IDENTICAL manifest", () => {
     const a = fixture("producer-sugar");
     a.component.producesDependency({ ecosystem: "npm", coordinate: "@acme/lib" });
-    const b = fixture("producer-sugar"); // same stack name, so the URNs match
+    const b = fixture("producer-sugar");
     b.stack.addDependencyProducer(b.component, { ecosystem: "npm", coordinate: "@acme/lib" });
     expect(a.stack.synth()).toEqual(b.stack.synth());
   });
@@ -769,12 +706,7 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
   });
 
   it("omits the collection when empty — and THAT is why deleting your only declaration retracts nothing", () => {
-    // Do not "fix" this to emit `producers: []`. An empty array is a PRESENT collection, which the
-    // server reads as "I manage producers and declare none" and therefore PRUNES; an absent key
-    // means UNMANAGED. Emitting `[]` here would make every stack that ever dropped a
-    // `producesDependency(...)` call retract that coordinate back to a public index on the next
-    // apply — the accepted cost documented on `Stack.addDependencyProducer` runs in this direction
-    // precisely so the catastrophic one cannot.
+    // Do not "fix" this to emit. See docs/iac.md §190.
     const { stack, component } = fixture("producer-none");
     const withDeclaration = (() => {
       component.producesDependency({ ecosystem: "npm", coordinate: "@acme/lib" });
@@ -790,20 +722,7 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
 });
 
 describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
-  /**
-   * A rung says "every containment move BENEATH this container needs `governance:move` at both
-   * ends". It is the SECOND collection whose absent key means UNMANAGED, and the more dangerous of
-   * the two to get wrong: pruning a producer re-arms dependency confusion, pruning a rung turns OFF
-   * a governance bar and the symptom is an ABSENCE of refusals. So the last case here is the one
-   * that matters — it exists so nobody "fixes" `synth()` to emit `governanceMoveRungs: []`, which
-   * WOULD disable, silently, every rung on every container each stack that ever declared one owns.
-   *
-   * | Mutation | Result |
-   * |---|---|
-   * | emit `governanceMoveRungs: []` instead of omitting it when empty | "…omits the collection when empty…" FAILS |
-   * | sort rungs by declaration order instead of by subject | "sorts on the subject…" FAILS |
-   * | resolve the subject to something other than its URN (e.g. the construct id) | "lands in the manifest…" and "accepts a container referenced by URN…" FAIL |
-   */
+  /** A rung says moves beneath this container need permission. See docs/iac.md §191. */
   function fixture(stackName: string) {
     const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
@@ -852,11 +771,7 @@ describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
   });
 
   it("omits the collection when empty — and THAT is why deleting your only rung disables nothing", () => {
-    // Do not "fix" this to emit `governanceMoveRungs: []`. An empty array is a PRESENT collection,
-    // which the server reads as "I manage rungs and declare none" and therefore DISABLES every rung
-    // on a container this stack owns. An absent key means UNMANAGED. Emitting `[]` here would
-    // un-govern a subtree on the next apply of every stack that ever declared a rung and later
-    // dropped it — and the symptom would be moves quietly succeeding, which nothing surfaces.
+    // Do not "fix" this to emit. See docs/iac.md §192.
     const { stack, service } = fixture("rung-none");
     stack.addGovernanceMoveRung(service);
     expect(stack.synth().governanceMoveRungs).toHaveLength(1);
@@ -868,16 +783,10 @@ describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
   });
 });
 
-/**
- * D16(2) — `fromXxx()` reference statics returning interface types. `Service.fromName(...)` /
- * `.fromUrn(...)` return `IService`, and an OWNED `Service` construct implements the same
- * interface, so the two are interchangeable wherever `IService` (or the looser `IResourceRef`) is
- * accepted — this is what lets a component in one repo reference a service declared in another
- * stack's file without a bare, untyped URN string.
- */
+/** D16(2) — `fromXxx()` reference statics returning interface types. See docs/iac.md §193. */
 describe("@scp/iac constructs: fromXxx() reference statics (D16(2))", () => {
   it("fromUrn returns the exact URN given, verbatim, with the construct's typeId", () => {
-    const ref = Service.fromName; // sanity: the static exists on the exported class
+    const ref = Service.fromName;
     expect(typeof ref).toBe("function");
     const svc = Service.fromUrn("urn:scp:payments-team:service:payments");
     expect(svc).toEqual({ urn: "urn:scp:payments-team:service:payments", typeId: "service" });
@@ -886,7 +795,7 @@ describe("@scp/iac constructs: fromXxx() reference statics (D16(2))", () => {
   it("fromName derives a deterministic, syntactically-valid-URN placeholder from (kind, name)", () => {
     const a = Service.fromName("payments");
     const b = Service.fromName("payments");
-    expect(a).toEqual(b); // pure — same input, same reference, every time
+    expect(a).toEqual(b);
     expect(a.typeId).toBe("service");
     // Syntactically a real URN (UrnSchema: urn:scp:{org}:{type}:{slug-path}) so it is legal
     // wherever a construct's own derived URN is — even though today nothing resolves it (below).
@@ -967,18 +876,13 @@ describe("@scp/iac constructs: fromXxx() reference statics (D16(2))", () => {
   });
 });
 
-/**
- * D16(1) — the guaranteed L1 escape hatch: `Stack.addManifestEntry`/`addRelationship` (raw doors)
- * and `ResourceConstruct.overrideManifestEntry` (per-construct patch). Follows the house
- * "synthesizes identically through the sugar and the stack-level door" pattern already used for
- * placements/producers/rungs above.
- */
+/** D16(1) — the guaranteed L1 escape hatch. See docs/iac.md §194. */
 describe("@scp/iac constructs: the L1 escape hatch (D16(1))", () => {
   it("an L1 addManifestEntry object and its L2 equivalent synthesize identically", () => {
     const l2 = new Stack("l1-vs-l2");
     new Service(l2, "checkout", { name: "Checkout", properties: { tier: "critical" } });
 
-    const l1 = new Stack("l1-vs-l2"); // same stack name -> same derived URN
+    const l1 = new Stack("l1-vs-l2");
     l1.addManifestEntry({
       urn: deriveConstructUrn("l1-vs-l2", "service", "checkout"),
       typeId: "service",
@@ -1068,12 +972,7 @@ describe("@scp/iac constructs: the L1 escape hatch (D16(1))", () => {
   });
 });
 
-/**
- * D16(5) — construct-path in synth errors (synth-side half). Every `DesiredStateManifestSchema`
- * validation failure now names the construct-tree PATH that produced the offending entry, not just
- * a bare array index into the assembled manifest — the whole point being that a large multi-
- * construct file's refusal maps back to the ONE construct a team actually wrote.
- */
+/** D16(5) — construct-path in synth errors. See docs/iac.md §195. */
 describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
   it("Construct.path is the slash-joined tree path from the root, excluding App", () => {
     const stack = new Stack("payments-api");
@@ -1096,7 +995,7 @@ describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
   it("a relationship validation refusal names the FROM construct's path", () => {
     const stack = new Stack("rel-path");
     const svc = new Service(stack, "svc", { name: "Svc" });
-    svc.dependsOn("not-a-valid-urn"); // fails UrnSchema on the `to` side
+    svc.dependsOn("not-a-valid-urn");
     expect(() => stack.synth()).toThrow(/rel-path\/svc/);
   });
 
@@ -1105,7 +1004,7 @@ describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
     stack.addManifestEntry({
       urn: "urn:scp:l1-path-fallback:service:x",
       typeId: "service",
-      name: "", // fails ManifestObjectSchema's name.min(1)
+      name: "",
       properties: {},
       labels: {}
     });
@@ -1122,15 +1021,7 @@ describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
   });
 });
 
-/**
- * TWO CONSTRUCTS, ONE URN — the case-folding collision `Stack.synth()` refuses.
- *
- * Found by `products.test.ts`'s fast-check generator (id pair `("F", "f")`, CI seed 1953244992):
- * `urn.ts`'s `slugify` lowercases, so sibling ids differing only in case derive ONE URN while the
- * tree treats them as two constructs. Nothing downstream could catch it — the manifest schema has
- * no cross-entry constraint and the server diffs BY URN, so the second entry silently became an
- * update of the first and one declared object never existed.
- */
+/** TWO CONSTRUCTS, ONE URN. See docs/iac.md §196. */
 describe("Stack.synth: two objects may not claim one URN", () => {
   it("refuses ids differing only in CASE, naming both construct paths", () => {
     const stack = new Stack("collide");

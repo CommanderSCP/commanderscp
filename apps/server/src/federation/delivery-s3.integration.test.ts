@@ -20,22 +20,7 @@ import {
 import { s3Get, s3Put, type S3DeliveryCredentials } from "./delivery-s3.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * M13.2b (proposal §13.2, owner decision D3: AWS SDK v3) — the s3-compatible DeliveryTarget
- * provider, proven end-to-end against a REAL MinIO (Testcontainers), the `endpoint` override +
- * `forcePathStyle` path every S3-compatible uses. What is proven here (the increment DoD):
- *
- *   - an s3 delivery target ROUND-TRIPS a bundle drop: `dropDeliveryFile` puts it, `listInbox` lists
- *     it back (names only), `getDeliveryFile` reads the identical bytes;
- *   - a LARGE (forced-multipart-threshold) upload exercises `@aws-sdk/lib-storage`'s MANAGED
- *     MULTIPART (the multipart ETag `<md5>-<numParts>` is the proof it was not a single PutObject);
- *   - an OUT-OF-ALLOWLIST endpoint is refused at PAIR-TIME (`assertDeliveryTargetRooted`);
- *   - an UNSET allowlist + s3 target FAILS CLOSED at resolution (never used);
- *   - CREDENTIALS resolve from the VAULT (`delivery/<peer>/out` under the ADR-0019 §3 artifact-store
- *     class) and drive a real drop — never argv/logs.
- *
- * The FILESYSTEM path is unchanged — its suite (`delivery-target.test.ts`) is green UNMODIFIED.
- */
+/** M13.2b (proposal §13.2, owner decision D3: AWS SDK v3). See docs/federation.md §72. */
 
 // A real MinIO release (digest-pinned by tag), pullable in the colima env the integration suite runs
 // under. MinIO is the org's/CDS's infrastructure, not SCP's — S3 stays OPTIONAL (Postgres remains the

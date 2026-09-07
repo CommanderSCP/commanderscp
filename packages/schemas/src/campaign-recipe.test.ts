@@ -6,15 +6,7 @@ import {
   CreateCampaignRequestSchema
 } from "./campaigns.js";
 
-/**
- * M25.4 — the AUTHOR'S DOOR, as a pure schema.
- *
- * Every case here is a document a real author could type, and the assertion is about what the
- * document would MEAN if it were stored. A recipe that parses wrong does not error at trigger time
- * — it reads as absent, and 47 components each roll their default pipeline while the campaign
- * reports success. That is the failure this schema exists to make impossible, so the negative cases
- * carry the weight.
- */
+/** M25.4 — the AUTHOR'S DOOR, as a pure schema. See docs/schemas.md §13. */
 
 const valid = {
   version: 1,
@@ -45,15 +37,7 @@ describe("CampaignRecipeSchema", () => {
   });
 
   it("REFUSES an unknown top-level key — a misspelling would be stored and read as no recipe", () => {
-    // M25.5 MOVED A KEY FROM UNKNOWN TO KNOWN, AND THIS CASE CAUGHT IT.
-    //
-    // Until M25.5 this assertion used `adoption` as its unknown-key example — a deliberate choice
-    // at the time, because the proposal DESCRIBED that key while M25.4 shipped without it, so it
-    // was the most likely thing an author would write and the most valuable thing to refuse.
-    // Shipping `adoption` flipped it from refused to accepted, and this case went red on exactly
-    // the change that made it wrong, which is the whole reason to pick a live example over an
-    // invented one. Replaced with a key nothing in the design names, so it cannot go stale the
-    // same way.
+    // M25.5 MOVED A KEY FROM UNKNOWN TO KNOWN, AND THIS CASE CAUGHT IT. See docs/schemas.md §14.
     expect(CampaignRecipeSchema.safeParse({ ...valid, notAKeyAnyDesignNames: true }).success).toBe(
       false
     );

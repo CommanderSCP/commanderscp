@@ -11,23 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `source_mappings.mirror_of_shared` — the DECLARED provenance marker (migration 0062,
- * outpost-ui.md §9.3a, owner 2026-08-14).
- *
- * The owner's model: a component spans domains; its ONE pipeline has inputs of two provenances —
- * globally shared repos authored at the commander, and domain-specific repos tracked only by that
- * domain's outpost. Where a domain holds a COPY of a shared repo, that mapping is physically local
- * but its provenance is the commander; the marker is how the operator says so, and the source lane
- * groups by it. Two properties are pinned here, and the second is the one that matters:
- *
- *   1. ROUND-TRIP through the public API: declared at create, read back on the wire, defaulted to
- *      false when omitted (every pre-0062 mapping's meaning, unchanged).
- *   2. INERTNESS: the marker is UI/reporting only. It must not change what a push CORRELATES to
- *      (the same repo/path/ref matches the same component with the marker on or off), and it must
- *      not appear on the correlation result at all — a change is never stamped with it, so nothing
- *      downstream can gate on it. Same discipline as ADR-0030 §3's classification, one field over.
- */
+/** The declared provenance marker on a source mapping. See docs/coordination.md §901. */
 describe("source mapping: declared mirror-of-shared provenance (outpost-ui.md §9.3a)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

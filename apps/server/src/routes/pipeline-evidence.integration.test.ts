@@ -24,60 +24,7 @@ import { alarmReportsInWindow, upsertHook } from "../coordination/pipeline-hooks
 import { evaluatePipelineHookGate } from "../coordination/pipeline-hook-gate.js";
 import { evaluateBakeGate } from "../coordination/pipeline-hook-verdicts.js";
 
-/**
- * `POST /pipelines/evidence` + `ChangeWaveTargetSchema.hold.continuousTests` — the two API-surface
- * halves of team-pipeline-iac increment 8, against REAL PostgreSQL.
- *
- * ============================================================================================
- * EVERY SUBMISSION IN THIS FILE GOES THROUGH HTTP, NEVER THROUGH `pipeline-hooks-repo.ts`
- * ============================================================================================
- * `recordTestRunEvidence`/`recordAlarmEvidence` already have their own storage-layer file
- * (`coordination/pipeline-hooks-repo.integration.test.ts`), and NOTHING this file claims can be
- * proved there: the authorization scope, the strict-body refusal and the server-side producer stamp
- * all live between the socket and those functions. A route proven only at the repo layer is a route
- * whose authz was never exercised — so every write below is `server.app.inject(...)` against the
- * fully-built app (auth plugin, Zod validation, the real handler), and every assertion about what
- * was stored is a SELECT against the row that request produced.
- *
- * `app.inject` rather than the generated SDK for the submissions specifically, because two of the
- * seven properties are about bodies the SDK's types cannot express: an extra top-level `producer`
- * key, and a `subject` carrying a forged producer claim. A test that could only send well-typed
- * bodies could not reach the refusals that matter.
- *
- * ============================================================================================
- * THE FOUR MUTATIONS THESE TESTS WERE WATCHED TO DIE UNDER (2026-08-27, baseline 8 passed)
- * ============================================================================================
- * Each was applied alone and reverted:
- *
- *  (a) `routes/pipelines.ts`'s `authorize({... scopeObjectId: target.id})` -> `scopeObjectId:
- *      input.orgId` (the org root — the bar `POST /change-sources/{kind}/report` uses) => TWO
- *      tests failed, both on the SAME shape: "a caller authorized only at ANOTHER target cannot
- *      submit for this one" and "stamps the PERSISTED producer from the authenticated subject",
- *      each `expected 403 to be 201`, with `subject '<component-scoped principal>' lacks
- *      'object:write' at scope '<org root>'`. The narrowing test failed at its POSITIVE CONTROL —
- *      the leg that exists so the case cannot pass by everything being refused — which is exactly
- *      where an org-root pin has to show up: it does not let MORE through here, it locks every
- *      component-scoped CI principal out. Its refusal leg stayed green, and so, correctly, did the
- *      other six tests, all of which submit as the org-root admin.
- *  (b) the producer stamp -> read from the caller's body
- *      (`producerSubjectId: rawSubject.producer ?? auth.subjectObjectId`, taken off
- *      `request.rawBody` so Zod's strip of the unknown `subject.producer` key does not hide it) =>
- *      "stamps the PERSISTED producer from the authenticated subject" FAILED ALONE, on the stored
- *      row: `expected '<impostor id>' to be '<reporter id>'`. The forged id was persisted.
- *  (c) `SubmitPipelineEvidenceRequestSchema` `z.strictObject` -> `z.object` (and `@scp/schemas`
- *      REBUILT — these tests import the package's `dist`, so a source-only mutation is a false
- *      green) => "REFUSES a body carrying an extra top-level `producer` key" FAILED ALONE:
- *      `expected 201 to be 400`.
- *  (d) `plan-service.ts`'s read-time continuous projection replaced by a persisted one (the verdict
- *      map captured on the FIRST read and reused on every later read — what a Decision-fed field
- *      does) => the hold-projection test FAILED ALONE on its second half:
- *      `expected [ { hookId: 'canary', …(4) } ] to be undefined`. Its first half (the key IS
- *      present while held) stayed green, which is what makes the failure attributable to
- *      read-time composition rather than to the projection existing at all.
- *
- * A test that survives its own mutation is vacuous; the results above are the record that these
- * did not.
- */
+/** The evidence route and the continuous-test hold. See docs/routes.md §301. */
 
 /** A valid `CapturedWorkflowRefSchema` value — the wire contract rejects anything less, so a
  *  fixture that cut corners here would be testing a payload production can never contain. */
@@ -177,9 +124,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
   const declareHook = (input: Parameters<typeof upsertHook>[2]) =>
     withTenantTx(server.deps.db, org.orgId, (tx) => upsertHook(tx, org.orgId, input));
 
-  // -------------------------------------------------------------------------------------------
   // PROPERTY 1 — a valid testRun lands bound to the right subject, AND a gate reads it
-  // -------------------------------------------------------------------------------------------
 
   it("persists a testRun bound to the submitted subject, and it FEEDS A GATE that was blocking before it", async () => {
     const component = await createTestComponent(admin, {
@@ -251,9 +196,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     expect(after.entries[0]!.satisfied).toBe(true);
   });
 
-  // -------------------------------------------------------------------------------------------
   // PROPERTY 2 — an EMPTY alarm list over a named window is an affirmative claim of quiet
-  // -------------------------------------------------------------------------------------------
 
   it("records `alarms: []` over a named window as an AFFIRMATIVE quiet claim — a bake gate reads it as quiet, where no report at all reads as no_source", async () => {
     const component = await createTestComponent(admin, {
@@ -321,10 +264,6 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     expect(quiet.coveredBy).toEqual(["pushed"]);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // PROPERTY 3 — the strict body
-  // -------------------------------------------------------------------------------------------
-
   it("REFUSES a body carrying an extra top-level `producer` key — never silently strips it", async () => {
     const component = await createTestComponent(admin, {
       name: `strict-${randomUUID().slice(0, 8)}`
@@ -359,9 +298,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     expect(rows).toHaveLength(1);
   });
 
-  // -------------------------------------------------------------------------------------------
   // PROPERTY 4 — the producer is the AUTHENTICATED subject, not anything the caller can influence
-  // -------------------------------------------------------------------------------------------
 
   it("stamps the PERSISTED producer from the authenticated subject — a forged producer claim in the body changes nothing", async () => {
     const component = await createTestComponent(admin, {
@@ -374,11 +311,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
       { role: "Operator", scope: component.id }
     ]);
 
-    // The forged claim rides inside `subject` — the ONE place a producer-shaped key survives
-    // validation at all (`SubmitPipelineEvidenceRequestSchema` is strict at the TOP level; the
-    // subject object is a plain `z.object`, so Zod strips unknown keys there rather than refusing).
-    // That makes this the sharpest available test of the stamp: a body the server accepts, carrying
-    // a producer the server must not believe.
+    // The forged claim rides inside `subject`. See docs/routes.md §302.
     const body = testRunBody({
       componentUrn: component.urn,
       targetUrn: component.urn,
@@ -417,9 +350,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     expect(secondRow.producerSubjectId).toBe(impostor.objectId);
   });
 
-  // -------------------------------------------------------------------------------------------
   // PROPERTY 5 — authorized at the SUBJECT'S TARGET, not at the org root
-  // -------------------------------------------------------------------------------------------
 
   it("a caller authorized only at ANOTHER target cannot submit for this one — with a positive control at the target it does hold", async () => {
     const mine = await createTestComponent(admin, { name: `mine-${randomUUID().slice(0, 8)}` });
@@ -449,7 +380,6 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     );
     expect(crossed.statusCode, crossed.body).toBe(403);
 
-    // NOTHING WAS WRITTEN for the refused target.
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()
@@ -460,10 +390,6 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     );
     expect(rows).toHaveLength(0);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // PROPERTY 6 — unauthenticated
-  // -------------------------------------------------------------------------------------------
 
   it("refuses an unauthenticated submission", async () => {
     const component = await createTestComponent(admin, {
@@ -494,10 +420,6 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     );
     expect(rows).toHaveLength(0);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // PROPERTY 7 — the read-time hold projection
-  // -------------------------------------------------------------------------------------------
 
   it("carries hold.continuousTests on a genuinely held wave target, and DROPS it on the very next read once fresh green lands — composed at read time, never persisted", async () => {
     const place = await admin.deploymentTargets.create({

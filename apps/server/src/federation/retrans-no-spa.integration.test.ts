@@ -1,33 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { listenTestServer, type ListeningTestServer } from "../test-support/harness.js";
 
-/**
- * M16.3 P3 (owner decision 2026-07-29) — "a retrans must not serve the SPA"
- * (BUILD_AND_TEST.md M13.1 — cited by MILESTONE, not by line number, since that file shifts under
- * every milestone that lands: the retrans deployment profile is "no local Gitea/registry, no
- * executor coordination, no deploy machinery, no UI"). Before this suite (and the `app.ts`/
- * `config.ts` change it pins), SPA registration was UNCONDITIONAL — a `role: retrans` relay served
- * the full management UI at the most sensitive point in the topology (a CDS boundary).
- *
- * WHICH ROLE AXIS GOVERNS, and why (see `config.ts`'s doc comment on `ServerConfig.federationRole`
- * for the full reasoning): this gates on `SCP_FEDERATION_ROLE` — a NEW, install-time/deployment-
- * wide config value, distinct from BOTH:
- *   - `SCP_ROLE` (`main.ts`'s `config.role`, `api`|`worker`|`all`) — proven below to be the WRONG
- *     axis: every `SCP_ROLE` value calls `buildApp` + `app.listen` unconditionally (`main.ts`), so
- *     today EVERY process role serves the SPA regardless — `SCP_ROLE` governs which BACKGROUND
- *     LOOPS run in-process, nothing about HTTP surface.
- *   - `federation/self-repo.ts`'s `FederationSelf.role` (`self_domain.role` in the DB) — ORG-scoped
- *     (self-repo.ts's own module doc: "kept org-scoped, not instance-wide"), set lazily post-
- *     install via the federation API, and explicitly declared ADVISORY by M15.4's own guardrail
- *     (`tools/helm-verify`'s doc comment: using it for an install-time render/boot decision would
- *     be exactly the runtime/install-time FORK the owner declined to create there). It is also
- *     simply unusable here: `app.ts` registers routes ONCE at process boot, before any request (or
- *     tenant) context exists to look a per-org DB row up against.
- *
- * MUTATION-PROVEN (reported in the PR body, not just asserted here): with the `app.ts` gate
- * removed, this suite's first test goes RED (a retrans-role instance serves real HTML at `GET
- * '/'`) — confirming the test actually exercises the gate rather than passing vacuously.
- */
+/** A retrans must not serve the single-page application. See docs/federation.md §469. */
 describe("M16.3 P3: a role:retrans instance never serves the management SPA", () => {
   it("retrans: GET '/' does not serve the SPA (JSON 404, not the built index.html)", async () => {
     const server: ListeningTestServer = await listenTestServer({ federationRole: "retrans" });

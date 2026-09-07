@@ -1,24 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalizeSourceRef, extractHint } from "./webhook-processor.js";
 
-/**
- * M17.2 unit — the CANONICALIZATION seam of ingress: what a delivery body turns into on the
- * proposed Change's `sourceRef`.
- *
- * Two things are pinned here.
- *
- * 1. SBOM REFERENCE (ADR-0015 §5). SCP never generates, signs, or stores an SBOM DOCUMENT — the
- *    executor's coordinated Trivy pass emits it at build and cosign-signs it at origin. What lands
- *    on the change is a REFERENCE ONLY: `{format, digest, location, signatureRef, …}`. There is no
- *    bytes path in this codebase to test, by design.
- *
- * 2. The `artifactDigest` CANONICALIZATION FIX. The typed first-party report body sends a flat
- *    camelCase `artifactDigest`; before M17.2 the generic hint never read it, so it was never lifted
- *    to the documented canonical `sourceRef.artifact_digest` key and survived only because two
- *    downstream readers happen to also accept the camelCase spelling. Now it is lifted properly —
- *    and, critically, the RAW key is still preserved verbatim alongside it (DESIGN §8), so nothing
- *    that read the old spelling regresses.
- */
+/** M17.2 unit — the CANONICALIZATION seam of ingress. See docs/coordination.md §1076. */
 describe("canonicalizeSourceRef: the report body's supply-chain fields become canonical sourceRef keys", () => {
   const SBOM_DIGEST = "sha256:" + "1c".repeat(32);
   const ARTIFACT_DIGEST = "sha256:" + "ab".repeat(32);
@@ -128,7 +111,6 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
       sbom: { format: "cyclonedx", digest: "v1.2.3", location: "x" }
     };
     const hint = extractHint("terraform", {}, bad);
-    // No TYPED reference is minted from it...
     expect(hint.sbom).toBeUndefined();
     const sourceRef = canonicalizeSourceRef(bad, hint);
     // ...and nothing throws. `sourceRef.sbom` is left UNSET so the M17.3 contract ("sbom, when
@@ -139,17 +121,7 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
     expect(sourceRef.repo).toBe("acme/api");
   });
 
-  // -------------------------------------------------------------------------------------------
-  // M21.2 — `repo` and `commit`, the two keys that say WHERE and WHICH POINT.
-  //
-  // Both were dropped at this seam. A GitHub push nests its repo at `repository.full_name` and its
-  // commit at `head_commit.id`, so `source_ref.repo` was absent for every provider webhook and
-  // `source_ref.commit` was absent for EVERY driver in the tree — measured filterlessly, nothing
-  // non-test ever wrote it. The cost was two hard refusals downstream: `manifest-reader.ts` throws
-  // with no repo and `internal-release-version.ts` refuses `no_released_commit` with no commit, so
-  // M21.4's three language ecosystems could not resolve a released version on any real delivery and
-  // M21.2's inventory could not be read at the released point.
-  // -------------------------------------------------------------------------------------------
+  // `repo` and `commit`: where, and which point. See docs/coordination.md §1077.
   describe("the released POINT and PLACE (M21.2)", () => {
     /** The shape a real GitHub push webhook arrives in — the fields are NESTED, which is exactly
      *  why a downstream reader could not simply dig them out itself without becoming a per-provider

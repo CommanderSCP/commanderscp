@@ -27,56 +27,7 @@ import {
   startInventoryIngestionLoop
 } from "./inventory-ingestion-loop.js";
 
-/**
- * ================================================================================================
- * ADR-0032 §7d — ALL DEPENDENCY AUTOMATION IS COMMANDER-ONLY, AND ALL OF IT AGREES
- * ================================================================================================
- * The owner's decision (2026-08-17) is a statement about the WHOLE feature, not about one job: a
- * FIELD outpost never ORIGINATES a dependency bump, it RECEIVES the resulting change down the global
- * pipeline the commander manages. ("Field" is load-bearing — an HQ outpost is the outpost in the
- * COMMANDER'S OWN trust domain and is not a second deployment, so every config below that declares
- * `federationRole: "outpost"` is a field outpost; `commander-only.ts` reads that out of the code.)
- * A rule that holds for a feature and is implemented once per job is the property CLAUDE.md's
- * census rule names — it regresses per job, and the branch that
- * regresses first is the fail-closed one, which is false on every developer machine, on every
- * declared commander, and in every test that does not deliberately construct it.
- *
- * So the DECISION is asserted here across every guard at once, over the FULL config matrix rather
- * than a sample. Two of the guards keep bespoke bodies on purpose (their refusal TEXT carries
- * capability-specific facts a shared string cannot); this file is what makes that safe, because it
- * does not care how a guard is implemented — only that they all answer the same question the same
- * way, and in the same ORDER.
- *
- * ================================================================================================
- * WHY {@link DEPENDENCY_JOBS} IS DISCOVERY-CHECKED AND NOT JUST WRITTEN DOWN (M21.7 follow-up)
- * ================================================================================================
- * The list this file iterates USED TO BE hand-maintained while its own comment claimed the
- * opposite — "add a sixth dependency job, forget to guard it, and the entry added here fails",
- * which was false in the only direction that matters: DROPPING AN ENTRY WAS FULLY GREEN, and so was
- * adding an unguarded job and never listing it. A completeness claim that is not checked is worse
- * than no claim, because a reviewer greps for the guarantee, finds the sentence, and stops looking.
- *
- * The census that made the claim true also settled a discrepancy the previous round left open —
- * FIVE production loops, FOUR guards, FOUR entries:
- *
- *   startDependencyVersionPollLoop  → dependencyVersionPollRoleGuard
- *   startInternalReleaseLoop        → internalReleaseDetectionRoleGuard
- *   startInventoryIngestionLoop     → inventoryIngestionRoleGuard
- *   startBumpDispatchLoop           → bumpDispatchRoleGuard
- *   startBumpGateLoop               → bumpDispatchRoleGuard   ← THE FIFTH LOOP
- *
- * The fifth is the AUTO-MERGE GATE. It has no guard of its own: `bump-gate.ts` IMPORTS the
- * dispatcher's, deliberately — merging is a repository write and a strictly more consequential one
- * than opening the pull request — so four guard functions cover five loops and nothing is missing.
- * That is now a derived fact rather than a remembered one: {@link JOB_GUARDS} is computed from
- * {@link DEPENDENCY_JOBS} by de-duplicating on guard IDENTITY, so a loop that quietly grew its own
- * copy of the predicate appears as a fifth guard and gets checked like the rest.
- *
- * M25.8b ADDED A SIXTH LOOP — `startBumpFreezeRedriveLoop`, on `bumpDispatchRoleGuard` again — and
- * the census is what said so: it landed in `unclassified` on the first run after the file was
- * created, before anyone thought to come here. That is the sentence above being true rather than
- * merely written down.
- */
+/** All dependency automation is commander-only, and agrees. See docs/dependencies.md §130. */
 
 /** Every deployment shape a guard can see — the full product of the three axes, not a sample. */
 const CONFIG_MATRIX: CommanderOnlyConfig[] = (["all", "api", "worker"] as const).flatMap((role) =>
@@ -103,15 +54,7 @@ interface DependencyJob {
   /** The loop starter AS IMPORTED — the function object, never a name string, so a wrapper or a
    *  lookalike declared locally is a DIFFERENT object and fails the census below. */
   readonly loop: (...args: never[]) => unknown;
-  /**
-   * Starts that loop against a probe `boss`, in ITS OWN calling convention — the poll takes
-   * `(boss, db, host, config)` and the other four take `(boss, deps)`. This adapter is the ONE
-   * hand-written thing per job and it is what makes the check behavioural instead of declarative:
-   * `guard` above says what the job SHOULD decide, and this actually runs the loop to find out what
-   * it DOES. Deleting a loop's guard consult — the exact regression that was fully green earlier in
-   * M21.7, because every fixture boots as a declared commander — makes the probe start a loop the
-   * guard refuses, and that is a failure.
-   */
+  /** Starts that loop in its own calling convention. See docs/dependencies.md §131. */
   readonly start: (boss: PgBoss, config: CommanderOnlyConfig) => Promise<{ stop(): Promise<void> }>;
 }
 
@@ -170,11 +113,7 @@ const DEPENDENCY_JOBS: readonly DependencyJob[] = [
       startBumpGateLoop(boss, { config } as unknown as Parameters<typeof startBumpGateLoop>[1])
   },
   {
-    // THE SIXTH LOOP (M25.8b), and the SECOND to import the dispatcher's guard rather than declare
-    // one. It has to be that guard, in both directions: this sweep exists to re-drive the auto-merge
-    // gate, so an outpost running it would initiate exactly the repository write the gate refuses to
-    // initiate there — and a refused gate loop never CREATES `dependency-bump-gate`, so a sweep that
-    // ran anyway would send to a queue that does not exist, once a minute, for ever.
+    // THE SIXTH LOOP. See docs/dependencies.md §132.
     name: "bump freeze redrive",
     guard: bumpDispatchRoleGuard,
     loop: startBumpFreezeRedriveLoop,
@@ -189,13 +128,7 @@ const DEPENDENCY_JOBS: readonly DependencyJob[] = [
   }
 ];
 
-/**
- * The DISTINCT guards, derived from {@link DEPENDENCY_JOBS} by function identity — never listed
- * separately, so the two lists cannot drift and a job whose loop grows a private copy of the
- * predicate shows up here as a new guard rather than disappearing into an existing row. The label
- * joins every job a guard covers, which is what makes "bump dispatch + auto-merge gate" a derived
- * string rather than a remembered one.
- */
+/** The distinct guards, derived by function identity. See docs/dependencies.md §133. */
 const JOB_GUARDS: readonly { name: string; guard: Guard }[] = [
   ...DEPENDENCY_JOBS.reduce((byGuard, job) => {
     byGuard.set(job.guard, [...(byGuard.get(job.guard) ?? []), job.name]);
@@ -203,19 +136,11 @@ const JOB_GUARDS: readonly { name: string; guard: Guard }[] = [
   }, new Map<Guard, string[]>())
 ].map(([guard, names]) => ({ name: names.join(" + "), guard }));
 
-// -------------------------------------------------------------------------------------------
 // THE CENSUS — what background loops EXIST, and is every one of them accounted for?
-// -------------------------------------------------------------------------------------------
 
 const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/**
- * A loop starter, by RETURN TYPE — `Promise<…LoopHandle>`, which is the shape all eleven in this
- * tree share — OR by NAME, `startXLoop`. The union is deliberate and both halves are load-bearing
- * in principle even though every loop today satisfies both: a new loop that returns
- * `Promise<PollerHandle>` is caught by the name, and one called `startDependencyReaper` is caught
- * by the return type. Matching on either is how a census avoids being a census of what it expects.
- */
+/** A loop starter, by RETURN TYPE. See docs/dependencies.md §134. */
 const RETURNS_LOOP_HANDLE = /^\s*:\s*Promise<\s*\w*LoopHandle\s*>\s*\{/;
 const LOOP_STARTER_NAME = /^start[A-Z][\w$]*Loop$/;
 
@@ -225,35 +150,7 @@ interface DiscoveredLoop {
   file: string;
 }
 
-/**
- * `readStripped`, NOT a bare `readFileSync` — the shared module exports it for exactly this.
- *
- * A `export function startSomethingLoop(` inside a `/* … *\/` block — a loop commented out during a
- * revert, or one quoted in a module doc explaining the shape — was DISCOVERED, then `import`ed,
- * then found to export no such name, and landed in `unclassified` as "add it to DEPENDENCY_JOBS".
- * A false RED, and a confusing one: the failure names a loop that does not exist and cannot be
- * fixed by adding a table entry. Stripping comments is what makes the census a census of the CODE.
- *
- * THIS NOTE USED TO END "…and this census was the one consumer still reading raw text". THAT WAS
- * FALSE WHEN IT WAS WRITTEN, and it is worth leaving the correction here rather than deleting the
- * sentence, because the sentence is the bug. Six other censuses were reading raw text — including
- * the OTHER read in `events/domain-event-routers.test.ts`, the very file converted alongside this
- * one, three functions above the line that was fixed. Every one of them was then measured passing
- * over commented-out wiring (2026-08-17): `bump-dispatch.test.ts` 20/20, `bump-gate.test.ts` 11/11,
- * `inventory-ingestion.test.ts` 38/38, `candidate-loop-registry.test.ts` 5/5 with a round-robin
- * bump deleted, and `watchdog-tenant-predicates.test.ts` 1/1 over a tenant query left scoped by RLS
- * alone.
- *
- * Two lessons, both already in CLAUDE.md and both re-learned the expensive way:
- *   - a census with a FILTER hides the next instance. The sweep that produced "the one consumer"
- *     looked at census-shaped tests in `dependencies/`; the misses were in `coordination/`,
- *     `events/` and `deploy/`, and one was a second call site in an already-visited file.
- *   - a WELL-WRITTEN COMMENT NAMING A HAZARD IS A SIGNAL TO SWEEP, NOT EVIDENCE IT WAS HANDLED.
- *     This paragraph is not evidence either. Re-derive it.
- *
- * And stripping is only the first of the things a text census cannot do — the rest are enumerated
- * on `readStripped` in `@scp/source-census`. Read them before trusting one.
- */
+/** `readStripped`, NOT a bare `readFileSync`. See docs/dependencies.md §135. */
 const discoveredLoops: DiscoveredLoop[] = productionSourceFiles(SRC_DIR).flatMap((file) =>
   exportedDeclarations(readStripped(file))
     .filter(
@@ -272,19 +169,7 @@ const discoveredLoopExports = await Promise.all(
   })
 );
 
-/**
- * The loops that are NOT dependency automation, each with the reason it is out of scope — listed
- * rather than filtered out by directory, because "only look in `dependencies/`" is precisely where
- * the next instance hides (CLAUDE.md: census with no grep filters). A dependency loop parked in
- * another directory would be silently exempt under a path filter; here it is an unclassified loop
- * and it fails.
- *
- * Every entry but the last is a COORDINATION or FEDERATION loop, and every one of those runs on an
- * outpost BY DESIGN: an outpost reconciles its own domain, watches its own timeouts, drains its own
- * inbox and relays its own journals. That is the opposite posture from ADR-0032 §7d's, which is
- * exactly why the two sets have to be kept apart on purpose rather than by a wildcard. The last
- * entry is exempt for a STRUCTURAL reason instead, and says so.
- */
+/** The loops that are not dependency automation. See docs/dependencies.md §136. */
 const NOT_DEPENDENCY_AUTOMATION: readonly { at: string; why: string }[] = [
   {
     at: "coordination/reconcile.ts:startReconcileLoop",
@@ -302,11 +187,7 @@ const NOT_DEPENDENCY_AUTOMATION: readonly { at: string; why: string }[] = [
     why: "a retrans node relays across the CDS boundary"
   },
   {
-    // NOT a loop at all — the only entry exempt for a structural reason rather than a federation
-    // posture. It is the composition root's RUNNER (`background-work.ts`): it starts whatever
-    // `BACKGROUND_LOOPS` holds, and has no guard of its own DELIBERATELY, because the guard belongs
-    // to each job — giving the runner one would put a second, coarser answer in front of the four
-    // this file checks. Discovered by the return-type arm (`Promise<BackgroundLoopHandle>`).
+    // NOT a loop at all. See docs/dependencies.md §137.
     at: "background-work.ts:startBackgroundLoops",
     why: "the loop runner, not a job — every job it starts brings its own guard"
   }
@@ -357,20 +238,7 @@ describe("the dependency-job table is COMPLETE — a job cannot exist without be
   });
 });
 
-/**
- * ================================================================================================
- * THE GUARD IS NOT MERELY COMPUTED — IT DECIDES WHETHER THE LOOP STARTS
- * ================================================================================================
- * A verdict that is calculated, logged and then structurally ignorable is this codebase's worst
- * shape, and it is not hypothetical here: earlier in M21.7, deleting the guard CONSULT from
- * `startInventoryIngestionLoop` left the WHOLE suite green — unit and integration — because every
- * fixture boots as a declared commander, so the refusal branch was never taken by anything.
- *
- * So each loop is actually STARTED, against a `boss` that throws the moment it is touched. A
- * refused loop must return its inert handle having touched nothing; an allowed loop must reach the
- * queue. The second half is the negative control: without it, three passing refusals would be
- * satisfied just as well by a loop that never starts anywhere.
- */
+/** THE GUARD IS NOT MERELY COMPUTED. See docs/dependencies.md §138. */
 class ProbeBossTouched extends Error {}
 
 function probeBoss(): { boss: PgBoss; touched: string[] } {
@@ -439,13 +307,7 @@ describe("every dependency loop OBEYS its guard — the verdict decides whether 
 });
 
 describe("every guard tests the axes in the SAME ORDER — one misconfiguration, one remedy", () => {
-  /**
-   * The order is pinned WITHOUT pinning any wording. For each guard, the refusal it gives for a
-   * deployment wrong on SEVERAL axes must be IDENTICAL to the refusal that same guard gives for the
-   * axis that should win, violated ALONE. Rewrite a sentence and this still passes; reorder a
-   * branch and it fails — which is the right sensitivity, because the wording is deliberately
-   * capability-specific and the order deliberately is not.
-   */
+  /** The order is pinned WITHOUT pinning any wording. See docs/dependencies.md §139. */
   const onlyProcessWrong: CommanderOnlyConfig = {
     role: "api",
     federationRole: "commander",
@@ -604,14 +466,7 @@ describe("commanderOnlyJobVerdict — the three refusals, one per axis", () => {
 
 describe("commanderOnlyFederationVerdict — the half a ROUTE asks", () => {
   it("ignores SCP_ROLE entirely, because every HTTP request lands on an api process in a split topology", () => {
-    // THE BUG THIS EXISTS TO PREVENT: applying the job guard to a route would 4xx every backfill
-    // call on a correctly-deployed commander that runs `SCP_ROLE=api` in front of `SCP_ROLE=worker`.
-    //
-    // `role` IS AN INPUT HERE, which it was not until M21.7's follow-up round: it was interpolated
-    // into the assertion label and nowhere else, so the config passed in was the same object three
-    // times and mutating the loop to nonsense role strings left the file 11/11 green. A test that
-    // reads as coverage of a property while checking nothing of it is worse than no test — a
-    // reviewer greps, finds it, and is told the property holds.
+    // THE BUG THIS EXISTS TO PREVENT. See docs/dependencies.md §140.
     const roles = [...new Set(CONFIG_MATRIX.map((config) => config.role))];
     // The fixture's own guard: the whole point is the role the JOB guard refuses, so a role list
     // that has lost it is a list this test cannot fail on.
@@ -666,16 +521,7 @@ describe("commanderOnlyFederationVerdict — the half a ROUTE asks", () => {
   });
 });
 
-/**
- * ================================================================================================
- * `dependencyManagementOf` — THE SAME VERDICT, SHAPED AS AN ANSWER RATHER THAN A REFUSAL
- * ================================================================================================
- * The guards above produce refusals. The tenant-facing resolve route does not refuse: it answers
- * `enabled` on an outpost, correctly computed from federated policies that NOTHING THERE WILL ACT
- * ON. The envelope is what qualifies that answer, so what has to be true of it is (a) it never
- * disagrees with the guard that actually gates the work, and (b) `role_undeclared` is its own value
- * — the branch that reads as `commander` on the config value alone, and is the exact opposite of it.
- */
+/** The same verdict, shaped as an answer not a refusal. See docs/dependencies.md §141. */
 describe("dependencyManagementOf — the answer-shaped verdict (ADR-0032 §7d)", () => {
   it("answers `true`/`commander` for an explicitly declared commander", () => {
     expect(
@@ -707,14 +553,7 @@ describe("dependencyManagementOf — the answer-shaped verdict (ADR-0032 §7d)",
   });
 
   it("reaches every reason value the schema declares — none is unreachable", () => {
-    // A value nobody can produce is a lie in the contract: a consuming client would branch on it
-    // forever and never see it.
-    //
-    // THE ORACLE IS DERIVED FROM THE SCHEMA, NOT COPIED FROM IT. This list used to be hand-typed
-    // here, which cannot detect the one thing the test claims to detect: a FIFTH member added to
-    // `DependencyManagementReasonSchema` with no config that produces it would be absent from both
-    // sides and the comparison would still pass. `.options` is the enum's own member list, so the
-    // schema is imported as a VALUE (not `import type`) precisely so this cannot drift.
+    // A value nobody can produce is a lie in the contract. See docs/dependencies.md §142.
     const declared: readonly DependencyManagementReason[] =
       DependencyManagementReasonSchema.options;
     // Anti-vacuity: an oracle that resolved to `[]` would make the assertion below a claim about

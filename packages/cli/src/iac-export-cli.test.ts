@@ -4,15 +4,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphObject, Relationship, SourceMapping } from "@scp/schemas";
 
-/**
- * `scp iac export` — DRIVEN through `buildProgram().parseAsync([...])` against a stubbed `@scp/sdk`
- * (the house pattern: `outpost-reconcile-precondition.test.ts`/`dependency-read-verbs-wire.test.ts`).
- * What matters here is CLI wiring and honesty, not the emitter's own logic — `@scp/iac`'s
- * `estate-program.test.ts` and this package's `iac-estate-program.roundtrip.test.ts` already prove
- * the emitter itself (round-trip, typecheck, placeholder behavior). This file proves the ACTION BODY
- * actually calls `readServiceExportSpec` off the SDK and prints its answer honestly, including the
- * placeholder count.
- */
+/** `scp iac export`. See docs/cli.md §120. */
 
 const SERVICE_ID = "0198f000-0000-7000-8000-000000000001";
 const COMPONENT_ID = "0198f000-0000-7000-8000-000000000002";
@@ -236,11 +228,7 @@ describe("scp iac export --format ts", () => {
     expect(listMappingsCalls.sort()).toEqual(["gitea", "github"]);
   });
 
-  // D5's whole point: applying an exported program must ADOPT the live topology, never duplicate it
-  // (owner fix). MUTATION-WATCHED: dropping `topologyUrn: topologyObj.urn` from
-  // `iac-estate-reader.ts`'s `readComponentSpec` makes this go red — the emitted pipeline would carry
-  // no `adoptTopologyUrn` at all, and a second `scp apply` of the export would create a duplicate
-  // `release-topology` object beside the real one.
+  // D5's whole point. See docs/cli.md §121.
   it("emits adoptTopologyUrn with the LIVE topology's own urn — export never duplicates it on apply", async () => {
     await run(["--scope", service.urn]);
     const out = logged.join("\n");

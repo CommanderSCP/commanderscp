@@ -5,7 +5,7 @@ import { memberClusterHeartbeat } from "./schema.js";
 /** §7.4 — how long since a heartbeat still counts a member cluster as LIVE. Generous relative to any
  *  boot cadence so a briefly-restarting pod is not mistaken for a decommissioned cluster; the
  *  version-skew gate only ever REFUSES on a live trailing heartbeat, never on a stale one. */
-export const MEMBER_HEARTBEAT_LIVE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+export const MEMBER_HEARTBEAT_LIVE_WINDOW_MS = 10 * 60 * 1000;
 
 export interface MemberHeartbeat {
   clusterId: string;
@@ -46,14 +46,7 @@ export async function listLiveMemberHeartbeats(
   return rows;
 }
 
-/**
- * §7.4 version-skew gate — pure, so the migrations Job's refusal is directly testable. REFUSES (by
- * throwing) iff any LIVE member cluster reports a version DIFFERENT from `deployingVersion` — i.e. an
- * old (or newer) member cluster is still up, so the contract half must wait. `own` heartbeats already
- * on the deploying version are fine (this cluster restarting), and an empty set is fine (first
- * deploy). N and N+1 only: it is the DIFFERENCE that blocks a contract migration, since a contract
- * migration is safe only once every member runs the release that shipped its expand half.
- */
+/** §7.4 version-skew gate. See docs/db.md §6. */
 export function assertNoVersionSkewOrThrow(
   liveHeartbeats: MemberHeartbeat[],
   deployingVersion: string

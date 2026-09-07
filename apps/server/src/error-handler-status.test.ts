@@ -6,21 +6,7 @@ import { createDb, createPool } from "./db/client.js";
 import { loadConfig } from "./config.js";
 import { frameworkClientProblem } from "./errors.js";
 
-/**
- * THE WIRING TEST for `app.ts`'s `setErrorHandler` honouring a framework-supplied status.
- *
- * Every case here answered **500 Internal Server Error** before this change, on this branch and on
- * `origin/main` — including on the commit that fixed prototype poisoning, which repaired one
- * member of this class (a raw `SyntaxError` from the replacement JSON parser) and left the rest.
- *
- * Routed through the real `buildApp`, not through `frameworkClientProblem` directly, for the
- * reason `json-body-parser.test.ts` gives: a helper that is correct but not installed is this
- * repo's dominant failure mode. Delete the `frameworkClientProblem` branch from `app.ts` and
- * every case in "framework client errors keep their own status" dies while the unit-level
- * "discriminates ..." cases below stay green.
- *
- * No database: `buildApp` connects lazily and none of these requests reaches a route handler.
- */
+/** The wiring test for the error handler honouring a status. See docs/server.md §54. */
 describe("app.ts setErrorHandler", () => {
   let app: FastifyInstance;
   let pool: Pool;
@@ -110,12 +96,7 @@ describe("app.ts setErrorHandler", () => {
   });
 
   describe("what must NOT be honoured", () => {
-    /**
-     * The reason `frameworkClientProblem` tests a marker rather than reading `err.statusCode`.
-     * `undici` — a direct dependency, used by the executor plugins — puts the UPSTREAM response's
-     * status on `statusCode` and the upstream body on `.body`. Honouring it would make an Argo CD
-     * 403 into SCP's own 403 and put the upstream's message on the wire.
-     */
+    /** Why this tests a marker rather than reading the property. See docs/server.md §55. */
     it("a non-framework error carrying statusCode is still 500, with no message leaked", async () => {
       const res = await app.inject({ method: "GET", url: "/__error_handler_probe/upstream" });
       expect(res.statusCode).toBe(500);

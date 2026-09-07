@@ -18,39 +18,7 @@ import { runWatchdogSweep } from "./watchdog.js";
 import { latestDecisionForSubjectKind } from "./decisions-repo.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 
-/**
- * ADR-0028 increment 4 — THE OPERATOR SURFACES, end to end against real Postgres.
- *
- * Increment 3 made the hold correct; nothing made it FINDABLE. A held target rendered as plain
- * `pending`, the watchdog's stall notice said "waiting for executor status" about a target no
- * executor had ever been handed, and the only account of the hold was one undifferentiated row in
- * `explain`'s `decisions[]`. These pin the two server-side surfaces that fix that.
- *
- * THE CENTRAL PROPERTY, and the one every case here is arranged around: the surfaces read the
- * PREDICATE LIVE, never the persisted Decision. `recordStageDependencyHold` writes a `hold` row and
- * nothing anywhere writes a clearing one, so the newest `stage_dependency` row of a change that was
- * held and then released is STILL a `hold` — forever. A surface built on that row would look correct
- * in every "is it held?" test and be wrong in exactly the case an operator cares about, the one where
- * the wait is over. `after the hold releases` below is that test, and it asserts the stale Decision
- * is still sitting there so it cannot pass vacuously.
- *
- * Fixture conventions are `stage-dependency-hold.integration.test.ts`'s, for the reasons its module
- * doc gives at length: `reconcileOrgTick` driven directly (so "N ticks" means exactly N), a FRESH ORG
- * per case (so a `BATCH_LIMIT` queue left by an earlier case cannot starve this one), and the
- * dependency's state moved only through the real poll path.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | remove `isStillTriggerable` from `resolveStageDependencyStatus` (the live-state gate) | 2 fail, one per surface: "stops reporting a hold once the release is CANCELLED" (`a cancelled release is not waiting for anything: expected true to be false`) and "does NOT call a stage held when the release it belongs to was cancelled" (`expected { …(4) } to be null`). The second is the point of moving the gate INTO the resolver — the component-pipeline used to carry its own copy, so it stayed green while `explain` reported a corpse as held |
- * | hard-code `unenforced: false` on the resolver's return | ONLY "reports `unenforced` when a declared coupling had NO PLACE to be scoped by" fails (`a declared coupling that was NOT enforced must not be silent: expected false to be true`). This is the review finding that named this file: BEFORE that case existed, the same mutation left all 43 cases green, so `unenforced` and the CLI's `NOT ENFORCED` mark were pinned only against fixtures nothing proved the server could produce |
- * | drop the non-uuid filter in `resolveNames` | 2 fail, both `Internal Server Error` — the `unenforced` case and "SURVIVES a malformed stored entry". An `undeclarable` verdict's `dependsOn` is raw JSON, and `uuid IN ('not-a-stage-dependency-at-all')` RAISES in Postgres rather than not-matching |
- * | keep the display names in the watchdog Decision's `inputContext` (drop `withoutDisplayNames`) | ONLY the watchdog case fails — `expected '[{"held":true,"targetName":"wd-app-92…' not to contain 'wd-dep-b4d79e46'` |
- * | source `stages[].hold` from the pinned `stage_dependency` hold Decision's `inputContext.held[]` (the join the grounding proposed) instead of re-running the predicate | 2 fail: the naming case (`expected null to be 'cp-dep-…'` — the Decision deliberately carries no display names, so "held by WHAT" degrades to an id) and the live-read case (`expected { …(4) } to be null`) |
- * | …and the FIRST version of that live-read case stayed GREEN under it | recorded because it is the whole lesson: "hold, let the dependency land, assert the badge is gone" cannot catch a Decision-sourced projection, because by then the dependant's own target has been TRIGGERED on the same tick and the `pending`/`triggering` candidate gate drops it for an unrelated reason. The case was rewritten to make the two sources disagree with that gate held constant |
- */
+/** The operator surfaces, end to end against real Postgres. See docs/coordination.md §968. */
 
 /** Mutable — the in-memory host closes over it and the plugin re-reads it on every call. */
 const executorConfig: {
@@ -144,18 +112,8 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     return row!.state;
   };
 
-  // -----------------------------------------------------------------------------------------
-  // SURFACE 1 — `GET /changes/{id}/explain`
-  // -----------------------------------------------------------------------------------------
-
   it("does not double-count a target that is BOTH freeze-held and dependency-held (M25.UI review finding 1)", async () => {
-    // `ChangeWaveSchema.heldTargetCount` is composed from TWO independent predicates over the SAME
-    // candidate set — the active wave's `pending`/`triggering` targets (routes/changes.ts's explain
-    // handler adds the stage-dependency half onto `plan`'s freeze half). `reconcile.ts`'s admission
-    // loop keeps its two hold sets disjoint BY CONSTRUCTION (only one `continue` can fire per
-    // target per tick — invariant 4 on the freeze-hold `continue`); the read side has no such
-    // ordering, so a target genuinely covered by BOTH a freeze and an unsatisfied stage dependency
-    // must still count as ONE held target on a wave, not two.
+    // The held count is composed from two independent predicates. See docs/coordination.md §969.
     const dependency = await componentAt("dedup-dep", [gamma]);
     const dependant = await componentAt("dedup-app", [gamma]);
     await admin.freezes.create({
@@ -237,7 +195,6 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     await tick(2);
     expect((await admin.changes.explain(appChange.id)).stageDependencyStatus!.held).toBe(true);
 
-    // The dependency finishes through the real poll path.
     executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
     await tick(3);
 
@@ -281,17 +238,7 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
   }, 60_000);
 
   it("stops reporting a hold once the release is CANCELLED — the gate is in the resolver, not at one call site", async () => {
-    // THE REGRESSION THIS FILE SHIPPED WITHOUT. `resolveStageDependencyStatus` had no gate on the
-    // change's own state; `component-pipeline.ts` applied one OUTSIDE the function and neither
-    // `explain` nor the watchdog did. So `explain` — and therefore `scp change explain` and
-    // `scp change wait-status` — said `held: true` FOREVER for a cancelled change: the resolver
-    // reports on the first wave that is not `succeeded`/`skipped`, which on a dead change is the
-    // dead one, and its never-run `pending` targets each still evaluate to a hold. A permanent
-    // marker on a release that is not waiting for anything and never will, which is the exact trap
-    // `verdict: "hold"` was chosen over `"block"` to avoid.
-    //
-    // One gate, inside the shared resolver, is the fix — a gate each caller must remember is a gate
-    // the next caller forgets, and that is not hypothetical here: it had already happened once.
+    // THE REGRESSION THIS FILE SHIPPED WITHOUT. See docs/coordination.md §970.
     const dependency = await componentAt("cancel-dep", [gamma]);
     const dependant = await componentAt("cancel-app", [gamma]);
     const change = await release("cancel-held", [dependant.id], [{ dependsOn: dependency.id }]);
@@ -333,27 +280,7 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
   }, 60_000);
 
   it("reports `unenforced` when a declared coupling had NO PLACE to be scoped by", async () => {
-    // THE LIVE COUNTERPART OF THE `stage_dependency_unscoped` WARN, and it shipped untested: review
-    // found that hard-coding `unenforced: false` left all 43 of this increment's cases green, which
-    // made the CLI's `NOT ENFORCED` mark and its footer dead paths — green only against fixtures the
-    // server could not produce. It CAN produce this one.
-    //
-    // THE SHAPE. With no release topology at any rung, `compilePlan` falls to its toposort path and
-    // the wave targets name the change's own COMPONENTS rather than placements
-    // (`stage-dependency-hold.integration.test.ts` measures exactly that). A component is not a
-    // place, so a stage-scoped coupling has nothing to be scoped by: ADR-0028 decision 4's
-    // `unscopeable` branch fails OPEN and the declaration orders nothing.
-    //
-    // WHY THE MALFORMED ENTRY IS PART OF THE FIXTURE and not incidental: the fail-open triggers the
-    // target on the very tick it is evaluated, and this surface only reports targets still awaiting
-    // a trigger — so the pure fail-open is observable for one tick and then gone. A malformed entry
-    // holds the target fail-CLOSED (it names a coupling this version cannot honour), which is the
-    // durable shape of the two together: a release stuck behind an unsatisfiable entry while a
-    // second, well-formed entry beside it is silently doing nothing. That is the worst version of
-    // this state and the one an operator is most likely to be looking at.
-    //
-    // WRITTEN STRAIGHT ONTO THE STORED ROW, because no ingress accepts a malformed entry any more —
-    // the same reason, and the same technique, as the flood case in the hold suite.
+    // The live counterpart of the warn, which shipped untested. See docs/coordination.md §971.
     const dependency = await componentAt("unenf-dep", [gamma]);
     const dependant = await componentAt("unenf-app", [gamma]);
     const change = await admin.changes.propose({
@@ -411,22 +338,7 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
   }, 60_000);
 
   it("SURVIVES a malformed stored entry — an `undeclarable` id is not a uuid, and the name lookup must not choke on it", async () => {
-    // FOUND BY THE CASE ABOVE, and pinned separately because it is a different defect that the
-    // fixture there only happened to cross. `resolveNames` collected EVERY verdict's `dependsOn`
-    // into one `objects.id IN (…)`. An `undeclarable` verdict's `dependsOn` is the raw stored entry
-    // rendered as JSON — the wire schema says so, and deliberately does not mark the field
-    // `.uuid()` — and Postgres does not quietly not-match a non-uuid against a `uuid` column, it
-    // RAISES. So `GET /changes/{id}/explain` answered 500 for any change carrying a malformed
-    // entry: `scp change explain`, `scp change wait-status` and the change-pipeline page all dead,
-    // for precisely the change whose declaration is broken and which an operator is therefore
-    // trying to read.
-    //
-    // The function's own comment said such ids "are simply absent"; the query it described had no
-    // way to make that true. A comment naming a hazard is a signal to sweep, not evidence it was
-    // handled.
-    //
-    // STAGE-SHAPED here, unlike the case above: this must hold on the ORDINARY topology, so that
-    // the pin does not depend on the legacy-plan fixture that first exposed it.
+    // Found by the case above, and a different defect. See docs/coordination.md §972.
     const dependency = await componentAt("undecl-dep", [gamma]);
     const dependant = await componentAt("undecl-app", [gamma]);
     const change = await release("undecl", [dependant.id], [{ dependsOn: dependency.id }]);
@@ -462,10 +374,6 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     const wellFormed = target.dependencies.find((d) => d.dependsOn === dependency.id)!;
     expect(wellFormed.dependsOnName).toBe(dependency.name);
   }, 60_000);
-
-  // -----------------------------------------------------------------------------------------
-  // SURFACE 3 — the component-pipeline view's stage
-  // -----------------------------------------------------------------------------------------
 
   it("the component pipeline marks the STAGE held, and names what by", async () => {
     // The bug in one sentence: a held target's `change_wave_targets.status` is and stays `pending`
@@ -527,26 +435,7 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
   }, 60_000);
 
   it("re-reads the predicate LIVE — the stage un-holds while the pinned `hold` Decision still says held, and the target is still `pending`", async () => {
-    // THE LIVE-READ TEST FOR THIS SURFACE, and it took two attempts to make it one.
-    //
-    // `recordStageDependencyHold` writes a `hold` Decision carrying exactly the join keys a
-    // projection would want (`targetObjectId` + `componentObjectId` + `deploymentTargetObjectId`
-    // per entry), and NOTHING anywhere writes a clearing row — so a badge sourced from it paints
-    // every stage that was ever held as held forever.
-    //
-    // The obvious test for that — hold, let the dependency land, assert the badge is gone — DOES
-    // NOT catch it. Measured: with the hold sourced from the pinned Decision instead of the live
-    // predicate, the case above stayed GREEN, because by the time the dependency has landed the
-    // dependant's own target has been TRIGGERED on the same tick, and the projection's
-    // `pending`/`triggering` candidate gate drops it for that reason instead. Green for the wrong
-    // reason, exactly the class this repo keeps hitting.
-    //
-    // So this case makes the two sources disagree with the candidate gate held constant: the
-    // coupling stops applying while the dependant's target is STILL `pending`. Removing the
-    // dependency's placement is the ordinary operator action that does it — the dependency no
-    // longer deploys at gamma, so ADR-0028 decision 4's `not_placed` branch SATISFIES the
-    // dependency (you cannot wait for a deploy that is not declared to happen). The Decision is
-    // untouched by that and still says `hold`.
+    // The live-read test, and it took two attempts to be one. See docs/coordination.md §973.
     const dependency = await componentAt("cp-stale-dep", [gamma]);
     const dependant = await componentAt("cp-stale-app", [gamma]);
     const appChange = await release(
@@ -578,11 +467,7 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
   }, 60_000);
 
   it("does NOT call a stage held when the release it belongs to was cancelled", async () => {
-    // The live-state gate, and it is not an optimisation. `resolveStageDependencyStatus` reports on
-    // the first wave that is not `succeeded`/`skipped`; on a dead change that IS the dead wave, and
-    // its never-run `pending` targets each still evaluate to a hold. Without the `executing` gate
-    // this stage would read "waiting on cp-cancel-dep" forever, about a release that is not waiting
-    // for anything and never will.
+    // The live-state gate, and it is not an optimisation. See docs/coordination.md §974.
     const dependency = await componentAt("cp-cancel-dep", [gamma]);
     const dependant = await componentAt("cp-cancel-app", [gamma]);
     const change = await release("cp-cancelled", [dependant.id], [{ dependsOn: dependency.id }]);
@@ -607,10 +492,6 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     expect(stage.currents).not.toHaveLength(0);
     expect(stage.hold).toBeNull();
   }, 60_000);
-
-  // -----------------------------------------------------------------------------------------
-  // SURFACE 4 — the watchdog's `executing` arm
-  // -----------------------------------------------------------------------------------------
 
   it("the watchdog's `executing` warn NAMES the coupling, instead of blaming a silent executor", async () => {
     const dependency = await componentAt("wd-dep", [gamma]);
@@ -647,19 +528,11 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     // ...and it must no longer blame the executor, which was never handed this target at all.
     expect(waitingOn).not.toContain("executor status to report");
 
-    // The structured half, for `scp decision get`.
     const held = (row!.inputContext as { heldStageDependencies?: unknown[] }).heldStageDependencies;
     expect(Array.isArray(held)).toBe(true);
     expect(held).toHaveLength(1);
 
-    // IDS, NOT NAMES — the persisted half only. `toWireVerdict`'s doc states the rule the whole
-    // verdict shape is built around: a Decision does not carry display names, because renaming a
-    // component would otherwise rewrite the recorded INPUTS of a verdict reached about something
-    // else. The resolver hands names to every caller (a CLI and a web page need them); this is the
-    // one caller that must drop them, and it was persisting them verbatim.
-    //
-    // Asserted on the SERIALISED row rather than field by field, so a name reappearing at any depth
-    // of the structure fails this — including on a field nobody has added yet.
+    // IDS, NOT NAMES. See docs/coordination.md §975.
     const serialised = JSON.stringify(held);
     expect(serialised, "a display name in a persisted Decision churns on a rename").not.toContain(
       dependency.name

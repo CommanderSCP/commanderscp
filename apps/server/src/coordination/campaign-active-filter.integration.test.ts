@@ -14,34 +14,7 @@ import { listActiveCampaignObjectIds } from "./campaign-repo.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 
-/**
- * `listActiveCampaignObjectIds` promised "every non-terminal campaign" in its doc and delivered
- * "every campaign that exists" in its WHERE clause — `org_id` + `type_id` + `deleted_at IS NULL`
- * and nothing else. Every campaign whose plan had `completed` months ago was still fetched on every
- * 1s tick, forever, for `reconcileOneCampaign` to early-return on.
- *
- * WHY THE FILTER IS THE DANGEROUS KIND OF FIX, and why this suite is heavier than the change looks.
- * The obvious predicate — "the campaign has no terminal plan" — is WRONG, because a campaign can
- * hold several plans: a re-plan INSERTS a new row rather than mutating the old one. A campaign that
- * completed one plan and was then re-planned has a terminal plan AND a live one, and the naive
- * predicate would strand it: excluded from the reconciler's batch permanently, driving nothing,
- * reporting nothing. Over-inclusion (the old bug) costs a batch slot. WRONG EXCLUSION LOSES A LIVE
- * CAMPAIGN SILENTLY. The two failure directions are not symmetric, so the test for the second one
- * is the point of this file — see "RE-PLANNED" below.
- *
- * The tie arm is the other half. `campaign_plans.created_at` defaults to `now()`, which in Postgres
- * is TRANSACTION time — two plans written in one transaction carry a byte-identical timestamp, so
- * "the latest plan" was genuinely ambiguous and decided by whatever order the planner returned. The
- * filter and `getLatestCampaignPlan` must resolve that tie THE SAME WAY, or a campaign gets
- * excluded here as terminal while the reader hands the reconciler an active plan. Both now order by
- * `(created_at DESC, id DESC)`.
- *
- * THE QUERY LATER GAINED A SECOND, UNRELATED PREDICATE — S10 single-writer, `origin_domain_id =
- * self` — for which the asymmetry above runs the other way: over-inclusion there is not a wasted
- * batch slot, it is this instance compiling a plan for a PEER'S campaign and proposing member
- * changes from it. Its arm is the last test in this file; the end-to-end consequence lives in
- * `foreign-origin-campaign.integration.test.ts`.
- */
+/** The filter promised non-terminal and delivered everything. See docs/coordination.md §53. */
 describe("listActiveCampaignObjectIds: the LATEST plan decides, and it agrees with getLatestCampaignPlan", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -170,7 +143,7 @@ describe("listActiveCampaignObjectIds: the LATEST plan decides, and it agrees wi
     // `id DESC` is the tiebreak BOTH sides now use.
     const sameInstant = new Date("2026-03-01T00:00:00Z");
     const olderId = uuidv7();
-    const newerId = uuidv7(); // UUIDv7 is time-ordered, so newerId > olderId
+    const newerId = uuidv7();
 
     const tiedActive = await makeCampaign("tie-active");
     await insertPlan(tiedActive, "completed", sameInstant, olderId);
@@ -207,7 +180,7 @@ describe("listActiveCampaignObjectIds: the LATEST plan decides, and it agrees wi
   it("a soft-deleted campaign stays excluded even with an ACTIVE plan — the pre-existing guard still composes with the new one", async () => {
     const id = await makeCampaign("deleted");
     await insertPlan(id, "active", new Date("2026-01-01T00:00:00Z"));
-    expect(await activeIds()).toContain(id); // control: it qualifies on plan status alone
+    expect(await activeIds()).toContain(id);
 
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.execute(sql`update objects set deleted_at = now() where id = ${id}`)
@@ -225,7 +198,7 @@ describe("listActiveCampaignObjectIds: the LATEST plan decides, and it agrees wi
     // LIMIT n` and a skipped row's `updated_at` never moves.
     const id = await makeCampaign("replica");
     await insertPlan(id, "active", new Date("2026-01-01T00:00:00Z"));
-    expect(await activeIds()).toContain(id); // control: it qualifies on every other predicate
+    expect(await activeIds()).toContain(id);
 
     const foreign = randomUUID();
     expect(foreign, "a vacuous fixture if this is our own domain").not.toBe(await selfDomainId());

@@ -12,12 +12,7 @@ import {
   type ResolvedManifest
 } from "./plan-diff.js";
 
-/**
- * Pure unit tests over hand-built "manifest + current-state snapshot" fixtures — no DB, per
- * BUILD_AND_TEST.md §4.1 ("anything testable as a pure function must be written as a pure
- * function"). The DB-aware assembly (`iac/plans-repo.ts`'s `computeDiffForManifest`) is exercised
- * separately by `routes/plans.integration.test.ts`.
- */
+/** Pure tests over hand-built manifest and snapshot fixtures. See docs/iac.md §54. */
 
 const STACK = "billing-platform";
 
@@ -123,7 +118,7 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Billing API",
           domainId: "0198f2a0-0000-7000-8000-000000000001",
           properties: { tier: "critical" },
-          labels: managedLabels(STACK), // already carries what the plan would merge in
+          labels: managedLabels(STACK),
           managedByStack: STACK
         }
       ],
@@ -358,7 +353,7 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Hand Created",
           domainId: null,
           properties: {},
-          labels: {}, // no scp:managed-by label at all
+          labels: {},
           managedByStack: null
         }
       ],
@@ -822,20 +817,14 @@ describe("iac/plan-diff: isStackManaged / managedLabels", () => {
   });
 
   it("the marker LABELS no longer decide anything — the predicate cannot even be handed them", () => {
-    // drizzle/0068. This is a compile-time property expressed as a runtime assertion: the only
-    // argument `isStackManaged` accepts is the column, so the label pair that used to BE ownership
-    // now reaches it only as the plain string it wraps — and the wrapper object is not assignable.
-    // If someone widens the signature back to a labels map, the `@ts-expect-error` below stops
-    // erroring and this test fails, which is the point of writing it here rather than in prose.
+    // A compile-time property expressed as a runtime assertion. See docs/iac.md §55.
     const labels = managedLabels("my-stack");
     // @ts-expect-error a labels map is not an ownership value
     expect(isStackManaged(labels, "my-stack")).toBe(false);
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // C1 — sourceMappings / executorBindings (docs/proposals/post-import-configuration.md §8)
-// -------------------------------------------------------------------------------------------
 
 type ManifestMapping = ResolvedManifest["sourceMappings"][number];
 type ManifestBinding = ResolvedManifest["executorBindings"][number];
@@ -1332,15 +1321,7 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
   });
 });
 
-/**
- * PRODUCER DECLARATIONS (ADR-0032 §7e) — the one collection where ABSENT and EMPTY differ.
- *
- * The type carries the ruling (`ResolvedManifest.producers` is `T[] | null`, not `T[]`), so the
- * first two cases below are what that type is FOR: `null` must skip the block entirely and `[]` must
- * prune. A mutation that maps absent to `[]` in `plans-repo.ts` cannot be caught here — it is caught
- * in `iac-dependency-producers.integration.test.ts` — so these cases pin the ENGINE's half and that
- * file pins the wiring's.
- */
+/** PRODUCER DECLARATIONS (ADR-0032 §7e). See docs/iac.md §56. */
 describe("iac/plan-diff: dependency producers", () => {
   const COMP = "urn:scp:billing-platform:component:lib";
   const OTHER = "urn:scp:billing-platform:component:other";
@@ -1551,11 +1532,7 @@ describe("iac/plan-diff: invalidProducerDeclarations", () => {
   });
 
   it("refuses a displacement whose holder cannot be NAMED, with its own remedy rather than the other stack's", () => {
-    // A tombstoned producer component leaves its declaration standing and resolves to no URN, so the
-    // snapshot carries `unresolvedProducerUrn`. It gets its own branch rather than failing the
-    // membership test: the fixture below puts the sentinel IN `diff.objects`, which a real URN could
-    // legitimately be (a manifest still naming the deleted component diffs it as a `create`) — and
-    // membership alone would then wave the overwrite through on precisely the plan to refuse.
+    // A tombstoned producer leaves its declaration standing. See docs/iac.md §57.
     const stranded = unresolvedProducerUrn("01a012aa-b584-75cd-a938-3e92263538df");
     const offenders = invalidProducerDeclarations(
       diffWith(

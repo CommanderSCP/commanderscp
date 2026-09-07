@@ -1,70 +1,4 @@
-/**
- * cosign signing/verification for the air-gap bundle.
- *
- * ## Why sign-blob, not `cosign sign`
- *
- * `cosign sign` attaches a signature to an image IN A REGISTRY (it pushes a `.sig` artifact next
- * to the manifest). At bundle-BUILD time our images only exist as local OCI-layout directories —
- * there is no registry yet to attach anything to (the registry is the CUSTOMER's, chosen at
- * install time, per-deployment). So this package signs a small **digest file** per image
- * (`sha256:<manifest digest>`, produced by oci-layout.ts) with `cosign sign-blob`, plus the
- * bundle's `CHECKSUMS.txt` for whole-bundle integrity. `cosign sign`/`cosign verify` against the
- * registry image itself becomes available to the OPERATOR after install.sh's retarget-push, as a
- * documented optional extra (see install.sh's own comments) — it's not this package's job to do
- * that on the operator's behalf, since it doesn't control the customer registry's credentials.
- *
- * ## The air-gap-critical flag combination (portable across a range of cosign versions)
- *
- * `cosign sign-blob` defaults to uploading every signature to the **public** Rekor transparency
- * log (`https://rekor.sigstore.dev`) even for pure local-keypair signing — confirmed by pointing
- * HTTP(S)_PROXY at a closed port and watching `sign-blob` fail with `Post
- * "https://rekor.sigstore.dev/api/v1/log/entries": ... connection refused`. That is a hard
- * violation of CLAUDE.md principle #5 ("no runtime network calls to the outside world") and of
- * this milestone's own "NO runtime network calls" requirement — bundle building must never depend
- * on reaching the public internet, let alone leak a customer's private image digests to a public
- * transparency log.
- *
- * The essential, long-stable fix is **`--tlog-upload=false`** — the flag that disables the Rekor
- * upload. It is present (deprecated but honored) across cosign 2.x and 3.x and is the ONE flag
- * that actually prevents the egress. Alongside it we pass `--new-bundle-format=false
- * --output-signature <file> --yes` to get the legacy detached-signature file this package stores
- * in the bundle (the format `verifyBlobDetached` and install.sh's `cosign verify-blob --signature`
- * both consume).
- *
- * `--use-signing-config=false` is handled DIFFERENTLY on the two cosign paths this package now
- * has (resolution lives in cosign-bin.ts, M17.3 E1):
- *   - PINNED cosign (the digest-pinned binary vendored into the runtime image, or an explicit
- *     `SCP_COSIGN_BIN`): the release is known — v3.1.2, a build that HAS the flag — so the flag
- *     set is a static constant and `cosign()` fail-closed asserts the reported version matches
- *     the pin before any call. No `--help` subprocess runs on the signing path.
- *   - UNPINNED cosign (an operator's own build on PATH — air-gap operators legitimately bring
- *     their own, BUILD_AND_TEST.md §1): the original version-ADAPTIVE probing is kept verbatim,
- *     because the flag's handling differs sharply across versions:
- *       - NEWER cosign (advertises `--use-signing-config`, ~2.5+/3.x): `--use-signing-config`
- *         DEFAULTS to `true`, and cosign then REJECTS `--tlog-upload=false` with
- *         "`--tlog-upload=false is not supported with --signing-config or --use-signing-config`".
- *         So on these builds we MUST also pass `--use-signing-config=false`.
- *       - OLDER cosign (does NOT have the flag — e.g. cosign 2.x): passing
- *         `--use-signing-config=false` fails with "`unknown flag: --use-signing-config`" (exactly
- *         the CI red this replaced), and it isn't needed anyway — `--tlog-upload=false` alone
- *         prevents the upload. So we OMIT it there.
- *     We detect the flag from `cosign sign-blob --help` (it's listed on versions that have it)
- *     and add `--use-signing-config=false` only when present.
- * Either way NOTHING is uploaded.
- *
- * `verifyBlobDetached` mirrors the sign side with `--insecure-ignore-tlog=true` (a stable flag
- * present across versions) — we deliberately never wrote a tlog entry, so asking cosign to check
- * for one would always — correctly, but uselessly — fail.
- *
- * Egress verified against a closed proxy on the PINNED v3.1.2 binary (and previously on v3.1.1):
- * with the full flag set, `sign-blob` succeeds behind `HTTPS_PROXY=http://127.0.0.1:1` and the
- * sig verifies — zero outbound connection attempts. If cosign's flags change again, re-run
- * exactly that: set `HTTPS_PROXY=http://127.0.0.1:1` (a closed local port) and confirm
- * sign/verify still succeed; if either ever tries the network it fails fast with `connection
- * refused` instead of silently working. CI no longer installs cosign over the network at all —
- * it extracts the SAME digest-pinned binary that ships in the image (scripts/install-pinned-cosign.sh,
- * `.github/workflows/ci.yml`), so CI validates the binary production actually uses.
- */
+/** cosign signing/verification for the air-gap bundle. See docs/cosign.md §6. */
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -79,11 +13,7 @@ export function cosignAvailable(): boolean {
   return resolveCosign().source !== "missing";
 }
 
-/**
- * Resolve cosign and, on the pinned path, assert it really is the pinned release before any
- * call. Every cosign invocation in this module goes through here, so a wrong binary fails
- * closed at the first use rather than producing signatures from an unvetted build.
- */
+/** Resolve cosign and assert the pin before any invocation. See docs/cosign.md §7. */
 function cosign(): ResolvedCosign {
   const resolved = resolveCosign();
   assertPinnedCosignVersion(resolved);
@@ -100,20 +30,7 @@ export interface SigningKey {
   isEphemeral: boolean;
 }
 
-/**
- * Resolve which signing key to use.
- *
- * - CI/production: set `COSIGN_KEY` (path to a cosign-format private key file) and
- *   `COSIGN_PASSWORD` (its password — cosign's own conventional env var name; empty string is a
- *   valid password for an unencrypted key). `COSIGN_PUBLIC_KEY` should also be set to the
- *   matching public key path; if omitted, it's derived on the fly via `cosign public-key`.
- * - Local dev/testing (no `COSIGN_KEY` set): generates a brand-new ephemeral key pair under
- *   `scratchDir` with an empty password, loudly logged as a TEST KEY. This keypair is never
- *   written anywhere under the repo or the bundle output except the public half, which is by
- *   design bundled as `cosign.pub` (a public key is not a secret) — the private half lives only
- *   in `scratchDir`, which callers are responsible for treating as ephemeral (e.g. an os.tmpdir()
- *   subdirectory, as build-bundle.ts does).
- */
+/** Resolve which signing key to use. - CI/production. See docs/cosign.md §8. */
 export async function resolveSigningKey(scratchDir: string): Promise<SigningKey> {
   const envKey = process.env.COSIGN_KEY;
   if (envKey) {
@@ -151,12 +68,7 @@ export function makeScratchDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "scp-airgap-"));
 }
 
-/**
- * Whether the installed cosign advertises `--use-signing-config` (a newer flag, ~cosign 2.5+/3.x).
- * Probed once from `cosign sign-blob --help` (the flag is listed there on versions that have it)
- * and cached for the rest of the process. See the module doc comment for why this matters and
- * signBlobFlags() for how it's used.
- */
+/** Whether the installed cosign advertises `--use-signing-config`. See docs/cosign.md §9. */
 let cachedUseSigningConfigSupported: boolean | undefined;
 
 function cosignSupportsUseSigningConfig(bin: string): boolean {
@@ -173,22 +85,11 @@ function cosignSupportsUseSigningConfig(bin: string): boolean {
   return cachedUseSigningConfigSupported;
 }
 
-/**
- * The portable `cosign sign-blob` flag set that produces a legacy detached signature and uploads
- * NOTHING to the Rekor transparency log — see the module doc comment for the full rationale and
- * the per-version behavior. `--tlog-upload=false` is the essential, long-stable egress-prevention
- * flag; `--use-signing-config=false` is added ONLY when the installed cosign has it (newer builds
- * make `--tlog-upload=false` conflict with its default `true`; older builds reject the flag as
- * unknown and don't need it).
- */
+/** The portable sign-blob flags that upload nothing to Rekor. See docs/cosign.md §10. */
 export function signBlobFlags(resolved: ResolvedCosign): string[] {
   const flags = ["--tlog-upload=false", "--new-bundle-format=false"];
   if (resolved.pinned) {
-    // PINNED path: we know exactly which release this is (asserted fail-closed by cosign()
-    // above), so the flag set is a STATIC known-good constant — no `--help` subprocess on a
-    // signing hot path to learn something the pin already tells us. Verified against the pinned
-    // v3.1.2 binary behind a closed proxy (HTTPS_PROXY=http://127.0.0.1:1): sign-blob +
-    // verify-blob both succeed with zero egress.
+    // Pinned path: a static flag set, no `--help` probe when signing. See docs/cosign.md §11.
     flags.push("--use-signing-config=false");
     return flags;
   }
@@ -248,18 +149,7 @@ export function verifyBlobDetached(
   }
 }
 
-/**
- * Sign an IN-MEMORY blob with IN-MEMORY cosign private-key material, returning the detached
- * signature as a base64 string. The seam the SERVER (M17.3 E6) uses to cosign-sign a promotion
- * MANIFEST with the org's `instance_cosign_keys` private key: it materializes the key + blob to a
- * fresh, private scratch dir, runs the offline/air-gap `sign-blob` (the same `--tlog-upload=false`
- * flag set as every other call here — NOTHING is uploaded to Rekor), reads the detached signature
- * back, and SCRUBS the scratch dir (KEY FILE INCLUDED) before returning. No key material survives
- * the call on disk, in success OR failure — the `finally` runs on both paths.
- *
- * `privateKeyPem` is cosign's empty-password encrypted PEM (`COSIGN_PASSWORD=''`), exactly what
- * `generateKeyPair`/`instance_cosign_keys` produce and store.
- */
+/** Sign an in-memory blob with in-memory key material. See docs/cosign.md §12. */
 export async function signBlob(blob: string | Buffer, privateKeyPem: string): Promise<string> {
   const dir = await makeScratchDir();
   try {
@@ -282,12 +172,7 @@ export async function signBlob(blob: string | Buffer, privateKeyPem: string): Pr
   }
 }
 
-/**
- * Verify a detached base64 `signature` over an IN-MEMORY blob against an IN-MEMORY cosign PUBLIC
- * key PEM. Materializes all three to a scratch dir, runs `verify-blob`
- * (`--insecure-ignore-tlog=true`, offline), scrubs, and returns a boolean. NEVER throws — a bad
- * signature is a normal, expected outcome (a swapped/forged manifest), reported as `false`.
- */
+/** Verify a detached signature; a bad one is a false, not a throw. See docs/cosign.md §13. */
 export async function verifyBlob(
   blob: string | Buffer,
   signature: string,
@@ -308,33 +193,13 @@ export async function verifyBlob(
 }
 
 export interface VerifyImageOptions {
-  /** Allow HTTP / self-signed-TLS registries. The outpost-local Gitea/Harbor registry an air-gap
-   *  operator side-loads bytes into is commonly plain HTTP or self-signed — and it is SAFE to allow
-   *  here because the artifact's authenticity is proven by the cosign SIGNATURE (verified against the
-   *  exporter's distributed public key), NOT by registry transport security: a registry MITM cannot
-   *  forge a signature that verifies against that key. Off by default (a TLS commander registry). */
+  /** Allow HTTP / self-signed-TLS registries. See docs/cosign.md §14. */
   allowInsecureRegistry?: boolean;
-  /** Extra environment variables overlaid onto `process.env` for THIS cosign subprocess only —
-   *  e.g. `DOCKER_CONFIG` pointing at a per-invocation scratch auth dir for a credentialed
-   *  registry read. Per-invocation by design: callers must NEVER mutate `process.env` to feed
-   *  cosign credentials — a process-global mutation leaks this caller's registry auth into every
-   *  CONCURRENT cosign/skopeo subprocess in a multi-tenant server (another org's relay, a
-   *  pre-deploy-gate verify), and two concurrent mutators race each other's save/restore. */
+  /** Per-invocation environment: never mutate `process.env`. See docs/cosign.md §15. */
   env?: NodeJS.ProcessEnv;
 }
 
-/**
- * `cosign verify` a container image / OCI artifact against the REGISTRY-ATTACHED signature, keyful
- * and offline (`--insecure-ignore-tlog=true` — the origin never wrote a Rekor entry we could or would
- * check; `--key` pins the exact public key, so no Fulcio identity is consulted). `imageRef` MUST be
- * digest-pinned (`registry/repo@sha256:…`) so verification binds to exact bytes. cosign READS the
- * registry to fetch the manifest + its `.sig`; it never pushes or pulls image bytes anywhere else.
- *
- * Never throws — a failed verification (tampered/unsigned/absent image, wrong key) is a normal,
- * expected, fail-closed outcome reported as `{ ok: false }`. A MISSING image (bytes not present in
- * the reachable registry) makes cosign's own fetch fail, which surfaces here as `{ ok: false }` too —
- * exactly the fail-closed "absent artifact FAILS" the per-artifact pre-deploy gate requires.
- */
+/** Verify an image's registry signature, keyful and offline. See docs/cosign.md §16. */
 export function verifyImage(
   imageRef: string,
   pubKeyPath: string,
@@ -352,13 +217,7 @@ export function verifyImage(
   }
 }
 
-/**
- * Verify a digest-pinned OCI `imageRef`'s registry-attached signature against an IN-MEMORY cosign
- * PUBLIC key PEM (the ergonomic seam the SERVER uses — the exporter's distributed cosign key lives in
- * Postgres as a PEM string, not a file). Materializes the key to a private scratch dir, runs
- * {@link verifyImage}, scrubs the dir, and returns a boolean. NEVER throws — a bad/absent signature
- * is a normal, expected, fail-closed outcome reported as `false`.
- */
+/** Verify a pinned image against an in-memory public key. See docs/cosign.md §17. */
 export async function verifyImageSignature(
   imageRef: string,
   publicKeyPem: string,

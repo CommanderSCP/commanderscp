@@ -52,11 +52,7 @@ interface OwnerSubResourceConfig {
   resourceName: string;
 }
 
-/**
- * The 4 typed resources that are valid `owns` "to" endpoints among this milestone's 8 typed
- * resources (drizzle/0002_rls_rbac_seed.sql §6: `owns.to_types`; `contract` isn't one of the 8
- * typed resources M2 adds, so it has no `/owners` sub-resource here).
- */
+/** The typed resources valid as an ownership endpoint. See docs/routes.md §294. */
 const OWNS_TO_RESOURCES: OwnerSubResourceConfig[] = [
   { basePath: "domains", typeId: "domain", resourceName: "Domain" },
   { basePath: "services", typeId: "service", resourceName: "Service" },
@@ -68,30 +64,13 @@ const OWNS_TO_RESOURCES: OwnerSubResourceConfig[] = [
   { basePath: "deployment-targets", typeId: "deployment-target", resourceName: "DeploymentTarget" }
 ];
 
-/** The 2 typed resources valid on both sides of `consumes`/`depends_on` (same migration, §6).
- *
- *  `assembly` is deliberately ABSENT, matching migration 0055's ruling: `depends_on`/`consumes`
- *  describe things that actually call each other, and an assembly does not make a request — its
- *  components do. Admitting it would put a node in the dependency graph with no runtime edge behind
- *  it, which is exactly the "guessing and assumptions" the dependency work is meant to remove. */
+/** The two resources valid on both sides of those edges. See docs/routes.md §295. */
 const EDGE_RESOURCES: Pick<OwnerSubResourceConfig, "basePath" | "typeId" | "resourceName">[] = [
   { basePath: "services", typeId: "service", resourceName: "Service" },
   { basePath: "components", typeId: "component", resourceName: "Component" }
 ];
 
-/**
- * `POST/GET/DELETE /{basePath}/{idOrUrn}/owners[/...]` — ergonomic wrapper around the built-in
- * `owns` relationship type. The owner side's type isn't known ahead of time (team, group, user,
- * or service-account — DESIGN.md §4.1's `owns.from_types`), so it's resolved via
- * `getObjectByIdOrUrnAnyType` rather than a fixed-type lookup; `createRelationship` itself still
- * enforces the endpoint-type and cardinality constraints from the relationship type registry
- * (fromTypes/toTypes/one_to_many), so a wrong-typed owner is a 400 and a second owner on an
- * already-owned target is a 409 — this route does not re-validate either.
- *
- * Relationship writes (add/remove) require `relationship:write` at BOTH endpoints' scopes,
- * exactly like `routes/relationships.ts` (PR #4 security review, CRITICAL 1) — load-bearing here
- * too, not just on the generic endpoint.
- */
+/** The ergonomic owners wrapper over the generic edges. See docs/routes.md §296. */
 function registerOwnerSubResource(
   app: FastifyInstance,
   deps: AppDeps,
@@ -130,7 +109,6 @@ function registerOwnerSubResource(
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrn(tx, auth.orgId, typeId, idOrUrn);
         const owner = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.ownerIdOrUrn);
-        // BOTH endpoints (module doc — load-bearing, mirrors relationships.ts).
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -277,13 +255,7 @@ interface RelationshipEdgeSubResourceConfig {
   verbName: "Consumes" | "DependsOn";
 }
 
-/**
- * `POST/GET/DELETE /{basePath}/{idOrUrn}/consumes|depends-on[/...]` — ergonomic wrapper around
- * the built-in `consumes`/`depends_on` relationship types (both many_to_many, both constrained to
- * service/component on either side — DESIGN.md §4.1). The target's type isn't pre-filtered here:
- * `createRelationship` rejects a wrong-typed target with a 400 against the registry, so pointing
- * `depends-on` at e.g. a `team` fails there, same as the generic `/relationships` endpoint.
- */
+/** The ergonomic consumes and depends-on wrapper. See docs/routes.md §297. */
 function registerRelationshipEdgeSubResource(
   app: FastifyInstance,
   deps: AppDeps,
@@ -322,7 +294,6 @@ function registerRelationshipEdgeSubResource(
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const source = await getObjectByIdOrUrn(tx, auth.orgId, typeId, idOrUrn);
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.targetIdOrUrn);
-        // BOTH endpoints (module doc — load-bearing, mirrors relationships.ts).
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -457,17 +428,7 @@ function registerRelationshipEdgeSubResource(
   });
 }
 
-/**
- * Ownership/consumes/depends-on ergonomics (BUILD_AND_TEST.md §8 M2 item 1) layered on top of
- * `routes/typed-registries.ts`'s 8 resources, reusing `graph/relationships-repo.ts`'s
- * `createRelationship`/`deleteRelationship`/`listRelationships` — which already enforce
- * endpoint-type and cardinality constraints from the relationship type registry, so this module
- * never re-validates those — and `authz/resolve.ts`'s `authorize()` at BOTH endpoints' scopes,
- * exactly like `routes/relationships.ts`.
- *
- * Built from two small parameterized factories (one per sub-resource shape) invoked 4 + 2 times,
- * rather than hand-copied per resource.
- */
+/** The ownership ergonomics, layered over the generic verbs. See docs/routes.md §298. */
 export function registerOwnershipRoutes(app: FastifyInstance, deps: AppDeps): void {
   for (const resource of OWNS_TO_RESOURCES) {
     registerOwnerSubResource(app, deps, resource);

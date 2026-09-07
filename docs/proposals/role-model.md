@@ -472,7 +472,7 @@ one is now a row above. The omission is recorded rather than quietly patched bec
 produced it — censusing from the *previous table* instead of from the tree — is the one that produces
 the next one.
 
-**Still open after this change**, all stated in `authz/role-binding-door.ts` §8 rather than implied:
+**Still open after this change**, all stated in `docs/authz/role-binding-door.md` §8 rather than implied:
 the federation-import path (by design, and now pinned in both directions by
 `federation/federation-member-of-exemption.integration.test.ts`); the fact that §2a applies the subset
 rule but **not** bar §1, so a delegation without `role_binding:write` is possible for an actor who
@@ -506,7 +506,7 @@ grep -rna "deleteObject(\|deleteRelationship("         apps/server/src
 | **IaC apply** (`iac/plans-repo.ts:1490` relationship prune, `:1950` object prune) | Yes — it calls both functions directly, never through a route | **Covered** by the choke-point placement; the relationship arm is PINNED, the object arm is not (named in the IaC suite). |
 | **Federation import** (`federation/import-repo.ts:376`, `:457`) | Yes | **DELIBERATELY EXEMPT**, `!input.federationImport`, the mechanism §2a already uses: `import-repo.ts`'s replay branch re-throws anything but a 400, so a 409 would abort a peer's whole signed bundle over a replica this instance has no authority to keep. **Not pinned by a test.** |
 | Foreign-shadow removal (`deleteObject`'s `removedForeignShadow` arm) | Yes | **DELIBERATELY EXEMPT**, same carve-out the edge cascade and the orphan guard take. **Not pinned.** |
-| `roles.permissions` | Yes — dropping `role_binding:write` from the last administrative role empties the candidate set | **No runtime writer exists.** A filterless `UPDATE roles` search returns ZERO hits in `apps/server/src`; only migrations write it. Recorded as open in `role-binding-door.ts` §8: **step 10's custom-role authoring API is a fourth door onto this invariant** and must call the predicate. |
+| `roles.permissions` | Yes — dropping `role_binding:write` from the last administrative role empties the candidate set | **No runtime writer exists.** A filterless `UPDATE roles` search returns ZERO hits in `apps/server/src`; only migrations write it. Recorded as open in `docs/authz/role-binding-door.md` §8: **step 10's custom-role authoring API is a fourth door onto this invariant** and must call the predicate. |
 | `objects.type_id` | Would matter (a `user` becoming something else stops counting) | **Not writable.** No `update(objects)` site sets it — `updateObject`, `artifacts-repo`, `stack-ownership`, `campaign-reconcile`, `publish-domain-local` set name/domain/properties/labels/provenance/`managed_by_stack`/`domain_local`/`updated_at` only. |
 | `upsertObjectByUrn`'s hand-fill reconciliation (`objects-repo.ts:1526`) — the one `UPDATE objects` that changes `id` | Yes in principle: `role_bindings.subject_id` has NO FK, so a re-identified principal would strand its binding | **FEDERATION-IMPORT ONLY** (the branch is inside `if (input.federationImport)`), so it inherits the exemption above. Recorded because it is the only id-rewriting write in the tree and a census by table alone would miss it. |
 | `createRelationship`, `insertRoleBinding`, `auth/local-auth.ts:84`, `auth/oidc.ts:178` | **No** — they only ADD reachability | Out of reach by construction. The grant door deliberately takes NO floor check. |
@@ -534,7 +534,7 @@ authoring API is the known one) would escape it.
   > routine: it ships `group`/`team` as first-class binding subjects and 0099's purpose roles exist
   > partly to be bound to teams.
   >
-  > **The fix:** `authz/role-binding-door.ts` §2a applies the identical subset rule (composing the
+  > **The fix:** `docs/authz/role-binding-door.md` §2a applies the identical subset rule (composing the
   > same `missingPermissionsFor` helper, so there is one definition of "a subset") at
   > `graph/relationships-repo.ts`'s `createRelationship` — the CHOKE POINT, so IaC apply, discovery
   > accept and every other edge writer inherit it — under the `federationImport` carve-out that
@@ -559,7 +559,7 @@ authoring API is the known one) would escape it.
   > which reads as coverage and is worse than none. What is real is that the granter is empowering a
   > membership list somebody else authored (here, the beneficiary) and the API shows them nothing.
   >
-  > **`authz/role-binding-door.ts` §2b** is what shipped: when a grant's subject is a `group` or
+  > **`docs/authz/role-binding-door.md` §2b** is what shipped: when a grant's subject is a `group` or
   > `team`, the door walks the membership DOWNWARD (`memberExpandCte` — the inverse of the walk §2a
   > and `hasPermission` use, emitted by the same `memberOfClosureCte` definition so the two directions
   > cannot disagree about a live edge, the bound, or cycle termination) and applies the two refusals
@@ -568,7 +568,7 @@ authoring API is the known one) would escape it.
   > `objects.deleted_at`) and a member whose type cannot hold a binding. Transitive both ways; an
   > empty group stays a 201.
   >
-  > **Still open, and stated rather than implied** — the full list is `role-binding-door.ts` §8:
+  > **Still open, and stated rather than implied** — the full list is `docs/authz/role-binding-door.md` §8:
   > §2a applies the subset rule and NOT bar §1, so an actor holding everything a group's bindings
   > carry may add a THIRD party without `role_binding:write` — a delegation the actor is not
   > authorised for, never an elevation. Demanding `role_binding:write` on every `member_of` write
@@ -606,7 +606,7 @@ authoring API is the known one) would escape it.
   > OrgAdmin may grant it — and the grantee then resolves `hasRoleAtScope('Approver')` where the
   > OrgAdmin who granted it does not. So a permissions-subset actor can seat a quorum voter for every
   > policy naming a role it is not itself eligible for. Recorded as open in
-  > `authz/role-binding-door.ts` §2a and §8 and pinned as a MEASUREMENT (not a guard) in
+  > `docs/authz/role-binding-door.md` §2a and §8 and pinned as a MEASUREMENT (not a guard) in
   > `routes/rbac-role-binding-door.integration.test.ts`, so the statement changes colour if anyone
   > closes it. **Not closed here, and it wants an owner ruling:** the obvious bar — "the actor must
   > itself hold role NAME R at that scope" — refuses OrgAdmin granting ServiceAdmin and
@@ -627,7 +627,7 @@ authoring API is the known one) would escape it.
   have appended to a built-in, so this is how the schema normally evolves. **Not fixable in the door**
   — re-testing at resolve time would put ~20 `hasPermission` probes on every authorization in the
   system and would make a subject's authority depend on the current authority of a granter who may
-  since have been revoked. **Recorded in `authz/role-binding-door.ts` §6, and it belongs to step 4:**
+  since have been revoked. **Recorded in `docs/authz/role-binding-door.md` §6, and it belongs to step 4:**
   the permission-drift gate is the only place that observes a role's array CHANGE, which is the event.
   The assertion worth adding there is that a migration widening built-in role R must state which
   existing bindings of R it widens — computable, because every grant's Decision persists
@@ -667,7 +667,7 @@ authoring API is the known one) would escape it.
   > Pinned by two `Promise.all` cases in `routes/rbac-role-binding-door.integration.test.ts`, each
   > mutation-proven from BOTH sides; the sequential cases that already pinned §7 and §2a/§2b all
   > stayed green against the racy code, which is why a sequential test cannot be the pin. Full
-  > reasoning, cost, and what it does not cover: `authz/role-binding-door.ts` §0.
+  > reasoning, cost, and what it does not cover: `docs/authz/role-binding-door.md` §0.
 
   > **CORRECTED 2026-08-27 — the first version counted ROWS and was bypassable in two requests.**
   > A binding on an EMPTY group is a row that resolves for nobody, so: bind a `role_binding:write`
@@ -707,7 +707,7 @@ authoring API is the known one) would escape it.
   > choke-point placement, by `iac/iac-administrative-floor.integration.test.ts`: moving the guard up
   > into `routes/relationships.ts` leaves the route suite 8/8 green while `POST /plans/{id}/apply`
   > goes on pruning the membership. Federation import stays exempt by the same mechanism §2a uses.
-  > Accepted consequence, stated in `role-binding-door.ts` §7: an org ALREADY below the floor is
+  > Accepted consequence, stated in `docs/authz/role-binding-door.md` §7: an org ALREADY below the floor is
   > refused a floor-relevant write; it is not wedged, because a soft-deleted principal still resolves
   > and can still grant.
 
@@ -751,7 +751,7 @@ authoring API is the known one) would escape it.
   > not "a usable secret exists for it". A row with no password, no `oidc_subject` and no live PAT
   > counts. Every tighter anchor is time-varying — an expiring PAT would drop an org below the floor
   > with no write involved, and the floor is only ever evaluated ON a write — so the secret half
-  > belongs to a credential-lifecycle door. `authz/role-binding-door.ts` §8 records it.
+  > belongs to a credential-lifecycle door. `docs/authz/role-binding-door.md` §8 records it.
 - **`OrgAdmin` is a strict subset of Administrator** after the proposed Migration B, so four of the
   five points in its rationale are false as written. It still earns its place via what it *withholds*,
   but the justification needs rewriting.
@@ -978,7 +978,7 @@ the binding will empower. What was decided, and why:
 **What it is not:** it refuses nothing an informed granter may do, and it is a point-in-time witness —
 somebody joining the group tomorrow is empowered by this binding and no acknowledgement is asked for,
 because the JOIN door (§2a) judges that, by the subset rule rather than by consent. Recorded in
-`role-binding-door.ts` §8 rather than implied.
+docs/authz/role-binding-door.md §8 rather than implied.
 
 **Operations touched (for the oasdiff gate — `pnpm gen` NOT run in this round).** MEASURED by
 building the document from the live `routeRegistry` — the same `buildOpenApiDocument` path `pnpm gen`

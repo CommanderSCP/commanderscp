@@ -1,22 +1,4 @@
-/**
- * Wires `@scp/plugin-argo-workflows` into `@scp/plugin-testkit`'s generic `ExecutorPlugin`
- * conformance suite (BUILD_AND_TEST.md §4.2: "every shipped plugin runs the relevant
- * `@scp/plugin-testkit` suite in its own package tests"). Mirrors
- * `packages/plugins/argocd/src/argocd.conformance.test.ts` exactly, including the `restart` hook —
- * the suite's idempotency-across-a-simulated-subprocess-restart assertion needs a FRESH plugin
- * instance + ctx sharing only the durable (on-disk) `statePath`, never the first instance's
- * in-process memory.
- *
- * Like the ArgoCD fixture (and unlike fake-executor/webhook-control's in-memory stubs), this wires
- * a REAL `ScopedHttpClient` (`./test-node-http-client.ts`) so the suite's calls travel through
- * `index.ts`'s actual `apiRequest()` HTTP path and get intercepted by `nock`, exercising the real
- * wire format rather than only in-process logic.
- *
- * Every interceptor matches by path REGEX (any workflow/template name the suite happens to use)
- * and is `.persist()`-ed, since the suite calls trigger/status/abort/observe with varying target
- * names across its own `it()`s without this fixture knowing which name a given test will use ahead
- * of time.
- */
+/** Wires this plugin into the generic executor conformance suite. See docs/plugins.md §1. */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll } from "vitest";
@@ -59,7 +41,6 @@ nock(SERVER_URL)
     return genericWorkflow(name);
   });
 
-// abort(): PUT .../terminate — any workflow name.
 nock(SERVER_URL)
   .persist()
   .put(new RegExp(`^/api/v1/workflows/${NAMESPACE}/[^/]+/terminate$`))

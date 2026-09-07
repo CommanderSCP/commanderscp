@@ -12,13 +12,7 @@ import {
   type ListeningTestServer
 } from "../test-support/harness.js";
 
-/**
- * M13.3a — the SCANNER-ASSIGNMENT REGISTRY end-to-end (ADR-0020 §2, proposal §13.3), against real
- * Postgres under real RLS. The registry MIRRORS `scan_requirement_floors`' instance-scoped posture,
- * so these assertions mirror the M17.5 suite's: operator PUT/GET round-trip, tenant read, and
- * tenant-write refusal driven through a REAL tenant transaction (`scp_app`, NOBYPASSRLS) — not a
- * mock. The last test proves the schema `scanner` widening left the E6 gate fixture parse unchanged.
- */
+/** M13.3a — the SCANNER-ASSIGNMENT REGISTRY end-to-end. See docs/governance.md §412. */
 
 const OPERATOR_TOKEN = "m13-3a-operator-token-fixture";
 
@@ -190,7 +184,6 @@ describe("M13.3a scanner-assignment registry (Testcontainers)", () => {
     );
     expect(err.status).toBe(403);
 
-    // The seed is unchanged after all of that.
     expect(
       (await admin.scannerAssignments.list()).find((a) => a.executorType === "image")?.methods
     ).toEqual(["trivy"]);

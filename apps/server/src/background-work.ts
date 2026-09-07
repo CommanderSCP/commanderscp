@@ -16,43 +16,7 @@ import { startBumpDispatchLoop } from "./dependencies/bump-dispatch.js";
 import { startBumpGateLoop } from "./dependencies/bump-gate.js";
 import { startBumpFreezeRedriveLoop } from "./dependencies/bump-freeze-redrive.js";
 
-/**
- * ================================================================================================
- * THE BACKGROUND-WORK COMPOSITION — every loop this process starts, as an IMPORTABLE VALUE
- * ================================================================================================
- * This module exists for ONE reason: so that "the composition root starts the loops, and stops them
- * on shutdown" can be proven by RUNNING it instead of by matching text in `main.ts`.
- *
- * `main.ts` calls `main()` at module scope, so no test can import it. Every wiring claim about it
- * was therefore a substring match, and a substring match cannot tell a live call from a dead one.
- * That was not a theoretical weakness — it was measured, twice:
- *
- *   - commenting `startBumpDispatchLoop(…)` out of `main.ts` left `bump-dispatch.test.ts` green at
- *     20/20, INCLUDING a case named "starts the worker, and stops it on shutdown", and left the
- *     whole `apps/server` unit suite green at 972/972 (M21.7);
- *   - making the enclosing `if (runsBackgroundWork)` branch unreachable — a one-token edit — left
- *     ALL of `bump-dispatch`, `bump-gate`, `inventory-ingestion` and `domain-event-routers` green
- *     at 79/79, with all eleven loops dead. `domain-event-routers.test.ts` had named this exact
- *     mutation as a known-uncovered edge; it is closed by this module and no longer a text problem.
- *
- * This is the SAME MOVE M21.7 made for domain-event routers, and for the same reason: the router
- * list moved out of `main.ts` into `events/domain-event-registry.ts`, a pure importable value, and
- * its census went from matching four conditional registrations to executing one function. This is
- * that move for the eleven background loops. `background-work.test.ts` starts every entry below
- * against a probe `boss` and asserts what actually happened.
- *
- * WHAT IS DELIBERATELY *NOT* HERE. The pg-boss handle, the outbox relay, the NATS fan-out and the
- * commander poke sender stay in `main.ts`. They are not loops: they are the substrate the loops run
- * on, they are constructed in a fixed order with interdependencies, and two of them need the raw
- * `Pool` rather than the `Db`. Moving them here would buy a bigger extraction and a worse one — the
- * registry's value is that every entry has the SAME shape, so a new loop cannot be added in a shape
- * the census does not check.
- *
- * ADDING A LOOP: add it to {@link BACKGROUND_LOOPS}. Nothing else. `background-work.test.ts`
- * discovers every `start…Loop` in the tree and fails if one is neither registered here nor
- * explicitly exempted with a reason, so forgetting this step is a red test rather than a capability
- * that silently never runs.
- */
+/** THE BACKGROUND-WORK COMPOSITION. See docs/server.md §15. */
 
 /** Everything any background loop needs. One context for all of them, so a loop cannot be added in
  *  a shape that the behavioural census below does not know how to start. */
@@ -86,13 +50,7 @@ export interface BackgroundLoop {
  */
 export const BACKGROUND_LOOPS: readonly BackgroundLoop[] = [
   {
-    // M3 coordination engine (BUILD_AND_TEST.md §8 M3, DESIGN.md §9.3/§9.4): the resumable
-    // reconciliation loop, over the plugin host. The shared fake-executor instance it relies on
-    // (coordination/executor-config.ts documents why: M3 has no plugin-instance configuration API
-    // yet) is registered there under this same role condition, with its state file under the OS
-    // temp dir — durable across the plugin SUBPROCESS restarting (the plugin-host isolation DoD
-    // scenario), not across this whole `scpd` process restarting, which is fine: fake-executor is
-    // never a real system of record.
+    // M3 coordination engine. See docs/server.md §16.
     name: "reconcile",
     loop: startReconcileLoop,
     start: (ctx) =>
@@ -122,60 +80,32 @@ export const BACKGROUND_LOOPS: readonly BackgroundLoop[] = [
     start: (ctx) => startInboxLoop(ctx.boss, ctx.db, ctx.config.secretsMasterKey)
   },
   {
-    // M13.1b staging-node AUTO-RELAY (proposal §13.1): the last operator-gated step of the CDS
-    // boundary walk — a `role: retrans` instance builds the onward byte tarball for an imported
-    // promotion with no operator command. DEFAULT-OFF behind its own explicit
-    // `SCP_RETRANS_AUTO_RELAY=1` (unattended byte egress across a security boundary is opted into
-    // separately from unattended INGEST; without it an inert handle, and the queue is never created).
+    // M13.1b staging-node AUTO-RELAY (proposal §13.1). See docs/server.md §17.
     name: "retrans auto-relay",
     loop: startAutoRelayLoop,
     start: (ctx) => startAutoRelayLoop(ctx.boss, ctx.db, ctx.config.secretsMasterKey)
   },
   {
-    // M14.0 outpost live-pull scheduler (docs/proposals/outpost-poke.md §"Milestone scope",
-    // ADR-0009) — DEFAULT-OFF (explicit `SCP_FEDERATION_SYNC_LOOP=1` opt-in; without it an inert
-    // handle, never a scheduled tick). The deferred federation-over-HTTP live-sync substrate the
-    // poke increments (M14.1–M14.4) optimize; it pulls+imports commander config over the
-    // fail-closed per-peer mTLS outbound dialer (federation-outbound.ts) and is the
-    // sparse-safety-net + pull-on-startup reliability floor.
+    // M14.0 outpost live-pull scheduler. See docs/server.md §18.
     name: "federation sync",
     loop: startFederationSyncLoop,
     start: (ctx) => startFederationSyncLoop(ctx.boss, ctx.db)
   },
   {
-    // M21.4 third-party dependency version poll (ADR-0032 §7): same queue-per-capability pattern,
-    // but with a SECOND, explicit guard on top of the background-work gate — `config.federationRole`
-    // must be `commander`. An unguarded background job that dials package registries on a timer
-    // would run on AIR-GAPPED OUTPOSTS too, and neither the process-role split nor any runtime
-    // predicate would stop it (`self_domain.role` is per-org, lazy and advisory). The guard lives in
-    // `dependencyVersionPollRoleGuard`, which returns an inert handle and never creates the queue
-    // when it refuses — proven across the full config matrix in `commander-only.test.ts`.
+    // M21.4 third-party dependency version poll (ADR-0032 §7). See docs/server.md §19.
     name: "third-party version poll",
     loop: startDependencyVersionPollLoop,
     start: (ctx) => startDependencyVersionPollLoop(ctx.boss, ctx.db, ctx.host, ctx.config)
   },
   {
-    // M21.4 internal release detection (ADR-0032 §7) — the worker half of a domain-event router.
-    // Event-driven rather than a timer, because a release IS an event. COMMANDER-ONLY, like every
-    // dependency job (ADR-0032 §7d, owner decision 2026-08-17): a FIELD outpost never ORIGINATES a
-    // dependency bump — it receives the resulting change down the global pipeline the commander
-    // manages — so it derives no inventory and detects no releases for this feature. ("Field" is
-    // load-bearing: an HQ outpost is the outpost in the commander's OWN trust domain, which is this
-    // process — see `dependencies/commander-only.ts`, which reads that out of the code.) The loop's
-    // module doc carries the accepted cost: an internal line released only at a FIELD outpost keeps
-    // a NULL head, which §7 defines as "not observed", never "nothing newer exists".
+    // M21.4 internal release detection (ADR-0032 §7). See docs/server.md §20.
     name: "internal release detection",
     loop: startInternalReleaseLoop,
     start: (ctx) =>
       startInternalReleaseLoop(ctx.boss, { db: ctx.db, host: ctx.host, config: ctx.config })
   },
   {
-    // M21.2 dependency-inventory ingestion (ADR-0032 §4/§6) — the worker half of the ingestion
-    // router. THIS IS WHAT WRITES `component_dependencies`: without it the table is empty on every
-    // deployment and the enablement chain, the version poll and internal detection all resolve over
-    // nothing. Same role answer as internal detection and the poll — COMMANDER-ONLY (ADR-0032 §7d).
-    // Accepted consequence, in the loop's module doc: dependencies declared in FIELD-outpost-only
-    // repositories are out of scope for dependency subscriptions.
+    // M21.2 dependency-inventory ingestion (ADR-0032 §4/§6). See docs/server.md §21.
     name: "dependency-inventory ingestion",
     loop: startInventoryIngestionLoop,
     start: (ctx) =>
@@ -192,11 +122,7 @@ export const BACKGROUND_LOOPS: readonly BackgroundLoop[] = [
       startBumpDispatchLoop(ctx.boss, { db: ctx.db, host: ctx.host, config: ctx.config })
   },
   {
-    // M21.5 the auto-merge link (ADR-0032 §8c) — runs the EXISTING governance gate FOR a bump change
-    // once its own commit has been observed back, then merges only if a governed control evidenced
-    // the component's own checks passed for exactly that commit. It takes `ctx.sandbox`, the SAME
-    // object the reconcile loop above was handed, which is what makes "the same gate machinery"
-    // literally the same — previously two `getSharedCelSandbox()` calls that happened to memoise.
+    // M21.5 the auto-merge link (ADR-0032 §8c). See docs/server.md §22.
     name: "auto-merge gate",
     loop: startBumpGateLoop,
     start: (ctx) =>
@@ -208,84 +134,24 @@ export const BACKGROUND_LOOPS: readonly BackgroundLoop[] = [
       })
   },
   {
-    // M25.8b the freeze re-drive (owner decision D8) — THE PRODUCER OF "THE NEXT ATTEMPT" the
-    // auto-merge gate's `frozen` refusal promises. That refusal's own Decision told the operator the
-    // pull request would merge once the window closed, and nothing scheduled such an attempt: the
-    // only producer of `dependency-bump-gate` jobs is a PROVIDER WEBHOOK correlated to the bump's
-    // branch, and a freeze expiring, being lifted or being shortened touches no repository. So a
-    // bump refused during a freeze was stranded for ever, silently, with the latest Decision
-    // asserting the opposite. This re-asks `checkBumpMergeFreeze` once a minute for exactly the
-    // bumps that refusal named and re-enqueues the ones nothing covers any more — commander-only
-    // under `bumpDispatchRoleGuard`, the same guard the gate above consults, because a refused gate
-    // loop never creates the queue this one sends to.
+    // M25.8b the freeze re-drive (owner decision D8). See docs/server.md §23.
     name: "bump freeze redrive",
     loop: startBumpFreezeRedriveLoop,
     start: (ctx) => startBumpFreezeRedriveLoop(ctx.boss, ctx.db, ctx.config)
   }
 ];
 
-/**
- * Does THIS process own background work?
- *
- * Extracted from `main.ts`'s inline `config.role === "all" || config.role === "worker"` so the
- * predicate is importable and therefore testable. The inline version was the subject of the
- * measured mutation above: setting it `false` killed all eleven loops with a fully green suite,
- * because no test could reach it.
- *
- * `role === "api"` is a pure request server for everything EXCEPT request-scoped plugin dispatch —
- * `main.ts` constructs the plugin host for every role (#200), and that is deliberately NOT gated on
- * this.
- */
+/** Does THIS process own background work? See docs/server.md §24. */
 export function runsBackgroundWork(config: Pick<ServerConfig, "role">): boolean {
   return config.role === "all" || config.role === "worker";
 }
 
-/**
- * Does THIS process CREATE the bootstrap admin?
- *
- * Only the HTTP-serving roles, and that is the whole point rather than an optimisation.
- *
- * THE BUG THIS CLOSES (measured 2026-08-29, reproduced 3/3). `ensureBootstrapAdmin` used to run
- * UNCONDITIONALLY in every process. In the chart's default split topology the api and worker pods
- * boot at the same moment against the same empty database, so WHICHEVER WINS creates the admin and
- * prints the one-time password — and that password is generated, shown once, and never stored. When
- * the worker won, the api logged "bootstrap admin 'admin' already exists, skipping" and the only
- * copy of the credential was in the WORKER's log.
- *
- * That is not merely untidy. Every operator-facing instruction — the chart NOTES, the docs, and
- * `scripts/kind-drill.sh`, which polls the api pod and fails with "could not capture the bootstrap
- * one-time password" — says to read the API pod's log. So on an unlucky boot the credential the
- * whole install depends on was written somewhere nobody is told to look, with no error anywhere.
- *
- * Tying creation to the role that serves HTTP makes the password's location a PROPERTY OF THE
- * DEPLOYMENT rather than of who won a startup race.
- *
- * WORKER-ONLY DEPLOYMENTS DO NOT BOOTSTRAP, deliberately: an install with no api has nothing to
- * serve the credential to, and the chart always deploys an api (`role: all` covers the
- * single-process case). A worker that starts first simply finds no org yet and picks it up on a
- * later tick — its loops are all org-scoped queries, not a one-time init.
- *
- * NOT A FULL MUTUAL EXCLUSION: two api REPLICAS can still race each other. That path is already
- * safe-by-construction rather than by this predicate — the loser's `existingAdmin` check returns
- * early and logs "already exists, skipping" — so this fixes WHERE the password lands, which is what
- * was broken and what was measured.
- */
+/** Does THIS process CREATE the bootstrap admin? See docs/server.md §25. */
 export function createsBootstrapAdmin(config: Pick<ServerConfig, "role">): boolean {
   return config.role === "all" || config.role === "api";
 }
 
-/**
- * Start every loop in `loops`, and return one handle that stops them all.
- *
- * SEQUENTIAL, IN ORDER, AND `stop()` STOPS IN THE SAME ORDER — preserving exactly what `main.ts`'s
- * hand-written `onClose` did. Neither start nor stop swallows an error, also as before: a loop that
- * throws on the way up fails boot loudly, and one that throws on the way down surfaces rather than
- * being hidden behind the loops after it.
- *
- * `loops` is a parameter with a production default so a test can drive this with its own table
- * (proving the runner) as well as with the real one (proving the wiring). The default is what
- * `main.ts` gets, so the test and production share one code path rather than resembling each other.
- */
+/** Start every loop, and return one handle that stops them. See docs/server.md §26. */
 export async function startBackgroundLoops(
   ctx: BackgroundLoopContext,
   loops: readonly BackgroundLoop[] = BACKGROUND_LOOPS

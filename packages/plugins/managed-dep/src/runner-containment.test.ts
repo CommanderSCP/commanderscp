@@ -15,41 +15,7 @@ import {
 } from "./write-test-support.js";
 import { RUNNER_LAUNCHER_DEADLINE_LABEL, RUNNER_LAUNCHER_OWNER_LABEL } from "@scp/runner-launcher";
 
-/**
- * ================================================================================================
- * THE CHARTER'S RUNNER/ORCHESTRATOR SPLIT, MEASURED (charter `scp-managed-dep`, amended 2026-08-15)
- * ================================================================================================
- * The 2026-08-15 amendment states the split in two sentences:
- *
- *   "Runner network egress is `--network none`; the runner holds no credential, contains no package
- *    manager, and edits only the bytes handed to it."
- *   "The orchestrator holds the per-run, repository-scoped, short-lived credential and reaches the
- *    git provider on the runner's behalf."
- *
- * Both halves were previously only DOCUMENTED here. A comment describing a containment property is
- * not the property; this file drives a real `trigger()` with every `docker` invocation mocked (so it
- * runs on every PR under `pnpm test`, no Docker required) and asserts what the container was
- * actually launched with — the same shape, and the same reason, as `@scp/plugin-managed-scan`'s
- * shipped `index.test.ts` containment block.
- *
- * WHAT EACH ASSERTION IS FOR, since a list of `expect`s is not self-explaining:
- *  - `--network none`      — the runner reaches no hosts. Without it, "never resolves a lockfile"
- *                            stops being a property of the image and becomes a hope.
- *  - no `-v`/`--mount`, no docker.sock — nothing of the host is reachable from inside, so a
- *                            path-escape in the editor has nowhere to escape TO. Bytes go in and out
- *                            by `docker cp`.
- *  - no `-e`/`--env`, and the token appears in NO argv — the credential does not cross into the
- *                            runner. This is the half the amendment had to be qualified for, so it
- *                            is the half most worth measuring.
- *  - argv is exactly the five descriptor strings — seven for a split shape, where the last two are
- *                            the M21.7 anchor (a line number and that line's own bytes). Nothing on
- *                            that command line can be a file body, a host path, or a command; the
- *                            anchor text is one line the container already holds in the file it was
- *                            handed, and the shim only ever COMPARES it.
- *  - the ORCHESTRATOR made the provider calls — the credential is used, but on this side of the
- *                            boundary. Asserted positively so "no network in the runner" cannot be
- *                            satisfied by there being no network anywhere.
- */
+/** THE CHARTER'S RUNNER/ORCHESTRATOR SPLIT, MEASURED. See docs/plugins.md §340. */
 
 interface DockerCall {
   file: string;
@@ -58,27 +24,10 @@ interface DockerCall {
 const dockerCalls: DockerCall[] = [];
 /** The bytes the stand-in runner "produces". Set per test; the copy-OUT mock writes them. */
 let editedOutput: string | undefined = PACKAGE_JSON_BUMPED;
-/**
- * THE ARGV-DRIVEN STAND-IN RUNNER, used by the split-shape block below.
- *
- * With `editedOutput` set, the mock writes a fixed string and the docker argv is decorative — which
- * is fine for the hostile-output cases, and useless for proving the orchestrator SENT something.
- * With it `undefined`, the mock instead reconstructs the bump spec FROM THE `docker create` ARGV,
- * reads the bytes that were copied in, and applies the reference edit. That is what makes the
- * anchor's wiring load-bearing: delete the two operands from `runEditorContainer`, or delete the
- * `locateVersionLine` call that produces them, and the reference edit has no anchor, refuses the
- * split shape, and a NAMED test below goes red.
- */
+/** The argv-driven stand-in runner for the split-shape block. See docs/plugins.md §341. */
 let copiedInDir: string | undefined;
 
-/**
- * M23.1 PHASE 4 — the reaper. `reap()` now runs at the top of every `run()`, issuing a `docker ps -a
- * --filter label=...` before `create` and stamping two more `--label` pairs onto every `create` it
- * issues. Neither is this file's subject, so both are kept out of `dockerCalls` entirely: the `ps`
- * call is answered with an empty listing and never recorded, and the two labels are stripped off
- * `create`'s argv before it is recorded — the "EVERY container it launches is NAMED AND LABELLED"
- * test below still needs to see the PLUGIN's own two labels untouched.
- */
+/** M23.1 PHASE 4 — the reaper. See docs/plugins.md §342. */
 function stripLauncherLabel(args: string[], key: string): string[] {
   const flagIndex = args.findIndex(
     (a, i) => a === "--label" && (args[i + 1] ?? "").startsWith(`${key}=`)
@@ -279,18 +228,7 @@ describe("the runner half — no network, no credential, no host", () => {
   });
 
   it("passes NO credential to the container — not on argv, not through -e, not through --env-file", async () => {
-    // ================================================================================================
-    // THE SWEEP THAT CATCHES A FOURTH MANAGED PLUGIN FOR FREE.
-    // ================================================================================================
-    // This used to check `-e`/`--env` and the joined command line. Since the port grew a `secretEnv`
-    // that Docker delivers through `--env-file`, "no `-e`" is no longer the whole of "no credential
-    // reaches the runner": a plugin could pass a credential with no `-e` anywhere in sight. Both
-    // delivery mechanisms are named here, and the value sweep runs over every ELEMENT of every argv
-    // rather than over the joined line — a joined line cannot say WHICH argument carried the secret,
-    // and its failure message is a wall of text nobody reads.
-    //
-    // IT IS ALSO THE ONLY ASSERTION HERE THAT DOES NOT NEED UPDATING WHEN A NEW SECRET APPEARS: it
-    // iterates the credentials this test knows the orchestrator actually resolved.
+    // THE SWEEP THAT CATCHES A FOURTH MANAGED PLUGIN FOR FREE. See docs/plugins.md §343.
     const plugin = createManagedDepExecutorPlugin();
     const { ctx, calls } = runCtx();
     await plugin.trigger(ctx, bumpIntent());
@@ -338,17 +276,7 @@ describe("the runner half — no network, no credential, no host", () => {
   });
 
   it("launches `--network none` UNCONDITIONALLY — a config naming another mode changes nothing", async () => {
-    // THIS ASSERTION IS THE INVERSE OF WHAT IT USED TO BE, and the reversal is the charter rather
-    // than a change of mind. It previously mirrored `managed-scan`'s "honours the server-injected
-    // networkMode" — correct THERE, because the 2026-07-23 amendment QUALIFIES that class's network
-    // clause ("excepting operator-allowlisted registry pulls for the subject artifact's bytes"), so
-    // an operator setting is exactly what the charter contemplates for it.
-    //
-    // The `scp-managed-dep` clause carries no such qualifier: "Runner network egress is `--network
-    // none`; the runner holds no credential, contains no package manager, and edits only the bytes
-    // handed to it" (2026-08-15). An operator-settable knob with a `none` default is an
-    // operator-facing way to contradict an unqualified clause, so the value is a LITERAL
-    // (`RUNNER_NETWORK_MODE`) and `SCP_MANAGED_DEP_NETWORK_MODE` is now read by nothing.
+    // This assertion is the inverse of what it was, per the charter. See docs/plugins.md §344.
     const plugin = createManagedDepExecutorPlugin();
     const { ctx } = runCtx({ networkMode: "bridge-for-test" });
     await plugin.trigger(ctx, bumpIntent());
@@ -376,19 +304,7 @@ describe("the orchestrator half — it is the side that holds the credential and
     expect(status.detail).toContain("@acme/lib");
   });
 
-  /**
-   * THE FIRST VERIFIER IS LOAD-BEARING, proven by a case only IT can catch.
-   *
-   * The runner returns a perfectly well-formed manifest that bumps the right dependency to the
-   * WRONG version. `verifyManifestOnlyEdit` accepts it — and is right to: every one of its gates
-   * holds (the dependency set is identical, exactly one already-declared version moved, the change
-   * is confined to that version's own text). It has no idea which version was ASKED for; that fact
-   * lives in the descriptor, which is what `verifyManifestBump` anchors on.
-   *
-   * This case exists because a mutation run found the gap: deleting the runner-output verdict check
-   * left the earlier "added a dependency" case green, since the second verifier caught that one
-   * anyway. A refusal that another layer would have caught is not evidence that this layer works.
-   */
+  /** The first verifier is load-bearing, proven by one case. See docs/plugins.md §345. */
   it("REFUSES a runner that bumped to a version nobody asked for — the descriptor-anchored check", async () => {
     editedOutput = PACKAGE_JSON_BUMPED.replace('"^1.4.0"', '"^9.9.9"');
     const plugin = createManagedDepExecutorPlugin();
@@ -429,25 +345,7 @@ describe("the orchestrator half — it is the side that holds the credential and
   });
 });
 
-/**
- * ================================================================================================
- * M21.7 — THE SPLIT SHAPE, END TO END, AND THE WIRING GATE ON THE ANCHOR
- * ================================================================================================
- * Everything below drives the REAL `trigger()` against a chart's `values.yaml` whose coordinate and
- * version are on different lines. The stand-in runner is argv-driven here (`editedOutput = undefined`),
- * so it can only produce bytes if the orchestrator actually SENT an anchor — which is the delete-the-
- * wiring gate this milestone's standing rule asks for:
- *
- *   * delete the two operands from `runEditorContainer`'s `docker create` argv → the stand-in runner
- *     has no anchor, the reference edit refuses, and "authors the bump" below goes red;
- *   * delete the `locateVersionLine` call in `trigger()` → the spec carries no anchor, the operands
- *     are not appended, and the same test goes red;
- *   * delete `verifyManifestBump`'s anchored branch → the runner's bytes are refused and the same
- *     test goes red with `wrong_declaration_changed`.
- *
- * A component built and never installed is this repository's dominant failure, and a suite that
- * reached `applyManifestBump` directly would be green with all three of those deletions in place.
- */
+/** The split shape end to end, and the wiring gate on the anchor. See docs/plugins.md §346. */
 describe("a split-shape Helm image is BUMPED, not merely detected", () => {
   function valuesIntent(overrides: Record<string, unknown> = {}) {
     return {
@@ -570,7 +468,6 @@ describe("a split-shape Helm image is BUMPED, not merely detected", () => {
     const status = await plugin.status(ctx, ref);
     expect(status.phase).toBe("failed");
     expect(status.detail).toContain("anchor_not_derivable");
-    // NO CONTAINER AT ALL, and nothing written.
     expect(dockerCalls).toHaveLength(0);
     expect(calls.some((c) => c.method === "PUT" && c.url.includes("/contents/"))).toBe(false);
   });

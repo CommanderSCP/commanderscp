@@ -5,19 +5,7 @@ import type { RelayedEvent } from "@scp/schemas";
 import { ScpClient } from "./client.js";
 import { resilientEventStream, type OpenEventStream } from "./event-stream.js";
 
-/**
- * The SSE API-parity work's load-bearing risk, tested.
- *
- * Migrating `apps/web` off the browser's `EventSource` onto the generated SDK operation trades away
- * something `EventSource` gave for free: automatic reconnection. The generated `createSseClient`
- * reconnects only from its `catch` — a CLEAN server close (rolling restart, idle proxy hangup)
- * simply ends its iterator, and a UI built on the raw generated call would go silently, permanently
- * dead on the first orderly `scpd` restart with nothing appearing to be broken.
- *
- * So these tests drive the REAL path — real `ScpClient`, real generated `streamEvents`, real
- * `createSseClient`, real `fetch`, against a real loopback HTTP server that speaks the exact frame
- * format `apps/server/src/routes/events.ts` writes — and kill the connection BOTH ways.
- */
+/** The SSE API-parity work's load-bearing risk, tested. See docs/sdk.md §55. */
 
 interface Connection {
   readonly res: ServerResponse;
@@ -26,7 +14,6 @@ interface Connection {
 }
 
 function frame(event: RelayedEvent): string {
-  // Byte-identical to routes/events.ts's `send`.
   return `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
@@ -140,7 +127,6 @@ describe("client.events.stream() — the live SSE channel through the generated 
     connectionAt(0).res.write(frame(anEvent("evt-1")));
     await waitFor(() => run.received.length === 1, "the first event");
 
-    // An abrupt reset — the LB/pod-eviction case.
     connectionAt(0).res.socket?.destroy();
 
     await waitFor(() => connections.length === 2, "a reconnection after the kill");

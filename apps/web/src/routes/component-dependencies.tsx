@@ -58,61 +58,9 @@ import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 import { WhyLink } from "../components/decision/WhyLink";
 import { decisionIdOf } from "../components/decision/decision-format";
 
-/**
- * THE DEPENDENCIES TAB of one component (docs/proposals/dependency-subscription-ui.md §4).
- *
- * It answers, per component: what do I depend on, what is the head of each major line, am I
- * subscribed and why, what has been bumped, and can I enable / opt out here. Everything rendered
- * is READ off three server responses — the instance unlock, the component's dependency inventory
- * (rows carry each line's resolved dependency subscription, resolved AS THE CALLER, plus the
- * component-level ingestion gate) and the bumps SCP authored — and NOTHING is recomputed here:
- *
- *   - the badge on a row switches on `subscription.reason`; the header's component line switches on
- *     `componentGate.reason` (a different vocabulary, deliberately: the gate is existential over
- *     lines). This file never writes the enablement AND. A UI that ORed the contributions itself
- *     would be the second copy of the merge that lets the work-list and the screen disagree.
- *   - an `ignored` contribution (a malformed effect, or an enable behind a condition that cannot be
- *     evaluated here) is rendered as an amber pill on the row and never hidden: hiding it hides
- *     exactly the opt-out an operator believed had applied.
- *   - `head.latestVersion: null` renders as `—` "not observed yet" — never "nothing newer".
- *   - `producer` renders only when DECLARED; nothing is inferred from a coordinate.
- *   - an empty inventory is NEVER "No dependencies" unless an ingestion record says the manifests
- *     were read and declared none. The M21.7 STAMP (`ingestion`) is the trichotomy: `null` is
- *     never attempted; `ok` + 0 rows is "No dependencies declared — read N manifests"; `partial` /
- *     `unreadable` list every manifest (repo:path) with its outcome; `not_enabled` says the gate was
- *     closed. `null` beside a null `lastIngestionDecision` renders amber `unknown` ("not recorded —
- *     never attempted").
- *   - the server's REQUIRED `dependencyManagement` envelope (ADR-0032 §7d) is the authority: when
- *     `managedHere` is false the page renders the same "managed at the commander" pointer the role
- *     gate renders (with the server's reason) and interprets nothing else — an empty inventory there
- *     is "nothing here ever ingested", not "declares nothing".
- *
- * WRITES ARE OFFERED, REFUSALS RENDERED (M16.3 rule; owner decision §8 Q3). There is no
- * permission introspection, so the enable and opt-out offers render for every viewer and the
- * server's refusal is shown verbatim: 403 names the permission and where it is needed, 409 (a
- * standing delegation to another tool) carries a `decision_id` and gets a Why link. Both writes are
- * ORDINARY POLICY OBJECTS through `client.policies.create` — a dependency subscription IS a
- * `dependencySubscription` effect on a policy — with `scope.objectRef` = this component and the
- * effect-level line selector for an opt-out. This form NEVER offers a group scope (the server
- * refuses a sole-group scope in both directions) and never a per-line "enable" (the chain enables;
- * a line-level enable beside an org-level one would only be explainable, never effective on its own).
- *
- * The instance unlock is READ-ONLY here (owner decision §8 Q2): the write needs a deployment
- * secret no tenant role can hold, so the pointer is the CLI verb.
- *
- * `instanceRole` is a PARAMETER of the bumps section (read by the page off `useAuth()` and threaded
- * down, like the pipeline page does) so the renderers stay provider-free in tests. Third-party
- * polls and bump dispatch run only on a declared commander; on any other role the section says so
- * instead of drawing an empty table that would look up to date.
- */
+/** THE DEPENDENCIES TAB of one component. See docs/web.md §210. */
 
-/**
- * One PARALLEL read as the view sees it. The page renders as soon as the inventory resolves; the
- * unlock and the bumps are separate queries that may still be pending or may have failed. The
- * view is told WHICH, so a read that has not finished is never painted as "could not be read", and
- * a read that failed is never painted as "none" — the same honesty rule the inventory's empty
- * states follow ("never No <noun> for an unknown").
- */
+/** One PARALLEL read as the view sees it. See docs/web.md §211. */
 export type ReadState<T> =
   { status: "pending" } | { status: "error"; error: unknown } | { status: "ok"; data: T };
 
@@ -121,18 +69,7 @@ export type ReadState<T> =
 // pinned by a unit test independent of the dialogs that collect their inputs.
 // -------------------------------------------------------------------------------------------
 
-/**
- * The enabling policy for one component: `scope.objectRef` = the component, one
- * `dependencySubscription` effect `enabled: true` with the chosen granularity/delivery,
- * `enforcement: "advisory"` (the policy document requires an enforcement; the resolver never reads
- * it). `domainId` is THE COMPONENT ITSELF (its own object id): `objects.domain_id` is a general
- * containment-parent pointer (any org object is accepted), `POST /policies` authorizes
- * `policy:write` at `domainId ?? org` and RBAC expands UPWARD from there — so a principal bound at
- * the component, at its containment domain, or at the org all pass, and the written policy is
- * contained by the component, where its team can later PATCH/DELETE it (those routes authorize at
- * the policy's own id). Sending the containment domain instead would refuse the component-bound
- * team; omitting it would refuse everyone below the org root.
- */
+/** The enabling policy for one component. See docs/web.md §212. */
 export function buildEnablePolicyRequest(input: {
   component: ComponentDependencyReadSubject;
   granularity: DependencySubscriptionGranularity;
@@ -150,13 +87,7 @@ export function buildEnablePolicyRequest(input: {
   };
 }
 
-/**
- * The opt-out policy for ONE major line of one component: the SAME `scope.objectRef` (the
- * component — never a line selector in the scope, which has no such thing) and the line named at
- * the EFFECT level (`ecosystem`, `coordinate` VERBATIM, `major` as the ecosystem spells it), with
- * `enabled: false`. A disable at any tier wins, so this opts the line out whatever enabled it.
- * `domainId` = the component itself, for the reasons on `buildEnablePolicyRequest`.
- */
+/** The opt-out policy for ONE major line of one component. See docs/web.md §213. */
 export function buildOptOutPolicyRequest(input: {
   component: ComponentDependencyReadSubject;
   line: ComponentDependencyInventoryRow["line"];
@@ -182,16 +113,7 @@ export function buildOptOutPolicyRequest(input: {
   };
 }
 
-/**
- * How a policy write's refusal is rendered (charter principle 6: every blocked response is
- * explained). 403 → the permission and where it is needed (`POST /policies` authorizes
- * `policy:write` at the body's `domainId` — this component — and RBAC expands upward, so a binding
- * at the component or anywhere above it passes) plus the server's own detail; 409 → the server's
- * detail (a standing delegation names the file/tool
- * that owns this repo's updates) plus the `decision_id` for a Why link; anything else → the
- * message as received. Never a fabricated Why link: `decisionId` is set only when the problem
- * body carried one.
- */
+/** How a policy write's refusal is rendered. See docs/web.md §214. */
 export function policyWriteRefusal(error: unknown): { message: string; decisionId?: string } {
   if (error instanceof ScpApiError) {
     const detail = error.problem?.detail ?? error.message;
@@ -211,9 +133,7 @@ export function policyWriteRefusal(error: unknown): { message: string; decisionI
   return { message: queryErrorMessage(error) };
 }
 
-// -------------------------------------------------------------------------------------------
 // Rendering vocabulary — the reason enums mapped onto Badge tones. READ, never derived.
-// -------------------------------------------------------------------------------------------
 
 const ROW_REASON_BADGE: Record<
   ComponentDependencyInventoryRow["subscription"]["reason"],
@@ -292,13 +212,7 @@ function contributionSelector(c: DependencySubscriptionContribution): string {
   return parts.length === 0 ? "* (every line)" : parts.join(" ");
 }
 
-/**
- * The Why dialog's CONTENT, portal-free — exported for the test (Radix portals nothing under
- * renderToStaticMarkup). One row per contribution, exactly as the server recorded it: tier, source,
- * what it contributed, its selector, the granularity/delivery it DECLARED (absent = carried at the
- * most restrictive default) and, for an ignored one, why. Same body for a row's resolution and
- * for the component gate.
- */
+/** The Why dialog's CONTENT, portal-free. See docs/web.md §215. */
 export function ContributionsBody({
   heading,
   contributions
@@ -362,10 +276,6 @@ export function ContributionsBody({
     </div>
   );
 }
-
-// -------------------------------------------------------------------------------------------
-// Header strip — the chain, honestly.
-// -------------------------------------------------------------------------------------------
 
 /** The instance line: three states off `{unlocked, updatedAt}`. `updatedAt: null` with
  *  `unlocked: false` is "never set" — a different operator situation from a deliberate re-lock. */
@@ -451,18 +361,7 @@ export function ComponentGateLine({
   }
 }
 
-/**
- * The enable dialog's CONTENT, portal-free — exported for the test. Collects granularity and
- * delivery; the confirm is the ONLY thing that fires the write. States plainly that the first bump
- * is always a pull request whatever the delivery, that auto-merge needs every enabling policy to
- * agree, and (M25.8 / owner decision D8) that an active change freeze over the component withholds
- * only the merge itself — never the pull request, and never permanently: `bump-gate.ts`'s `frozen`
- * refusal kind still GRANTS auto-merge and every capability is in place, and
- * `bump-freeze-redrive.ts` re-asks every open `frozen` bump roughly once a minute
- * (`BUMP_FREEZE_REDRIVE_INTERVAL_SECONDS`), so the merge lands on its own within about a minute of
- * the freeze lifting — all three are the server's rules, repeated so the picker does not
- * misrepresent them.
- */
+/** The enable dialog's CONTENT, portal-free. See docs/web.md §216. */
 export function EnableDialogBody({
   component,
   busy,
@@ -638,15 +537,7 @@ export function OptOutDialogBody({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// The inventory table and its empty states.
-// -------------------------------------------------------------------------------------------
-
-/**
- * What to show when there are NO rows, keyed on the ingestion stamp, then the newest ingestion
- * Decision, then nothing — never collapsing to "No dependencies" without a record that says the
- * manifests were read and declared none.
- */
+/** What to show when there are no rows, keyed on the stamp. See docs/web.md §217. */
 export function InventoryEmptyState({
   inventory
 }: {
@@ -865,17 +756,7 @@ function InventoryRowView({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// Bumps section.
-// -------------------------------------------------------------------------------------------
-
-/**
- * The Merge cell — READ off what is stored, never inferred: `mergedAt` (a confirmed merge) → "merged
- * <date>"; else the newest merge Decision's verdict; else, when a pull request NUMBER is on record,
- * "not merged" (the stated absence — the server never observes a close-without-merge, so "open" would
- * be a claim it cannot make); else `—`, because with no pull request reported there is nothing whose
- * merge state could be described.
- */
+/** The Merge cell. See docs/web.md §218. */
 function bumpProgress(bump: ComponentDependencyBump): React.JSX.Element {
   if (bump.mergedAt) return <>merged {formatWhen(bump.mergedAt)}</>;
   if (bump.merge) return <>{bump.merge.verdict}</>;
@@ -896,17 +777,8 @@ function bumpProgress(bump: ComponentDependencyBump): React.JSX.Element {
   );
 }
 
-/** The bumps section — a table on the commander; on any other role a sentence, because third-party
- *  polls and bump dispatch run only on a declared commander and an empty table there would look
- *  up to date. On the commander the read's STATE decides: pending → a skeleton row; failed → an
- *  amber `unknown` line (the page's error notice carries the diagnosis); only a SUCCESSFUL read
- *  with zero rows says "No bumps yet." */
-/** What an OUTPOST (or any non-commander) site renders at `/components/$idOrUrn/dependencies` when
- *  the URL is reached directly — the tab itself is hidden there (component-detail.tsx). Owner rule
- *  2026-08-17: dependency automation happens ONLY at the commander — it pulls from public registries
- *  to bump the GLOBAL repos, and outposts receive the result down the promotion pipeline — so an
- *  outpost holds no dependency inventory and dispatches no bumps. A stated pointer, not an empty
- *  page that would read as "no dependencies". Provider-free; role is a PARAMETER. */
+/** The bumps section. See docs/web.md §219. */
+/** What an OUTPOST. See docs/web.md §220. */
 export function ManagedAtCommanderNotice({
   reason,
   role
@@ -1082,19 +954,9 @@ export function BumpsSection({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // The "Produces" strip (dependency-subscription-ui.md §12.4, owner decision 2026-08-18 Q2).
-// -------------------------------------------------------------------------------------------
 
-/**
- * "This component is the declared producer of `npm @acme/lib`, … — Admin › Dependencies." Rendered
- * ONLY when the org's producer list (`GET /dependencies/producers`, filtered by the page to
- * `producerObjectId === component.id`) is non-empty for this component: it is the one place a TEAM
- * sees that their component's releases now drive other teams' bumps without visiting Admin. Nothing
- * is rendered while the read is pending or when it holds no row for this component — the strip
- * asserts a fact, and its absence asserts nothing. A FAILED read is stated (an amber `unknown`
- * pill), never painted as "not a producer".
- */
+/** "This component is the declared producer of `npm @acme/lib`, …. See docs/web.md §221. */
 export function ProducesStrip({
   produces
 }: {
@@ -1137,10 +999,6 @@ export function ProducesStrip({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// The view (provider-free) and the page (hooks).
-// -------------------------------------------------------------------------------------------
-
 type WhyTarget =
   | { kind: "gate"; contributions: readonly DependencySubscriptionContribution[] }
   | { kind: "row"; row: ComponentDependencyInventoryRow };
@@ -1154,11 +1012,7 @@ export const DIALOG_COPY = {
   optOut: "Writes an ordinary policy at this component with an opt-out effect naming the line."
 } as const;
 
-/**
- * The tab's whole rendering off already-loaded data. `onEnable`/`onOptOut` receive the EXACT policy
- * document to write; `writeState` is the page's mutation state so the open dialog can render the
- * refusal. Provider-free so tests can render it with `renderToStaticMarkup`.
- */
+/** The tab's whole rendering off already-loaded data. See docs/web.md §222. */
 export function DependenciesView({
   unlock,
   inventory,
@@ -1444,11 +1298,7 @@ export function ComponentDependenciesPage(): React.JSX.Element {
   }
   const inventory = inventoryQuery.data;
   if (!inventory) return <p className="text-sm text-slate-500">No dependency inventory yet.</p>;
-  // THE SERVER IS THE AUTHORITY (ADR-0032 §7d, M21.7): `dependencyManagement` is computed by the
-  // deployment's own commander-only predicate. When it says dependencies are not managed here, the
-  // rest of the envelope is not to be interpreted — the same pointer the role gate renders, plus the
-  // server's stated reason. Defensive beside the role gate above: a mis-set web-side role must never
-  // turn "nothing here ever ingested" into an empty inventory page.
+  // THE SERVER IS THE AUTHORITY. See docs/web.md §223.
   if (inventory.dependencyManagement.managedHere === false) {
     return <ManagedAtCommanderNotice reason={inventory.dependencyManagement.reason} />;
   }

@@ -577,9 +577,7 @@ export interface ListObjectsQuery extends ListQuery {
 
 /** Wire-INPUT shape (pre-defaults) — the schema's `PlacementListQuery` is the parsed output type. */
 export interface ListPlacementsQuery extends ListObjectsQuery {
-  /** id or URN of a component. */
   component?: string;
-  /** id or URN of a deployment-target. */
   deploymentTarget?: string;
 }
 
@@ -618,15 +616,7 @@ function idempotencyHeaders(idempotencyKey?: string): Record<string, string> | u
   return idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
 }
 
-// ---------------------------------------------------------------------------------------------
-// M2 typed registries (DESIGN.md — BUILD_AND_TEST.md §8 M2 item 1). All 8 resources share the
-// exact same generic request/response shapes (CreateObjectRequest/.../ObjectListResponse) — the
-// generated per-resource functions (createDomain, createService, ...) differ only by which
-// operationId/URL they call, so `ScpClient.typedResource` below is a single generic wrapper
-// invoked once per resource instead of 8 hand-copies of the same 6 methods, mirroring
-// routes/typed-registries.ts's server-side route factory. `ownerMethods`/`edgeMethods` do the
-// same for the `owns`/`consumes`/`depends_on` sub-resource ergonomics (routes/ownership.ts).
-// ---------------------------------------------------------------------------------------------
+// M2 typed registries. See docs/sdk.md §4.
 
 interface TypedObjectFns<C = CreateObjectRequest, U = UpsertObjectRequest> {
   create: (opts: {
@@ -688,13 +678,7 @@ interface EdgeFns {
   }) => Promise<ApiResult<Relationship>>;
 }
 
-/**
- * Thin handwritten layer over the `@hey-api/openapi-ts` generated core (DESIGN.md §15): token
- * management (auth), a cursor-pagination iterator, and ergonomic namespaces over the M1 graph
- * endpoints (type registry, generic objects-of-any-type, relationships, named graph queries,
- * audit events). The CLI and the server-rendered UI stub consume only this class — never a raw
- * `fetch` to the API, and every write that accepts an `Idempotency-Key` here too.
- */
+/** Thin handwritten layer over the `@hey-api/openapi-ts` generated core. See docs/sdk.md §5. */
 export class ScpClient {
   private readonly client: Client;
   private token: string | undefined;
@@ -730,11 +714,7 @@ export class ScpClient {
     return data;
   }
 
-  // -----------------------------------------------------------------------------------------
-  // Web UI v1 session discovery (M2 step 4, BUILD_AND_TEST.md §8 M2 item 2) — `login()` above
-  // stays where every existing caller (CLI, tests) already expects it; these three are new and
-  // namespaced so they read as a group at call sites (`client.auth.me()`, etc).
-  // -----------------------------------------------------------------------------------------
+  // Web UI v1 session discovery (M2 step 4, BUILD_AND_TEST.md §8 M2 item 2). See docs/sdk.md §6.
 
   readonly auth = {
     /** `GET /auth/me` — how the Web UI discovers "am I logged in" (it can't read the httpOnly
@@ -755,9 +735,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
   // M0 legacy /objects/service (unchanged contract — DESIGN.md additive-only-within-v1)
-  // -----------------------------------------------------------------------------------------
 
   readonly objects = {
     service: {
@@ -805,9 +783,7 @@ export class ScpClient {
     } while (cursor);
   }
 
-  // -----------------------------------------------------------------------------------------
   // Runtime type registry (DESIGN.md §4.1)
-  // -----------------------------------------------------------------------------------------
 
   readonly typeRegistry = {
     objectTypes: {
@@ -894,13 +870,7 @@ export class ScpClient {
         });
         return unwrap(result);
       },
-      /**
-       * M20.4 (ADR-0031 §6) — publish a domain-local object so it federates from this point on.
-       *
-       * ONE-WAY: there is no inverse method and there will not be one, because federation has no
-       * un-send. The response reports the edge sweep in two buckets — edges published alongside the
-       * object, and edges deliberately withheld because their other endpoint is still domain-local.
-       */
+      /** Publish a domain-local object: one-way, with no inverse. See docs/sdk.md §7. */
       publish: async (idOrUrn: string): Promise<PublishObjectResponse> => {
         const result = await publishDomainLocalObjectRequest({
           client: this.client,
@@ -911,7 +881,6 @@ export class ScpClient {
     };
   }
 
-  /** Pagination iterator over any object type. */
   async *listAllObjects(
     type: string,
     query: Omit<ListObjectsQuery, "cursor"> = {}
@@ -923,10 +892,6 @@ export class ScpClient {
       cursor = page.nextCursor ?? undefined;
     } while (cursor);
   }
-
-  // -----------------------------------------------------------------------------------------
-  // Relationships
-  // -----------------------------------------------------------------------------------------
 
   readonly relationships = {
     create: async (
@@ -954,11 +919,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M2 typed registries: friendlier ergonomic namespaces over the fixed-type endpoints
-  // (BUILD_AND_TEST.md §8 M2 item 1) — same generic request/response contract as `object(type)`,
-  // just resource-specific and without a `type` argument to pass at every call site.
-  // -----------------------------------------------------------------------------------------
+  // M2 typed registries. See docs/sdk.md §8.
 
   private typedResource<C = CreateObjectRequest, U = UpsertObjectRequest>(
     fns: TypedObjectFns<C, U>
@@ -995,7 +956,6 @@ export class ScpClient {
     };
   }
 
-  /** `.addOwner()/.listOwners()/.removeOwner()` — valid on domains/services/components/deploymentTargets. */
   private ownerMethods(fns: OwnerFns) {
     return {
       addOwner: async (
@@ -1121,15 +1081,7 @@ export class ScpClient {
       addDependsOn: dependsOn.add,
       listDependsOn: dependsOn.list,
       removeDependsOn: dependsOn.remove,
-      /**
-       * The service release board (coordination-ui-views.md Phase 2, Layer A) — the service's
-       * components, each's latest change per-wave status + attention, and a releasing/blocked/
-       * stable summary, projected server-side in one call. Read-only.
-       *
-       * (ADR-0021 D6 residual: this line said "per-stage wave status" until 2026-07-25 — a leftover
-       * of the wave-sense misuse of "stage". The field it describes is `waves`; the (iii-b) rename
-       * moved the field but missed this caption.)
-       */
+      /** The service release board. See docs/sdk.md §9. */
       board: async (idOrUrn: string): Promise<ServiceBoardResponse> => {
         const result = await getServiceBoardRequest({ client: this.client, path: { idOrUrn } });
         return unwrap(result);
@@ -1167,14 +1119,7 @@ export class ScpClient {
         });
         return unwrap(result);
       },
-      /** M22.8 — THE SCAN RULES IN FORCE FOR THIS COMPONENT: the resolved six-tier severity ceiling
-       *  with every tier that contributed to it (ADR-0016), plus which exclusion classes the tiers
-       *  above admit and at which tiers a clause of each would actually take effect (ADR-0033 §1).
-       *
-       *  READS ONLY — it writes no Decision, which is exactly why it exists beside `policyEvaluate`
-       *  rather than being folded into it. `policyEvaluate` runs the real orchestrator and writes a
-       *  Decision row per call with no suppression, so polling it from a UI reproduces the
-       *  1.44 GB/day amplification ADR-0024 §D0 exists over. Poll THIS one. */
+      /** M22.8 — THE SCAN RULES IN FORCE FOR THIS COMPONENT. See docs/sdk.md §10. */
       scanRequirements: async (idOrUrn: string): Promise<ComponentScanRequirementsResponse> => {
         const result = await getComponentScanRequirementsRequest({
           client: this.client,
@@ -1193,11 +1138,7 @@ export class ScpClient {
       addDependsOn: dependsOn.add,
       listDependsOn: dependsOn.list,
       removeDependsOn: dependsOn.remove,
-      /**
-       * Assign or move a component into a service (M12 P5b) — idempotent: sets the component's sole
-       * `contains` parent whether it has none (assign), a different one (atomic move), or the same
-       * one (no-op). Closes the missing `contains` SDK helper.
-       */
+      /** Assign or move a component into a service (M12 P5b). See docs/sdk.md §11. */
       setService: async (idOrUrn: string, serviceIdOrUrn: string): Promise<GraphObject> => {
         const result = await setComponentServiceRequest({
           client: this.client,
@@ -1206,11 +1147,7 @@ export class ScpClient {
         });
         return unwrap(result);
       },
-      /**
-       * Merge `loserIdOrUrn` into `survivorIdOrUrn` (M12 P5d) — moves the loser's executor bindings
-       * onto the survivor and soft-deletes the loser. Rejects (409) on a binding-type collision
-       * (relabel one first) or if either component has an in-flight change / live graph edges.
-       */
+      /** Merge `loserIdOrUrn` into `survivorIdOrUrn` (M12 P5d). See docs/sdk.md §12. */
       merge: async (
         survivorIdOrUrn: string,
         loserIdOrUrn: string
@@ -1225,13 +1162,7 @@ export class ScpClient {
     };
   })();
 
-  /**
-   * Placements — one component at one deployment target (ADR-0026). Declared, never inferred: there
-   * is no "pair these by name" helper here and there must not be one (D8).
-   *
-   * No `update`: a placement's endpoints ARE its identity, so changing one is a new declaration, not
-   * an edit (see `routes/placements.ts`).
-   */
+  /** Placements — one component at one deployment target. See docs/sdk.md §13. */
   readonly placements = {
     create: async (
       req: CreatePlacementRequest,
@@ -1310,9 +1241,7 @@ export class ScpClient {
     upsert: upsertServiceAccountByUrnRequest
   });
 
-  // -----------------------------------------------------------------------------------------
   // Named graph queries + generic traverse (DESIGN.md §5)
-  // -----------------------------------------------------------------------------------------
 
   readonly graph = {
     query: async (name: NamedGraphQuery, params: GraphQueryParams): Promise<GraphQueryResult> => {
@@ -1327,11 +1256,7 @@ export class ScpClient {
       const result = await graphTraverseRequest({ client: this.client, query: params });
       return unwrap(result);
     },
-    /**
-     * Induced-subgraph edges over an explicit object-id set — the REAL relationships whose both
-     * endpoints are in `params.ids`. Lets a caller that already holds a named query's result SET
-     * (`impact-of`/`blast-radius`/…) render the true edge structure among it in one round-trip.
-     */
+    /** Induced-subgraph edges over an explicit object-id set. See docs/sdk.md §14. */
     subgraph: async (params: SubgraphParams): Promise<SubgraphResult> => {
       const result = await graphSubgraphRequest({ client: this.client, body: params });
       return unwrap(result);
@@ -1346,12 +1271,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // `scp doctor` — read-only operational self-checks. Distinct from `/healthz` ("is this process
-  // up") and from `client.health` below ("what did an owner say about this object"): these report
-  // whether the instance's own state is COHERENT, which is exactly the class of fault a green
-  // liveness probe hides.
-  // -----------------------------------------------------------------------------------------
+  // `scp doctor` — read-only operational self-checks. See docs/sdk.md §15.
 
   readonly doctor = {
     /**
@@ -1362,11 +1282,7 @@ export class ScpClient {
       const result = await doctorReportRequest({ client: this.client });
       return unwrap(result);
     },
-    /**
-     * §7.3 — INSTANCE-WIDE operational self-checks (DSN reachability, recovery state, delivery
-     * config, mTLS/XO readiness). Gated by the deployment OPERATOR token (not a tenant bearer),
-     * passed as the `x-scp-operator-token` header. `scp doctor instance`.
-     */
+    /** §7.3 — INSTANCE-WIDE operational self-checks. See docs/sdk.md §16. */
     instanceReport: async (operatorToken: string): Promise<DoctorReport> => {
       const result = await doctorInstanceReportRequest({
         client: this.client,
@@ -1376,11 +1292,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // Object health (observe-enrichment signal 4; ADR-0008 decision 4). SCP STORES pushed health;
-  // it never probes/polls/computes it (charter principle 1). Stored graph-natively as an
-  // object-referencing projection row keyed by objects(id) (DESIGN §4.1).
-  // -----------------------------------------------------------------------------------------
+  // Object health (observe-enrichment signal 4; ADR-0008 decision 4). See docs/sdk.md §17.
 
   readonly health = {
     /**
@@ -1403,20 +1315,12 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /**
-     * Batch latest-health over an object-id set — the graph node-payload JOIN. `subgraph` returns
-     * EDGES ONLY, so the UI fetches health in a parallel follow-up call over the node id set and
-     * joins by id. Objects with no pushed health are absent (rendered grey/unknown, not fabricated).
-     */
+    /** Batch latest-health over an object-id set. See docs/sdk.md §18. */
     batchGet: async (params: HealthBatchParams): Promise<HealthBatchResult> => {
       const result = await graphHealthRequest({ client: this.client, body: params });
       return unwrap(result);
     }
   };
-
-  // -----------------------------------------------------------------------------------------
-  // Audit log
-  // -----------------------------------------------------------------------------------------
 
   readonly auditEvents = {
     list: async (query: ListQuery = {}): Promise<AuditEventListResponse> => {
@@ -1435,9 +1339,7 @@ export class ScpClient {
     } while (cursor);
   }
 
-  // -----------------------------------------------------------------------------------------
   // Personal Access Tokens (M2 step 2 Part A, BUILD_AND_TEST.md §8 M2 item 3)
-  // -----------------------------------------------------------------------------------------
 
   readonly pats = {
     /** `token` in the response is shown ONCE — it cannot be retrieved again after this call returns. */
@@ -1462,14 +1364,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // RBAC — roles, role bindings, effective permissions (role-model.md §5 steps 5, 6, 10)
-  //
-  // The generated client carries these operations; this wrapper is what the CLI and the web UI
-  // consume, and until now it did not expose them — so the whole roles milestone was reachable
-  // only by hand-written HTTP. Charter principle 3 is API -> SDK -> CLI -> IaC -> UI, and the SDK
-  // rung is this object, not the generated one.
-  // -----------------------------------------------------------------------------------------
+  // RBAC — roles, role bindings, effective permissions. See docs/sdk.md §19.
 
   readonly roles = {
     /** Built-ins and this org's own, in one bounded list — `GET /roles` is deliberately unpaginated. */
@@ -1478,7 +1373,7 @@ export class ScpClient {
       return unwrap(result);
     },
     /** Authors an ORG role. Refused if it names a built-in, carries an unknown permission, or
-     *  carries a permission the caller does not hold at the org root (role-binding-door.ts §9). */
+     *  carries a permission the caller does not hold at the org root (`docs/authz/role-binding-door.md` §9). */
     create: async (
       body: CreateRoleRequest,
       opts: { idempotencyKey?: string } = {}
@@ -1549,20 +1444,10 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
   // Instance-tier operator credentials (role-model.md §5 step 9)
-  // -----------------------------------------------------------------------------------------
 
   readonly operatorCredentials = {
-    /**
-     * `token` is returned ONCE and is not retrievable afterwards.
-     *
-     * `operatorToken` is REQUIRED on all three of these, unlike the read half of the other
-     * instance-tier surfaces: minting, listing and revoking are each gated by
-     * `x-scp-operator-token` (an existing credential, or the bootstrap `SCP_OPERATOR_TOKEN`). The
-     * listing is operator-gated too because it discloses how many credentials exist and when each
-     * was last used, which is a fact about the deployment's key material.
-     */
+    /** `token` is returned ONCE and is not retrievable afterwards. See docs/sdk.md §20. */
     create: async (
       body: CreateOperatorCredentialRequest,
       operatorToken: string
@@ -1617,11 +1502,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // `@scp/iac` server-side plan/apply (M2 step 3, BUILD_AND_TEST.md §8 M2 item 4) — the diff
-  // engine lives once on the server (routes/plans.ts); `scp plan`/`scp apply` (packages/cli) are
-  // thin callers of `.create()`/`.apply()` here, same layering as every other resource.
-  // -----------------------------------------------------------------------------------------
+  // `@scp/iac` server-side plan/apply. See docs/sdk.md §21.
 
   readonly plans = {
     create: async (manifest: DesiredStateManifest): Promise<Plan> => {
@@ -1638,11 +1519,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M3 Change Coordination Engine (BUILD_AND_TEST.md §8 M3, DESIGN §9/§10.4) —
-  // `scp change propose/accept/rollback/explain` (packages/cli) are thin callers of these,
-  // same layering as every other resource.
-  // -----------------------------------------------------------------------------------------
+  // M3 Change Coordination Engine. See docs/sdk.md §22.
 
   readonly changes = {
     propose: async (
@@ -1800,12 +1677,7 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /** `scp change-source report` (DESIGN §12 Mode 1) — the GENERATED `reportChangeSource`
-     *  operation against its own typed route, `POST /change-sources/{sourceKind}/report`. Same
-     *  persist-then-process engine path as `webhook()` (one `change_source_events` row, same
-     *  processor), but PAT-authenticated (no HMAC) and fully typed — including the M12 P4B
-     *  coupled-pipeline declaration (`provides`/`requires`), which the raw webhook shape cannot
-     *  carry. */
+    /** `scp change-source report` (DESIGN §12 Mode 1). See docs/sdk.md §23. */
     report: async (
       sourceKind: string,
       req: ChangeReportRequest
@@ -1819,11 +1691,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, DESIGN §10). Policy/Control documents reuse
-  // `typedResource` exactly like every other typed registry (routes/typed-registries.ts); control
-  // bindings/runs, approvals, freezes, and `policy evaluate` are their own thin wrappers.
-  // -----------------------------------------------------------------------------------------
+  // M4 Governance Engine. See docs/sdk.md §24.
 
   readonly policies = this.typedResource({
     create: createPolicyRequest,
@@ -1866,19 +1734,7 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /**
-     * The persisted findings of ONE scan control run (M22.1b/ADR-0033 §7), paged by ordinal.
-     *
-     * OPT-IN, and separate from `listForChange` on purpose: a run can carry up to
-     * `SCAN_FINDINGS_PERSIST_CAP` rows, so folding them into the run listing would put thousands of
-     * rows on a surface every change page reads.
-     *
-     * ALWAYS READ `findingsRecord` BEFORE THE ROWS. It is `truncated`, `unsupported`, or absent, and
-     * each of those means every exclusion for that scan was REFUSED — you cannot except what you did
-     * not record. A caller handed only `items` cannot distinguish "nothing was excluded" from "the
-     * finding set was capped and exclusions were therefore disallowed", which is the whole reason the
-     * marker travels with the page rather than beside it.
-     */
+    /** The persisted findings of ONE scan control run. See docs/sdk.md §25. */
     findings: async (
       controlRunId: string,
       query: CursorPageQuery = { limit: 20 }
@@ -1930,41 +1786,12 @@ export class ScpClient {
       const result = await getFreezeRequest({ client: this.client, path: { id } });
       return unwrap(result);
     },
-    /** M25.1 — LIFT (retract) a freeze: it stops being in force immediately, whatever `endsAt`
-     *  says. The `reason` is mandatory — lifting is a governance LOOSENING that applies to everyone
-     *  the freeze covered.
-     *
-     *  `freeze:write` AT THE FREEZE'S OWN SCOPE, and — M25.9 / owner ruling D1(a-ii), 2026-08-25 —
-     *  the Owner-only `freeze:override` AT THAT SAME SCOPE ON TOP whenever you are not the actor who
-     *  declared it (compared on the freeze's `created_by_actor_id`). Lifting YOUR OWN freeze stays
-     *  `freeze:write` alone, so the permission that declares a freeze is still the permission that
-     *  undoes it; retracting someone else's protection for everyone it covers costs the same
-     *  permission that admits one change past it. Expect a 403 naming `freeze:override` otherwise.
-     *  Scope is NOT expanded downward: `freeze:override` bound at a service does not reach the
-     *  org-root freeze that covers everyone. `routes/governance.ts`'s `assertMayRetractAnothersFreeze`
-     *  is where the rule is spelled.
-     *
-     *  A SOFT lift: the returned row is the freeze, still readable by `get(id)` forever with
-     *  `liftedAt` set, because a `gate`/`freeze_admission` Decision cites `freeze.id` in its
-     *  `inputContext` and that citation must keep resolving (charter principle 6). */
+    /** M25.1 — LIFT (retract) a freeze. See docs/sdk.md §26. */
     lift: async (id: string, req: LiftFreezeRequest): Promise<Freeze> => {
       const result = await liftFreezeRequest({ client: this.client, path: { id }, body: req });
       return unwrap(result);
     },
-    /** M25.1 — move a freeze's `endsAt`, in EITHER direction. Shortening it is a loosening and
-     *  extending it is a tightening; both take `freeze:write` at the freeze's own scope, both
-     *  require a reason, and the server records which direction it was along with the old and new
-     *  instants. Shortening to a past instant is allowed and is NOT re-labelled a lift.
-     *
-     *  THE TWO DIRECTIONS DO NOT COST THE SAME (M25.9 / owner ruling D1(a-ii), 2026-08-25). A
-     *  SHORTENING ends the protection early for everyone the freeze covers — the same act as
-     *  {@link lift} with a different record — so it additionally takes the Owner-only
-     *  `freeze:override` at the freeze's own scope whenever you are not the actor who declared it,
-     *  and gating the lift alone would have left the retraction one PATCH away. EXTENDING adds
-     *  protection and takes nothing from anyone, so it stays `freeze:write` even on someone else's
-     *  freeze; so does re-sending the `endsAt` a freeze already has, which moves nothing. The server
-     *  decides this from the direction it computes under the row lock, so the answer is about the
-     *  window actually in force, not the one you last read. */
+    /** M25.1 — move a freeze's `endsAt`, in EITHER direction. See docs/sdk.md §27. */
     updateWindow: async (id: string, req: UpdateFreezeWindowRequest): Promise<Freeze> => {
       const result = await updateFreezeWindowRequest({
         client: this.client,
@@ -1982,12 +1809,7 @@ export class ScpClient {
     return unwrap(result);
   }
 
-  // -----------------------------------------------------------------------------------------
-  // M5 Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5) — `scp campaign
-  // create/status` (packages/cli) are thin callers of these, same layering as `changes` above.
-  // No `accept`/`cancel` verbs: a campaign has no transition-guarded state machine of its own
-  // (coordination/campaign-status.ts's module doc) — `status` is always derived live by `get`.
-  // -----------------------------------------------------------------------------------------
+  // M5 Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5). See docs/sdk.md §28.
 
   readonly campaigns = {
     propose: async (
@@ -2019,27 +1841,7 @@ export class ScpClient {
       const result = await campaignAdoptionRequest({ client: this.client, path: { id } });
       return unwrap(result);
     },
-    /**
-     * M25.6a (owner decision D4) — SET, MOVE or CLEAR this campaign's deadline. `deadline: null`
-     * CLEARS it, which releases every target the deadline was withholding fan-out from on the next
-     * tick. That is the BLUNT exit; `overrideDeadline` below is the per-target one.
-     *
-     * WHAT EACH ACT COSTS (owner ruling 2026-08-25, D1 b-i). Setting a FIRST deadline and SHORTENING
-     * an existing one are tightenings and run at plain `object:write` at the campaign. CLEARING it
-     * (`deadline: null`), or moving `at` to an instant LATER than the one stored, RELEASES targets —
-     * so both additionally require the Owner-only `campaign:deadline-override` at the campaign, and
-     * throw 403 without it. Clearing is a strict superset of waiving one target via
-     * `overrideDeadline`, so it cannot cost less than that call does.
-     *
-     * `CampaignDeadlineInput`, not `CampaignDeadline`: the stored document carries `overrides[]` and
-     * this verb cannot author them whatever the caller holds — minting a waiver goes through
-     * `overrideDeadline`, which names its targets and audits one event each. Waivers already in
-     * force survive a set or a move.
-     *
-     * `reason` is MANDATORY on all three acts including the clear: the audit event records the
-     * operator's own words and the Decision it cites carries the PREVIOUS value, without which "the
-     * deadline slipped four times" is unreconstructible.
-     */
+    /** Set, move or clear a campaign deadline; null releases targets. See docs/sdk.md §29. */
     setDeadline: async (
       id: string,
       deadline: CampaignDeadlineInput | null,
@@ -2052,19 +1854,7 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /**
-     * M25.6b (§4.5) — WAIVE this campaign's deadline for named targets, so one laggard can be
-     * excused without clearing the deadline for everybody.
-     *
-     * Takes `campaign:deadline-override` (Owner-only) AT THE CAMPAIGN — the thing being waived is
-     * *this campaign's* deadline, and a target-scoped check would hand the laggard their own waiver
-     * — PLUS `object:write` at each named target. OMITTING `targets` waives every target the
-     * campaign declares, which still is not the same as clearing: the deadline stands, each waiver
-     * is audited per target, and `until` expires them individually.
-     *
-     * `until` is a BOUNDARY with read-time expiry: an instant in the past is stored, audited, and
-     * simply not effective. There is no un-waive verb, for the same reason there is no unlock verb.
-     */
+    /** Waive a deadline for named targets, without clearing it. See docs/sdk.md §30. */
     overrideDeadline: async (
       id: string,
       req: OverrideCampaignDeadlineRequest
@@ -2088,19 +1878,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M17.5: instance-scoped scan-requirement floors (ADR-0016 §3) — the two ABOVE-org tiers of the
-  // six-tier, most-restrictive-wins scan chain (platform + trust domain (partition)). They bind
-  // EVERY org on the deployment, so `put` is an OPERATOR action: it carries the deployment's
-  // `x-scp-operator-token`, never a tenant role. `list` is an ordinary authenticated read.
-  // -----------------------------------------------------------------------------------------
-  // -----------------------------------------------------------------------------------------
-  // M22.6 (ADR-0033 §6a) — the override request: a STANDING grant per (component x finding) with an
-  // EXPIRY. `create` raises one (`object:write` at the component); `approve`/`deny`/`revoke` are the
-  // authority acts and each needs `policy:write` at the object naming the tier that SET the rule
-  // (D3). Every act writes a Decision AND a high-severity hash-chained audit event, copying
-  // `freeze.override` — never the approvals path, where a vote writes no audit event today.
-  // -----------------------------------------------------------------------------------------
+  // M17.5: instance-scoped scan-requirement floors (ADR-0016 §3). See docs/sdk.md §31.
   readonly scanOverrideGrants = {
     create: async (req: CreateScanOverrideGrantRequest): Promise<ScanOverrideGrant> => {
       const result = await createScanOverrideGrantRequest({ client: this.client, body: req });
@@ -2146,14 +1924,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M25.3: instance-scoped (PLATFORM) freezes — the freeze tier ABOVE org (drizzle/0086,
-  // campaigns-rework §2, owner decision D1). One row binds EVERY org on the deployment, so the
-  // two write verbs take the deployment-level operator token and NO tenant role can grant them —
-  // the twin of `instanceScanFloors`, on purpose. `list` is tenant-readable, deliberately: a
-  // platform freeze is the one freeze a tenant can neither author nor (by default) override, so a
-  // tenant that cannot read it cannot be told why its release stopped.
-  // -----------------------------------------------------------------------------------------
+  // M25.3: instance-scoped (PLATFORM) freezes. See docs/sdk.md §32.
   readonly instanceFreezes = {
     /** Every instance freeze, including RETRACTED ones — a block Decision cites the id forever. */
     list: async (): Promise<InstanceFreeze[]> => {
@@ -2214,14 +1985,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M22.9: instance-scoped scan-exclusion admissions (ADR-0033 §1, §7a) — the `platform` and
-  // `trust_domain` rungs of the monotone AND. NO POLICY CAN EVER CONTRIBUTE THESE TWO
-  // (`tierForObjectType` maps graph object types and `containmentChain` is org-rooted), so without
-  // this surface every exclusion clause on a deployment fails the AND at the top rung and the whole
-  // dimension is inert. The five org-and-below rungs admit through the ordinary `scanExclusion`
-  // policy effect and are NOT here. The twin of `instanceScanFloors`, on purpose.
-  // -----------------------------------------------------------------------------------------
+  // M22.9: instance-scoped scan-exclusion admissions (ADR-0033 §1, §7a). See docs/sdk.md §33.
   readonly instanceScanExclusionAdmissions = {
     list: async (): Promise<InstanceScanExclusionAdmission[]> => {
       const result = await listInstanceScanExclusionAdmissionsRequest({ client: this.client });
@@ -2244,13 +2008,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M13.3a: instance-scoped scanner assignments (ADR-0020 §2) — the executor Type -> managed scan
-  // method(s) registry the commander's promotion scan step selects scanners from. They bind EVERY
-  // org on the deployment, so `put` is an OPERATOR action carrying the deployment's
-  // `x-scp-operator-token`, never a tenant role. `list` is an ordinary authenticated read. The
-  // twin of `instanceScanFloors`, on purpose.
-  // -----------------------------------------------------------------------------------------
+  // M13.3a: instance-scoped scanner assignments (ADR-0020 §2). See docs/sdk.md §34.
   readonly scannerAssignments = {
     list: async (): Promise<ScannerAssignment[]> => {
       const result = await listScannerAssignmentsRequest({ client: this.client });
@@ -2271,13 +2029,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M13.3b-ii: the offline scanner-DB cache (ADR-0020, proposal §13.3b). `status`/`stalenessPolicy`
-  // are ordinary authenticated reads (a blocked-for-stale-DB promotion must be explainable). The
-  // WRITES bind every org on the deployment, so each is an OPERATOR action carrying the deployment's
-  // `x-scp-operator-token`: the staleness-policy PUT, the connected `refresh` (skopeo-pull), and the
-  // air-gap `load` of a cosign-signed DB blob (server-local paths, verified before accept).
-  // -----------------------------------------------------------------------------------------
+  // M13.3b-ii: the offline scanner-DB cache. See docs/sdk.md §35.
   readonly scanDb = {
     status: async (): Promise<ScanDbStatus> => {
       const result = await getScanDbStatusRequest({ client: this.client });
@@ -2319,36 +2071,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M21.3: the DEPENDENCY-SUBSCRIPTION ENABLEMENT CHAIN (ADR-0032 §3a, §6).
-  //
-  //     effective_enabled(component, line) =
-  //         instance_unlocked  AND  component_enabled  AND  NOT line_opted_out
-  //
-  // `unlock` is an ordinary authenticated read (a team whose subscription is inert because the
-  // DEPLOYMENT never opened the feature must be able to see that); `setUnlock` binds every org on
-  // the deployment, so it is an OPERATOR action carrying `x-scp-operator-token`. The twin of
-  // `instanceScanFloors`/`scanDb`, on purpose.
-  //
-  // THERE IS NO `subscribe()` HERE, AND THERE MUST NOT BE. A dependency subscription IS a
-  // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a) — author it with
-  // `client.policies.create(...)`, carrying `effects: [{ dependencySubscription: { enabled: true } }]`
-  // at the scope you want it, and opt one line back out with `{ coordinate: "…", enabled: false }`.
-  // A convenience wrapper here would be a second authoring path for one concept.
-  // -----------------------------------------------------------------------------------------
-  // -----------------------------------------------------------------------------------------
-  // `governance:move` — THE OPT-IN SECOND BAR ON A CONTAINMENT MOVE (proposal
-  // governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18).
-  //
-  // THERE IS NO `move()` HERE, AND THERE MUST NOT BE. A move is still made through the ordinary
-  // verbs — `object(type).update({ domainId })`, `components.setService(...)`, `relationships`
-  // create/delete of a `contains` edge, or an IaC apply. What this block exposes is the LATTICE that
-  // decides whether those verbs demand `governance:move` as well as `object:write`.
-  //
-  // `enforcement(type, idOrUrn)` answers about ONE object's containment chain. A move has TWO ends
-  // and the door ORs them, so `enforced: false` here is not a promise that a particular move is
-  // ungoverned — the destination's chain may carry the rung.
-  // -----------------------------------------------------------------------------------------
+  // M21.3: the DEPENDENCY-SUBSCRIPTION ENABLEMENT CHAIN. See docs/sdk.md §36.
   readonly governanceMove = {
     /** Is a move of this object governed, and by which rung? (See the note above about two ends.) */
     enforcement: async (type: string, idOrUrn: string): Promise<GovernanceMoveEnforcement> => {
@@ -2423,14 +2146,7 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /** Resolve ONE (component, line) pair, with the per-tier `contributions` that decided it — the
-     *  explainability surface (charter principle 6: WHICH level turned this off?). The line key
-     *  travels VERBATIM; the coordinate is never slugified on either side.
-     *
-     *  READ `dependencyManagement` BEFORE ACTING ON `resolution`. It is required and always present,
-     *  and when `managedHere` is false the verdict is correct but INERT: this deployment is not an
-     *  explicitly declared commander, so no dependency job runs on it and nothing here will ever act
-     *  on an `enabled: true` (ADR-0032 §7d, `DependencyManagementSchema`). */
+    /** Resolve one component and line, with the tiers that decided it. See docs/sdk.md §37. */
     resolve: async (
       componentIdOrUrn: string,
       line: DependencyLineKey
@@ -2442,35 +2158,14 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /**
-     * M21.2 (ADR-0032 §4) — read enabled components' dependency manifests and (re)build their
-     * inventory.
-     *
-     * Ingestion is normally event-driven off an accepted change, which covers only components that
-     * RELEASE. This is how an existing estate — and any component that has not pushed since being
-     * enabled — acquires an inventory at all. Idempotent, and it reports every skip.
-     *
-     * It does not weaken the enablement gate: a component with no enabling subscription is refused
-     * before its repo is read, and no argument here can turn that off.
-     */
+    /** Read enabled components' manifests and rebuild the inventory. See docs/sdk.md §38. */
     backfillInventory: async (
       req: BackfillDependencyInventoryRequest = {}
     ): Promise<BackfillDependencyInventoryResponse> => {
       const result = await backfillDependencyInventoryRequest({ client: this.client, body: req });
       return unwrap(result);
     },
-    /**
-     * M21.6 — a component's dependency INVENTORY: one row per (major line × dependency manifest)
-     * with the line's last-observed head, its DECLARED producer and its resolved dependency
-     * subscription, plus the component-level ingestion gate.
-     *
-     * Every `rows[].subscription` is resolved AS THE CALLER — the acting subject is the requesting
-     * principal, exactly as `resolve()` threads it — so it is byte-equal to `resolve()` for the same
-     * caller and line, and a `scope.group` policy can make one human's answer differ from another's.
-     * `ingestion: null` and `lastIngestionDecision: null` mean NOT RECORDED; an empty `rows` beside
-     * them is UNKNOWN, never "no dependencies". `object:read` at the component; paged (limit ≤ 200,
-     * default 100).
-     */
+    /** M21.6 — a component's dependency INVENTORY. See docs/sdk.md §39. */
     inventory: async (
       componentIdOrUrn: string,
       query: ListQuery = {}
@@ -2482,13 +2177,7 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /**
-     * M21.6 — the bumps SCP AUTHORED for a component, newest dispatch first: each authorship row
-     * joined to its change's name and to the newest dispatch (`delivery`) and merge (`merge`)
-     * Decisions. `pullRequestUrl` is `null` until the server persists one — a consumer links only
-     * when it is non-null and never composes a URL from `repo` + `pullRequestNumber`. Same
-     * authorization and paging as `inventory`.
-     */
+    /** The bumps SCP authored for a component, newest dispatch first. See docs/sdk.md §40. */
     bumps: async (
       componentIdOrUrn: string,
       query: ListQuery = {}
@@ -2502,46 +2191,9 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // THE PRODUCER DECLARATION (ADR-0032 §7e) — which COMPONENT this org declares it publishes a
-  // coordinate from, and therefore which coordinates are INTERNAL.
-  //
-  // It is the switch between two entirely different head ingresses. An internal coordinate's
-  // versions are DERIVED from the org's own production releases; a third-party one's are FETCHED
-  // from a public index. Declaring a coordinate the org does not publish silently stops security
-  // updates reaching every subscriber of it; failing to declare one it does publish hands that
-  // coordinate to a public index, where a stranger's package answering `9.9.9` bumps every
-  // subscriber onto it.
-  //
-  // SO CALL IT WITH `dryRun` FIRST. Both verbs return the BLAST RADIUS — every major line the
-  // coordinate covers, each line's observed head, and the components subscribed to it — and with
-  // `dryRun: true` they compute it and write nothing. That list is unguessable from the request:
-  // you name one coordinate and affect repositories you cannot see.
-  //
-  // WHO MAY CALL THESE: a principal holding `policy:write` AT THE ORG ROOT. Custody of the
-  // producing component is deliberately NOT enough (`governance/policy-scope-authz.ts`'s
-  // precedent — custody of a row is not jurisdiction over what it reaches). The READ needs only
-  // `object:read`.
-  //
-  // THERE IS NO `producerIdOrUrn: null` FORM. Retraction is its own verb, because a nullable field
-  // that switches a call between "declare" and "undeclare" is how an omitted key becomes a
-  // destructive default.
-  // -----------------------------------------------------------------------------------------
+  // THE PRODUCER DECLARATION. See docs/sdk.md §41.
   readonly dependencyProducers = {
-    /**
-     * DECLARE that a component produces this coordinate. Idempotent.
-     *
-     * It CLEARS the observed head of every line the coordinate covers, deliberately: a poisoned
-     * public head would otherwise survive the very declaration that exists to undo it, and internal
-     * detection can never move a head backwards.
-     *
-     * `declaredByObjectId` is NOT a parameter and must not become one — the server stamps the
-     * authenticated subject, because a provenance label the asserter supplies is forgeable.
-     *
-     * A `service` is REFUSED with a 400 in the first cut: head derivation reads the COMPONENT a
-     * production placement names, so a service declaration would do the harmful half (remove the
-     * coordinate from polling) and none of the useful half.
-     */
+    /** DECLARE that a component produces this coordinate. See docs/sdk.md §42. */
     declare: async (
       req: DeclareDependencyLineProducerRequest
     ): Promise<DependencyLineProducerVerbResponse> => {
@@ -2551,17 +2203,7 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /**
-     * RETRACT the declaration and return the coordinate to third-party polling.
-     *
-     * It clears the heads too, and this is the direction that matters most: `latestVersion` is an
-     * input to the M22 vendor scan rule, so a head left over from the internal era on a coordinate
-     * that is third-party again could grant a vendor-pass against a version no registry published.
-     *
-     * READ `openBumpAuthorships` IN THE RESPONSE. Those are pull requests SCP already opened in
-     * other teams' repositories. Retraction stops FUTURE triggers only — SCP does not close them,
-     * because asserting it closed a PR it did not close would be a false record.
-     */
+    /** Retract the declaration and return the coordinate to polling. See docs/sdk.md §43. */
     retract: async (
       req: RetractDependencyLineProducerRequest
     ): Promise<DependencyLineProducerVerbResponse> => {
@@ -2608,11 +2250,7 @@ export class ScpClient {
       const result = await getFederationPeerRequest({ client: this.client, path: { id } });
       return unwrap(result);
     },
-    /** M16.2 phase A (E4) — the NARROW peer update: transport settings only. Carries NO key material,
-     *  so it cannot rotate, supersede or revoke a peer key — unlike `pair`, where a different
-     *  `publicKey` IS a rotation. Every field is absent-means-preserve; `deliveryTarget: null` clears.
-     *  Every pair-time guard still fires (poke-mode⇒mTLS over the merged tuple, the delivery-target
-     *  allowlists, the `full`-scope cursor re-anchor). */
+    /** M16.2 phase A (E4) — the NARROW peer update. See docs/sdk.md §44. */
     updatePeer: async (id: string, req: UpdateFederationPeerRequest): Promise<FederationPeer> => {
       const result = await updateFederationPeerRequest({
         client: this.client,
@@ -2663,17 +2301,7 @@ export class ScpClient {
      *  and soft-deletes the remaining shadows. Never touches a signature-verified replica. */
     reconcileOutpost: async (
       peerDomainId: string,
-      /** N9 — `keep` names the row that should SURVIVE. Absent keeps the most authoritative one, so
-       *  the default call is unchanged. It is the ONLY public-API way out of a VERIFIED foreign-origin
-       *  duplicate: with it, this domain deletes the row IT authored (an ordinary journaled tombstone).
-       *  Deleting a signature-verified replica stays refused unconditionally.
-       *
-       *  `ifClaimants` is the OPTIMISTIC-CONCURRENCY PRECONDITION — the `objectId:version` token of
-       *  every claimant the caller PREVIEWED, from {@link outpostClaimantTokens}. If the live set has
-       *  moved since, the call is refused 412 having written NOTHING, and the refusal body carries
-       *  the fresh claimants (parse with `OutpostReconcileStaleProblemSchema`, or use
-       *  {@link reconcileStaleClaimants}). Omitting it proceeds unchecked, which is the protocol
-       *  default for compatibility — not a recommendation. */
+      /** N9 — `keep` names the row that should SURVIVE. See docs/sdk.md §45. */
       opts: { keep?: string; ifClaimants?: readonly string[] } = {}
     ): Promise<OutpostConfigReconcileResult> => {
       const query = {
@@ -2720,12 +2348,7 @@ export class ScpClient {
       const result = await importRelayTarballRequest({ client: this.client, body: req });
       return unwrap(result);
     },
-    /** M13.1b operator read surface (owner ask) — the auto-relay build ledger's queue depth and
-     *  exhausted rows, `GET /federation/relay-builds`. ROLE-AGNOSTIC: rows exist only on a
-     *  `role: retrans` instance (seeded at promotion import there — `relay-builds-repo.ts`'s
-     *  `listRelayBuilds` doc); on any other role this returns an empty array rather than a 409,
-     *  matching every other read in this codebase. `opts.status` narrows to one bucket; `opts.limit`
-     *  is server-bounded (default 100, max 500) — both omitted apply the server defaults. */
+    /** M13.1b operator read surface (owner ask). See docs/sdk.md §46. */
     listRelayBuilds: async (
       opts: { status?: RelayBuildStatus; limit?: number } = {}
     ): Promise<RelayBuild[]> => {
@@ -2739,11 +2362,7 @@ export class ScpClient {
       });
       return unwrap(result).items;
     },
-    /** Federation audit witness (multi-region-instance-resilience.md §7.2.7) — what this domain
-     *  has passively witnessed of `originDomainId`'s audit-chain head, in chain order. This is the
-     *  post-failover peers-witness comparison's read surface (resilience runbook §7.2 step 5):
-     *  `scp audit verify` alone is structurally unable to see a truncated chain, since any prefix
-     *  of a valid hash chain still verifies. */
+    /** Federation audit witness. See docs/sdk.md §47. */
     listAuditWitnesses: async (originDomainId: string): Promise<AuditWitness[]> => {
       const result = await listFederationAuditWitnessesRequest({
         client: this.client,
@@ -2775,11 +2394,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12) — webhook signing
-  // secrets, executor/notification bindings, encrypted secrets (write-only), the plugin-manifest
-  // catalog, and DiscoveryPlugin run/accept.
-  // -----------------------------------------------------------------------------------------
+  // M7: Real Executor Integrations. See docs/sdk.md §48.
 
   readonly executors = {
     putBinding: async (
@@ -2915,24 +2530,10 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
-  // The live event stream (`GET /events/stream`, DESIGN §6/§8). Every frame is validated against
-  // the contract schema before it is yielded — the generated `responseValidator` runs per frame,
-  // exactly as it does per JSON body everywhere else (ADR-0023), which is what closes that ADR's
-  // named "not in the spec at all" hole.
-  // -----------------------------------------------------------------------------------------
+  // The live event stream. See docs/sdk.md §49.
 
   readonly events = {
-    /**
-     * The caller's org's events, as an async iterator that reconnects on its own — the SDK
-     * replacement for the browser `EventSource` `apps/web` used to open by hand.
-     *
-     * `sseMaxRetryAttempts: 1` deliberately switches the generated client's internal retry OFF so
-     * that one policy in `event-stream.ts` covers BOTH failure modes; the generated loop only ever
-     * covered the error one, and a clean server close would otherwise end the stream silently.
-     *
-     * Pass `signal` to stop: nothing else ends the iteration.
-     */
+    /** The org's events as an iterator that reconnects on its own. See docs/sdk.md §50. */
     stream: (options: EventStreamOptions = {}): AsyncGenerator<RelayedEvent, void, void> =>
       resilientEventStream(
         ({ signal, headers, onError }) =>

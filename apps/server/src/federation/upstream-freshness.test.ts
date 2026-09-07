@@ -8,29 +8,7 @@ import {
 import type { FederationPeerRow } from "./peers-repo.js";
 import type { ServiceBoardAsOf, TrustDomainId } from "@scp/schemas";
 
-/**
- * UNIT coverage (no database) for the "as of &lt;bundle/date&gt;" reading DESIGN.md §13 requires —
- * the same shape `federation-sync-cadence.test.ts` gives `peerSyncCadence`/`isPeerDue`, and for the
- * same reason: the truth table is where the dishonesty would hide, and it must be checkable without
- * standing up two domains.
- *
- * The properties that matter, each with a case below:
- *
- *  1. THE ANCHOR IS TRANSPORT-AGNOSTIC. A bundle that arrived by file/inbox reads as `via: "bundle"`
- *     and still carries a real timestamp — the air-gapped case, where the live-pull columns are NULL
- *     forever and a pull-derived label would say "never synced" on an instance syncing weekly.
- *  2. THE TRANSPORT IS READ, NOT INFERRED. A live pull says `live-pull` even though the scheduler
- *     stamps `lastPullSuccessAt` BEFORE the import it triggers confirms.
- *  3. THE THRESHOLD IS THE PEER'S OWN CADENCE, PLUS GRACE. A peer proven onto the sparse poke cadence
- *     is NOT late for being exactly as sparse as configured; and no peer is late for the ordinary
- *     overshoot every healthy cycle produces.
- *  4. NO CADENCE ⇒ `stale: null`, NEVER `false`; NOTHING DELIVERED ⇒ `stale: true`, NEVER `false`.
- *  5. THE LIMITING PEER IS THE OLDEST. `stale` is a per-peer verdict, never a cross-peer comparator.
- *  6. ...AND THEREFORE STALENESS IS AN ANY-PEER PREDICATE, computed separately from the label —
- *     reading it off the label's own `stale` loses every overdue peer that is not also the oldest.
- *  7. THE THRESHOLD IS ON THE WIRE (`staleAfterSeconds`), so no client re-derives the grace factor
- *     or mistakes the cadence for the bound.
- */
+/** Unit coverage for the as-of reading, with no database. See docs/federation.md §564. */
 
 const NOW = new Date("2026-07-25T12:00:00.000Z");
 const ago = (seconds: number): string => new Date(NOW.getTime() - seconds * 1000).toISOString();
@@ -80,11 +58,7 @@ describe("upstreamFreshness — DESIGN §13 'as of' reading", () => {
   });
 
   it("REGRESSION: a live pull reads `live-pull` even though its success stamp PRECEDES the import", () => {
-    // `federationSyncOrgTick` captures `now` ONCE at tick start and hands that same value to
-    // `markPeerPullSuccess`, so `lastPullSuccessAt` is always EARLIER than the `confirmed_at` the
-    // import it triggered wrote. The old attribution inferred the transport from
-    // `lastPullSuccessAt >= at` and therefore reported EVERY real live pull as a bundle import —
-    // exactly backwards. This pins the ordering that used to break it.
+    // The tick captures the instant once and passes it down. See docs/federation.md §565.
     const pullSuccessAt = ago(12);
     const confirmed = arrived(9, "live-pull");
     // The premise, stated: the success stamp is strictly EARLIER than the confirmation it produced.
@@ -318,14 +292,7 @@ describe("oldestReading — the LIMITING upstream is the oldest, full stop", () 
     expect(oldestReading([only])).toBe(only);
   });
 
-  /**
-   * THE SECOND HALF OF THE SAME MISTAKE. Fixing the label to be the oldest reading (above) then
-   * broke the caveat that used to be read off it: the service board derived its staleness unknown
-   * from `asOf.stale === true`, so a genuinely overdue peer that was NOT the oldest lost its caveat
-   * entirely — and the masking peer is, typically, an air-gapped one whose `stale` is `null` because
-   * no cadence applies to it. The label answers "how old is the oldest thing here"; the caveat
-   * answers "is anything late". Different questions, answered separately.
-   */
+  /** THE SECOND HALF OF THE SAME MISTAKE. See docs/federation.md §566. */
   it("REGRESSION: an overdue peer that is NOT the oldest still sets `anyStale`", () => {
     // Peer A — a commander on a 60s cadence whose last import confirmed an hour ago. Overdue.
     const overdueCommander = reading({
@@ -348,7 +315,6 @@ describe("oldestReading — the LIMITING upstream is the oldest, full stop", () 
       [ancientAirGapped, overdueCommander]
     ]) {
       const summary = summarizeReadings(order);
-      // The label is still the true oldest bound...
       expect(summary.label.peerName).toBe("air-gapped");
       // ...and the caveat still fires for the peer that is actually late.
       expect(summary.anyStale).toBe(true);

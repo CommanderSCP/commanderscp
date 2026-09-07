@@ -13,33 +13,7 @@ import type { PluginHost } from "../plugin-host/contract.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import { reconcileOrgTick } from "./reconcile.js";
 
-/**
- * THE CAMPAIGN-LAYER WAVE-TARGET HOLD PROJECTION (M25.UI) — through the real HTTP `:explain`
- * route, the campaign-side sibling of the change-wave layer's freeze-hold projection
- * (`wave-target-freeze-hold.integration.test.ts`), which this file's own NOT-COVERED note named as
- * the gap: "`campaigns.ts`'s own `getLatestCampaignPlan`/`CampaignWaveTarget` projection — a
- * structurally separate schema, out of this increment's stated scope."
- *
- * `CampaignWaveTargetSchema.hold` / `CampaignWaveSchema.heldTargetCount` are composed by the SAME
- * `resolveActiveCampaignWaveFreezeHolds` / `toWaveTargetHold` / `activeWaveOf` machinery the change
- * side uses (`campaign-plan-service.ts`, `plan-service.ts`) — this file is the one place that
- * exercises it end to end against real Postgres, mirroring `freeze-admission.integration.test.ts`'s
- * own campaign-fan-out fixture (case F) for freeze creation/targeting.
- *
- * DRIVES `reconcileOrgTick` DIRECTLY, never a live loop — same two reasons
- * `freeze-admission.integration.test.ts` states: "N ticks" must mean exactly N, and a live loop
- * competes for the same rows these cases read back.
- *
- * NOT COVERED here, stated rather than left to be discovered:
- *   * a stage-dependency half of a hold — a campaign wave target has none (ADR-0028 is a
- *     Change-only coupling; `CampaignWaveTargetSchema.hold` is already the WHOLE hold, freeze-only).
- *   * more than one wave simultaneously `running` — `resolveActiveCampaignWaveFreezeHolds` assumes
- *     sequential wave admission, the same assumption `campaign-repo.ts`'s own M25.2 comment states
- *     ("Only the active wave fans out"); no fixture here forces two waves running at once because
- *     nothing in `campaign-wave-targets-repo.ts` appears able to produce that state.
- *   * a federation/cross-domain fixture — the same gap `component-pipeline-correlated-infra.
- *     integration.test.ts` and `component-pipeline.integration.test.ts` record for `maintainedBy`.
- */
+/** THE CAMPAIGN-LAYER WAVE-TARGET HOLD PROJECTION. See docs/coordination.md §230. */
 describe("campaign wave-target hold projection (M25.UI): HTTP-layer parity with the change-wave layer", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

@@ -5,25 +5,7 @@ import {
   type PlacementBindingNeed
 } from "./resolve-bindings.js";
 
-/**
- * THE DOMAIN RECONCILER'S DECISION (ADR-0046 section 4).
- *
- * Every case here is about a REFUSAL TO GUESS. The happy path - one policy, one target, one
- * binding - is the least interesting property in the file, because it is the one a wrong
- * implementation also gets right.
- *
- * MUTATION LOG - each applied, watched fail, reverted, watched pass (MEASURED)
- * | Mutation | Result (MEASURED) |
- * |---|---|
- * | a same-depth tie picks the lowest policy id instead of reporting ambiguity | 2 FAIL - (3) and (5c). A binding appears where none should, and the operator never learns they wrote two policies. |
- * | `resolveLane` takes the MAX depth instead of the MIN | (2) FAILS - the domain-wide default beats the per-target override, i.e. the ladder inverts. |
- * | the test lane falls back on AMBIGUOUS as well as on absent | (5c) FAILS - the conflict is silently resolved in favour of a declaration nobody made for that lane. |
- * | `laneOf` returns "test" for an absent lane | 8 FAIL - every pre-lane document changes meaning, which is the blast radius that makes this one line worth a case of its own. |
- *
- * Case (1) - no policy means UNBOUND - has no mutation because its failure mode is an ADDITION: an
- * org-tier default would have to be written in, not removed. It is pinned as an exact-equality
- * assertion on both `bindings` and `gaps` so a default appearing anywhere fails it.
- */
+/** THE DOMAIN RECONCILER'S DECISION. See docs/binding-policy.md §14. */
 describe("binding policy: the reconciler's decision", () => {
   const TARGET = "target-1";
   const COMPONENT = "component-1";

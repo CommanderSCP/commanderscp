@@ -3,27 +3,7 @@ import { manifest as managedDepManifest } from "@scp/plugin-managed-dep";
 import { MANIFEST_BY_MODULE, validatePluginConfig } from "./plugin-manifests.js";
 import { isKnownExecutorModule } from "../coordination/executor-bindings-repo.js";
 
-/**
- * M21.5 — `managed-dep` IS REGISTERED, and its `additionalProperties: false` therefore RUNS.
- *
- * ================================================================================================
- * WHY THIS TEST EXISTS AND WHAT IT IS ABOUT
- * ================================================================================================
- * An authored `configSchema` is worth exactly nothing until its module is in
- * {@link MANIFEST_BY_MODULE}: `validatePluginConfig` looks the module up there and RETURNS SILENTLY
- * when it finds nothing, so an unregistered module is an UNVALIDATED one. That is not hypothetical —
- * shipped `managed-scan` authored the same schema, was never registered, and its `dockerBinary` (the
- * executable it spawns) was settable from a tenant binding config as a result.
- *
- * So this asserts BOTH halves that have to hold together: the entry exists, AND the refusal it
- * enables actually fires on the server-governed keys. Deleting the map entry fails the second
- * assertion, not merely the first — a test that only read the map would pass against a schema whose
- * gate nothing ran.
- *
- * The last case is the class rather than the instance: EVERY module on the executor allowlist must
- * have a manifest here. That is the boot assertion PR #238 adds, expressed as a test so this
- * milestone cannot be the one that breaks it.
- */
+/** That module is registered, and its schema is strict. See docs/plugin-host.md §82. */
 describe("M21.5 managed-dep's config schema is registered, and therefore enforced", () => {
   it("is in MANIFEST_BY_MODULE, which is what makes validatePluginConfig look at it at all", () => {
     expect(MANIFEST_BY_MODULE["managed-dep"]).toBe(managedDepManifest);

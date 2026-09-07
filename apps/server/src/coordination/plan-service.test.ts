@@ -7,14 +7,7 @@ import {
 import type { FreezeHoldVerdict } from "./freeze-hold.js";
 import type { ContinuousHoldTargetVerdict } from "./continuous-hold.js";
 
-/**
- * Pure decision-logic tests for the two wire-shape composers `toChangePlanShape` folds into
- * `ChangeWaveTargetSchema.hold` — the read-time predicates that feed them
- * (`resolveWaveTargetFreezeHolds`, `resolveWaveTargetContinuousHolds`) are `TenantTx`-bound and
- * stay with the integration suites that already cover the wire field end to end
- * (`campaign-wave-hold-projection.integration.test.ts` and the freeze/continuous admission
- * integration tests).
- */
+/** Pure decision logic for the two wire-shape composers. See docs/coordination.md §686. */
 
 describe("toWaveTargetHold — FreezeHoldVerdict -> wire shape", () => {
   it("returns undefined for an undefined verdict", () => {

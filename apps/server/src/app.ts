@@ -62,12 +62,7 @@ import { registerGovernanceMoveRoutes } from "./routes/governance-move.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/**
- * M7 (routes/change-sources.ts, coordination/webhook-signature.ts): every inbound webhook source
- * (GitHub, TFC/Atlantis, ...) signs over the RAW request bytes, not a re-serialized
- * JSON.parse/stringify round trip — whitespace/key-order differences would break the HMAC. Fastify
- * augmented here with the one extra field the signature-verification path needs.
- */
+/** M7 (routes/change-sources.ts, coordination/webhook-signature.ts). See docs/server.md §2. */
 declare module "fastify" {
   interface FastifyRequest {
     rawBody?: Buffer;
@@ -75,15 +70,10 @@ declare module "fastify" {
 }
 
 export interface BuildAppOptions {
-  /** Suppresses request logging noise for openapi:emit / tests. */
   logger?: boolean;
 }
 
-/**
- * Builds (but does not start listening on) the Fastify app. Never touches the database at
- * construction time — `pg.Pool` connects lazily — so `openapi:emit` can boot route definitions
- * without a DB (BUILD_AND_TEST.md §8 M0).
- */
+/** Builds (but does not start listening on) the Fastify app. See docs/server.md §3. */
 export async function buildApp(
   deps: AppDeps,
   options: BuildAppOptions = {}
@@ -95,28 +85,9 @@ export async function buildApp(
 
   const app = Fastify({
     logger: options.logger ?? true,
-    // Global body ceiling (http-limits.ts). Modest by default so a small route (e.g. /auth/login)
-    // can't be handed a huge JSON body that blocks the event loop in the synchronous JSON.parse +
-    // prototype-poisoning walk below. The two doors that ingest large payloads — POST
-    // /federation/imports (a `.scpbundle` as one JSON body) and POST /change-sources/:kind/report
-    // (an open-ended IaC planJson) — opt UP to LARGE_BODY_LIMIT_BYTES per-route. Both limits are
-    // finite and explicit (never unbounded — the oversized-payload DoS a bundle parser must defend
-    // against), and enforced by Fastify BEFORE the body reaches JSON.parse or any route code.
-    // (2026-08-31 security review; the global was previously a flat 64 MiB for bundles' sake.)
+    // Global body ceiling. See docs/server.md §4.
     bodyLimit: GLOBAL_BODY_LIMIT_BYTES,
-    // M9.3 (ADR-0001, `docs/adr/0001-in-app-federation-mtls.md`) — when in-app federation mTLS is
-    // configured, the WHOLE process listens as HTTPS (there is only ever one Fastify instance /
-    // one `.listen()` call — main.ts), not just the federation routes: Node has no per-route TLS
-    // concept, only per-listener. `requestCert: true, rejectUnauthorized: false` is mandatory, not
-    // a relaxed default — this SAME listener also serves browsers/CLI/SDK traffic that must NOT be
-    // required to present a client certificate; `rejectUnauthorized: false` asks for a cert but
-    // never refuses the HANDSHAKE over its absence, so enforcement happens per-route instead
-    // (`federation/mtls-enforcement.ts`'s `enforceFederationMtls`, called explicitly as the first
-    // statement in each of the three federation transport routes' handlers in
-    // `routes/federation.ts` — see that module's doc comment for why this is a plain function
-    // call rather than a registered Fastify hook). When `federationServerMtls` is unset (the
-    // default), `https` is omitted entirely and Fastify builds a plain `http.Server`, byte-for-byte
-    // the pre-M9.3 behavior.
+    // M9.3 (ADR-0001, `docs/adr/0001-in-app-federation-mtls.md`). See docs/server.md §5.
     ...(deps.config.federationServerMtls
       ? {
           https: {
@@ -134,48 +105,7 @@ export async function buildApp(
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
-  // M7 (coordination/webhook-signature.ts): captures the RAW request bytes onto `request.rawBody`
-  // BEFORE JSON-parsing them — every webhook signature scheme (GitHub's `X-Hub-Signature-256`, the
-  // generic `sha256=` fallback) is computed over those exact bytes, and a JSON.parse -> JSON.
-  // stringify round trip is not guaranteed byte-identical (whitespace, key order). This REPLACES
-  // Fastify's default parser rather than adding a second, route-scoped one, because Fastify
-  // content-type parsers are registered per content-type globally, not per-route — so whatever
-  // this function does or fails to do applies to EVERY route in the process.
-  //
-  // THIS COMMENT USED TO CLAIM the replacement "behaves identically to Fastify's own default JSON
-  // parser for every OTHER route". It was false in three ways, all measured against the base
-  // commit, and the first was a live vulnerability:
-  //
-  //   1. Fastify's default is `secure-json-parse` with `onProtoPoisoning: "error"` and
-  //      `onConstructorPoisoning: "error"`. The replacement was a bare `JSON.parse`, so prototype-
-  //      poisoning rejection was absent from every route in the application — and, since nothing
-  //      else in this codebase ever mentioned `secure-json-parse`, from the codebase entirely.
-  //      `POST /services` with `properties: {"ok":1,"__proto__":{…}}` returned 201 Created and
-  //      stored `{"ok":1}`: accepted, silently partially discarded, reported as success. Restored
-  //      below via `util/safe-json.ts`, which reimplements the same two rules (that module's doc
-  //      comment records why the library itself cannot be added as a dependency here: it is in the
-  //      pnpm store but not the offline metadata mirror, so a direct dependency edge would need a
-  //      network fetch at install time, which charter principle 5 forbids).
-  //   2. A JSON syntax error did NOT surface as `FST_ERR_CTP_INVALID_JSON_BODY`. That error carries
-  //      `statusCode: 400`; a raw `SyntaxError` carries none, so `setErrorHandler` below fell
-  //      through to its catch-all and answered a client typo with 500 Internal Server Error
-  //      (measured: `{not json` -> 500). Both failure modes now produce a 400 problem+json via
-  //      `badRequest`, which is this codebase's own equivalent of that Fastify error.
-  //
-  //      THAT SENTENCE NAMES A PROPERTY, AND THIS PARSER WAS ONE MEMBER OF IT. `setErrorHandler`
-  //      ignored `err.statusCode` for EVERY error, not only for parser errors, so every other
-  //      pre-handler refusal Fastify raises was a 500 too — an unsupported media type, an
-  //      oversized body, a mismatched `content-length`. Fixing the parser and leaving those is the
-  //      exact shape CLAUDE.md's census-by-property rule exists to prevent, so the handler now
-  //      honours the status instead: see `frameworkClientProblem` in `errors.ts` for the
-  //      measured census of the whole class and `error-handler-status.test.ts` for its pins.
-  //   3. An empty body does NOT match Fastify's default — the default replies
-  //      `FST_ERR_CTP_EMPTY_JSON_BODY`. Parsing it to `undefined` is a DELIBERATE divergence that
-  //      routes here rely on, so it is kept, and now labelled as a divergence rather than as parity.
-  //
-  // One further known divergence, left as-is: Fastify's default strips a leading UTF-8 BOM before
-  // parsing and this does not, so a BOM-prefixed body is a 400 here. Narrowing behaviour is safe;
-  // it is recorded rather than silently "fixed" because widening it is a functional change.
+  // Captures the raw request bytes for signature checking. See docs/server.md §6.
   app.addContentTypeParser<Buffer>(
     "application/json",
     { parseAs: "buffer" },
@@ -239,17 +169,7 @@ export async function buildApp(
       sendProblem(request, reply, badRequest(err.message));
       return;
     }
-    // A FRAMEWORK-RAISED CLIENT ERROR KEEPS THE STATUS THE FRAMEWORK GAVE IT. Everything Fastify
-    // refuses before a route handler runs — unsupported media type, oversized body, a
-    // `content-length` that does not match the bytes — arrived here with a correct `statusCode`
-    // that this handler used to drop on the floor, answering 415/413/400 conditions with 500.
-    // `frameworkClientProblem` (errors.ts) carries the full census, and the reason it is narrower
-    // than a bare `err.statusCode` read: `undici`'s errors carry an UPSTREAM response's status
-    // under that same property name.
-    //
-    // Logged at `info`, not `error`: these are the caller's mistakes, and the whole harm of the
-    // old behaviour was that a client typo looked like a server fault to everything downstream of
-    // the logs as well as to the client.
+    // A framework-raised client error keeps its own status. See docs/server.md §7.
     const clientProblem = frameworkClientProblem(err);
     if (clientProblem) {
       request.log.info({ err }, "request refused");
@@ -340,12 +260,7 @@ export async function buildApp(
   registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   registerScanDbRoutes(app, deps); // M13.3b-ii offline scanner-DB cache: status/staleness/refresh/load (ADR-0020)
   registerDependencySubscriptionRoutes(app, deps); // M21.3 instance unlock + (component, line) enablement resolution (ADR-0032 §6)
-  // THE PRODUCER DECLARATION'S AUTHORING SURFACE (ADR-0032 §7e). Without this line
-  // `declareDependencyLineProducer` has no non-test caller, `dependency_line_producers` stays
-  // empty, and the INTERNAL half of dependency subscriptions cannot fire in production at all —
-  // that is the defect the route exists to close, so deleting this registration must turn
-  // `dependency-producers.integration.test.ts`'s "WIRING" case red rather than merely removing a
-  // convenience.
+  // THE PRODUCER DECLARATION'S AUTHORING SURFACE. See docs/server.md §8.
   registerDependencyProducerRoutes(app, deps);
   registerScanOverrideGrantRoutes(app, deps); // M22.6 standing, expiring scan override grants (ADR-0033 §6a)
   // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — coordinate many
@@ -369,22 +284,7 @@ export async function buildApp(
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
-  // M2 step 4 (BUILD_AND_TEST.md §8 M2 item 2, DESIGN.md §14): the built Web UI v1 SPA
-  // (apps/web/dist) — superseding the M0 `/ui` server-rendered stub, which is deleted (see
-  // routes/typed-registries.ts and friends for the real API this now talks to via @scp/sdk).
-  // `wildcard: false` makes this registration glob `apps/web/dist` once at boot and register one
-  // route per real file (e.g. `/assets/index-*.js`) instead of a dynamic wildcard — the SPA
-  // client-side-routing fallback below handles everything else. `decorateReply: false` avoids
-  // colliding with the `/static/` registration above, which already added `reply.sendFile`.
-  //
-  // M16.3 P3 (owner decision 2026-07-29): a `role: retrans` relay MUST NOT serve this — the
-  // profile is "no local Gitea/registry, no executor coordination, no deploy machinery, no UI"
-  // (BUILD_AND_TEST.md M13.1), and a retrans sits at the most sensitive point in the topology (a
-  // CDS boundary). Gated on `deps.config.federationRole` — the install-time/deployment-wide axis
-  // (`config.ts`'s doc comment on `federationRole` explains why THIS axis, not `SCP_ROLE` and not
-  // the per-org `self_domain.role`, governs here). Every other value (the `commander`/`outpost`
-  // defaults every pre-M16.3 deployment already has) preserves the unconditional-serve behavior
-  // byte-for-byte.
+  // M2 step 4 (BUILD_AND_TEST.md §8 M2 item 2, DESIGN.md §14). See docs/server.md §9.
   if (deps.config.federationRole !== "retrans") {
     const webDistRoot = path.resolve(__dirname, "../../web/dist");
     await app.register(fastifyStatic, {
@@ -396,28 +296,7 @@ export async function buildApp(
 
     const webIndexHtmlPath = path.join(webDistRoot, "index.html");
 
-    // Low-priority catch-all: find-my-way (Fastify's router) always prefers the exact/static
-    // routes @fastify/static just registered over this wildcard, for any request that lands here
-    // at all — so real built assets are served directly, and this only ever runs for SPA
-    // client-side routes (`/services`, `/graph/abc`, ...) that have no matching file on disk. The
-    // explicit `/api/`, `/static/`, `/healthz` guard is belt-and-braces on top of that route
-    // precedence, so an unmatched API path still 404s as JSON rather than getting served HTML.
-    //
-    // READ FROM DISK EVERY TIME, DELIBERATELY. This used to memoize into a
-    // `let cachedIndexHtml: string | undefined` for the lifetime of the process, which made ONE
-    // document served from TWO sources under TWO different caching policies: `GET /` comes from
-    // @fastify/static, which reads the file per request, while every SPA deep link came from a
-    // snapshot taken at the first such request. Rebuild the web app under a running server — the
-    // ordinary local loop — and Vite emits new content-hashed asset names and deletes the old
-    // ones, so `/` correctly referenced the new bundle while `/services/anything` kept handing out
-    // HTML pointing at files that no longer existed: two 404s and a blank page, with nothing in
-    // the server log. The asymmetry was the defect, not the staleness; the fix is to make both
-    // paths agree, and agreeing on "fresh" is the only option that is never wrong.
-    //
-    // The cost is one ~400-byte `readFile` per SPA DOCUMENT request — not per client-side
-    // navigation (those never reach the server) and not per asset (@fastify/static already reads
-    // those from disk per request). Next to the DB-backed API calls the page makes on load it does
-    // not register. Pinned by `routes/spa-index-freshness.integration.test.ts`.
+    // Low-priority catch-all: find-my-way. See docs/server.md §10.
     app.get("/*", async (request, reply) => {
       if (
         request.url.startsWith("/api/") ||

@@ -14,14 +14,7 @@ interface CyLike {
   edges: () => { length: number };
 }
 
-/**
- * Smoke test 4 (BUILD_AND_TEST.md §8 M2 item 2 TESTS section): create fixture data (two services
- * + a `depends_on` edge) via `@scp/sdk` directly, navigate to `/graph/{idOrUrn}` for the source
- * object, assert the Cytoscape container renders and shows at least the expected node/edge
- * count. Cytoscape renders to `<canvas>`, which isn't otherwise inspectable — this suite exposes
- * `window.__cy` for exactly this purpose (routes/graph-explorer.tsx, gated so it's unreachable
- * outside a Playwright-controlled page — see fixtures.ts `enableGraphTestHook`).
- */
+/** Smoke test 4 (BUILD_AND_TEST.md §8 M2 item 2 TESTS section). See docs/web.md §13. */
 test("graph explorer: renders nodes/edges for an object with a real relationship", async ({
   page
 }) => {

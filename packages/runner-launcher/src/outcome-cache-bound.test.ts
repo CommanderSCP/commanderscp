@@ -6,19 +6,7 @@ import {
   pruneOutcomeRecord
 } from "./index.js";
 
-/**
- * MEDIUM (M23.0 verification pass 7, finding M1) — BOUNDING ONE ENTRY DID NOT BOUND THE MAP.
- *
- * The previous round capped each managed executor's `detail` and left the CACHES that hold them
- * unpruned. Measured on managed-iac's durable ledger at 500 keys: `bytes=2074290`,
- * `bytesPerKey=4149` — the per-entry bound working perfectly while the map grew without limit,
- * because the map is a different quantity from the entry. Worse for that one specifically:
- * `loadState` `JSON.parse`s the whole file on EVERY `status()` poll and `saveState` rewrites it
- * whole on every `trigger()`, so an unbounded ledger is O(total history ever) of parsing on a loop
- * that ticks once a second.
- *
- * THIS FILE PINS THE MECHANISM. The three plugins' own suites pin that they are WIRED to it.
- */
+/** MEDIUM (M23.0 verification pass 7, finding M1). See docs/runner-launcher.md §339. */
 describe("MEDIUM: an outcome cache is bounded by ENTRY COUNT, not only by entry size", () => {
   describe("pruneOutcomeMap (the in-memory form)", () => {
     it("drops the OLDEST entries and keeps the newest, in insertion order", () => {

@@ -27,65 +27,7 @@ interface OutboxRow {
   created_at: Date;
 }
 
-/**
- * Worker-side half of the transactional outbox (DESIGN.md §8): claims unprocessed rows with
- * `FOR UPDATE SKIP LOCKED` (safe under multiple worker replicas), relays each to the pg-boss
- * `domain-events` queue and issues a `scp_sse_events` NOTIFY for it, then marks it processed —
- * all in one transaction per batch. Wakes immediately on the `scp_outbox_insert` NOTIFY
- * (drizzle/0002_rls_rbac_seed.sql's trigger fires post-commit) with a 1s poll as the fallback.
- *
- * SINCE M26.1 (proposal multi-region-instance-resilience.md §7.1 item 1, closing §4-A1): this no
- * longer calls `sseHub.publish` directly. The relay and the SSE-serving process are two disjoint
- * process sets under the default chart topology (api×N + worker×N) — an in-process `EventEmitter`
- * cannot cross that boundary. `pg_notify` can: it is issued from INSIDE the same transaction as
- * the batch, so delivery is atomic with the COMMIT, and events/sse-bridge.ts (started in every
- * process that serves `GET /events/stream`) is what actually feeds each process's local `sseHub`.
- * This is now the ONLY delivery path in every topology, including a single `role=all` process
- * where the relay and the SSE route already share one process — no separate direct-publish
- * shortcut, so there is exactly one way an event reaches `sseHub` rather than two that could
- * double-deliver it.
- *
- * The relay legitimately needs cross-org visibility (it fans out every org's events), but gets
- * it through the narrowest possible mechanism (PR #4 security review, CRITICAL 3): it runs on
- * the least-privileged runtime pool (`scp_app` login) and assumes the `scp_relay` role with
- * `SET LOCAL ROLE` inside each transaction. `scp_relay` (drizzle/0003_runtime_roles.sql) is
- * NOBYPASSRLS and is granted ONLY on `outbox` (SELECT + UPDATE, with a permissive policy on
- * that one table) — it cannot read or write objects/relationships/role_bindings/audit_events.
- *
- * `eventBusBackend` (DESIGN.md §8 "Scaling insurance", BUILD_AND_TEST.md M3 item 8) is the NATS
- * JetStream backend toggle: `"postgres"` (the default) means this relay behaves exactly as it
- * always has (pg-boss + SSE only, zero new dependency). `"nats"` means every row is ALSO
- * republished to JetStream, in the same per-row step as the pg-boss send and the SSE publish — if
- * it throws, the whole batch transaction rolls back and the row is retried on the next
- * NOTIFY/poll, exactly like a pg-boss `send` failure already does today. `EventBus.publish()`
- * itself (events/event-bus.ts) is unchanged for both backends: it only ever writes the outbox row,
- * because write-then-publish atomicity is a Postgres-transaction property no broker can join —
- * the backend distinction lives entirely here, in what the relay fans out to.
- *
- * CRITICAL #5 fix (PR #7 review — "relay can permanently drop a NATS-bound event"): the OLD
- * signature took an optional `natsFanout` handle and gated the JetStream publish on whether that
- * PARTICULAR handle happened to be truthy (`if (natsFanout)`), with nothing tying that to the
- * deployment's actually-configured backend. A relay instance constructed without a `natsFanout`
- * handle — a misconfiguration, a partial rollout, a caller that simply forgot — could win an
- * outbox row via `FOR UPDATE SKIP LOCKED`, silently skip the NATS publish, mark the row
- * `processed_at`, and commit: the event is gone from JetStream forever, with no error anywhere.
- * `eventBusBackend` makes the intended backend an explicit, required argument instead of an
- * inferred side-effect of whether a handle happens to be present — and the constructor below
- * throws immediately if they're inconsistent (`"nats"` with no handle), turning that
- * misconfiguration into a loud boot-time failure instead of a silent per-row data loss. Within one
- * relay instance this is now airtight: `processed_at` is set only after every one of ITS
- * configured sinks (pg-boss, SSE, and — when `eventBusBackend === "nats"` — JetStream) has
- * accepted the row; any sink throwing rolls back the whole batch and the row is retried.
- *
- * Tracked follow-up (same idiom as the pg-boss-role / OIDC-allowlist items in
- * BUILD_AND_TEST.md §8 M3 item 9): this does NOT yet detect two DIFFERENT relay processes sharing
- * one outbox table with genuinely inconsistent `SCP_EVENT_BUS_BACKEND` config across replicas —
- * that needs a small persisted "this deployment's backend is X" marker checked at every relay's
- * boot, which is real scope (a migration + a cross-replica agreement check) beyond this fix. Single
- * -process behavior (main.ts boots exactly one relay per `role=worker/all` process, from exactly
- * one `config.eventBus.backend`) is airtight today; multi-replica config drift is an operator
- * misconfiguration this doesn't yet turn into a startup error.
- */
+/** Worker-side half of the transactional outbox (DESIGN.md §8). See docs/events.md §32. */
 export function startOutboxRelay(
   runtimePool: Pool,
   listenConnectionString: string,
@@ -93,14 +35,7 @@ export function startOutboxRelay(
   opts: {
     eventBusBackend: "postgres" | "nats";
     natsFanout?: NatsFanoutHandle;
-    /**
-     * M14.3 (ADR-0009) — post-commit hook handed the DISTINCT org ids a just-committed batch
-     * produced events for. Fire-and-forget: invoked AFTER COMMIT, OUTSIDE the `scp_relay` tx (that
-     * role can read only `outbox`), synchronous up to its own internal scheduling, and wrapped so a
-     * throw can never roll back or wedge the relay. The commander poke sender (federation/
-     * poke-sender.ts) uses it to nudge poke-mode peers to pull — the "outbox-derived" federation
-     * feed of DESIGN §5, reusing this exact machinery rather than inventing a new event source.
-     */
+    /** A post-commit hook handed the org ids a batch touched. See docs/events.md §33. */
     onEventsRelayed?: (orgIds: string[]) => void;
   }
 ): OutboxRelayHandle {
@@ -112,16 +47,7 @@ export function startOutboxRelay(
     );
   }
   let stopped = false;
-  // Tracks every relayOnce() call currently in flight (there can be more than one: the 1s poll
-  // timer, the LISTEN/NOTIFY handler, and the initial kick-off below all fire independently — see
-  // `trigger()`). `stop()` awaits this set before returning, which is the actual fix for a real
-  // shutdown-race bug: without it, a caller that calls `stop()` then immediately closes
-  // `runtimePool` (main.ts's onClose hook, test-support/harness.ts's close()) could tear down the
-  // pool out from under a relayOnce() that was still mid-query, producing
-  // "TypeError: Cannot destructure property 'rows' of ... as it is undefined" — `client.query()`
-  // resolving to `undefined` instead of rejecting, a rare-but-real pg behavior when the
-  // connection is destroyed mid-flight. See the defensive `result?.rows` guard below too — belt
-  // and braces, since ordering discipline alone can't prove every possible teardown interleaving.
+  // Tracks every relayOnce() call currently in flight. See docs/events.md §34.
   const inFlight = new Set<Promise<void>>();
 
   async function relayOnce(): Promise<void> {
@@ -134,11 +60,7 @@ export function startOutboxRelay(
         `SELECT * FROM outbox WHERE processed_at IS NULL ORDER BY created_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
         [BATCH_SIZE]
       );
-      // Defensive guard (see `inFlight` doc comment above): a client torn down mid-query by pool
-      // shutdown has been observed to resolve `query()` with `undefined` rather than rejecting.
-      // Treat that as "no rows this pass" instead of crashing — nothing is lost, since the
-      // row(s) are simply left unprocessed and picked up by the next relayOnce() (or, if the
-      // process really is shutting down, by the relay after restart).
+      // Defensive guard (see `inFlight` doc comment above). See docs/events.md §35.
       const rows = result?.rows ?? [];
       const relayedOrgIds = new Set<string>();
       for (const row of rows) {
@@ -159,13 +81,7 @@ export function startOutboxRelay(
           data: row.data,
           createdAt: row.created_at.toISOString()
         };
-        // SSE fan-out (M26.1 §7.1 item 1, revised by review finding F1): NOTIFY from INSIDE this
-        // transaction, so delivery is atomic with the batch COMMIT. The payload is a POINTER, never
-        // the event itself: NOTIFY is not channel-access-controlled, so any DB login can inject a
-        // frame on this channel — the bridge therefore re-derives every event from the
-        // authoritative `outbox` row by id and treats nothing in the payload as authority. `orgId`
-        // rides along strictly as a non-authoritative observability hint. This also makes payload
-        // size independent of event size (no ~8000-byte NOTIFY-cap path to split on).
+        // SSE fan-out (M26.1 §7.1 item 1, revised by review finding F1). See docs/events.md §36.
         await client.query("SELECT pg_notify($1, $2)", [
           SSE_NOTIFY_CHANNEL,
           JSON.stringify({ id: row.id, orgId: row.org_id })
@@ -200,12 +116,7 @@ export function startOutboxRelay(
     }
   }
 
-  /** Fires relayOnce() and tracks it in `inFlight` so `stop()` can await it — every trigger
-   *  source (NOTIFY, the poll timer, the initial kick-off) goes through this instead of calling
-   *  relayOnce() directly. Synchronous up to its `stopped` check, so once `stop()` sets `stopped`
-   *  no new relayOnce() can start afterward (JS's single-threaded run-to-completion semantics: no
-   *  interleaving is possible between `stop()`'s synchronous prefix and any event-loop callback
-   *  that calls `trigger()`). */
+  /** Tracks each run so `stop()` can await work in flight. See docs/events.md §37. */
   function trigger(): void {
     if (stopped) return;
     const call = relayOnce().finally(() => {
@@ -214,12 +125,7 @@ export function startOutboxRelay(
     inFlight.add(call);
   }
 
-  // The wake LISTEN (§4-A5 fix): now the shared reconnecting client (events/listen-client.ts)
-  // instead of a raw `pg.Client` whose `on('error')` only logged — a Postgres blip used to
-  // silently and permanently demote this relay to the 1s poll fallback with no reconnection ever
-  // attempted. `onReconnect: trigger` is a belt-and-braces catch-up (the poll fallback already
-  // covers a missed NOTIFY, but there is no reason to wait up to 1s for it after a connection that
-  // just came back).
+  // The wake LISTEN (§4-A5 fix). See docs/events.md §38.
   const wakeListener: ListenClientHandle = startReconnectingListenClient({
     connectionString: listenConnectionString,
     channels: ["scp_outbox_insert"],
@@ -232,15 +138,7 @@ export function startOutboxRelay(
   trigger();
 
   return {
-    /**
-     * Stops the relay deterministically: no new relayOnce() can start after this is called, AND
-     * every already-in-flight relayOnce() has settled by the time this resolves. Callers
-     * (main.ts's onClose hook, test-support/harness.ts's close()) rely on that ordering to close
-     * `runtimePool` immediately afterward without racing a query against a torn-down client —
-     * this is what actually fixes the shutdown-race bug described on `inFlight` above; the
-     * `result?.rows` guard in relayOnce() is the belt-and-braces backstop for any interleaving
-     * this ordering doesn't cover.
-     */
+    /** Stops the relay deterministically. See docs/events.md §39. */
     async stop() {
       stopped = true;
       clearInterval(timer);

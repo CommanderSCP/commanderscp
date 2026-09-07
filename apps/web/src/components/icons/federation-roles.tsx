@@ -1,23 +1,6 @@
 import { createLucideIcon, type IconNode } from "lucide-react";
 
-/**
- * THE FEDERATION ROLE SYMBOLS (owner direction, 2026-08-11): minimalist, military-flavoured marks
- * for the three service roles of ADR-0004 — commander / outpost / retrans. Built through
- * `createLucideIcon` so they are first-class lucide citizens: same stroke conventions, same
- * `size-*`/`strokeWidth` props, drop-in wherever a `LucideIcon` is accepted (Badge `icon`, NavIcon,
- * EmptyState). Hand-drawn on the 24px grid; inline path data, so the air-gap posture is unchanged.
- *
- * The vocabulary (design spec §1.6 extension):
- *   - COMMANDER — a five-pointed star over a base bar: the general-officer star, the single most
- *     legible "command" mark there is, grounded by the bar so it reads as an insignia rather than
- *     a rating/favourite star. (A figure/portrait was considered and rejected: unreadable at 14px,
- *     and the star IS the military symbol for command.)
- *   - OUTPOST — a crenellated fort tower with a door: the field fortification, distinct at a
- *     glance from every rounded lucide glyph around it.
- *   - RETRANS — an antenna mast with signal arcs on BOTH sides: receive on one flank, resend on
- *     the other — the arcs literally state "retransmission", which one-sided broadcast glyphs
- *     (RadioTower, Antenna) do not.
- */
+/** THE FEDERATION ROLE SYMBOLS. See docs/web.md §58. */
 
 /** Path data exported for `lib/graph-glyphs.ts` — one drawing per mark, shared between the React
  *  icon and the Cytoscape node glyph so the two can never drift. */

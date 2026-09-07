@@ -1,17 +1,4 @@
-/**
- * @scp/plugin-webhook-control — the webhook-control escape hatch (DESIGN.md §10.2: "a generic
- * webhook ControlPlugin (POST evaluation context → receive outcome, timeout → `timed_out`) gives
- * orgs custom controls on day 1 without writing a plugin"; BUILD_AND_TEST.md §8 M4 item 2).
- *
- * One `ControlPlugin` implementation, configured per `control_bindings` row
- * (apps/server/src/db/schema.ts) with a target `url` — every binding is a SEPARATE subprocess
- * plugin-host instance (apps/server/src/plugin-host/host.ts), so one org can point different
- * controls at different webhook endpoints just by creating different bindings, no code change.
- *
- * Runs under the exact same subprocess plugin host as ExecutorPlugin instances
- * (plugin-host/subprocess-entry.ts) — `ctx.http` is therefore already the host-mediated, scoped
- * HTTP client (DESIGN §11's `PluginContext.http`), not a raw `fetch` this plugin owns.
- */
+/** @scp/plugin-webhook-control — the webhook-control escape hatch. See docs/plugins.md §551. */
 import type {
   ControlOutcome,
   ControlOutcomeStatus,
@@ -24,13 +11,7 @@ export interface WebhookControlConfig {
   /** The org's webhook endpoint — receives `POST { changeId, controlId, context }`. */
   url: string;
   headers?: Record<string, string>;
-  /** Wall-clock budget for the remote endpoint to respond. Default 10s. Enforced HERE (a
-   *  `Promise.race` against the outbound call) rather than relying solely on the plugin host's
-   *  own call-level timeout (`PluginHostOptions.callTimeoutMs`, default 10s): this plugin's own
-   *  timeout produces the DESIGN-specified `timed_out` OUTCOME (evidence-bearing, persisted as a
-   *  normal control_run) instead of the host's timeout, which would instead surface as an RPC
-   *  failure the caller has to translate — racing here keeps that translation in exactly one
-   *  place, this file, closest to the actual HTTP call. */
+  /** Wall-clock budget for the remote endpoint to respond. See docs/plugins.md §552. */
   timeoutMs?: number;
 }
 

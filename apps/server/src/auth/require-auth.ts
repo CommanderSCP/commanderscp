@@ -17,12 +17,7 @@ export function extractToken(request: FastifyRequest): string | null {
   return null;
 }
 
-/**
- * Org is always resolved from the token (DESIGN.md §6); path overrides only assert a match. The
- * ONE seam that resolves a bearer/cookie value to an AuthContext — a `scp_pat_` prefixed token is
- * a Personal Access Token (auth/pat.ts), anything else falls through to the existing local-auth
- * session-token path (auth/local-auth.ts `verifyToken`, unchanged).
- */
+/** Org is always resolved from the token. See docs/auth.md §39. */
 export async function requireAuth(deps: AppDeps, request: FastifyRequest): Promise<AuthContext> {
   const token = extractToken(request);
   if (!token) throw unauthorized("missing bearer token or session cookie");

@@ -2,23 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExecutorEvent } from "@scp/plugin-api";
 import { observedEventIdentity } from "./observe.js";
 
-/**
- * The observe dedupe identity.
- *
- * THE BUG THIS PINS. The identity was `correlationKey ?? commitSha ?? artifactDigest ?? …`, which
- * reads as a sensible fallback chain and is not one: `correlationKey` is a GROUPING key, deliberately
- * STABLE across events for several providers, and because it was checked first the discriminating
- * fields were never reached. Every event sharing a group collapsed onto one dedupe key, so exactly
- * ONE row per (instance, group) was ever ingested — permanently, not per poll window.
- *
- * Measured on the homelab: 4 push events ingested in total against 402 workflow runs (which escaped
- * only because `run-${id}` is incidentally unique), and 62 argocd events for 61 bound applications
- * with the newest a week stale.
- *
- * These cases are written per PROVIDER SHAPE rather than per plugin, because the defect was a
- * property of the identity function and not of any one adapter — three plugins emit the constant
- * `"refs/heads/*"`, and argocd emits a constant app name.
- */
+/** The observe dedupe identity. See docs/coordination.md §571. */
 describe("observedEventIdentity: the grouping key alone is not an identity", () => {
   const ev = (correlation: ExecutorEvent["correlation"], over: Partial<ExecutorEvent> = {}) =>
     ({

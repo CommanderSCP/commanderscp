@@ -9,27 +9,7 @@ import type {
   ScopedHttpResponse
 } from "@scp/plugin-api";
 
-/**
- * A REAL (non-stubbed) `ScopedHttpClient` for `@scp/plugin-terraform`'s tests — unlike every
- * other plugin's unit tests in this repo (webhook-control, fake-executor, federation-https),
- * which stub `ctx.http.request` directly with a hand-written function, THIS package's tests exist
- * specifically to exercise the plugin's ACTUAL network code (URL templating incl.
- * `encodeURIComponent`, header construction, response-body JSON parsing) against `nock`-fixtured
- * HTTP, since Mode 1 (DESIGN.md §12) is a genuinely HTTP-calling plugin.
- *
- * Deliberately built on `node:http`/`node:https` `request()`, NOT the global `fetch()`: Node's
- * built-in `fetch` is implemented on top of `undici`, which does its own socket handling and
- * bypasses the `http`/`https` core modules entirely. `nock` (installed here at 13.5.6, see
- * package.json) patches exactly those core modules and has no undici/fetch interception support
- * — empirically confirmed while building this suite: a bare `nock(url).reply(...)` interceptor
- * plus a `fetch()` call against that same URL throws `TypeError: fetch failed`, never reaching
- * the interceptor. This client is the `node:http`-based sibling of
- * apps/server/src/plugin-host/subprocess-entry.ts's `unscopedFetchHttpClient` — same
- * request/response shape and the same "JSON-parse with raw-text fallback" behavior — swapped only
- * for the transport `nock` can actually see. (If a future `nock`/undici upgrade adds native
- * `fetch` support, this file plus `unscopedFetchHttpClient` could converge on one implementation;
- * until then they must stay separate for tests to be able to intercept anything at all.)
- */
+/** A real, non-stubbed HTTP client for this package's tests. See docs/plugins.md §547. */
 function request(req: ScopedHttpRequest): Promise<ScopedHttpResponse> {
   return new Promise((resolve, reject) => {
     const url = new URL(req.url);
@@ -76,12 +56,7 @@ const noopLogger: Logger = {
   error() {}
 };
 
-/**
- * Builds a `PluginContext` whose `http` is the real `node:http`-backed client above, so calls the
- * plugin makes actually hit the wire (and therefore whatever `nock` interceptors the test set up)
- * rather than a hand-rolled stub. `secretsGet` defaults to "no secret configured", matching every
- * other plugin's test fixture in this repo (fake-executor, webhook-control, federation-https).
- */
+/** A context whose client is the real Node-backed one above. See docs/plugins.md §548. */
 export function realHttpPluginContext(
   config: unknown,
   secretsGet?: (key: string) => Promise<string | undefined>

@@ -22,91 +22,7 @@ import {
 } from "../test-support/harness.js";
 import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
-/**
- * M22.5 (component-declared facts, D2) and M22.6 (the override request, D3/D4) — PROVEN AT THE REAL
- * GATE, and at the real authoring doors.
- *
- * The pure predicates are pinned in `packages/schemas/src/scan-exclusion-declared-override.test.ts`
- * and the pure folds in `scan-declared-facts.test.ts`. NEITHER of those can tell you whether the
- * thing is WIRED — this repo's dominant defect is a component built, tested green against itself,
- * and installed nowhere — so every test below drives a PRODUCTION entry point:
- *
- *   - the real lifecycle gate, through the real subprocess plugin host running the real
- *     `scan-result-control` against a real loopback Trivy-shaped result;
- *   - the real component write route, for the declaration's strict door;
- *   - the real `/scan-override-grants` routes, for raising, approving, denying and revoking;
- *   - the real generic `/objects/{type}` endpoint, for the governance-managed refusal.
- *
- * Nothing here calls `resolveEffectiveScanExclusionsForTargets`, `applyScanExclusions` or either
- * fact resolver directly.
- *
- * MUTATIONS RUN against this file (2026-08-17) — the MEASURED result of each, each applied ALONE
- * against a passing suite and reverted by an exact inverse edit. Baseline: 10 passed. Nothing below
- * is a prediction.
- *
- *   M-1  DELETE the `attachDeclaredFacts` call in `resolveEffectiveScanExclusionsForTargets`
- *          -> 1 failed (D1). THE INSTALLATION PROOF for M22.5: the declarations resolve and reach
- *             nothing.
- *   M-2  DELETE the `attachApprovedOverrides` call, same function
- *          -> 1 failed (O1). The installation proof for M22.6.
- *   M-3  replace the `(properties->>'expiresAt')::timestamptz > at` SQL window with `true`
- *          -> 1 failed (O2). An expired grant would authorise a promotion — the whole reason expiry
- *             is a read-time window and not a status a (non-existent) job flips.
- *   M-4  approve authorizes `object:write` at the COMPONENT instead of `policy:write` at the TIER
- *          -> 1 failed (O4). The waiver becomes available to exactly the party it constrains.
- *   M-5  remove `scan_override_grant` from `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`
- *          -> 1 failed here (O6) + 1 in `governance-managed-write-doors.integration.test.ts` (the
- *             set-membership guard). NOTE what did NOT fail: that file's DOOR 1 and DOOR 2 stayed
- *             green, because they loop over a set the type had just left. That is precisely why the
- *             membership guard exists as its own case.
- *   M-6  delete BOTH `assertValidComponentSecurityDeclarations` calls in `graph/objects-repo.ts`
- *          -> 1 failed (D4).
- *   M-7  `declaredFactPredicate` accepts a clause with `declaredFact` and NO `declaredValue`
- *          -> 1 failed (D3) — but ONLY AFTER `pnpm -w build`. The first run of this mutation passed
- *             the whole suite, because `scan-result-control` runs in a SUBPROCESS that loads the
- *             BUILT `@scp/schemas`, so a source-only edit to that package is invisible here. Any
- *             future mutation of `packages/schemas` must rebuild before it is measured; the unit
- *             suite caught this one immediately, which is why both exist.
- * MUTATIONS RUN for the D3 review round (2026-08-18, cases O7-O11). Baseline: 15 passed.
- *
- *   M-9   the authority bar grants every candidate (`applyOverrideAuthorityBar`'s two refusals)
- *           -> 2 failed (O7, O9) + 3 in `scan-override-authority.test.ts`.
- *   M-10  `requiredOverrideApprovalTier` always returns the bottom rung
- *           -> 3 failed (O7, O8, O9). O8 fails on the RECORDED bar, which is why the bar is in the
- *              Decision and not only in the filter.
- *   M-11  `attachApprovedOverrides` derives the bar from NO ceiling
- *           -> 3 failed here (O7, O8, O9) + A9 in `scan-exclusion-actuator.integration.test.ts`.
- *   M-12  DELETE `assertOverrideTierStanding` at the RAISE route
- *           -> 1 failed (O10), and only O10.
- *   M-13  DELETE the instance-floor refusal at APPROVE
- *           -> 1 failed (O11), and only O11.
- *   M-14  the DECIDE route's `updateObject` passes `scanOverrideGrantDecision: false`
- *           -> 1 failed (O1). THE ANTI-VACUITY MUTATION for the internal bypass: without it the flag
- *              could have been dead code and every refusal above would still have looked correct.
- *   M-15  `scanExclusionsForDecision` stops recording `overrideRequiredTier` /
- *         `overridesRefusedForAuthority`
- *           -> 4 failed (O1, O7, O8, O9).
- *   M-16  `scanExclusionsForDecision` stops recording the grant's DERIVED `grantTier`
- *           -> 1 failed (O1).
- *
- *   M-8  drop `declaredFacts` and `approvedOverrides` from `scanExclusionsForDecision`
- *          -> 2 failed (D1, O1). The exclusion applies and the Decision cannot explain why.
- *
- * MUTATION RUN for O13 — the guarded `::timestamptz` cast (2026-08-18). Baseline: 17 passed.
- *
- *   M-17  UNWRAP the `CASE ... ~ ISO_TIMESTAMP_TEXT_PATTERN` in `scan-override-grants.ts`'s live-grant
- *         window back to the bare `(properties->>'expiresAt')::timestamptz` cast
- *           -> 1 failed (O13), and ONLY O13; the other 16 passed. It fails by TIMEOUT rather than by
- *              an assertion, and that is the defect's own shape rather than a weak test: the cast
- *              throws inside the gate's query, so no control run is ever written and there is nothing
- *              to assert against. Nothing else in this file notices, because a peer's row is the only
- *              way to reach a non-ISO `expiresAt` — every LOCAL door refuses the field outright.
- *
- * Instance-scoped `scan_exclusion_admissions` rows are GLOBAL to the deployment and the integration
- * suite runs `singleFork` against ONE shared Postgres, so a row left behind would silently admit
- * loosenings in every later suite. They are cleared in an `afterEach` that runs regardless of
- * outcome, and once more at teardown.
- */
+/** The component-declared facts and the override request. See docs/governance.md §293. */
 
 const OPERATOR_TOKEN = "m22-5-operator-token-fixture";
 const MATCH_DIGEST = "sha256:cccc777777777777777777777777777777777777777777777777777777777777";
@@ -184,16 +100,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     operator = new ScpClient({ baseUrl: server.baseUrl, token: bootstrap.adminToken });
   }, 180_000);
 
-  /**
-   * THE PRODUCTION WRITE DOOR (M22.9). This used to `INSERT INTO scan_exclusion_admissions` over the
-   * admin pool, which made the suite green while the two instance rungs every clause requires — and
-   * that NO policy can ever contribute — had no writer outside these tests. The whole exclusion
-   * dimension was inert on a real deployment. It now goes through
-   * `PUT /api/v1/instance/scan-exclusion-admissions/{tier}` with the deployment operator token,
-   * exactly as an operator would; delete that route's registration in `app.ts` and every admitting
-   * test in this file dies. The PUT is a whole-set REPLACE, so this unions with what is already
-   * admitted rather than clobbering an earlier call in the same test.
-   */
+  /** THE PRODUCTION WRITE DOOR. See docs/governance.md §294. */
   async function admitAtInstance(cls: string) {
     for (const tier of ["platform", "trust_domain"] as const) {
       const current = await operator.instanceScanExclusionAdmissions.list();
@@ -240,23 +147,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await trivy?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixtures
-  // -----------------------------------------------------------------------------------------
-
-  /**
-   * A SECOND PRINCIPAL TO RAISE WITH, because the raiser may not be the approver (ADR-0033 §6a,
-   * owner decision 2026-08-18).
-   *
-   * Every case below used to raise AND approve as `admin`, which the separation-of-duties refusal
-   * now answers 400 to — seven of them went red at once when it landed, which is the measurement
-   * that says the guard reaches the real route rather than only the unit under it.
-   *
-   * `Operator` at the component supplies exactly the `object:write` the raise route asks for and
-   * NOTHING else — deliberately the weakest identity that can raise, so these fixtures keep proving
-   * that raising is open (it authorizes nothing) while approving is not. `Viewer` at the org root
-   * supplies the reads the SDK needs to resolve the component on the way in.
-   */
+  /** A second principal, since the raiser may not approve. See docs/governance.md §295. */
   async function raiserFor(org: TestOrg, componentId: string): Promise<ScpClient> {
     const user = await createTestUser(server, org, [
       { role: "Viewer", scope: org.orgId },
@@ -285,12 +176,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     scopeObjectId: string,
     effect: Record<string, unknown>
   ) {
-    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
-    // `scanExclusion` rule that requires no scan control: such a document is silently inert,
-    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
-    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
-    // doc: a real bound control would add a control run and change what these tests measure.
-    // `admit`-only stays untouched — it is an admission, not a rule about a finding (exempt).
+    // M22.8 — the authoring guard. See docs/governance.md §296.
     const requires =
       effect.exclude === undefined
         ? []
@@ -364,16 +250,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     );
   }
 
-  /**
-   * The gate Decision's own record of the exclusion set, read from the `decisions` table the way an
-   * operator resolving a `decision_id` would.
-   *
-   * EVERY decision for the change is scanned, not the latest one, and that is a measured correction
-   * rather than caution: a change writes SEVERAL `transition` decisions on its way through, and the
-   * LAST one is `coordinated -> executing`, whose `inputContext.gate` is `{gatesBound: 0}` — it runs
-   * no policy gate at all. Reading only the newest row therefore reports "no exclusions recorded" for
-   * a change whose gate recorded them perfectly well one transition earlier.
-   */
+  /** The gate Decision's own record of the exclusion set. See docs/governance.md §297. */
   async function gateDecisionExclusions(org: TestOrg, changeId: string) {
     return withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const rows = await tx.execute<{ input_context: Record<string, unknown> }>(sql`
@@ -391,9 +268,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     });
   }
 
-  // ===========================================================================================
   // M22.5 — the component-declared fact
-  // ===========================================================================================
 
   it("D1: an ADMITTED declared_fact clause plus a matching component declaration excludes at the real gate, and the DECLARED VALUE lands verbatim in evidence AND in the Decision", async () => {
     await admitAtInstance("declared_fact");
@@ -411,11 +286,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await exclusionPolicy(admin, "clause-decl", org.orgId, {
       exclude: {
         class: "declared_fact",
-        // NARROWED, and now required to be (M22.4 review round): a `declared_fact` clause with NO
-        // narrowing matcher was a bare `() => true` that excluded EVERY finding at EVERY severity,
-        // while the tiers above had consented only to the CLASS and could not see the blast radius.
-        // It is refused at the authoring door and inert at read time. Every finding these cases scan
-        // is `curl`, so naming it changes nothing they assert.
+        // NARROWED, and now required to be (M22.4 review round). See docs/governance.md §298.
         pkgName: "curl",
         declaredFact: "egress",
         declaredValue: "none",
@@ -553,9 +424,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     expect(ok.properties).toMatchObject({ security: { declarations: { egress: "none" } } });
   });
 
-  // ===========================================================================================
   // M22.6 — the override request
-  // ===========================================================================================
 
   it("O1: a RAISED and APPROVED grant excludes exactly its finding, and evidence names the grant, its authority and its expiry", async () => {
     await admitAtInstance("approved_override");
@@ -567,15 +436,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
       exclude: { class: "approved_override" }
     });
 
-    // RAISED at the component, then APPROVED at the ORG — and the org rather than the service is
-    // the whole of the D3 floor made visible (owner decision, 2026-08-18). This case named
-    // `service.id` until that floor landed and the grant stopped applying, which is correct and is
-    // the behaviour change to know about: NO clause here authors a `scanThreshold`, so the bar has
-    // no tier contributor to derive from and sits on the floor. A service-tier grant is below it.
-    //
-    // Read together with O7/O8: a grant below the bar is refused and a grant at-or-above it applies.
-    // The floor's effect is that "at-or-above" now starts at `org` even when nothing set a ceiling,
-    // because the gate is still enforcing one the contributors cannot see.
+    // RAISED at the component, then APPROVED at the ORG. See docs/governance.md §299.
     const requested = await (
       await raiserFor(org, component.id)
     ).scanOverrideGrants.create({
@@ -627,11 +488,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
         expiresAt: approved.expiresAt
       }
     ]);
-    // ...and the BAR it was measured against. No `scanThreshold` is authored anywhere in this org and
-    // no instance floor is set — and the bar is still `org`, NOT the bottom rung. That is the D3
-    // floor (owner decision, 2026-08-18): "no tier contributed a ceiling" is not "no ceiling is
-    // enforced", because the control binding's `config.threshold` and the scan plugin's shipped
-    // fail-closed 0/0 are both in force and neither is authorable below `org`.
+    // ...and the BAR it was measured against. See docs/governance.md §300.
     expect(decisionExclusions?.overrideRequiredTier).toBe("org");
     expect(decisionExclusions?.overridesRefusedForAuthority).toBeUndefined();
   });
@@ -852,21 +709,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     expect(listed.items).toHaveLength(0);
   });
 
-  // ===========================================================================================
-  // M22.6 REVIEW ROUND — D3 IS ENFORCED, NOT MERELY ASSERTED
-  //
-  // Until this round `tierObjectId` was chosen freely by the REQUESTER and read afterwards only for
-  // PRESENCE. Because `authz/resolve.ts`'s `scopeExpandCte` expands UPWARD, naming a LOWER object
-  // strictly WIDENED the set of principals whose bindings satisfied the approve check — so the party
-  // seeking a waiver selected the authority that granted it, and a service lead could approve away a
-  // ceiling set at org or platform while the audit trail truthfully recorded "under authority of
-  // '<service>'".
-  //
-  // O7/O8 are a MATCHED PAIR and must be read together: identical org, identical ceiling, identical
-  // clause, identical finding, identical grant — the ONLY difference is which rung the grant was
-  // approved at. O9 proves the same bar is re-derived at the gate from a rule authored AFTER the
-  // approval. O10/O11 are the authoring doors.
-  // ===========================================================================================
+  // The decision is enforced now, not merely asserted. See docs/governance.md §301.
 
   /** An org-anchored policy that BOTH requires the real scan control and sets the ceiling — one
    *  document, because `scan-rule-authoring-guard.ts` refuses a `scanThreshold` that requires no
@@ -984,14 +827,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
   });
 
   it("O9: an INSTANCE FLOOR set AFTER the approval makes the grant inert — the bar is re-derived at every gate, from the rule as it stands now", async () => {
-    // The escalation in the objection, exactly: a platform floor, a grant approved at the service.
-    // The floor is set AFTER the approval on purpose — so the approve-time refusal cannot be what is
-    // being measured, and only the gate's re-derivation can produce this outcome.
-    //
-    // The floor names `maxLow`, a severity the finding does not even have. That is deliberate: it
-    // proves the bar is the most senior tier that set ANY ceiling, not the tier whose value happens
-    // to BIND. Excluding a finding lowers the COUNT, which loosens every ceiling on that severity at
-    // once, so a junior tier must not be able to defeat a senior one indirectly.
+    // The escalation in the objection, exactly. See docs/governance.md §302.
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-floor");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -1107,13 +943,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     expect(denied.status).toBe("denied");
   });
   it("O12: the RAISER may not APPROVE their own grant — and deny/revoke stay open to them", async () => {
-    // SEPARATION OF DUTIES (owner decision, 2026-08-18). The escalation D3 exists to stop needs two
-    // things to go wrong: an authority bar that does not bind, and one actor holding both halves of
-    // the act. O7-O9 cover the bar. This covers the actor.
-    //
-    // It is NOT a substitute for the bar and the assertions say so: a SECOND principal with the same
-    // standing approves the very same grant successfully at the end, which is the point — this rule
-    // constrains WHO signs, never WHETHER the waiver is permissible.
+    // SEPARATION OF DUTIES. See docs/governance.md §303.
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-sod");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -1174,29 +1004,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
   });
 
   it("O13: a PEER'S grant with an uncastable `expiresAt` does not take the gate out — it is simply not live", async () => {
-    // THE DEFECT THIS PINS. The live-grant window casts `properties->>'expiresAt'` to `timestamptz`
-    // inside the gate's own query. `expiresAt` is refused at every LOCAL door, but the M22.6
-    // authoring guard deliberately EXEMPTS `federationImport` — a throw on that path aborts a peer's
-    // whole signed bundle — and the registered `property_schema` types the field only as
-    // `{"type": "string"}`, deliberately (0075 §1: typing it would move the failure from one grant to
-    // the whole channel). So a peer can legitimately deliver `expiresAt: "never"`.
-    //
-    // With a BARE cast, that one row throws inside EVERY gate evaluation for the org — the reconcile
-    // prewarm, the wave boundary, `POST /policy-evaluate` and the commander promotion scan — so no
-    // change in the org can be validated or advanced until an operator finds it. Fail-OPEN by way of
-    // a crash, reachable from across a trust boundary. The resolver now wraps the cast in a
-    // `CASE ... ~ pattern`, exactly as `graph/containment.ts` wraps its `::uuid`.
-    //
-    // WHY THE ROW IS PLANTED THROUGH `upsertObjectByUrn` WITH `federationImport` RATHER THAN A RAW
-    // INSERT, and what that does and does not buy. It is the exact function `import-repo.ts`'s
-    // `object_upsert` branch calls, with the same actor and the same context shape, so this exercises
-    // the REAL import writer and the REAL registry validation — which is the precondition the whole
-    // finding rests on: if `property_schema` refused `"never"`, no such row could exist and the guard
-    // would be unreachable. A raw `INSERT INTO objects` would prove nothing about that and is exactly
-    // the shortcut that let the exclusion dimension ship green and inert. What it does NOT do is
-    // drive a signed bundle end to end — `verifyBundleSignature`/`verifyJournalChain` are upstream of
-    // this function and are covered by `federation/federation.integration.test.ts`; duplicating a
-    // two-domain fixture here would not exercise one additional line of the resolver.
+    // THE DEFECT THIS PINS. See docs/governance.md §304.
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-poison");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });

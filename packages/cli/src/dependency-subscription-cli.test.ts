@@ -22,26 +22,7 @@ import {
   dependencySubscriptionUnlockRow
 } from "./cli.js";
 
-/**
- * M21.3 — THE CLI HALF OF THE ENABLEMENT SURFACE (ADR-0032 §3a/§6).
- *
- * Charter principle 3 is API → SDK → CLI, so a capability that stops at the SDK is a parity hole.
- * Three things need a witness here:
- *
- *  1. **The three commands exist and carry the right shape** — in particular `set-unlock` takes TWO
- *     mutually exclusive flags rather than one defaulted boolean, because absent never means enabled
- *     (ADR-0032 §6) and a defaulted boolean flag is precisely how an omission becomes a value.
- *
- *  2. **There is NO `subscribe` verb, and the help says where to author one instead.** A dependency
- *     subscription IS a `dependencySubscription` policy effect (ADR-0032 §3a); a bespoke CLI verb
- *     would be a second authoring path for one concept. The ABSENCE is the guarantee, and an absence
- *     is exactly what nobody notices regressing.
- *
- *  3. **The formatters are honest about absent values, and about which level decided the verdict.**
- *     They are exported and called DIRECTLY here for the reason `cli-absent-formatters.test.ts`
- *     records at length: a mapper written inline in a Commander `.action()` closure is unreachable
- *     by any test, so its guards are correct and completely unheld.
- */
+/** M21.3 — THE CLI HALF OF THE ENABLEMENT SURFACE. See docs/cli.md §109. */
 
 function findCommand(root: Command, path: string[]): Command | undefined {
   let current: Command | undefined = root;
@@ -67,13 +48,7 @@ describe("scp dependency-subscriptions — the CLI surface (ADR-0032 §6)", () =
   it("exists, with exactly the read/operator-write/resolve trio, M21.2's backfill and M21.6's two READ verbs", () => {
     expect(root).toBeDefined();
     const names = root!.commands.map((c) => c.name()).sort();
-    // A CLOSED list on purpose: there is still no `subscribe` verb, and there must not be — a
-    // subscription is a `dependencySubscription` effect on an ordinary policy (ADR-0032 §3a), so a
-    // bespoke one here would be a second authoring surface for one concept. `backfill-inventory` is
-    // not that: it authors nothing, it reads manifests an enabled component already declares.
-    // `inventory` and `bumps` (M21.6) are READS of the component-scoped read surface — they author
-    // nothing either. This list is also the DELETE-THE-WIRING gate for those two verbs: remove
-    // either `.command(...)` registration and this assertion dies.
+    // A CLOSED list on purpose. See docs/cli.md §110.
     expect(names).toEqual([
       "backfill-inventory",
       "bumps",
@@ -266,16 +241,7 @@ describe("the M21.3 CLI formatters", () => {
     expect(onCommander.managedReason).toBe("commander");
   });
 
-  /**
-   * THE OPERATOR-FACING CAVEAT, HELD IN BOTH DIRECTIONS (ADR-0032 §7d, M21.7 follow-up).
-   *
-   * This note used to be written INLINE inside the resolve command's Commander `.action()` closure,
-   * where nothing could call it: inverting its condition — so the note printed on a healthy
-   * commander and went SILENT on the deployment it exists to warn, the exact inversion that matters
-   * — left the whole suite green. A conditional caveat is only held when BOTH arms are pinned, so
-   * both are below. The wording is deliberately NOT pinned beyond the two facts an operator acts on
-   * (the posture, and where to go instead), so a rewrite passes and a wrong condition fails.
-   */
+  /** THE OPERATOR-FACING CAVEAT, HELD IN BOTH DIRECTIONS. See docs/cli.md §111. */
   describe("the `resolve` caveat printed beside the table", () => {
     it("APPEARS when nothing here will act on the verdict, and names the posture and the remedy", () => {
       const note = dependencyManagementNote({ managedHere: false, reason: "outpost" });
@@ -327,7 +293,6 @@ describe("the M21.3 CLI formatters", () => {
     expect(row.delivery).toBe("-");
     expect(row.granularity).toBe("-");
 
-    // NEGATIVE CONTROL: present values are printed as themselves.
     const full = dependencySubscriptionResolutionRow(enabledResponse);
     expect(full.delivery).toBe("pull_request");
     expect(full.granularity).toBe("patch");
@@ -384,12 +349,7 @@ describe("the M21.3 CLI formatters", () => {
   });
 });
 
-/**
- * M21.6 — THE TWO READ VERBS (proposal §3.3) and their formatters. Both consume the component-scoped
- * read surface through the SDK (`client.dependencySubscriptions.inventory` / `.bumps`); the
- * formatters are exported and called DIRECTLY here because a mapper inside a Commander `.action()`
- * closure is unreachable by any test (see the file doc above).
- */
+/** M21.6 — THE TWO READ VERBS. See docs/cli.md §112. */
 describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verbs", () => {
   const program = buildProgram();
 
@@ -639,7 +599,6 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
     ).toBe(
       `ingestion: ok — no dependencies declared (read 2 manifest(s)) at ${at} (loop); manifests: acme/app:package.json=ok, acme/app:go.mod=ok`
     );
-    // ok + N rows: an ordinary receipt.
     expect(
       dependencyIngestionStampLine({
         lastAttemptAt: at,

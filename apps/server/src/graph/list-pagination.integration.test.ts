@@ -3,18 +3,7 @@ import { buildTestServer, createTestOrg, type TestServer } from "../test-support
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject, getOrgRootObjectId, listObjects } from "./objects-repo.js";
 
-/**
- * Regression for the `scp object list component` hang (cursor-precision pagination bug).
- *
- * `objects.created_at` is stored at Postgres microsecond precision, but the pagination cursor
- * round-trips through a JS `Date` (millisecond precision) — so a keyset comparison of
- * `created_at > cursor.created_at` used to RE-INCLUDE the boundary row (its microseconds make it
- * strictly greater than the millisecond-truncated cursor). When more than one page of rows shares
- * a `created_at` millisecond — exactly what a bulk discovery import of components produces, all
- * created in one transaction with an identical `now()` — `nextCursor` never advanced and the
- * SDK/CLI `listAllObjects` iterator looped forever. Services stayed dormant only because there
- * were fewer of them than one page, so pagination never engaged.
- */
+/** Regression for the `scp object list component` hang. See docs/graph.md §56. */
 describe("list pagination: cursor precision", () => {
   let server: TestServer;
   let orgId: string;
@@ -68,7 +57,7 @@ describe("list pagination: cursor precision", () => {
     } while (cursor);
 
     const distinct = new Set(seen);
-    expect(distinct.size).toBe(25); // every component seen
+    expect(distinct.size).toBe(25);
     expect(seen.length).toBe(25); // and each seen exactly once (no boundary-row duplicates)
   });
 });

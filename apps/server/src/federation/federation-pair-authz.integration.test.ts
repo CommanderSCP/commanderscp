@@ -14,85 +14,13 @@ import { federationPeerKeys, federationPeers, roleBindings, roles } from "../db/
 import { initFederationSelf } from "./self-repo.js";
 import { trustDomainIdFromWire } from "../domain-id-edge.js";
 
-/**
- * ================================================================================================
- * `federation:pair` — ESTABLISHING A LINK IS NOT THE SAME ACT AS OPERATING ONE (owner ruling D4)
- * ================================================================================================
- *
- * THE CHAIN. `POST /api/v1/federation/peers` took `federation:write` alone and the peer's Ed25519
- * `publicKey` VERBATIM from the request body (a changed value is a KEY ROTATION that supersedes the
- * current window). `POST /api/v1/federation/imports` takes that same single permission, and
- * `applyEntry`'s `object_upsert` branch resolves ANY registered `typeId` through
- * `upsertObjectByUrn`. So on `federation:write` alone: pair a peer with a keypair you generated,
- * import a bundle you signed with it, and you hold estate write authority having never held
- * `object:write`.
- *
- * WHERE THE BAR GOES, AND WHY NOT ON IMPORT. A throw on the import path wedges a legitimately paired
- * peer's whole signed bundle, and an import from a legitimately paired peer writing what that peer
- * sent is the federation contract working as designed. PAIRING is the link that can be gated without
- * breaking the contract, so `federation:pair` (drizzle/0094) is demanded there — ADDED alongside the
- * existing `federation:write` check, never substituted for it.
- *
- * NOT LIVE TODAY, which is why the actor below has to be BUILT. drizzle/0012 grants
- * `federation:write` to Administrator and Owner and to no other built-in role, and drizzle/0094
- * grants `federation:pair` to exactly those two — so no built-in role can express "operates the link,
- * cannot establish one". The FederationAdmin role role-model.md §4.1 is designing is precisely that
- * shape, and testing against the built-in role table's current accident would measure nothing.
- *
- * ================================================================================================
- * WHAT THIS FILE ASSERTS
- * ================================================================================================
- *  1. THE REFUSAL, on both halves of the ruling — a link operator cannot ADD a peer and cannot
- *     RE-KEY one — each with the "nothing was written" half read from `federation_peers` /
- *     `federation_peer_keys` directly, because a refusal that still stored the key is not a refusal.
- *  2. THE REFUSAL IS ABOUT THIS PERMISSION. Every 403 is matched against `federation:pair` by name.
- *     A bare status assertion would be satisfied by the `federation:write` check that was already
- *     there, and would go on passing if the new bar were deleted tomorrow.
- *  3. THE CONTROL, which is also the non-vacuity witness: the SAME actor still exports a bundle and
- *     reads status (200), and still edits a peer's TRANSPORT through the structurally keyless PATCH.
- *     That proves the actor genuinely holds `federation:write` — so the 403s above are about
- *     `federation:pair` and not about being powerless — and proves the ruling's "import, export,
- *     status, outposts, resync and poke stay on `federation:write`" survived.
- *  4. BOTH GRANTED ROLES, measured separately: a built-in ADMINISTRATOR pairs and re-keys (201), and
- *     so does the bootstrap OWNER. Asserting one would leave the other's grant in 0094 unmeasured.
- *
- * ================================================================================================
- * MUTATION RUN (2026-08-25). MEASURED, not predicted.
- * ================================================================================================
- *   M-1  DELETE the `permission: "federation:pair"` authorize block from `POST /federation/peers`
- *        (`routes/federation.ts`), leaving the `federation:write` one
- *          -> 2 failed | 4 passed. Both refusal cases went red, each with the peer row it should
- *             have refused printed in the failure message:
- *             "a link operator (federation:write, no federation:pair) cannot ADD a peer"
- *               AssertionError: {"id":"998ff4c4-...","name":"smuggled-998ff4c4","role":"commander",
- *               ...,"publicKey":"MCowBQYDK2VwAyEATzUGQ/QFZRKid4u+EvM/FwXBxoSauG9hi76kl+ZVTyc="}:
- *               expected 201 to be 403
- *             "... cannot RE-KEY an existing peer"
- *               AssertionError: {"id":"9573f29f-...","name":"established-9573f29f",...}:
- *               expected 201 to be 403
- *             — i.e. with the bar removed the link-only actor both admitted a brand-new peer under a
- *             key it generated itself AND rotated an established peer's trust anchor to one. The
- *             four control/grant cases stayed GREEN, which is the point of case 3: they do not
- *             depend on the new bar and are not what makes the refusals pass.
- *
- *   M-2  NARROW drizzle/0094's grant to `name IN ('Owner')` — the migration's other half
- *          -> 2 failed | 4 passed, and a DIFFERENT two:
- *             "a built-in ADMINISTRATOR pairs and re-keys"
- *               AssertionError: {"status":403,"detail":"subject '01a03ab7-...' lacks
- *               'federation:pair' at scope '01a03ab7-...'"}: expected 403 to be 201
- *             "the built-in role table really does carry the new permission ..."
- *               AssertionError: expected [ 'Owner' ] to deeply equal [ 'Administrator', 'Owner' ]
- *             — so the Administrator half of the grant is measured, not assumed, and the two
- *             refusal cases do NOT depend on it (they stayed green: they are refused by the absent
- *             permission, not by a role table accident).
- */
+/** Establishing a link is not the same act as operating one. See docs/federation.md §133. */
 describe("federation:pair — a second bar on pairing, added never substituted (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
   /** `federation:read` + `federation:write` at the org root, NO `federation:pair`, NO `object:write`
    *  — the FederationAdmin shape (role-model.md §4.1). */
   let linkOperator: TestUser;
-  /** The built-in `Administrator`, which drizzle/0094 grants `federation:pair`. */
   let administrator: TestUser;
   /** A peer paired by the OWNER before the refusal cases run — the thing a re-key is attempted on,
    *  and the peer the control export/PATCH cases operate. */
@@ -143,15 +71,7 @@ describe("federation:pair — a second bar on pairing, added never substituted (
     });
   }
 
-  /**
-   * The actor under test: it OPERATES the link and cannot ESTABLISH one.
-   *
-   * Built through `roles.org_id` (the org-defined-role mechanism) because no built-in role can
-   * express it — see this file's header. The `Viewer` binding exists only so the harness mints an
-   * auth row and a live token; `object:read` is no part of what is under test and grants no write
-   * anywhere. `federation:pair` is conspicuously ABSENT from the permission list, which is the whole
-   * fixture.
-   */
+  /** The actor under test. See docs/federation.md §134. */
   async function createLinkOperator(): Promise<TestUser> {
     const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
@@ -254,12 +174,7 @@ describe("federation:pair — a second bar on pairing, added never substituted (
   });
 
   it("CONTROL: the SAME actor still exports, reads status, and edits peer TRANSPORT — the link keeps working", async () => {
-    // Non-vacuity for both cases above: without this, every 403 there is equally explained by an
-    // actor holding nothing at all, and the file would prove nothing about `federation:pair`.
-    //
-    // It is also the ruling's other half, asserted rather than assumed: "import, export, status,
-    // outposts, resync and poke stay on `federation:write` so the link keeps working". Over-narrowing
-    // would break a paired federation, which is a worse outcome than the hole being closed.
+    // Non-vacuity for both cases above. See docs/federation.md §135.
     const exported = await server.app.inject({
       method: "POST",
       url: "/api/v1/federation/exports",
@@ -275,15 +190,7 @@ describe("federation:pair — a second bar on pairing, added never substituted (
     });
     expect(status.statusCode, status.body).toBe(200);
 
-    // THE PER-FIELD SPLIT, made real. `PATCH /federation/peers/{id}` is transport-only — its request
-    // schema admits no key material at all — so it deliberately does NOT demand `federation:pair`:
-    // "may edit peer transport, may NOT rotate a peer's trust anchor" is now enforced at the
-    // permission layer as well as by the body's shape.
-    //
-    // On its OWN peer, not on `establishedPeer`. This case must fail only for its own reason: run
-    // against a peer another case has attempted to re-key, the anchor assertion below would go red
-    // whenever THAT case's guard was removed, and this control would be reporting someone else's
-    // failure under a title about the link still working.
+    // THE PER-FIELD SPLIT, made real. See docs/federation.md §136.
     const transportPeer = randomUUID();
     const transportPeerKey = publicKeyB64();
     const transportPaired = await pair(org.adminToken, {
@@ -383,21 +290,7 @@ describe("federation:pair — a second bar on pairing, added never substituted (
       .filter((r) => r.permissions.includes("federation:pair"))
       .map((r) => r.name)
       .sort();
-    // `OrgAdmin` JOINED THE SET IN drizzle/0099, BY OWNER RULING D6 (2026-08-27), and this assertion
-    // is what caught the change rather than letting it land silently — which is the whole reason it
-    // enumerates the holders instead of spot-checking two names.
-    //
-    // D6 resolved a contradiction inside role-model.md: §4.1 and D4 both granted `federation:pair` to
-    // "Administrator, Owner and OrgAdmin", while §3C's permission list — the one 0099's seed literal
-    // is copied from — omitted it. D4 governs, because it is the ruling that REASONED about this
-    // permission: establishing a trust relationship is a different act from operating one, so the
-    // role that operates the link must not decide whose signature this instance believes. That names
-    // `FederationAdmin` as the withholding, and it is the ONLY one — §3B holds `federation:write` and
-    // not this. Withholding it from OrgAdmin as well would leave an org whose only pairing principals
-    // are Owner and the D5-deprecated Administrator, i.e. unadministrable in exactly the dimension
-    // OrgAdmin exists to cover.
-    //
-    // So the list below is three, and `FederationAdmin`'s ABSENCE from it is the load-bearing half.
+    // `OrgAdmin` JOINED THE SET IN drizzle/0099, BY OWNER RULING D6. See docs/federation.md §137.
     expect(holders).toEqual(["Administrator", "OrgAdmin", "Owner"]);
     expect(holders).not.toContain("FederationAdmin");
   });

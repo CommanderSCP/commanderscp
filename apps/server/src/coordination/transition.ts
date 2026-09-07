@@ -55,29 +55,7 @@ export interface LocalAuthorityCheckInput {
 export type LocalAuthorityResult =
   { ok: true } | { ok: false; decision: Decision; blockedReason: string };
 
-/**
- * THE single-writer-authority check for change-transition verbs (S10, `tracked-security-
- * followups`'s "CHANGE TRANSITIONS BYPASS THE SINGLE-WRITER GUARD"). Shared by `transitionChange`
- * below and `coordination/rollback.ts`'s `triggerRollback` — the two entry points that can
- * initiate a write against a change this domain does not authoritatively own.
- *
- * KEYS ON `originDomainId`, NEVER `importedFromDomain`. A promoted change's graph OBJECT is
- * LOCALLY originated (`originDomainId == self`) even though its `importedFromDomain` column
- * records which peer it was promoted from — that field is provenance, not authority. Keying this
- * check on `importedFromDomain` would refuse an outpost from ever accepting/rolling back a change
- * it legitimately owns after accepting a promotion — exactly the regression this must not
- * introduce. `originDomainId` is the ONLY column `graph/objects-repo.ts::updateObject`'s own
- * single-writer guard reads, for the identical reason.
- *
- * On refusal, persists a `block` Decision + `change.transition.blocked` audit event in the
- * CALLER's transaction (so both commit together, exactly like `transitionChange`'s own
- * illegal-transition/gate-block arms below) and RETURNS `{ ok: false }` rather than throwing — the
- * caller decides whether to surface a 409 (operator-initiated verbs) after its own transaction
- * commits. Never called from the reconcile ENGINE's write paths: those filter foreign-origin
- * changes out of their candidate batches before ever attempting a transition, so an engine tick
- * SKIPS a change it doesn't drive rather than parking it here (see `reconcile.ts`'s per-loop
- * `selfDomainId` filters) — parking would wedge a change nothing can ever resume.
- */
+/** The single-writer authority check for transition verbs. See docs/coordination.md §1006. */
 export async function enforceLocalChangeAuthority(
   tx: TenantTx,
   input: LocalAuthorityCheckInput
@@ -120,30 +98,7 @@ export async function enforceLocalChangeAuthority(
   };
 }
 
-/**
- * THE single guarded transition function (DESIGN.md §9.1) — every `changes.state` mutation in the
- * system goes through this, and only this. Must run inside the caller's `withTenantTx` (it does
- * not open its own transaction) so its writes commit or roll back atomically with whatever else
- * the caller is doing in the same request/job.
- *
- * Atomically, in order: (1) locks the change row (`SELECT ... FOR UPDATE`) so two concurrent
- * transition attempts on the same change serialize rather than race; (2) checks single-writer
- * authority (`enforceLocalChangeAuthority` above) — UNCONDITIONALLY, regardless of caller, so this
- * is genuinely pinned at the one chokepoint every `changes.state` write shares, not merely at the
- * HTTP layer; (3) checks legality — a pure function, `coordination/transitions.ts` — then the gate
- * seam (`coordination/gates.ts`); (4) writes EXACTLY ONE Decision recording the verdict either
- * way; (5) ONLY on `verdict: allow`, updates `changes.state` (+ resets the watchdog clock), writes
- * the audit event, and publishes an outbox event.
- *
- * Deliberately does NOT throw for an "expected" block (foreign authority, illegal edge, or a
- * failed gate) — it returns `{ verdict: 'block', decision, blockedReason }` and lets the enclosing
- * transaction commit normally, so the Decision (and a `change.transition.blocked` audit event)
- * persist even though nothing about the change itself changed. Route handlers (routes/changes.ts)
- * inspect the result AFTER the transaction has committed and turn a block into a 409 carrying
- * `decision.id` as `decision_id` (DESIGN §6/§10.4). This function only throws for genuinely
- * exceptional conditions (change not found, DB errors) — those DO roll back the transaction, as
- * they should.
- */
+/** THE single guarded transition function (DESIGN.md §9.1). See docs/coordination.md §1007. */
 export async function transitionChange(
   tx: TenantTx,
   input: TransitionChangeInput,
@@ -259,11 +214,7 @@ export async function transitionChange(
           }
   });
 
-  // DESIGN §10.3: a freeze override is ALWAYS a high-severity, mandatory-reason audit event —
-  // written even though the transition itself allows, in the SAME transaction as everything else
-  // this guarded function does, so an override can never happen without its own permanent record.
-  // CRITICAL #2: EVERY overridden freeze gets its own event (a change under several simultaneous
-  // freezes must override — and audit — each one individually).
+  // A freeze override is always a high-severity audit event. See docs/coordination.md §1008.
   for (const override of gate.freezeOverrides ?? []) {
     await appendAuditEvent(tx, {
       orgId: input.orgId,
@@ -303,12 +254,7 @@ export async function transitionChange(
       watchdogFlaggedAt: null,
       updatedAt: now,
       ...(toState === "rolled_back" && input.reason ? { rollbackTriggerReason: input.reason } : {}),
-      // 0053: WHO cancelled, structurally. Both the engine's auto-cancel (reconcile.ts, on a plan
-      // that would not compile) and a human `scp change cancel` land in the same state, and until
-      // this column the only difference was the wording of a free-text reason — so counting
-      // engine-killed changes meant substring-matching an English sentence that any refactor could
-      // silently change. The actor IS the distinction and it is already here: `reconcile.ts` and the
-      // watchdog pass the system sentinel, every human path passes a real subject.
+      // 0053: WHO cancelled, structurally. See docs/coordination.md §1009.
       ...(toState === "cancelled"
         ? { cancellationKind: input.actorObjectId === SYSTEM_ACTOR_ID ? "system" : "user" }
         : {})
@@ -344,11 +290,7 @@ export async function transitionChange(
       reason: input.reason ?? null,
       importedFromDomain: existing.importedFromDomain
     };
-    // M20.3 (ADR-0031 §5) — and NOT for a domain-local change. This is the entry that would
-    // otherwise defeat the whole feature at its most-scoped peer: `change_status` is exactly what a
-    // `status_only` commander receives, so without this skip a domain deploying its own networking
-    // config would still be reporting every state transition upward — "the commander doesn't need to
-    // know when these deploy out" is precisely this line.
+    // M20.3 (ADR-0031 §5) — and NOT for a domain-local change. See docs/coordination.md §1010.
     if (!row.domainLocal) {
       await appendJournalEntry(tx, {
         orgId: input.orgId,

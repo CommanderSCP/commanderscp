@@ -10,28 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * GRAPH READS HONOUR object:read (role-model.md §8.6a — the enumeration bypass)
- * ================================================================================================
- * `graph:query` authorizes whether a traversal may RUN from a root; it does NOT constrain the RESULT
- * SET, which the org-only queries returned in full. So a component-scoped principal could read its
- * PARENT SERVICE and SIBLINGS via `/graph/traverse` / `/graph/subgraph` / a named query — the exact
- * horizontal read `GET /objects/{type}/{id}` refuses for that same principal. routes/graph.ts now
- * resolves the caller's `object:read` set (the SAME production door every list uses) and intersects
- * every returned object/edge/path with it.
- *
- * Fixture: service --contains--> compA, service --contains--> compB (two siblings under one service).
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ------------------------------------------------------------------------------------------------
- * | Mutation | Result |
- * |---|---|
- * | routes/graph.ts: pass `null` instead of the resolved set to `traverse` | the component-scoped traverse case FAILS — the parent service + sibling reappear in `objects` |
- * | traverse.ts: return `{objects, edges}` before the `readableIds` intersection | same case FAILS — sibling/parent leak back |
- * | traverse.ts subgraph: drop the both-endpoints-readable filter | the subgraph case FAILS — the service-touching `contains` edges come back |
- */
+/** GRAPH READS HONOUR object:read. See docs/routes.md §244. */
 describe("graph read-scoping (role-model.md §8.6a)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -75,7 +54,7 @@ describe("graph read-scoping (role-model.md §8.6a)", () => {
     });
     const seen = new Set(res.objects.map((o) => o.id));
     expect(seen.has(compA)).toBe(true);
-    expect(seen.has(serviceId)).toBe(true); // org-root reader is unfiltered (readable set is null)
+    expect(seen.has(serviceId)).toBe(true);
     expect(seen.has(compB)).toBe(true);
   });
 
@@ -87,10 +66,9 @@ describe("graph read-scoping (role-model.md §8.6a)", () => {
       maxDepth: 10
     });
     const seen = new Set(res.objects.map((o) => o.id));
-    expect(seen.has(compA)).toBe(true); // its own component is readable
+    expect(seen.has(compA)).toBe(true);
     expect(seen.has(serviceId)).toBe(false); // parent service — the bypass this closes
-    expect(seen.has(compB)).toBe(false); // sibling under the same service
-    // and no returned edge names a non-readable endpoint
+    expect(seen.has(compB)).toBe(false);
     expect(res.edges.every((e) => seen.has(e.fromId) && seen.has(e.toId))).toBe(true);
   });
 

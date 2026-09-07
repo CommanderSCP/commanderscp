@@ -29,37 +29,7 @@ import {
 } from "./campaign-adoption.js";
 import type { AdoptionEvidence, CampaignRecipe } from "@scp/schemas";
 
-/**
- * ================================================================================================
- * M25.5 — ADOPTION EVIDENCE, END TO END AGAINST REAL POSTGRES
- * ================================================================================================
- *
- * The guarantee under test is a single asymmetry: **`adopted` is only ever produced by an OBSERVED
- * fact, and every absence produces `unknown`.** M25.6's deadline lock reads this predicate and
- * nothing else, so an `adopted` conjured out of an un-ingested component or an un-orderable version
- * string is a signed governance record asserting compliance nobody verified.
- *
- * WHY THE VERDICT MATRIX LIVES HERE AND NOT IN A UNIT TEST. Two of the three kinds are ONLY
- * interesting at the join: `dependency` turns on "does this component have ANY inventory rows"
- * against "does it have one for THIS `(ecosystem, coordinate)`", which is exactly the distinction a
- * stubbed transaction defines away; `control` turns on "the LATEST run wins" and on reading
- * `plugin_module` off the row rather than re-resolving a binding. The repo's rule — integration
- * tests run against real PostgreSQL, never a mocked DB — is also the rule that makes these cases
- * mean anything. The genuinely pure parts (`positionAgainstFloor`, and the zero-query inertness
- * proof) are in `campaign-adoption.test.ts`.
- *
- * DRIVES `reconcileCampaignsOrgTick` DIRECTLY — never `withReconcileLoop`. A live loop is a
- * COMPETING CONSUMER of the very rows these cases read back (`SKIP LOCKED` makes an inline call a
- * silent no-op), and "one tick" must mean exactly one tick for "no member change was minted" to be
- * an assertion rather than a race.
- *
- * NO FIXED SLEEPS anywhere. Every wait is a tick count — a positive signal the engine writes —
- * which is what `test-support/integration-sleep-census.test.ts` exists to keep true.
- *
- * A FRESH ORG PER CASE. `reconcileCampaignsOrgTick` serves `ORDER BY updated_at ASC LIMIT 25` over
- * every campaign in the org, and several cases here assert org-wide counts ("zero Changes exist"),
- * which only mean what they say when the org holds one campaign.
- */
+/** Adoption evidence, end to end against real Postgres. See docs/coordination.md §54. */
 
 const PY_COORDINATE = "docker.io/library/python";
 
@@ -225,16 +195,9 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
         .orderBy(decisions.createdAt, decisions.id)
     );
 
-  // ===========================================================================================
   // A — `dependency`: every verdict, and the two absences that must never become `adopted`
-  // ===========================================================================================
 
-  /**
-   * THE CASE THE WHOLE FEATURE IS SHAPED AROUND. "Never ingested" and "declares nothing" are
-   * different facts; the first is a statement about CommanderSCP, not about the component. Reading
-   * it as "declares no python2, therefore migrated" would hand `adopted` to every component in an
-   * estate that has not wired inventory ingestion — i.e. it would fail open at the largest scale.
-   */
+  /** THE CASE THE WHOLE FEATURE IS SHAPED AROUND. See docs/coordination.md §55. */
   it("A1: ZERO inventory rows is `unknown` and explicitly NOT `adopted` — never ingested is not nothing declared", async () => {
     const { org, componentId } = await fixture("adopt-a1");
     const campaignId = await campaignFor(org, componentId, pythonRecipe("3.0"));
@@ -293,11 +256,7 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     );
   });
 
-  /**
-   * A NULL `resolved_version` means "the manifest does not pin one" (an open range), never "we did
-   * not look" — a real observation that still cannot satisfy a floor, because a range's floor is not
-   * what will be installed.
-   */
+  /** A null resolved version means an open range, not unseen. See docs/coordination.md §56. */
   it("A4: a NULL resolved_version (an open range) is `unknown`, never `adopted`", async () => {
     const { org, componentId } = await fixture("adopt-a4");
     const campaignId = await campaignFor(org, componentId, pythonRecipe("3.0"));
@@ -347,12 +306,7 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(result.verdict).toBe("not_adopted");
   });
 
-  /**
-   * INGESTED, BUT NOTHING ON THIS COORDINATE. This is the case the "zero rows" clause buys: the
-   * manifests HAVE been read and the laggard declaration is simply gone — a Dockerfile that moved
-   * off a python base entirely. That is an observation, not a silence, which is exactly why the two
-   * must not be collapsed.
-   */
+  /** INGESTED, BUT NOTHING ON THIS COORDINATE. See docs/coordination.md §57. */
   it("A6: ingested with NO row for this coordinate is `adopted` — the laggard declaration is observably gone", async () => {
     const { org, componentId } = await fixture("adopt-a6");
     const campaignId = await campaignFor(org, componentId, pythonRecipe("3.0"));
@@ -371,12 +325,7 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(result.summary).toContain("none of them declares");
   });
 
-  /**
-   * THE FALSE-`adopted` GENERATOR. `3f2a1b9c` is a git sha whose first character happens to be a
-   * digit; `parseComparableVersion` reads it as major 3 with suffix `f2a1b9c`. A numeric-core
-   * comparison that ignored suffix SHAPE would rank it at or above a floor of `3.0` and report a
-   * sha-pinned base image as migrated.
-   */
+  /** THE FALSE-`adopted` GENERATOR. See docs/coordination.md §58. */
   it("A7: a sha-shaped tag is `unknown` — a numeric core that is not a version can never be evidence", async () => {
     const { org, componentId } = await fixture("adopt-a7");
     const campaignId = await campaignFor(org, componentId, pythonRecipe("3.0"));
@@ -408,10 +357,6 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     const result = await evaluate(a.org, campaignId, a.componentId, pythonRecipe("3.0"));
     expect(result.verdict).toBe("unknown");
   });
-
-  // ===========================================================================================
-  // B — `delivered`
-  // ===========================================================================================
 
   const DELIVERED: AdoptionEvidence = { kind: "delivered" };
   const deliveredRecipe: CampaignRecipe = {
@@ -468,10 +413,6 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(result.summary).not.toContain("migrated");
   });
 
-  // ===========================================================================================
-  // C — `control`
-  // ===========================================================================================
-
   const controlRecipe = (controlObjectId: string): CampaignRecipe => ({
     version: 1,
     trigger: { kind: "sync" },
@@ -527,11 +468,7 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(result.observations[0]).toContain("'fail'");
   });
 
-  /**
-   * `plugin_module` IS READ OFF THE RUN ROW. The column is stamped at insert (drizzle/0063) so that
-   * re-pointing a binding cannot retroactively relabel a historical pass — a provenance label read
-   * from the resolved row, never inferred from which binding matches now.
-   */
+  /** `plugin_module` IS READ OFF THE RUN ROW. See docs/coordination.md §59. */
   it("C4: the LATEST run wins, and the observation names the module STAMPED ON THE ROW", async () => {
     const { org, componentId } = await fixture("adopt-c4");
     const controlId = randomUUID();
@@ -591,22 +528,9 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(result.verdict).not.toBe("adopted");
   });
 
-  // ===========================================================================================
   // D — CONSUMER 1: THE ACTUATOR. `adopted` => terminalize, and NO member change is proposed.
-  // ===========================================================================================
 
-  /**
-   * MUTATION-PROVEN. Deleting the `adopted => terminalize, skip proposeChange` branch from
-   * `campaign-reconcile.ts` fails this case on its first assertion:
-   *
-   *   AssertionError: an already-migrated component must have NO member Change minted for it:
-   *   expected 1 to be +0
-   *
-   * A test one has not watched fail is not evidence, and "the campaign completed" would pass against
-   * the bug: the fan-out succeeds either way. The only assertion that separates a campaign that
-   * RECOGNISED an already-migrated component from one that re-ran the migration on it is the absence
-   * of the Change.
-   */
+  /** Mutation-proven: deleting the adopted branch fails this. See docs/coordination.md §60. */
   it("D1: a component already at 3.12 gets NO member Change and terminalizes `succeeded`, with one deduped Decision", async () => {
     const { org, componentId } = await fixture("adopt-d1");
     await declare(org, componentId, {
@@ -731,9 +655,7 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(await decisionsOfKind(org, campaignId, CAMPAIGN_ADOPTION_DECISION_KIND)).toHaveLength(0);
   });
 
-  // ===========================================================================================
   // E — CONSUMER 2: the read surface, over the SAME predicate
-  // ===========================================================================================
 
   it("E1: GET /campaigns/{id}/adoption reports the per-target verdict, the evidence source and the observations", async () => {
     const { org, componentId } = await fixture("adopt-e1");

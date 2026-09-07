@@ -1,17 +1,4 @@
-/**
- * `@scp/plugin-gitlab` behavioral test suite (M15.3b). Every HTTP call is fixtured deterministically
- * with `nock` against Node's `http`/`https` core modules (see `gitlab-test-support.ts`'s module doc
- * for why the `ScopedHttpClient` uses `node:https` directly, not `fetch`). `nock.disableNetConnect()`
- * is active file-wide so any unanticipated call fails loudly rather than reaching the real network
- * (CLAUDE.md: "Tests never touch the internet"). Each test's interceptors are checked for full
- * consumption by the file-wide `afterEach` (`nock.pendingMocks()` must be empty).
- *
- * These assert REAL GitLab wire shapes, not tautologies: the auth header is `PRIVATE-TOKEN: <PAT>`
- * (NOT github's Bearer, NOT gitea's `token`), the base is `/api/v4`, the project id is the
- * URL-encoded `owner%2Frepo`, create-pipeline returns the pipeline object (with its id) SYNCHRONOUSLY
- * (no dispatch-then-poll dance), status is a single GitLab enum, and the webhook is authenticated by
- * a PLAINTEXT `X-Gitlab-Token` shared secret (NOT an HMAC signature).
- */
+/** `@scp/plugin-gitlab` behavioral test suite. See docs/plugins.md §217. */
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,9 +49,7 @@ afterEach(() => {
   expect(pending, `unconsumed nock interceptors after test: ${pending.join(", ")}`).toEqual([]);
 });
 
-// -------------------------------------------------------------------------------------------
 // verifyGitlabWebhookToken — PLAINTEXT X-Gitlab-Token (NOT an HMAC). Pure function.
-// -------------------------------------------------------------------------------------------
 
 describe("verifyGitlabWebhookToken (plaintext X-Gitlab-Token equality)", () => {
   const secret = "gitlab-webhook-secret";
@@ -97,9 +82,7 @@ describe("verifyGitlabWebhookToken (plaintext X-Gitlab-Token equality)", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // mapGitlabWebhookEventToHint — pure function (X-Gitlab-Event names + GitLab payload paths).
-// -------------------------------------------------------------------------------------------
 
 describe("mapGitlabWebhookEventToHint", () => {
   it("maps a Push Hook to repo (path_with_namespace) / checkout_sha / ref", () => {
@@ -162,9 +145,7 @@ describe("mapGitlabWebhookEventToHint", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() — create pipeline (GitLab returns the pipeline id SYNCHRONOUSLY; no poll-to-correlate).
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() — create pipeline (synchronous id, no correlation poll)", () => {
   it("POSTs the pipeline on the URL-encoded project id, returns pipeline::<id> DIRECTLY, and carries the PRIVATE-TOKEN header", async () => {
@@ -252,9 +233,7 @@ describe("trigger() — create pipeline (synchronous id, no correlation poll)", 
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() idempotency — the core's dedup cache still wraps GitLab's own triggerCI.
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() idempotency", () => {
   it("a second trigger() with the SAME idempotencyKey returns the SAME ref and never re-creates", async () => {
@@ -310,9 +289,7 @@ describe("trigger() idempotency", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // status() — GitLab's SINGLE pipeline status enum → phase.
-// -------------------------------------------------------------------------------------------
 
 describe("status() — single GitLab pipeline status enum", () => {
   async function statusFor(pipelineStatus: string) {
@@ -365,16 +342,7 @@ describe("status() — single GitLab pipeline status enum", () => {
   });
 
   it("ENCODES the pipelineId sliced out of externalId into the route", async () => {
-    // Same census class as readFileAtRef's `repo`/`ref` (M21.2 review BLOCKERS 1-2) and github's
-    // `postCommitStatus` sha: a non-literal string spliced into a REST route. `externalId` is
-    // stored correlation state and numeric in practice, so this encoding is an IDENTITY today and
-    // its removal would change no observed behaviour — which is exactly why it is pinned. An
-    // unpinned member of a censused class is indistinguishable from an untouched one on the next
-    // refactor (CLAUDE.md, "census by property, not by symptom"). Unencoded, `../../../user`
-    // re-targets this GET at `<base>/user` because `new URL()` collapses literal `..` segments;
-    // encoded it is `..%2F..%2F..%2Fuser`, ONE segment a URL does not normalize away. The
-    // interceptor matches only the encoded form, and `disableNetConnect()` plus the file-wide
-    // pending-mocks check make the unencoded form fail loudly rather than pass quietly.
+    // Same census class as readFileAtRef's `repo`/`ref`. See docs/plugins.md §218.
     const { ctx, token, base, pid } = setup();
     const pipelineId = "../../../user";
     const scope = nock(base)
@@ -387,10 +355,6 @@ describe("status() — single GitLab pipeline status enum", () => {
     scope.done();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// abort()
-// -------------------------------------------------------------------------------------------
 
 describe("abort()", () => {
   it("cancels a correlated pipeline", async () => {
@@ -438,10 +402,6 @@ describe("abort()", () => {
     scope.done();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// observe() — commits + pipelines, and poll-vs-push equivalence.
-// -------------------------------------------------------------------------------------------
 
 describe("observe() polling — commits and pipelines", () => {
   it("maps commits (id=sha) and pipelines to well-formed ExecutorEvents", async () => {
@@ -501,7 +461,7 @@ describe("observe() polling — commits and pipelines", () => {
       token: JSON.stringify({ push: watermark, workflow_run: watermark })
     });
 
-    expect(events.filter((e) => e.kind === "push")).toHaveLength(101); // 100 + the one after it
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(101);
     scope.done();
   });
 
@@ -524,7 +484,7 @@ describe("observe() polling — commits and pipelines", () => {
     scope
       .get(`/projects/${pid}/repository/commits`)
       .query((q) => q.page === "2")
-      .reply(200, [{ id: "c".repeat(40), created_at: "2026-06-30T00:00:00Z" }]); // pre-watermark: ends the walk
+      .reply(200, [{ id: "c".repeat(40), created_at: "2026-06-30T00:00:00Z" }]);
     scope.get(`/projects/${pid}/pipelines`).query(true).reply(200, []);
 
     const events = await plugin.observe(ctx, {
@@ -545,7 +505,7 @@ describe("observe() polling — commits and pipelines", () => {
       .get(`/projects/${pid}/repository/commits`)
       .query((q) => q.since === since && q.page === "1" && q.per_page === "100")
       .reply(200, [
-        { id: "old".padEnd(40, "0"), created_at: "2026-06-01T00:00:00Z" }, // older -> filtered
+        { id: "old".padEnd(40, "0"), created_at: "2026-06-01T00:00:00Z" },
         { id: "new".padEnd(40, "0"), created_at: "2026-07-02T00:00:00Z" }
       ]);
     // This fixture puts the NEWEST commit last (a real GitLab lists newest-first), so the
@@ -663,11 +623,7 @@ describe("base URL resolution (baseUrl → serverUrl; required, no default)", ()
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// discover() (DiscoveryPlugin) — GitLab repository-tree topology walk. The `sourceKind: 'gitlab'`
-// on the proposed component's sourceMapping is the load-bearing assertion (matches the executor's
-// source_kind so imported components correlate observed gitlab events).
-// -------------------------------------------------------------------------------------------
+// discover() (DiscoveryPlugin) — GitLab repository-tree topology walk. See docs/plugins.md §219.
 
 describe("discover() (DiscoveryPlugin)", () => {
   it("proposes one Service (repo root) + one Component per marker-file-containing top-level tree; the component's sourceMapping.sourceKind is 'gitlab'; non-marker trees and blobs are skipped", async () => {
@@ -678,7 +634,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       .query({ per_page: "100" })
       .reply(200, [
         { name: "service-a", path: "service-a", type: "tree" },
-        { name: "docs", path: "docs", type: "tree" }, // tree, but no marker inside -> skipped
+        { name: "docs", path: "docs", type: "tree" },
         { name: "README.md", path: "README.md", type: "blob" } // not a tree -> no sub-listing
       ]);
     nock(base)
@@ -720,11 +676,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       toUrn: `urn:scp:component:gitlab:${config.projectPath}/service-a`
     });
 
-    // The endpoints must be the ALIASES the proposed objects declare, asserted BY REFERENCE to
-    // those objects rather than as a third copy of the literal. Restating the strings would let a
-    // plugin change its URN scheme in one of the two places and stay green — and an endpoint that
-    // names no proposed object is exactly the 404 (`object '...' not found`) that made this edge
-    // unimportable even once its type was right.
+    // Endpoints asserted by reference to the proposed objects. See docs/plugins.md §220.
     expect(proposal.relationships[0]?.fromUrn).toBe(services[0]?.urn);
     expect(proposal.relationships[0]?.toUrn).toBe(components[0]?.urn);
   });
@@ -753,19 +705,7 @@ function randomKey(): string {
   return Math.random().toString(36).slice(2);
 }
 
-// -------------------------------------------------------------------------------------------
-// readFileAtRef (M21.2, ADR-0032 §4) — the first file-body read in this package, and the one place
-// where GitLab is genuinely NOT github/gitea-compatible. Three differences are asserted directly:
-//
-//   1. a different endpoint — `GET /projects/:id/repository/files/:file_path?ref=`, not `contents/`;
-//   2. WHOLE-string path encoding (`services%2Fapi%2Fgo.mod`), not per-segment — a per-segment
-//      encoding produces a different (non-existent) route, so the nested-path test below is the
-//      proof, not decoration;
-//   3. ONE call, not two — `commit_id` in the same response IS the resolved commit, so no separate
-//      ref-resolution request is made (asserted by nock consuming exactly one interceptor).
-//
-// Field names are GitLab's documented repository-file response.
-// -------------------------------------------------------------------------------------------
+// The first file-body read in this package. See docs/plugins.md §221.
 
 describe("readFileAtRef()", () => {
   const COMMIT_ID = "3d".repeat(20);
@@ -836,11 +776,7 @@ describe("readFileAtRef()", () => {
   });
 
   it("ESCAPES a '#' in the REF query value — unencoded it starts a URL fragment and TRUNCATES the request", async () => {
-    // The `repo` and `path` interpolations are already pinned by the two tests above (a `%2F` in
-    // either changes the route). `ref` is the third, and it needed a character where the encoding
-    // is load-bearing rather than identity: `git check-ref-format` permits `#` in a ref name, so
-    // `assertSafeRef` does not refuse it, but unencoded it ends the URL — `?ref=release/#42` would
-    // reach GitLab as `ref=release/` and resolve a DIFFERENT commit (a wrong answer, not an error).
+    // The interpolations are pinned above; this adds the rest. See docs/plugins.md §222.
     const { ctx, token, base, pid } = setup();
     const ref = "release/#42";
     const scope = nock(base)
@@ -965,11 +901,7 @@ describe("readFileAtRef()", () => {
     expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed) — a SEPARATE, larger ceiling from the
-  // decode-bound `too_large` refusals above. GitLab was the provider with the CLEAREST exposure:
-  // no `encoding: "none"` cutoff of any kind, arbitrarily large blobs served inline as base64.
-  // -----------------------------------------------------------------------------------------
+  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed). See docs/plugins.md §223.
 
   it("THROWS on a response so large it exceeds the TRANSPORT ceiling, before decodeBoundedBase64 ever runs", async () => {
     const { ctx, token, base, pid } = setup();
@@ -1112,14 +1044,7 @@ describe("readFileAtRef()", () => {
     expect(result).toMatchObject({ outcome: "found", content: "FROM alpine:1.0\n" });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // ADVERSARIAL `ref` and `repo` (M21.2 review, BLOCKERS 1 and 2). This adapter is the one that
-  // already ENCODED both — into a single whole-encoded route parameter and a query value — so
-  // neither was exploitable here, which is precisely why it needs the tests: the refusal is now a
-  // shared rule across all three providers, and "gitlab happened to encode" is an implementation
-  // detail a later refactor (e.g. adopting the two-call resolve shape) would silently take away.
-  // These pin the RULE, not the encoding.
-  // -----------------------------------------------------------------------------------------
+  // ADVERSARIAL `ref` and `repo`. See docs/plugins.md §224.
 
   it("refuses a REF traversal and the other git-forbidden ref shapes BEFORE any HTTP", async () => {
     const { ctx } = setup();
@@ -1176,7 +1101,6 @@ describe("readFileAtRef()", () => {
         size: Buffer.byteLength(manifest, "utf8"),
         encoding: "base64",
         content: Buffer.from(manifest, "utf8").toString("base64"),
-        // no `blob_id` at all
         commit_id: COMMIT_ID
       });
 
@@ -1186,12 +1110,7 @@ describe("readFileAtRef()", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. GitLab is the
-// one provider that genuinely PAGINATES its tree listing (`repository/tree?recursive=true`,
-// standard `per_page`/`page`) and carries no commit identity in that listing, so this resolves
-// `ref` to a commit sha FIRST via `repository/commits/:sha_or_ref`.
-// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12). See docs/plugins.md §225.
 
 describe("readFilesAtRef()", () => {
   const TREE_COMMIT_SHA = "7a".repeat(20);
@@ -1398,22 +1317,7 @@ describe("readFilesAtRef()", () => {
   });
 });
 
-/**
- * ============================================================================================
- * THIS ADAPTER WRITES NOTHING (owner decision 2026-08-15; ADR-0032 §9)
- * ============================================================================================
- * ADR-0032 §9 admits `GitProviderAdapter` as an escape hatch on two grounds — the `ExecutorPlugin`
- * object is unchanged, and "It also only READS." M21.5 briefly grew branch/commit/pull-request
- * hooks on all three providers, which contradicts the second ground. The repository-write authority
- * now lives inside the enumerated `scp-managed-dep` class (`packages/plugins/managed-dep`), where
- * the charter's containment preconditions bind.
- *
- * `@scp/git-provider-core`'s own suite pins the INTERFACE at the type level. This pins the OBJECT,
- * here, because the interface is structural: an adapter carrying extra write methods still
- * satisfies it, so the type-level pin alone would not notice a hook re-added to this file. Asserted
- * per provider rather than once, because the hooks existed on all three — the census is the point
- * (CLAUDE.md: fix the property, then find every place with it).
- */
+/** THIS ADAPTER WRITES NOTHING. See docs/plugins.md §226. */
 describe("gitlab adapter surface — read-only", () => {
   it("carries no repository-write hook, and still carries the read hook", () => {
     for (const hook of ["createBranch", "putFileOnBranch", "openPullRequest"]) {

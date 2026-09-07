@@ -11,23 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M13.2a — the DeliveryTarget SUBSTRATE (proposal §13.2), proven at the real API surface
- * (real Postgres, real routes — the same parity plane the SDK/CLI ride):
- *
- *   1. PARITY — `deliveryTarget` is settable + visible through the EXISTING federation peer
- *      surfaces (pair/list), additive within /v1, with `cosignPublicKey`'s tri-state re-pair
- *      discipline: absent preserves, object sets, explicit null clears.
- *   2. CONFIG-TIME VALIDATION — a traversal-hostile directory never enters the DB (400 at pair).
- *   3. WRITE SEAM, PER-PEER — `deliver: true` on the sync export drops the bundle document into
- *      the PEER's configured outDir, even when the instance env points elsewhere.
- *   4. WRITE SEAM, ENV FALLBACK — a peer with NO target delivers into `SCP_RELAY_OUT_DIR`
- *      (today's instance-level behavior; the retrans-relay suite — unmodified — is the
- *      byte-identical proof for the relay emission itself).
- *   5. FAIL-CLOSED — BOTH absent refuses 400 with a problem NAMING the gap (peer + env var);
- *      and the relay route resolves its outbound drop the same way (per-peer config carries it
- *      past delivery resolution; both-absent refuses before anything else runs).
- */
+/** M13.2a — the DeliveryTarget SUBSTRATE. See docs/federation.md §78. */
 
 function authHeader(token: string): { authorization: string } {
   return { authorization: `Bearer ${token}` };

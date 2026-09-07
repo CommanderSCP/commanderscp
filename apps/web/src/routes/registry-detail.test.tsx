@@ -6,30 +6,7 @@ import { ScpApiError } from "@scp/sdk";
 import type { GovernanceMoveEnforcement, GraphObject } from "@scp/schemas";
 import { fire, render, typeInto } from "../test-support/render-dom";
 
-/**
- * REGISTRY DETAIL — two new, provider-free pieces threaded onto `RegistryDetailPage` this round
- * (`RegistryDetailPage` itself needs a live router for `useBasePathParam`/`useIdOrUrnParam`, so it
- * is not mounted directly here — the house pattern `admin-governance.tsx`/`admin-dependencies.tsx`
- * already use for their own dialogs and views: export the piece that carries the real logic, thread
- * the SDK verb in as a prop, test THAT).
- *
- * governance-reach-on-containment-move.md §9.4 Q4 follow-up — the "governed here" line:
- *   - `enforced: true` with rungs renders the NEAREST rung (last = deepest, per the schema doc's
- *     org-root-first ordering) with "+N more" naming the rest in the tooltip;
- *   - `enforced: true` with NO rungs (the instance rung alone) names "the instance level" instead of
- *     a rung that does not exist;
- *   - pending / errored / `enforced: false` all render NOTHING — mutation: render on any of those
- *     three → RED (the "absence makes no claim" pin) — each is its own case below;
- *   - the fetch fires exactly ONCE per mount (spy call count) — mutation: fire on every render → RED.
- *
- * Delete… (owner decision 2026-08-18, every registry type):
- *   - the confirm gate requires the object's OWN NAME typed back EXACTLY — mutation: drop the gate
- *     (always enabled) → RED (a case types a near-miss and asserts Delete stays disabled);
- *   - a refusal (409 container-delete guard / 403) renders the server's sentence VERBATIM
- *     (`problem.detail`, not the RFC 9457 `title`) and the dialog stays open — mutation: read
- *     `.message` instead of `.problem.detail` → RED; mutation: close on error → RED;
- *   - success calls `onDeleted` exactly once and nothing is removed optimistically before it does.
- */
+/** Two provider-free pieces threaded onto the detail page. See docs/web.md §449. */
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -109,8 +86,6 @@ function rung(
     ...overrides
   };
 }
-
-// -------------------------------------------------------------------------------------------
 
 describe("GovernedHereLine — pure rendering off an already-resolved GovernanceMoveEnforcement", () => {
   it("one rung: names its tier and name, no '+N more', links to /admin/governance", () => {
@@ -252,8 +227,6 @@ describe("GovernedHereLineForObject — the query wiring", () => {
     view.unmount();
   });
 });
-
-// -------------------------------------------------------------------------------------------
 
 function graphObjectStub(): GraphObject {
   // Only `DeleteObjectDialogBody`'s `run()` return type needs satisfying — the dialog reads none

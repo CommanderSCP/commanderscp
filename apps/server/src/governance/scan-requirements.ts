@@ -31,121 +31,16 @@ import { matchPoliciesForTargets } from "./policy-resolve.js";
 import type { MatchedPolicy } from "./policy-model.js";
 import type { FiredPolicy } from "./evaluate.js";
 
-/**
- * M17.5 — SCOPED SCAN-REQUIREMENT RESOLUTION (ADR-0016).
- *
- * Computes the EFFECTIVE scan threshold for a change's targets as the per-severity MIN across a
- * SIX-tier chain, top-down:
- *
- *   platform -> trust domain (partition) -> org -> containment domain -> service -> component
- *
- * MOST-RESTRICTIVE-WINS: a child tier may only ever TIGHTEN a ceiling, never loosen it. This
- * mirrors — and is the same shape as — the existing stricter-wins `requireControls` set-union in
- * `policy-model.ts` `resolvePolicies`, where a child scope can add a required control but can never
- * drop one.
- *
- * ORDER-INDEPENDENT BY CONSTRUCTION. The merge is a per-severity MIN over a SET; MIN is commutative
- * and associative, so the result cannot depend on the order tiers are visited in. That is not a
- * nicety — it is why this design is safe on top of `graph/containment.ts`, which DOCUMENTS
- * (containment.ts:60-73) that containment-domain-vs-service is NOT a strict ordering: two ancestors
- * of different kinds can be exactly equidistant from a component and TIE. "Most specific wins"
- * override semantics would be undefined at that tie; most-restrictive-wins has no such failure mode.
- * DO NOT add ordering/precedence logic here — it would reintroduce exactly the sensitivity this
- * design exists to avoid.
- *
- * TWO SENSES OF "DOMAIN", never conflated (ADR-0016 terminology):
- *  - `trust_domain` — the AMBIENT federation boundary (a partition) ABOVE org. Comes from the
- *    instance-scoped `scan_requirement_floors` table (no `org_id`), which applies to EVERY org on
- *    the deployment.
- *  - `containment_domain` — the intra-org `domain` OBJECT TYPE BELOW org, an ordinary graph node on
- *    the containment chain.
- * The stored/emitted literal is `trust_domain`, never bare `domain`.
- *
- * WHAT IS NEW HERE AND WHAT IS NOT. The four org-and-below tiers reuse the EXISTING machinery
- * unchanged: `matchPoliciesForTargets` (org-rooted policy matching over `containmentChain`) gathers
- * the contributing policy documents; this module only reads a `scanThreshold` effect out of them and
- * folds it into the MIN. No new resolution engine, no new matching rules, no new tables for
- * org-and-below (charter principle 2 — new concepts arrive as policy data). Only the two above-org
- * tiers are new structure, and they share ONE table.
- *
- * THE MATCHER THAT REUSE DEPENDS ON WAS FAIL-OPEN UNTIL 2026-08-15 (ADR-0016 §2a). `scope.group`
- * implemented only DESIGN §10.1's ACTING-subject half, so a group-scoped scan CEILING contributed
- * to the MIN below ONLY when the acting subject happened to be a member of that group. Since an
- * absent contributor cannot tighten anything (see ABSENT NEVER MEANS ZERO), the effective threshold
- * came out LOOSER than the operator authored — silently, for every non-member, and ALWAYS at the
- * wave boundary, where the actor is `SYSTEM_ACTOR_ID` and is `member_of` nothing. This module was
- * the live exposure of that defect, not its cause: nothing here needed to change. The matcher now
- * also matches on the OWNING subject (`via: "ownerGroup"`), which is strictly additive, so this
- * merge can only ever gain a contributor — never lose one. Note the knock-on for the tier LABEL
- * below: an ownership match anchors at the OWNED object rather than the org root, so a
- * service-owned ceiling is finally reported at the `service` tier instead of `org`.
- *
- * ABSENT NEVER MEANS ZERO. A tier that sets no ceiling for a severity contributes NOTHING for that
- * severity. Reading "no floor" as 0 would make it the TIGHTEST possible ceiling and would block
- * everything — the exact inversion of the intended semantics.
- *
- * CONDITIONS ARE HONOURED — a ceiling comes ONLY from the FIRED set. An org-and-below contributor
- * whose CEL `condition` evaluated FALSE contributes NOTHING, exactly as it contributes no
- * `requireControls`/`requireApprovals` (evaluate.ts `resolveFiredPolicies`; gate-orchestrator.ts
- * drives both off the same `fired`). Anything else would let `when env == "prod", maxCritical: 0`
- * silently apply in dev — tightening-only, so never unsafe, but SILENTLY over-restrictive and a
- * block citing a policy whose condition was false (charter principle 6: every verdict must explain
- * itself).
- *
- * AN UNEVALUABLE CONDITION FAILS CLOSED — AT EVERY ENFORCEMENT LEVEL. "Condition FALSE" and
- * "condition COULD NOT BE EVALUATED" are different things and are treated differently. A
- * contributor whose CEL `condition` ERRORS (parse error, missing key, sandbox TIMEOUT) STILL
- * SUPPLIES ITS CEILING, whether it was authored `advisory`, `recommended` or `required`. The
- * admitted key set is therefore the UNION of, per name-group:
- *   - `contributingPolicyVersions` of groups with `fired === true` (the fired set), and
- *   - `conditionErrorPolicyVersions` of EVERY group (evaluate.ts) — the contributors that errored.
- *
- * WHY THIS DELIBERATELY DIFFERS FROM evaluate.ts's require*-EFFECT SEMANTICS. There,
- * `resolveFiredPolicies` fires a group closed ONLY when a contributor that is at least `required`
- * errors (`requiredConditionEvalError`); an advisory/recommended contributor whose condition errors
- * is annotated (`conditionError`) and does not fire. That carve-out is sound for require*-effects
- * because dropping an ADVISORY `requireControls` only loses a WARNING — an advisory effect can
- * never block, so nothing that would have failed now passes. It does NOT transfer to ceilings: a
- * `scanThreshold` is applied by `scan-result-control` REGARDLESS of the enforcement level of the
- * policy that authored it, so dropping an advisory ceiling converts a FAIL into a PASS. And a
- * ceiling-only policy has no require* effect, which makes `advisory` the most natural — and most
- * common — enforcement to author one at. Restricting the carve-out to `required` here would
- * therefore be FAIL-OPEN on the most typical authoring shape.
- *
- * PRECISE, NOT COARSE. Only the contributor that ACTUALLY ERRORED is re-admitted. A sibling
- * contributor in the same name-group whose condition cleanly evaluated FALSE stays EXCLUDED —
- * admitting a whole group because one of its members errored would reintroduce exactly the
- * over-restriction (a false condition tightening a ceiling) this design removed.
- *
- * The instance-scoped floors (platform / trust domain) carry no condition and are unaffected.
- */
+/** M17.5 — SCOPED SCAN-REQUIREMENT RESOLUTION. See docs/governance.md §365. */
 
-/** A `scanThreshold` effect on a policy document — the org-and-below tiers' authoring surface
- *  (`effects: [{ scanThreshold: { maxHigh: 0 } }]`, validated by the policy JSON Schema updated in
- *  drizzle/0029). Deliberately NOT added to `policy-model.ts`'s `PolicyEffect` union: that union
- *  drives the gate's require/approve enforcement, and a scan ceiling is not an "unsatisfied effect"
- *  — it is an INPUT to a control's own verdict. `mergeContributorEffects` already ignores effect
- *  shapes it doesn't recognize, so existing enforcement is untouched. */
+/** A `scanThreshold` effect on a policy document. See docs/governance.md §366. */
 interface ScanThresholdEffect {
   scanThreshold?: unknown;
 }
 
 const SEVERITY_KEYS = ["maxCritical", "maxHigh", "maxMedium", "maxLow"] as const;
 
-/**
- * The six-tier label for a graph object type. Only used for EXPLAINABILITY (which tier set the
- * ceiling) — never for precedence, because there is no precedence in a MIN. An object type outside
- * the four org-and-below tiers is reported at the `component` (deepest) label with its real
- * `objectTypeId` carried alongside, so the mapping stays auditable instead of silently lying.
- *
- * THIS IS ONLY AS HONEST AS THE ANCHOR IT IS GIVEN. It reads `match.matchedAt.objectId`'s type, so a
- * scope kind with no anchor of its own reports the tier of wherever it was parked. `scope.group`'s
- * ACTING half parks at the org root (`typeId: "organization"`), so it is reported as `org` — which
- * is the truthful answer for a ceiling that genuinely applies org-wide whenever a member acts. Its
- * OWNING half (ADR-0016 §2a) anchors at the actually-owned object, so it reports that object's real
- * tier. Before the owning half existed, EVERY group-scoped ceiling read `org` regardless of what it
- * governed, quietly breaking ADR-0016 §5's promise that a block can show which tier set the floor.
- */
+/** The six-tier label for a graph object type. See docs/governance.md §367. */
 export function tierForObjectType(objectTypeId: string): ScanRequirementTier {
   switch (objectTypeId) {
     case "organization":
@@ -156,17 +51,7 @@ export function tierForObjectType(objectTypeId: string): ScanRequirementTier {
     case "service":
       return "service";
     case "assembly":
-      // M22.0 (ADR-0033 §5). The OPTIONAL rung between a service and its components (migration
-      // 0055). It shipped AFTER this function was written and fell through to `component` below,
-      // so an assembly-anchored ceiling enforced correctly and reported the WRONG tier — the same
-      // class of defect §2a fixed for group scope, at a rung added later. Nothing about the MERGE
-      // changes: `mergeScanThresholds` never reads a tier.
-      //
-      // WALKING a rung is edge-generic and free (`containmentChain` matches on the `contains` edge,
-      // never on the parent's type, which is why 0055 shipped no resolver edit). NAMING one is not.
-      // If a third container level is ever added, every hardcoded rung list must be revisited —
-      // this switch and `APPROVAL_SCOPE_KEYWORDS` in gate-orchestrator.ts are the two that 0055
-      // silently missed.
+      // The optional rung between a service and its components. See docs/governance.md §368.
       return "assembly";
     default:
       return "component";
@@ -186,13 +71,7 @@ function parseScanThresholdEffect(effect: unknown): PartialScanThreshold | undef
   return SEVERITY_KEYS.some((k) => value[k] !== undefined) ? value : undefined;
 }
 
-/**
- * THE MERGE — pure, order-independent, per-severity MIN over the contributing tiers.
- *
- * Extracted as a pure function (BUILD_AND_TEST.md §4.1: "anything testable as a pure function must
- * be written as a pure function") so the order-independence property is unit-testable without a
- * database, and integration-testable at the real gate.
- */
+/** The merge: pure, order-independent, per-severity minimum. See docs/governance.md §369. */
 export function mergeScanThresholds(
   contributors: ScanThresholdContribution[]
 ): EffectiveScanThreshold {
@@ -208,17 +87,7 @@ export function mergeScanThresholds(
   return { threshold, contributors };
 }
 
-/** The instance-scoped (above-org) floors — `platform` + `trust_domain`, read through the ORDINARY
- *  tenant transaction under the table's tenant-read RLS policy. No privileged connection is needed
- *  to EVALUATE a gate (ADR-0016 §3's stated reason for preferring this over a privileged table).
- *
- *  NOTE (dated 2026-07-23, M17.5 follow-on): this reads BOTH `origin: 'local'` and `origin:
- *  'federated'` rows uniformly — but no federation writer producing `origin: 'federated'` rows
- *  exists; only the operator PUT (routes/instance-scan-floors.ts) writes this table today. Under
- *  the 2026-07-23 D5 decision, outposts/retrans never evaluate scan policy (they validate the
- *  commander's signature, not requirements), so federated-origin floors are DORMANT until a
- *  genuine multi-commander distribution need exists. This resolution code is already correct for
- *  that future — nothing here needs to change when a federated writer eventually lands. */
+/** The instance-scoped (above-org) floors. See docs/governance.md §370. */
 export async function readInstanceScanFloors(tx: TenantTx): Promise<ScanThresholdContribution[]> {
   const result = await tx.execute<{
     tier: string;
@@ -241,7 +110,7 @@ export async function readInstanceScanFloors(tx: TenantTx): Promise<ScanThreshol
       ...(row.max_medium !== null ? { maxMedium: row.max_medium } : {}),
       ...(row.max_low !== null ? { maxLow: row.max_low } : {})
     };
-    if (SEVERITY_KEYS.every((k) => threshold[k] === undefined)) continue; // an all-NULL row is inert
+    if (SEVERITY_KEYS.every((k) => threshold[k] === undefined)) continue;
     contributions.push({
       tier: row.tier,
       source: `instance:${row.tier}:${row.origin}`,
@@ -265,12 +134,7 @@ export interface ResolveScanThresholdInput {
   firedPolicies: FiredPolicy[];
 }
 
-/**
- * The `(policyObjectId, policyVersion)` keys admitted to set a ceiling: the UNION of every
- * contributor that actually FIRED and every contributor whose condition could NOT be evaluated, at
- * ANY enforcement level (see the module doc's fail-closed section). A contributor whose condition
- * cleanly evaluated FALSE is in neither set and can never set a ceiling.
- */
+/** The policy keys admitted to set a ceiling: the union. See docs/governance.md §371. */
 function ceilingContributorKeys(firedPolicies: FiredPolicy[]): Set<string> {
   const keys = new Set<string>();
   for (const fp of firedPolicies) {
@@ -286,13 +150,7 @@ function ceilingContributorKeys(firedPolicies: FiredPolicy[]): Set<string> {
   return keys;
 }
 
-/**
- * Resolves the effective scan threshold for a change's targets across all six tiers.
- *
- * Returns `undefined` when NO tier contributes any ceiling — mirroring how the gate leaves
- * `context.artifactDigest` unset rather than inventing one: the control then falls back to its own
- * per-binding `config.threshold`, the documented M17.1 behaviour, unchanged.
- */
+/** Resolves the effective threshold across all six tiers. See docs/governance.md §372. */
 export async function resolveEffectiveScanThreshold(
   tx: TenantTx,
   input: ResolveScanThresholdInput
@@ -342,25 +200,7 @@ export async function resolveEffectiveScanThreshold(
   return mergeScanThresholds(contributors);
 }
 
-// ===========================================================================================
-// M22.2 (ADR-0033 §1, §3, §4) — THE EXCLUSION DIMENSION, resolved beside the ceiling and sharing
-// nothing with it but the tier vocabulary.
-//
-// Everything below runs the OPPOSITE way from everything above, on purpose:
-//
-//   | | ceiling (ADR-0016, above)          | exclusion (ADR-0033, here)                        |
-//   |-|-----------------------------------|---------------------------------------------------|
-//   | | per-severity MIN over a SET       | monotone AND down the TIER CHAIN                  |
-//   | | a child may only TIGHTEN          | a clause needs admission from every tier above it  |
-//   | | absent contributes nothing        | admission is EMPTY at every tier by default        |
-//   | | union across targets is SAFE      | union across targets is an INVERSION — never done  |
-//   | | an UNEVALUABLE condition FAILS    | an UNEVALUABLE condition yields NO exclusion       |
-//   | |   CLOSED and still sets a ceiling |   (`ceilingContributorKeys` MUST NOT be reused)    |
-//
-// With nothing authored anywhere, `resolveEffectiveScanExclusions` returns `undefined` and every
-// downstream consumer behaves byte-identically to pre-M22.2. That is the property the suite pins
-// first, because it is the one that makes the rest of this safe to ship.
-// ===========================================================================================
+// The exclusion dimension, resolved beside the ceiling. See docs/governance.md §373.
 
 /** The six-tier chain as a TOTAL ORDER, top-down. The AND walks this, NOT the containment chain's
  *  `depth` — `graph/containment.ts` documents that two ancestors of DIFFERENT kinds can be exactly
@@ -383,11 +223,9 @@ export function tierRank(tier: ScanRequirementTier): number {
 export interface ScanExclusionAdmission {
   tier: ScanRequirementTier;
   class: ScanExclusionClass;
-  /** `instance:platform:local`, `policy:<name>@<objectId>`, … */
   source: string;
 }
 
-/** One tier's contribution of a CLAUSE. */
 export interface ScanExclusionClauseContribution {
   tier: ScanRequirementTier;
   source: string;
@@ -400,28 +238,9 @@ export interface ScanExclusionClauseContribution {
  */
 export interface ScanExclusionTargetInput {
   targetObjectId: string;
-  /**
-   * The tiers that are REPRESENTED for this target — `platform` and `trust_domain` always (they are
-   * facts about the deployment), plus every tier label present on this target's containment chain.
-   *
-   * This is what keeps the AND from being vacuous in both directions. Requiring EVERY tier in
-   * `TIER_ORDER` to admit would make a clause unreachable for any org with no containment domain
-   * and no assembly — there would be nobody to speak for those rungs. Requiring only the tiers that
-   * happened to author something would be the fail-OPEN twin: a silent tier would be read as
-   * consent. So: a rung that EXISTS must say yes, and a rung that does not exist is not asked.
-   */
+  /** The tiers that are REPRESENTED for this target. See docs/governance.md §374. */
   representedTiers: ScanRequirementTier[];
-  /**
-   * M22.6 (D3) — the TIER of every object on this target's containment chain, by object id.
-   *
-   * `representedTiers` answers "which rungs exist here"; this answers "which rung is THIS object",
-   * which is the question an override grant's derived authority needs and which no set of tier
-   * labels can answer. It is built from the SAME `containmentChain` walk that produced
-   * `representedTiers`, so a grant can never be placed at a rung the admission algebra did not see.
-   *
-   * An id ABSENT from this map is not "unknown, assume component" — it is an object that is not an
-   * ancestor of this target at all, and {@link applyOverrideAuthorityBar} refuses it.
-   */
+  /** The tier of every object on this target's chain. See docs/governance.md §375. */
   chainTierByObjectId: Record<string, ScanRequirementTier>;
   admissions: ScanExclusionAdmission[];
   clauses: ScanExclusionClauseContribution[];
@@ -446,31 +265,7 @@ function clauseKey(entry: {
   ]);
 }
 
-/**
- * THE AND — pure, order-independent, resolved PER TARGET and then INTERSECTED across targets.
- *
- * A clause anchored at tier T has effect only if EVERY represented tier strictly above T admits its
- * class. `platform` and `trust_domain` are always represented, so a deployment whose operator has
- * inserted no admission row admits nothing at all and every clause beneath is inert — which is
- * exactly the default this feature ships with.
- *
- * WHY THE CROSS-TARGET COMPOSITION IS AN INTERSECTION, NOT A UNION. ADR-0033 §3 forbids unioning:
- * for a CEILING more contributors can only tighten, so union is safe; for an EXCLUSION a union is an
- * inversion — a clause admitted for one target would leak to its siblings, which is silent
- * cross-component scope creep, and it would widen a LOOSENING past the reach of the BLOCKING it
- * loosens (a failing scan verdict stops only that component from moving forward). One verdict is
- * produced for one artifact across the change's whole target set, so the only composition that
- * cannot leak is the one where every target independently admitted the clause. A single-target
- * change — the overwhelmingly common shape — is unaffected either way.
- *
- * A clause of a class whose PREDICATE is not yet built (`vendor_latest`, `declared_fact`,
- * `approved_override`) still resolves here and is still admitted; it simply matches no finding
- * (`scanExclusionClauseMatches` in `@scp/schemas`). Admission and application are separate questions
- * and conflating them would hide one behind the other.
- *
- * Returns `undefined` when NO clause survives — mirroring `resolveEffectiveScanThreshold`, so the
- * conditional context key is simply absent and no evidence field appears.
- */
+/** The conjunction: per target, then intersected across. See docs/governance.md §376. */
 export function resolveEffectiveScanExclusions(
   targets: ScanExclusionTargetInput[]
 ): EffectiveScanExclusions | undefined {
@@ -495,7 +290,7 @@ export function resolveEffectiveScanExclusions(
     const perTarget = new Map<string, AdmittedScanExclusionClause>();
     for (const contribution of target.clauses) {
       const rank = tierRank(contribution.tier);
-      if (rank < 0) continue; // an unrecognized tier label admits nothing
+      if (rank < 0) continue;
       const above = TIER_ORDER.filter((t) => tierRank(t) < rank && represented.has(t));
       const admittedBy: AdmittedScanExclusionClause["admittedBy"] = [];
       let blocked = false;
@@ -535,20 +330,7 @@ export function resolveEffectiveScanExclusions(
   return { clauses };
 }
 
-/**
- * The `(policyObjectId, policyVersion)` keys admitted to contribute an EXCLUSION: contributors of a
- * group that FIRED, MINUS every contributor whose condition could not be evaluated.
- *
- * DELIBERATELY NOT `ceilingContributorKeys`, and the two must never be merged. That helper UNIONS
- * the errored contributors back IN, at every enforcement level, because dropping a CEILING converts
- * a fail into a pass. Here the sign is reversed: ADMITTING a clause whose condition could not be
- * evaluated IS the fail-open. ADR-0033 §4 states the requirement in exactly those terms — "the two
- * dimensions need opposite error handling and must not share that helper".
- *
- * The subtraction is not belt-and-braces. `resolveFiredPolicies` ADDS an errored REQUIRED
- * contributor into `contributingPolicyVersions` (so a fail-closed group blocks and names what broke),
- * so "fired contributors" alone would already carry an unevaluable contributor's effects.
- */
+/** The policy keys admitted to contribute an exclusion. See docs/governance.md §377. */
 function exclusionContributorKeys(firedPolicies: FiredPolicy[]): Set<string> {
   const keys = new Set<string>();
   for (const fp of firedPolicies) {
@@ -576,14 +358,7 @@ function parseScanExclusionEffect(effect: unknown) {
   return value;
 }
 
-/**
- * The instance-scoped (above-org) ADMISSIONS — the `platform` and `trust_domain` rungs of the AND.
- *
- * Read through the ORDINARY tenant transaction under the table's tenant-read RLS policy, exactly as
- * `readInstanceScanFloors` reads its own table, so no gate evaluation path needs the privileged
- * connection. A DEPLOYMENT WITH NO ROWS ADMITS NOTHING, which is the shipped default: the table is
- * created empty and never seeded (absent never means admitted).
- */
+/** The instance-scoped (above-org) ADMISSIONS. See docs/governance.md §378. */
 export async function readInstanceScanExclusionAdmissions(
   tx: TenantTx
 ): Promise<ScanExclusionAdmission[]> {
@@ -612,30 +387,11 @@ export interface ResolveScanExclusionsInput {
   /** The condition-resolved firing set — REQUIRED for the same reason the ceiling's is: no call site
    *  may silently fall back to "every match contributes". */
   firedPolicies: FiredPolicy[];
-  /** M22.4 — THE instant this whole evaluation is measured against: the vendor rule's freshness
-   *  bound AND the override grants' expiry window, which are the same clock by construction rather
-   *  than by convention (`resolveEffectiveScanExclusionsForTargets` resolves it once and threads it).
-   *  Injectable for tests ONLY; every production caller omits it and gets one `new Date()`. It never
-   *  enters a Decision or evidence — a timestamp in either would defeat write suppression (M22.0). */
+  /** The instant this whole evaluation is measured against. See docs/governance.md §379. */
   now?: Date;
 }
 
-/**
- * THE PER-TARGET GATHER — every input the pure AND consumes, built from the graph, for each target
- * independently.
- *
- * EXTRACTED IN M22.8, NOT REWRITTEN. `GET /components/{idOrUrn}/scan-requirements` has to answer
- * "which exclusion classes are admitted here, and where would a clause have effect" — which is a
- * question about ADMISSIONS and REPRESENTED TIERS, neither of which survives into
- * {@link EffectiveScanExclusions} (that type carries only the clauses that already won). Rebuilding
- * the gather in the read module would have produced a second construction of the AND's inputs, one
- * edit away from the read surface and the gate disagreeing about what is admitted — which is the
- * exact class of divergence M22.2 closed at `promotion-scan-step.ts`'s `firedPolicies: []`.
- *
- * So there is ONE gather, and both consumers call it. `resolveEffectiveScanExclusionsForTargets`
- * feeds it to the pure resolver and then attaches the per-class FACTS; the read surface feeds it to
- * the same pure resolver and reads the admissions off it directly, resolving no facts.
- */
+/** THE PER-TARGET GATHER. See docs/governance.md §380. */
 export async function buildScanExclusionTargetInputs(
   tx: TenantTx,
   input: ResolveScanExclusionsInput
@@ -699,11 +455,7 @@ export async function buildScanExclusionTargetInputs(
   return targets;
 }
 
-/**
- * M22.8 — WHICH TIERS ABOVE `tier` ARE REPRESENTED, top-down. The one place `TIER_ORDER` and
- * `tierRank` are read from outside this module's own AND, so the read surface cannot drift into a
- * second opinion about the chain's shape.
- */
+/** M22.8 — WHICH TIERS ABOVE `tier` ARE REPRESENTED, top-down. See docs/governance.md §381. */
 export function representedTiersAbove(
   tier: ScanRequirementTier,
   represented: Iterable<ScanRequirementTier>
@@ -719,62 +471,9 @@ export function scanRequirementTierOrder(): readonly ScanRequirementTier[] {
   return TIER_ORDER;
 }
 
-/**
- * M22.6 (D3), THE DERIVED BAR — the tier an override grant must have been approved at-or-above, read
- * off the RULE rather than off the request.
- *
- * PURE, and the one place the bar is computed. The ceiling's `contributors` are the provenance M22.0
- * put into the gate Decision precisely so a block could name the tier that bound it; this is the
- * second consumer of that provenance and the reason it had to be recorded rather than merged away.
- *
- * THE MOST SENIOR CONTRIBUTOR WINS, not the one whose value happens to be the per-severity MIN.
- * Excluding a finding removes it from the COUNT, which loosens EVERY ceiling on that severity at once
- * — a count of 6 dropping to 5 satisfies a platform ceiling of 5 exactly as it satisfies the service
- * ceiling of 0 that produced the block. Keying on the binding contributor alone would let a junior
- * tier defeat a senior tier's ceiling indirectly, which is the escalation D3 exists to forbid.
- *
- * THERE IS NO SUCH THING AS "NO CEILING", WHICH IS WHY THE BAR NEVER FALLS BELOW `org`.
- *
- * This docblock used to say the opposite — that with no contributors the bar is `component`, i.e. no
- * bar, because "there is no constraint stricter than the requester's own authority to escalate past,
- * and the control falls back to its own per-binding `config.threshold`". That sentence names the
- * counter-example in its own final clause and was wrong on both halves:
- *
- *   * `config.threshold` IS a constraint. It is authored at the CONTROL object's scope
- *     (`routes/governance.ts`'s `PUT /controls/:idOrUrn/binding`, guarded by `policy:write` AT THE
- *     CONTROL), which is nowhere on the component's containment chain. A service- or component-scoped
- *     principal cannot author it and therefore must not be able to waive it.
- *   * When neither a policy nor the binding config decides a severity, the plugin does not stop
- *     enforcing — it applies its historical fail-closed default of `maxCritical`/`maxHigh` = 0
- *     (`scan-result-control/src/index.ts`, `critical.value ?? 0`, and that module's own docblock says
- *     so). That is a PLATFORM-SHIPPED rule no tenant can edit at all.
- *
- * Exclusions are applied BEFORE the counts are compared, so an approved grant on the only CRITICAL
- * turns a fail into a pass against whichever of those ceilings is in force. With the bar at
- * `component`, every candidate that merely sat on the chain cleared it — so a team lead holding a
- * routine service-scoped `policy:write` could raise and approve a waiver against a ceiling they had
- * no standing over. That is precisely the escalation D3 exists to forbid.
- *
- * THE FLOOR IS `org` (owner decision, 2026-08-18), and it is a floor rather than the fully-derived
- * answer on purpose. Deriving the true bar — injecting the binding config and the 0/0 default as
- * synthetic contributors — was costed and REJECTED because it makes every grant inert on any
- * deployment that authored no `scanThreshold` policy and no `config.threshold`, killing the feature
- * outright for the common case. `org` is the most senior rung a TENANT can author at, so it is the
- * strongest bar that still leaves the override usable: a component-, assembly-, service- or
- * containment-domain-scoped grant can never clear it, while an org-tier grant keeps working.
- *
- * WHAT THE FLOOR DOES NOT CLOSE, stated because a partial guard read as a total one is worse than
- * none: an ORG-tier approver can still waive a `config.threshold` authored at control scope. Closing
- * that requires the full derivation above and its cost. `platform`/`trust_domain` contributions still
- * raise the bar past `org` normally — the floor only ever tightens the bottom, never loosens the top.
- */
+/** M22.6 (D3), THE DERIVED BAR. See docs/governance.md §382. */
 
-/**
- * The lowest tier that may ever approve an override, regardless of what the ceiling says.
- *
- * `org` rather than `component`: see `requiredOverrideApprovalTier`. Named rather than inlined so the
- * test that pins it and the code that applies it cannot drift apart.
- */
+/** The lowest tier that may ever approve an override. See docs/governance.md §383. */
 export const OVERRIDE_APPROVAL_TIER_FLOOR: ScanRequirementTier = "org";
 
 export function requiredOverrideApprovalTier(
@@ -783,34 +482,20 @@ export function requiredOverrideApprovalTier(
   let best: ScanRequirementTier = OVERRIDE_APPROVAL_TIER_FLOOR;
   for (const contribution of ceiling?.contributors ?? []) {
     const rank = tierRank(contribution.tier);
-    if (rank < 0) continue; // an unrecognized tier label raises no bar
+    if (rank < 0) continue;
     if (rank < tierRank(best)) best = contribution.tier;
   }
   return best;
 }
 
-/**
- * Resolves the effective exclusion set for a change's targets across all seven rungs.
- *
- * Structurally parallel to `resolveEffectiveScanThreshold` and deliberately NOT folded into it: the
- * two share the tier vocabulary and nothing else, and a single function computing both would be one
- * edit away from letting a ceiling contributor admit an exclusion. It does CONSUME the ceiling —
- * `approved_override` is measured against it (D3) — but only as an input it cannot change.
- */
+/** Resolves the effective exclusion set across seven rungs. See docs/governance.md §384. */
 export async function resolveEffectiveScanExclusionsForTargets(
   tx: TenantTx,
   input: ResolveScanExclusionsInput
 ): Promise<EffectiveScanExclusions | undefined> {
   if (input.targetObjectIds.length === 0) return undefined;
 
-  // ONE INSTANT FOR THE WHOLE EVALUATION, resolved here and threaded UNCONDITIONALLY. The previous
-  // shape forwarded `input.now` only when it was defined, which meant the shared clock existed only
-  // on the TEST path: in production `resolveVendorLatestFactsForTarget` took a `new Date()` of its
-  // own ONCE PER TARGET and `attachApprovedOverrides` took yet another, so a change with three
-  // targets measured the vendor freshness bound against four different instants and the override
-  // expiry window against a fifth. Harmless-looking and unfindable — the tests that assert "the same
-  // now" were the only callers for whom it was true. Both attach* functions now REQUIRE the instant
-  // (as does `resolveVendorLatestFactsForTarget`), so no future one can quietly re-acquire a clock.
+  // One instant for the whole evaluation, threaded always. See docs/governance.md §385.
   const at = input.now ?? new Date();
   const targets = await buildScanExclusionTargetInputs(tx, input);
   const resolved = resolveEffectiveScanExclusions(targets);
@@ -819,21 +504,7 @@ export async function resolveEffectiveScanExclusionsForTargets(
   return attachApprovedOverrides(tx, input, targets, withDeclared, at);
 }
 
-/**
- * M22.4 (owner decision D1) — resolve the VENDOR FACTS, but only if a `vendor_latest` clause
- * actually survived the AND.
- *
- * TWO PHASES ON PURPOSE, and the order is the point. Phase one is the admission algebra, which is
- * pure and cheap; phase two is an inventory read per target, which is neither. Resolving the facts
- * unconditionally would put two joins per target on EVERY gate evaluation in the estate — including
- * the overwhelming majority that have authored no exclusion at all, for whom M22.2's promise is that
- * behaviour is byte-identical to pre-M22. So the facts are resolved only once a clause of that class
- * has been admitted by every tier above it.
- *
- * The facts are then INTERSECTED across targets, exactly like the clauses and for exactly the same
- * reason (ADR-0033 §3): a fact is as much a loosening as a clause is, and one target's currency must
- * never excuse a sibling's findings.
- */
+/** Resolve the vendor facts, but only if a rule needs them. See docs/governance.md §386. */
 async function attachVendorLatestFacts(
   tx: TenantTx,
   orgId: string,
@@ -857,18 +528,7 @@ async function attachVendorLatestFacts(
   return vendorLatest ? { ...resolved, vendorLatest } : resolved;
 }
 
-/**
- * M22.5 (owner decision D2) — resolve WHAT THE COMPONENT DECLARED, but only if a `declared_fact`
- * clause actually survived the AND.
- *
- * SAME TWO-PHASE SHAPE AS THE VENDOR FACTS, and for the same measured reason: the admission algebra
- * is pure and cheap, a property read per target is not, and the overwhelming majority of deployments
- * have authored no exclusion at all. M22.2's promise to them is that behaviour is byte-identical to
- * pre-M22, and that promise is kept by not asking the question.
- *
- * The facts are INTERSECTED across targets (ADR-0033 §3): a declaration is as much a loosening as a
- * clause is, and one component's assertion must never excuse a sibling's findings.
- */
+/** Resolve what the component declared, only if needed. See docs/governance.md §387. */
 async function attachDeclaredFacts(
   tx: TenantTx,
   orgId: string,
@@ -885,27 +545,7 @@ async function attachDeclaredFacts(
   return declaredFacts ? { ...resolved, declaredFacts } : resolved;
 }
 
-/**
- * M22.6 (owner decisions D3/D4) — resolve the LIVE override grants, but only if an
- * `approved_override` clause actually survived the AND.
- *
- * THE EXPIRY IS APPLIED HERE, AT READ TIME, and this is the only place it is applied. `at` is the
- * gate's own instant, so a grant that expired one second ago is simply not in the result — there is
- * no status to have been flipped and no sweeper to have failed to run.
- *
- * The gate-evaluation instant is the SAME one the vendor rule's freshness bound uses, and it is now
- * PASSED IN rather than taken here. This docblock previously asserted that sameness while the code
- * did `input.now ?? new Date()` locally and the vendor path did its own per target — so the claim
- * held only under a test that injected `now`, which is why no test ever caught it. The instant is
- * resolved once in `resolveEffectiveScanExclusionsForTargets` and is a required parameter here.
- *
- * THE AUTHORITY BAR (D3) IS APPLIED HERE TOO, and it is applied PER TARGET before the intersection,
- * never after. A grant's tier is derived from the containment chain of the target it excuses, and two
- * targets have two different chains — the same `tierObjectId` can be an ancestor of one and a
- * stranger to the other. Filtering after the intersection would let a grant that cleared the bar for
- * target A excuse a finding on target B it has no standing over, which is the same cross-target leak
- * ADR-0033 §3 forbids for clauses.
- */
+/** Resolve the live override grants, only if needed. See docs/governance.md §388. */
 async function attachApprovedOverrides(
   tx: TenantTx,
   input: ResolveScanExclusionsInput,
@@ -917,25 +557,7 @@ async function attachApprovedOverrides(
   if (!resolved) return undefined;
   if (!resolved.clauses.some((c) => c.clause.class === "approved_override")) return resolved;
   const orgId = input.orgId;
-  // THE BAR IS RESOLVED HERE, NOT THREADED IN FROM THE CALLER — measured, not preferred.
-  //
-  // The first version of this fix took the ceiling as a REQUIRED input field so TypeScript would
-  // force every gate site to supply it. Three sites supplied it, and the mutation run said what a
-  // type cannot: setting the commander producer's (`federation/promotion-scan-step.ts`) to
-  // `undefined` left the WHOLE suite green, because that producer has no override-grant coverage at
-  // all. A fourth site would inherit the same silence. So the resolver asks for itself, from the SAME
-  // `matches` and `firedPolicies` the exclusion dimension already resolved against — there is no
-  // longer a call site that can get this wrong, and `applyOverrideAuthorityBar` is reached by every
-  // caller of this function by construction. One deletion (this resolution) now kills a named test at
-  // every producer instead of one test per site.
-  //
-  // IT COSTS NOTHING ON THE PATH THAT MATTERS. This runs only AFTER an `approved_override` clause has
-  // survived the AND — the same two-phase shape the vendor and declared facts use, for the same
-  // measured reason. A deployment that authored no override clause (the overwhelming majority, and
-  // every deployment before M22) pays not one extra query, and M22.2's promise that its behaviour is
-  // byte-identical to pre-M22 is kept. Where it does run, it repeats one indexed resolution the gate
-  // already did in the same transaction against identical inputs — deterministic by construction,
-  // because `matches` and `firedPolicies` are the caller's own.
+  // THE BAR IS RESOLVED HERE, NOT THREADED IN FROM THE CALLER. See docs/governance.md §389.
   const requiredTier = requiredOverrideApprovalTier(
     await resolveEffectiveScanThreshold(tx, {
       orgId,

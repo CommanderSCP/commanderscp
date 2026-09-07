@@ -14,17 +14,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `GET /events/stream` end to end, over real HTTP, through the generated SDK (ADR-0025).
- *
- * The unit layer proves the CONTRACT (openapi/build-document.test.ts: the 200 is declared
- * `text/event-stream`) and the SDK layer proves RECONNECTION (packages/sdk/src/event-stream.test.ts,
- * against a loopback server). Neither proves that the real Fastify route still streams: declaring
- * the operation added a `schema` block to a handler that writes to `reply.raw` and never calls
- * `reply.send`, and that is exactly the kind of change that can turn a working stream into a route
- * Fastify tries to serialize. So this drives the shipped path — relay → `sseHub` → the real route →
- * the real generated `streamEvents` operation → `client.events.stream()`.
- */
+/** The event stream end to end, over real HTTP via the SDK. See docs/events.md §18. */
 describe("GET /events/stream: the declared route, consumed through the SDK", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -66,13 +56,7 @@ describe("GET /events/stream: the declared route, consumed through the SDK", () 
         describe: `the SSE route to register a listener for org ${org.orgId}`
       });
 
-      // THE SUBJECT MUST BE AN OBJECT THIS CALLER CAN READ. The route admits each frame with an
-      // `object:read` check at `event.subject` (routes/events.ts), so the free-form probe string
-      // this used to publish is now refused before the pool — correctly: it names no object. The
-      // org root IS an object (`objects.id = orgId`) and this caller is the bootstrap admin, bound
-      // Owner there, so the frame is delivered on the strength of a real binding rather than on
-      // the absence of a check. `scp.object.updated` keeps the probe distinguishable from the
-      // org-root creation event `createTestOrg` itself wrote.
+      // THE SUBJECT MUST BE AN OBJECT THIS CALLER CAN READ. See docs/events.md §19.
       await withTenantTx(server.deps.db, org.orgId, async (tx) => {
         await eventBus.publish(tx, {
           orgId: org.orgId,

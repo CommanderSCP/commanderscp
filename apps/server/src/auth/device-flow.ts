@@ -6,22 +6,9 @@ import { deviceAuthRequests } from "../db/schema.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { createSession } from "./local-auth.js";
 
-/**
- * SCP's OWN RFC 8628-shaped device-authorization flow (M2 step 2 Part C, DESIGN.md §7's
- * "OIDC device flow... grafted — headless jump boxes can't do browser redirects") — a decision
- * made deliberately, flagged here as security-sensitive: this is NOT a proxy to the upstream
- * IdP's device grant. It's hosted entirely by SCP, so it works identically whether the org is
- * OIDC-configured or local-auth-only/air-gapped. The `verificationUri` points at SCP's own web
- * UI/API; the human approves there using whatever auth method (local or OIDC) they already have a
- * browser session for (routes/device-flow.ts `approve`, behind `requireAuth`).
- *
- * Session minting is deferred to claim time (`pollDeviceAuth`), not done at approval
- * (`approveDeviceAuth`): the `device_auth_requests` row must never hold a usable bearer token at
- * rest, matching every other credential in the system (sessions: SHA-256 hash; PATs: argon2
- * hash) — see the doc comments on those two functions and drizzle/0006_device_flow_defer_session.sql.
- */
+/** SCP's OWN RFC 8628-shaped device-authorization flow. See docs/auth.md §5. */
 
-const DEVICE_TTL_MS = 10 * 60 * 1000; // 10 min — request itself expires
+const DEVICE_TTL_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_SECONDS = 5;
 // Excludes visually-ambiguous characters (0/O, 1/I) — this code is hand-typed by a human.
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -80,15 +67,7 @@ export async function startDeviceAuth(db: Db): Promise<StartedDeviceAuth> {
   throw new Error("failed to allocate a unique device user_code after 5 attempts");
 }
 
-/**
- * `POST /auth/device/approve` — REQUIRES requireAuth (the already-logged-in human approving from
- * their own browser/UI session). Deliberately does NOT mint a session here: it records only WHO
- * approved (`approvedByUserId`) and WHEN (`approvedAt`), so the device row never holds a usable
- * credential. The actual session is minted later, at claim time, inside `pollDeviceAuth`'s
- * `FOR UPDATE` transaction (single-use, see below). Returns `false` if no matching PENDING,
- * unexpired request exists — callers should turn that into a 404 without more detail (don't leak
- * which case it was).
- */
+/** `POST /auth/device/approve` — REQUIRES requireAuth. See docs/auth.md §6. */
 export async function approveDeviceAuth(
   db: Db,
   params: { userCode: string; orgId: string; userId: string }
@@ -121,19 +100,7 @@ export type DeviceTokenResult =
   | { kind: "ok"; token: string; expiresAt: Date; orgId: string }
   | { kind: "error"; error: DeviceFlowErrorCode };
 
-/**
- * `POST /auth/device/token` — no auth required (this IS the auth mechanism); RFC 8628 error-code
- * vocabulary (`authorization_pending`/`expired_token`/`access_denied`/`invalid_grant`) so the CLI
- * can branch predictably (routes/device-flow.ts documents the response shape in a schema).
- *
- * Single-use AND the point where a session first comes into existence: once a row is confirmed
- * `approved` (and only then, under the `FOR UPDATE` lock taken below — no other poller can be
- * concurrently inspecting the same row), this mints the session via `createSession` and, in the
- * same transaction, flips the row to `claimed`. The device row itself never stores the resulting
- * plaintext bearer — it exists only in this function's return value, handed to the caller exactly
- * once. A second poll after a successful claim always sees `claimed` and gets `invalid_grant`,
- * never a replayed token or a second minted session.
- */
+/** `POST /auth/device/token` — no auth required. See docs/auth.md §7. */
 export async function pollDeviceAuth(db: Db, deviceCode: string): Promise<DeviceTokenResult> {
   const deviceCodeHash = hashDeviceCode(deviceCode);
 

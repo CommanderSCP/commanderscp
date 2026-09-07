@@ -16,13 +16,7 @@ import {
 } from "@scp/iac";
 import { buildProgram } from "./cli.js";
 
-/**
- * `scp iac render` (team-pipeline-iac.md D21(d), §12) — DRIVEN through `buildProgram().parseAsync
- * ([...])`, the established pattern for a Commander `.action()` closure (`dependency-read-verbs-
- * wire.test.ts`'s doc explains why: neither a pure-printer unit test nor a hand-called function
- * reaches the closure itself). This is deliberately OFFLINE — no login, no `--base-url` — so unlike
- * most of this file's siblings it needs no stubbed `@scp/sdk` client.
- */
+/** `scp iac render` (team-pipeline-iac.md D21(d), §12). See docs/cli.md §122. */
 
 function findCommand(root: Command, path: string[]): Command | undefined {
   let current: Command | undefined = root;

@@ -19,13 +19,7 @@ import {
 import { permitCursorReanchor, FEDERATION_DIVERGENCE_DECISION_KIND } from "./cursors-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * §7.2.6 RESYNC — the mutually-authorized recovery. A = commander/exporter, B = full-scope
- * outpost/importer. Proves: the signed handshake (B signs, A verifies-and-consents), the
- * force-overwrite re-convergence (a divergent replica ahead in revision is overwritten to the
- * exporter's reality — the whole point; a normal import would no-op), both-sides Decisions +
- * generation bumps, the cleared standing divergence lifting rail 5, and a forged request refused.
- */
+/** §7.2.6 RESYNC — the mutually-authorized recovery. See docs/federation.md §468. */
 describe("federation resync: signed handshake, force-overwrite convergence, divergence cleared", () => {
   let domainA: IsolatedDomain;
   let domainB: IsolatedDomain;
@@ -54,7 +48,7 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
       ensureFederationSelf(tx, domainA.orgId)
     );
     await pair(domainA, domainB, "outpost"); // A knows B as an outpost it exports to
-    await pair(domainB, domainA, "commander"); // B knows A as its commander
+    await pair(domainB, domainA, "commander");
     const peerA = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       getPeerByIdOrName(tx, domainB.orgId, selfA.domainId)
     );
@@ -128,7 +122,6 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
       )
     ).rejects.toMatchObject({ type: "urn:scp:federation:journal_divergence" });
 
-    // THE HANDSHAKE. B signs; A verifies-and-consents-and-re-exports; B force-applies.
     const signed = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       signResyncRequest(tx, domainB.orgId, peerAIdInB)
     );
@@ -158,7 +151,6 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
     );
     expect(reconverged.properties.tier).toBe("critical");
 
-    // Both sides recorded a resync Decision.
     const bDecision = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       latestDecisionForSubjectKind(tx, domainB.orgId, peerAIdInB, FEDERATION_RESYNC_DECISION_KIND)
     );

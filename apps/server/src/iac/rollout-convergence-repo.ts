@@ -1,16 +1,4 @@
-/**
- * STORAGE FOR THE TWO MANIFEST COLLECTIONS THAT USED TO BE DROPPED (D12, D25(b); migration 0106).
- *
- * `@scp/iac` has emitted `rollouts` and `convergence` since the L1 doors and the `CanaryRollout` /
- * `RollingRollout` constructs shipped, and `plans-repo.ts` projected neither — so a declared canary
- * synthesised, validated, planned green, applied, and was discarded in silence. These are the reads
- * and writes that end that.
- *
- * Ownership derives from the COMPONENT, exactly as it does for `pipeline_hooks`, `source_mappings`
- * and `executor_bindings`: a row carries no owner of its own, so its owner is the owner of the
- * component it hangs off. That is why every function here is keyed by component id and why the
- * diff's pool is "rows on components this stack owns".
- */
+/** STORAGE FOR THE TWO MANIFEST COLLECTIONS THAT USED TO BE DROPPED. See docs/iac.md §165. */
 
 import { and, eq, inArray } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";

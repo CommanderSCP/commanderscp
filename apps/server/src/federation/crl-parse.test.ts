@@ -2,13 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isCrlExpired, parseCrlNextUpdate } from "./crl-parse.js";
 import { createTestCa, generateCrl, opensslAvailable } from "./test-support/mtls-pki.js";
 
-/**
- * M9.3 (ADR-0001) — `crl-parse.ts` is a hand-rolled minimal DER reader (no runtime dependency
- * added, CLAUDE.md principle 5), so it gets its own direct unit coverage against REAL CRLs minted
- * by `openssl` (not hand-crafted byte arrays) — proving it reads the exact `nextUpdate` OpenSSL
- * itself reports (`openssl crl -noout -nextupdate`), for both a normal (future) and a deliberately
- * expired CRL. No Postgres needed — plain `pnpm test`, not the Testcontainers integration suite.
- */
+/** A hand-rolled minimal DER reader, with no dependency. See docs/federation.md §60. */
 describe.skipIf(!opensslAvailable())("crl-parse", () => {
   it("reads nextUpdate from a fresh (far-future) CRL", () => {
     const ca = createTestCa();
@@ -37,7 +31,7 @@ describe.skipIf(!opensslAvailable())("crl-parse", () => {
   });
 
   it("throws on a malformed/truncated CRL rather than silently reporting 'no expiry'", () => {
-    const garbage = Buffer.from([0x30, 0x7f, 0x01, 0x02]); // claims 0x7f bytes of content, has 2
+    const garbage = Buffer.from([0x30, 0x7f, 0x01, 0x02]);
     expect(() => parseCrlNextUpdate(garbage)).toThrow();
   });
 });

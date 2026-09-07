@@ -57,32 +57,14 @@ interface GraphCanvasProps {
   onNodeTap?: (node: { id: string; typeId?: string; external?: boolean }) => void;
 }
 
-/**
- * Shared Cytoscape.js node-link renderer for both `/graph` (org overview) and `/graph/{idOrUrn}`
- * (object-scoped explorer). Extracted from the original graph-explorer page so the two entry
- * points render identically and the testability hook / click-to-navigate behaviour lives in one
- * place.
- *
- * `window.__cy` is exposed for Playwright (apps/web/e2e) — Cytoscape renders to `<canvas>`, which
- * isn't otherwise inspectable, so the e2e suite asserts on the real rendered node/edge counts via
- * this handle. Gated on `import.meta.env.DEV` OR the runtime `__SCP_E2E__` flag the e2e suite
- * injects (fixtures.ts) — the flag is what actually matters, since the e2e suite runs against the
- * SAME production build (`vite build`) that ships in the Docker image, where `import.meta.env.DEV`
- * is false. Nothing in real production traffic sets `__SCP_E2E__`, so this never activates outside
- * a Playwright-controlled page.
- */
+/** Shared Cytoscape.js node-link renderer for both `/graph`. See docs/web.md §50. */
 /** A graph smaller than the viewport should render at life size, not be blown up to fill it. */
 const MAX_AUTOFIT_ZOOM = 1.4;
 
 /** How much one click of the zoom in/out control changes the zoom level. */
 const ZOOM_STEP_FACTOR = 1.25;
 
-/**
- * FIT, THEN CLAMP — shared by the auto-fit-on-layout effect and the Maximize control (§4 Group D)
- * so the two never drift into two different "fit" behaviours. `fit` frames the graph with padding;
- * the clamp stops a small graph being magnified past life size, and re-centres after clamping so
- * the content stays put rather than drifting to a corner.
- */
+/** FIT, THEN CLAMP. See docs/web.md §51. */
 function fitAndClamp(cy: Core): void {
   cy.fit(undefined, 48);
   if (cy.zoom() > MAX_AUTOFIT_ZOOM) {
@@ -91,13 +73,7 @@ function fitAndClamp(cy: Core): void {
   }
 }
 
-/**
- * Per-layout spacing. Cytoscape's defaults are tuned for dense graphs and pack a handful of nodes
- * into a tight cluster where the labels (rendered BELOW each node) overlap each other and the
- * neighbouring shapes — so a five-service org map was unreadable despite having room to spare.
- * These widen the spacing enough for a label to sit under its own node; `avoidOverlap`/`nodeOverlap`
- * stop shapes colliding outright.
- */
+/** Per-layout spacing, since the defaults pack too densely. See docs/web.md §52. */
 const LAYOUT_OPTIONS: Record<string, Record<string, unknown>> = {
   concentric: { minNodeSpacing: 70, avoidOverlap: true, padding: 40 },
   cose: {
@@ -112,12 +88,7 @@ const LAYOUT_OPTIONS: Record<string, Record<string, unknown>> = {
   circle: { avoidOverlap: true, spacingFactor: 1.3, padding: 40 }
 };
 
-/**
- * Cytoscape types `LayoutOptions` as a UNION of per-layout option shapes keyed on a literal
- * `name`, so a config assembled from a runtime string cannot be narrowed to one member. The cast
- * is at the boundary and the option bag above is the only thing that reaches it; an unknown layout
- * name falls back to bare padding rather than passing something Cytoscape would reject.
- */
+/** The layout options type is a union keyed on the name. See docs/web.md §53. */
 function layoutConfig(name: string): LayoutOptions {
   return { name, ...(LAYOUT_OPTIONS[name] ?? { padding: 40 }) } as unknown as LayoutOptions;
 }
@@ -172,12 +143,7 @@ export function GraphCanvas({
             "background-clip": "node"
           }
         },
-        // SHAPE = type, COLOUR = group (lib/graph-visual.ts). Both are computed per node and
-        // handed to Cytoscape as data, so there is one style rule instead of one per type — a new
-        // object type gets a shape by adding a row to `NODE_SHAPE_BY_TYPE`, not a selector here.
-        // This replaced fixed per-type colours (service blue, component purple), which spent the
-        // colour channel on something shape already says and left a graph of N components as N
-        // identical dots.
+        // SHAPE = type, COLOUR = group. See docs/web.md §54.
         {
           selector: "node",
           style: {
@@ -199,11 +165,7 @@ export function GraphCanvas({
             "background-image-opacity": 0.4
           }
         },
-        // Health overlay (observe-enrichment signal 4) — a colored border ring keyed on the
-        // OPTIONAL `health` node-data field, using the same attribute-selector technique as
-        // `node[?external]`/`node[?root]`. A `node[health=...]` selector out-ranks the base `node`
-        // rule and is undefined-safe: nodes without health (overlay off, or nothing pushed) match
-        // none of these and render exactly as before. Grey = unknown/no push (never fabricated).
+        // Health overlay (observe-enrichment signal 4). See docs/web.md §55.
         {
           selector: 'node[health="healthy"]',
           style: { "border-width": 4, "border-color": "#16a34a", "border-opacity": 1 }

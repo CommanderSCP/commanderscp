@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { assignGroupColors, deriveGroupIds, shapeForType, sizeForType } from "./graph-visual";
 
-/**
- * The owner's colour rule (2026-08-10): colour is decided at the HIGHEST LEVEL IN SCOPE — at org
- * level each service is its own colour; inside a service each assembly or directly-held component
- * is; inside an assembly each component is. `deriveGroupIds` claims all three are one rule, so all
- * three are asserted here against the same function rather than three code paths.
- */
+/** The owner's colour rule (2026-08-10). See docs/web.md §120. */
 
 const contains = (fromId: string, toId: string) => ({
   fromId,
@@ -15,7 +10,6 @@ const contains = (fromId: string, toId: string) => ({
 });
 
 describe("deriveGroupIds: colour is decided at the highest level in scope", () => {
-  // org -> service -> [assembly] -> component
   const objects = [
     { id: "svc-a" },
     { id: "svc-b" },

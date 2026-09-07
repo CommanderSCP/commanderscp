@@ -19,26 +19,7 @@ import {
 } from "./bundle-transfers-repo.js";
 import { getFederationStatus } from "./status-repo.js";
 
-/**
- * M16.2 phase A, REVIEW ROUND 4 — THE STATUS ROW'S REMAINING HONESTY DEFECTS (H3, H4, H9a).
- *
- * Each case below is a MEASURED wrong answer from the previous revision, pinned so it cannot come back:
- *
- *   H3 — `lastSyncedBundleChecksum` (documented as "the last CONFIRMED INBOUND **sync** bundle") and
- *        `lastSyncedAt` were read off `listRecentTransfers(...).find(t => t.status === 'confirmed')`:
- *        ANY direction, ANY kind, last 5 rows. Inserting the exact row `promotion-repo.ts` writes on an
- *        accepted promotion (import/promotion/confirmed) made the field report that PROMOTION checksum —
- *        and removed `lastSyncedBundleChecksum` from `unknownFields` — for a peer no sync bundle had ever
- *        arrived from.
- *   H4 — `connectivity` overclaimed in BOTH positive branches: a peer with an `http://` baseUrl AND a
- *        deliveryTarget read `air-gap` (a configured, dialable-in-principle topology labelled air-gapped),
- *        and an https peer read `connected` even having never been reached. The field is now
- *        `transportMode` and says only what CONFIG says.
- *   H9a — `lastSyncExportForPeer` ordered by `through_sequence DESC`, and Postgres DESC is NULLS FIRST,
- *        so one export row with a NULL `through_sequence` would sort first and make the code report
- *        "never exported" FOREVER. Not reachable through `export-repo.ts` today, which is exactly when a
- *        trap is cheap to disarm — so the trap is exercised directly.
- */
+/** The status row's remaining honesty defects. See docs/federation.md §535. */
 describe("M16.2 review round 4: federation status honesty (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -92,9 +73,7 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     await server?.close();
   });
 
-  // ---------------------------------------------------------------------------------------
   // H3 — the "as of ⟨bundle⟩" identifier names a SYNC IMPORT, or nothing.
-  // ---------------------------------------------------------------------------------------
 
   it("H3: a confirmed import/PROMOTION row does NOT become the 'as of ⟨bundle⟩' identifier", async () => {
     const peer = await pairFresh({ baseUrl: "https://p.example.test" });
@@ -169,9 +148,7 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     expect(entry?.lastExportedBundleChecksum).toBe("outbound-not-inbound");
   });
 
-  // ---------------------------------------------------------------------------------------
   // H4 — `transportMode` describes CONFIG, and says nothing about reachability.
-  // ---------------------------------------------------------------------------------------
 
   it("H4: an http baseUrl PLUS a deliveryTarget is NOT reported as air-gap — it is declared unknown", async () => {
     const peer = await pairFresh({
@@ -204,10 +181,6 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     expect(entry?.transportMode).toBe("air-gap");
     expect(entry?.unknownFields ?? []).not.toContain("transportMode");
   });
-
-  // ---------------------------------------------------------------------------------------
-  // H9a — DESC is NULLS FIRST in Postgres.
-  // ---------------------------------------------------------------------------------------
 
   it("H9a: one export row with a NULL through_sequence does not make the peer read 'never exported'", async () => {
     const peer = await pairFresh({ baseUrl: "https://p.example.test" });
@@ -251,13 +224,10 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     expect(entry?.unknownFields ?? []).not.toContain("lastExportedThroughSequence");
   });
 
-  // ---------------------------------------------------------------------------------------
   // N8 (review round 5) — THE SAME TRAP, IN THE HELPER H3 NOW MAKES TWO FIELDS DEPEND ON.
-  // ---------------------------------------------------------------------------------------
 
   it("N8: one confirmed import/sync row with a NULL confirmed_at does not make the peer read 'never synced'", async () => {
     const peer = await pairFresh({ baseUrl: "https://p.example.test" });
-    // A genuine, correctly-stamped confirmed sync import.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       recordBundleTransfer(tx, {
         orgId: org.orgId,
@@ -270,13 +240,7 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
         channel: "metadata"
       })
     );
-    // The trap: a row matching the SAME predicate whose `confirmed_at` is NULL. Postgres `DESC` is
-    // NULLS FIRST, so it sorted ahead of the real row and the `!row?.confirmedAt` bail below made
-    // BOTH `lastSyncedAt` and `lastSyncedBundleChecksum` read null — "never synced" and "bundle
-    // unknown" over a real sync. `recordBundleTransfer` cannot write this shape (it stamps
-    // `confirmed_at` whenever status is confirmed), so it is inserted directly — exactly as H9a's
-    // own test does, and for the same reason: an unreachable trap is the cheapest kind to disarm,
-    // and H3 has just made two more fields depend on this ordering.
+    // The trap: a matching row whose confirmation is null. See docs/federation.md §536.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.insert(bundleTransfers).values({
         id: randomUUID(),

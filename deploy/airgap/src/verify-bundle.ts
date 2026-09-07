@@ -1,15 +1,5 @@
 #!/usr/bin/env node
-/**
- * @scp/airgap verify-bundle — the standalone counterpart to install.sh's own built-in verify
- * step. Cosign-verifies every image + the bundle's checksums (and, given a tarball, the tarball
- * itself) against a SUPPLIED public key, and fails loudly — non-zero exit, every problem listed —
- * on any signature mismatch or content tampering. Never trusts a `cosign.pub` found inside the
- * thing it's verifying as its OWN root of trust for the outer tarball check (see --pubkey below);
- * see deploy/airgap/README.md for the trust model this implements.
- *
- * Run: `pnpm --filter @scp/airgap verify -- --pubkey cosign.pub --dir dist-bundle/scp-bundle-1.0.0-rc`
- * or `... --pubkey cosign.pub --tarball dist-bundle/scp-bundle-1.0.0-rc.tar.gz`.
- */
+/** The standalone counterpart to the installer's verify step. See docs/airgap.md §59. */
 import { Command } from "commander";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

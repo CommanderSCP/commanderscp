@@ -6,23 +6,7 @@ import { ScpApiError } from "@scp/sdk";
 import type { Decision, DecisionListQuery, DecisionListResponse } from "@scp/schemas";
 import { fire, render } from "../test-support/render-dom";
 
-/**
- * ADMIN › DECISIONS — the wired-up page against a stubbed SDK (owner-approved 2026-08-23,
- * "Decisions & Audit explorer" — charter principle 6).
- *
- * What is pinned, and the mutation each pin exists to catch:
- *   - the empty state renders ONLY after a successful zero-row read — never while pending, never
- *     after an error; mutation: paint it during pending → RED (`pending never paints empty` case);
- *     mutation: paint it on error instead of `QueryErrorNotice` → RED;
- *   - a failed read renders `QueryErrorNotice`'s diagnosis, never a silently empty table;
- *   - "Load more" fetches the SERVER's own `nextCursor` and appends — never re-fetches page 1,
- *     never fires twice per click; mutation: drop the cursor from the second call → the exact-query
- *     assertion goes RED;
- *   - the filter form sends `subjectId`/`kind` ONLY when non-empty (never an empty-string filter
- *     masquerading as "no filter"), and re-queries from page 1 on Apply — mutation: keep sending a
- *     stale cursor after Apply → the "second call has no cursor" assertion goes RED;
- *   - the Why affordance opens `DecisionDetailDialog` with the SAME row's record, not a stale one.
- */
+/** ADMIN › DECISIONS. See docs/web.md §167. */
 
 function decisionFixture(overrides: Partial<Decision> = {}): Decision {
   return {
@@ -144,8 +128,6 @@ function problem(status: number, title: string, detail: string): ScpApiError {
   });
 }
 
-// -------------------------------------------------------------------------------------------
-
 describe("Admin › Decisions renders the list", () => {
   it("renders rows from the fixture — kind, subject, verdict, id", async () => {
     listImpl = async () => ({
@@ -219,7 +201,7 @@ describe("Admin › Decisions — Load more carries the server's own cursor", ()
 
     clickInDocument("decisions-load-more");
     await waitUntil(() => allInDocument("decision-list-row").length === 2, "page 2 to append");
-    expect(inDocument("decisions-load-more")).toBeNull(); // nextCursor was null
+    expect(inDocument("decisions-load-more")).toBeNull();
     expect(calls).toHaveLength(2);
     expect(calls[0]!.query.cursor).toBeUndefined();
     expect(calls[1]!.query.cursor).toBe("CURSOR-1");

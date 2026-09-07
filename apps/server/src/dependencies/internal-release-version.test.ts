@@ -7,26 +7,7 @@ import {
   type ResolveReleasedVersionInput
 } from "./internal-release-version.js";
 
-/**
- * M21.4 — THE VERSION STRATEGY, without a database (BUILD_AND_TEST.md §4.1).
- *
- * `resolveReleasedVersion` is where the whole feature's honesty lives: it either points at a signal
- * or says why it cannot, and the failure mode that matters is the QUIET one — a plausible-looking
- * version derived from something that is not a version. So the assertions below are almost all of
- * the shape "records NOTHING, and here is the reason", each paired with the positive control that
- * makes the refusal about the input rather than about a function that always refuses.
- *
- * MUTATION LOG — applied, watched fail, reverted, watched pass:
- * | Mutation | Result |
- * |---|---|
- * | fall back to the digest when the observed ref carries no tag | "records NOTHING for a digest-only ref" FAILS |
- * | read the manifest at `source_ref.ref` instead of `.commit` | "reads package.json AT THE RELEASED COMMIT" and "records NOTHING when the change carries no released commit" both FAIL |
- * THE LINE GUARD MOVED OUT OF THIS FILE. `lineAcceptsVersion` now lives in `line-head.ts` — it was
- * a SECOND implementation of a question the third-party poll also answers, and the two disagreed
- * about what `tag_pattern` means. Its tests moved with it, to `line-head.test.ts`.
- * (The per-ecosystem refusals are additionally mutation-proven end to end in
- * `internal-release-detection.integration.test.ts` — see its own log.)
- */
+/** M21.4 — THE VERSION STRATEGY, without a database. See docs/dependencies.md §247. */
 
 const found = (content: string, commitSha = "c0ffee"): ReadFileAtRefResult => ({
   outcome: "found",
@@ -103,12 +84,7 @@ describe("parseImageRef", () => {
 
 describe("resolveReleasedVersion — an ecosystem with no strategy says SO", () => {
   it("reports `no_strategy_for_ecosystem`, not a missing manifest reader", async () => {
-    // `dependency_lines.ecosystem` is plain `text` with no CHECK (0061), so a row can outlive the
-    // enum and a sixth ecosystem lands here first. The REFUSAL was always right; the LABEL was not.
-    // It reported `manifest_reader_unavailable`, whose stated remedy is "wire a readFileAtRef
-    // reader" — which would fix nothing here. That is the provenance-label failure this repo has
-    // shipped once already: a reason named after the branch that matched, false as soon as the
-    // branch covers a second case (charter principle 6, ADR-0030 §2).
+    // `dependency_lines.ecosystem` is plain `text` with no CHECK. See docs/dependencies.md §248.
     const wired = reader(() => found(JSON.stringify({ version: "1.0.0" })));
     const result = await resolveReleasedVersion(
       input({
@@ -177,21 +153,7 @@ describe("resolveReleasedVersion — oci reads the observed image ref", () => {
     ).toMatchObject({ determined: false, reason: "no_matching_image_ref" });
   });
 
-  /**
-   * MEDIUM (M23.0 verification pass 8) — A MISS AFTER A CUT IS NOT A MISS.
-   *
-   * `observed_state` is bounded at the store, and an Argo CD Application's `status.summary.images`
-   * is the uncapped image list across every managed resource — an umbrella app overflows the
-   * whole-value budget on its own, at a measured 73 refs. The bound truncates the array's tail and
-   * leaves a recognisable marker; this function then found no match and reported
-   * `no_matching_image_ref`, which is a claim about the EXECUTOR ("it deployed these and none was
-   * yours") for something the platform did. Fail-silent: the internal release's `latest_version` is
-   * never determined and no dependant is ever bumped, with a reason that sends the reader to the
-   * pipeline instead of to the bound.
-   *
-   * The end-to-end arm — a REAL bounded row, read by the real `observedImagesOf` — is
-   * `coordination/observed-state-gate-critical-leaf.integration.test.ts`. These pin the branch.
-   */
+  /** MEDIUM (M23.0 verification pass 8). See docs/dependencies.md §249. */
   it("a MISS in a TRUNCATED list is `observed_images_elided`, never `no_matching_image_ref`", async () => {
     const truncated = [
       "ghcr.io/acme/other:1.2.3",

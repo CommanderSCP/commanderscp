@@ -8,38 +8,7 @@ import { RUNNER_LAUNCHER_DEADLINE_ANNOTATION, RUNNER_LAUNCHER_DEADLINE_LABEL } f
 const execFileAsync = promisify(execFile);
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/**
- * ================================================================================================
- * THE BUILT PACKAGE LOADS UNDER A REAL NODE ESM LOADER — M23.2, AND IT IS HERE BECAUSE IT CAUGHT ONE
- * ================================================================================================
- *
- * WHAT HAPPENED, MEASURED, NOT IMAGINED. M23.2 added `kubernetes-adapter.ts`, which imports
- * `./index.js`, and made `index.ts` re-export it. That cycle is legal ESM for function bodies and an
- * immediate `ReferenceError` for a top-level `const` initialised from the other module's binding —
- * and the file had exactly one such line:
- *
- *     export const RUNNER_LAUNCHER_DEADLINE_ANNOTATION = RUNNER_LAUNCHER_DEADLINE_LABEL;
- *
- * Under a real loader:
- *
- *     ReferenceError: Cannot access 'RUNNER_LAUNCHER_DEADLINE_LABEL' before initialization
- *         at .../packages/runner-launcher/dist/kubernetes-adapter.js:138
- *
- * Every managed-executor plugin subprocess died at import, and the only symptom anywhere was
- * `plugin instance 'managed-iac-budget' did not become ready within 10000ms` from
- * `apps/server`'s budget suites — three failures whose message names nothing about a module cycle.
- *
- * AND THE PART THAT MAKES THIS FILE NECESSARY RATHER THAN TIDY: a unit test written to catch exactly
- * this was GREEN. `kubernetes-adapter.test.ts`'s first case says in its own comment "if any binding
- * of this file's imports were read at module-evaluation time rather than at call time, THIS line
- * would throw a TDZ ReferenceError before the assertion" — it did not, because vitest resolves the
- * cycle through its own module graph in the other order. A claim about a loader cannot be verified
- * with a different loader (CLAUDE.md: "a claim about a tool cannot be verified with that tool").
- *
- * SO THIS TEST BUILDS THE PACKAGE AND LOADS IT WITH `node`. Building first is not politeness: the
- * manifests and plugins resolve `main: dist/index.js`, so a test that read a stale `dist` would
- * report the previous commit's answer — the same "checks that pass without running" family.
- */
+/** THE BUILT PACKAGE LOADS UNDER A REAL NODE ESM LOADER. See docs/runner-launcher.md §321. */
 
 describe("M23.2: `@scp/runner-launcher` can actually be imported by Node", () => {
   beforeAll(async () => {

@@ -12,75 +12,9 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changeWaveTargets } from "../db/schema.js";
 
-/**
- * ================================================================================================
- * M23.0 verification pass 15 — `__proto__` FROM A REAL PLUGIN, THROUGH A REAL SUBPROCESS, INTO A
- * REAL POSTGRES ROW.
- * ================================================================================================
- * Pass 14 found prototype pollution reachable from an untrusted executor's response and closed it
- * with `isUnsafePersistedKey`. Everything that proves it is a UNIT test over a value handed
- * straight to `boundPersistedJson` (`persisted-json-proto.test.ts`). That is the same gap pass 12
- * recorded for `executor_ref`: the defect is about what a PLUGIN can put in a ROW, and no fixture
- * drove a plugin.
- *
- * The gap is not academic, because `__proto__` only behaves this way on a specific path. Writing
- * `{ __proto__: x }` in TypeScript sets the prototype and produces NO own key, so a test written
- * the obvious way asserts nothing. The key has to arrive the way a plugin's actually does:
- * `JSON.parse`, which is specified to DEFINE the property rather than assign it. This file makes
- * every hop real —
- *
- *     JSON.parse in the test  ->  config JSON  ->  plugin subprocess  ->  JSON-RPC response
- *       ->  the server's JSON.parse  ->  boundPluginJson  ->  jsonb column  ->  read back
- *
- * — and asserts on the row, not on a return value.
- *
- * BOTH WRITE SITES, because the guard is spelled twice and a census that checked one would have
- * missed the other:
- *   * `executor_ref` via `runRefExtrasByTarget` — the key lands at the ROOT of the walked object,
- *     which is the only place `walkObjectFields` phase 1 can refuse a ROOT field;
- *   * `observed_state.rollout` via `rolloutByTarget` — NESTED, so it exercises the same guard at
- *     depth, where the loss has to roll up into the root field that contains it.
- *
- * WHAT "HANDLED DELIBERATELY" MEANS HERE, stated so a future round cannot satisfy it by accident:
- * the stored object's prototype is `Object.prototype`, the key is not an own property of the row,
- * nothing the plugin nested under it is readable through the row, and — for `observed_state`, the
- * column an operator reads — the loss is REPORTED rather than silent. `executor_ref` gets no report
- * by the deliberate decision recorded in `wave-targets-repo.ts`, and this file pins that too, so
- * "no signal there" stays a decision instead of decaying into an oversight.
- *
- * ================================================================================================
- * AND ONE THING THIS FILE MEASURED THAT THE THREAT MODEL DID NOT SAY — READ THIS BEFORE ADDING AN
- * ARM HERE
- * ================================================================================================
- * THE POLLUTION ITSELF DOES NOT SURVIVE INTO THE ROW, AND NO ROW ASSERTION CAN SEE IT. Measured by
- * deleting `isUnsafePersistedKey`'s guard, rebuilding, and re-running this file: the four
- * prototype/own-key/payload/serialised-form checks in `assertNotAGadget` ALL STAYED GREEN for
- * `executor_ref`. `JSON.stringify` does not serialise a prototype, so a polluted object becomes a
- * clean row on its way into `jsonb`, and `JSON.parse` on the way out hands back an object whose
- * prototype is `Object.prototype` no matter what happened in the server's memory.
- *
- * So pass 14's defect is an IN-PROCESS hazard — the object the server holds between the bound and
- * the write, whose failed property lookups consult plugin data — and `persisted-json-proto.test.ts`
- * is the right instrument for it. What IS observable at the row is the defect's SECOND half, which
- * pass 14 recorded and nothing drove end to end: the field is CHARGED against the budget and then
- * silently dropped, so its siblings are cut to pay for a field that was never stored. That is what
- * the root arm below asserts, with a fixture measured to separate the two builds at the production
- * budget (`vendorField` survives whole at 4 000 characters; against the unguarded build it comes
- * back at 3 822). An arm here that only reads prototypes proves nothing — it is green either way.
- */
+/** M23.0 verification pass 15. See docs/coordination.md §572. */
 
-/**
- * A root-level `__proto__`, as a plugin's serialiser would actually emit it. Built by `JSON.parse`
- * because the object literal `{ __proto__: … }` sets the prototype and creates no own key — a test
- * written that way is green against the unguarded build too.
- *
- * THE TWO LENGTHS ARE MEASURED, NOT DECORATIVE. `executor_ref` is bounded at the default
- * `PERSISTED_JSON_MAX_CHARS` (8 000). At 4 000 + 4 000 the pair saturates it, so a `__proto__`
- * field that is charged and then dropped takes its cost out of `vendorField` — the only
- * ROW-OBSERVABLE consequence of the guard (see the header). Measured END TO END across the two
- * builds — through the plugin, so the run ref's own `externalId` and `url` are in the budget too:
- * guarded keeps `vendorField` at 4 000, unguarded returns 3 822.
- */
+/** A root-level `__proto__`, as a serialiser would emit it. See docs/coordination.md §573. */
 const PROTO_PAYLOAD_CHARS = 4_000;
 const VENDOR_FIELD_CHARS = 4_000;
 const PROTO_RUN_REF_EXTRAS = JSON.parse(

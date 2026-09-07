@@ -13,24 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ADR-0030 §1 — a first-party CI report reaches a REF-SCOPED mapping, through the real typed
- * ingress.
- *
- * This is the end of the chain the milestone actually needs, and it is the half that a unit test of
- * `matchComponentForSource` cannot reach. `ChangeReportRequestSchema` is a **`strictObject`**, so
- * declaring `ref` on it was not cosmetic: an undeclared key is REFUSED, not stripped, and a dev CI
- * step reporting its build's ref would have received a validation error instead of a route. Teaching
- * the processor's generic hint extractor to read `ref` was necessary and NOT sufficient — this suite
- * exists because that distinction is invisible from either side alone.
- *
- * It also underwrites the runbook (`docs/runbooks/dev-pipeline-fast-crossing.md`), whose whole
- * premise is a CI step reporting a scanned dev build so the later crossing short-circuits. That
- * instruction has to be executable, not plausible.
- *
- * Transport is the generated SDK's `changeSources.report(...)` — a real PAT-authed HTTP call
- * (charter principle 3), not a hand-built row.
- */
+/** A first-party CI report reaches a ref-scoped mapping. See docs/coordination.md §425. */
 describe("ADR-0030: a typed CI report routes by git ref", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -51,7 +34,7 @@ describe("ADR-0030: a typed CI report routes by git ref", () => {
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.id, eventId))
     );
-    expect(rows[0]!.processedAt).not.toBeNull(); // processed either way — routed or correctly dropped
+    expect(rows[0]!.processedAt).not.toBeNull();
     return rows[0]!.resultingChangeObjectId;
   }
 

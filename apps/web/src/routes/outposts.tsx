@@ -27,25 +27,7 @@ import {
   TableRow
 } from "../components/ui/table";
 
-/**
- * `/federation/outposts` — M16.2 phase B (B1), THE OUTPOSTS OVERVIEW: every outpost/retrans peer
- * this instance syncs with, in one table.
- *
- * WHAT THIS FILE IS ACTUALLY ABOUT. Phase A (ADR-0022) spent four review rounds making the
- * `/federation/status` response say only what it can source: an unasserted trust tier is `null` and
- * named in `unknownFields`; a peer with no transport configured is `null`, NOT `air-gap`; every
- * export figure measures WHAT THIS SIDE PUT ON THE WIRE and there is deliberately no
- * applied-at-the-peer field at all. A browser that paints those nulls as blanks — or, worse, as
- * green ticks — undoes every one of those rounds in one render pass. So the rule here is the same
- * rule `service-board.tsx` follows, applied to federation:
- *
- *   AN UNOBSERVABLE FIELD IS AN EXPLICIT UNKNOWN. It is never blank, never a zero, never a default,
- *   and never a success colour — and no string on this page may read as "the outpost has this".
- *
- * Consumes ONLY the generated SDK (`client.federation.status()`), per charter principle 3.
- * Pinned on every PR by `outposts-honesty.test.tsx` (cheaper than the Playwright suite, which also
- * guarantees that must not regress live in plain vitest + `renderToStaticMarkup`).
- */
+/** `/federation/outposts` — M16.2 phase B (B1), THE OUTPOSTS OVERVIEW. See docs/web.md §422. */
 
 /** The peer roles this page is ABOUT (ADR-0004). A `commander` peer is another instance's view of
  *  us, not an outpost we manage, so it is excluded — and the count of what was excluded is shown,
@@ -56,23 +38,12 @@ export function isOutpostPeer(status: FederationPeerStatus): boolean {
   return (OUTPOST_PEER_ROLES as readonly string[]).includes(status.peer.role);
 }
 
-/** True when the server explicitly declared this peer-status field UNOBSERVABLE
- *  (`FederationPeerStatusSchema.unknownFields`) — as opposed to observed-and-empty. `unknownFields`
- *  is optional on the wire (additivity): an older server that never declares anything must not be
- *  read as declaring everything observable, so `undefined` means "nothing declared", and the
- *  per-cell renderers below still refuse to paint a bare `null` as a reading. */
+/** True when the server declared this field unobservable. See docs/web.md §423. */
 export function isPeerUnknown(status: FederationPeerStatus, field: string): boolean {
   return (status.unknownFields ?? []).includes(field);
 }
 
-/**
- * The honest-unknown marker — the Badge `unknown` tone (design spec §1.5/§2.2), the ONE sanctioned
- * rendering of the honesty pill app-wide, so an operator reads one visual language for "this
- * instance cannot see / is not the authority" everywhere it appears.
- *
- * Its own testid (`outpost-unknown`) rather than the board's, so the two suites cannot pass on each
- * other's markup.
- */
+/** The honest-unknown marker. See docs/web.md §424. */
 export function UnknownHere({ title, label = "unknown here" }: { title: string; label?: string }) {
   return (
     <Badge variant="unknown" title={title} data-testid="outpost-unknown">
@@ -81,12 +52,7 @@ export function UnknownHere({ title, label = "unknown here" }: { title: string; 
   );
 }
 
-/**
- * "This side's own record — nothing here observes the peer." (spec §4E) — the ONE canonical
- * sentence replacing the three drifted paragraph variants that used to say this on `/outposts`,
- * `/outposts/$peerDomainId`, and `/federation` separately. A fragment in chrome (copy rule 1); the
- * full rationale lives in the `title` tooltip.
- */
+/** "This side's own record. See docs/web.md §425. */
 export function ObservationScopeNote(): React.JSX.Element {
   return (
     <span
@@ -103,23 +69,7 @@ export function ObservationScopeNote(): React.JSX.Element {
   );
 }
 
-/**
- * THE ATTENTION-DOT COLUMN (spec §4E) — a leading at-a-glance triage signal derived ONLY from
- * signals already computed on this row, never a new fetch or a fabricated threshold:
- *
- *   * `danger` (red) — a signal that something set up to work is NOT working: this side is opted
- *     into poke-mode but has never actually received one (the named unilateral-sparse case
- *     `outpost-configuration.tsx` also renders, computed the same way here for the overview).
- *   * `warning` (amber) — "worth a look": transport cannot be derived (no base URL or delivery
- *     target configured), or the trust tier is unset/unverified.
- *   * `nominal` (slate) — nothing above is true.
- *
- * Transport-unknown is DELIBERATELY warning, not danger (first QA pass got this wrong): a freshly
- * enrolled peer has no transport yet, and a genuinely air-gapped peer may NEVER have one — bundles
- * move by hand, which is a supported deployment shape, not a failure. Red on every fresh or
- * air-gap row is the wall-of-amber problem reborn one tier up: when everything is a fire, nothing
- * is. Red therefore requires a signal that a configured mechanism is misbehaving.
- */
+/** THE ATTENTION-DOT COLUMN. See docs/web.md §426. */
 export type AttentionLevel = "danger" | "warning" | "nominal";
 
 export function attentionLevel(status: FederationPeerStatus): AttentionLevel {
@@ -204,26 +154,9 @@ export type TierMark =
   | { tier: string; provenance: "declared" | "unverified" }
   | { tier: "not-applicable"; provenance: "not-applicable" };
 
-/**
- * THE TIER CLAIM AND ITS QUALIFIER, DERIVED ONCE (round 3, the X4 census miss).
- *
- * `data-trust-tier` is a CLAIM, and this suite's own stated rule is that the forbidden thing is the
- * claim — the rendered word AND the machine-readable attribute. The ROW carried a bare
- * `data-trust-tier={status.trustTier ?? "unknown"}` with no qualifier beside it, so an unverified
- * hand-typed peer and a commander-declared one produced a BYTE-IDENTICAL
- * `<tr … data-trust-tier="commercial">` — and the row attribute is exactly what an E2E selector or
- * any other DOM consumer keys on. The cell inside had been fixed; the row had not, because the
- * census walked the components rather than the attributes.
- *
- * So both read this. A qualifier that is computed in one place cannot be applied in one place and
- * forgotten in the other.
- */
+/** THE TIER CLAIM AND ITS QUALIFIER, DERIVED ONCE. See docs/web.md §427. */
 export function trustTierMark(status: FederationPeerStatus): TierMark {
-  // A `retrans` peer is a STRONGER claim than "unobservable" — this instance can SOURCE its
-  // inapplicability: `POST /federation/outposts` refuses (400) to bind an `outpost` config object to
-  // any peer whose role is not `outpost` (`outpost-binding.ts`'s `REQUIRED_PEER_ROLE`, ADR-0004;
-  // measured `outpost-object.integration.test.ts`). So this is not "no tier was asserted" — it is
-  // "no tier can EVER be asserted for this peer" — and the two must not share a rendering.
+  // A `retrans` peer is a STRONGER claim than "unobservable". See docs/web.md §428.
   if (status.peer.role === "retrans")
     return { tier: "not-applicable", provenance: "not-applicable" };
   const tier = status.trustTier ?? null;
@@ -234,32 +167,9 @@ export function trustTierMark(status: FederationPeerStatus): TierMark {
   return { tier, provenance: unverified ? "unverified" : "declared" };
 }
 
-/**
- * TRUST TIER — the field with no source but an operator's own keystrokes, and three distinct states
- * that must never be shown alike (ADR-0022):
- *
- *   * NO TIER — `trustTier: null`, declared unknown. Renders the unknown marker. It must NEVER
- *     render blank and must never render `commercial`: "the operator has not decided" and "the
- *     operator asserted the lowest tier" are opposite facts, and defaulting one to the other is the
- *     invented posture this whole milestone exists to prevent.
- *   * DECLARED — a tier this instance is authoritative for (its own local-origin `outpost` object on
- *     a commander; the signature-verified commander replica on an outpost). A plain badge.
- *   * UNVERIFIED — the only tier available came from a `provenance:'manual'` HAND-FILLED SHADOW
- *     (DESIGN §13 hand-fill). The value rides the wire, and the server ALSO lists `trustTier` in
- *     `unknownFields` for exactly this case. Rendering it as a commander assertion is the
- *     fabrication phase A's review round 4 fixed on the server; this is the rendering half.
- */
+/** Trust tier: the field with no source but a keystroke. See docs/web.md §429. */
 export function TrustTierCell({ status }: { status: FederationPeerStatus }): React.JSX.Element {
-  // THE RETRANS BRANCH, DERIVED ONCE. Read off `trustTierMark` — the SAME derivation `OutpostRow`
-  // puts on the row's own `data-trust-tier`/`data-tier-provenance`, so the two cannot disagree — never
-  // re-checked with a second bare `status.peer.role === "retrans"` here.
-  //
-  // Rendered as the §1.5 STRUCTURALLY-EXPECTED-ABSENCE dash, not a badge: "a retrans can never have
-  // a tier" is a permanent structural absence (the same class as the spec's own "Layer B unmodeled
-  // fields" example), and §1.5 reserves pills for signal — a column of "not applicable" badges on
-  // every retrans row is the wall-of-pills problem reborn one tone over. The honesty sentence rides
-  // the title, exactly as the dash idiom prescribes; the amber unknown pill below stays reserved
-  // for the genuinely-unobservable outpost case, so the two states cannot be confused.
+  // THE RETRANS BRANCH, DERIVED ONCE. See docs/web.md §430.
   const rowMark = trustTierMark(status);
   if (rowMark.tier === "not-applicable") {
     return (
@@ -300,16 +210,7 @@ export function TrustTierCell({ status }: { status: FederationPeerStatus }): Rea
     );
   }
 
-  // TWO INDEPENDENT SIGNALS FOR ONE FACT, and the honest branch is whichever fires. The server sets
-  // `trustTierProvenance: "unverified"` AND pushes `"trustTier"` into `unknownFields` for exactly this
-  // case (`status-repo.ts`: `if (trustTier === null || tier?.unverified === true)`; the pairing is
-  // documented on the schema field). `trustTierProvenance` is `.nullable().optional()`, so a response
-  // that carries the TIER and the DECLARATION but omits the provenance is well-formed — and keying on
-  // provenance alone dropped such a row through to the declared badge below, rendering a hand-typed
-  // claim BYTE-IDENTICAL to a commander assertion. That is the fabrication phase A round 4 existed to
-  // fix, with the honest signal already on the wire and unread. So: OR them. `rowMark` is the same
-  // derivation computed above — not re-run — so the not-applicable branch and this one can never
-  // drift into checking the role two different ways.
+  // Two independent signals for one fact, and which is honest. See docs/web.md §431.
   if (rowMark.provenance === "unverified") {
     return (
       <span data-testid="outpost-tier" data-trust-tier={tier} data-tier-provenance="unverified">
@@ -341,18 +242,7 @@ export function TrustTierCell({ status }: { status: FederationPeerStatus }): Rea
   );
 }
 
-/**
- * TRANSPORT MODE — config-derived, never an observation (phase A replaced a `connectivity` field
- * whose `connected` value asserted reachability nobody had measured).
- *
- *   * `dialable` — an https/mTLS base URL is CONFIGURED. It does not say the peer was ever reached;
- *     the reachability observations are `lastPullAttemptAt`/`lastPullSuccessAt`/`effectiveCadence`,
- *     rendered beneath it.
- *   * `air-gap` — no base URL, a delivery target: a file/object channel.
- *   * `null` — NOT DERIVABLE, and emphatically NOT air-gap. Either nothing is configured at all, or
- *     a base URL federation refuses to dial (plain http) is configured. Reading "no transport" as
- *     "air-gapped" is the same class of fabrication as reading "no tier" as "commercial".
- */
+/** TRANSPORT MODE — config-derived, never an observation. See docs/web.md §432. */
 export function TransportCell({ status }: { status: FederationPeerStatus }): React.JSX.Element {
   const mode = status.transportMode ?? null;
   if (mode === null) {
@@ -404,15 +294,7 @@ export function InboundSyncCell({ status }: { status: FederationPeerStatus }): R
   );
 }
 
-/**
- * OUTBOUND — PENDING-EXPORT, AND NOTHING MORE.
- *
- * Every figure here measures what THIS SIDE PUT ON THE WIRE. The commander cannot observe what a
- * peer applied (`sync_cursors` records only what WE applied FROM a peer; `bundle_transfers` export
- * rows are INSERT-only and never advance), so there is no "up to date", no "in sync", no green tick
- * — a zero backlog means only that this side has bundled everything it has authored, which says
- * nothing whatsoever about whether the outpost received or applied any of it.
- */
+/** OUTBOUND — PENDING-EXPORT, AND NOTHING MORE. See docs/web.md §433. */
 export function PendingExportCell({ status }: { status: FederationPeerStatus }): React.JSX.Element {
   // BELT AND BRACES, and not decoration. `unknownFields` is OPTIONAL on the wire (additivity), so an
   // older server sends an ABSENT sequence and declares nothing — and keying only on the declaration
@@ -447,11 +329,7 @@ export function PendingExportCell({ status }: { status: FederationPeerStatus }):
           <UnknownHere
             label="backlog unknown"
             title={
-              // The reason must be one that can be TRUE HERE. This branch is only reachable after
-              // `neverExported` returned FALSE — something HAS been exported to this peer — so the
-              // old copy ("nothing has been exported yet") explained the marker with the one fact
-              // this code path rules out. What is actually true is narrower: the count is absent or
-              // the server declared it unobservable.
+              // The reason must be one that can be TRUE HERE. See docs/web.md §434.
               "This side has exported to this peer, but no pending-export backlog is available: the " +
               "server did not report a count, or declared it one it cannot observe. It is NOT a " +
               "statement that nothing is pending."
@@ -478,26 +356,8 @@ export function PendingExportCell({ status }: { status: FederationPeerStatus }):
   );
 }
 
-/**
- * THE TWO PROMISED-BUT-SOURCELESS COLUMNS, kept VISIBLE as explicit unknowns rather than quietly
- * dropped (the proposal promised both; a reader who remembers the promise and sees no column
- * assumes it is fine).
- *
- *   * `appliedAtPeer` — what the peer applied. ABSENT from the schema by design; there will be no
- *     such field until M16.4 builds a return path that can observe it.
- *   * `healthRollup` — the observe-enrichment health rollup. ABSENT from the schema: no health signal
- *     is replicated per peer.
- *
- * Both are named by the server in `unknownFields`. The `false` branch is not decorative: if a future
- * server stops declaring the name (because it grew a real field, or because it regressed), this
- * renders "not reported" — still never a clean reading, and visibly different from the declared case
- * so the change is noticed rather than silently absorbed.
- */
-/** Shared tooltip copy for the two sourceless columns (spec §4E: milestone codes stay out of
- *  rendered/tooltip copy — the "M16.4" citation that used to sit here moved to this comment).
- *  A return-path confirmation that would source `appliedAtPeer` is a named future increment, not a
- *  field that exists today. Shared with `outpost-detail.tsx`'s `OutpostStatusCard`, which renders
- *  the same two fields with the same honest reason. */
+/** The two promised-but-sourceless columns, kept visible. See docs/web.md §435. */
+/** Shared tooltip copy for the two sourceless columns. See docs/web.md §436. */
 export const APPLIED_AT_PEER_TITLE =
   "This instance cannot observe what the peer applied: it records only what it exported. A " +
   "return-path confirmation isn't implemented yet.";
@@ -538,12 +398,7 @@ function transferStatusBadge(status: string): React.JSX.Element {
   );
 }
 
-/** drizzle/0087 — the byte-relay tag beside a transfer row, ONLY for `channel === 'bytes'`. A
- *  `'metadata'` channel renders nothing extra (an ordinary `.scpbundle` handoff is today's default
- *  reading and needs no callout), and an ABSENT channel (pre-0087 row, or a writer that could not
- *  determine it) renders nothing either — provenance here is READ off the ledger row, never
- *  inferred from `checksum === null` or the peer's role, both of which are true for plenty of
- *  ordinary metadata rows too. */
+/** The byte-relay tag beside a transfer row, for one channel. See docs/web.md §437. */
 function TransferChannelTag({
   channel
 }: {
@@ -561,14 +416,7 @@ function TransferChannelTag({
   );
 }
 
-/**
- * RECENT TRANSFERS — the last five rows of THIS instance's own per-hop ledger, labelled as such.
- *
- * Deliberately NOT rendered as a "pending transfers" COUNT: `recentTransfers` is capped at five by
- * the server, so any total derived from it would be a number with no source. A `created` EXPORT row
- * means this side produced a bundle; it never advances, because only the RECEIVER can confirm, in
- * its own database.
- */
+/** Recent transfers: the last rows of this instance's ledger. See docs/web.md §438. */
 export function RecentTransfersCell({
   transfers
 }: {
@@ -662,33 +510,8 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
   );
 }
 
-/**
- * THIS DOMAIN, as an outpost — ADR-0026 §9.2, owner decision D3: "a commander acting in an outpost
- * capacity IS an outpost and must be shown as one, exempt from polling and poking itself."
- *
- * Rendered as its OWN panel rather than a row in the table below, and that is the whole design.
- * ADR-0022 splits outpost authority between a `federation_peers` row (transport, keys, sync state)
- * and an `outpost` graph object (declared config) — and **this domain has neither**. Seven of the
- * table's nine columns therefore have no source for self: last sync in, exported by this side,
- * applied at outpost, health, transfers, trust tier, transport. Putting self in the table would
- * mean blanking them, which is exactly the failure this file's module doc exists to prevent — an
- * unobservable field must be an explicit unknown, never a blank. A panel has no columns to blank,
- * so it can state only what `federation_self` actually knows.
- *
- * The exemption from polling is a DATA fact, not a rendering one: this row is synthesised here and
- * is never written to `federation_peers`, because a self peer row would make the federation-sync
- * loop dial its own `base_url` and sync a journal against itself.
- *
- * Deliberately NOT shown: the stages this domain coordinates. ADR-0026 D10 makes a stage a DERIVED
- * name over a place-role deployment-target, and none of this instance's targets carry the
- * `environment` property that derivation needs — so there is nothing honest to print yet.
- */
-/**
- * THE HQ OUTPOST'S TIER (§10.5; formerly "co-located" — GLOSSARY, ADR-0021 D7) — the same three states `TrustTierCell` renders for a peer
- * row, read off the OutpostConfig itself (this record has no peer-status row): no tier → the unknown
- * marker; a tier the server ALSO lists in `unknownFields` (an unverified hand-filled shadow) →
- * `<tier> · unverified`; else the plain badge. Never blank, never defaulted.
- */
+/** THIS DOMAIN, as an outpost. See docs/web.md §439. */
+/** THE HQ OUTPOST'S TIER. See docs/web.md §440. */
 export function SelfOutpostTier({ config }: { config: OutpostConfig }): React.JSX.Element {
   const tier = config.trustTier ?? null;
   if (tier === null) {
@@ -722,19 +545,7 @@ export function SelfOutpostTier({ config }: { config: OutpostConfig }): React.JS
   );
 }
 
-/**
- * THE HQ OUTPOST LINE inside the self-domain panel (pipeline-substrate-registry-scan.md
- * §10.5): the `outpost` record whose `peerDomainId` is THIS instance's own domain, read off
- * `FederationStatusResponse.selfOutpost` — the ONE place a self-bound record can be read, since it
- * has no peer row and so no `peers[]` entry. Three states, each stated:
- *   * a record  → its name (linked to `/federation/outposts/$peerDomainId` with self's own id — that
- *                 page renders the HQ record), its tier, and the marker
- *                 `HQ outpost · this instance`;
- *   * `null`    → `no outpost registered` — a stated absence, with the way to declare one (quiet)
- *                 ONLY when `self.role` is `commander` (the one role the server's self-shape door
- *                 accepts); on any other role it reads `declared at the commander` with no link;
- *   * absent    → `not reported` — an older server that does not resolve it; NOT read as "none".
- */
+/** THE HQ OUTPOST LINE inside the self-domain panel. See docs/web.md §441. */
 export function SelfOutpostLine({
   self,
   selfOutpost
@@ -755,11 +566,7 @@ export function SelfOutpostLine({
     );
   }
   if (selfOutpost === null) {
-    // The declare offer is made ONLY where the server accepts the write: `outpost-binding.ts` takes
-    // the self shape only when `federation_self.role` is `commander` (MEASURED — `outpost-config-sync
-    // .integration.test.ts`: an outpost-role instance is 400'd both before and after the replica
-    // arrives). On any other role the record is the commander's, and the honest line says so
-    // instead of offering a door the server refuses.
+    // The declare offer is made ONLY where the server accepts the write. See docs/web.md §442.
     return self.role === "commander" ? (
       <span
         data-testid="self-outpost"

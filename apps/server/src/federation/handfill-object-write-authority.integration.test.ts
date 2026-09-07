@@ -19,81 +19,13 @@ import {
   PROJECTION_BOUND_OBJECT_TYPE_IDS
 } from "../governance/governance-managed-types.js";
 
-/**
- * ================================================================================================
- * `federation:write` IS NOT A GRAPH-WRITE PERMISSION — THE HAND-FILL DOOR
- * ================================================================================================
- *
- * THE PROPERTY. `federation:write` operates the federation LINK: pair a peer, export a bundle,
- * import one, poke. `object:write` authors the ESTATE. A door that writes a graph object while
- * demanding only the former has silently merged the two, and every role built on the split becomes
- * a lie. `POST /api/v1/federation/hand-fill` was exactly that door: `routes/federation.ts`
- * authorizes `{permission: 'federation:write', scopeObjectId: auth.orgId}` and nothing else, and
- * `federation/handfill-repo.ts` then takes a free-form `typeId`, `urn`, `name`, `properties` and
- * `labels`. Its four preceding refusals are narrow — pair-bound (`placement`), peer-bound naming a
- * foreign domain (`outpost`), projection-bound (`freeze`), and governance-managed (`policy`,
- * `control`, ... , which take `policy:write`) — so EVERY OTHER REGISTERED TYPE, `service` and
- * `component` and `change` included, landed on `federation:write` alone.
- *
- * THE ACTOR THAT MAKES IT LIVE, and why the M21.7 coincidence argument does not cover this. A
- * `FederationAdmin` role holds `federation:read` + `federation:write` and DELIBERATELY withholds
- * `object:write`, on the invariant "a federation administrator operates the link, it does not edit
- * the estate". M21.7's sibling hole (`policy` through the same door) was latent because
- * `federation:write` and `policy:write` both land on Administrator and Owner and nowhere else — an
- * accident between two migrations. This one is not an accident: the role is being written to hold
- * one permission and not the other on purpose, so a role that exists to be safe was the exploit.
- *
- * MEASURED before the fix, over HTTP, with the `federationOnly` actor below:
- * `POST /api/v1/federation/hand-fill {typeId: "service", ...}` answered **201** with a live row in
- * `objects`, from a subject holding `object:write` NOWHERE.
- *
- * ================================================================================================
- * WHAT THIS FILE ASSERTS
- * ================================================================================================
- *  1. THE REFUSAL, over the whole reachable type set rather than over `service` alone — computed
- *     from the live `object_types` registry minus the four classes hand-fill already refuses for
- *     other reasons, so a type registered tomorrow is covered without editing this file. Per-type
- *     cases are how the sibling hole survived a green suite.
- *  2. THE CONTROL — an actor with BOTH permissions still lands the row, so (1) is not satisfied by
- *     a hand-fill route that is broken for everyone.
- *  3. THE SHADOW-COPY PROPERTY did not regress: the row that lands is still authored by
- *     `FEDERATION_IMPORT_ACTOR_ID` with `provenance: 'manual'` and `revision: 0`, which is the
- *     entire reconciliation mechanism (`handfill-repo.ts` module doc). The new bar is
- *     AUTHORIZATION ONLY; if a later change "tidies" it by passing the requesting subject to the
- *     upsert, the next signed bundle stops reconciling over the shadow and this case goes red.
- *  4. NO REGRESSION in the four refusals that already existed — driven by the BOTH-permissions
- *     actor on purpose, so each one is measured to still fire on its own reason rather than being
- *     masked by the new `object:write` 403 in front of it.
- *
- * ================================================================================================
- * MUTATION RUN (2026-08-25). MEASURED, not predicted.
- * ================================================================================================
- *   M-1  DELETE the `await assertObjectWriteAuthorityForHandFill(tx, input)` call from
- *        `handFillObject`
- *          -> 1 failed | 2 passed. "a FederationAdmin (federation:write, no object:write) cannot
- *             author estate objects through hand-fill" went red on
- *             `AssertionError: assembly: {"id":"01a03935-...","typeId":"assembly",...,
- *             "revision":0,"provenance":"manual",...}: expected 201 to be 403` — the loop's first
- *             type alphabetically, with the row LIVE in `objects` and stamped as a shadow copy, i.e.
- *             a subject holding `object:write` nowhere had authored an estate object.
- *             THE OTHER TWO CASES STAYED GREEN, which is the measured point of case 4: the four
- *             pre-existing refusals never depended on this bar, so the new bar is not what makes
- *             them pass and they are not what makes it pass.
- */
+/** `federation:write` IS NOT A GRAPH-WRITE PERMISSION. See docs/federation.md §227. */
 describe("hand-fill demands object:write as a second bar — federation:write is not estate authority (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
   /** `federation:write` at the org root and `object:write` NOWHERE — the FederationAdmin shape. */
   let federationOnly: TestUser;
-  /**
-   * A REAL, PAIRED commander peer, and it is load-bearing rather than fixture noise.
-   *
-   * `handFillObject` runs every refusal BEFORE `getPeerByIdOrName`, so with a peer that does not
-   * exist each refusal case would still see its 403 — but the "nothing was written" half would be
-   * VACUOUS (the write was unreachable whatever the guard did) and unwiring the guard would turn the
-   * case red with a 404 about the peer rather than letting the row land. With a real peer the only
-   * thing between the request and a live row is the bar under test.
-   */
+  /** A real paired peer, not fixture noise. See docs/federation.md §228. */
   let handFillPeer: string;
 
   beforeAll(async () => {
@@ -116,18 +48,7 @@ describe("hand-fill demands object:write as a second bar — federation:write is
     });
   }
 
-  /**
-   * The FederationAdmin under test: `federation:write` and NOTHING that writes the graph.
-   *
-   * Built through `roles.org_id` (the org-defined-role mechanism) because no BUILT-IN role can
-   * express it — `drizzle/0012` puts `federation:write` on Administrator and Owner, and
-   * `drizzle/0002` puts `object:write` on both of those plus Operator and Approver, so every
-   * built-in holder of one holds the other. Testing against the role table's current accident would
-   * measure nothing.
-   *
-   * Viewer is bound purely so the harness mints an auth row and a live token; `object:read` is no
-   * part of what is under test and grants no write anywhere.
-   */
+  /** The FederationAdmin under test. See docs/federation.md §229. */
   async function createFederationOnlyUser(): Promise<TestUser> {
     const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
@@ -186,15 +107,7 @@ describe("hand-fill demands object:write as a second bar — federation:write is
     );
   }
 
-  /**
-   * EVERY registered type this door will actually try to write, computed rather than listed.
-   *
-   * The four exclusions are the classes hand-fill refuses for reasons that are NOT this bar — a
-   * pair-bound `placement`, a peer-bound `outpost` naming a foreign domain, a projection-bound
-   * `freeze`, and the governance-managed set that takes `policy:write`. Including them would make
-   * the loop green on refusals that already existed, which is precisely the vacuous shape this file
-   * is written against: the 403 would be real and would say nothing about `object:write`.
-   */
+  /** Every type this door will write, computed not listed. See docs/federation.md §230. */
   async function handFillableTypeIds(): Promise<string[]> {
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select({ id: objectTypes.id }).from(objectTypes)
@@ -240,16 +153,7 @@ describe("hand-fill demands object:write as a second bar — federation:write is
   });
 
   it("CONTROL: both permissions still land the row, and it is STILL a shadow copy authored by the import actor", async () => {
-    // Without this the case above is satisfied by a hand-fill route that refuses everyone — which
-    // would delete DESIGN §13's reason for the feature (an air-gapped outpost with no bundle
-    // transport keying a commander-origin object in by hand).
-    //
-    // The provenance assertions are not decoration. The bar added above is AUTHORIZATION ONLY: the
-    // row must still be written as `FEDERATION_IMPORT_ACTOR_ID` with `provenance: 'manual'` and
-    // `revision: 0`, because that is what makes ANY later real import (always `revision >= 1`,
-    // always `provenance: null`) win the single-writer comparison and reconcile over the shadow.
-    // Handing the requesting subject to `upsertObjectByUrn` instead would look like a tidy-up and
-    // would silently break reconciliation forever.
+    // Without this, a door that refuses everyone would pass. See docs/federation.md §231.
     const name = `objwrite-control-${randomUUID().slice(0, 8)}`;
     const urn = `urn:scp:${org.orgId}:service:${name}`;
     const res = await post("/api/v1/federation/hand-fill", org.adminToken, {
@@ -285,13 +189,7 @@ describe("hand-fill demands object:write as a second bar — federation:write is
   });
 
   it("NO REGRESSION: the pair-bound, peer-bound and governance-managed refusals still fire for an actor who clears the new bar", async () => {
-    // Driven by the ADMINISTRATOR — who holds `object:write` and therefore passes the new bar — on
-    // purpose. Driven by the federation-only actor these would all be green off the new 403 alone,
-    // and the file would claim coverage it does not have: the risk of adding a broad permission bar
-    // is that it MASKS the narrow refusals in front of it, turning four measured guards into one.
-    //
-    // The `object:write` bar is ordered LAST in `handFillObject` for exactly this reason, and these
-    // three assertions are what holds that ordering in place.
+    // Driven by the ADMINISTRATOR. See docs/federation.md §232.
     const pairBound = await post("/api/v1/federation/hand-fill", org.adminToken, {
       peer: handFillPeer,
       typeId: "placement",

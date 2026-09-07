@@ -6,41 +6,10 @@ import {
 import type { PolicyEvaluationEntry } from "../../governance/evaluate.js";
 import { canonicalJson } from "../../util/canonical-json.js";
 
-/**
- * THE SUITE-WIDE CEL TIMEOUT FOR DECISION-COUNTING SUITES, AND WHY IT IS NOT THE PRODUCTION 250 ms.
- *
- * `CEL_DEFAULT_TIMEOUT_MS` (250 ms, cel-sandbox.ts) is a SECURITY bound — it caps what an untrusted
- * policy expression can burn on a worker thread — and production is exactly where it belongs. But it
- * is a HARD WALL CLOCK, and a suite that counts Decision ROWS is measured against it while the box
- * is also running every other integration file: a trivial `change.emergency == false` that would
- * evaluate in microseconds can exceed 250 ms of wall clock purely because its worker thread did not
- * get scheduled (observed twice on this machine with no injection at all — the first cold run of both
- * amplification files at `SCP_TEST_MAX_FORKS=2`, and the 80-file suite at forks=8).
- *
- * When that happens the production code does the RIGHT thing, and the row count changes as a result:
- * `governance/evaluate.ts` fails the required contributor closed with a synthetic
- * `kind:"conditionError"` effect, which is a genuinely DIFFERENT reason tree, so
- * `insertDecisionIfChanged` CORRECTLY writes a second row — and a third when the next tick evaluates
- * normally again (block -> conditionError -> block). Asserting "exactly one row" against that is
- * asserting the machine is never busy.
- *
- * So these suites raise the wall clock far above any scheduling hiccup. This weakens NOTHING they
- * test: the timeout wall itself is covered by `governance/cel-sandbox.test.ts`, and the property
- * under test here — a restated verdict does not append a row — is entirely independent of how long
- * an evaluation is allowed to take. The evaluation COUNT assertions (the invariant that the gate is
- * still re-evaluated every tick) are unaffected either way, because a timed-out evaluation is still
- * an evaluation and is still counted.
- */
+/** The suite-wide CEL timeout, not the production one. See docs/coordination.md §987. */
 export const DECISION_COUNT_SUITE_CEL_TIMEOUT_MS = 30_000;
 
-/**
- * A REAL `CelSandbox` (own worker threads, real cel-js) that also records what it was asked to
- * evaluate. Subclassed rather than faked so the gate path under test is byte-for-byte the production
- * one — the recording and the raised timeout are the only additions.
- *
- * Shared by the change-side and campaign-side write-amplification suites so the two cannot drift
- * apart on the flake fix.
- */
+/** A REAL `CelSandbox`. See docs/coordination.md §988. */
 export class CountingCelSandbox extends CelSandbox {
   readonly evaluated: string[] = [];
 
@@ -62,15 +31,7 @@ export class CountingCelSandbox extends CelSandbox {
   }
 }
 
-/**
- * True when this Decision's reason tree is the FAIL-CLOSED CONDITION-ERROR statement rather than an
- * ordinary gate verdict — i.e. at least one policy entry carries the synthetic
- * `kind:"conditionError"` effect, or the `conditionError` annotation, that `governance/evaluate.ts`
- * produces when a contributor's CEL condition could not be evaluated (parse error OR timeout).
- *
- * Structural, not a substring match on the serialized tree, so a renamed field fails the type check
- * instead of silently matching nothing.
- */
+/** True when this reason tree is the fail-closed statement. See docs/coordination.md §989. */
 export function isConditionErrorReasonTree(reasonTree: unknown): boolean {
   if (reasonTree === null || typeof reasonTree !== "object") return false;
   const policies = (reasonTree as { policies?: unknown }).policies;
@@ -90,31 +51,7 @@ export interface DecisionContentRow {
   reasonTree: unknown;
 }
 
-/**
- * Split a subject's Decision rows into the ORDINARY gate verdicts and the FAIL-CLOSED condition-error
- * statements a CEL evaluation failure produces.
- *
- * WHY THE COUNTING ASSERTIONS NEED THIS, and why filtering ALONE is not enough — measured, not
- * assumed. Inject one timeout into a parked gate's tick sequence and the persisted rows are:
- *
- *     row 0  block / requireApprovals unmet      (the standing verdict)
- *     row 1  block / conditionError              (fail-closed: a DIFFERENT reason tree)
- *     row 2  block / requireApprovals unmet      (the next normal tick: differs from row 1)
- *
- * Every one of those writes is CORRECT — each differs from the row before it, which is exactly what
- * persist-on-change promises. Dropping row 1 still leaves TWO ordinary rows, so "exactly one row"
- * cannot be asserted on a box where a 250 ms wall clock can be missed by a scheduling hiccup (observed
- * twice here with no injection at all). The suites therefore raise the wall clock far above any
- * hiccup AND assert the bound the fix actually guarantees:
- *
- *     ordinary.length <= conditionErrors.length + 1
- *     and every ordinary row states the SAME thing
- *
- * which is 1 on any healthy run, tolerates exactly the extra statement a timeout legitimately causes,
- * and is completely independent of machine load. It does NOT soften the property under test: removing
- * the dedupe guard appends an ordinary restatement per tick with no condition errors at all, so the
- * bound becomes 20 <= 1 and the assertion goes RED (mutation-proven — T1/T3/T2/U2/U3 all fail).
- */
+/** Splits ordinary gate verdicts from condition errors. See docs/coordination.md §990. */
 export function partitionConditionErrors<T extends { reasonTree: unknown }>(
   rows: T[]
 ): { ordinary: T[]; conditionErrors: T[] } {
@@ -126,21 +63,9 @@ export function partitionConditionErrors<T extends { reasonTree: unknown }>(
   return { ordinary, conditionErrors };
 }
 
-/**
- * How many DISTINCT statements a set of Decision rows makes — the content key `restatesDecision`
- * compares on (verdict + inputContext + reasonTree), normalized key-order-independently for the same
- * reason it normalizes there: `jsonb` does not preserve the author's key order.
- *
- * This is the assertion that keeps "at most one more row than there were condition errors" from being
- * a loophole: the extra rows a timeout causes must be RESTATEMENTS of the same standing verdict, not
- * new information that persist-on-change lost.
- */
+/** How many DISTINCT statements a set of Decision rows makes. See docs/coordination.md §991. */
 export function distinctDecisionStatements(rows: DecisionContentRow[]): number {
-  // `@scp/schemas/canonical-json`, not a local copy of the sort: an inline copy here would be a
-  // sixth instance of the family whose shared defect (a silently dropped `__proto__` subtree) made
-  // two materially different Decision statements collapse into one Set entry — which in THIS
-  // function would under-count distinct statements and turn the assertion it exists to make into
-  // a loophole.
+  // `@scp/schemas/canonical-json`, not a local copy of the sort. See docs/coordination.md §992.
   return new Set(
     rows.map((r) => canonicalJson({ v: r.verdict, i: r.inputContext, t: r.reasonTree }))
   ).size;

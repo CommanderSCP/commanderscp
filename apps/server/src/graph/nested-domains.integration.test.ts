@@ -13,17 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * G2 (outpost-ui.md §5, owner decision 2026-08-13): CONTAINMENT DOMAINS NEST — a `domain` object may
- * be created inside another `domain`, first-class rather than an unexercised capability.
- *
- * The proposal's own §5 measured that nothing exercised this before today: `resolveDomainId` never
- * constrained the parent's type, and `containmentChain`'s route 1 (`child.domain_id -> parent`) is
- * already generic across the recursive walk — so a domain-under-domain was always structurally
- * reachable, just never created and never pinned. This file is that census: (a) create + round-trip,
- * (b) M20.5 locality inheritance crossing the domain rung, (c) whether a RESOLVER that walks
- * `domainId` parents actually resolves through the nesting.
- */
+/** Containment domains nest: a domain inside a domain. See docs/graph.md §68. */
 describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-08-13)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -41,10 +31,6 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (a) create-under-domain, round-tripped.
-  // -----------------------------------------------------------------------------------------
-
   it("a domain object may be created with domainId set to another domain's id, and round-trips", async () => {
     const parent = await admin.object("domain").create({ name: uniq("parent-domain") });
     const child = await admin
@@ -58,9 +44,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     expect(reread.domainId).toBe(parent.id);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (b) M20.5 locality inheritance crosses the domain rung.
-  // -----------------------------------------------------------------------------------------
 
   it("M20.5: a child domain created under a domainLocal:true parent inherits locality, without saying so", async () => {
     const parent = await admin
@@ -97,12 +81,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     expect(child.domainLocal).toBe(false);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (c) does a RESOLVER that walks domainId parents actually traverse the nesting?
-  //
-  // Two candidate resolvers, per the section 1 task: executor-binding resolution's org/domain rung,
-  // and policy scope expansion. They give OPPOSITE answers, and both are pinned rather than assumed.
-  // -----------------------------------------------------------------------------------------
+  // Does a resolver that walks parents actually traverse nesting. See docs/graph.md §69.
 
   it("POLICY resolution walks the nesting: a policy scoped at the PARENT domain governs a component whose domain is the CHILD domain", async () => {
     const parentDomain = await admin
@@ -154,11 +133,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
   });
 
   it("FINDING (ADR-0029 D2): executor-BINDING resolution does NOT walk domain at all, nested or not", async () => {
-    // binding-resolution.ts:224's own header is explicit: "a binding on a containment `domain` does
-    // not resolve" (ADR-0029 D2) — the ladder walks the `contains` edge only (component -> service ->
-    // assembly -> org root), and never consults `domain_id`. This is NOT a nesting-specific gap; a
-    // binding on a domain does not resolve even ONE hop up under the CURRENT (unnested) model. Pinned
-    // here with a real resolution attempt, so the negative is asserted rather than assumed.
+    // binding-resolution.ts:224's own header is explicit. See docs/graph.md §70.
     const parentDomain = await admin
       .object("domain")
       .create({ name: uniq("binding-parent-domain") });
@@ -195,17 +170,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     ).toBe("none");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // AT THE BOUND — the ADR-0037 loudness contract, flipped DELIBERATELY from this test's first
-  // life as a hazard pin (M21 crossover, 2026-08-13). Every recursive walk shares one bound
-  // (CONTAINMENT_WALK_MAX_DEPTH, six census sites), and before ADR-0037 each STOPPED EXPANDING
-  // silently: authz refused deep domain creates with a permission-shaped 403 naming neither
-  // depth nor bound, while a component created under the deepest allowed domain got a chain
-  // whose depth inversion presented a mid-level domain at "org root" — org-scoped required
-  // policies silently stopped matching (the ADR-0026 failure shape), reachable through the
-  // public API. Both halves are now LOUD: the walks probe one level past the bound and refuse
-  // with the depth named. This test pins that contract from the operator's side.
-  // -----------------------------------------------------------------------------------------
+  // AT THE BOUND. See docs/graph.md §71.
 
   it("AT THE BOUND (ADR-0037): deep creates refuse with the DEPTH named, and a chain that would truncate refuses instead of relabeling", async () => {
     // CONTROL first — a shallow nesting, well under the bound: the convention holds and the org
@@ -266,20 +231,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     expect(refusalDetail).toContain("ADR-0037");
     expect(domains.length).toBeGreaterThanOrEqual(8);
 
-    // The other half of the old hazard: a component created under the deepest allowed domain used
-    // to get a silently truncated chain whose inversion presented a mid-level domain as the org
-    // root. Now NOTHING is silent — walk back from the deepest domain: every component whose chain
-    // would exceed the bound is refused LOUDLY AT CREATE, naming the depth, and the deepest one
-    // whose chain FITS must still produce the honest shape (organization at index 0).
-    //
-    // FLIPPED 2026-08-18 (owner ruling; ADR-0037 Consequences; `containment-depth-doors.
-    // integration.test.ts`). This loop used to tolerate EITHER arm — a create refused loudly, OR a
-    // create that succeeded and whose chain read then threw — because before the doors counted the
-    // row they were writing, a component under the deepest allowed domain WAS created (201) and
-    // was refused only when something walked it (M22's governance-reach capture, in an org with a
-    // policy; a chain read, otherwise). That second arm is now a FAILURE, not a contract: the door
-    // invariant says no write leaves a live row past the bound, so a successful create MUST yield
-    // a complete chain. A create-then-409-on-read here means a door went quiet.
+    // The other half of the old hazard. See docs/graph.md §72.
     const deepSvc = await admin.services.create({ name: uniq("svc-deep") });
     let sawDepthRefusal = false;
     let honestChain: Awaited<ReturnType<typeof containmentChain>> | null = null;

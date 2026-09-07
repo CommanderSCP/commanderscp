@@ -9,7 +9,6 @@ import { cn } from "../../lib/utils";
 export interface EmptyStateProps {
   icon: LucideIcon;
   message: React.ReactNode;
-  /** Optional action Button. */
   action?: React.ReactNode;
   className?: string;
   "data-testid"?: string;

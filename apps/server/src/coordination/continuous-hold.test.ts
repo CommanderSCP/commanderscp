@@ -7,16 +7,7 @@ import {
   type ContinuousHookHold
 } from "./continuous-hold.js";
 
-/**
- * Pure decision-logic tests for the composers `evaluateContinuousHolds` (a `TenantTx`-bound DB
- * seam, left to `pipeline-hook-admission.integration.test.ts`) hands its answer to:
- *  - `summarize`: the three-reasons-never-collapsed operator sentence.
- *  - `describeContinuousHeldTargets`: the sort that keeps a `continuous_test` Decision from
- *    rewriting itself every tick on a reordered — but otherwise unchanged — query result
- *    (ADR-0024's persist-on-change contract, same property `freeze-hold.test.ts` defends for
- *    `describeHeldTargets`).
- *  - `describeContinuousHold`: the wire/reason-tree sentence per held target.
- */
+/** Pure decision logic for the hold composers, no database. See docs/coordination.md §327. */
 
 const hold = (overrides: Partial<ContinuousHookHold>): ContinuousHookHold => ({
   hookId: "probe-1",

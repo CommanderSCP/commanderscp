@@ -62,18 +62,7 @@ function RollbackResultBanner({ result }: { result: RollbackCampaignResponse }):
   );
 }
 
-/**
- * `/campaigns/{id}` (BUILD_AND_TEST.md §8 M5 UI requirement: "...+ wave board view") — one
- * `client.campaigns.explain()` call gets the campaign, its compiled plan/waves, and every
- * Decision made about it. Polls every 3s (`refetchInterval`), same reasoning as
- * change-detail.tsx: wave/target progress is written by the server-side reconciliation loop, not
- * user action.
- *
- * Wave board + Decisions render through the shared pipeline/decision module (design spec §2.13),
- * the same one change-detail.tsx uses — `PipelineWaveCard` gives campaign wave targets the same
- * version/executor/rollout detail and target-name resolution a change gets, and `PromotionArrow`
- * is the only wave-to-wave connector app-wide.
- */
+/** One campaign, with the wave board view. See docs/web.md §187. */
 export function CampaignDetailPage(): React.JSX.Element {
   const id = useIdParam();
   const queryClient = useQueryClient();

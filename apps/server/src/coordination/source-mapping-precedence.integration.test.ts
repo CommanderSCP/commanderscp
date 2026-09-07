@@ -13,18 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `matchComponentForSource` precedence (M12 P4A follow-up).
- *
- * Both `repo_pattern` and `path_pattern` are nullable and a null pattern is skipped by the matcher,
- * so a catch-all mapping matches EVERY event of its sourceKind and overlaps with every specific
- * mapping next to it. The match had no ORDER BY, so which of the two won was whatever Postgres
- * happened to return. Since P4A the winning row also carries the routing `type` (ADR-0007), so that
- * coin flip picks WHICH PIPELINE the release drives, not just which component.
- *
- * Each case uses its own sourceKind: the match is scoped to (orgId, sourceKind), so a private
- * sourceKind is what makes "these two mappings and no others matched" true.
- */
+/** `matchComponentForSource` precedence (M12 P4A follow-up). See docs/coordination.md §903. */
 describe("source mapping precedence: the most-constrained mapping wins, deterministically", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -43,12 +32,7 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
   const component = async (name: string): Promise<string> =>
     (await createTestComponent(admin, { name: `${name}-${uuidv7()}` })).id;
 
-  /**
-   * One mapping per transaction, exactly as the create route does it — and load-bearing here:
-   * `created_at` defaults to `now()`, which in Postgres is the TRANSACTION timestamp, so two
-   * mappings written in one tx would share a `created_at` and this suite could not control which
-   * is "older".
-   */
+  /** One mapping per transaction, exactly as the route does. See docs/coordination.md §904. */
   const mapping = (input: {
     sourceKind: string;
     componentIdOrUrn: string;
@@ -168,14 +152,7 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
   });
 
   it("the EXACT pattern beats the wildcard even when the wildcard is OLDER", async () => {
-    // This assertion was inverted on 2026-08-02 (owner decision). It previously pinned the opposite
-    // — that an exact pattern does NOT beat a wildcard and the older mapping wins — as "the
-    // documented limit of the rank rather than an accident", asserted so that changing it had to be
-    // a decision someone makes on purpose. That decision was made; see `correlation.ts`'s "WHY RULE
-    // 2 WAS ADDED" for the estate that forced it.
-    //
-    // The wildcard is created FIRST here on purpose: under the old rank it would win on age, so
-    // this test fails against the old ordering rather than passing for either.
+    // This assertion was inverted on 2026-08-02. See docs/coordination.md §905.
     const sourceKind = `precedence-tie-${uuidv7()}`;
     const suffix = uuidv7();
     const wildcardComponent = await component("wildcard");

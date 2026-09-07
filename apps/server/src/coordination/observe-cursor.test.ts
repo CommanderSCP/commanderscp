@@ -7,25 +7,9 @@ import {
   watermarkFor
 } from "./observe.js";
 
-/**
- * The observe cursor, and the starvation a single shared watermark caused.
- *
- * A git-provider adapter polls two resources with different TIME BASES and merges them:
- * `[...pollCommits(since), ...pollRuns(since)]`. Commits carry the author date; workflow runs carry
- * the run's creation time. A CI run is always created AFTER the commit that triggered it, so with
- * one watermark for both, the run dragged the cursor past its own commit and the next `?since=`
- * query excluded that commit **permanently** — skipped, not delayed.
- *
- * Measured on the homelab: commit `bfddca9` at `02:32:14Z` was never ingested, because the
- * `workflow_run` it triggered at `02:32:17Z` advanced the shared cursor three seconds past it.
- */
+/** The observe cursor, and the starvation it prevents. See docs/coordination.md §560. */
 
-/**
- * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
- * that three named keys are absent only proves those three are absent; this proves NOTHING was
- * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
- * so it is checked rather than assumed.
- */
+/** Snapshot every Object.prototype key, not three named ones. See docs/coordination.md §561. */
 const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
 
 describe("observe cursor: each event kind advances independently", () => {
@@ -96,12 +80,7 @@ describe("observe cursor: each event kind advances independently", () => {
     expect(serializeCursorToken(marks)).toBe(token);
   });
 
-  /**
-   * `ExecutorEvent.kind` is a string a PLUGIN supplies, and nothing validates it against an
-   * allow-list — `custom` exists precisely so a plugin can invent kinds. A kind of `__proto__`
-   * therefore reaches the watermark map as a key, where on the base commit it hit
-   * `Object.prototype`'s accessor instead of being stored.
-   */
+  /** The event kind is plugin-supplied and unvalidated. See docs/coordination.md §562. */
   describe("an event kind of __proto__ is an ordinary kind, not a hole in the cursor", () => {
     it("advances its watermark like any other kind (it used to be a permanent no-op)", () => {
       // MEASURED on the base commit: four ticks, and the mark set stayed `[]` the whole time while

@@ -21,76 +21,7 @@ import { asTrustDomainId } from "@scp/schemas";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 import { GOVERNANCE_LABEL_PREFIX } from "./governance-labels.js";
 
-/**
- * ================================================================================================
- * THE RESERVED GOVERNANCE LABEL NAMESPACE — INSTALLED, AT EVERY DOOR, AGAINST THE REAL ESCAPE
- * ================================================================================================
- *
- * ## What was broken
- *
- * `governance/policy-resolve.ts`'s `scope.selector.labels` branch matched a policy against
- * `objects.labels` on the target's containment chain. Authoring that policy required `policy:write`
- * AT THE ORG ROOT (`policy-scope-authz.ts`, "precisely because a selector has org-wide blast
- * radius"). Writing the labels it matched on required plain `object:write` at the object — the
- * subject's own owner — against no schema and no reserved namespace. The subject of a constraint
- * could therefore step out of its reach by deleting one map entry, and nothing anywhere said so.
- *
- * ## Why this file is HTTP-level and its unit sibling is not enough
- *
- * `governance-labels.test.ts` proves the guard DECIDES correctly. It cannot prove the guard RUNS.
- * This project's dominant defect is a component that is built, unit-tested green and never
- * installed (CLAUDE.md), and a suite that reaches the guard directly is exactly the shape that
- * cannot tell the two apart. So every case below drives a REAL DOOR — an HTTP request, an IaC
- * apply, a repo function a route calls — and the guard is reached only if it is actually wired in.
- *
- * MUTATION LOG — MEASURED, not predicted. Each was applied ALONE against a green suite, the run
- * recorded, then reverted. Every entry below is the actual failure set.
- *
- *   1. delete `assertMayWriteGovernanceLabels` from `createObject`  → B1, B2, B3, B5, B8
- *   2. delete it from `updateObject`                                → A3, A4, A5
- *   3. delete it from `createRelationship`                          → B6
- *   4. delete it from `handFillObject`                              → B7
- *   5. delete `assertSelectorKeysAreGovernanceLabels` from `createObject` → C1, C3, C5
- *   6. delete it from `updateObject`                                → C2
- *   7. delete `assertSyncScopeSelectorKeys…` from `pairPeer`        → D1
- *   8. delete it from `updatePeerTransport`                         → D2
- *   9. compute the delta over `after`'s keys only (lose REMOVAL)    → A4, A5
- *  10. `isGovernanceLabelKey` returns `true` for every key          → A2, B0, B4, C1, C2, C3, C4, C5, D1, D2
- *  11. delete `assertSelectorKeysAreGovernanceLabels` from `handFillObject` → C4
- *
- * A PART F WAS HERE, AND IT WAS REMOVED BECAUSE ITS MUTATIONS STOPPED KILLING ANYTHING.
- * It added `assertPolicyScopeWithinAuthority` to `createOverlay` and `handFillObject` on the reading
- * that the check's census had missed those two doors, and claimed mutations 9/10 (delete each call
- * site → F1/F2 die). Re-measured after #244 merged, on this tree:
- *   - F2 FAILED outright — `assertGovernanceAuthorityForHandFill` throws FIRST, with a different
- *     message, so the case was asserting a refusal that no longer came from the guard it named.
- *   - F1 PASSED WITH THE CALL SITE DELETED. The refusal was #244's governance-managed org-root
- *     `policy:write` bar all along; F1's assertion (`/policy:write/`) matched either message.
- * #244 closed both doors independently and more strongly, so the added calls could no longer refuse
- * anything — see `federation/overlay-repo.ts` and `federation/handfill-repo.ts` for the argument.
- * The doors' real coverage is `governance-managed-write-doors.integration.test.ts` DOOR 1 and DOOR 5.
- *
- * THREE OF THESE ARE THE POINT, not bookkeeping:
- *   - #5 does NOT kill C4 and #11 does — which is the measured proof that hand-fill runs the
- *     selector refusal FOR ITSELF rather than inheriting the choke point it is exempt from. The
- *     same separation holds for #1 vs #4.
- *   - #9 kills A4 and A5 and nothing else: the removal case is the whole defect, and a delta
- *     written the obvious way (over `after`'s keys) leaves it wide open with 23 of 25 still green.
- *   - #10 kills the CONTROLS (A2, B0, B4). An over-broad namespace refuses ordinary estate
- *     description, which is the failure mode option (b) in the proposal was rejected for.
- *
- * A5's failure under #2 and #11 is a genuine cascade, not a flake: A4's refusal is what leaves the
- * governance label on the row for A5 to still be governed by. That coupling is deliberate — A5
- * asserts REACH, not a status code.
- *
- * ## The actor
- *
- * `operator` is the built-in **Operator** role at the org root: `drizzle/0002` gives it
- * `object:write` + `relationship:write`, and `drizzle/0010` grants `policy:write` to
- * Administrator/Owner ONLY. It is precisely the "component's own owner" of the report. CASE B0 is
- * the control that earns every 403 below — without it this whole file passes just as well against a
- * token holding no permissions at all.
- */
+/** THE RESERVED GOVERNANCE LABEL NAMESPACE. See docs/governance.md §140. */
 describe("governance labels: the namespace is enforced at every local write door (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -104,14 +35,7 @@ describe("governance labels: the namespace is enforced at every local write door
 
   const GOV_TIER = `${GOVERNANCE_LABEL_PREFIX}tier`;
 
-  /**
-   * The refusal's `detail`, from an SDK call OR a direct repo call.
-   *
-   * A `ScpApiError`'s `message` and a `ProblemError`'s `message` are both only the RFC 9457 TITLE
-   * ("Bad Request", "Forbidden"), so `.rejects.toThrow(/…/)` against the message would pass for any
-   * refusal the server could ever produce — the "green for the wrong reason" shape this repo has
-   * paid for repeatedly. Every assertion below reads the detail instead.
-   */
+  /** The refusal's detail, from an SDK or a direct call. See docs/governance.md §141. */
   async function refusalDetail(call: Promise<unknown>): Promise<string> {
     return call.then(
       () => {
@@ -272,11 +196,7 @@ describe("governance labels: the namespace is enforced at every local write door
   });
 
   it("CASE A5: the operator cannot escape by re-labelling the COMPONENT either — the chain is the reach", async () => {
-    // The selector matches at every ancestor. A component owner clearing their own labels does not
-    // reach the service's assertion, so this must fail for the ORDINARY reason (nothing to remove)
-    // rather than accidentally succeeding at removing the wrong thing.
-    // Through the STRICT typed route: `/objects/component` refuses service-member types outright
-    // (`graph/service-member-types.ts`), so using it here would pass for the wrong reason.
+    // The selector matches at every ancestor. See docs/governance.md §142.
     const component = await admin.object("component").get(componentId);
     const res = await asOperator("PUT", `/api/v1/components/${encodeURIComponent(component.urn)}`, {
       name: component.name,
@@ -384,13 +304,7 @@ describe("governance labels: the namespace is enforced at every local write door
   });
 
   it("CASE B7: hand-fill — the door that wears the federationImport flag exempting the choke point", async () => {
-    // Driven at the REPO, not over HTTP, and deliberately: `POST /federation/hand-fill` authorizes
-    // `federation:write` at the org root, which `drizzle/0012` grants only to Administrator/Owner —
-    // and those same roles hold org-root `policy:write`, so no BUILT-IN role can reach this door
-    // without also clearing the bar. The refusal exists for a custom role (the `roles` table is
-    // org-scoped and operators do define their own) and as defence in depth, and the claim under
-    // test is INSTALLATION: `handFillObject` must run the check for itself, because the choke point
-    // skips it for `federationImport`. Calling the door proves that; calling the guard would not.
+    // Driven at the REPO, not over HTTP, and deliberately. See docs/governance.md §143.
     const domainId = asTrustDomainId(randomUUID());
     const { publicKey } = generateKeyPairSync("ed25519");
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -437,14 +351,7 @@ describe("governance labels: the namespace is enforced at every local write door
   });
 
   it("CASE B9 (EXEMPTION): a verified federation import carries governance labels through untouched", async () => {
-    // The width of the skip, and why it is not "imported data is trusted": `import-repo.ts`'s
-    // `object_upsert` branch has NO try/catch, so one refusal aborts a whole signed bundle and
-    // wedges that channel. A receiving domain also has no standing to referee a document its
-    // AUTHORING instance already accepted — the guard is an authoring-time refusal by construction.
-    //
-    // Driven at the repo with `federationImport` set, because that flag — not the transport — is
-    // what the exemption is keyed on, and it is supplied by exactly two modules (`import-repo.ts`
-    // and `handfill-repo.ts`, whose unearned share of it CASE B7 closes).
+    // The width of the skip, and why it is not trust. See docs/governance.md §144.
     const urn = `urn:scp:${org.orgId}:service:b9-${randomUUID().slice(0, 8)}`;
     const imported = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       upsertObjectByUrn(tx, {
@@ -592,9 +499,7 @@ describe("governance labels: the namespace is enforced at every local write door
     expect(created.id).toBeTruthy();
   });
 
-  // ---------------------------------------------------------------------------------------------
   // PART D — the OTHER label-keyed decision: which journal entries leave this security domain.
-  // ---------------------------------------------------------------------------------------------
 
   it("CASE D1: pairing a peer with a `custom` scope keyed on an ordinary label is refused", async () => {
     const domainId = asTrustDomainId(randomUUID());

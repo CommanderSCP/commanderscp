@@ -54,28 +54,7 @@ import {
   type RelayBuildClaim
 } from "./relay-builds-repo.js";
 
-/**
- * M13.1b — the staging node's UNATTENDED ONWARD BYTE HOP: THE 13.1b DoD suite (proposal §13.1,
- * BUILD_AND_TEST.md M13.1b). Same topology-faithful harness as the M13.1a inbox suite — three REAL
- * isolated federation domains (separate Postgres databases), real `registry:2` containers, the real
- * cosign + skopeo binaries:
- *
- *   commander A ──.scpbundle──▶ retrans B ──signed byte tarball──▶ outpost C
- *
- * The milestone's whole claim is "no operator command", so every case here asserts DATABASE or
- * FILESYSTEM state — the ledger row, the Decision/audit trail, the bytes in the drop directory,
- * `bundle_transfers` — never a log line and never "some action happened". Where a case exists to
- * catch a specific regression, the comment says which one.
- *
- * Two properties get the most weight because they are the ones that go wrong silently:
- *
- *  - The HIGH SIDE never builds. Both boundary nodes are `role: retrans` and both seed a ledger row
- *    at import, so the node whose BYTES ARRIVE must be stopped by the `forwarded` terminal state or
- *    it would produce a trail of fabricated refusals over a promotion that in fact crossed.
- *  - The permanent record is BOUNDED (#153). A failing change gets a finite number of verdicts and
- *    then writes NOTHING, ever — asserted as an exact row-count delta over `decisions` and
- *    `audit_events`, because "roughly stops" is how 1.44 GB/day happened in production.
- */
+/** M13.1b — the staging node's UNATTENDED ONWARD BYTE HOP. See docs/federation.md §22. */
 
 const sha256 = (buf: Buffer): string => "sha256:" + createHash("sha256").update(buf).digest("hex");
 
@@ -90,16 +69,16 @@ const AUTO_ON_CAP_3: NodeJS.ProcessEnv = {
 const MAX_ATTEMPTS_UNDER_TEST = 3;
 
 describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + cosign + skopeo)", () => {
-  let commander: IsolatedDomain; // A — the exporter
-  let retrans: IsolatedDomain; // B — the CDS-boundary staging node under test
-  let outpost: IsolatedDomain; // C — the receiving destination
+  let commander: IsolatedDomain;
+  let retrans: IsolatedDomain;
+  let outpost: IsolatedDomain;
 
   let srcRegistry: StartedTestContainer;
   let destRegistry: StartedTestContainer;
   let srcHost: string;
   let destHost: string;
 
-  let blobServer: Server; // source-side blob byte channel (SBOM + sig)
+  let blobServer: Server;
   let blobBaseUrl: string;
   const blobStore = new Map<string, Buffer>();
   let destBlobServer: Server;
@@ -121,7 +100,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
   /** Fixture tarballs built by DIRECT `buildRelayTarball` calls (the high-side fixture) — kept out
    *  of `autoDropDir` so "the sweep dropped nothing" stays a statement about the sweep. */
   let fixtureOutDir: string;
-  /** Where the high-side fixture's validate-and-forward hop drops. */
   let forwardOutDir: string;
 
   const RETRANS_MASTER_KEY = Buffer.alloc(32, 7);
@@ -204,7 +182,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     process.env.SCP_ARTIFACT_BLOB_BASE_URLS = `${blobBaseUrl},${destBlobBaseUrl}`;
     process.env.SCP_ARTIFACT_INSECURE_HOSTS = `${srcHost},${destHost}`;
 
-    // Federation identities + roles.
     commanderDomainId = (
       await withTenantTx(commander.db, commander.orgId, (tx) =>
         ensureFederationSelf(tx, commander.orgId)
@@ -244,7 +221,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
       "--yes"
     ];
 
-    // Pairing (out-of-band key exchange, as in production).
     const commanderEd = await withTenantTx(commander.db, commander.orgId, (tx) =>
       ensureInstanceKey(tx, commander.orgId)
     );
@@ -315,9 +291,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     if (scratch) await rm(scratch, { recursive: true, force: true });
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // Harness — the exporter side (identical shapes to the M13.1a/M15.5(c) suites).
-  // ---------------------------------------------------------------------------------------------
 
   async function pushImage(
     host: string,
@@ -554,9 +528,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     };
   }
 
-  // ---------------------------------------------------------------------------------------------
   // Assertion helpers — DB/FS state only.
-  // ---------------------------------------------------------------------------------------------
 
   async function ledgerRow(domain: IsolatedDomain, changeObjectId: string) {
     return withTenantTx(domain.db, domain.orgId, (tx) =>
@@ -564,14 +536,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     );
   }
 
-  /**
-   * The two scheduling columns `getRelayBuild` does not project (the retry gate + the lease), plus
-   * the gate's SIZE measured ENTIRELY INSIDE POSTGRES (`next_attempt_at - updated_at`). The
-   * in-database subtraction is the point: comparing a DB timestamp against the test process's
-   * `Date.now()` is only as good as the clock agreement between the host and the container, so a
-   * VM whose clock runs ahead would make a "the gate is in the future" assertion pass over a
-   * backoff of zero — exactly the regression this needs to catch.
-   */
+  /** The two scheduling columns the getter does not project. See docs/federation.md §23. */
   async function ledgerTiming(
     domain: IsolatedDomain,
     changeObjectId: string
@@ -932,11 +897,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     });
   }, 240_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (5a) CAUSAL, NEVER DERIVED — enabling the feature must not drain a historical backlog across
-  //      the CDS. A promotion imported before the ledger existed simply has no row, and no
-  //      predicate scan over `changes` may resurrect one.
-  // ---------------------------------------------------------------------------------------------
+  // (5a) CAUSAL, NEVER DERIVED. See docs/federation.md §24.
 
   it("NO BACKLOG DRAIN: a promotion imported at the retrans with no ledger row (a pre-M13.1b import) is never a candidate — the sweep enumerates work causally, not by predicate", async () => {
     const legacy = await seedPromotion("legacy");
@@ -969,13 +930,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(sweep).toEqual([]);
   }, 300_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (6) THE HIGH-SIDE CASE — the most consequential one. Both boundary nodes are `role: retrans`
-  //     and both seed at import, so the node whose BYTES ARRIVE must be stopped by the `forwarded`
-  //     terminal state. Without it that node enumerates a build it can never perform (its source
-  //     registry is on the far side of the air gap) and buries a real crossing under fabricated
-  //     refusals.
-  // ---------------------------------------------------------------------------------------------
+  // (6) THE HIGH-SIDE CASE. See docs/federation.md §25.
 
   it("HIGH SIDE: a retrans that RECEIVES and validate-and-forwards a tarball marks the obligation `forwarded` — and never also builds it (no second drop, not one further Decision)", async () => {
     const high = await seedPromotion("highside");
@@ -1031,12 +986,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(sweep).toEqual([]); // the obligation is not even enumerated.
   }, 300_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (7)+(11) REFUSAL → BACKOFF → EXHAUSTION → THE BOUND. #153's pathology (a byte-identical block
-  //          Decision restated once a tick forever, measured at 1.44 GB/day in production) is what
-  //          this whole shape exists to not re-introduce, so the last assertion is EXACT: three
-  //          more sweeps add zero rows to `decisions` and zero to `audit_events`.
-  // ---------------------------------------------------------------------------------------------
+  // (7)+(11) REFUSAL → BACKOFF → EXHAUSTION → THE BOUND. See docs/federation.md §26.
 
   let failing: Awaited<ReturnType<typeof seedPromotion>>;
 
@@ -1061,7 +1011,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     // The retry gate is a REAL interval (the first backoff step is 60s), not merely "not the past".
     expect(timing.backoffSeconds).toBeGreaterThanOrEqual(60);
     expect(timing.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
-    expect(timing.claimedUntil).toBeNull(); // the lease is released with the verdict.
+    expect(timing.claimedUntil).toBeNull();
 
     // The refusal is `buildRelayTarball`'s own block Decision — the manual path's verdict, verbatim.
     const blocks = await decisionsOf(
@@ -1127,7 +1077,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(
       await decisionsOf(retrans, RETRANS_RELAY_VALIDATE_DECISION_KIND, failing.changeAtB)
     ).toHaveLength(MAX_ATTEMPTS_UNDER_TEST);
-    // Still nothing crossed.
     expect(await relayTarballs(autoDropDir)).not.toContain(tarballNameFor(failing.changeAtA));
 
     // THE BOUND, exactly: a terminal row costs NOTHING per tick, forever. Row-count deltas over the
@@ -1136,7 +1085,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     const auditAtTerminal = await auditCount(retrans);
     const idleSweeps: AutoRelayOutcome[] = [];
     for (let i = 0; i < 3; i += 1) {
-      await clearBackoff(retrans, failing.changeAtB); // even with the retry gate forced open.
+      await clearBackoff(retrans, failing.changeAtB);
       idleSweeps.push(...(await tickRetrans(AUTO_ON_CAP_3, brokenConfig)));
     }
     expect(await decisionCount(retrans)).toBe(decisionsAtTerminal);
@@ -1144,12 +1093,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(idleSweeps).toEqual([]); // not even enumerated.
   }, 300_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (10) THE MANUAL EXIT — `exhausted` must never be a trap needing superuser SQL. The operator's
-  //      existing `POST /api/v1/federation/relay` both delivers the bytes and clears the state;
-  //      this drives the route's two steps (build, then `reopenRelayBuild`) directly, since the
-  //      route body is those two calls (routes/federation.ts, after the refusal check).
-  // ---------------------------------------------------------------------------------------------
+  // (10) THE MANUAL EXIT. See docs/federation.md §27.
 
   it("MANUAL EXIT: a successful operator-invoked relay on an EXHAUSTED change delivers the bytes and re-arms the ledger row to `built`", async () => {
     expect(await ledgerRow(retrans, failing.changeAtB)).toMatchObject({ status: "exhausted" });
@@ -1211,11 +1155,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
   it("CONCURRENCY: two sweeps racing the same seeded obligation produce exactly ONE tarball, ONE claim and ONE allow Decision", async () => {
     const raced = await seedPromotion("raced");
 
-    // (a) THE CLAIM IS THE ATOM, proven directly and deterministically: two workers claiming the
-    // same row in concurrent transactions — the second blocks on the row lock and then re-evaluates
-    // the due predicate against the WINNER's committed row, so it comes back empty-handed rather
-    // than taking a second lease. An enumerate-then-update pair (whose read is stale by the time it
-    // writes) would hand out two.
+    // The claim is the atom, proven directly and deterministically. See docs/federation.md §28.
     const contested = randomUUID();
     await withTenantTx(retrans.db, retrans.orgId, (tx) =>
       seedRelayBuild(tx, {
@@ -1266,12 +1206,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect((await dirEntries(autoDropDir)).filter((n) => n.endsWith(".partial"))).toEqual([]);
   }, 300_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (8) THE FENCE — a lease can expire mid-build, so two workers legitimately hold one change in
-  //     sequence. Every release carries the `attempts` its own claim returned; a stale claimant
-  //     must not clobber the winner's state, and above all must never persist "nothing crossed the
-  //     boundary" about bytes that did.
-  // ---------------------------------------------------------------------------------------------
+  // (8) THE FENCE. See docs/federation.md §29.
 
   it("FENCED RELEASE: a stale claimant whose lease lapsed can neither steal a PENDING row from the current claimant nor re-open a terminal one", async () => {
     // Synthetic ledger rows: `change_object_id` deliberately references no `changes` row, so these
@@ -1419,12 +1354,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(staleComplete).toBe(false);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (12) STRICT DROP RESOLUTION — the automated path must refuse a config gap the operator-invoked
-  //      route 400s on, rather than falling through to the instance env and marking a build done
-  //      whose bytes reached a directory the s3-expecting CDS never watches. A deferral costs no
-  //      attempt: it is a config gap, not a verdict.
-  // ---------------------------------------------------------------------------------------------
+  // (12) STRICT DROP RESOLUTION. See docs/federation.md §30.
 
   it("STRICT DROP: a peer configured for s3-compatible delivery makes the sweep DEFER — no drop into the instance env dir, no attempt consumed — and clearing the target lets the same obligation build", async () => {
     const s3Case = await seedPromotion("s3-defer");
@@ -1450,7 +1380,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
 
     const decisionsBefore = await decisionCount(retrans);
     const dropBefore = await dirEntries(autoDropDir);
-    const outcomes = await tickRetrans(AUTO_ON); // `outDir` IS set — the env fallback exists.
+    const outcomes = await tickRetrans(AUTO_ON);
 
     // NO SILENT FALLBACK, NO COST: nothing landed in the instance env dir, no verdict was written,
     // and the obligation is untouched — `attempts` still 0, so the next tick has its full budget.
@@ -1486,25 +1416,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(await relayTarballs(autoDropDir)).toContain(tarballNameFor(s3Case.changeAtA));
   }, 300_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // STRICT DROP, THE OTHER HALF — the topology strictness must NOT refuse.
-  //
-  // WHY THIS CASE EXISTS, specifically. Strictness is a refusal, and a refusal that fires too widely
-  // is indistinguishable from the feature being broken: every obligation reads `deferred` forever,
-  // with no attempt, no Decision and no audit event to explain it — at a CDS, where nobody is
-  // watching a terminal. The over-refusal is not hypothetical: the first cut keyed on the RESOLVED
-  // outbound directory alone, so it flagged any peer that merely HAD no outbound dir of its own,
-  // which in the normal retrans topology is the upstream commander. This case pins the exact
-  // arrangement the milestone requires and the earlier filter killed:
-  //
-  //   - an UPSTREAM peer whose deliveryTarget declares only `inDir` (the documented M13.1a inbox
-  //     shape — the schema makes `outDir` optional precisely so a peer can be an inbox and no more),
-  //   - a DOWNSTREAM boundary peer carrying the only `outDir`,
-  //   - and NO `SCP_RELAY_OUT_DIR`, which is legitimate exactly because the boundary peer has one.
-  //
-  // It asserts the tarball FILE exists, not that some outcome string says "built": the bug this
-  // catches produced a perfectly well-formed `deferred` outcome and an empty directory.
-  // ---------------------------------------------------------------------------------------------
+  // STRICT DROP, THE OTHER HALF. See docs/federation.md §31.
 
   it("STRICT DROP does not over-refuse: an inbound-ONLY upstream peer alongside a boundary peer that carries the outDir still relays — with no instance-wide SCP_RELAY_OUT_DIR at all", async () => {
     const narrow = await seedPromotion("strict-inbound-only");
@@ -1580,21 +1492,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     }
   }, 300_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // THE PAYLOAD BOUND — #153 arriving by SIZE instead of by row count.
-  //
-  // The attempt cap bounds how MANY permanent rows a failing promotion leaves. It says nothing about
-  // how BIG each one is, and every ingredient of a refusal's payload comes from the imported bundle:
-  // the artifact set has no schema maximum, `ArtifactRefSchema.digest` is a bare `z.string()`, and
-  // each failure embeds skopeo's verbatim stderr. Unbounded, one imported promotion could write
-  // megabytes into `decisions` AND `audit_events` AND the sync journal — which ADR-0024 classes as
-  // never-deleted — so the bound has to be on bytes, not only rows.
-  //
-  // The oversized artifact set is injected straight onto the already-imported change rather than
-  // built through the export path, deliberately: what is under test is the PERSISTENCE bound, i.e.
-  // what happens once a large set has legitimately arrived. Verification is not in scope here and is
-  // covered elsewhere; `buildRelayTarball` reads exactly this field as its authorized set.
-  // ---------------------------------------------------------------------------------------------
+  // THE PAYLOAD BOUND. See docs/federation.md §32.
 
   it("PAYLOAD BOUND: a promotion carrying an oversized artifact set with hostile-length digests leaves a TRUNCATED permanent record — with the real totals still stated", async () => {
     const fat = await seedPromotion("payload-bound");
@@ -1628,7 +1526,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(ctx.failingCount).toBe(HUGE);
     expect(ctx.authorizedArtifactCount).toBe(HUGE);
 
-    // THE SETS ARE CUT.
     const failing = ctx.failing as { type: string; digest: string; reason: string }[];
     const authorized = ctx.authorizedArtifacts as { type: string; digest: string }[];
     expect(failing.length).toBe(RELAY_FAILURE_DETAIL_LIMIT);
@@ -1655,17 +1552,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(row!.lastReason!.length).toBe(summary.length);
   }, 300_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // ARRIVING BYTES CORRECT AN EXHAUSTED ROW — the misconfigured-high-side recovery.
-  //
-  // Both boundary nodes are `role: retrans` and both seed at import, so a high side with
-  // SCP_RETRANS_AUTO_RELAY mistakenly set burns its verdict budget in minutes of backoff — while the
-  // CDS transfer that will deliver the tarball can take far longer (the default claim lease is an
-  // hour precisely because multi-GB moves are slow). If `forwarded` could only correct a `pending`
-  // row, the arriving bytes would be unable to correct the record they disprove: the row would stay
-  // `exhausted`, asserting the hop never happened, on the very node that just validated and
-  // forwarded it.
-  // ---------------------------------------------------------------------------------------------
+  // ARRIVING BYTES CORRECT AN EXHAUSTED ROW. See docs/federation.md §33.
 
   it("a tarball that ARRIVES after the obligation was exhausted still corrects it to `forwarded`", async () => {
     const late = await seedPromotion("late-arrival");
@@ -1710,7 +1597,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
   // ---------------------------------------------------------------------------------------------
 
   it("the retrans never terminated a promotion: every change this suite relayed, refused, exhausted or forwarded is in the EXACT state its import left it in (ADR-0004)", async () => {
-    expect(stateAtImport.size).toBeGreaterThanOrEqual(6); // every fixture above is covered.
+    expect(stateAtImport.size).toBeGreaterThanOrEqual(6);
     const rows = await withTenantTx(retrans.db, retrans.orgId, (tx) =>
       tx.select({ objectId: changes.objectId, state: changes.state }).from(changes)
     );

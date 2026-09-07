@@ -21,18 +21,7 @@ import type {
   PluginHost
 } from "../plugin-host/contract.js";
 
-/**
- * WD-1 (M26.1 review): the per-org watchdog sweep restructure (§7.1 item 3) dropped the per-candidate
- * error isolation that every sibling loop in the same diff has (reconcile's per-change, observe's
- * per-instance, federation-sync's per-peer try/catch). Without it, a throw while claiming or writing
- * ONE stalled change's Decision/audit escapes the candidate loop AND the outer per-state loop, so
- * every later-ordered candidate is silently starved on that tick — and since the failed claim's
- * `watchdog_flagged_at` was rolled back, the poison row re-qualifies forever, wedging the sweep for
- * that org. This pins that one candidate's failure is isolated: the others are still flagged.
- *
- * Injection: `insertDecision` is made to throw for exactly ONE change's id (the real implementation
- * runs for every other), which is precisely the transient in-tx failure the restructure targets.
- */
+/** The sweep restructure dropped per-candidate isolation. See docs/coordination.md §1019. */
 const inject = vi.hoisted(() => ({ poisonSubjectId: null as string | null }));
 
 vi.mock("./decisions-repo.js", async (importOriginal) => {

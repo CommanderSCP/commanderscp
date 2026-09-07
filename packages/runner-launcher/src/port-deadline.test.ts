@@ -1,40 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KubernetesApiRequest, KubernetesRunnerIo, RunnerSpec } from "./index.js";
 
-/**
- * ================================================================================================
- * M23.5 HIGH-1 — THE WHOLE-RUN DEADLINE IS THE PORT'S, NOT THE ADAPTER-AUTHOR'S
- * ================================================================================================
- *
- * THE DEFECT, AS THE MEASUREMENT. `KubernetesRunnerIo` carried `timeoutMs` on `request` and on
- * nothing else. `copyDir` and `removeDir` took no deadline; `createFetchKubernetesIo` implemented
- * them as a bare `cp`/`rm`. The adapter's `copy()` checked the remaining budget BEFORE the call and
- * then awaited it forever — against `dist`, `timeoutMs: 3000`, a `copyDir` that never settles:
- *
- *     after 15003ms with timeoutMs=3000: STILL RUNNING
- *     requests issued: ["GET …/jobs timeoutMs=30000", "POST …/jobs timeoutMs=2999"]
- *
- * and the volume is BY CONSTRUCTION a network filesystem — the chart names NFS, CephFS, EFS and
- * Azure Files — which is the kind that hangs rather than errors. `run()` never returns; the host
- * SIGKILLs the subprocess at `timeoutMs + MANAGED_TRIGGER_GRACE_MS`; `withRecordedOutcome` never
- * writes; managed-iac's ledger entry never lands; `reconcile.ts` retries; a SECOND `tofu apply`
- * goes at live infrastructure. Copy-in precedes `start`, so the abandoned Job is still SUSPENDED —
- * it never finishes, `ttlSecondsAfterFinished` never applies, and the per-run credential Secret
- * survives until some later run's `reap()` happens by.
- *
- * WHY THIS FILE IS NOT `kubernetes-adapter.test.ts`. That suite's fake settles every operation on
- * the next tick — deliberately, because it asks WHAT was issued and in what ORDER. It is
- * structurally unable to ask whether an operation that never settles is given up on, which is the
- * only question here. The same blindness is what let the surviving mutation the adversarial pass
- * found — DELETE `copy()`'s budget pre-check entirely — leave 328 unit tests and 11 kind tests all
- * green.
- *
- * THE HANG IS MODELLED WITH A HANDLE, AND THAT IS LOAD-BEARING. See {@link neverSettles}.
- */
+/** The whole-run deadline is the port's, not the author's. See docs/runner-launcher.md §388. */
 
-// ==================================================================================================
 // THE DOCKER SEAM — a child that can be made to ignore its own `timeout`, which is the whole point.
-// ==================================================================================================
 
 interface DockerCall {
   args: string[];
@@ -45,15 +14,7 @@ const dockerCalls: DockerCall[] = [];
  *  cannot reach, which is exactly what a `docker cp` onto a wedged NFS mount looks like. */
 let deaf: Set<string> = new Set();
 
-/**
- * THE FILESYSTEM SEAM — the Docker adapter's secret-env staging, which is I/O the port drives too.
- *
- * `secretEnvDir` is a SERVER-INJECTED path (`SCP_MANAGED_*_WORKSPACE_ROOT`), and an operator may
- * perfectly well point it at the same shared mount the Kubernetes workspace uses. So the `mkdir` +
- * `writeFile` that stages a mode-0600 credential file is the same unbounded network-filesystem call
- * as a `copyDir` — and it happens BEFORE `create`, where a hang costs the whole run with no
- * container to show for it. The census that found HIGH-1 found this too.
- */
+/** THE FILESYSTEM SEAM. See docs/runner-launcher.md §389. */
 let hangSecretEnvWrite = false;
 
 vi.mock("node:fs/promises", () => ({
@@ -104,21 +65,10 @@ const {
   withStepBound
 } = await import("./index.js");
 
-// ==================================================================================================
 // A HANG THAT KEEPS THE LOOP ALIVE — see `withStepBound`'s doc for why this is not a detail.
-// ==================================================================================================
 
 const heldHandles: ReturnType<typeof setInterval>[] = [];
-/**
- * A promise that never settles AND holds a real libuv handle while it does not.
- *
- * `withStepBound`'s abandonment timer is `unref`'d on purpose: an abandonment timer must never be
- * the reason a process stays alive, because if nothing else is pending there is no in-flight I/O to
- * abandon. Real wedged I/O — `fs.cp` on an unresponsive NFS mount, a child in uninterruptible sleep
- * — holds a threadpool request or a process handle, so the loop stays alive and the `unref`'d timer
- * fires exactly when it is needed. A test that modelled the hang as a bare `new Promise(() => {})`
- * would hold NOTHING, let the loop drain, and be asking a different question than production asks.
- */
+/** A promise that never settles but holds a real handle. See docs/runner-launcher.md §390. */
 function neverSettles<T>(): Promise<T> {
   return new Promise<T>(() => {
     hold();
@@ -128,9 +78,7 @@ function hold(): void {
   heldHandles.push(setInterval(() => undefined, 20));
 }
 
-// ==================================================================================================
 // A MINIMAL CLUSTER — just enough to reach copy-in, with every operation RECORDED.
-// ==================================================================================================
 
 const NAMESPACE = "scp";
 const WORKSPACE_ROOT = "/scp-workspace";
@@ -265,9 +213,7 @@ afterEach(async () => {
   heldHandles.length = 0;
 });
 
-// ==================================================================================================
 describe("M23.5 HIGH-1: a Kubernetes `copyDir` that never settles cannot hold `run()` open", () => {
-  // ================================================================================================
   it("THE HUNG COPY-IN ENDS THE RUN WITHIN THE BOUND THE PORT STATES, instead of never ending it", async () => {
     const c = cluster({ hangCopyDir: true });
     const startedAt = Date.now();
@@ -383,9 +329,7 @@ describe("M23.5 HIGH-1: a Kubernetes `copyDir` that never settles cannot hold `r
   });
 });
 
-// ==================================================================================================
 describe("M23.5: the SAME port bounds the Docker adapter — one mechanism, not one per adapter", () => {
-  // ================================================================================================
   it("A `docker cp` WHOSE CHILD IGNORES SIGTERM DOES NOT HOLD `run()` OPEN EITHER", async () => {
     // Node's `execFile` timeout SIGTERMs the child and rejects only once the child exits. A child
     // wedged on a network mount takes the signal and does not exit, so `promisify(execFile)` never
@@ -432,20 +376,9 @@ describe("M23.5: the SAME port bounds the Docker adapter — one mechanism, not 
   });
 });
 
-// ==================================================================================================
 describe("M23.5: `RunDeadline.spend` — the refusal, at a boundary the process can actually land on", () => {
-  // ================================================================================================
   it("A STEP REACHED WITH LESS THAN THE MINIMUM BUDGET IS REFUSED, not issued with a doomed bound", async () => {
-    // THE BOUNDARY `remaining <= 0` COULD NOT REACH, and it is the port primitive rather than an
-    // adapter because the defect is in the primitive. `RunDeadline` measures the deadline with
-    // `Date.now()`; the budget kill that lands on it is a libuv timer on a different clock, and the
-    // two disagree by up to a millisecond — so the step BEHIND a killed one saw `remaining === 1`
-    // and was issued as `docker cp … { timeout: 1 }`. Three arms of `whole-run-budget.test.ts`
-    // failed on that intermittently (3 runs in 8, a different arm each time), which is the shape of
-    // a boundary the process cannot land on rather than of a wrong test.
-    //
-    // DETERMINISTIC BY CONSTRUCTION, which the arms it replaces could not be: the budget is BORN
-    // under the floor rather than whittled down to it by a race.
+    // The boundary that condition could not reach. See docs/runner-launcher.md §391.
     const deadline = createRunDeadline({
       requestedTimeoutMs: RUNNER_MIN_STEP_BUDGET_MS - 1,
       file: "docker",
@@ -469,13 +402,7 @@ describe("M23.5: `RunDeadline.spend` — the refusal, at a boundary the process 
   });
 
   it("`spent()` AND THE REFUSAL ARE THE SAME INSTANT — one question, not two expressions for it", async () => {
-    // THE SECOND HALF OF THE SAME DEFECT, and the one that produced a verdict about the TENANT for
-    // something the launcher did. Three sites asked "is the budget gone?" with a raw
-    // `Date.now() >= deadline.at` while the kill that lands on it is a libuv timer on another clock;
-    // the Docker adapter's was `e.killed === true && Date.now() >= runDeadlineAt`, and it reported
-    // FALSE for a `create` its own derived timeout had just killed — `exit-nonzero` instead of
-    // `budget-exhausted`. If `spent()` ever answers "no" where `spend()` refuses, they have drifted
-    // apart again.
+    // The second half of the same defect. See docs/runner-launcher.md §392.
     const deadline = createRunDeadline({
       requestedTimeoutMs: RUNNER_MIN_STEP_BUDGET_MS - 1,
       file: "docker",
@@ -514,9 +441,7 @@ describe("M23.5: `RunDeadline.spend` — the refusal, at a boundary the process 
   });
 });
 
-// ==================================================================================================
 describe("M23.5: `withStepBound` — the primitive both adapters are built on", () => {
-  // ================================================================================================
   it("WORK THAT IGNORES ITS BOUND IS ABANDONED AFTER EXACTLY ONE GRACE, and the message names both", async () => {
     const startedAt = Date.now();
     const err = await withStepBound({
@@ -535,17 +460,7 @@ describe("M23.5: `withStepBound` — the primitive both adapters are built on", 
   });
 
   it("THE GRACE IS NOT PADDING — a self-bounded call that settles LATE still keeps its own diagnosis", async () => {
-    // WHY THE WORK REJECTS AFTER ITS BOUND RATHER THAN AT IT, and it is the whole point of the arm.
-    // `execFile`'s `timeout` does not reject when it fires: it fires, SIGTERMs the child, and the
-    // promise settles on the child's exit — at least one turn of the loop later, and in practice a
-    // few milliseconds. Set the abandonment timer for the same instant and it wins that race, so
-    // EVERY ordinary budget kill arrives as an abandonment and the `code`/`killed`/`signal` and
-    // partial stdout that `classifyRunnerFailure` exists to preserve are thrown away.
-    //
-    // THE EXISTING SUITES CANNOT ASK THIS. `whole-run-budget.test.ts`'s seam settles a killed step
-    // EXACTLY at `timeout`, and its callback timer is registered before ours, so it wins whatever
-    // the grace is — which is why shrinking the grace to zero leaves those arms green. This one
-    // models the settle delay, so it does not.
+    // Why the work rejects after its bound rather than at it. See docs/runner-launcher.md §393.
     const SETTLE_DELAY_MS = 25;
     const err = await withStepBound({
       timeoutMs: 100,
@@ -576,17 +491,7 @@ describe("M23.5: `withStepBound` — the primitive both adapters are built on", 
   });
 
   it("WORK THAT REJECTS AFTER IT WAS ABANDONED IS NOT AN UNHANDLED REJECTION", async () => {
-    // An abandoned promise that rejects at minute nine with nobody listening takes a plugin
-    // subprocess down — the failure this whole mechanism exists to prevent, arriving by the back
-    // door.
-    //
-    // AND THERE IS NO EXPLICIT GUARD IN `withStepBound` FOR IT — recorded here rather than left for
-    // a reader to wonder about. `Promise.race` subscribes to every promise it is given and keeps
-    // that subscription after it settles, so `pending` is handled from the moment it enters the
-    // race. A first draft added `void pending.catch(() => undefined)`; mutating it away reddened
-    // NOTHING across the whole suite, so it went (charter priority 1). This arm is what a rewrite
-    // away from `Promise.race` — an `AbortController` and a `.then`, say — would have to keep true,
-    // which is why it stays even though nothing in today's code can break it.
+    // An abandoned promise rejecting late, unheard. See docs/runner-launcher.md §394.
     const seen: unknown[] = [];
     const onUnhandled = (reason: unknown): void => {
       seen.push(reason);

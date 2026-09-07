@@ -1,209 +1,50 @@
-/**
- * The vocabulary every manifest parser in this package speaks.
- *
- * SCOPE OF THIS PACKAGE (ADR-0032 §4, "Direct declared dependencies only"):
- * these parsers return **what a component's own manifest declares, and nothing else**. They never
- * resolve, never fetch, never walk a lockfile, and never expand a transitive closure. That is not a
- * simplification we chose for convenience — ADR-0013 keeps SBOM bytes out of SCP deliberately, and
- * ADR-0032 §3's "nothing in the dependency path may expose a transitive traversal" is the boundary
- * that justifies the whole projection-table representation. A parser here that returned a
- * transitively-resolved set would silently dissolve that justification, so every parser is a pure
- * string -> declarations function with no I/O of any kind.
- *
- * The types below deliberately have no Zod counterpart in this package. Per CLAUDE.md, Zod schemas
- * live in `packages/schemas`; when these declarations become API-visible they get a schema there
- * that mirrors this file.
- *
- * ============================================================================================
- * THE ZERO-DEPENDENCY PROPERTY WAS SPENT IN M21.7, ONCE, ON `yaml` — RECORDED, NOT QUIETLY TAKEN
- * ============================================================================================
- * This package used to have NO `dependencies` block at all, and hand-rolled the TOML and XML
- * subsets it needed rather than take a library (charter principle 5 — everything must work
- * offline). `kubernetes-images.ts` takes `yaml@^2.9.0`, and the trade is stated rather than
- * implied:
- *
- *  - WHAT IT DOES NOT COST. `yaml@2.9.0` was already in the lockfile (`tools/helm-verify` and
- *    `deploy/airgap` both declare it) and resolves with NO transitive dependencies, so the offline
- *    install set does not grow by a single package and nothing new is fetched at build or run time.
- *  - WHY A HAND-ROLLED SUBSET WAS REFUSED. `toml-lite.ts`'s own argument runs the other way here:
- *    YAML's surface is significant indentation, block and flow collections, five scalar styles,
- *    anchors/aliases/merge keys and multi-document streams, and INDENTATION is precisely where a
- *    partial implementation returns a confidently wrong tree instead of an error. One values file
- *    can be the sole declaration site for a dozen images, and a wrong tree there prunes all of
- *    them. There is also a capability argument that settles it independently of size: reading a
- *    version through a node's JS value corrupts it (`tag: 1.20` parses to 1.2), so the parser needs
- *    the scalar's own SOURCE TEXT plus document and alias structure, which `yaml` exposes and a
- *    JSON-shaped reader does not.
- *  - WHAT WAS MEASURED ABOUT THE RUNNER, correcting the claim this comment used to make. The
- *    parsers were said to be "trivially usable from a runner image". `apps/runner-dep/Dockerfile`
- *    is `FROM scratch` plus a BusyBox multi-call binary and seven applets — it contains NO Node
- *    runtime and no JS at all, so no version of this package has ever been inside it. What the
- *    property actually buys is a small, auditable supply chain for the ORCHESTRATOR
- *    (`packages/plugins/managed-dep`, which imports these parsers and runs in a plugin subprocess)
- *    and for the air-gap bundle. That is still worth keeping, which is why this is the one.
- */
+/** The vocabulary every manifest parser here speaks. See docs/dependency-manifests.md §83. */
 
-/**
- * The five ecosystems ADR-0032 §10 puts in scope, built "Go -> images -> npm -> Python -> Maven".
- *
- * `oci` is a first-class member, not an afterthought: a `FROM alpine:1.0` that should become
- * `alpine:1.1` is the owner's headline example (proposal §6.3) and container images are the one
- * ecosystem with no air-gap gap, because the org's own registry is the index.
- *
- * MUST stay identical to `DependencyEcosystemSchema` in `@scp/schemas/dependencies` — that Zod enum
- * is what the API, the DB check constraint and the `(org, ecosystem, coordinate, major)` identity key
- * all validate against, so a value this package emits and that one rejects is a row that cannot be
- * written. This package deliberately does NOT import the schema (parsers stay dependency-free and
- * pure), which is precisely why the two drifted once already: the container ecosystem was built here
- * as `"image"` and there as `"oci"`, and nothing caught it because neither side's tests cross the
- * boundary. `ecosystem-vocabulary.test.ts` now pins the two lists equal.
- *
- * `oci`, NOT `image`: `image` is already a value of the executor `type` enum
- * (`packages/schemas/src/executors.ts:32`), where it means "a build that PRODUCES an image artifact".
- * This axis is what a component CONSUMES. Reusing one word across a produces/consumes boundary is the
- * same collision class as bare `subscription` and bare `manifest`, both settled in GLOSSARY.md.
- * (`npm` unavoidably appears in both enums with different senses — see the glossary note.)
- */
+/** The five ecosystems in scope, `oci` among them. See docs/dependency-manifests.md §84. */
 export type DependencyEcosystem = "npm" | "go" | "maven" | "python" | "oci";
 
-/**
- * Why the component depends on this thing. Only recorded where the manifest FORMAT expresses it —
- * we never infer a scope from a package's name, which is the ADR-0030 §2 / provenance-label lesson
- * ("declared, never inferred"): a label named after what happened to match goes false the moment a
- * second kind of thing matches it.
- *
- * - `runtime` — shipped with, and needed by, the running component.
- * - `dev`     — needed only to develop/test it (npm `devDependencies`, Maven `test`, PEP 735 groups).
- * - `build`   — needed to produce the artifact but not shipped inside it (a Dockerfile `FROM`,
- *               `[build-system].requires`, Maven `provided`/`system`).
- *
- * Formats that express no distinction at all (go.mod, requirements.txt) report `runtime` — see the
- * per-parser doc comments, each of which says so explicitly rather than leaving it implied.
- */
+/** Why the component depends on this thing. See docs/dependency-manifests.md §85. */
 export type DependencyScope = "runtime" | "dev" | "build";
 
-/**
- * How precisely the manifest pins the dependency. This is the "declared vs pinned differ, record
- * which it was" distinction: `requests>=2.0` and `requests==2.31.0` are not the same statement, and
- * a subscription actuator that treated them alike would rewrite a range as a pin.
- *
- * - `pinned`     — exactly one version is named (`==2.31.0`, `v1.2.3` in go.mod, `alpine:3.19`).
- * - `range`      — a set of acceptable versions (`^1.2.3`, `>=2.0,<3`, `[1.0,2.0)`).
- * - `unpinned`   — the dependency is declared with no version constraint whatsoever
- *                  (`FROM alpine`, a bare `requests` line, npm `"*"`). NOTE this is NOT recorded as
- *                  "latest": Docker's implicit `:latest` and npm's `*` are RESOLUTION rules, and
- *                  writing them into `declared` would be inventing text the author never wrote.
- * - `unresolved` — a version is expressed but this package cannot know it without doing work it is
- *                  forbidden to do: a Maven `${property}` or parent-POM inheritance, a Dockerfile
- *                  `ARG` interpolation, a `git+https://`/`workspace:` npm specifier. Reported as
- *                  unresolved rather than guessed — a wrong version here becomes a wrong bump.
- */
+/** How precisely the manifest pins the dependency. See docs/dependency-manifests.md §86. */
 export type VersionConstraintKind = "pinned" | "range" | "unpinned" | "unresolved";
 
-/**
- * A numeric version core extracted from a version string, plus enough context that a caller can
- * refuse to compare two things that are not comparable. Produced only by
- * {@link import("./version.js").parseComparableVersion} — never assembled by a parser by hand.
- */
+/** A numeric version core, plus comparison context. See docs/dependency-manifests.md §87. */
 export interface ComparableVersion {
   readonly major: number;
   readonly minor: number;
   readonly patch: number;
-  /**
-   * How many numeric components the string ACTUALLY carried: 1 for `3`, 2 for `1.2`, 3 for `1.2.3`.
-   *
-   * `minor`/`patch` are zero-filled so the triple is always comparable, but zero-filling is an
-   * assumption and `precision` is the receipt for it. An image tag `1.2` is a MOVING tag that today
-   * points at 1.2.7; treating it as the frozen point 1.2.0 without knowing you did so is how a
-   * subscription "bumps" a component backwards.
-   */
+  /** How many numeric components the string carried. See docs/dependency-manifests.md §88. */
   readonly precision: 1 | 2 | 3;
-  /**
-   * Everything after the numeric core, verbatim and WITHOUT interpretation — `-alpine` from
-   * `1.2.3-alpine`, `-rc.1` from `1.2.3-rc.1`, `+build.5`.
-   *
-   * Deliberately NOT called `prerelease`, and deliberately not given semver precedence semantics:
-   * in an OCI tag `-alpine` is a VARIANT (a different flavour of the same release), while semver
-   * says `1.2.3-alpine` sorts BEFORE `1.2.3`. Applying semver precedence to image tags would order
-   * a variant line wrongly, so ordering across differing suffixes is refused outright — see
-   * {@link import("./version.js").compareVersions}.
-   */
+  /** Everything after the numeric core, uninterpreted. See docs/dependency-manifests.md §89. */
   readonly suffix?: string;
   /** The input string, so an audit trail can show what was parsed rather than what we made of it. */
   readonly raw: string;
 }
 
-/** One direct, declared dependency of a component. */
 export interface DeclaredDependency {
   readonly ecosystem: DependencyEcosystem;
-  /**
-   * The dependency's coordinate in its ecosystem's OWN spelling, preserved verbatim — `@acme/lib`,
-   * `github.com/Masterminds/semver/v3`, `org.springframework:spring-core`,
-   * `ghcr.io/CommanderSCP/base`.
-   *
-   * Verbatim matters: ADR-0032 Context 2 measured that SCP's URN slug lowercases and hyphenates,
-   * collapsing `@acme/lib`, `acme/lib` and `acme-lib` into one identity. That collapse is precisely
-   * why the inventory is a projection table keyed on this string and not a graph object, so this
-   * string is the identity and normalising it here would re-create the collision the design avoids.
-   */
+  /** The coordinate in its ecosystem's own spelling. See docs/dependency-manifests.md §90. */
   readonly coordinate: string;
   /** The constraint text exactly as written (`^1.2.3`, `>=2.0,<3`, `3.19-alpine`), or undefined for `unpinned`. */
   readonly declared?: string;
   readonly constraint: VersionConstraintKind;
   readonly scope: DependencyScope;
-  /**
-   * The comparable numeric core of {@link declared}, or **undefined when it could not be parsed**.
-   *
-   * Undefined is a first-class, expected outcome (ADR-0032 §7: "unparseable tags are skipped rather
-   * than guessed"). A caller MUST treat undefined as "cannot participate in a version comparison",
-   * never as a reason to fall back to string ordering.
-   */
+  /** The comparable core, or undefined when unparsed. See docs/dependency-manifests.md §91. */
   readonly version?: ComparableVersion;
   /** OCI digest (`sha256:...`) when the manifest pins one. Images only; tag is a label, digest is identity (proposal §6.3). */
   readonly digest?: string;
-  /**
-   * Which part of the manifest this came from, in the manifest's own words — `require`,
-   * `devDependencies`, `FROM`, `project.optional-dependencies.test`, `build-system.requires`,
-   * `dependencies` (Maven). Carried for explainability (charter principle 6): a Decision that
-   * refuses a bump can say which block it read.
-   */
+  /** Which part of the manifest this came from. See docs/dependency-manifests.md §92. */
   readonly declaredIn: string;
   /** 1-based line number in the source manifest, where the format is line-oriented. */
   readonly line?: number;
-  /**
-   * HOW MANY DECLARATION SITES IN THIS FILE FED THIS ENTRY. `1` for an ordinary declaration; `n`
-   * when the parser MERGED n byte-identical declarations into one entry because the inventory row
-   * they produce merges (`kubernetes-images.ts` trap 9: `component_dependencies` is keyed
-   * `(org, component, line, manifest_path)`, so a Deployment and a CronJob both pinning
-   * `acme/api:1.2.3` in one file are ONE row however many times the file says it).
-   *
-   * **Undefined means "this parser does not merge", which is the same as `1`** — read it as
-   * `occurrences ?? 1`. Only `parseKubernetesImages` sets it, because it is the only parser that can
-   * merge; the other four emit one entry per declaration site by construction.
-   *
-   * IT EXISTS AS A NUMBER BECAUSE IT IS A GATE INPUT. `n > 1` means an edit to ONE of those sites
-   * would leave the others behind, so a bump actuator must refuse rather than pick — and until this
-   * field existed that fact lived only inside the human-readable {@link note}, where a gate would
-   * have had to match prose. See `@scp/plugin-managed-dep`'s `locateVersionLine` step 5.
-   */
+  /** How many declaration sites fed this entry. See docs/dependency-manifests.md §93. */
   readonly occurrences?: number;
-  /**
-   * Set when the entry is understood but something about it is worth surfacing — an unresolvable
-   * `ARG` interpolation, an inherited Maven version, a non-registry npm specifier. Human-readable,
-   * never parsed.
-   */
+  /** Set when understood but still worth surfacing. See docs/dependency-manifests.md §94. */
   readonly note?: string;
 }
 
-/**
- * Thrown when a manifest is not the format it claims to be at all (unparseable JSON, XML with no
- * `<project>`), as opposed to a manifest that legitimately declares nothing.
- *
- * These two MUST NOT collapse into the same empty array. "Zero dependencies" and "I could not read
- * this file" produce identical inventory rows but mean opposite things, and the second one silently
- * DELETES a component's whole dependency set on the next ingestion pass. This is the vacuous-test
- * hazard in production form: an assertion of absence that is satisfied for the wrong reason.
- */
+/** Thrown when a manifest is not the format it claims. See docs/dependency-manifests.md §95. */
 export class ManifestParseError extends Error {
   constructor(message: string, cause?: unknown) {
     // `cause` goes through Error's own options bag rather than a parameter property: `Error.cause`

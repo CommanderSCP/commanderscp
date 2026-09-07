@@ -9,27 +9,7 @@ import {
   type HeadWriteIngress
 } from "./line-head.js";
 
-/**
- * M21.4 — WHAT `latest_version`/`latest_digest` MEAN, pinned without a database
- * (BUILD_AND_TEST.md §4.1).
- *
- * Every assertion here is about a disagreement that ACTUALLY EXISTED between the two writers of
- * those columns — internal detection and the third-party poll — and that no type could catch,
- * because both wrote a `string` into a `text` column:
- *
- *   - `tag_pattern` meant "the literal variant suffix" to one and NOTHING to the other, so an
- *     `-alpine` line took a plain glibc tag as its head.
- *   - the column was "the head" to one and "the last thing I saw" to the other, so a hotfix on an
- *     older minor moved it backwards.
- *   - `produced_by_object_id` split the two ingresses in the ADR and in NEITHER writer.
- *
- * MUTATION LOG — each applied, watched fail, reverted, watched pass:
- * | Mutation | Result |
- * |---|---|
- * | drop the variant check from `lineAcceptsVersion` (compare only the numeric core, the pre-fix internal reading) | "an `-alpine` line REFUSES the plain flavour" FAILS |
- * | make `evaluateHeadMovement` always return `advanced` | "a hotfix behind the head does not move it" FAILS |
- * | `asThirdPartyLine` returns the line regardless of `produced_by_object_id` | "an internal line is not a pollable line" FAILS |
- */
+/** What the head fields mean, pinned without a database. See docs/dependencies.md §321. */
 
 const line = (
   over: Partial<Pick<DependencyLine, "ecosystem" | "major" | "tagPattern">> = {}
@@ -85,16 +65,10 @@ describe("lineAcceptsVersion — a release must be proven to be ON THIS LINE", (
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // `tag_pattern` HAS ONE MEANING, AND BOTH WRITERS USE IT
-  // -----------------------------------------------------------------------------------------
 
   it("an `-alpine` line REFUSES the plain flavour — and the plain line refuses `-alpine`", () => {
-    // THE DEFECT THIS PINS: internal detection ignored `tag_pattern` entirely, so an image line
-    // declared as the alpine variant happily took `3.18.4` — a glibc image — as its head, and every
-    // subscriber tracking the alpine variant would have been bumped across flavours. The poll, using
-    // the same column as a literal suffix, would never have offered that tag. One column, two
-    // meanings; now one.
+    // THE DEFECT THIS PINS. See docs/dependencies.md §322.
     const alpine = line({ ecosystem: "oci", major: "3.18", tagPattern: "-alpine" });
     expect(lineAcceptsVersion(alpine, "3.18.4-alpine")).toMatchObject({ accepted: true });
     expect(lineAcceptsVersion(alpine, "3.18.4")).toMatchObject({
@@ -234,44 +208,13 @@ describe("asThirdPartyLine — the ingress split is structural", () => {
   });
 
   it("THE FACT IS AN ARGUMENT, so a caller who never looked cannot get a pollable line by default", () => {
-    // WHY THIS CASE EXISTS (drizzle/0068). Under the old signature the internal-ness fact was a
-    // COLUMN on the line row, and the dangerous path was a row whose column was NULL because nobody
-    // had ever written it — a brand-new major of a coordinate the org publishes. `asThirdPartyLine`
-    // dutifully returned a pollable line, and the org's own package went to a public index.
-    //
-    // The fact is now a required second parameter, so "I did not look" is not expressible: the two
-    // call sites below are the only two answers, and there is no third that means "unknown". This
-    // asserts the SHAPE — `asThirdPartyLine.length === 2` — because the whole guarantee is that the
-    // argument cannot be omitted, and a one-argument overload would restore the old hole with every
-    // other test still green.
+    // WHY THIS CASE EXISTS. See docs/dependencies.md §323.
     expect(asThirdPartyLine.length).toBe(2);
   });
 });
 
 describe("evaluateIngressAuthority — the ingress split survives the transaction boundary", () => {
-  /**
-   * WHY THIS EXISTS ALONGSIDE `asThirdPartyLine`, WHICH ALREADY SPLITS THE INGRESSES.
-   *
-   * `asThirdPartyLine` mints a COMPILE-TIME brand, and it is minted in an EARLIER TRANSACTION than
-   * the head write — both ingresses deliberately do their network work with no transaction open
-   * ("a registry that takes 15s must never hold a tenant transaction"). So the brand asserts "no
-   * declaration existed when the work-list was built", which a declare landing in that window makes
-   * false. Measured: a public `2.99.0` landed on a just-declared internal line, fanned a bump out,
-   * and was then unfixable — the poll no longer visits an internal line, and the org's real `2.1.0`
-   * is refused as `behind_head`.
-   *
-   * This is the runtime half, re-checked at the write door inside the writing transaction. The
-   * end-to-end replay of the race is `version-poll.integration.test.ts` (6); this pins the rule
-   * itself, all three directions, without a database.
-   *
-   * MUTATION LOG — applied, watched fail, reverted, watched pass:
-   * | Mutation | Result |
-   * |---|---|
-   * | `return { authorized: true }` unconditionally | the three refusal cases FAIL (3 of 6) |
-   * | drop the `line_is_third_party` arm (guard the confusion direction alone) | ONE failure — "an INTERNAL write onto a RETRACTED coordinate is refused", and note WHY only one: a null declaration then falls into the transfer arm and is refused as `line_transferred`, which is the wrong REASON rather than a wrong verdict. Two arms that both refuse are still two facts, and the audit record has to carry the right one |
-   * | drop the transfer arm — i.e. restore the pre-2026-08-17 rule, which is exactly what `{ hasDeclaredProducer: boolean }` could express | ONE failure, and it is "a TRANSFER refuses the FORMER producer". THE OTHER FIVE STAY GREEN, which is the whole reason that case had to be written rather than assumed covered |
-   * | keep the transfer arm but report it as `line_is_third_party` | same one failure, on the reason alone — the write is refused and the Decision then says the coordinate is third-party when it is internal and owned by Q |
-   */
+  /** Why this exists alongside the ingress splitter. See docs/dependencies.md §324. */
 
   const P = "aaaaaaaa-0000-0000-0000-000000000001";
   const Q = "bbbbbbbb-0000-0000-0000-000000000002";
@@ -301,13 +244,7 @@ describe("evaluateIngressAuthority — the ingress split survives the transactio
   });
 
   it("a TRANSFER refuses the FORMER producer's in-flight write — the case a boolean could not see", () => {
-    // THE BUG THIS ARM EXISTS FOR, measured. `POST /dependencies/producers` UPSERTS, so declaring a
-    // coordinate that already has a producer TRANSFERS it (the route records
-    // `displacedProducerObjectId` precisely because that happens). Under the previous shape this
-    // rule was handed `hasDeclaredProducer: true` in exactly this situation and authorized P's
-    // write: P's version became the head, `line_head_advanced` fanned bump PRs into every
-    // subscriber's repo, and Q's genuine release was then refused `behind_head` FOREVER — the poll
-    // never visits a declared line, backward movement is refused, and no API resets the column.
+    // THE BUG THIS ARM EXISTS FOR, measured. See docs/dependencies.md §325.
     const verdict = evaluateIngressAuthority(
       { kind: "internal", producerObjectId: P },
       { producerObjectId: Q }

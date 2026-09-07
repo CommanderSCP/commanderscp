@@ -17,22 +17,7 @@ import {
   whenReapSettled
 } from "@scp/runner-launcher";
 
-/**
- * M23.2 — THE STANDING GATE THAT ADAPTER SELECTION IS *INSTALLED*, NOT MERELY BUILT.
- *
- * `launcher-seam.test.ts` proves this plugin launches through the injected `RunnerLauncher`, and
- * every one of its cases injects a resolver. That is precisely why it CANNOT prove this: production
- * injects nothing. `apps/server/src/plugin-host/subprocess-entry.ts` constructs this plugin as
- * `createManagedScanExecutorPlugin()` — no argument — so the DEFAULT PARAMETER is the whole of the
- * production wiring, and a test that always passes its own resolver never touches it.
- *
- * That is this repository's dominant defect class, named in CLAUDE.md: a component built, tested
- * through a seam that bypasses the wiring, and installed nowhere. It has happened six times in one
- * session, including a live RCE on main. The only check that works is to delete the wiring and watch
- * a NAMED test die — so this file constructs the plugin with NO ARGUMENT and requires the Kubernetes
- * adapter to be reached. Revert the default parameter to `resolveDockerRunnerLauncher` and this dies;
- * nothing else in the repository does.
- */
+/** The standing gate that adapter selection is installed. See docs/plugins.md §495. */
 
 /** The Kubernetes launcher's injected seam, recording what the adapter tried to send and then
  *  refusing. Reaching it AT ALL is the assertion — the Docker adapter cannot touch this object. */
@@ -56,14 +41,7 @@ const KUBERNETES_SETTINGS = {
   }
 };
 
-/**
- * AND THIS PLUGIN HAS A SECOND PRODUCTION CONSTRUCTION PATH, which is the one easiest to miss:
- * `apps/server/src/federation/promotion-scan-step.ts` calls `createManagedScanExecutorPlugin()`
- * IN-PROCESS, bypassing the plugin-host boundary entirely (recorded as STILL OPEN at
- * BUILD_AND_TEST.md M23.1d). Both paths call the zero-argument factory, so this case covers both —
- * and `apps/server`'s own `managed-runner-selection.test.ts` pins that the commander's promotion
- * scan context carries the selection at all, which is the half this package cannot see.
- */
+/** A second production construction path, easiest to miss. See docs/plugins.md §496. */
 
 let scratch: string;
 beforeEach(async () => {
@@ -118,16 +96,7 @@ describe("M23.2: managed-scan, constructed the way production constructs it, hon
     expect(seen).toStrictEqual([]);
   });
 
-  /**
-   * ================================================================================================
-   * M23.6 CLAUSE 1 — NO PROCESS IS SPAWNED ON THE KUBERNETES PATH
-   * ================================================================================================
-   * The clause asks for the recorded SPAWN, not a mock's call count, "so a renamed binary cannot
-   * pass it". `runnerSpawns()` records the binary as it was handed to `execFile` and nothing else in
-   * the package can start a process — `no-docker-on-kubernetes.test.ts` censuses that. Measured
-   * before the ledger existed: a real `execFile(dockerBinary, ["version", …])` in
-   * `resolveRunnerLauncher`'s KUBERNETES branch left the whole workspace green.
-   */
+  /** No process is spawned on the Kubernetes path. See docs/plugins.md §497. */
   it("ON THE KUBERNETES PATH NOTHING IS SPAWNED — no container CLI, under any name", async () => {
     await whenReapSettled();
     clearRunnerSpawns();
@@ -164,15 +133,7 @@ describe("M23.2: managed-scan, constructed the way production constructs it, hon
     expect(new Set(runnerSpawns().map((s) => s.file))).toStrictEqual(new Set(["docker"]));
   });
 
-  /**
-   * ================================================================================================
-   * M23.6 CLAUSE 7 — NEVER *CONSTRUCTED*, WHICH IS STRONGER THAN NEVER CALLED
-   * ================================================================================================
-   * The `io is NEVER touched` case above is a statement about CALLS. Measured: making the Docker
-   * branch of `resolveRunnerLauncher` build `createFetchKubernetesIo(...)` AND
-   * `createKubernetesRunnerLauncher(...)`, discard both and return the Docker launcher left
-   * `pnpm -w test` green (72/72). This arm is what that mutation now fails.
-   */
+  /** Never constructed, which is stronger than never called. See docs/plugins.md §498. */
   it("WITH THE DOCKER LAUNCHER SELECTED NO KUBERNETES CLIENT IS CONSTRUCTED — an air-gapped VM gains no dependency", async () => {
     const seen: string[] = [];
     const before = kubernetesConstructionCount();
@@ -200,24 +161,7 @@ describe("M23.2: managed-scan, constructed the way production constructs it, hon
   });
 });
 
-/**
- * ==================================================================================================
- * M23.6 CLAUSE 1, BEHAVIOURALLY — THE SPAWN IS OBSERVED FROM OUTSIDE THIS PROCESS
- * ==================================================================================================
- *
- * WHY THE LEDGER ARM ABOVE IS NOT ENOUGH, MEASURED. `runnerSpawns()` records what goes THROUGH
- * `spawnRunnerProcess`. A real `child_process.execFile(dockerBinary, …)` on the Kubernetes path goes
- * nowhere near it: planted in `resolveRunnerLauncher`'s Kubernetes branch it left this file, its two
- * siblings and the whole workspace GREEN while fourteen processes were actually created. What caught
- * it was a source census — and a census proves the presence of TEXT, never the absence of an
- * EXECUTION, which is this repository's most expensive standing confusion.
- *
- * SO THIS CASE RUNS THE PLUGIN IN A CHILD `node` whose `node:child_process` was wrapped before the
- * plugin loaded, and asserts over the processes that were actually created. It carries its OWN
- * control in the same child, in order: the Kubernetes trigger first (nothing may be created), then a
- * Docker trigger (something must be), so an observer that had silently stopped observing fails the
- * second half rather than passing the first.
- */
+/** M23.6 CLAUSE 1, BEHAVIOURALLY. See docs/plugins.md §499. */
 describe("M23.6 clause 1, behaviourally: managed-scan creates no process on the Kubernetes path", () => {
   it("OBSERVED FROM OUTSIDE: the Kubernetes trigger spawns NOTHING and the Docker trigger spawns", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "managed-scan-observed-"));
@@ -317,35 +261,7 @@ console.log(JSON.stringify({ seen, afterKubernetes, afterDocker: spawnsSoFar() }
   }, 180_000);
 });
 
-/**
- * ==================================================================================================
- * M23.6 CLAUSE 1, THE HOLE EVERY CASE ABOVE LEFT: the `io` THIS SUITE ALWAYS INJECTS
- * ==================================================================================================
- *
- * Every case above hands the plugin a `kubernetes.io`. `resolveRunnerLauncher` reads it as
- * `k8s.io ?? createDefaultKubernetesIo(…)`, and the right-hand side of a `??` is not evaluated when
- * the left is present — so the transport the resolver builds FOR ITSELF, which is the only one
- * production ever gets, was evaluated by no test in this repository.
- *
- * MEASURED, NOT SUSPECTED. A `spawnSync(config.dockerBinary ?? "docker", ["version"])` planted on
- * that right-hand side, in a NEW module so that no `node:child_process` string appears in
- * `kubernetes-adapter.ts` for the source census to find, executed a REAL `docker version` while
- * `@scp/runner-launcher` reported 427/427 and the three managed plugins reported 38 + 50 + 255 —
- * every suite green, including the observed case above. A marker file proved the probe was reached
- * rather than merely present.
- *
- * So this case injects NOTHING: no `io`, and NO `dockerBinary` either. The Kubernetes adapter is not
- * given a container binary in production and must not need one, so with the field absent the only
- * name a probe can reach for is `DEFAULT_DOCKER_BINARY` — and the assertion is simply that this
- * child created no process at all, with no binary name guessed in advance.
- *
- * TWO THINGS MAKE THE EMPTY LIST MEAN SOMETHING, because a green negative arm was already worthless
- * once: `kubernetesConstructionCount()` must move by TWO (the launcher AND the transport the resolver
- * built — an injected `io` makes it one, which is what every case above produces), and the run must
- * fail naming the projected service-account token path, which is proof the resolver's own `readToken`
- * closure actually executed. The observer's own liveness is then proven in the SAME child by a
- * deliberate spawn at the end.
- */
+/** M23.6 CLAUSE 1, THE HOLE EVERY CASE ABOVE LEFT. See docs/plugins.md §500. */
 describe("M23.6 clause 1: managed-scan on the Kubernetes path with NO injected transport", () => {
   it("NO `io`, NO `dockerBinary`: the resolver builds its OWN transport and NOTHING is spawned", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "managed-scan-defaultio-"));
@@ -436,7 +352,6 @@ console.log(
         report.detail,
         "the run never reached the default transport's token read, so nothing past construction was driven"
       ).toContain(`${K8S_SA_DIR}/token`);
-      // THE MEASUREMENT.
       expect(
         report.afterKubernetes,
         `managed-scan created a process on the Kubernetes path: ${JSON.stringify(run.spawns)}`

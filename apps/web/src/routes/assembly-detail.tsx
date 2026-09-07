@@ -23,12 +23,7 @@ import { QueryErrorNotice } from "../components/query-error";
 
 type RouterLinkProps = React.ComponentProps<typeof Link>;
 
-/**
- * An outline `Button`-styled router `Link` — mirrors `Button`'s `outline size="sm"` classes plus
- * the shared focus ring (§2.10) onto a `Link`, since `Button` itself renders a `<button>` and
- * cannot navigate. Same pattern as `service-board.tsx`'s `LinkButton` (spec §2.12/§4B: every `→`
- * literal dies).
- */
+/** An outline `Button`-styled router `Link`. See docs/web.md §184. */
 function LinkButton({
   to,
   params,
@@ -53,27 +48,7 @@ function LinkButton({
   );
 }
 
-/**
- * ONE ASSEMBLY — the layout + board, mirroring `service-detail.tsx`/`service-board.tsx`.
- *
- * TWO TABS, NOT THREE. A service carries Board/Infrastructure/Settings; an assembly gets
- * Board/Settings, because there is nothing to put on an Infrastructure tab: `REGISTRIES` marks
- * assemblies `edges: false` (an assembly does not `consumes`/`depends_on` — it does not make a
- * request), and executor bindings resolve at the service or component rung, never here.
- *
- * WHAT THE BOARD DELIBERATELY DOES NOT SHOW: a rolled-up status for the assembly itself.
- * GLOSSARY.md §assembly rules that an assembly is "not a release unit either: a change is per-
- * component, and rolling 'the assembly is blocked' up out of its children would need a rule nobody
- * has chosen, so the service board shows an assembly with a component count and a link down, not a
- * status." That ruling is not weakened by moving one level in — this board lists the assembly's
- * components and links down to each one's pipeline. Per-component release state belongs here too,
- * but there is no `GET /assemblies/{id}/board` to source it honestly (the service board's
- * releasing/blocked/stable/unknown buckets are computed server-side, beside the freeze and
- * driver-visibility logic that decides what this instance may even claim to know). Inventing it
- * client-side would mean re-deriving that honesty in the browser — exactly the thing the service
- * board exists to avoid — so this ships as an inventory with links, and gains status when the
- * endpoint does.
- */
+/** One assembly: the layout and board, mirroring the service. See docs/web.md §185. */
 
 // The accent (army olive since 2026-08-11) marks the active tab (spec standing decision — "active nav" is one of the accent's
 // four sanctioned homes), consistent with `service-detail.tsx`'s identical tab nav.

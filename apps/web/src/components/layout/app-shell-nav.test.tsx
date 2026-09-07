@@ -1,26 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-/**
- * M16.2 phase B (B4) — THE NAV GUARANTEE, on every PR.
- *
- * The E2E spec (`apps/web/e2e/outposts-no-bypass.spec.ts`) walks nav → list → detail against the
- * real router. When this was written every E2E job was `main`-only and SKIPPED on pull requests; they
- * now run on PRs and 5z requires them. These two properties stay pinned here regardless, because a
- * nav guarantee is worth a check that costs milliseconds:
- *
- *   1. "Outposts" is REACHABLE from the nav at all (a page nothing links to is a page nobody finds);
- *   2. the pre-existing `/federation` entry SURVIVES. It ships today and may be bookmarked; adding a
- *      section is not a licence to rename an existing destination out from under one.
- *
- * …plus the route tree itself, asserted against the real `router` object: a nav link to a path with
- * no route is a 404 that no unit test of the sidebar alone would catch.
- *
- * The three hooks `AppShell` calls (`useAuth`, `useNavigate`, `useQueryClient`) all require
- * providers this file deliberately does not stand up — the sidebar's link set is what is under test,
- * not the auth session — so they are stubbed. `Link` renders a real `<a href>` so the assertions are
- * about destinations rather than about component identity.
- */
+/** M16.2 phase B (B4) — THE NAV GUARANTEE, on every PR. See docs/web.md §66. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({
@@ -63,11 +44,7 @@ function routePaths(): string[] {
   return Object.keys(router.routesById).map((id) => id.replace(/^\/authenticated/, "") || "/");
 }
 
-/** Every `href` the sidebar renders, EXACTLY — not by substring.
- *
- *  `expect(html).toContain('href="/federation"')` was the previous form and is satisfied by the
- *  Outposts link alone, since `href="/federation/outposts"` contains it: the "Federation survives"
- *  assertion could not have failed while Outposts existed. Exact hrefs close that. */
+/** Every `href` the sidebar renders, EXACTLY. See docs/web.md §67. */
 function navHrefs(html: string): string[] {
   return [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]!);
 }
@@ -185,12 +162,7 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
   });
 });
 
-/**
- * THE OUTPOST SITE (outpost-ui.md §9, owner correction 2026-08-14): the same bundle serves a
- * SMALLER site when the instance's install-time role is `outpost`. Pinned as a table diff against
- * the commander site above — the whole point of making the nav data was that this test could say,
- * per entry, which site carries it and which does not.
- */
+/** THE OUTPOST SITE. See docs/web.md §68. */
 describe("app nav: the OUTPOST site is the small one (outpost-ui.md §9)", () => {
   const html = renderToStaticMarkup(<SiteNav role="outpost" />);
   const hrefs = navHrefs(html);
@@ -326,12 +298,7 @@ describe("app router: every nav destination this milestone adds actually resolve
   });
 });
 
-/**
- * SITE-SHAPED INSIGNIA (outpost-ui.md §9, owner 2026-08-14): the outpost site wears the fort, the
- * commander the star — and the login page ALWAYS wears the star, because the role is post-auth
- * only (topology disclosure). Pinned by the `data-insignia` attribute rather than SVG path text,
- * so a redraw of either icon does not break the test while a swapped role does.
- */
+/** SITE-SHAPED INSIGNIA (outpost-ui.md §9, owner 2026-08-14). See docs/web.md §69. */
 describe("brand mark: one insignia per site, star before auth", () => {
   it("wears the fort on the outpost site and the star on the commander site", () => {
     expect(renderToStaticMarkup(<BrandMark role="outpost" />)).toContain('data-insignia="outpost"');

@@ -7,22 +7,7 @@ import type {
   ComponentDependencyInventoryResponse
 } from "@scp/schemas";
 
-/**
- * WHAT THIS FILE PINS THAT `dependency-subscription-cli.test.ts` CANNOT: that the two M21.6 read
- * verbs' ACTION BODIES actually call the SDK and feed the printers.
- *
- * The closed-list test proves `.command("inventory")` / `.command("bumps")` are REGISTERED, and the
- * pure printers are unit-pinned; but a Commander `.action()` closure is unreachable from either. A
- * mutation that inserted `return;` as the first statement of BOTH actions left the whole package
- * green (116/116) — the M21 lesson ("component built, never installed") one layer down. So here the
- * commands are DRIVEN through `buildProgram().parseAsync([...])` against a stubbed SDK (the
- * `outpost-reconcile-precondition.test.ts` pattern): what the verb asked the SDK for, and what it
- * printed off the answer, are the assertions.
- *
- * MUTATIONS WATCHED TO FAIL: `return;` before `clientFromStoredCredentials` in the inventory
- * action → both inventory cases RED (no SDK call, no header, no row); the same in the bumps action →
- * both bumps cases RED; restored.
- */
+/** The read verbs' action bodies really do call the SDK. See docs/cli.md §108. */
 
 const inventoryCalls: { idOrUrn: string; query: unknown }[] = [];
 const bumpsCalls: { idOrUrn: string; query: unknown }[] = [];

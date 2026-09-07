@@ -1,13 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-/**
- * THE COMPONENT TAB BAR — the four Links, by testid and label. `router-paths.test.ts` proves the
- * `/dependencies` URL is registered in the real route tree (DELETE-THE-WIRING: drop
- * `componentDependenciesRoute` from `addChildren` and that case dies); this file proves the layout
- * OFFERS the tab (drop the fourth Link and this dies), and that the three pre-existing testids —
- * one of them pinned by `e2e/component-settings-tab.spec.ts` — are still there.
- */
+/** THE COMPONENT TAB BAR. See docs/web.md §224. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({

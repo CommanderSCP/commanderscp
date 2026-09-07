@@ -5,31 +5,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { createObjectType, listObjectTypes } from "../graph/type-registry-repo.js";
 import { insertDecision, listDecisions } from "./decisions-repo.js";
 
-/**
- * Systemic regression for the cursor-precision keyset pagination bug (companion to
- * `graph/list-pagination.integration.test.ts`, which covers `objects-repo`).
- *
- * `created_at` is stored at Postgres MICROSECOND precision, but the pagination cursor round-trips
- * through a JS `Date` (MILLISECOND, via `encodeCursor` → `toISOString`). Every repo that paged with
- * a RAW `created_at` keyset had one of two failure modes when more than one page of rows shares a
- * `created_at` millisecond — exactly what a bulk write committed in ONE transaction produces, since
- * `defaultNow()` stamps every row with the SAME transaction `now()`:
- *
- *  - TWO-COLUMN raw keyset (`(created_at, id) > (cursor_ms, cursor_id)`): the row's sub-millisecond
- *    tail makes `created_at` strictly greater than the truncated cursor for EVERY row, so the whole
- *    page re-qualifies, `nextCursor` never advances, and the `listAll*` iterator LOOPS FOREVER.
- *  - SINGLE-COLUMN raw keyset with NO id tiebreak (`created_at > cursor`): once the cursor lands on
- *    the shared millisecond, no row is strictly greater, so the next page is empty — pagination
- *    terminates but SILENTLY DROPS every same-millisecond row past the first page.
- *
- * The fix (shared `keysetAfter`/`keysetOrderBy` in `pagination.ts`) truncates the column to
- * `date_trunc('milliseconds', created_at)` in BOTH the WHERE and the ORDER BY and always carries an
- * `id` tiebreak, making `(created_at_ms, id)` a stable, terminating, lossless keyset.
- *
- * This file exercises a representative TWO-COLUMN repo (`type-registry` object types) and a
- * representative SINGLE-COLUMN-plus-new-tiebreak repo (`decisions`) — the latter proving the added
- * tiebreak both TERMINATES and does not DROP same-millisecond rows.
- */
+/** Systemic regression for the cursor-precision bug. See docs/coordination.md §551. */
 const SEED = 25;
 const PAGE = 20;
 // A correct keyset terminates in 2 pages (20 + 5); the cap turns the pre-fix infinite loop into a
@@ -97,7 +73,7 @@ describe("list pagination sweep: cursor precision across repos", () => {
     // seeded subset rather than a hard total: every seeded type appears EXACTLY once (no loop dupes)
     // and none are dropped.
     const seededSeen = seen.filter((id) => id.startsWith("bulk-type-"));
-    expect(new Set(seededSeen).size).toBe(SEED); // all seeded types seen
+    expect(new Set(seededSeen).size).toBe(SEED);
     expect(seededSeen.length).toBe(SEED); // and each exactly once
   });
 
@@ -119,12 +95,8 @@ describe("list pagination sweep: cursor precision across repos", () => {
       ).toBeLessThanOrEqual(PAGE_CAP);
     } while (cursor);
 
-    // The decisive assertion for the added tiebreak: pre-fix, the single-column `gt(created_at)`
-    // keyset (no id tiebreak) mishandles same-millisecond rows past page one — it LOOPS when the
-    // stored sub-millisecond tail is nonzero (the boundary row re-qualifies; caught by the PAGE_CAP
-    // assertion above) or DROPS rows when the tail is zero (caught here). The (created_at_ms, id)
-    // tiebreak fixes both; this assertion proves no rows were lost.
-    expect(new Set(seen).size).toBe(SEED); // every decision seen — none dropped
+    // The decisive assertion for the added tiebreak. See docs/coordination.md §552.
+    expect(new Set(seen).size).toBe(SEED);
     expect(seen.length).toBe(SEED); // and each exactly once — no boundary-row duplicates
   });
 });

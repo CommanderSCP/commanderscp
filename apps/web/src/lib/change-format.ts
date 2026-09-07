@@ -1,14 +1,7 @@
 import type { ChangeState } from "@scp/sdk";
 import type { BadgeProps } from "../components/ui/badge";
 
-/**
- * Change `state` -> Badge variant (components/ui/badge.tsx).
- *
- * Lives here rather than on a page because the Changes LIST page was removed (the nav cleanup of
- * 2026-08-10) while four surfaces still colour a change state: change detail, the change pipeline,
- * the service board and the component pipeline. A shared formatter in `lib/` is the honest home for
- * something no single page owns.
- */
+/** Change `state` -> Badge variant. See docs/web.md §116. */
 export function stateBadgeVariant(state: ChangeState): BadgeProps["variant"] {
   switch (state) {
     case "proposed":

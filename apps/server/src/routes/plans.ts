@@ -26,44 +26,7 @@ import {
   prepareApplyChecks
 } from "../iac/plans-repo.js";
 
-/**
- * Server-side `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15): the diff
- * engine lives once here and is identical for the CLI (`scp plan`/`scp apply`), the SDK, and (in
- * later milestones) federation import and drift detection — "Kubernetes-apply semantics, not
- * client-side Terraform semantics" (DESIGN.md §15).
- *
- * **Routing note (documented deviation):** DESIGN.md's `{id}:verb` syntax (e.g.
- * `/changes/{id}:accept`) does NOT survive Fastify's router (find-my-way) the way it reads —
- * verified empirically: registering `/plans/:id:apply` does not parse as param `id` + literal
- * suffix `:apply`; find-my-way instead treats the whole `id:apply` token as ONE parameter name
- * (`request.params["id:apply"]`), so `/plans/abc` and `/plans/abc:apply` collapse onto the same
- * route and can't be told apart. No `:verb`-style route exists anywhere else in the codebase yet
- * to be consistent with (M3 introduces the first ones), so this module falls back to the
- * conventional REST subpath `POST /plans/{id}/apply` instead — a deliberate, isolated deviation,
- * not a precedent-breaking one.
- *
- * **Scope decisions (documented):**
- *  - `POST /plans` (diff computation) is read-only against the graph and can touch objects across
- *    many scopes, so it checks `object:read` at the org-root scope — mirrors
- *    `objects-generic.ts`'s list-scope decision. The write-permission gate that actually matters
- *    is per-affected-object at apply time (`prepareApplyChecks`, `iac/plans-repo.ts`), not here.
- *  - `POST /plans/{id}/apply` checks `object:write`/`relationship:write` at EVERY individual
- *    affected object/relationship's own scope, not one coarse check at the org root — the parent
- *    task's explicit instruction, mirroring the M1 security review's "relationship writes require
- *    write permission at both endpoints' scopes" (CRITICAL 1). Every check runs to completion
- *    BEFORE any mutation executes, in the same transaction, so a single denial rolls back the
- *    entire apply (fails fully closed — see `plans.integration.test.ts`'s partial-denial test).
- *  - A `policy`/`control` object in the manifest is checked against `policy:write` instead of
- *    `object:write`, and a `policy` create/update additionally runs
- *    `assertPolicyScopeWithinAuthority` — the exact same governance gates the typed `/policies`/
- *    `/controls` routes enforce (security fast-follow after PR #9: `iac/plans-repo.ts`'s
- *    `prepareApplyChecks` doc comment has the full story). "The exact same gates" is a claim this
- *    file cannot keep on its own, and M21.3 briefly made it FALSE: ADR-0032 §6a's refusal was added
- *    to the typed route's `validateWrite` and to nothing else, so a manifest declaring a group-scoped
- *    dependency-subscription opt-out applied cleanly through here and the object read back. That
- *    refusal now lives at `graph/objects-repo.ts`'s `createObject`/`updateObject` — which apply calls
- *    directly — so parity holds by construction rather than by two lists happening to agree.
- */
+/** Server-side `@scp/iac` plan/apply. See docs/routes.md §310. */
 export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -170,39 +133,13 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
         // duration so two concurrent applies of the same plan can't both succeed.
         const pending = await lockPendingPlan(tx, auth.orgId, request.params.id);
 
-        // D7 SINGLE OWNERSHIP PER STACK (ADR-0046 §3, team-pipeline-iac §4/§5). A stack bound to a
-        // config source is repo-owned: its state is delivered by that repo's sync, and a direct
-        // apply against it would be reverted by the very next sync — silently, and with the CLI
-        // caller having been told it succeeded. Refused with a 409 naming the owning config source,
-        // which is the thing the caller has to change to get their push back.
-        //
-        // AT APPLY, NOT AT `POST /plans`, for the reason the commander-only check below it is:
-        // computing a diff writes nothing, and seeing what a push WOULD do to a repo-owned stack is
-        // a legitimate — and, for a PR dry-run, the intended — thing to ask.
-        //
-        // The predicate is `config-source/cli-apply-guard.ts`, which is also what makes "not bound"
-        // mean exactly what it does today: every stack no config source claims returns
-        // `{ allowed: true }` unconditionally, so this is one new refusal and not a new gate on the
-        // existing path.
+        // D7 SINGLE OWNERSHIP PER STACK. See docs/routes.md §311.
         const ownership = evaluateCliApplyOwnership(
           await findStackConfigSourceBinding(tx, auth.orgId, pending.stackName)
         );
         if (!ownership.allowed) throw conflict(ownership.message);
 
-        // COMMANDER-ONLY, BUT ONLY FOR THE ONE COLLECTION THAT IS (ADR-0032 §7d, §7e). A plan that
-        // touches no producer declarations applies anywhere, as it always has; a plan that writes
-        // one is refused on a field outpost exactly as `POST /dependencies/producers` is. IaC apply
-        // is a SECOND DOOR into `dependency_line_producers`, and a commander-only capability guarded
-        // at one door is not guarded — the row would land where no dependency job runs and no
-        // inventory exists to act on it, which is the "true elsewhere, inert here" shape
-        // `dependencyManagement` exists to close.
-        //
-        // The FEDERATION axis only, never the process axis: every HTTP request lands on an
-        // `SCP_ROLE=api` process in the split topology, so a route carrying the process axis would
-        // refuse every caller on a correct commander (`commander-only.ts`'s "a route does not get
-        // both"). Checked at APPLY and not at `POST /plans`: computing a diff writes nothing, and
-        // the plan an outpost operator computes is a legitimate way to see what the commander would
-        // do.
+        // Commander-only, but only for the one collection that is. See docs/routes.md §312.
         if ((pending.diff.producers ?? []).some((entry) => entry.action !== "noop")) {
           const commander = commanderOnlyFederationVerdict(
             deps.config,

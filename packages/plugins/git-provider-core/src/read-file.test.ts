@@ -1,13 +1,4 @@
-/**
- * `read-file.ts` unit tests — the provider-neutral half of `readFileAtRef` (M21.2, ADR-0032 §4).
- * Pure functions only: no HTTP, no nock, no provider. Each adapter's wire shapes are proven in that
- * package's own nock suite; what is proven HERE is the behavior all three share, so a refusal is
- * tested once instead of three times.
- *
- * Every assertion below is mutation-proven: the bound checks fail if either size gate is removed,
- * the UTF-8 round-trip test fails if the round-trip check is dropped OR if the decode is changed to
- * latin1, and the whitespace-stripping test fails if `base64DecodedByteLength` stops stripping.
- */
+/** `read-file.ts` unit tests. See docs/plugins.md §93. */
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_FILE_BYTES,
@@ -39,9 +30,7 @@ function decodeInput(overrides: Partial<DecodeBoundedBase64Input> = {}): DecodeB
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // resolveMaxBytes — the bound is structural, not advisory
-// -------------------------------------------------------------------------------------------
 
 describe("resolveMaxBytes", () => {
   it("defaults to DEFAULT_MAX_FILE_BYTES when nothing was requested", () => {
@@ -66,9 +55,7 @@ describe("resolveMaxBytes", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // base64DecodedByteLength — the pre-decode measurement the size refusal rests on
-// -------------------------------------------------------------------------------------------
 
 describe("base64DecodedByteLength", () => {
   it("matches the real decoded length for payloads at each padding length (0, 1, 2 '=')", () => {
@@ -85,16 +72,12 @@ describe("base64DecodedByteLength", () => {
     const flat = Buffer.from(text, "utf8").toString("base64");
     const wrapped = (flat.match(/.{1,60}/g) ?? []).join("\n");
 
-    expect(wrapped).toContain("\n"); // the fixture really is wrapped (guards the guard)
+    expect(wrapped).toContain("\n");
     expect(base64DecodedByteLength(wrapped)).toBe(300);
     // Mutation control: without the strip, the newlines inflate the count.
     expect(base64DecodedByteLength(wrapped)).not.toBe(Math.floor((wrapped.length * 3) / 4));
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// decodeBoundedBase64 — the gates
-// -------------------------------------------------------------------------------------------
 
 describe("decodeBoundedBase64", () => {
   it("decodes a normal base64 payload and reports the resolved commit sha and decoded byte length", () => {
@@ -127,16 +110,7 @@ describe("decodeBoundedBase64", () => {
   });
 
   describe("gate 3b — a body SHORTER than the provider declares is not the file", () => {
-    /**
-     * THE ONLY EVIDENCE OF TRUNCATION THERE IS. Every one of ADR-0032's six manifest formats is
-     * line-oriented or brace-balanced, and the first N bytes of a `requirements.txt` are still a
-     * valid `requirements.txt` — so no parser and no consumer can see this from the content. Its
-     * one consumer PRUNES a manifest's declarations down to what it just parsed, so a body missing
-     * its second half deletes the declarations that never arrived.
-     *
-     * Gates 2 and 3 each compare ONE size against the decode bound; this is the only place the two
-     * sizes are compared with each other.
-     */
+    /** THE ONLY EVIDENCE OF TRUNCATION THERE IS. See docs/plugins.md §94. */
     it("refuses a payload that decodes to fewer bytes than the declared size", () => {
       const arrived = "requests==2.31.0\n";
       const result = decodeBoundedBase64(
@@ -269,10 +243,6 @@ describe("decodeBoundedBase64", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// Path / ref URL safety
-// -------------------------------------------------------------------------------------------
-
 describe("assertSafeRepoPath", () => {
   it("accepts an ordinary nested repo-relative path", () => {
     expect(() => assertSafeRepoPath("p", "services/api/package.json")).not.toThrow();
@@ -308,7 +278,7 @@ describe("assertSafeRef", () => {
       "refs/heads/main",
       "refs/tags/v1.2.3",
       "v1.2.3",
-      "9f".repeat(20), // a 40-hex commit sha
+      "9f".repeat(20),
       "user@example.com-branch"
     ]) {
       expect(() => assertSafeRef("p", ref), ref).not.toThrow();
@@ -357,7 +327,6 @@ describe("assertSafeRepo", () => {
   it("accepts the shapes each provider actually addresses", () => {
     expect(() => assertSafeRepo("github", "acme/widgets", 2)).not.toThrow();
     expect(() => assertSafeRepo("gitea", "acme-org/my_repo.git-ish", 2)).not.toThrow();
-    // GitLab nests, so it asserts no count.
     expect(() => assertSafeRepo("gitlab", "group/subgroup/repo")).not.toThrow();
   });
 
@@ -392,19 +361,7 @@ describe("assertSafeRepo", () => {
   });
 
   it("every character it ACCEPTS is URL-identity — the property the adapters splice `repo` raw on", () => {
-    // This is the load-bearing half of the M21.2 repo fix, and it lives here rather than in the
-    // adapters because it is a property of THIS charset. github's and gitea's `readFileAtRef` put
-    // the validated `repo` into their routes unencoded (see the comment at each `const repoPath =
-    // repo`), which is only safe while `REPO_SEGMENT` admits nothing that a URL would treat
-    // structurally or that would need an escape. They previously wrapped it in
-    // `encodePathSegments`, but that call was a provable identity under this same charset — a
-    // no-op indistinguishable from its own deletion, so no test could hold it (CLAUDE.md: a
-    // well-written comment naming a hazard is a signal to sweep, not evidence it was handled).
-    // Relaxing the charset — a space, `~`, `%`, `/`, or "any non-slash character" — fails HERE
-    // instead of silently re-opening the injection two packages away.
-    //
-    // The sweep is over every ASCII code point plus a sample of non-ASCII (an exhaustive Unicode
-    // sweep is not runnable; these catch the realistic relaxation, e.g. to a negated class).
+    // The load-bearing half of the fix, and why it lives here. See docs/plugins.md §95.
     const candidates = [
       ...Array.from({ length: 128 }, (_, i) => String.fromCharCode(i)),
       "é",
@@ -428,11 +385,7 @@ describe("assertSafeRepo", () => {
       acceptedNonIdentity.map((c) => JSON.stringify(c)),
       "assertSafeRepo accepts characters that are NOT URL-identity — github/gitea splice the validated repo into their REST routes UNENCODED, so relaxing REPO_SEGMENT means re-introducing encoding at those call sites"
     ).toEqual([]);
-    // The sweep must also be shown to have ACCEPTED something: an assert that refused every
-    // candidate would satisfy the check above vacuously (this repo's second recurring bug class —
-    // green for the wrong reason). Pinning the exact accepted set rather than a count also makes
-    // the charset itself readable here, and makes any change to it — tightening included — arrive
-    // as a deliberate edit to this line.
+    // The sweep must also be shown to have ACCEPTED something. See docs/plugins.md §96.
     expect(accepted.join("")).toBe(
       "-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz"
     );
@@ -449,10 +402,6 @@ describe("encodePathSegments", () => {
     expect(encodePathSegments("a?b#c%d")).toBe("a%3Fb%23c%25d");
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// Failure classification — redirects and transport/egress
-// -------------------------------------------------------------------------------------------
 
 describe("assertNoRedirect", () => {
   it("passes 2xx and 4xx/5xx straight through (they are the adapter's own business)", () => {
@@ -484,7 +433,6 @@ describe("assertNoRedirect", () => {
 
 describe("wrapProviderRequestError", () => {
   it("re-states an egress-guard denial with the self-hosted case named, and preserves the cause", () => {
-    // The exact marker the guard sets (apps/server/src/plugin-host/egress-guard.ts:83).
     const blocked = Object.assign(
       new Error("egress guard: host 'gitea.internal' resolves to private 10.0.0.5"),
       { egressBlocked: true as const }
@@ -493,7 +441,7 @@ describe("wrapProviderRequestError", () => {
 
     expect(wrapped.message).toMatch(/refused by the plugin egress guard/);
     expect(wrapped.message).toMatch(/self-hosted gitea/);
-    expect(wrapped.message).toMatch(/10\.0\.0\.5/); // the guard's own detail survives
+    expect(wrapped.message).toMatch(/10\.0\.0\.5/);
     expect(wrapped.cause).toBe(blocked);
     expect(wrapped.provider).toBe("gitea");
 

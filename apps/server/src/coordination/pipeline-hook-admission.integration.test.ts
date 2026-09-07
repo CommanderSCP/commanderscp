@@ -32,34 +32,7 @@ import {
 import { describeContinuousHeldTargets, evaluateContinuousHolds } from "./continuous-hold.js";
 import type { PipelineHookGateEntry } from "./pipeline-hook-gate.js";
 
-/**
- * INCREMENT 8 ADMISSION, END TO END AGAINST REAL POSTGRES — the wiring that makes the declared
- * hooks actually gate and hold something.
- *
- * ============================================================================================
- * EVERYTHING IS DRIVEN THROUGH `reconcileOrgTick`, NEVER BY CALLING AN ENGINE FUNCTION INLINE
- * ============================================================================================
- * This is not a stylistic preference and it has been paid for once already in this tree. The
- * reconcile loop claims work with `FOR UPDATE SKIP LOCKED`; an inline engine call made beside a
- * running loop is a SILENT NO-OP that returns cleanly, so a test written that way passes while
- * proving nothing about the code that runs in production. Every assertion below is therefore about
- * what a real tick did: what the EXECUTOR was asked to do (`triggered`, the plugin host's own call
- * log), what status the wave and its targets reached, and what Decision rows exist.
- *
- * "Not triggered" is asserted against the executor rather than against a status column, for the
- * same reason `stage-dependency-hold.integration.test.ts` states: a hold that recorded the right
- * row while still firing the release would pass a column assertion and fail the only thing that
- * matters.
- *
- * A FRESH ORG PER CASE. `reconcileOrgTick` sweeps the whole org and `advanceExecutingChanges`
- * serves `ORDER BY reconcile_cursor_at ASC LIMIT BATCH_LIMIT`, so changes an earlier case left
- * `executing` compete for the same slots and "tick(4)" stops meaning four evaluations of MY change.
- * That is the same fixture-rebuilt-starvation the stage-dependency file measured; the note is
- * repeated here rather than cross-referenced because the next person to add a case to this file is
- * the person who needs it.
- *
- * The four MUTATION PROOFS this file's guard tests are for are named on the tests themselves.
- */
+/** INCREMENT 8 ADMISSION, END TO END AGAINST REAL POSTGRES. See docs/coordination.md §596. */
 
 /** A valid `CapturedWorkflowRefSchema` value. The evidence rows below are written through the repo
  *  (there is no write door yet — that is a later increment), which stores the payload verbatim, but
@@ -293,10 +266,6 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     expect(await waveTargetStatus(changeId, firstPlacement)).toBe("succeeded");
   }
 
-  // -------------------------------------------------------------------------------------------
-  // PART 2 — the per-target `continuous` hold
-  // -------------------------------------------------------------------------------------------
-
   it("property 1: a STALE continuous probe HOLDS the target, and fresh green RELEASES it", async () => {
     const topology = await oneWaveTopology([gamma]);
     const app = await componentAt("stale", [gamma]);
@@ -463,10 +432,6 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     expect(ctx.held.map((h) => h.targetObjectId)).toEqual([app.at(gamma)]);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // PART 1 — the wave-boundary gate contributor
-  // -------------------------------------------------------------------------------------------
-
   it("property 4: a FAILED postDeploy result blocks the wave's exit — the next wave stays `pending`", async () => {
     const topology = await sequentialTopology([gamma, prod]);
     const app = await componentAt("postdeploy-fail", [gamma, prod]);
@@ -549,14 +514,7 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
   });
 
   it("property 5b: THE GATE'S AWAITING TUPLE IS ACTUALLY DISPATCHED — a hook run row exists", async () => {
-    // WHAT THIS CLOSES, and why it is the load-bearing case in this file. `ensureHookRunTriggered`
-    // was fully built, unit- and integration-tested, and had NO PRODUCTION CALLER: nothing wrote
-    // `pipeline_hook_runs`, so `pollNonTerminalHookRuns` polled an always-empty table and a declared
-    // `postDeploy` hook blocked its wave FOREVER with a correct-looking `awaiting`. Property 5 above
-    // passed throughout, because "blocks and is re-decided when evidence arrives" is true of a gate
-    // whose run was never triggered — the evidence simply had to come from somewhere else.
-    //
-    // So this asserts the ROW, not the verdict. The verdict was never the thing that was broken.
+    // What this closes, and the load-bearing case in the file. See docs/coordination.md §597.
     const topology = await sequentialTopology([gamma, prod]);
     const app = await componentAt("postdeploy-dispatch", [gamma, prod]);
     await declareHook({
@@ -566,12 +524,7 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
       workflow: { repo: "acme/pipelines", branch: "main", path: "w.yaml" }
     });
 
-    // AN EXECUTOR BINDING ON THE CARRIER, which the other properties in this file do not need and
-    // this one does. A hook run resolves its executor from the wave target itself (the PLACEMENT,
-    // here) and `ensureHookRunTriggered` REFUSES to claim a run it could not dispatch (§14 res 2,
-    // loud-unbound) rather than recording one that fake-succeeds. Every other property asserts a
-    // gate VERDICT, which needs no executor at all — this is the first that asserts a dispatch, so
-    // it is the first that has to look like an estate where one can happen.
+    // An executor binding on the carrier, needed only here. See docs/coordination.md §598.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       upsertExecutorBinding(tx, {
         orgId: org.orgId,
@@ -626,15 +579,7 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
   });
 
   it("property 5c: a CONTINUOUS hook's schedule is DECLARED to the executor that will run it", async () => {
-    // OUTPOST-RUN PROBES. The commander declares WHAT to probe and the domain holds the schedule;
-    // this is the domain half — the tick hands the executor a cadence and the executor's own
-    // scheduler runs it. SCP never fires the probe, which is why this asserts a DECLARATION and not
-    // a run: `everySeconds` is descriptive in three places, all unchanged.
-    //
-    // Asserted on the recorded spec, not on "the call did not throw": the driver gates on the
-    // optional `ensureSchedule` being present, so an executor without it is skipped silently — and
-    // a test that only checked for absence of an error would pass against a driver that skipped
-    // everything.
+    // Outpost-run probes: the commander declares what to probe. See docs/coordination.md §599.
     const subject = await componentAt("probe-scheduled", [gamma]);
     // The probe resolves its executor from the TARGET (the placement), exactly as a hook run does,
     // so this needs a binding for the same reason property 5b did — it asserts a dispatch, not a
@@ -685,15 +630,7 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
   });
 
   it("property 5d: DELETING the hook RETRACTS the schedule from the executor", async () => {
-    // THE OTHER HALF OF 5c, and it did not exist. The module doc claimed "the schedule is removed by
-    // the retraction sweep below"; there was no sweep, and `removeSchedule` — implemented on the
-    // contract, routed by the plugin-host RPC, implemented by the Argo plugin and by this very
-    // fixture — had NO application caller anywhere. So a hook retracted by an IaC prune or a
-    // federation tombstone stopped being declared and its cron kept firing on the executor forever.
-    //
-    // Asserted on the fixture's `removedSchedules` log rather than on a row disappearing: the
-    // failure this closes is entirely on the executor's side of the boundary, so a DB-shaped
-    // assertion would have passed against the broken code.
+    // THE OTHER HALF OF 5c, and it did not exist. See docs/coordination.md §600.
     const subject = await componentAt("probe-retracted", [gamma]);
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       upsertExecutorBinding(tx, {
@@ -818,20 +755,8 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     }
   });
 
-  // -------------------------------------------------------------------------------------------
-  // The terminalization arithmetic
-  // -------------------------------------------------------------------------------------------
-
   it("property 7: an ALREADY-FAILED wave whose only remaining targets are held still terminalizes — and does not terminalize while a sibling is genuinely in flight", async () => {
-    // TWO ASSERTIONS, ONE FIXTURE, because they are the two halves of the same arithmetic and the
-    // second is the one that catches a missing `nonTerminalTargets++`:
-    //
-    //   * with a failed target, a held target AND a genuinely OBSERVING one, the wave must stay
-    //     `running` — miss the count and `nonTerminalTargets - heldCount` reaches 0, the first
-    //     guard falls through, and the wave terminalizes with a live target (MUTATION TARGET (a));
-    //   * once the observing target finishes, the wave must terminalize `failed` even though a held
-    //     target remains — holding a dependant on a doomed wave buys nothing, and not terminalizing
-    //     leaves the change occupying a BATCH_LIMIT slot forever with no failure ever recorded.
+    // Two assertions on one fixture, two halves of one sum. See docs/coordination.md §601.
     const topology = await oneWaveTopology([gamma, prod, amer]);
     const app = await componentAt("terminalize", [gamma, prod, amer]);
     await declareHook({
@@ -886,10 +811,6 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     );
   });
 
-  // -------------------------------------------------------------------------------------------
-  // Persist-on-change
-  // -------------------------------------------------------------------------------------------
-
   it("property 8: two consecutive evaluations against unchanged evidence produce a byte-identical `inputContext`", async () => {
     // ADR-0024's contract, asserted TWICE and in two different ways, because the failure is silent:
     // a clock in `inputContext` writes a new row every tick, which is the measured 1.44 GB/day
@@ -915,12 +836,7 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     const change = await release("stable", [app.id], topology);
     await tick(8);
 
-    // (a) THE PREDICATE, DIRECTLY, at two different clocks — asserted FIRST, and the order is
-    // deliberate: it must be able to fail on its own. When the end-to-end row count below runs
-    // first it fails for the same mutation, and a `now` reaching only the predicate would then be
-    // reported by an assertion that never executed. (Measured: with a clock injected into the
-    // predicate's record this assertion is what goes red.) The record must be byte-identical for
-    // the same evidence read a minute apart.
+    // (a) THE PREDICATE, DIRECTLY, at two different clocks. See docs/coordination.md §602.
     const at = async (now: Date) =>
       JSON.stringify(
         describeContinuousHeldTargets([
@@ -947,21 +863,10 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     expect(rows).toHaveLength(1);
   });
 
-  // -------------------------------------------------------------------------------------------
   // Ordering — the disjointness the terminalization arithmetic depends on
-  // -------------------------------------------------------------------------------------------
 
   it("ORDERING: a target that is both frozen and probe-held records the FREEZE, not the probe", async () => {
-    // MUTATION TARGET (b). Only one `continue` can fire per target, so the three hold sets are
-    // DISJOINT BY CONSTRUCTION — a property of the ORDERING, not of the data, which is why it needs
-    // its own test. The continuous `continue` is placed LAST; move it above the freeze one and the
-    // frozen target starts recording a `continuous_test` hold instead, which names the wrong reason
-    // and spends a hook read per tick on a target no evidence could release.
-    //
-    // TWO PLACES, and that is a fixture requirement rather than decoration: an ALL-frozen wave is
-    // blocked by `evaluateWaveGate` itself (`gate-orchestrator.ts`'s `partiallyFrozen` keeps that
-    // case a whole-wave block), so the per-target loop this test is about is never reached. Freezing
-    // ONE of two targets is what makes the wave run and the loop decide per target.
+    // MUTATION TARGET (b). See docs/coordination.md §603.
     const topology = await oneWaveTopology([gamma, prod]);
     const app = await componentAt("both", [gamma, prod]);
     await declareHook({

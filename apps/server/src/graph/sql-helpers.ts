@@ -1,13 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
 
-/**
- * `column IN (v1, v2, ...)`. Deliberately NOT `column = ANY(${values}::type[])`: drizzle-orm's
- * `sql` template tag special-cases JS array interpolations by expanding them into a
- * parenthesized, comma-separated parameter list (`(v1, v2, ...)`) rather than binding a single
- * array-typed parameter — so `${values}::text[]` receives a bare scalar (1 element) or an
- * anonymous record tuple (2+ elements) and fails to cast. `IN` embraces that expansion instead
- * of fighting it. Caller must ensure `values` is non-empty (`IN ()` is invalid SQL).
- */
+/** `column IN (…)`, deliberately not `= ANY` over an array. See docs/graph.md §192. */
 export function sqlIn(columnExpr: string, values: readonly string[]): SQL {
   return sql`${sql.raw(columnExpr)} IN ${values}`;
 }

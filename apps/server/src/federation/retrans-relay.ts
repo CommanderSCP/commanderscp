@@ -1,78 +1,4 @@
-/**
- * M15.5(c) — the RETRANS VALIDATE-THEN-RELAY (ADR-0019 §2), the ADR-0004 `retrans` role made real.
- *
- * ## What this is
- *
- * A retrans-role instance sits at a CDS boundary. It RECEIVES the metadata promotion bundle (the
- * ordinary `.scpbundle` walk — `promotion-repo.ts::importPromotionBundle`, which already runs the
- * M17.4(a) manifest verify) and must then relay the artifact BYTES onward. This module is that
- * byte leg, as a pipeline of proven pieces (ADR-0019 §2, steps 1–7):
- *
- *   1. RESOLVE the authorized artifact set — the imported change's M17.4(a)-verified
- *      `sourceRef.artifacts` (`crossBoundaryManifestOf`, the same scoping the pre-deploy gate
- *      uses). The signed promotion manifest is the ONLY source of what may cross.
- *   2. PULL each artifact's bytes from the SOURCE registry via the VENDORED skopeo
- *      (`resolveSkopeo` + fail-closed pin assertion, @scp/cosign) — BY DIGEST, refs constructed
- *      with `bindOciRefToAuthorizedDigest` (#108's binding, one shared implementation). Blob bytes
- *      ride the guarded blob fetch. BOTH operator allowlists are enforced on this pull path:
- *      `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` (every OCI ref, before any dial) and
- *      `SCP_ARTIFACT_BLOB_BASE_URLS` (every blob URL, before any request) — ADR-0019 §4.
- *   3. VALIDATE with the M17.4 machinery (`verifyAuthorizedArtifactSet`): per-artifact,
- *      digest-bound, origin-signature-verified against the EXPORTER's distributed cosign pubkey,
- *      keyful/offline. FAIL-CLOSED: a tampered/unauthorized/missing artifact refuses the WHOLE
- *      relay with a `retrans-relay-validate` block Decision + hash-chained audit event — it NEVER
- *      crosses the CDS. (Pulled OCI layouts are additionally digest-checked and
- *      layout-integrity-checked, so what is packaged is byte-for-byte what was verified —
- *      content addressing closes the pull/verify gap.)
- *   4. PACKAGE a SIGNED OCI-layout tarball — the `@scp/airgap` build-bundle machinery via its
- *      importable seam (`checksums`/`ociLayout`; not rewritten): per-artifact OCI layouts + blob
- *      files + `relay-manifest.json` + `CHECKSUMS.txt`, the checksums cosign-signed with THIS
- *      instance's cosign key (M17.3 E4, `ensureInstanceCosignKey`).
- *   5. RELAY the tarball across the CDS AS A FILE — out-of-band, exactly the `.scpbundle` walk's
- *      boundary: signed file out, signed file in. Federation bundles stay METADATA-ONLY
- *      (ADR-0009); this tarball is a separate channel artifact, never a bundle-format change.
- *   6. PUSH (destination side, `importRelayTarball`): verify the tarball signature + checksums +
- *      that every carried artifact is in the LOCAL change's own (a)-verified authorized set, then
- *      push each image into the destination local Gitea and RE-INSPECT the landed digest (the
- *      install.sh push + re-inspect pattern) — a registry push cannot silently alter what was
- *      verified. Blob bytes land in an operator-served directory. The change's
- *      `sourceRef.artifacts[].location` is then populated with where the bytes landed — the exact
- *      seam `artifact-verify.ts`'s `LocationRegistryReader` documents ("populated when the bytes
- *      land — M15.5").
- *   7. RECEIVER RE-VERIFIES — ZERO TRUST IN THE RELAY. The receiving outpost still runs M17.4(a)
- *      at import and M17.4(b) pre-deploy, unchanged and unweakened: the relay is an optimization
- *      of the sneakernet leg, not a verification authority.
- *
- * ## Credentials (ADR-0019 §3 — the artifact-store class)
- *
- * Source-registry READ + destination-Gitea PUSH credentials are ARTIFACT-STORE credentials —
- * registry creds, NOT credentials to infrastructure execution systems manage (charter principle
- * 1 holds). They live in the EXISTING AES-256-GCM `secrets` vault (`secrets/secrets-repo.ts` —
- * same vault, same envelope, same resolution seam as executor credentials), scoped PER-REGISTRY
- * under the keys {@link relaySourceReadSecretKey} / {@link relayDestPushSecretKey}. No
- * admin/delete grants are ever needed (read on source repos, push on destination repos). They are
- * handed to skopeo/cosign via a mode-0600 scratch docker auth file, NEVER via argv (argv is
- * logged) and never echoed into Decisions, audit events, or responses. The auth file reaches
- * skopeo via explicit `--src/dest-authfile` flags and cosign via a PER-INVOCATION subprocess
- * `DOCKER_CONFIG` env — never a `process.env` mutation, which on this multi-tenant server would
- * leak one org's registry auth into every concurrently spawned cosign/skopeo subprocess.
- *
- * ## Roles
- *
- * `buildRelayTarball` runs ONLY on a `role: 'retrans'` instance (`scp federation init --role
- * retrans`) — any other role refuses (409). This activates the ADR-0004 arm that was
- * declared-but-placeholder in `self-repo.ts`. The destination import runs on the receiving
- * outpost (any role) — it is the outpost's own registry-load operation.
- *
- * ## TLS / CA (the #111 recorded decision)
- *
- * The SCP runtime image carries NO CA bundle. For TLS registries the operator provides CAs via
- * `SCP_RELAY_CERT_DIR` (passed to skopeo as `--src-cert-dir`/`--dest-cert-dir`). Plain-HTTP /
- * self-signed in-cluster registries (the common outpost-local Gitea shape) are supported via the
- * explicit `SCP_RELAY_INSECURE_HOSTS` allowlist (`--src/dest-tls-verify=false` for exactly those
- * hosts) — safe here because the cosign SIGNATURE, not registry TLS, is the trust anchor (the
- * same argument as `VerifyImageOptions.allowInsecureRegistry`). See docs/runbooks/retrans-relay.md.
- */
+/** M15.5(c) — the RETRANS VALIDATE-THEN-RELAY. See docs/federation.md §475. */
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -124,17 +50,11 @@ export const RETRANS_RELAY_IMPORT_DECISION_KIND = "retrans-relay-import";
 /** M13.1a — the retrans's push-less VALIDATE-AND-FORWARD verdicts (proposal §13.1). */
 export const RETRANS_RELAY_FORWARD_DECISION_KIND = "retrans-relay-forward";
 
-// -------------------------------------------------------------------------------------------------
-// Config surface (documented in docs/runbooks/retrans-relay.md). All operator-configured env —
-// bundle-supplied data NEVER steers relay egress (ADR-0019 §4): the pull side is guarded by the
-// two artifact allowlists, and the push side needs no allowlist because the destination is the
-// relay's OWN configured registry, never bundle data.
-// -------------------------------------------------------------------------------------------------
+// Config surface (documented in docs/runbooks/retrans-relay.md). See docs/federation.md §476.
 
 export interface RelayConfig {
   /** Source-side drop directory built tarballs are written into (`SCP_RELAY_OUT_DIR`). */
   outDir?: string;
-  /** Destination-side drop directory tarballs are read from (`SCP_RELAY_IN_DIR`). */
   inDir?: string;
   /** Fallback SOURCE repository (`host[:port]/path`) for OCI artifacts whose bundle carries no
    *  `location` (the export path records digests only) — pull ref = `<sourceRepo>@<digest>`
@@ -176,11 +96,7 @@ export function relayConfigFromEnv(): RelayConfig {
   };
 }
 
-/** Scoping (dated 2026-07-23, ADR-0019 §3 addendum): these keys are per-registry-host only, not
- *  literally per-peer. Per-peer scoping holds IMPLICITLY today because a retrans instance serves
- *  exactly one boundary/peer, so its per-host keys are per-peer in practice. A future multi-peer
- *  retrans would need the peer encoded in the key shape (e.g. `relay/source-read/<peerId>/<host>`)
- *  — a vault migration at that point, not a change needed now. */
+/** Scoping (dated 2026-07-23, ADR-0019 §3 addendum). See docs/federation.md §477. */
 /** Vault key (existing `secrets` table) holding the READ-only pull credential (`user:password`)
  *  for one SOURCE registry host — per-registry scoping, ADR-0019 §3. */
 export function relaySourceReadSecretKey(host: string): string {
@@ -192,22 +108,12 @@ export function relayDestPushSecretKey(host: string): string {
   return `relay/dest-push/${host.toLowerCase()}`;
 }
 
-/** 13.2b — vault key holding the S3 DeliveryTarget credential (`accessKeyId:secretAccessKey`) for
- *  one peer, per DIRECTION: `out` is WRITE-scoped (the outbound CDS drop), `in` is READ-scoped (the
- *  inbox). Under the ADR-0019 §3 artifact-store credential class (an S3 bucket is a passive shelf) —
- *  a target WITHIN that class, not a new class. Resolved at use via the SAME {@link getSecretValue}
- *  as the relay's `relay/source-read/<host>` keys; injected to the SDK client, never argv/logs/
- *  Decisions. Per-peer scoping is EXPLICIT in the key (a retrans may serve one peer, but an s3
- *  delivery bucket is genuinely per-peer), unlike the relay registry keys' implicit per-peer scope. */
+/** 13.2b — vault key holding the S3 DeliveryTarget credential. See docs/federation.md §478. */
 export function deliveryTargetSecretKey(peerName: string, direction: "out" | "in"): string {
   return `delivery/${peerName.toLowerCase()}/${direction}`;
 }
 
-/** Parse the vault value for a {@link deliveryTargetSecretKey} into an S3 credential pair. The value
- *  is `accessKeyId:secretAccessKey`, split on the FIRST `:` only — an AWS secret access key is
- *  base64-shaped (`[A-Za-z0-9/+]`) and never contains `:`, so the first colon is unambiguous. A value
- *  with no colon, or an empty half, is malformed → `null` (the caller fails closed on a missing/bad
- *  credential). */
+/** Parses the vault value into an object-store credential pair. See docs/federation.md §479. */
 export function parseDeliveryS3Credential(
   raw: string | undefined
 ): { accessKeyId: string; secretAccessKey: string } | null {
@@ -220,9 +126,7 @@ export function parseDeliveryS3Credential(
   return { accessKeyId, secretAccessKey };
 }
 
-// -------------------------------------------------------------------------------------------------
 // The relay tarball format (`scp-relay-<sourceChangeObjectId>.tar.gz`) — the CDS channel artifact.
-// -------------------------------------------------------------------------------------------------
 
 export const RELAY_BUNDLE_VERSION = "scp-relay-bundle/v1";
 
@@ -230,16 +134,10 @@ const RelayBundleArtifactSchema = z.object({
   type: z.enum(["oci", "blob"]),
   digest: z.string(),
   signatureRef: z.string().optional(),
-  /** OCI: layout dir (relative) of the image itself. */
   ociPath: z.string().optional(),
   ociTag: z.string().optional(),
-  /** OCI: the registry-attached cosign signature artifact(s), each as an OCI layout + the tag it
-   *  was stored under at the source. Cosign's storage scheme varies by version — the legacy
-   *  `sha256-<hex>.sig` tag and/or the OCI-1.1 referrers-fallback `sha256-<hex>` tag — so the
-   *  relay carries whichever exist(s) and re-creates the SAME tag(s) at the destination, keeping
-   *  the receiving M17.4(b) `cosign verify` working regardless of the signing cosign's vintage. */
+  /** The registry-attached signature artifacts, as a layout. See docs/federation.md §480. */
   ociSignatures: z.array(z.object({ tag: z.string(), path: z.string() })).optional(),
-  /** blob: byte + origin detached-signature files (relative). */
   blobPath: z.string().optional(),
   blobSigPath: z.string().optional()
 });
@@ -254,11 +152,7 @@ const RelayBundleManifestSchema = z.object({
 type RelayBundleManifest = z.infer<typeof RelayBundleManifestSchema>;
 type RelayBundleArtifact = z.infer<typeof RelayBundleArtifactSchema>;
 
-// -------------------------------------------------------------------------------------------------
-// Vendored-skopeo execution. Resolution + pin assertion live in @scp/cosign (M15.5 c1); this
-// wrapper only adds fail-closed execution + argv-only logging (credentials ride an authfile,
-// never argv — argv IS logged).
-// -------------------------------------------------------------------------------------------------
+// Vendored skopeo execution; resolution lives elsewhere. See docs/federation.md §481.
 
 function skopeoBin(): string {
   const resolved = resolveSkopeo();
@@ -273,16 +167,7 @@ function skopeoBin(): string {
   return resolved.bin;
 }
 
-/**
- * ASYNCHRONOUS by requirement, not by taste (M13.1b). Until this milestone `buildRelayTarball` had
- * exactly one non-test caller — the operator-invoked route — so a blocking `execFileSync` around a
- * multi-GB `skopeo copy` froze one deliberate, human-initiated request. M13.1b puts the same
- * pipeline on an unattended timer inside the shared worker process, which also hosts reconcile,
- * watchdog, observe, inbox and federation-sync (`main.ts`): a synchronous pull there would stop the
- * event loop — every other loop, every in-flight HTTP request on a combined `SCP_ROLE=all` process,
- * and the SIGTERM handler that makes a rolling restart graceful — for as long as the copy takes.
- * `execFile` keeps the subprocess semantics identical (argv only, no shell) while yielding.
- */
+/** ASYNCHRONOUS by requirement, not by taste. See docs/federation.md §482. */
 async function runSkopeo(args: string[]): Promise<string> {
   const bin = skopeoBin();
   // argv only — NEVER env, and credentials never appear in argv (authfile flags carry a path).
@@ -392,10 +277,6 @@ class RelaySourceRegistryReader extends LocationRegistryReader {
     return super.resolveBlob(artifact);
   }
 }
-
-// -------------------------------------------------------------------------------------------------
-// SOURCE SIDE — buildRelayTarball (pipeline steps 1–5).
-// -------------------------------------------------------------------------------------------------
 
 export interface BuildRelayTarballInput {
   orgId: string;
@@ -546,14 +427,7 @@ export async function buildRelayTarball(
     await mkdir(path.join(bundleRoot, "images"), { recursive: true });
     await mkdir(path.join(bundleRoot, "blobs"), { recursive: true });
 
-    // Credentialed source registries: cosign's registry reads honor DOCKER_CONFIG, skopeo takes an
-    // explicit --src-authfile — BOTH point at the same 0600 scratch config so credentials never
-    // touch argv or logs. DOCKER_CONFIG is handed to cosign as a PER-INVOCATION subprocess env
-    // (`cosignEnv` below), NEVER by mutating process.env: this is a multi-tenant server, and a
-    // process-global mutation would leak this org's registry auth into every cosign/skopeo
-    // subprocess that happens to spawn during the window (another org's concurrent relay, an
-    // M17.4(b) pre-deploy-gate verify) — and two concurrent relays would race each other's
-    // save/restore.
+    // Credentialed source registries. See docs/federation.md §483.
     const dockerConfigDir = path.join(workDir, "docker-config");
     await mkdir(dockerConfigDir, { recursive: true, mode: 0o700 });
     const auths: Record<string, { auth: string }> = {};
@@ -643,13 +517,7 @@ export async function buildRelayTarball(
               ]);
               ociSignatures.push({ tag: sigTag, path: sigRelPath });
             } catch (err) {
-              // This particular tag scheme isn't present (or its artifact couldn't be copied) —
-              // fine as long as SOME signature artifact lands (asserted below); the VALIDATE step
-              // still independently proves the signature verifies against the exporter's key.
-              // Recorded so the fail-closed refusal names the REAL per-tag error: an absent tag
-              // ("manifest unknown") reads very differently from a copy-tooling failure (e.g. a
-              // pre-1.16 skopeo refusing the referrers-fallback OCI index under
-              // --preserve-digests), and the refusal is all an operator gets.
+              // This particular tag scheme isn't present. See docs/federation.md §484.
               sigProbeFailures.push(
                 `${sigTag}: ${err instanceof Error ? err.message : String(err)}`
               );
@@ -777,16 +645,7 @@ export async function buildRelayTarball(
         await rm(keyDir, { recursive: true, force: true }); // never leave key material on disk.
       }
       await mkdir(input.outDir, { recursive: true });
-      // ATOMIC PUBLICATION (M13.1b). The drop directory IS the org's CDS intake, and a CDS watcher
-      // polls it. `tar czf` straight to the final name publishes a GROWING file, so a watcher can
-      // pick up a truncated tarball mid-write — latent while a human ran the relay and then walked
-      // the file over, LIVE the moment an unattended loop writes it (and doubly so if a lease
-      // expiry ever lets two builders write the same name). So the archive is written under a temp
-      // name in the SAME directory (rename is atomic only within one filesystem) and renamed into
-      // place: that rename is the single instant the file becomes visible under its
-      // channel-artifact name, whole. The temp name deliberately does NOT match
-      // `scp-relay-*.tar.gz`, so a loopback config whose drop dir doubles as an inbox can never
-      // mistake a partial for an arrival.
+      // ATOMIC PUBLICATION (M13.1b). See docs/federation.md §485.
       const finalPath = path.join(input.outDir, `${bundleDirName}.tar.gz`);
       const partialPath = path.join(input.outDir, `.scp-relay-build-${randomUUID()}.partial`);
       try {
@@ -803,17 +662,7 @@ export async function buildRelayTarball(
   }
 
   if (failures.length > 0 || tarballPath === null) {
-    // FAIL-CLOSED REFUSAL: a failing/tampered/unauthorized/missing artifact NEVER crosses — block
-    // Decision + hash-chained audit event, like every gate (charter principle 6).
-    //
-    // BOUNDED PAYLOAD (M13.1b). Each entry embeds skopeo's verbatim stderr and the authorized
-    // artifact set has no schema-level maximum, so an unbounded join could persist a multi-megabyte
-    // `reason` + `input_context` into `decisions` AND (via `appendAuditEvent`) `audit_events` and
-    // the sync journal — tables ADR-0024 classes as never-deleted. Once this function runs on a
-    // timer that is #153's pathology arriving by size instead of by row count, so both the joined
-    // text and the persisted `failing` array are truncated to a head plus an honest total. The
-    // COMPLETE per-artifact detail still reaches the operator on the spot, via the `+ skopeo …`
-    // stderr trace and the per-attempt log line; only the permanent record is bounded.
+    // Fail-closed: a tampered or missing artifact never crosses. See docs/federation.md §486.
     const shown = failures.slice(0, RELAY_FAILURE_DETAIL_LIMIT).map((f) => ({
       ...boundedArtifactRef(f),
       reason: truncate(f.reason, RELAY_FAILURE_REASON_CHARS)
@@ -885,14 +734,7 @@ export async function buildRelayTarball(
       decisionId: decision.id,
       requestId: `federation-relay:${ctx.sourceChangeObjectId}`
     });
-    // M13.1b — the BUILD hop's own `submitted` row, so the byte leg is visible on the SAME
-    // `bundle_transfers` status surface §13.1 names for the staging node and M16.1's boundary
-    // segment reads. The forward hop has always written this pair (`validateAndForwardRelayTarball`
-    // below); the build hop wrote nothing at all, so an unattended build was invisible to every
-    // surface except the logs — untenable once nobody is watching a terminal. Validate-gated by
-    // construction (D4): this transaction runs only after every artifact verified and the tarball
-    // landed. Attributed to the DOWNSTREAM peer the drop targets when the caller resolved one,
-    // else the upstream import peer — the same fallback the forward hop uses.
+    // The build hop's own row, so the byte leg is visible too. See docs/federation.md §487.
     const onwardPeerDomainId = input.onwardPeerDomainId ?? ctx.importedFromDomain;
     if (onwardPeerDomainId) {
       await recordBundleTransfer(tx, {
@@ -912,9 +754,7 @@ export async function buildRelayTarball(
   return { refused: false, tarballPath: finalTarballPath, artifacts, decisionId };
 }
 
-// -------------------------------------------------------------------------------------------------
 // DESTINATION SIDE — importRelayTarball (pipeline step 6). Runs at the receiving outpost.
-// -------------------------------------------------------------------------------------------------
 
 export interface ImportRelayTarballInput {
   orgId: string;
@@ -945,26 +785,14 @@ export type ImportRelayTarballResult =
 /** Internal refusal signal for phase 2 — every refusal path converges on one block Decision. */
 class RelayImportRefusal extends Error {}
 
-/**
- * Decompressed-size ceiling for an untrusted inbox relay tarball (`SCP_RELAY_MAX_DECOMPRESSED_BYTES`,
- * default 4 GiB). `tar xzf` extracts to disk BEFORE any signature/checksum check runs, so a gzip
- * bomb (a few KiB on the wire, terabytes decompressed) would fill the scratch volume / OOM the
- * worker before the first trust decision — a fail-open the streamed CHECKSUMS verification cannot
- * catch because it runs on the already-extracted files. `runTar`'s `maxBuffer` bounds only captured
- * pipe output, not extracted files, so it is not this control.
- */
+/** The decompressed-size ceiling for an untrusted tarball. See docs/federation.md §488. */
 const RELAY_MAX_DECOMPRESSED_BYTES = (() => {
   const raw = process.env.SCP_RELAY_MAX_DECOMPRESSED_BYTES;
   const parsed = raw ? Number(raw) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 4 * 1024 * 1024 * 1024;
 })();
 
-/**
- * Stream the gzip through a counting sink (bounded memory — chunks are counted and discarded, never
- * buffered) and throw {@link RelayImportRefusal} the moment the decompressed byte total exceeds the
- * cap, BEFORE `tar` writes anything to disk. A malformed/corrupt gzip surfaces as a pipeline error,
- * which the caller also converges on a fail-closed refusal.
- */
+/** Stream the gzip through a counting sink. See docs/federation.md §489. */
 async function assertRelayTarballDecompressedSizeUnderCap(tarballPath: string): Promise<void> {
   let total = 0;
   try {
@@ -1006,28 +834,7 @@ interface VerifiedRelayTarball {
   verifiedBlobs: VerifiedRelayBlob[];
 }
 
-/**
- * M13.1a EXTRACTION (proposal §13.1 — "a refactor, not a new trust decision"): the verification
- * half of the destination import, byte-equivalent to what `importRelayTarball` always ran inline
- * with its registry-push flow, now callable WITHOUT the push half so a `role: retrans` staging
- * node can validate-and-forward a tarball it has no registry to push into. The checks, in order,
- * exactly as before:
- *
- *   1. tarball transport integrity — CHECKSUMS.txt.sig against the OPERATOR/PAIRING-provided
- *      relay cosign public key (never a key found inside the tarball), then every file against
- *      CHECKSUMS.txt;
- *   2. relay-manifest parse + binding to THIS change's imported source change;
- *   3. AUTHORIZATION CROSS-CHECK — every carried artifact must be in the LOCAL change's own
- *      M17.4(a)-verified authorized set (zero trust in the relay's own manifest);
- *   4. per-artifact pre-push verification — OCI layout digest + integrity self-check, blob
- *      byte-hash equality.
- *
- * `requireBlobLandingDir` is the ONE caller-mode difference: the destination import lands blob
- * bytes in `config.blobOutDir` and must therefore refuse when it is unconfigured (unchanged
- * behavior); the retrans forward never lands blobs — the tarball is forwarded whole — so the
- * landing-dir config check does not apply there. Throws {@link RelayImportRefusal} on any
- * failing check; the caller converges every refusal on one block Decision.
- */
+/** An extraction: a refactor, not a new trust decision. See docs/federation.md §490. */
 async function extractAndVerifyRelayTarball(args: {
   workDir: string;
   tarballPath: string;
@@ -1219,21 +1026,11 @@ export async function importRelayTarball(
     };
   });
 
-  // Phase 2 (no tx): verify EVERYTHING about the tarball, then push. All verification (signature,
-  // checksums, authorization cross-check, per-layout digest + integrity, blob digests) completes
-  // BEFORE the first push — a tampered or unauthorized tarball pushes NOTHING. The verification
-  // itself is `extractAndVerifyRelayTarball` — extracted (M13.1a, byte-equivalent) so the retrans
-  // forward path runs the SAME checks without the push half below.
+  // Phase 2 (no tx): verify EVERYTHING about the tarball, then push. See docs/federation.md §491.
   const workDir = await makeScratchDir();
   const pushed: RelayPushedArtifact[] = [];
   let refusalReason: string | null = null;
-  // TOCTOU close (copy-once-then-operate-on-the-private-copy): input.tarballPath sits in the
-  // attacker-writable low-side inbox. Ingest its bytes into the server-controlled scratch dir
-  // EXACTLY once, then hash + verify ALL from that private copy — so the D4 confirmed-transfer
-  // checksum below describes the SAME bytes that were verified and imported, never a post-verify
-  // swap of the inbox file. After this copy `input.tarballPath` is never read again. The copy+hash
-  // live INSIDE the try so a missing/unreadable inbox path converges to the fail-closed block
-  // Decision (route → 409), not a raw throw that leaks the scratch dir.
+  // TOCTOU close (copy-once-then-operate-on-the-private-copy). See docs/federation.md §492.
   let tarballSha256: string | null = null;
   try {
     const privateTarball = path.join(workDir, "ingress-relay.tar.gz");
@@ -1356,11 +1153,7 @@ export async function importRelayTarball(
     return { refused: true, decisionId, reason };
   }
 
-  // Phase 3 (tx): record WHERE the bytes landed on the change's `sourceRef.artifacts[].location`
-  // (+ blob signatureRef URLs) — the byte-landing seam artifact-verify.ts's LocationRegistryReader
-  // documents. `location` is deliberately UNSIGNED bundle-side metadata: the M17.4(b) gate binds
-  // every verification to the manifest-signed DIGEST regardless of what location says, so this
-  // update cannot weaken the gate — it only tells it where to look.
+  // Phase three: record where the bytes actually landed. See docs/federation.md §493.
   const pushedByKey = new Map(pushed.map((p) => [`${p.type}:${p.digest}`, p]));
   const decisionId = await withTenantTx(db, input.orgId, async (tx) => {
     const sourceRef = (ctx.change.sourceRef ?? {}) as Record<string, unknown>;
@@ -1430,16 +1223,7 @@ export async function importRelayTarball(
   return { refused: false, localChangeObjectId: ctx.change.objectId, pushed, decisionId };
 }
 
-// -------------------------------------------------------------------------------------------------
-// RETRANS SIDE, INBOUND — validateAndForwardRelayTarball (M13.1a, proposal §13.1): the push-less
-// VALIDATE-AND-FORWARD for a relay tarball ARRIVING AT a `role: retrans` staging node (the
-// high-side hop of a double-retrans CDS crossing). A retrans has NO registry to push into
-// (deployment profile, §13.1) — its whole job on this hop is: run the SAME verification the
-// destination import runs (`extractAndVerifyRelayTarball`, the byte-equivalent extraction — "a
-// refactor, not a new trust decision"), then hand the UNTOUCHED original tarball bytes to the
-// outbound DeliveryTarget drop. It imports nothing, pushes nothing, decides nothing about the
-// promotion (ADR-0004: retrans never terminates a promotion).
-// -------------------------------------------------------------------------------------------------
+// RETRANS SIDE, INBOUND. See docs/federation.md §494.
 
 export interface ForwardRelayTarballInput {
   orgId: string;
@@ -1452,11 +1236,7 @@ export interface ForwardRelayTarballInput {
   relayCosignPublicKeyPem: string;
   /** The resolved OUTBOUND drop directory (the onward DeliveryTarget — §13.2). */
   outDir: string;
-  /** The DOWNSTREAM boundary peer this onward hop targets (its federation domain id) — the loop
-   *  resolves it from `resolveOnwardOutDir`'s peer match. Used ONLY to attribute the onward
-   *  `export`/`submitted` `bundle_transfers` row to the peer the drop actually goes to (M16.1
-   *  per-peer surface); observational only (the ledger is never authority). Absent (env-fallback
-   *  drop, no downstream peer resolvable) → falls back to the upstream import peer. */
+  /** The DOWNSTREAM boundary peer this onward hop targets. See docs/federation.md §495. */
   /** TRUST sense (ADR-0021 D4) — the DOWNSTREAM boundary peer the onward drop targets. */
   onwardPeerDomainId?: TrustDomainId;
   /** File name to drop under `outDir` (defaults to the tarball's own basename); rides the
@@ -1512,21 +1292,9 @@ export async function validateAndForwardRelayTarball(
     };
   });
 
-  // Phase 2 (no tx): the EXTRACTED verification — tarball signature, per-file checksums,
-  // manifest binding, authorized-set cross-check, per-artifact layout/blob integrity — with the
-  // push half absent and `requireBlobLandingDir: false` (the tarball is forwarded WHOLE; nothing
-  // lands here). Then the onward drop of the ORIGINAL file bytes. NO skopeo ever runs on this
-  // path — the retrans profile needs no registry for the forward hop.
+  // Phase 2 (no tx): the EXTRACTED verification. See docs/federation.md §496.
   const workDir = await makeScratchDir();
-  // TOCTOU close (copy-once-then-operate-on-the-private-copy): input.tarballPath sits in the
-  // attacker-writable low-side inbox. A low-side writer who SWAPS it between our verify and our
-  // forward-copy would push UNVALIDATED bytes across the boundary drop under an allow Decision —
-  // the exact zero-trust invariant this feature protects. So we ingest its bytes into the
-  // server-controlled scratch dir EXACTLY once, then hash + verify + forward-copy ALL from that
-  // private copy. After this copy `input.tarballPath` is never read again: a mid-window swap
-  // changes only the abandoned inbox file, never the bytes we verify/forward/hash. The copy+hash
-  // live INSIDE the try so a missing/unreadable inbox path converges to the fail-closed block
-  // Decision (D4), not a raw throw.
+  // TOCTOU close (copy-once-then-operate-on-the-private-copy). See docs/federation.md §497.
   let tarballSha256: string | null = null;
   let refusalReason: string | null = null;
   let artifacts: RelayArtifactSummary[] = [];
@@ -1643,13 +1411,7 @@ export async function validateAndForwardRelayTarball(
         channel: "bytes"
       });
     }
-    // M13.1b — TERMINATE this change's auto-relay obligation. Both boundary nodes are `role:
-    // retrans` (ADR-0009 §38), so both seed a relay-build row when they import the promotion
-    // `.scpbundle`; but the node whose BYTES ARRIVE is the receiving side of the hop and must never
-    // also try to build them (its source registry is on the far side of the air gap — which is
-    // precisely why this tarball exists). Recording `forwarded` here is the causal signal that this
-    // node is that side, and it is what stops the sweep from producing a trail of fabricated
-    // refusals over a promotion that in fact crossed successfully.
+    // M13.1b — TERMINATE this change's auto-relay obligation. See docs/federation.md §498.
     await markRelayBuildForwarded(tx, {
       orgId: input.orgId,
       changeObjectId: ctx.change.objectId,

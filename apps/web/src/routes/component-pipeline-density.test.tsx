@@ -7,37 +7,7 @@ import type {
   ComponentPipelineUnplacedStage
 } from "@scp/sdk";
 
-/**
- * TILE DENSITY (pipeline-substrate-registry-scan.md §10.3, owner) — the STATIC half.
- *
- * Every pipeline tile is a COMPACT part plus a Details disclosure, collapsed by default. This file
- * pins, tile by tile, that the compact markup holds EXACTLY the compact set and NOT the detail
- * rows — and that rendering the same tile expanded reveals them (nothing that rendered before
- * §10.3 became unreachable; it moved). The doubles' `detailsExpanded` prop is the pin: omitted, a
- * tile takes the production default (collapsed); `true` opens it through the same context the
- * page's Expand-all control drives.
- *
- * The BEHAVIOURAL half — a real click on the chevron, Expand all / Collapse all flipping every
- * tile, a tile's own override until the next page flip — lives in
- * `component-pipeline-density-interaction.test.tsx` under happy-dom, because a string cannot fire a
- * handler (see `test-support/render-dom.tsx`).
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `TileDetails` renders its children whether or not `open` (only `hidden` toggles) | every "compact does NOT contain" assertion FAILS — the detail rows are back in the markup |
- * | `useTileDetails` reads `scope.expandedAll ?? true` (default open) | the collapsed-by-default tests FAIL, and every compact-set test with them |
- * | `NodeShell` draws `<TileDetails>` even with no `details` | the Build "no toggle" test FAILS — a chevron over nothing |
- * | keep `MaintainerLine` in the compact part of `StageCard` | the target compact test FAILS on `stage-maintainer` |
- * | `GateSummary` reads `gate.checks.length` for the "none" branch instead of `gate.policies.length` | the approval-only gate test FAILS — an approval-gated stage reads "none" |
- * | `scanSummary` folds a `fail` row as `pass` when another row passed | the fail-verdict test FAILS |
- * | put the Registry's "from change" back on the compact digest line | the Registry compact test FAILS on "from change" |
- * | drop `aria-label` from the `TileDetails` button (or pass no `label` from `NodeShell`) | the disclosure-ARIA test and the "every kind of tile names WHOSE details" test FAIL |
- * | render the Registry's absent-imported-manifest line for every role (drop the `!== "commander"` guard) | the §10.4 absent-manifest test FAILS on the commander half |
- * | put the Registry's PRESENT imported-manifest line under Details (or drop `registryHasReview`) | the §10.4 present-manifest test FAILS (compact lacks the line / no Review button) |
- */
+/** TILE DENSITY (pipeline-substrate-registry-scan.md §10.3, owner). See docs/web.md §247. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -305,7 +275,6 @@ describe("§10.3 — a PLACED target tile: identity + state compact, everything 
     const html = renderWithQueryClient(
       <StageCardForTest stage={stage()} pipelineKey={["pipeline", "c"]} />
     );
-    // The compact set.
     expect(html).toContain("commercial-nyc3-prod");
     expect(html).toContain("deploys to prod");
     expect(html, "the facet stays beside the hint").toContain(
@@ -492,7 +461,6 @@ describe("§10.3 — the one-line ENTRY GATE summary (compact), the per-check li
     const html = renderToStaticMarkup(<StageCardForTest stage={stage({ gate: gate([], 1) })} />);
     expect(html).toContain("0 checks · approval required");
     expect(html).not.toContain('data-gate-summary="none"');
-    // The approval's WHO/HOW MANY is a Details fact.
     expect(html).not.toContain('data-testid="gate-approval"');
     expect(
       renderToStaticMarkup(
@@ -741,7 +709,6 @@ describe("§10.3 — the SCAN & SIGN tile: four one-liners compact; rows, export
     expect(html).toContain("2 exports");
     const signed = /data-testid="pipeline-sign-summary"[^>]*>(.*?)<\/p>/s.exec(html)?.[1] ?? "";
     expect(signed).not.toContain("old-peer");
-    // Order: scan → E6 → PM → signed.
     expect(at("pipeline-scan-summary")).toBeLessThan(at("pipeline-scan-export-gate"));
     expect(at("pipeline-scan-export-gate")).toBeLessThan(at("pipeline-scan-pm"));
     expect(at("pipeline-scan-pm")).toBeLessThan(at("pipeline-sign-summary"));

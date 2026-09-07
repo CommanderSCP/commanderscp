@@ -7,28 +7,7 @@ import { ScpApiError } from "@scp/sdk";
 import type { EffectivePermissionsResponse, Role, RoleBinding } from "@scp/schemas";
 import { fire, render, typeInto } from "../test-support/render-dom";
 
-/**
- * ADMIN › ACCESS — the wired-up page against a stubbed SDK (role-model.md §5 steps 5, 6, 10).
- *
- * What is pinned, and the mutation each pin exists to catch:
- *
- *   - the page READS all three surfaces (`roles.list`, `roleBindings.list`, `authz.effective`) —
- *     a `return;` in any of them, or a component that renders static text instead of querying,
- *     goes RED on the call log;
- *   - INSTANCE-TIER CREDENTIALS ARE NEVER REACHED FROM THE BROWSER, pinned the two ways Admin ›
- *     Governance had to pin the same property: clicking every control never records an
- *     `operatorCredentials.*` call, AND the page's own source never mentions the methods. The
- *     first pin alone was defeated on that page by a real wired button named off-pattern, so both
- *     are kept here;
- *   - `authz.effective` is called with the SCOPE THE USER TYPED, not the default — a form that
- *     ignored its input would otherwise answer confidently about the wrong object;
- *   - a DENY binding renders as `danger`, never as an ordinary row: a deny overrides every allow
- *     at any matching scope, and a reader who skims past it has the answer backwards;
- *   - a role's `deprecated` flag renders as "no new bindings", not "deprecated" — D5 leaves every
- *     EXISTING binding resolving, and "deprecated" reads as inert;
- *   - an empty effective-permission set renders "you hold no permissions", never an empty table —
- *     "nothing here" and "we could not ask" are different facts and the endpoint distinguishes them.
- */
+/** ADMIN › ACCESS. See docs/web.md §160. */
 
 const ORG_ID = "019f0000-0000-7000-8000-0000000000f1";
 const OTHER_ID = "019f0000-0000-7000-8000-0000000000c1";
@@ -181,12 +160,7 @@ async function mount() {
       <AdminAccessPage />
     </QueryClientProvider>
   );
-  // Poll until the reads have painted. A fixed zero-delay tick is not enough — react-query
-  // resolves across several microtask turns, and asserting too early reads as "the page renders
-  // nothing", which is indistinguishable from a genuinely broken page.
-  // Wait on the CALL LOG, not on rendered text. The first version waited for "Roles" and matched
-  // the section heading, which is painted before any query resolves — so every content assertion
-  // ran against an empty table and read as a broken page.
+  // Poll until the reads have painted. See docs/web.md §161.
   await waitUntil(
     () =>
       calls.some((c) => c.method === "roles.list") &&

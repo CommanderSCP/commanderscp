@@ -8,12 +8,7 @@ import {
 } from "../test-support/harness.js";
 import { startCliSession, type CliInvocation } from "../test-support/cli-runner.js";
 
-/**
- * BUILD_AND_TEST.md §8 M1 DoD (b): "a custom object type + custom relationship type registered
- * via the API are immediately usable through the generic endpoints, SDK, and CLI with no
- * deploy." One test org exercises the SDK surface; a second exercises the real `scp` CLI binary
- * end to end (login -> register type -> create -> list), proving all three interface tiers.
- */
+/** BUILD_AND_TEST.md §8 M1 DoD (b). See docs/graph.md §46. */
 describe("custom object/relationship type: immediately usable, no deploy", () => {
   let server: ListeningTestServer;
 

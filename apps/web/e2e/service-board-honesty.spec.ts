@@ -3,29 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { ScpClient, type ServiceBoardResponse } from "@scp/sdk";
 import { adminCredentials, apiBaseUrl, baseUrl, loginAsAdmin } from "./fixtures.js";
 
-/**
- * The RENDERING half of the service board's federation-honesty rule (apps/web/src/routes/
- * service-board.tsx, apps/server/src/coordination/service-board.ts).
- *
- * The server can name every field it cannot observe in `unknownFields` and still fail the operator
- * completely if the browser paints those placeholder zeros the same way it paints a real
- * observed-and-empty value. This spec is what stops that: it pins that an unobservable field renders
- * as an explicit "unknown here" marker, that an observed-and-empty field on the SAME board still
- * renders as the muted dash, and that the not-driven-here count is never dressed as a success.
- *
- * WHY THE BOARD RESPONSE IS STUBBED (`page.route`), unlike every other spec in this directory,
- * which drives real API writes. The distinction under test only appears when a row's change is a
- * READ-ONLY REPLICA of ANOTHER federation domain's — `objects.origin_domain_id` pointing at a peer.
- * That state is reachable only through a signed bundle import from a genuinely separate instance
- * (`importSyncBundle`); no public API this browser can call produces it, by design (single-writer
- * authority, DESIGN §13). The server-side behaviour is covered where it can be produced honestly —
- * on the real two-database federation topology, in
- * `apps/server/src/coordination/service-board-federation.integration.test.ts` and
- * `service-board-precedence.integration.test.ts`. What is left over, and what this spec owns, is
- * purely "given this contract, does the UI render the distinction" — so the contract is exactly what
- * is fed in. The service itself is real (created through the SDK, real route, real authz), so a
- * silently-failing intercept surfaces as a failing assertion rather than a false pass.
- */
+/** The RENDERING half of the service board's federation-honesty rule. See docs/web.md §25. */
 
 const REPLICA_CHANGE_ID = "5f6b4a2c-1d3e-4f8a-9b0c-2d4e6f8a0b1c";
 const ORIGIN_DOMAIN_ID = "2c1d3e4f-5a6b-4c8d-9e0f-1a2b3c4d5e6f";
@@ -36,17 +14,7 @@ interface StubComponent {
   name: string;
 }
 
-/**
- * The exact board contract under test: one row this instance drives (observed-and-empty) and one it
- * does not (every detail field declared unobservable).
- *
- * TYPED AS THE REAL RESPONSE, and that annotation is the point. This builder and `stubBoard` were
- * both untyped (`payload: unknown`), so when #222 added three REQUIRED fields to
- * `ServiceBoardResponse` — `rows[].pipelines`, `servicePipelines`, `childAssemblies` — this stub kept
- * compiling while serving a payload the UI could no longer render. Typecheck could not see it, the
- * unit fixtures WERE typed so they were fixed, and this one was `main`-only so nothing caught it.
- * With the annotation, the next required field is a compile error in the "2. Static checks" job.
- */
+/** The exact board contract under test. See docs/web.md §26. */
 function boardPayload(
   service: StubComponent,
   driven: StubComponent,
@@ -76,18 +44,13 @@ function boardPayload(
           emergency: false
         },
         activeFreeze: null,
-        // `driver: null` means NO latest change to attribute to anyone, not "this domain drives
-        // it" (fix(web) "qualify data-driven-here", src/routes/service-board.tsx) — that renders
-        // "none", the third of three states. This row is genuinely locally-driven, so it needs an
-        // explicit driver object to assert `data-driven-here="true"` (mirrors the `locallyDriven`
-        // fixture in src/routes/service-board-honesty.test.tsx).
+        // A null driver means no latest change, not none anywhere. See docs/web.md §27.
         driver: { drivenHere: true, originDomainId: null },
         // Empty on purpose, not by omission: this spec owns the unknown-vs-observed distinction, and
         // per-pipeline chips have their own PR-gated coverage in
         // `src/routes/service-board-honesty.test.tsx`. `[]` claims "no pipelines", which is a fact the
         // renderer handles, rather than smuggling in pipeline state this test does not assert.
         pipelines: [],
-        // Nothing declared unknown: these empties ARE observations.
         unknownFields: []
       },
       {
@@ -128,11 +91,7 @@ function boardPayload(
     // distinction, and a single-domain board legitimately has no upstream to label. The staleness
     // rendering has its own PR-gated coverage in `src/routes/service-board-honesty.test.tsx`.
     asOf: null,
-    // Board-level: a freeze crosses only if the domain that declared it federated it (M25.7, owner
-    // decision D6), and that defaults off — so no row's "not frozen" is a statement about freezes
-    // declared in another domain. This comment said "freezes never ride the sync journal" until D6
-    // retracted that; the fixture VALUE is unchanged, because the caveat still fires unconditionally
-    // on any peer, and the reason is corrected here rather than left stale in a green spec.
+    // A freeze crosses only if the declaring domain federated it. See docs/web.md §28.
     unknownFields: ["serviceFreeze", "rows[].activeFreeze"]
   };
 }
@@ -189,7 +148,6 @@ test("service board: an unobservable field renders as an explicit unknown, never
   await expect(drivenRow).toHaveCount(1);
   await expect(replicaRow).toHaveCount(1);
 
-  // 1. The not-driven-here row is LABELLED as such.
   await expect(replicaRow.getByTestId("board-not-driven-here")).toBeVisible();
 
   // 2. Every field the server declared unobservable renders the explicit marker — lifecycle state,
@@ -225,14 +183,6 @@ test("service board: an unobservable field renders as an explicit unknown, never
   );
   expect(notDrivenBadgeClass).not.toContain("bg-emerald-50");
 
-  // 5. The board-level freeze-visibility caveat: a freeze crosses only if the domain that declared
-  //    it federated it, and that defaults off (M25.7 / owner decision D6) — so an unfrozen row on a
-  //    federated instance means "none VISIBLE here", not "none applies", for EVERY row alike.
-  //
-  //    THE SECOND COPY OF THE SAME CLAIM IN THIS FILE, and it survived the first pass of the M25.7
-  //    census: the fixture comment at the top was corrected and this one was not, so the file
-  //    asserted the retracted reasoning ("freezes never replicate") and its replacement at once. A
-  //    per-file census that stops at the first hit is the same defect the project instructions name
-  //    for a repo-wide one; the fix is to finish the file.
+  // 5. The board-level freeze-visibility caveat. See docs/web.md §29.
   await expect(page.getByTestId("board-freeze-visibility-unknown")).toBeVisible();
 });

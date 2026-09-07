@@ -16,16 +16,7 @@ import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import { dispatchNotification } from "../notify/dispatch.js";
 
-/**
- * Stuck-change watchdog (DESIGN.md §9.4): "a watchdog sweep flags any change showing no progress
- * within its per-state SLA, writes a Decision naming what it's waiting on, and escalates via
- * notifications. The 'stuck change' failure mode is *detected*, not discovered."
- *
- * Per-state SLA — how long a change may sit in a non-terminal state with no progress
- * (`state_entered_at` unchanged) before the sweep flags it. `validating` gets a much longer SLA
- * because it is often waiting on a HUMAN `scp change accept` call, not engine work — that's an
- * expected wait, not a stall.
- */
+/** Stuck-change watchdog (DESIGN.md §9.4). See docs/coordination.md §1023. */
 export const WATCHDOG_SLA_MS: Record<
   Exclude<ChangeState, "cancelled" | "rolled_back" | "accepted">,
   number
@@ -33,11 +24,7 @@ export const WATCHDOG_SLA_MS: Record<
   proposed: 5 * 60_000,
   evaluated: 5 * 60_000,
   coordinated: 5 * 60_000,
-  // M12 P4B: a change WAITING on a cross-change prerequisite is an expected long wait (the owner's
-  // rule is "wait forever, warn at a threshold"), not a stall — so it gets the same 24h SLA as
-  // `validating` (which waits on a human `accept`), NOT `executing`'s 30-min stall SLA. The watchdog
-  // only WARNS (it never transitions), and notification bindings are off by default, so past 24h this
-  // costs a Decision row + a log line, never an auto-cancel of a still-legitimately-waiting change.
+  // A change waiting on a prerequisite is an expected long wait. See docs/coordination.md §1024.
   waiting: 24 * 60 * 60_000,
   executing: 30 * 60_000,
   validating: 24 * 60 * 60_000
@@ -56,30 +43,7 @@ export interface WatchdogFlag {
  *  re-exported under this name for call-site clarity; same sentinel `reconcile.ts` uses. */
 export const WATCHDOG_SYSTEM_ACTOR_ID = SYSTEM_ACTOR_ID;
 
-/**
- * One sweep pass over one org: finds changes past their per-state SLA that haven't already been
- * flagged since entering this state, and for each one races to CLAIM it before writing anything.
- * Returns what THIS call actually flagged — a losing claim never appears here. The notification
- * seam (DESIGN §9.4 "escalates via notifications") dispatches for real (`notify/dispatch.ts`, M7)
- * to every configured `notification_bindings` channel meeting its own severity threshold —
- * best-effort, never able to fail this sweep; the Decision record remains the durable, queryable
- * artifact regardless of delivery outcome.
- *
- * TRANSACTION SHAPE (§7.1 item 3 restructure — was one long `withTenantTx` for the ENTIRE per-org
- * sweep; mirrors `reconcile.ts`'s per-row pattern now): candidates are read cheaply, one short
- * transaction per SLA state below; each candidate then gets its OWN short transaction
- * (`claimAndFlagStall`) that claims the row and, ONLY on a winning claim, writes that change's
- * Decision + audit event in the SAME transaction, with the escalation notification dispatched
- * strictly after that transaction commits. The bug this replaces: the old sweep built the Decision
- * FIRST and ran a guarded UPDATE afterward whose affected-row count it never checked, so two
- * overlapping sweeps hitting the same row both committed their own full Decision + audit event —
- * the guard ordered statements inside an uncommitted transaction, which guards nothing.
- *
- * Idempotent per state-entry: `watchdog_flagged_at IS NULL` (cleared by `transitionChange` on
- * every legal transition, since a transition IS progress) is the guard against re-flagging the
- * same stall on every sweep tick — this sweep sets it, so the NEXT sweep skips this change until
- * either it progresses (clearing the flag) or an operator re-runs a manual check.
- */
+/** One sweep pass over one org. See docs/coordination.md §1025. */
 export async function runWatchdogSweep(
   db: Db,
   orgId: string,
@@ -111,13 +75,7 @@ export async function runWatchdogSweep(
     );
 
     for (const candidate of stalled) {
-      // Per-candidate isolation, exactly as every sibling loop in this diff does (reconcile's
-      // per-change try/catch, observe's per-instance, federation-sync's per-peer): a throw while
-      // claiming or writing ONE candidate's Decision/audit must not abort the remaining candidates
-      // or the outer per-state loop. Because a failed claim's `watchdog_flagged_at` was never
-      // committed (the whole claim tx rolled back), the row simply re-qualifies next tick — but
-      // WITHOUT this guard the exception escapes to the per-org catch and silently starves every
-      // later-ordered candidate and state for this org on every tick (review finding WD-1).
+      // Per-candidate isolation, as every sibling loop does. See docs/coordination.md §1026.
       try {
         const flag = await claimAndFlagStall(
           db,
@@ -145,12 +103,7 @@ export async function runWatchdogSweep(
   return flags;
 }
 
-/**
- * Claims exactly one stalled change and, only on a winning claim, writes its Decision + audit
- * event in the SAME short transaction as the claim, then dispatches the escalation notification
- * in a SEPARATE transaction strictly after that one commits. Returns `null` on a lost race — see
- * `runWatchdogSweep`'s doc comment; that is the ordinary multi-replica outcome, not an error.
- */
+/** Claims one stalled change, writing only on a win. See docs/coordination.md §1027. */
 async function claimAndFlagStall(
   db: Db,
   orgId: string,
@@ -164,11 +117,7 @@ async function claimAndFlagStall(
   requestId: string
 ): Promise<WatchdogFlag | null> {
   const won = await withTenantTx(db, orgId, async (tx) => {
-    // THE CLAIM, first, before any of the per-state detail work below — this ordering (and
-    // actually checking `.returning()`'s row count) is the fix: a losing claim now costs nothing
-    // beyond the UPDATE itself, rather than a full Decision + audit event committed on stale
-    // information. Guarded on `state` too (not just the flag), so a change that progressed out of
-    // this state in the window between the candidate read and this claim also loses cleanly.
+    // The claim first, before any per-state detail work. See docs/coordination.md §1028.
     const claim = await tx
       .update(changes)
       .set({ watchdogFlaggedAt: now })
@@ -185,19 +134,11 @@ async function claimAndFlagStall(
 
     const stalledForMs = now.getTime() - stateEnteredAt.getTime();
 
-    // M12 P4B (coupled-pipelines.md §3.6 — explainability): a `waiting` warn that says only
-    // "stalled in waiting for 24h" is strictly worse than the state badge. Name the actual
-    // unsatisfied `{key, at}` pairs (re-read LIVE at flag time via the same predicate the sweep
-    // uses) — and any malformed (unsatisfiable, fail-closed) entries — so the notification alone
-    // tells the operator what the change is waiting FOR.
+    // M12 P4B (coupled-pipelines.md §3.6 — explainability). See docs/coordination.md §1029.
     let waitingDetail: { waitingOn: string; unsatisfied?: unknown; malformed?: unknown } | null =
       null;
     if (state === "waiting") {
-      // `org_id` alongside the id, like every other query in this file. RLS would scope this on
-      // its own — the tenant tx sets `app.org_id` and the policy on `objects` enforces it — but a
-      // predicate that leans on RLS ALONE is one `withSystemTx`, one maintenance script or one
-      // policy regression away from reading another tenant's row, and this is a defence in depth
-      // the rest of the codebase already pays for everywhere.
+      // The org id alongside, like every query in this file. See docs/coordination.md §1030.
       const objRows = await tx
         .select({ properties: objects.properties })
         .from(objects)
@@ -225,13 +166,7 @@ async function claimAndFlagStall(
         ...(malformed.length > 0 ? { malformed } : {})
       };
     }
-    // ADR-0028 increment 4 — the `executing` arm. A stall notice that says only "wave target
-    // executor status to report success/failure" is actively misleading for a change whose
-    // trigger was never issued: nothing is going to report, because nothing was ever handed to an
-    // executor. Name the dependency and the place instead, from the SAME live resolver `explain`
-    // uses (`stage-dependency-status.ts`) — one predicate, not two — re-read at flag time exactly
-    // as the `waiting` arm above re-reads its requirements. Reached only on a winning claim, so
-    // this still costs nothing per tick for every OTHER sweep that loses the race on this row.
+    // ADR-0028 increment 4 — the `executing` arm. See docs/coordination.md §1031.
     let heldDetail: { waitingOn: string; held: unknown } | null = null;
     if (state === "executing") {
       const objRows = await tx
@@ -315,15 +250,7 @@ async function claimAndFlagStall(
 
   if (!won) return null;
 
-  // ESCALATION, STRICTLY AFTER COMMIT (§7.1 item 3): the flag, the Decision and the audit event
-  // are already durable by the time this runs, in a brand-new transaction — a delivery failure
-  // here must never roll any of that back. `dispatchNotification` is already best-effort PER
-  // CHANNEL (notify/dispatch.ts's doc comment: a channel's own misconfiguration or downstream
-  // failure is caught and logged, never allowed to propagate); the try/catch below covers the one
-  // thing that isn't per-channel — `listNotificationBindings` itself throwing (e.g. a dropped
-  // connection) — with the same "log it, don't propagate" contract external dispatch has
-  // everywhere else in this codebase: at-least-once, never transactional with the write that
-  // triggered it.
+  // ESCALATION, STRICTLY AFTER COMMIT. See docs/coordination.md §1032.
   try {
     await withTenantTx(db, orgId, (tx) =>
       dispatchNotification(tx, host, orgId, masterKey, {
@@ -355,25 +282,7 @@ async function claimAndFlagStall(
   };
 }
 
-/**
- * THE HELD TARGETS AS IDS ONLY, for the Decision's `inputContext`.
- *
- * `resolveStageDependencyStatus` returns display names alongside every id, because its primary
- * consumers are a CLI and a web page where an id is not an answer. A DECISION is the other kind of
- * consumer: `stage-dependency-status.ts`'s own `toWireVerdict` doc states the rule — display names
- * are the thing a persisted Decision deliberately does NOT carry, because renaming a component
- * would then rewrite the recorded inputs of a verdict that was reached about something else
- * entirely. An audit record has to keep meaning what it meant, and an id is the only part of this
- * that does.
- *
- * `summary` stays: `describeStageDependencyHold` renders ids, never names (checked, and it is the
- * same function the hold Decision's own `reasonTree` is built from), so it is already byte-stable.
- *
- * The `reasonTree.waitingOn` sentence beside this DOES name the deployment-target, and that is
- * deliberate rather than an oversight of the same rule: it is the line that goes out in the
- * notification to a human being woken at 2am, and `describeStageDependencyStatus` says so where it
- * appends the place. Structured inputs get ids; prose gets names.
- */
+/** The held targets as ids only, for the input context. See docs/coordination.md §1033. */
 function withoutDisplayNames(target: ChangeStageDependencyTarget): unknown {
   return {
     targetObjectId: target.targetObjectId,
@@ -384,17 +293,7 @@ function withoutDisplayNames(target: ChangeStageDependencyTarget): unknown {
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// pg-boss wiring (CRITICAL #1 fix, PR #7 review: "watchdog never runs in production" —
-// `runWatchdogSweep` had no non-test caller; `main.ts` scheduled the reconcile loop but never
-// this). Mirrors `coordination/reconcile.ts`'s `startReconcileLoop` shape exactly: a lightweight,
-// self-re-scheduling pg-boss job that, on every firing, sweeps every org with the same tenant
-// scoping (`withTenantTx` per org) the reconcile loop uses. A much longer interval than the
-// reconcile tick's 1s is deliberate — the shortest watchdog SLA (`proposed`/`evaluated`/
-// `coordinated`, 5 minutes) makes sub-minute sweep granularity pointless — but the shape (one
-// queue, one singleton-keyed re-send) is identical on purpose: same failure-isolation guarantees,
-// same crash-resumption story, no new machinery to reason about.
-// -------------------------------------------------------------------------------------------
+// The pg-boss wiring, without which this never ran. See docs/coordination.md §1034.
 
 export const WATCHDOG_QUEUE = "coordination-watchdog-sweep";
 export const WATCHDOG_SWEEP_INTERVAL_SECONDS = 60;
@@ -432,11 +331,7 @@ export async function startWatchdogLoop(
 ): Promise<WatchdogLoopHandle> {
   const intervalSeconds = opts.intervalSeconds ?? WATCHDOG_SWEEP_INTERVAL_SECONDS;
   let stopped = false;
-  // `stop()` awaits whichever sweep is currently in flight — same reasoning as
-  // `reconcile.ts`'s `startReconcileLoop`: without draining an already-running sweep, a caller
-  // that closes `db`'s pool right after `stop()` resolves can race an in-flight sweep's own
-  // queries against a torn-down pool, and (in tests) a straggling sweep can outlive its own test
-  // server and reach into a later test's orgs.
+  // `stop()` awaits whichever sweep is currently in flight. See docs/coordination.md §1035.
   let inFlightSweep: Promise<void> | undefined;
   await boss.createQueue(WATCHDOG_QUEUE);
   await boss.work(WATCHDOG_QUEUE, async () => {
@@ -455,11 +350,7 @@ export async function startWatchdogLoop(
       { startAfter: intervalSeconds, singletonKey: "tick", singletonSeconds: intervalSeconds }
     );
   });
-  // Startup kick: UNKEYED, so it always inserts (LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts).
-  // Never give this send a singletonKey+window — not the chain's "tick" and not a private key
-  // either: job_i4 counts COMPLETED jobs, so any window lets a previous boot swallow it silently.
-  // With the shared key this loop's first reschedule landed in the same 60s bucket as its
-  // just-completed startup job and was swallowed — one sweep, then dead, on ~58 of every 60 boots.
+  // Startup kick: UNKEYED, so it always inserts. See docs/coordination.md §1036.
   await boss.send(WATCHDOG_QUEUE, {});
   return {
     async stop() {

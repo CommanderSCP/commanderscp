@@ -18,33 +18,7 @@ import { reconcileOrgTick } from "./reconcile.js";
 import { claimWaveTargetForTriggering } from "./wave-targets-repo.js";
 import type { GateDeps } from "./gates.js";
 
-/**
- * THE MEASURED PRODUCTION STORM (live homelab k3s, 2026-08-01, in the 15 minutes after the
- * executing-batch starvation fix let the engine reach its backlog again):
- *
- *     19 x "argocd trigger: sync returned HTTP 400"
- *     12 x "argocd: sync triggered"
- *
- * — and every single 400 was the SAME target. Argo CD refuses a sync while an operation is already
- * running on that Application, and a real backlog fans many changes onto a handful of Argo apps, so
- * losing that race is the NORMAL case, not an error.
- *
- * Before this fix a refused trigger left the row `triggering` with `attempt` still 0 (only
- * `markWaveTargetTriggered` ever wrote `attempt`, and only on SUCCESS), so the next tick — one
- * second later — re-claimed and re-fired it. Forever. That burned executor capacity on requests
- * guaranteed to fail and buried genuine failures under repeated noise.
- *
- * THE DISTINCTION THIS SUITE EXISTS TO PROTECT. Two faults reach the same code path and must be
- * treated OPPOSITELY:
- *
- *   - a CRASH between claiming a target and recording the outcome leaves `attempt` at 0, and
- *     `wave-targets-repo.ts`'s crash-recovery contract requires it to be retried on the VERY NEXT
- *     tick with no time budget (several M3 suites depend on exactly that);
- *   - a REFUSAL means the executor was reached and said no, and must be backed off.
- *
- * `attempt` is the discriminator, which is why it is written on the failure path and nowhere else.
- * Collapse the two and you either re-introduce the storm or break crash recovery.
- */
+/** THE MEASURED PRODUCTION STORM. See docs/coordination.md §1016. */
 describe("trigger retry backoff: a refused trigger steps aside; a crashed one does not", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -199,15 +173,7 @@ describe("trigger retry backoff: a refused trigger steps aside; a crashed one do
   }, 180_000);
 
   it("a target reset to 'pending' for a fresh re-trigger is NOT delayed, even though its `attempt` is non-zero", async () => {
-    // FOUND BY THIS CHANGE BREAKING wave-target-type.integration.test.ts, and pinned here because
-    // the cause is a genuine trap: `attempt` is NOT a pure failure counter — `markWaveTargetTriggered`
-    // also sets it to 1 on SUCCESS. So a target deliberately put back to `pending` to force a fresh
-    // re-trigger still carries `attempt: 1` from its successful run. A backoff keyed on the COUNT
-    // alone would silently delay a re-trigger that nothing had ever refused.
-    //
-    // The gate is therefore keyed on `status === 'triggering'` — the only state that means "handed
-    // to the executor and not recorded as succeeded". This arm fails if anyone simplifies it back
-    // to an attempt-only check.
+    // Found by this change breaking a sibling suite. See docs/coordination.md §1017.
     const { targetObjectId, waveTargetId } = await changeReadyToTrigger("repending");
     const permissive = withRefusingTrigger(inner, () => false);
 
@@ -238,13 +204,7 @@ describe("trigger retry backoff: a refused trigger steps aside; a crashed one do
   }, 180_000);
 
   it("CONTRACT PRESERVED: a target abandoned mid-claim (attempt 0) is still retried on the very next tick, with no delay", async () => {
-    // This is the crash case `wave-targets-repo.ts` documents and the M3 suites exercise: a tick
-    // died after `claimWaveTargetForTriggering` and before recording anything, so the row sits in
-    // `triggering` with `attempt` still 0. Simulated exactly — claim it, then do nothing.
-    //
-    // If the backoff were keyed on `status`/`updated_at` alone rather than on `attempt`, THIS is
-    // the test that would fail: the claim itself stamps `updated_at`, so a freshly abandoned row
-    // would look "recently attempted" and be made to wait, breaking crash recovery.
+    // The crash case the repo documents and the suites exercise. See docs/coordination.md §1018.
     const { targetObjectId, waveTargetId } = await changeReadyToTrigger("abandoned");
     const claimed = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       claimWaveTargetForTriggering(tx, org.orgId, waveTargetId)
@@ -253,7 +213,7 @@ describe("trigger retry backoff: a refused trigger steps aside; a crashed one do
 
     const before = await targetRow(waveTargetId);
     expect(before.status).toBe("triggering");
-    expect(before.attempt).toBe(0); // nothing ever reached the executor
+    expect(before.attempt).toBe(0);
 
     // A non-refusing host: the retry should go through immediately and succeed.
     const { host, calls } = withRefusingTrigger(inner, () => false);

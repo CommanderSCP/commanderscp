@@ -2,18 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ExecutorTypeSchema } from "@scp/schemas";
 
-/**
- * A2 (docs/proposals/outpost-ui.md §3): `putBinding` used to send NO `type` at all — a silent
- * default to 'configuration' with no signal to the operator that a choice was even being made.
- * The fix has two testable halves, and Radix's `SelectContent` portals its items (rendering
- * nothing under `renderToStaticMarkup` — `domain-local.test.tsx`'s precedent), so they are pinned
- * separately rather than by reading a rendered option list back out of static HTML:
- *
- *   1. `ExecutorBindingTypeField` renders a real field (label + trigger + help text) — extracted
- *      out of `ConfigureDialog`'s Dialog/Portal specifically so it CAN be asserted statically.
- *   2. `buildExecutorBindingPayload` is the pure shape of the actual request; every Type the field
- *      offers is exercised through it, proving the wiring rather than the DOM.
- */
+/** A2 (docs/proposals/outpost-ui.md §3). See docs/web.md §443. */
 const { ExecutorBindingTypeField, buildExecutorBindingPayload } = await import("./plugins");
 
 describe("A2 — executor binding Type", () => {

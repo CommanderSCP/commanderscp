@@ -1,23 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 
-/**
- * Coupled-pipeline prerequisites (M12 P4B — docs/proposals/coupled-pipelines.md). A change declares
- * `properties.requires: {key, at}[]`; it may not execute until, for EACH requirement, some OTHER
- * change is in `validating` or `accepted` and `provides` that `key` at that `at` object.
- *
- * The predicate is EXISTENTIAL over a CONDITION, not a pointer to a specific prerequisite row: a
- * failed/cancelled prerequisite is simply not in {validating, accepted}, so the waiter keeps
- * waiting; the operator fixes it and re-pushes, a NEW change reaches `validating` with the same
- * key, and the waiter releases — nothing to re-point. That is what makes "wait forever" (the owner's
- * choice) coherent rather than stubborn.
- *
- * State choice `validating|accepted`, NOT `accepted` alone (owner ruling: "run successfully, not a
- * human gate"): a forward change never auto-accepts (`reconcile.ts` completeExecution returns for
- * non-rollback changes — promotion is a human `scp change accept`), so a `accepted` predicate would
- * deadlock every automated coupled release. `validating` is the state the engine writes once every
- * wave succeeded — the executor ran, the bucket exists.
- */
+/** Coupled-pipeline prerequisites, provided and required. See docs/coordination.md §399. */
 export interface Requirement {
   key: string;
   /** Object id (resolved at propose time) the key must be provided at. */
@@ -31,14 +15,7 @@ export interface RequirementStatus extends Requirement {
   satisfiedByChangeObjectId: string | null;
 }
 
-/**
- * The satisfaction status of EVERY requirement — the single query implementation behind both the
- * reconcile predicate and the `explain` wait-status surface (Phase 4). One jsonb-containment probe
- * per requirement, served by the `obj_props` GIN index (`drizzle/0001:170`, `jsonb_path_ops`):
- * `properties @> {"provides":[key],"targets":[at]}` is true iff the provider's `provides` array
- * contains `key` AND its `targets` array contains `at`. No new index, no new column — `provides`/
- * `targets` already live in `objects.properties`.
- */
+/** The satisfaction status of EVERY requirement. See docs/coordination.md §400. */
 export async function requirementStatuses(
   tx: TenantTx,
   orgId: string,
@@ -104,27 +81,7 @@ export function describeRequirements(requires: Requirement[]): string {
  *  or a release Decision, never the hot reconcile path, so a handful of examples is enough. */
 const DIAGNOSTIC_LIMIT = 20;
 
-/**
- * "Did you mean?" (coupled-pipelines.md §3.7, `listProvidedKeysAtScope`): for an UNSATISFIED
- * requirement, the `provides` keys that SOME change has actually declared at that `at` object,
- * org-scoped. Because `at` is a resolved object id (not a substring embedded in the key), this is
- * exact rather than a prefix guess — "no change has ever provided `feture-a` at `us-east-1`; keys
- * provided there: `feature-a`, `feature-b`." Every change ever proposed at that scope counts
- * (not just currently-`validating`/`accepted` ones) — a typo diagnosis cares what pipelines
- * DECLARE, not what is live right now. Served by the same `obj_props` GIN index as
- * `requirementStatuses` (`jsonb_path_ops` covers `@>`, not the `jsonb_array_elements_text` unnest
- * itself, but the `@>` prefilter is what keeps this cheap).
- *
- * FAIL-CLOSED on a non-array `provides` (same class as `requiresOf`'s malformed-`requires`
- * handling, coupled-pipelines.md §10): a version-skewed federation peer or a corrupted legacy row
- * can carry `properties.provides` as a scalar rather than an array — past the API's typed
- * validation, exactly like a malformed `requires` entry. `jsonb_array_elements_text` raises
- * `cannot extract elements from a scalar` on such a row, which would 500 this diagnostic (and
- * therefore `explain`/`wait-status`) for every OTHER, well-formed waiter at the same scope. The
- * `jsonb_typeof(...) = 'array'` guard excludes the junk row from the unnest before it is ever
- * evaluated, rather than trying to catch or coerce it — the row is simply not a source of
- * suggestions, and every well-formed provider at the scope is unaffected.
- */
+/** "Did you mean?". See docs/coordination.md §401. */
 export async function listProvidedKeysAtScope(
   tx: TenantTx,
   orgId: string,
@@ -156,18 +113,7 @@ export interface AmbiguousProvider {
   providerChangeObjectIds: string[];
 }
 
-/**
- * Release-time key-reuse warn (M12 P4B Phase 4, coupled-pipelines.md §6#8/§3.8): given the
- * ALREADY-satisfied `statuses` for a releasing waiter (every requirement true — this is called
- * only once `unsatisfiedRequirements` is empty), re-probes each requirement's provider set and
- * reports every key with more than one qualifying provider. Deliberately a SEPARATE query from
- * `requirementStatuses`'s `LIMIT 1` (which exists to pick the one id pinned in
- * `satisfiedRequirements` — changing its cardinality would ripple into every caller); this runs
- * ONCE per release, not per reconcile tick, so the extra query is cheap where it matters. Warn,
- * never block (coupled-pipelines.md §5: "no key uniqueness constraint... a hotfix under one
- * release name is legitimate") — the caller records this in the release Decision's inputs and
- * proceeds regardless.
- */
+/** Release-time key-reuse warn. See docs/coordination.md §402. */
 export async function ambiguousProvidersFor(
   tx: TenantTx,
   orgId: string,

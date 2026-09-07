@@ -6,30 +6,7 @@ import {
   type ReadableRoot
 } from "./readable-scope.js";
 
-/**
- * ================================================================================================
- * THE READ-SURFACE FILTER'S PURE HALF — the effect classifier, and the three-outcome contract
- * ================================================================================================
- *
- * `readable-scope.integration.test.ts` drives both of these against real PostgreSQL and is where
- * the WALK's correctness is settled — no fake database appears here and none should. What this file
- * pins is the pair of properties that are decided in JavaScript before any query runs, and that an
- * integration fixture can only reach one value of at a time:
- *
- *  - `partitionReadableRoots` classifies a RAW `role_bindings.effect` string. The docblock's rule is
- *    that it must match `hasPermission`'s exact-string comparison, so a row a pre-`0096` dump can
- *    still carry grants nothing AND denies nothing. Building each malformed value through the API is
- *    impossible (the CHECK refuses it) and through the harness costs a fixture per value; here every
- *    value is one line.
- *  - `readableObjectFilterSql`'s three outcomes. `null` and "matches nothing" are OPPOSITES — the
- *    module doc says treating `null` as "matches nothing" empties every org admin's lists, and
- *    treating "matches nothing" as `null` hands the whole org to a subject with no grant. The
- *    empty-allow branch has NO production caller that can observe it (`list-door-scope.ts` returns
- *    403 first), so it is exactly the kind of fail-closed defence that only a direct call can pin.
- *
- * The SQL is rendered with drizzle's own `PgDialect` — the same serializer the driver uses, not a
- * reimplementation — so the assertions below are about the statement PostgreSQL would receive.
- */
+/** THE READ-SURFACE FILTER'S PURE HALF. See docs/authz.md §37. */
 
 const render = (fragment: ReturnType<typeof readableObjectFilterSql>) => {
   if (fragment === null) throw new Error("expected a filter, got null");

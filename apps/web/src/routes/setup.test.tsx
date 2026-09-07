@@ -4,14 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Freeze, InstanceFreeze } from "@scp/schemas";
 
-/**
- * G5 (`docs/proposals/outpost-ui.md` §4 close, owner decision 2026-08-13) — the setup landing.
- *
- * `Link` is stubbed as a bare `<a href>` (the `outposts-honesty.test.tsx` house pattern): every
- * link on this page is a STATIC destination (no `params`), so the simpler stub — the one
- * `service-board-honesty.test.tsx`/`outposts-honesty.test.tsx` use, not `domain-local.test.tsx`'s
- * param-interpolating one — is the honest fit here.
- */
+/** The setup checklist, and what the owner decision asked for. See docs/web.md §493. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ to, children }: { to?: string; children?: React.ReactNode }) => (
@@ -52,9 +45,7 @@ function elementByTestId(html: string, testId: string): string {
   throw new Error(`unbalanced <${tag}> around data-testid="${testId}"`);
 }
 
-// -------------------------------------------------------------------------------------------
 // Checklist: the honesty math (pure), then the rendering (real destinations + no fabricated 0s).
-// -------------------------------------------------------------------------------------------
 
 describe("buildChecklistRows — the honesty math behind every count", () => {
   it("a row whose call hasn't answered yet reports an UNDEFINED count, never a fabricated 0", () => {
@@ -284,15 +275,7 @@ describe("FreezeRow — the lift claim, and the state a lift leaves behind", () 
     objectId: null
   };
 
-  // DELIBERATE INVERSION (M25.1). Until `DELETE /api/v1/freezes/{id}` shipped, these two cases
-  // pinned the OPPOSITE claim: that the tooltip said "no early-lift or delete control yet" and
-  // that a freeze row contained no `<button>` at all. That reasoning was CORRECT for the server it
-  // was written against — the API genuinely had create/list/get and nothing else, and pinning the
-  // absence stopped the UI from implying a control that did not exist. M25.1 made it false, so the
-  // pins are flipped in the same change that wires the control, never before and never after.
-  //
-  // Non-vacuity: revert `LIFT_SENTENCE` to the retired wording and the first case goes red; drop
-  // the `onLift` branch from `FreezeRow` and the second goes red.
+  // DELIBERATE INVERSION (M25.1). See docs/web.md §494.
   it("states, in the row's own tooltip, that the freeze can be lifted early and that a reason is needed", () => {
     const html = renderToStaticMarkup(
       <FreezeRow freeze={ROW_FREEZE} now={new Date("2026-08-14T00:00:00.000Z")} />
@@ -339,7 +322,6 @@ describe("FreezeRow — the lift claim, and the state a lift leaves behind", () 
     // and a `freeze_admission` Decision still cites this freeze's id (charter principle 6).
     expect(html).toContain("Lifted");
     expect(html).toContain("incident resolved");
-    // ...and offers no second lift.
     expect(html).not.toContain("<button");
   });
 
@@ -413,23 +395,7 @@ describe("DeclareFreezeForm — exactly CreateFreezeRequest's fields, nothing in
     expect(html).toContain('data-testid="freeze-ends-input"');
     expect(html).toContain('data-testid="freeze-reason-input"');
     expect(html).toContain('data-testid="freeze-atomic-input"');
-    // Census, not a spot check: exactly 5 <input>s and 1 <textarea> — a seventh field (e.g. a role
-    // or scope-TYPE picker) would fail this even if it carried no testid at all.
-    //
-    // The count moved 4 -> 5 with M25.2's `atomic`, and the count is the POINT of this case: it is
-    // what makes the form's field set track `CreateFreezeRequestSchema` rather than drift from it.
-    // `atomic` is a real key on that schema, so it belongs here; bumping the number is the correct
-    // response, and inventing a field that is NOT on the schema still fails.
-    //
-    // M25.7 ADDED TWO SCHEMA KEYS AND THIS COUNT DELIBERATELY DID NOT MOVE — recorded rather than
-    // left to be rediscovered as drift. `federate` and `domainLocal` are gated on `federation:write`
-    // at the freeze's scope, not on the `freeze:write` this page's audience holds, and this form has
-    // no way to know whether the viewer holds it; an inert checkbox that 403s on submit is worse
-    // than no checkbox. Freeze authoring UI is the UI session's surface (coordinated in
-    // docs/proposals/campaigns-rework.md §2.3), and `scp freeze create --federate` is the door until
-    // then. So the invariant this case pins is now "one field per schema key the form OFFERS, and no
-    // field that is not on the schema" — inventing an off-schema field still fails, and adding
-    // `federate` later means bumping this to 6 with a testid above.
+    // Census, not a spot check: exactly 5 <input>s and 1 <textarea>. See docs/web.md §495.
     expect((html.match(/<input\b/g) ?? []).length).toBe(5);
     expect((html.match(/<textarea\b/g) ?? []).length).toBe(1);
   });
@@ -473,9 +439,7 @@ describe("DeclareFreezeForm — exactly CreateFreezeRequest's fields, nothing in
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // FreezeRow — the window-edit control (M25.UI increment 3, PATCH /freezes/{id}).
-// -------------------------------------------------------------------------------------------
 
 describe("FreezeRow — 'Adjust window'", () => {
   const ROW_FREEZE: Freeze = {
@@ -674,13 +638,7 @@ describe("PlatformFreezeCard — the empty state and the operator's CLI/HTTP poi
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// The role-gating census (outpost-ui.md §2 / CLAUDE.md's property-census rule): this page must
-// never key ANY rendering decision on the instance's federation role. A source-level assertion,
-// same spirit as replica-origin's own census tests — here it's the file's own text rather than a
-// derived predicate, because "reads federation.self" has no runtime signal to assert on short of
-// grepping the source.
-// -------------------------------------------------------------------------------------------
+// The role-gating census. See docs/web.md §496.
 
 describe("setup.tsx never reads the instance's federation role", () => {
   it("the source contains no federation.self / federationSelfKey / role-branch usage", () => {

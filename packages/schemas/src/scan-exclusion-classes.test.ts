@@ -12,24 +12,7 @@ import {
   type ScanVendorLatestFacts
 } from "./supply-chain.js";
 
-/**
- * M22.3 (`no fix available`) and M22.4 (the vendor rule, owner decision D1) — THE TWO CLASS
- * PREDICATES, pure.
- *
- * `scan-exclusion-classes` rather than an addition to `supply-chain.test.ts` because these are tests
- * of the CLASSES, not of the exclusion machinery: M22.2 already pins the machinery (admission,
- * application-before-counting, the truncation refusal, the evidence projection) and those tests must
- * keep failing for their own reasons.
- *
- * WHAT THE TWO CLASSES HAVE IN COMMON, and why they are in one file: both answer "is this finding
- * one we have already done everything about?", and both must fail CLOSED on every absence. M22.3
- * reads one field off the finding; M22.4 reads facts the SERVER resolved and serialized. Neither may
- * ever degrade into "the narrowing matchers alone", because a clause whose class contributes nothing
- * excludes a strictly LARGER set than the same clause with its class enforced.
- *
- * MUTATIONS RUN against this file — measured, reverted by an exact inverse edit, recorded in the
- * increment report rather than predicted here.
- */
+/** The no-fix and vendor-rule exclusion classes. See docs/schemas.md §383. */
 
 const finding = (over: Partial<ScanFinding> = {}): ScanFinding => ({
   severity: "high",
@@ -54,9 +37,7 @@ const withFacts = (
 
 const VENDOR: ScanExclusionClause = { class: "vendor_latest" };
 
-// ===========================================================================================
 // M22.3 — `no fix available`: pure data over the retained fields, no join of any kind.
-// ===========================================================================================
 
 describe("M22.3 — no_fix_available reads FixedVersion's ABSENCE and nothing else", () => {
   it("excludes a finding with NO FixedVersion and keeps one that has a fix", () => {
@@ -137,9 +118,7 @@ function parseOne(vuln: Record<string, unknown>): ScanFinding {
   return first;
 }
 
-// ===========================================================================================
 // M22.4 — the vendor rule's key and the purl→ecosystem read.
-// ===========================================================================================
 
 describe("M22.4 — the join key is canonicalised ONCE, per ecosystem's own rule", () => {
   it("folds python by PEP 503 and NOTHING ELSE", () => {
@@ -281,11 +260,7 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
   });
 
   it("A CURRENT SIBLING ON ANOTHER MAJOR DOES NOT VOTE AWAY A STALE LINE", () => {
-    // `dependency_lines` is keyed by `(ecosystem, coordinate, MAJOR)` and at-head-ness is computed
-    // per line, so a component declaring `lodash@4.17.21` (head of `4`) AND `lodash@3.10.1` (behind
-    // head of `3`) has exactly one at-head line. A version-less key projected both onto `npm|lodash`
-    // and excused the 3.10.1 finding — the current sibling voting away the stale one that
-    // `foldVendorLatestFacts`' own docblock says cannot happen.
+    // Lines are keyed by major, and what at-head-ness means. See docs/schemas.md §384.
     const stale = finding({
       class: "lang-pkgs",
       pkgName: "lodash",
@@ -298,12 +273,7 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
   });
 
   it("A FIX IN A NEWER MAJOR STILL EXCUSES — D1 is 'latest of a MAJOR version', not 'no fix anywhere'", () => {
-    // THIS CASE INVERTED (owner decision, 2026-08-18). A blanket `fixedVersion !== undefined ⇒
-    // refuse` backstop was implemented in the review round and removed: it reads like free
-    // fail-closed safety and instead refuses the exact case D1 exists for. The component IS at the
-    // head of the line it declared; the fix shipped in a different major line, and a major upgrade
-    // is a project rather than a patch. With the backstop, `vendor_latest` excused nothing that
-    // `no_fix_available` would not already excuse, so the class could not earn its own existence.
+    // THIS CASE INVERTED. See docs/schemas.md §385.
     const lang = finding({
       class: "lang-pkgs",
       pkgName: "lodash",
@@ -318,11 +288,7 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
   });
 
   it("a fix in the SAME major is still refused — by the version join, not by a backstop", () => {
-    // The half that makes dropping the backstop safe, and the reason it cost nothing real. If a fix
-    // shipped INSIDE the declared major line then the line's head has moved past what is installed,
-    // the org's own inventory says so, and the join refuses on that basis — from observed data
-    // rather than from the scanner's opinion. `atHead` puts the line at 4.17.21, so an artifact
-    // still carrying 4.17.20 misses the key no matter what `fixedVersion` says.
+    // The half that makes dropping the backstop safe. See docs/schemas.md §386.
     const lang = finding({
       class: "lang-pkgs",
       pkgName: "lodash",
@@ -336,14 +302,7 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
   });
 
   it("a lang-pkgs finding with NO INSTALLED VERSION cannot be shown to be the one at head", () => {
-    // `parseTrivyFindings` retains an entry on its severity alone, so this is a real shape. The facts
-    // say which VERSION is at head; a finding that will not say which version it is gets no pass,
-    // rather than falling back to matching on the name — which was the whole defect.
-    //
-    // WHICH MUTATION THIS ACTUALLY KILLS, measured rather than claimed: deleting the predicate's
-    // `installedVersion === undefined` refusal leaves this green, because a `…|undefined` key misses
-    // the set anyway. It dies against the mutation that MATTERS — degrading the lookup to a
-    // name-prefix match, the pre-fix behaviour — which also kills the three cases above it.
+    // The parser retains an entry on its severity alone. See docs/schemas.md §387.
     const findings = [
       finding({ class: "lang-pkgs", pkgName: "lodash", purl: "pkg:npm/lodash@4.17.21" })
     ];
@@ -406,11 +365,7 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
   });
 
   it("a finding with an UNRECOGNISED or ABSENT Class attributes to nothing", () => {
-    // Trivy emits `license`, `secret` and `config` results too, and `parseTrivyFindings` retains an
-    // entry on its severity alone — so a finding with no `Class` at all is a real shape. Neither the
-    // base image nor a package line speaks for it, and guessing one is the inversion.
-    // Both carry a purl, a name AND the installed version the facts say is at head, so the ONLY
-    // thing refusing them is the class arm — without that, this would pass for the wrong reason.
+    // The scanner emits other result kinds too, and they count. See docs/schemas.md §388.
     const findings = [
       finding({
         class: "license",
@@ -439,11 +394,7 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
   });
 
   it("facts DO NOT leak across classes: the VENDOR facts cannot satisfy declared_fact or approved_override", () => {
-    // Both of those classes are now BUILT (M22.5/M22.6) and read their own facts, so this is no
-    // longer "unbuilt classes stay inert" — it is the stronger property that each class consults
-    // ONLY its own resolved fact. A `vendor_latest` resolution reaching a `declared_fact` clause
-    // would mean a component at the head of its dependency lines silently satisfied a declaration it
-    // never made.
+    // Both of those classes are now BUILT. See docs/schemas.md §389.
     for (const cls of ["declared_fact", "approved_override"] as const) {
       const applied = applyScanExclusions(
         [finding({ class: "os-pkgs", pkgName: "openssl" })],

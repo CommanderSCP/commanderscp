@@ -52,19 +52,7 @@ describe("FakeExecutorPlugin (unit, in-memory state)", () => {
     expect(status2.stateRef).toBe("v2");
   });
 
-  /**
-   * THE STRING SEAM INTO `observed_state` (M23.0 verification pass 10).
-   *
-   * `observedStateFrom` maps `status().stateRef` onto `observed_state.revision`. Until this hook
-   * existed the value was hardcoded to `v${target.version}`, so `imagesByTarget` — an ARRAY — was
-   * the ONLY free-form field an integration test could vary in that column, and every
-   * string-shaped defect in `@scp/runner-launcher`'s persisted-JSON bound was unreachable end to
-   * end by construction. Three verification rounds shipped one behind that gap.
-   *
-   * DELETE-THE-WIRING: drop the `cfg.stateRefByTarget?.[targetRef] ??` in `status()` and the first
-   * assertion fails; the second is the one that keeps the default — and every existing `v0`/`v1`
-   * assertion in this file — from being collateral of adding it.
-   */
+  /** THE STRING SEAM INTO `observed_state`. See docs/plugins.md §60. */
   it("stateRefByTarget overrides status().stateRef per target, and changes the default for nobody", async () => {
     const plugin = createFakeExecutorPlugin();
     const revision = "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f70982";
@@ -149,7 +137,7 @@ describe("FakeExecutorPlugin (unit, in-memory state)", () => {
     await sleep(30);
     const statusA = await plugin.status(ctx, refA);
     const statusB = await plugin.status(ctx, refB);
-    expect(statusA.phase).toBe("succeeded"); // unaffected target still auto-succeeds
+    expect(statusA.phase).toBe("succeeded");
     expect(statusB.phase).toBe("failed"); // forced target stays failed deterministically
   });
 
@@ -233,15 +221,7 @@ describe("FakeExecutorPlugin (file-backed state — restart recovery)", () => {
   });
 
   it("a second plugin instance sharing statePath sees state written by the first — the restart-recovery property", async () => {
-    // Simulates the subprocess-host scenario: process A (plugin instance 1) triggers a run, then
-    // gets killed; a freshly spawned process B (plugin instance 2, same statePath) must answer
-    // status() for that exact ref correctly. Two SEPARATE `FakeExecutorPlugin` instances stand in
-    // for "two separate OS processes" here — the class holds no state itself once statePath is
-    // set (see module doc), so this is a faithful proxy for the real subprocess-kill scenario,
-    // which is additionally exercised end-to-end in apps/server/src/plugin-host/*.integration.test.ts.
-    // Deterministic clock (fake Date only): the "running" read happens at elapsed 0 and the
-    // "succeeded" read after a controlled +40ms jump — no dependence on wall-clock timing, which
-    // previously flaked when I/O between trigger() and status() outran the 20ms auto-succeed window.
+    // Simulates the subprocess-host scenario. See docs/plugins.md §61.
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));

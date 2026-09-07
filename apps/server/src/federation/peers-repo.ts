@@ -15,13 +15,7 @@ import { assertSyncScopeSelectorKeysAreGovernanceLabels } from "../governance/go
 import { maxAppliedSequenceForPeer, permitCursorReanchor } from "./cursors-repo.js";
 import { federationPeerRequiresMtls } from "./federation-outbound.js";
 
-/**
- * Peer pairing + the peer public-key registry (DESIGN.md §13). Pairing itself is always initiated
- * from THIS side dialing/registering the other — never the reverse (§13 outpost-initiated-only;
- * for air-gapped peers, an out-of-band exchange of each side's `scp federation status` output).
- * This module only persists the result; it does not perform any network handshake itself (that's
- * `packages/plugins/federation-https`'s job for the connected-mTLS case).
- */
+/** Peer pairing + the peer public-key registry. See docs/federation.md §355. */
 
 export interface FederationPeerRow {
   /** TRUST sense (ADR-0021 D4) — = the peer's own `federation_self.domainId`. */
@@ -44,11 +38,7 @@ export interface FederationPeerRow {
    *  NOT NULL DEFAULT false) is poll-mode; `true` means the commander MAY send it a contentless
    *  wake signal and its frequent poll is disabled (full enforcement is M14.4). */
   pokeMode: boolean;
-  /** M14.4 (ADR-0009, drizzle/0038) — the scheduler's per-peer due-state, ISO-8601 or `null`
-   *  ("never"). `lastPullAttemptAt` is stamped by the conditional claim (every attempt, success or
-   *  not); `lastPullSuccessAt` only by an `imported` outcome; `lastPokeReceivedAt` by the M14.2 poke
-   *  handler when it ACCEPTS a poke from this peer. See {@link isPeerDue} for how the three combine
-   *  into the frequent/sparse decision, and drizzle/0038 for why NULL is deliberately "due now". */
+  /** The scheduler's per-peer due state, or null. See docs/federation.md §356. */
   lastPullAttemptAt: string | null;
   lastPullSuccessAt: string | null;
   lastPokeReceivedAt: string | null;
@@ -110,13 +100,7 @@ export async function currentPeerPublicKey(
   return row?.publicKey ?? null;
 }
 
-/** The peer's CURRENT cosign VERIFICATION public key (PEM), or `null` when the peer has none
- *  registered (paired pre-E5, or never supplied one). Parallels `currentPeerPublicKey` and rides
- *  the SAME non-superseded key window as the Ed25519 key, so a cosign rotation is anchored to the
- *  same journal-sequence window (never a timestamp). This is the ONLY key M17.4(a) trusts to verify
- *  that peer's cosign-signed promotion manifests — `null` is load-bearing for the downgrade defense
- *  (a manifest-less bundle from a peer that HAS a cosign key is a downgrade; from one that has none
- *  it is genuine pre-E6 back-compat). */
+/** The peer's CURRENT cosign VERIFICATION public key. See docs/federation.md §357. */
 export async function currentPeerCosignPublicKey(
   tx: TenantTx,
   orgId: string,
@@ -154,15 +138,7 @@ export async function listPeerKeyWindows(
   }));
 }
 
-/**
- * Resolves the public key that must verify an entry signed at origin `sequence` — the ONLY key
- * selection permitted (SECURITY-SENSITIVE, M6 review fix — CRITICAL). A key is valid for sequence
- * `S` iff `effectiveFromSequence < S AND (supersededAtSequence IS NULL OR S <= supersededAtSequence)`.
- * Returns `null` (fail-closed) if no window covers `S`. Because rotation anchors the old key's
- * `supersededAtSequence` to the highest sequence this domain had already applied, and every future
- * import applies only entries with sequence beyond that, a rotated-away/compromised key can never
- * verify content that will ever be applied — never by a self-declared timestamp.
- */
+/** The public key that must verify an entry at that sequence. See docs/federation.md §358. */
 export function verificationKeyForSequence(keys: PeerKeyWindow[], sequence: number): string | null {
   for (const key of keys) {
     if (
@@ -192,12 +168,7 @@ export interface PairPeerInput {
    *  (field absent — an old client) PRESERVES whatever is already configured; an object SETS it;
    *  explicit `null` CLEARS it back to the instance-env fallback. */
   deliveryTarget?: DeliveryTarget | null;
-  /** M14.1 (ADR-0009) — per-peer poke-mode. Tri-state on re-pair, mirroring `deliveryTarget`'s
-   *  additive discipline (a boolean has no null state, so: `undefined` = field absent = PRESERVE
-   *  the current value; `true`/`false` = SET). An EFFECTIVE (post-write) `true` requires an
-   *  https/mTLS-capable EFFECTIVE `baseUrl` — the pair-time guard (see `pairPeer`) checks the merged
-   *  tuple, so a re-pair can neither set poke-mode true on a non-https peer NOR downgrade the baseUrl
-   *  of a peer whose poke-mode stays true. */
+  /** M14.1 (ADR-0009) — per-peer poke-mode. See docs/federation.md §359. */
   pokeMode?: boolean;
 }
 
@@ -211,11 +182,7 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
     .where(and(eq(federationPeers.orgId, input.orgId), eq(federationPeers.id, input.domainId)))
     .limit(1);
 
-  // THE RESERVED GOVERNANCE LABEL NAMESPACE, applied to the OTHER label-keyed decision in the tree
-  // (governance/governance-labels.ts). Keyed off the DECLARED scope, never the effective one, so an
-  // already-stored `custom` selector is grandfathered until someone edits it — the same
-  // grandfathering ADR-0032 §6a's guard accepted, and for the same reason: a refusal that fires on a
-  // request which declared nothing is a refusal nobody can act on.
+  // The reserved governance label namespace, applied here too. See docs/federation.md §360.
   assertSyncScopeSelectorKeysAreGovernanceLabels(input.syncScope);
 
   const syncScope = input.syncScope ?? { mode: "full" as const };
@@ -224,21 +191,7 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
   // set or rotate). The over-the-wire schema is `.optional()` (not nullable), so absent === undefined.
   const cosignProvided = input.cosignPublicKey !== undefined;
 
-  // M14.1 pair-time guard (ADR-0009; the fail-closed transport-identity invariant). Poke-mode TRUE
-  // requires an https/mTLS-capable peer baseUrl — the poke must authenticate the caller as the
-  // enrolled commander (ADR-0001), which only the mTLS transport does. This is the EARLY guard (the
-  // pair refuses); full enforcement (the outpost's poke endpoint refusing) is M14.2.
-  //
-  // M14.3 HARDENING — the guard validates the EFFECTIVE POST-WRITE STATE, not the input transition.
-  // The two fields MERGE with OPPOSITE rules below (baseUrl: request wins when present; pokeMode:
-  // tri-state, EXISTING wins when absent), so keying the guard off `input.pokeMode === true` checked a
-  // DIFFERENT tuple than the one actually persisted. The hole: a re-pair that sets
-  // `baseUrl: 'http://…'` while OMITTING pokeMode skipped the guard entirely and left an
-  // `{http baseUrl, pokeMode: true}` row — which the sender would then dial with the federation bearer
-  // in cleartext (scheme-derived `requireMtls` never fires for http). Computing the effective tuple
-  // makes `pokeMode=true` on a non-https baseUrl UNREPRESENTABLE through EVERY path: explicit true on
-  // http, explicit true with no baseUrl, an omitted pokeMode that preserves true while downgrading the
-  // baseUrl, and a re-pair that preserves both. `pokeMode=false` (effective) is always allowed.
+  // M14.1 pair-time guard. See docs/federation.md §361.
   const effectivePokeMode =
     input.pokeMode !== undefined ? input.pokeMode : (existing[0]?.pokeMode ?? false);
   const effectiveBaseUrl =
@@ -304,41 +257,7 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
   const row = repaired[0];
   if (!row) throw new Error("pairPeer: failed to update peer");
 
-  // ── THE RE-ANCHOR ON `full` (pre-M16 residual W1; drizzle/0042; R1 fix). SECURITY-SENSITIVE.
-  //
-  // This side's own `sync_scope` for a peer being (or ending up) `full` is a SUPPORTED configuration
-  // state that used to wedge that peer permanently the first time it happened: while narrow, this
-  // side verified the peer's sparse chain and advanced its cursor with `last_applied_row_hash = NULL`
-  // (correct — it never held the range tail's hash). The strict path then sat in front of an
-  // ANCHORLESS cursor, whose absent hash `verifyJournalChain` reads as JOURNAL_GENESIS_HASH, so the
-  // peer's next run — contiguous, gap-free, authentic — could not link, and every subsequent import
-  // was refused forever. The prescribed recovery ("align both sync_scope values, re-export") was
-  // inert.
-  //
-  // ORIGINALLY THIS WAS GATED ON THE TRANSITION (`previousScope.mode !== "full" && syncScope.mode ===
-  // "full"`), which issues the permit exactly once, at the moment of the widen. That missed the ONLY
-  // population that actually existed: every peer already wedged by the pre-fix bug already has
-  // `sync_scope.mode === "full"` (the operator widened it with the OLD code, before this fix existed)
-  // and an anchorless cursor — so there is no transition left to catch, and the message's own
-  // prescribed recovery (re-pair with `--sync-scope full`) was a no-op transition-wise and issued
-  // nothing. THE FIX: key issuance off the RESULTING scope and the cursor's actual state, not off
-  // what it changed FROM. `permitCursorReanchor` itself already only touches a cursor that is
-  // anchorless (`last_applied_row_hash IS NULL AND last_applied_seq > 0` — see cursors-repo.ts), so
-  // calling it on every `pairPeer` that leaves this peer at `full` is safe and idempotent: a peer
-  // that is already strictly anchored has nothing for the predicate to match, and re-declaring the
-  // SAME `full` scope on an already-wedged peer now heals it, exactly as the refusal message says.
-  //
-  // A scope of `full` being set is a LOCAL, AUTHENTICATED OPERATOR ACTION on config that is never
-  // carried on the wire and never reconciled, so it is the one signal it is legitimate to key a
-  // re-anchor off. ANCHORING OFF WIRE DATA — e.g. adopting the row hash of whatever entry the bundle
-  // claims sits at the cursor — would be an anchor chosen by the sender, which is precisely the
-  // splice this cursor exists to prevent. Nothing a peer sends reaches this function: `pairPeer` has
-  // exactly one caller, `POST /v1/federation/peers`, behind `federation:write`.
-  //
-  // ONLY TO `full`. `full` is the only mode that demands a contiguous, anchored chain, so it is the
-  // only resulting scope that can strand an anchorless cursor. Narrowing needs no permit (sparse
-  // verification never consults the anchor) and gets none. `permitCursorReanchor` additionally
-  // refuses to touch any cursor that DOES hold a real anchor — see cursors-repo.ts.
+  // ── THE RE-ANCHOR ON `full`. See docs/federation.md §362.
   if (syncScope.mode === "full") {
     await permitCursorReanchor(tx, input.orgId, input.domainId);
   }
@@ -358,13 +277,7 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
     (current.cosignPublicKey ?? null) !== nextCosign;
   if (rotated) {
     const now = new Date();
-    // SECURITY-SENSITIVE (M6 review fix — CRITICAL): anchor the rotation to the AUTHENTICATED
-    // journal sequence, not a timestamp. The old key legitimately signed everything this domain has
-    // already applied from the peer (its cursor high-water mark); the new key takes over from there.
-    // Every future import applies only entries beyond the cursor, so the old key is hard-revoked for
-    // all content that will ever be applied — no timestamp fallback an attacker could backdate. The
-    // cosign key rides the SAME window, so the OLD cosign key is retained in its superseded window
-    // exactly as the Ed25519 key is (fully reconstructible history for both).
+    // SECURITY-SENSITIVE (M6 review fix — CRITICAL). See docs/federation.md §363.
     const anchor = await maxAppliedSequenceForPeer(tx, input.orgId, input.domainId);
     await tx
       .update(federationPeerKeys)
@@ -417,76 +330,7 @@ export interface UpdatePeerTransportInput {
   pokeMode?: boolean;
 }
 
-/**
- * M16.2 phase A (E4) — `PATCH /v1/federation/peers/{id}`: the NARROW, TRANSPORT-ONLY peer write.
- *
- * SECURITY-CRITICAL, AND THE WHOLE REASON IT EXISTS. `pairPeer` is a re-pair: `publicKey` is REQUIRED
- * in its body, a DIFFERENT value is a KEY ROTATION that supersedes the current key window and
- * hard-revokes the old key at the applied-sequence anchor, and `name`/`role` are overwritten
- * unconditionally. A Settings form built on it rotates a peer's TRUST ANCHOR the first time it drops
- * or mangles the key. This function touches `federation_peers` ONLY — there is no reference to
- * `federationPeerKeys` anywhere in its body, and its input type has no field that could carry key
- * material — so no call, however malformed, can open, close or supersede a key window.
- *
- * ============================================================================================
- * PAIR-TIME GUARD CENSUS — every validation `POST /federation/peers` performs, and how this path
- * accounts for it. A new write door that silently skips the old door's checks is the bypass class
- * this project has already been bitten by, so each one is listed and dispositioned, not assumed.
- * ============================================================================================
- *  G1 requireAuth ....................... RE-APPLIED (route handler, identical call), and WITNESSED:
- *     `peer-patch.integration.test.ts` asserts 401 for an anonymous call.
- *  G2 authorize `federation:write` @ org . RE-APPLIED (route handler, identical call), and WITNESSED
- *     BY BEHAVIOUR since review round 4 (H2): `outposts-rbac.integration.test.ts` drives this route with
- *     an actor holding `object:write` but NOT `federation:write` and asserts 403 + an unchanged row —
- *     mutation-proven by deleting this route's `authorize` block. Before that, the census row was true
- *     of the code and UNPROVEN by the suite: every `authorize` block in this milestone could be deleted
- *     with the whole federation suite still green.
- *  G3 self-pair refusal ("cannot pair this domain with itself") .... N/A BY CONSTRUCTION: this route
- *     resolves an EXISTING `federation_peers` row and never inserts. An instance is never its own
- *     peer (`initFederationSelf` writes `federation_self`, not a peer row), so the id cannot resolve
- *     to self — an attempt 404s at `getPeerByIdOrName` before this function is reached.
- *  G4 `assertDeliveryTargetRooted` (SCP_DELIVERY_ROOTS / SCP_DELIVERY_S3_ENDPOINTS allowlists)
- *     ..................................... RE-APPLIED at the route, the same call pairing makes, so
- *     an out-of-root drop directory or an un-allowlisted S3 endpoint is refused before storage.
- *  G5 body schema validation (name length, `baseUrl` is a URL, `syncScope` union, `deliveryTarget`
- *     strict union incl. absolute traversal-free dirs / relative traversal-free prefixes / bare
- *     bucket, `pokeMode` boolean) ......... RE-APPLIED: `UpdateFederationPeerRequestSchema` reuses the
- *     very same `SyncScopeSchema`/`DeliveryTargetSchema` members and the same `z.string().url()`.
- *  G6 `trustDomainIdFromWire` boundary .... N/A: no wire domain id is accepted here. The brand comes
- *     from the RESOLVED existing row, which is stronger than validating an input.
- *  G7 M14.1/M14.3 poke-mode ⇒ https/mTLS baseUrl guard, over the EFFECTIVE POST-WRITE TUPLE
- *     ..................................... RE-APPLIED BELOW, and it MUST be: this route's fields merge
- *     with exactly the same opposite rules the re-pair path has (baseUrl: request wins when present;
- *     pokeMode: existing wins when absent), so keying it off the request alone would check a different
- *     tuple than the one persisted — the M14.3 hole verbatim. All four shapes stay unrepresentable:
- *     explicit poke on http, explicit poke with no baseUrl at all, an omitted pokeMode that preserves
- *     `true` while downgrading baseUrl to http, and a no-op patch on an already-bad row.
- *  G8 `permitCursorReanchor` when the request DECLARES a syncScope whose RESULT is `full`
- *     ..................................... RE-APPLIED BELOW. Widening a peer to `full` through this
- *     route must heal an anchorless cursor exactly as widening it through a re-pair does; otherwise the
- *     documented recovery ("set the scope to full") would work on one route and silently wedge the peer
- *     forever on the other. NARROWED in review round 4 (H8) by `input.syncScope !== undefined`: with
- *     absent-means-preserve, a PATCH that only set `name` also resolved to `full` and issued the permit,
- *     so a RENAME fired a scope-declaration guard. See the call site for the full note.
- *  G9 key-window rotation/superseding ..... DELIBERATELY ABSENT — the point of this route. No key
- *     material is representable in the input, and no `federationPeerKeys` write exists here, so the
- *     capability is structurally missing rather than conditionally skipped.
- *  G10 tri-state PRESERVE semantics for `deliveryTarget`/`pokeMode`/`cosignPublicKey`
- *     ..................................... RE-APPLIED for the two transport fields (absent preserves;
- *     `deliveryTarget: null` clears). `cosignPublicKey` is key material — see G9 — and is preserved
- *     untouched because nothing here writes the key window at all.
- *  G11 unconditional `name`/`role` overwrite .... INTENTIONALLY NARROWED: `name` is patched only when
- *     supplied, and `role` is NOT patchable at all. A peer's federation role is an identity-level
- *     assertion made at pairing (it decides whether this side pulls FROM or exports TO the peer, and
- *     which validation the boundary applies); a settings form must not be able to flip it. Changing a
- *     role remains a deliberate re-pair.
- *  G12 `(org_id, name)` UNIQUENESS .... NEW in review round 4 (H6), and it had to be, because this route
- *     is the reason `name` is patchable at all. `getPeerByIdOrName` resolves a non-UUID identifier BY
- *     NAME, so two peers sharing a name made a TRANSPORT WRITE land on an arbitrary one of them. Enforced
- *     in the DATABASE (drizzle/0045, with a self-healing backfill) rather than per-route, and surfaced
- *     here as a 409 instead of a 500.
- * ============================================================================================
- */
+/** M16.2 phase A (E4) — `PATCH /v1/federation/peers/{id}`. See docs/federation.md §364. */
 export async function updatePeerTransport(
   tx: TenantTx,
   input: UpdatePeerTransportInput
@@ -540,19 +384,7 @@ export async function updatePeerTransport(
   const row = updated[0];
   if (!row) throw new Error("updatePeerTransport: failed to update peer");
 
-  // G8, re-applied — but ONLY when this call actually DECLARES a scope (review round 4, H8). Keyed off
-  // the RESULTING scope, never the transition, for exactly the reasons `pairPeer`'s long note gives:
-  // `permitCursorReanchor` only touches a cursor that is genuinely anchorless, so re-declaring `full`
-  // heals an already-wedged peer and is safe and idempotent.
-  //
-  // `input.syncScope !== undefined` is the part that was missing, and it is a DOC-VS-CODE fix, not a
-  // security one. Absent-means-preserve meant a PATCH that only set `name` still resolved to `full` and
-  // still issued the permit — so a RENAME fired a one-shot re-anchor permit, while `cursors-repo.ts` and
-  // the G8 census row both describe the two call sites as "operator DECLARATIONS of this peer's own
-  // sync_scope". A rename is not a scope declaration. Nothing was exploitable (the anchorless-cursor
-  // predicate is the whole safety story and is unchanged), but a guard whose trigger is WIDER than every
-  // document describing it is the defect class this repo has now fixed several times — including
-  // `permitCursorReanchor`'s own header, rewritten once already for exactly this kind of drift.
+  // Re-applied, but only when this call declares a scope. See docs/federation.md §365.
   if (input.syncScope !== undefined && effectiveSyncScope.mode === "full") {
     await permitCursorReanchor(tx, input.orgId, input.domainId);
   }
@@ -602,13 +434,7 @@ export async function getPeerByIdOrName(
   idOrName: string
 ): Promise<FederationPeerRow> {
   if (!idOrName) throw badRequest("peer identifier is required");
-  // `federationPeers.id` is a `uuid` column — comparing it against a non-UUID string (a plain
-  // peer NAME) is a Postgres type error, not merely a non-match, so the id branch of the OR is
-  // only included when `idOrName` actually parses as a UUID (mirrors `graph/objects-repo.ts`'s
-  // `idOrUrnCondition` convention for the identical id-or-friendly-name ergonomic).
-  // BOUNDARY (ADR-0021 D4): `idOrName` is an operator-supplied identifier that may be either a
-  // trust-domain id or a human peer name. The `isUuid` branch is exactly where it has been
-  // established to be the former, so that is where the brand is asserted.
+  // `federationPeers.id` is a `uuid` column. See docs/federation.md §366.
   const condition = isUuid(idOrName)
     ? or(eq(federationPeers.id, asTrustDomainId(idOrName)), eq(federationPeers.name, idOrName))
     : eq(federationPeers.name, idOrName);
@@ -630,28 +456,7 @@ export async function getPeerByIdOrName(
   return toPeerRow(rows[0], key?.publicKey ?? "", key?.cosignPublicKey ?? null);
 }
 
-/**
- * M14.4 (ADR-0009) — CLAIM one peer's pull slot for the current window, ATOMICALLY.
- *
- * A single conditional `UPDATE … RETURNING`: the row's `last_pull_attempt_at` is advanced to `now`
- * ONLY if it is NULL (never attempted — deliberately "due now", drizzle/0038) or older than
- * `now - intervalSeconds`. Returns `true` when THIS caller won the slot, `false` when the peer was
- * already claimed inside the window.
- *
- * WHY A CONDITIONAL UPDATE AND NOT AN IN-MEMORY MAP (load-bearing): the scheduler runs on every
- * worker replica. An in-process throttle would let N replicas each pull the same peer per window,
- * multiplying the effective poll rate by the replica count and defeating "sparse" exactly where it
- * matters most. Postgres row-locking during the UPDATE makes the claim mutually exclusive across
- * replicas, processes, and restarts, with no new coordination primitive (charter principle 4).
- *
- * `force` (the poke path, S4) SKIPS the window predicate but still stamps the attempt — a poke-woken
- * tick must never be swallowed by the very due-gate the poke complements.
- *
- * The threshold is computed from the CALLER's `now` rather than the database's `now()` purely so the
- * scheduler can be driven by a deterministic test clock; the mutual exclusion comes from the atomic
- * UPDATE, not from the clock source (two replicas with slightly skewed clocks still cannot both win
- * the same row).
- */
+/** Claims one peer's pull slot for the window, atomically. See docs/federation.md §367. */
 export async function claimPeerPull(
   tx: TenantTx,
   orgId: string,
@@ -691,11 +496,7 @@ export async function markPeerPullSuccess(
     .where(and(eq(federationPeers.orgId, orgId), eq(federationPeers.id, peerDomainId)));
 }
 
-/** M14.4 (owner decision D2 — SELF-PROVING SPARSE) — stamp that this peer's poke was ACCEPTED. The
- *  M14.2 poke handler calls this after its consent + rate-limit gates pass. Until a peer has stamped
- *  at least once, the scheduler keeps it on the FREQUENT cadence no matter what the local
- *  `poke_mode` flag says: an outpost must never go sparse on the strength of its own flag alone
- *  (the commander's half may never have been enabled — silent staleness with no error anywhere). */
+/** Stamps that this peer's poke was accepted. See docs/federation.md §368. */
 export async function markPokeReceived(
   tx: TenantTx,
   orgId: string,

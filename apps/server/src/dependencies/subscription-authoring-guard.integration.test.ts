@@ -7,42 +7,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE GUARD IS WIRED — proven through the real HTTP routes, not by calling the function.
- *
- * `subscription-authoring-guard.test.ts` proves the guard DECIDES correctly. It cannot prove the
- * guard RUNS: it calls `assertEnforceableDependencySubscriptionScope` directly, so deleting its
- * installation leaves that whole suite green. Measured, not assumed — that mutation was applied and
- * the unit suite stayed at 649 passed (the count before this round's cases were added).
- *
- * That is this repo's documented "green for the wrong reason" class in its most ordinary form: a
- * correct component and an unpinned installation look identical from the component's own tests. So
- * this file exercises the policy routes themselves.
- *
- * THREE THINGS IT PINS, and each exists because it caught something:
- *
- *  1. ALL THREE VERBS. `typed-registries.ts` reaches the write path from POST, from
- *     PATCH-with-properties and from PUT. The first cut of this file used POST for all four cases,
- *     so a guard installed on only one of the three would have looked fully covered.
- *
- *  2. THE NARROWING. A policy carrying `group` AND `objectRef` is PERMITTED, because
- *     `matchPoliciesForTargets` records the `objectRef` match independently of the group branch —
- *     the policy contributes for every caller and the hazard is absent. The first cut refused it,
- *     which is a 400 telling the author to do exactly what they had already done.
- *
- *  3. THE OTHER COMPOSED CHECK, PROVEN BY A REFUSAL. `validateWrite` still runs
- *     `assertPolicyScopeWithinAuthority`. The first cut "proved" that by asserting a policy write
- *     SUCCEEDS — which cannot distinguish "the check ran and passed" from "the check was deleted",
- *     while this header claimed it proved the latter. It now asserts a refusal ONLY that check can
- *     produce (a service-scoped author declaring an org-wide scope → 403), which fails the moment
- *     the check is removed.
- *
- * The refusal itself no longer lives in the route — it moved to `graph/objects-repo.ts`'s
- * `createObject`/`updateObject` choke point; see `subscription-guard-write-doors.integration.test.ts`
- * for the three other doors that exposed why. This file stays route-level on purpose: the typed
- * `/policies` routes are the surface an author actually types at, and "the refusal reaches the wire
- * with its remedy intact" is a property of the whole stack, not of a repo function.
- */
+/** THE GUARD IS WIRED. See docs/dependencies.md §359. */
 describe("group-scoped dependency-subscription effects are refused by the policy routes", () => {
   let server: TestServer;
 
@@ -151,14 +116,7 @@ describe("group-scoped dependency-subscription effects are refused by the policy
       effects: [{ dependencySubscription: { enabled: true, granularity: "patch" } }]
     });
 
-    // This case USED to be the guard's narrowness control, on M21.3's reasoning that failing to
-    // match leaves it not-enabled and nothing is lost. M21.4 refused it on a reason that has since
-    // been retired as FALSE (ADR-0032 §6a-ii): "the jobs resolve as `SYSTEM_ACTOR_ID`, which is
-    // `member_of` nothing, so the enable never contributes for them". Group scope's OWNING half
-    // ignores the actor, so it can contribute. The refusal stands on the ground that survived: a
-    // group-scoped effect's reach is decided by membership and by mutable `owns` edges rather than
-    // by what the author wrote, in either direction. The narrowness controls the direction axis no
-    // longer provides are supplied by the objectRef and no-scope cases below and beside it.
+    // This used to be the guard's narrowness control. See docs/dependencies.md §360.
     expect(res.statusCode, res.body).toBe(400);
     expect(res.body).toMatch(/objectRef/);
     // WHICH refusal — a bare 400 would pass equally against the opt-out branch, the URN check or
@@ -182,11 +140,7 @@ describe("group-scoped dependency-subscription effects are refused by the policy
       effects: [{ dependencySubscription: { enabled: true, granularity: "patch" } }]
     });
 
-    // THE NEGATIVE CONTROL THE WIDENING NEEDS. Without it, the refusal above is equally satisfied by
-    // a guard that rejects every group-scoped policy or every dependencySubscription enable —
-    // exactly the over-broad shape clause 6a-i(b) narrowed away, and the one a direction widening is
-    // most likely to reintroduce. The `objectRef` branch reaches exactly what it names, for every
-    // caller, so this enable's reach is what the author wrote and is not fail-open.
+    // THE NEGATIVE CONTROL THE WIDENING NEEDS. See docs/dependencies.md §361.
     expect(res.statusCode, res.body).toBe(201);
   });
 

@@ -18,21 +18,7 @@ import {
   seedRelayBuild
 } from "../federation/relay-builds-repo.js";
 
-/**
- * M13.1b — the OPERATOR READ SURFACE for the auto-relay build ledger (owner ask: see queue depth
- * and exhausted rows without DB surgery). HTTP-level, per the delete-the-wiring rule: every
- * assertion here goes through `GET /api/v1/federation/relay-builds` via `server.app.inject`, never
- * `listRelayBuilds` called directly — a route that forgot its `authorize(...)` call, or a handler
- * that dropped the query params on the floor, would be invisible to a repo-level test and is
- * exactly what this file exists to catch.
- *
- * Fixture rows are seeded through the REAL writers (`seedRelayBuild` / `claimRelayBuild` /
- * `completeRelayBuild` / `exhaustRelayBuild` / `markRelayBuildForwarded`) — the ledger table has no
- * FK to `changes` (drizzle/0047's own header: "the ledger must survive independently of the change
- * row"), so a fixture-only `changeObjectId` is a legitimate row, not a shortcut around a
- * constraint. `updatedAt` is then pinned with a direct SQL nudge so the DESC-ordering assertion
- * does not depend on four transactions landing on four distinguishable wall-clock instants.
- */
+/** The operator read surface for the auto-relay ledger. See docs/routes.md §187. */
 describe("GET /federation/relay-builds — the auto-relay ledger's operator triage surface (Testcontainers)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -79,7 +65,6 @@ describe("GET /federation/relay-builds — the auto-relay ledger's operator tria
         sourceChangeObjectId: sourceForPending
       });
 
-      // built — seed, claim, then the SUCCESS release.
       await seedRelayBuild(tx, {
         orgId: org.orgId,
         changeObjectId: builtId,

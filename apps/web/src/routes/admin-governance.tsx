@@ -49,55 +49,11 @@ import { decisionIdOf } from "../components/decision/decision-format";
 import { formatRelative } from "./admin-dependencies";
 import type { ReadState } from "./component-dependencies";
 
-/**
- * ADMIN › GOVERNANCE — the `governance:move` enforcement lattice
- * (docs/proposals/governance-reach-on-containment-move.md §9.2/§9.4; owner ruling 2026-08-18;
- * server routes `apps/server/src/routes/governance-move.ts`; SDK facade
- * `client.governanceMove` in `packages/sdk/src/client.ts`).
- *
- * "When enforcement is on for an object, moving it requires governance:move — held by
- * Administrators and Owners." Enforcement is a top-down monotone OR of enabled RUNGS: the
- * instance rung (deployment-wide, operator-only), the org root, or any containment domain /
- * service / assembly. An upper rung's enable cannot be undone below it — `disable` answers 409
- * naming the blocker.
- *
- * BOTH SITES CARRY THIS PAGE (unlike Admin › Dependencies, which is commander-only): enforcement
- * is PER-INSTANCE, and an outpost's own local containment moves are real moves the lattice can
- * govern just as a commander's can. No role/wire gate here — pinned by `app-shell-nav.test.tsx`
- * (both `COMMANDER_NAV` and `OUTPOST_NAV` carry `/admin/governance`).
- *
- * THREE PIECES, THREE AUTHORITIES (M16.3 offer-the-write rule: every write renders for every
- * viewer, and the server's own refusal sentence is what tells them no):
- *
- *   1. Instance rung — READ-ONLY here. The write is OPERATOR-token only (`SCP_OPERATOR_TOKEN`),
- *      never a tenant role, because it activates enforcement for every org on the deployment; the
- *      page names the CLI verb (`scp governance move-enforcement instance set --enabled
- *      true|false`) rather than offering a browser form for a credential this UI never holds.
- *   2. Org rung — a switch on the org root (`useAuth()`'s `orgId`, from `/auth/me` — ADR-0021 D4
- *      makes the org id the org root object's id). `policy:write` at-or-above the org root;
- *      offered to every viewer, and a 403 renders the server's sentence.
- *   3. Enabled rungs (containment domain / service / assembly) — a table with Disable (direct,
- *      no confirmation dialog: the consequence a confirm step would explain is already the 409
- *      sentence when disabling is refused) and an Enable at… dialog with a container picker.
- *
- * The picker reads `client.domains.list`/`.services.list`/`.assemblies.list` at `limit: 100` —
- * `ObjectListQuerySchema`'s max (packages/schemas/src/graph.ts); a larger value is a 400 on the
- * real server, invisible behind a mocked SDK, which is why the test parses the query against the
- * real schema rather than trusting the literal here.
- *
- * Honest empties throughout: an empty rungs table renders ONLY after a successful zero-row read,
- * never while pending, and a failed read shows the diagnosis instead of a table.
- */
+/** ADMIN › GOVERNANCE. See docs/web.md §182. */
 
-// -------------------------------------------------------------------------------------------
 // Refusal rendering — shared by the org switch, the enable dialog and every row's Disable.
-// -------------------------------------------------------------------------------------------
 
-/** Every governance:move write refusal the server sends already NAMES what is needed (403:
- *  "…lacks 'policy:write' at scope '…'"; 409: "…is also enabled at <tier> '<name>' above it…") —
- *  so this renders the server's sentence verbatim, plus a Why link only when the problem carried
- *  a `decision_id` (the disable 409 does not today; never fabricate a link the server did not
- *  offer). */
+/** Every write refusal already names what would be needed. See docs/web.md §183. */
 export function governanceMoveWriteRefusal(error: unknown): {
   message: string;
   decisionId?: string;
@@ -165,9 +121,7 @@ const selectClass = cn(
   focusRing
 );
 
-// -------------------------------------------------------------------------------------------
 // Tier badge — six-tone system, neutral (a tier is a fact, not a status).
-// -------------------------------------------------------------------------------------------
 
 function TierBadge({ tier }: { tier: GovernanceMoveTier }): React.JSX.Element {
   return (
@@ -176,10 +130,6 @@ function TierBadge({ tier }: { tier: GovernanceMoveTier }): React.JSX.Element {
     </Badge>
   );
 }
-
-// -------------------------------------------------------------------------------------------
-// The org rung switch.
-// -------------------------------------------------------------------------------------------
 
 export function OrgRungSwitch({
   orgId,
@@ -242,9 +192,7 @@ export function OrgRungSwitch({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // One enabled (containment_domain | service | assembly) rung — the table row.
-// -------------------------------------------------------------------------------------------
 
 function RungRow({
   rung,
@@ -320,10 +268,6 @@ function RungRow({
     </TableRow>
   );
 }
-
-// -------------------------------------------------------------------------------------------
-// Enable at… dialog.
-// -------------------------------------------------------------------------------------------
 
 export type ContainersRead = Record<ContainerTier, ReadState<readonly GraphObject[]>>;
 
@@ -489,9 +433,7 @@ export function EnableDialogBody({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // The page's whole rendering off already-loaded reads, and the page (hooks).
-// -------------------------------------------------------------------------------------------
 
 export function GovernanceView({
   orgId,

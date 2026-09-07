@@ -6,11 +6,7 @@ import {
   withRecordedOutcome
 } from "./index.js";
 
-/**
- * `withRecordedOutcome` in isolation — the plugin-level tests (`managed-iac`/`managed-scan`'s
- * `launcher-seam.test.ts`) prove it is actually WIRED into `trigger()`; this file proves the
- * primitive itself does what its doc claims, independent of any plugin.
- */
+/** `withRecordedOutcome` in isolation. See docs/runner-launcher.md §404. */
 describe("withRecordedOutcome", () => {
   it("a resolved fn() records nothing — success recording stays the caller's own job", async () => {
     const record = vi.fn();
@@ -56,14 +52,7 @@ describe("withRecordedOutcome", () => {
     expect(written).toBe(true);
   });
 
-  /**
-   * FOUND BY A MUTATION, NOT BY READING (M23.0 verification pass 7). Removing the bound from
-   * `withRecordedOutcome` left all 17 tests in `failure-detail-bound.test.ts` green, because none of
-   * them came through this helper — and this helper is the path for EVERY throw out of a plugin's
-   * `trigger()`, which is where the freeform, unbounded strings actually are: a `docker create`
-   * rejection's `.message` carries the child's whole stderr, and managed-iac's `record` writes it to
-   * a durable JSON file that is never pruned and from there into a `Decision`'s `inputContext`.
-   */
+  /** FOUND BY A MUTATION, NOT BY READING. See docs/runner-launcher.md §405. */
   it("A THROWN MESSAGE IS BOUNDED BEFORE `record` EVER SEES IT — the store is never handed a megabyte", async () => {
     const recorded: string[] = [];
     const cause = `Command failed: docker create scp-runner-iac:vetted\n${"noise\n".repeat(200_000)}Error: no space left on device`;
@@ -112,15 +101,7 @@ describe("withRecordedOutcome", () => {
     expect(record).toHaveBeenCalledWith(false, "a plain string rejection");
   });
 
-  // ================================================================================================
-  // M23.5 MEDIUM-8 — A `create`/`secret-env`/`copy-in` REJECTION'S `.stderr` REACHES THE RECORD TOO
-  // ================================================================================================
-  //
-  // `create`, `secret-env` and `copy-in` failures reject `run()` directly — `classifyRunnerFailure`
-  // never runs for them, so `withRecordedOutcome` is the ONLY place their rejection becomes a
-  // recorded `detail`. The Kubernetes adapter's `api()` builds a deliberately SHORT `.message`
-  // ("kubernetes POST /path -> HTTP 403") and puts the API server's own response body — the reason —
-  // in `.stderr` instead. Before this fix, only `.message` was read.
+  // A rejection's standard error reaches the record. See docs/runner-launcher.md §406.
 
   it("A RunnerLaunchError'S `.stderr` — THE API SERVER'S OWN REASON — REACHES THE RECORDED DETAIL", async () => {
     const recorded: string[] = [];
@@ -147,17 +128,12 @@ describe("withRecordedOutcome", () => {
       }
     );
     expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toContain("HTTP 403"); // the short message is still there
+    expect(recorded[0]).toContain("HTTP 403");
     expect(recorded[0]).toContain('cannot create resource \\"jobs\\"'); // and now so is the reason
   });
 
   it("NO DOUBLE-PRINT — a Docker rejection whose `.message` ALREADY carries the reason is not repeated", async () => {
-    // The Docker adapter's cause IS `promisify(execFile)`'s own rejection, whose `.message` is
-    // Node's own `Command failed: ... \n<stderr>` format — the reason is already in `.message`, and
-    // `RunnerLaunchError`'s constructor falls `.stderr` back to that SAME `.message` when the cause
-    // carries no `stderr` of its own (see the class doc's "THE `?? \"\" / ?? message` FALLS"). If
-    // `withRecordedOutcome` concatenated unconditionally, every Docker failure would print its
-    // reason twice.
+    // The Docker cause is that call's own rejection. See docs/runner-launcher.md §407.
     const recorded: string[] = [];
     const causeMessage =
       "Command failed: docker create scp-runner-iac:vetted\nError: no space left on device";

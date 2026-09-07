@@ -1,24 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-/**
- * THE INSTALL-SITE GATE for M23.1c's `assertManagedTimeoutSchemas()`.
- *
- * `call-policy.test.ts` proves the assertion WORKS. This proves it is CALLED — and the distinction
- * is this repository's single most common defect (CLAUDE.md: "a component correctly built, well
- * tested, and installed nowhere", six instances in one recent milestone, one of them a live RCE).
- * A boot check that nothing invokes is a comment with a stack trace.
- *
- * The check therefore has to be exercised the way production reaches it: by IMPORTING the module
- * that owns the allowlist. `coordination/executor-bindings-repo.ts` calls it at module load, beside
- * `assertEveryModuleHasManifest`, so this test replaces one managed plugin's manifest with an
- * unbounded one and asserts the IMPORT ITSELF rejects.
- *
- * DELETE THE `assertManagedTimeoutSchemas()` LINE FROM `executor-bindings-repo.ts` AND THIS TEST
- * FAILS BY NAME — the import resolves happily and `.rejects` has nothing to catch. Nothing else in
- * the suite would notice: `call-policy.ts` would simply stop treating `managed-scan` as managed and
- * hand its `trigger` the 10s hang detector back, which is the original defect, restored on one
- * plugin, green.
- */
+/** The install-site gate for the boot-time schema assertion. See docs/plugin-host.md §66. */
 describe("the managed timeoutMs ceiling is asserted AT BOOT, not merely asserted somewhere", () => {
   afterEach(() => {
     vi.doUnmock("@scp/plugin-managed-scan");

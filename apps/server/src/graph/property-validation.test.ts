@@ -2,26 +2,9 @@ import { describe, expect, it } from "vitest";
 import { validateProperties } from "./property-validation.js";
 import { ProblemError } from "../errors.js";
 
-/**
- * Unit cover for `validateProperties`' content-addressed cache. The behaviour that matters most —
- * a `property_schema` edit reaching a LIVE process — is proved end to end in
- * `property-schema-live-edit.integration.test.ts` through the real HTTP write path, because that is
- * the only shape that can prove it (see that file's header). What is left for a unit test is the
- * part the integration test cannot reach in reasonable time: the bounded-cache reset branch.
- *
- * That branch exists for a deployment with more distinct schemas than `CACHE_LIMIT`, which no
- * normal estate hits — so without this test it would be a code path that ships unexercised, which
- * is the same defect class this whole change is about.
- */
+/** Unit cover for `validateProperties`' content-addressed cache. See docs/graph.md §148. */
 
-/**
- * Asserts the write was REFUSED, and returns the refusal so a caller can inspect it.
- *
- * Deliberately keys on the 400 status rather than on the message: `badRequest` builds a
- * `ProblemError` whose `.message` is the generic title "Bad Request" and whose `.detail` carries
- * the Ajv text, so a `toThrow(/JSON Schema/)` matcher passes vacuously against `.message` — it
- * would go green for a refusal thrown by something else entirely.
- */
+/** Asserts the write was refused, keyed on status not wording. See docs/graph.md §149. */
 function expectRefused(schema: unknown, properties: unknown): ProblemError {
   let caught: unknown;
   try {

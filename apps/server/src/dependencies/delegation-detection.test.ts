@@ -14,14 +14,7 @@ import {
   type DelegationProbeSubject
 } from "./delegation-detection.js";
 
-/**
- * The conflict detection, at the layer that always runs.
- *
- * The rule these assertions encode is stated once in the module doc and is the reason every
- * ambiguous case below resolves the way it does: WHEN IN DOUBT, IT COVERS. A wrong "covers" costs a
- * legible refusal naming a file; a wrong "does not cover" puts two actuators on one manifest, which
- * is the failure the whole feature is gated on preventing.
- */
+/** The conflict detection, at the layer that always runs. See docs/dependencies.md §150. */
 
 describe("renovate configs", () => {
   it("covers everything by default — that is what Renovate actually does", () => {
@@ -141,21 +134,7 @@ describe("the candidate path list", () => {
   });
 });
 
-/**
- * ================================================================================================
- * "WE COULD NOT CHECK" IS NOT "NOTHING TO FIND" — EACH FAILURE MODE, SEPARATELY
- * ================================================================================================
- * The probe used to swallow every read failure into `unreadable` and return `delegated: false`, so a
- * bad credential, a provider 5xx, an egress refusal and a refused blob all produced a result
- * BYTE-IDENTICAL to a clean repository: `configs: []`, `collisions: []`, `delegated: false`. The
- * dispatcher then wrote an `allow` Decision and authored the bump, and the `delegation_probe_failed`
- * branch it has for exactly this was unreachable.
- *
- * Each mode is asserted on its own rather than as one "the reader failed" case, because they arrive
- * through DIFFERENT limbs — three of them as a THROW from the reader (the git adapter's own auth/HTTP
- * failure, and the plugin host's egress guard) and one as a `refused` OUTCOME the reader returns
- * normally. A single test would have proven only whichever limb it happened to take.
- */
+/** "WE COULD NOT CHECK" IS NOT "NOTHING TO FIND". See docs/dependencies.md §151. */
 describe("a probe that could not READ never resolves to 'no delegation here'", () => {
   const subject: DelegationProbeSubject = {
     componentObjectId: "component-1",
@@ -208,7 +187,6 @@ describe("a probe that could not READ never resolves to 'no delegation here'", (
     expect(probe.delegated).toBe(false);
     expect(probe.configs).toEqual([]);
     expect(probe.collisions).toEqual([]);
-    // ...is now distinguished, on every candidate path.
     expect(probe.conclusive).toBe(false);
     expect(probe.unreadable).toHaveLength(DELEGATION_CONFIG_PATHS.length);
     expect(delegationProbeIsInconclusive(probe)).toBe(true);
@@ -313,17 +291,7 @@ describe("the authored-branch contract, pinned across the two modules that resta
     expect(BUMP_AUTHORED_REF_PREFIX).toBe(`refs/heads/${BUMP_BRANCH_PREFIX}`);
   });
 
-  /**
-   * THE OTHER HALF OF THE SAME SEAM, and the one easy to leave untested because both sides compile
-   * fine without it: the server BUILDS the descriptor and the plugin PARSES it, across a plugin-host
-   * RPC boundary where the type on the wire is `Record<string, unknown>`. Nothing but a test can say
-   * the two agree.
-   *
-   * It is not hypothetical. The plugin REQUIRES `declaredManifestPaths` — it refuses to default that
-   * set to the target manifest, because a default would make its "must be a manifest the component
-   * already contains" gate compare a value with itself — so a server that did not send it would fail
-   * every bump at dispatch with both packages green.
-   */
+  /** The other half of the seam, easy to leave untested. See docs/dependencies.md §152. */
   it("the descriptor the server builds is one the plugin accepts, field for field", async () => {
     const plugin = await import("@scp/plugin-managed-dep");
     const changeObjectId = "0198f3c1-1111-7000-8000-000000000001";

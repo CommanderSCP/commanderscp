@@ -14,24 +14,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents, relationships } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 
-/**
- * M15.3b end-to-end — the GitLab `DiscoveryPlugin` (gitlab-discovery) proves the FULL import loop for
- * a bring-your-own GitLab, not just the plugin's own nock unit test:
- *   POST /discovery/run (module gitlab-discovery, backed by an execution-system kind=gitlab) →
- *   a real subprocess plugin-host scan of a live (in-process) GitLab repository-tree API →
- *   proposal carrying a Component whose sourceMapping.sourceKind is 'gitlab' →
- *   the proposal's component + source_mapping are landed (through the typed doors since ADR-0047 removed accept) →
- *   the imported component SELF-REPORTS: a gitlab observed event on its repo/path correlates to a
- *   Change. sourceKind='gitlab' is the load-bearing link — it matches the gitlab EXECUTOR's
- *   source_kind, so pulled gitlab events correlate against the imported component (before this,
- *   nothing produced a gitlab-kinded source_mapping, so gitlab events correlated against nothing).
- *
- * The GitLab instance is a real loopback (127.0.0.1) HTTP server: the plugin-host subprocess makes
- * genuine undici calls to it (nock can't reach across the subprocess boundary). Reaching loopback is
- * gated by BOTH the operator allowlist (SCP_INTERNAL_EGRESS_HOSTS, set here) AND the execution-
- * system's `allowInternalEgress` intent (ADR-0003 two-layer) — exactly the path a self-hosted /
- * air-gapped GitLab outpost uses, so this also exercises that egress grant end to end.
- */
+/** M15.3b end-to-end — the GitLab `DiscoveryPlugin`. See docs/routes.md §217. */
 describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → land → self-report)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -60,7 +43,7 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → land
           res.end(
             JSON.stringify([
               { name: "service-a", path: "service-a", type: "tree" },
-              { name: "docs", path: "docs", type: "tree" }, // no marker inside → skipped
+              { name: "docs", path: "docs", type: "tree" },
               { name: "README.md", path: "README.md", type: "blob" } // not a tree
             ])
           );
@@ -100,17 +83,7 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → land
     // withReconcileLoop wires a real SubprocessPluginHost onto deps.pluginHost — /discovery/run
     // fail-closes without one (the API-only-role guard). This is the SCP_ROLE=all equivalent.
     server = await listenTestServer({
-      // `withPluginHost`, NOT `withReconcileLoop` — and that is load-bearing. This suite calls
-      // `processChangeSourceEvents` INLINE and then reads `resulting_change_object_id` back
-      // synchronously. A live reconcile loop is a competing consumer of exactly those rows: the
-      // processor claims with `FOR UPDATE SKIP LOCKED`, so a tick that claims the row first makes
-      // the inline call a silent no-op and the follow-up read returns the tick's uncommitted
-      // pre-image — NULL. Measured at ~0.7% per event under CPU load, 0/300 with the loop off, and
-      // it never reproduces on an idle machine. It failed once in CI on PR #217 and passed on re-run.
-      //
-      // The loop would also race the `state === "proposed"` assertion below, since
-      // `advanceProposedChanges` moves it to `evaluated`. Only the plugin host is actually needed
-      // here: `POST /discovery/run` fail-closes on `deps.pluginHost` alone.
+      // `withPluginHost`, NOT `withReconcileLoop`. See docs/routes.md §218.
       withPluginHost: true
     });
     org = await createTestOrg(server, "m15-gitlab-discovery");
@@ -196,28 +169,10 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → land
       }
     ]);
 
-    // 2) ACCEPT — the only path that writes. Carry the proposal's objects AND ITS RELATIONSHIPS
-    //    through, and turn the component's carried sourceMapping into a sourceMappings[] entry so
-    //    the import self-reports (the transform a UI/CLI review does).
-    //
-    //    THIS STEP USED TO SEND `relationships: []` — see the matching note in
-    //    `gitea-discovery.integration.test.ts` and the census in
-    //    `routes/discovery-relationship-import.integration.test.ts`. Asserting the proposal contains
-    //    an edge and then importing a proposal containing none is how a dead write path stayed green.
-    //
-    //    Both objects are renamed at review time while `relationships` is passed VERBATIM: that only
-    //    works because an endpoint names the object's proposal-local `urn` ALIAS, not its name.
+    // 2) ACCEPT — the only path that writes. See docs/routes.md §219.
     const uniqueName = `${component.name}-${randomUUID().slice(0, 8)}`;
     const uniqueServiceName = `${services[0]!.name}-${randomUUID().slice(0, 8)}`;
-    // LANDED THROUGH THE ORDINARY DOORS, not `discovery/accept` — that route was removed in
-    // increment 6 (ADR-0047), and with it the one-call import this section used to make.
-    //
-    // What the section is ABOUT is unchanged and is the reason it survives rather than being
-    // deleted: a `gitlab`-kinded `source_mapping` on a real component is what makes a pulled
-    // `gitlab` event correlate to a Change. Before that mapping existed, nothing produced a
-    // `gitlab`-kinded mapping and every such event correlated against nothing. The import mechanism
-    // moved to IaC; the correlation property did not move at all, so it is still proven here,
-    // against a component created the way a scaffolded manifest creates one.
+    // LANDED THROUGH THE ORDINARY DOORS, not `discovery/accept`. See docs/routes.md §220.
     const importedService = await admin.services.create({ name: uniqueServiceName });
     const imported = await admin.components.create({
       name: uniqueName,

@@ -11,54 +11,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE TWO WAYS A CONTAINMENT MOVE STILL BROKE THE ORG-ROOT CHAIN AFTER `containment-parent-authz.ts`
- * BECAME THE CHOKE POINT.
- *
- * That module closed two defects — a move authorized only at the object, and a wire `null` written
- * through as a detach. Both are instances of ONE property: *a write that leaves a row whose
- * authority chain does not terminate at the org root, or that hands custody of a row to someone who
- * did not have it*. The choke point closed the two values that had been observed. Two more values
- * reach the same property through the same door, and this file pins both:
- *
- *  - **C1 — a CYCLE is a detach with no `null` in it.** The refusal was `destination === current.id`
- *    only: a depth-1 self-parent. Move X under its own child C and neither hop trips it, yet
- *    `X -> C -> X` has no org-root ancestor at all. `authz/resolve.ts`'s scope expansion walks
- *    UPWARD and terminates inside the loop, so no binding above the cycle — the org root Owner's
- *    included — reaches either row again. They cannot be read, edited, moved back or deleted, by
- *    anyone, ever. That is byte-for-byte the outcome `domain_id IS NULL` produced.
- *
- *  - **C2 — a move was authorized at the DESTINATION and never at the SOURCE.** Authority expands
- *    strictly upward, so holding it AT an object implies nothing about the container the object
- *    currently sits in. An actor bound narrowly at X could therefore yank X out of a container they
- *    hold nothing at — the mirror image of the defect the module exists to close, and the exact
- *    shape `graph/components-repo.ts`'s `setComponentService` already refuses ("the OLD service too
- *    on a move (it loses a child)").
- *
- * Both are pinned on the HTTP door AND on the IaC apply door, because apply is a second, independent
- * copy of the same decision (`iac/plans-repo.ts` calls itself "the apply-path twin of
- * `graph/containment-parent-authz.ts`") and a twin is where the next instance hides.
- *
- * ------------------------------------------------------------------------------------------------
- * RE-RUNNING THIS, AND THE THREE SUITES A CHANGE HERE MUST NOT BREAK
- * ------------------------------------------------------------------------------------------------
- * With FULL PATHS, because the commit that added this file (`16e836c`) named those suites by bare
- * filename — and a bare filename is a NO-OP here. vitest given a path it cannot resolve runs nothing
- * and EXITS 0; `apps/server`'s `test:integration` script passes `--passWithNoTests`, so that empty
- * run reports success. "Green" then means "never executed". The DEFAULT vitest config additionally
- * EXCLUDES `*.integration.test.ts`, so `--config` is not optional either. From `apps/server`
- * (the `DOCKER_HOST` line is for a local colima socket; CI provides its own Docker):
- *
- *   DOCKER_HOST=unix://$HOME/.colima/default/docker.sock TESTCONTAINERS_RYUK_DISABLED=true \
- *     npx vitest run --config vitest.integration.config.ts \
- *       src/routes/containment-move-cycle-and-source-authz.integration.test.ts \
- *       src/routes/containment-move-authz.integration.test.ts \
- *       src/governance/governance-managed-write-doors.integration.test.ts \
- *       src/dependencies/subscription-authoring-guard.integration.test.ts
- *
- * Then READ THE FILE LIST vitest echoes back and confirm all four are in it before believing the
- * result — that check is the only thing separating a pass from a silent no-op.
- */
+/** The two ways a move still broke the org-root chain. See docs/routes.md §85. */
 describe("a containment move may not build a cycle, and is authorized at both ends", () => {
   let server: TestServer;
 
@@ -119,10 +72,6 @@ describe("a containment move may not build a cycle, and is authorized at both en
     return created.json().id as string;
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // C1 — a cycle has no org-root ancestor
-  // ---------------------------------------------------------------------------------------------
-
   it("moving an object under its own CHILD is refused — a two-hop cycle detaches both rows", async () => {
     const org = await createTestOrg(server, "cycle-one-hop");
     const parent = await makeService(org, "cycle-parent");
@@ -149,7 +98,6 @@ describe("a containment move may not build a cycle, and is authorized at both en
       200
     );
 
-    // And the row did not move.
     const after = await getService(org.adminToken, parent);
     expect((after.json() as { domainId: string | null }).domainId).toBe(org.orgId);
   });
@@ -199,11 +147,7 @@ describe("a containment move may not build a cycle, and is authorized at both en
     const stranded = await makeService(org, "unrooted-stranded", doomedId);
     const movable = await makeService(org, "unrooted-movable");
 
-    // THE API WILL NOT STRAND `stranded` FOR US: `deleteObject`'s route-1 orphan guard (M20, the
-    // ui-review branch) refuses to tombstone a domain that live children still name — 409, blockers
-    // named — precisely so this shape cannot be produced through a door. Pinned here as the
-    // negative control, because if that guard ever went quiet this fixture would silently start
-    // testing a state the API can produce.
+    // THE API WILL NOT STRAND `stranded` FOR US. See docs/routes.md §86.
     const deleted = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/domains/${doomedId}`,
@@ -237,40 +181,7 @@ describe("a containment move may not build a cycle, and is authorized at both en
   it("a walk PAST THE BOUND fails closed — the destination reaches the org root, and the cycle sits beyond the bound", async () => {
     const org = await createTestOrg(server, "deep-parent");
 
-    // The shape that makes the depth bound load-bearing rather than decorative, and the only shape
-    // that isolates it. The destination is a DAG with two routes up:
-    //
-    //   destination --domain_id--> org root                      (1 hop: the root IS on the chain)
-    //   destination --contains---> deepService -...-> movable     (10 hops; the root behind it at 11)
-    //
-    // So `the org root is missing` does not fire, and yet the move WOULD close a real cycle whose
-    // proof lies at the edge of the bound. Under ADR-0037 the walk does not truncate silently: it
-    // probes one level PAST the bound and REFUSES when anything is there — and the containment-
-    // parent door turns that refusal into its own 400 (`containmentParentChainForDoor`'s conversion
-    // branch: "a row under it would sit past the bound on that route"). Delete that conversion —
-    // or let the door read a shortened chain — and this case is the one that goes red (measured
-    // 2026-08-18: `throw error` in place of the conversion, in CODE, turned exactly this case red
-    // while `containment-depth-doors` stayed green — the two files pin two different properties).
-    //
-    // WHY THIS BRANCH IS STILL LOAD-BEARING when no door can build the shape any more: the depth
-    // invariant is a WRITE door, so rows planted before 2026-08-18, or arrived under the
-    // federation-import carve-out, are untouched by it. Whether an estate actually holds one is a
-    // measurable fact, not a guess — `scripts/containment-depth-census.sql` asks each database.
-    // Review pair, 2026-08-18: zero rows past the bound (deepest live route 5 on the commander, 6
-    // on the outpost); production not measured from a laptop. So today this is defence-in-depth
-    // against a state no current door can create, and the comment says so rather than implying a
-    // live population.
-    //
-    // Nine levels under `movable`: `deep-9`'s own chain is exactly ten hops — the ceiling, complete
-    // and readable — so a row under it would sit at hop ELEVEN. Since the owner ruling of 2026-08-18
-    // (ADR-0037 Consequences; `graph/containment-depth-doors.integration.test.ts`) NO door will
-    // write that row: `POST /components {service: deep-9}` — the way this fixture used to be built —
-    // now answers 400 from the `contains` door. The hop-eleven shape is therefore PLANTED below the
-    // doors, exactly as the refusal-3 case above plants its tombstone: the component is created
-    // legitimately under a root-level service, and its `contains` edge is then re-pointed at
-    // `deep-9` by a direct UPDATE. That is the population this conversion branch exists for — a
-    // legacy row, or one that arrived under the federation-import carve-out — and it is labelled as
-    // such rather than dressed up as something a door can produce.
+    // The shape that makes the depth bound load-bearing. See docs/routes.md §87.
     const movable = await makeService(org, "deep-movable");
     let deepService = movable;
     for (let i = 1; i <= 9; i += 1) {
@@ -389,15 +300,12 @@ describe("a containment move may not build a cycle, and is authorized at both en
     });
     expect(applied.statusCode, applied.body).toBe(400);
 
-    // Reachability survived the refusal.
     expect((await getService(org.adminToken, parent)).status).toBe(200);
     const after = await getService(org.adminToken, parent);
     expect((after.json() as { domainId: string | null }).domainId).toBe(org.orgId);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // C2 — the SOURCE container is the other end of a move
-  // ---------------------------------------------------------------------------------------------
 
   interface SourceFixture {
     org: TestOrg;

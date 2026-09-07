@@ -1,9 +1,4 @@
-/**
- * `read-tree.ts` unit tests — the provider-neutral half of `readFilesAtRef` (team-pipeline-iac
- * proposal §12: bounded multi-file/tree reads). Pure functions and accumulators only: no HTTP, no
- * nock, no provider — each adapter's wire shapes (tree-listing endpoint, pagination) are proven in
- * that package's own nock suite; what is proven HERE is the bound machinery all three share.
- */
+/** `read-tree.ts` unit tests. See docs/plugins.md §120. */
 import { describe, expect, it } from "vitest";
 import {
   assertNonEmptyGlobs,
@@ -24,10 +19,6 @@ import {
   resolveMaxTotalBytes,
   type RawTreeEntry
 } from "./read-tree.js";
-
-// -------------------------------------------------------------------------------------------
-// globMatchesPath / matchesAnyGlob
-// -------------------------------------------------------------------------------------------
 
 describe("globMatchesPath", () => {
   it("`*` matches within one segment but NOT across `/`", () => {
@@ -78,9 +69,7 @@ describe("assertNonEmptyGlobs", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // Bound resolvers — same clamp shape as `read-file.ts`'s `resolveMaxBytes`, tested per bound.
-// -------------------------------------------------------------------------------------------
 
 describe("resolveMaxFiles / resolveMaxTotalBytes / resolveMaxEntriesScanned", () => {
   it("default when unset, undefined, zero, negative, NaN or non-finite", () => {
@@ -106,10 +95,6 @@ describe("resolveMaxFiles / resolveMaxTotalBytes / resolveMaxEntriesScanned", ()
     expect(resolveMaxEntriesScanned(500)).toBe(500);
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// gitProviderTreeBoundError / isGitProviderTreeBoundError
-// -------------------------------------------------------------------------------------------
 
 describe("gitProviderTreeBoundError / isGitProviderTreeBoundError", () => {
   it("builds an Error carrying treeBoundExceeded/limit/provider, message names both", () => {
@@ -209,9 +194,7 @@ describe("createTreeScanAccumulator", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // createTreeReadAccumulator — axis 3 (maxTotalBytes), enforced as each file finishes decoding.
-// -------------------------------------------------------------------------------------------
 
 describe("createTreeReadAccumulator", () => {
   it("does not throw while the running total stays at or under the bound", () => {

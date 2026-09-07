@@ -20,55 +20,7 @@ import { reconcileOrgTick } from "./reconcile.js";
 import { distinctDecisionStatements } from "./test-support/counting-cel-sandbox.js";
 import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake-plugin-host.js";
 
-/**
- * ADR-0028 increment 3 — THE HOLD, end to end against real Postgres.
- *
- * The guarantee under test: *A's deploy at stage S is not TRIGGERED until every declared dependency
- * of A that applies at S is satisfied at S.* "Not triggered" is asserted against the EXECUTOR — the
- * `trigger()` calls the plugin host actually received — not merely against a status column, because
- * a hold that recorded the right row while still firing the release would pass a column assertion
- * and fail the only thing that matters.
- *
- * DRIVES `reconcileOrgTick` DIRECTLY, no pg-boss loop (the same choice
- * `decision-write-amplification.integration.test.ts` makes, and for the same reason): "N ticks" then
- * means exactly N, which is what makes the persist-on-change row count a real assertion instead of a
- * race. A live loop would also be a COMPETING CONSUMER of the very rows these tests read back.
- *
- * The dependency's state is moved through the REAL write path — the fake executor's own
- * `forcePhase`/`rolloutByTarget` config, polled by reconcile, landing in `observed_state` via
- * `updateWaveTargetObserved`. Nothing here writes a wave-target column by hand; a fixture that
- * fabricated the observation would prove the predicate and nothing about the plumbing feeding it.
- * `ctx.config` is re-read on every plugin call, so mutating the shared config object between ticks
- * is how a dependency "progresses".
- *
- * A FRESH ORG PER CASE, and that is what makes the "exactly N" above TRUE rather than aspirational.
- * `reconcileOrgTick` sweeps the WHOLE org, and `advanceExecutingChanges` serves
- * `ORDER BY reconcile_cursor_at ASC LIMIT 25` — reconcile.ts's `BATCH_LIMIT`. On a shared org, every
- * change an earlier case leaves behind therefore competes for those same 25 slots with the change
- * the current case is about, and two properties of THIS fixture make that bite rather than merely
- * being untidy:
- *
- *   * `autoSucceedAfterMs` is ten minutes below, deliberately, so every target this file triggers is
- *     still `observing` when the file ends. Its change stays `executing` for the whole run.
- *   * Each such change keeps taking a slot for the whole run. (When this note was written a merely-
- *     POLLING change was ALSO un-bumped, so it froze at the FRONT of the queue permanently — that
- *     specific hole has since been closed by the poll-path bump, and the cursor moved to its own
- *     column in migration 0058. The fixture reason stands regardless: a fresh org per case is what
- *     makes "exactly N" a fact rather than a hope about batch contention.)
- *
- * MEASURED on the shared-org version of this file: the servable `executing` count climbed
- * 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 15, 16, 17, 18, 19, 20, 20, 21, 21, 23, 24, 25, 26, 27, 28, 29
- * — crossing `BATCH_LIMIT` at the 23rd case. From there `tick(3)` stopped meaning "three evaluations
- * of my change" and started meaning "three sweeps in which my change may or may not have got a turn",
- * and the last five cases failed at random under the full parallel suite while passing alone. That is
- * the production starvation `executing-batch-starvation.integration.test.ts` exists for, rebuilt by
- * accident inside a fixture — and the dose-response is exact: injecting four extra never-finishing
- * changes ahead of the suite moved the crossing four cases earlier and failed three of the last five;
- * ten failed thirteen consecutively from the crossing point, each a change the batch never served.
- *
- * Assertions are still scoped to a specific placement id or change id rather than to a bare call
- * count: `triggered` is ONE log for the whole file (fake-plugin-host.ts's own warning).
- */
+/** The hold, end to end against real Postgres. See docs/coordination.md §930. */
 
 interface RolloutSnapshot {
   phase?: string;
@@ -256,20 +208,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     );
 
   it("a hold is NOT a board-level block — it must not mark the component blocked forever", async () => {
-    // `latestBlockDecisionForSubject` selects the newest `verdict = 'block'` row for a subject,
-    // filtered on the VERDICT ALONE — no kind, no recency, no change-state gate — and
-    // `service-board.ts` does `isBlocked = hasFailedWave || blockDecision !== undefined`, feeding it
-    // into the component row's `attention.blocked` and the board's `blocked` tally. Nothing ever
-    // writes a clearing row.
-    //
-    // So if the hold recorded `block`, the component would read blocked PERMANENTLY: after the hold
-    // released, after the change reached `accepted`, forever. That is tolerable for the other
-    // nineteen `block` writers, which fire when something is genuinely stuck and wants an operator.
-    // This one fires on EVERY coupled release by design, so it would make the attention signal
-    // permanently wrong for precisely the components that adopted the feature.
-    //
-    // Asserted through the board's OWN query rather than by reading the verdict string, so this
-    // fails if someone reintroduces the coupling to that read path by any route.
+    // The newest block row for a subject, filtered by kind. See docs/coordination.md §931.
     const dependency = await componentAt("blockread-dep", [gamma]);
     const dependant = await componentAt("blockread-app", [gamma]);
 
@@ -338,17 +277,10 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("an ABANDONED release of the dependency does not wedge the hold forever", async () => {
-    // THE PERMANENT DEADLOCK. Nothing on the cancel path touches `change_wave_targets`, so a
-    // cancelled change leaves every one of its targets frozen exactly where it stood — `observing`,
-    // here, for the lifetime of the database. Reading that as "the dependency's latest deploy at
-    // this place" makes the verdict `behind` on every tick from now until somebody notices, with no
-    // override, no expiry and no operator escape, EVEN THOUGH the dependency's last actual deploy
-    // here succeeded. Holding on a genuinely failed dependency is defensible; holding on an
-    // abandoned one, where no action exists that would ever clear it, is not.
+    // THE PERMANENT DEADLOCK. See docs/coordination.md §932.
     const dependency = await componentAt("abandoned-dep", [gamma]);
     const dependant = await componentAt("abandoned-app", [gamma]);
 
-    // (1) The dependency's real deploy at gamma SUCCEEDS.
     const first = await release("abandoned-dep-first", [dependency.id]);
     executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
     await tick(3);
@@ -434,21 +366,10 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("a release PARKED IN `waiting` does not mask the dependency's earlier success", async () => {
-    // THE SAME WEDGE AS THE ABANDONED CASE, REACHED WITHOUT ANYONE ABANDONING ANYTHING — and the
-    // instance that showed the two-state `["cancelled","rolled_back"]` list was an INCOMPLETE CENSUS
-    // rather than a complete rule. Plans are compiled on the `evaluated -> coordinated` edge, BEFORE
-    // a change executes, so a change that never starts still OWNS `pending` wave targets at every
-    // place it would have deployed. Being newest, they outranked the dependency's genuinely
-    // successful earlier deploy at the same place, and every dependant was held forever behind a
-    // release that had not begun and might never begin (the owner's rule for `waiting` is "wait
-    // forever, warn at 24h").
-    //
-    // The property, which is what the fix is keyed on rather than a longer list of states: a wave
-    // target that no change is actively standing behind is not the dependency's current state here.
+    // The same wedge, reached without anyone abandoning anything. See docs/coordination.md §933.
     const dependency = await componentAt("waiting-dep", [gamma]);
     const dependant = await componentAt("waiting-app", [gamma]);
 
-    // (1) The dependency's real deploy at gamma SUCCEEDS.
     const first = await release("waiting-dep-first", [dependency.id]);
     executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
     await tick(3);
@@ -480,38 +401,15 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("a `coordinated` release DOES count — the census must not exclude the batch's own backlog", async () => {
-    // THE BOUNDARY ON THE OTHER SIDE of the three parked cases above, and the one an earlier
-    // revision of the census got wrong in the opposite direction: it ruled `coordinated` out,
-    // reasoning that "a freeze or any other gate on `coordinated -> executing` throws inside
-    // `advanceCoordinatedChanges`, so a change can sit here". Nothing gates that edge —
-    // `GOVERNED_LIFECYCLE_EDGES` is `{"validating->accepted"}` — and the one real blocker,
-    // `runPreDeployArtifactGate`, PARKS, which `reconcileBlockedAt` already excludes. So the
-    // exclusion caught nothing and gave up something real: `advanceCoordinatedChanges` is
-    // BATCH_LIMIT-capped, so on a busy tick the surplus sit in `coordinated` unparked, owning
-    // `pending` rows at every place they are about to deploy. Excluding them releases every
-    // dependant against the dependency's STALE earlier success — the exact race this feature exists
-    // to prevent.
-    //
-    // Asserted through `findLatestWaveTargetForObject` rather than through the tick loop on purpose:
-    // a change left in `coordinated` is advanced to `executing` by the very next tick (which also
-    // counts), so a loop-driven test would pass for the wrong reason and could not tell the two
-    // states apart. This reads the census directly, at the one instant that distinguishes them.
+    // The boundary on the other side of the parked cases. See docs/coordination.md §934.
     const dependency = await componentAt("coordinated-dep", [gamma]);
 
-    // (1) The dependency's real deploy at gamma SUCCEEDS.
     const first = await release("coordinated-dep-first", [dependency.id]);
     executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
     await tick(3);
     expect(await waveTargetStatus(first.id, dependency.at(gamma))).toBe("succeeded");
 
-    // (2) A second release compiles its plan and is then put back into the state it occupies while
-    //     it waits its turn: `coordinated`, unparked, targets still `pending` because
-    //     `advanceCoordinatedChanges` has not reached it. Both fields are written directly, and
-    //     that is the honest way to build this: one `reconcileOrgTick` cascades
-    //     proposed -> evaluated -> coordinated -> executing in a single call (each pass re-reads its
-    //     own state), so there is no number of ticks that LEAVES a change here. The state is real —
-    //     it is what every change past BATCH_LIMIT looks like on a busy tick — it just cannot be
-    //     reached by ticking, only by being outnumbered.
+    // A second release, put back into the state it occupies. See docs/coordination.md §935.
     delete executorConfig.forcePhase[dependency.at(gamma)];
     const second = await release("coordinated-dep-second", [dependency.id]);
     await tick(2);
@@ -547,14 +445,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("a release PARKED by a wave that failed ELSEWHERE does not mask the earlier success either", async () => {
-    // The third way into the same wedge, and the one that shows why the fix cannot simply be "trust
-    // terminal rows and distrust the rest of a parked change". `markChangeReconcileBlocked` takes a
-    // change OUT of `listChangeRowsInStates` for good, so every target it has not reached yet stays
-    // `pending` for the lifetime of the database — at OTHER places, where nothing failed at all.
-    //
-    // THE BOUNDARY THIS MUST NOT CROSS is pinned by the `FAILED` case above: the same park, read at
-    // the place where the target itself is `failed`, still HOLDS. Terminal is a fact about the
-    // place; parked is a fact about who is tending the change.
+    // The third way in, showing why trusting is not the fix. See docs/coordination.md §936.
     const twoWave = await admin.object("release-topology").create({
       name: `gamma-then-prod-${randomUUID().slice(0, 8)}`,
       properties: {
@@ -610,12 +501,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("a GENUINELY IN-FLIGHT newer release DOES still supersede an older success", async () => {
-    // THE OTHER SIDE OF THE PROPERTY, and the reason the fix is a rule about who is standing behind
-    // a row rather than "ignore anything that is not `succeeded`". This is "B is rolling out v2 and
-    // A must wait for v2": the dependency succeeded here last week and is RIGHT NOW mid-redeploy at
-    // the same place, with a live `executing` change driving it. Falling back to the old success
-    // would let the dependant deploy against a version its dependency is in the middle of leaving —
-    // exactly the situation the coupling exists to order.
+    // The other side of the property, and who stands behind it. See docs/coordination.md §937.
     const dependency = await componentAt("supersede-dep", [gamma]);
     const dependant = await componentAt("supersede-app", [gamma]);
 
@@ -767,13 +653,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("INERTNESS: an edge pointing OUTSIDE the change's own target set orders nothing", async () => {
-    // THE BOUNDARY of what ADR-0028 decision 6 moved, and the reason it is a boundary rather than a
-    // simplification. The removed compile-time check keyed on edges with BOTH endpoints in the
-    // change's target set (`loadDependsOnEdges`), so an edge reaching outside it never ordered
-    // anything and must not start now: `graph.dependentIds` is a live CEL policy input, and making
-    // every edge in the org a release gate would re-serialise releases that ran in parallel
-    // yesterday. Here the change targets ONLY the dependant, so this edge is out of scope — even
-    // though it points at a component that has never deployed at gamma and would otherwise hold.
+    // The boundary of what the decision moved, not a single case. See docs/coordination.md §938.
     const dependency = await componentAt("inert-dep", [gamma]);
     const dependant = await componentAt("inert-app", [gamma]);
     await admin.relationships.create({
@@ -790,12 +670,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("a plain `depends_on` EDGE between two targets of ONE change serialises them — no declaration", async () => {
-    // THE SET THE COMPILE-TIME CHECK COVERED AND THE DECLARATION CHANNEL DOES NOT. `compileStages`
-    // used to 400 any plan putting two edge-joined targets in one wave, whatever wrote the edge — a
-    // seed, an IaC manifest, an operator, or an EARLIER change's declaration. Keying the hold only
-    // on THIS change's `stageDependencies` would have left every one of those ordering nothing at
-    // all: the pair would compile into one wave and both targets would fire in parallel, with no
-    // hold and no record. Nothing here declares anything; the edge is the whole input.
+    // The set the compile-time check covered and this does not. See docs/coordination.md §939.
     const dependency = await componentAt("edge-dep", [gamma]);
     const dependant = await componentAt("edge-app", [gamma]);
     await admin.relationships.create({
@@ -828,12 +703,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("`atTargets` narrows the DECLARATION, it does not subtract the pair's edge", async () => {
-    // The one interaction between the two halves of the dependency set, pinned because the tempting
-    // "de-dupe against everything declared" is wrong. A declaration scoped to prod is filtered out
-    // at gamma — but the `depends_on` edge it minted is a standing graph fact with both endpoints in
-    // this change's target set, which is exactly the input `compileStages` used to refuse outright.
-    // Suppressing it here would let a declarer WEAKEN an ordering the graph already asserts, and
-    // would ship the parallel deploy that used to be a 400.
+    // The one interaction between the two halves of the set. See docs/coordination.md §940.
     const dependency = await componentAt("narrow-dep", [gamma, prod]);
     const dependant = await componentAt("narrow-app", [gamma, prod]);
 
@@ -855,16 +725,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("`minWeight` does not SUBTRACT the pair's edge either — the strictest constraint wins", async () => {
-    // THE OTHER HALF OF THE SAME COROLLARY, and the one that was missing: `atTargets` narrows WHERE
-    // a declaration applies, `minWeight` weakens WHAT it demands, and neither may reach the ordering
-    // an EDGE asserts. The edge here is written by an operator — nothing the declarer authored —
-    // and it says "app does not deploy before dep at a shared place", full stop.
-    //
-    // Without the composition rule the declarer neutralises that for free: `minWeight: 1` is
-    // satisfied by any observable weight, so app fires alongside a dependency sitting at 5%, on an
-    // input that was a loud 400 before ADR-0028 decision 6 handed the duty to this hold. The
-    // authority story around minting `depends_on` edges (`relationship:write` at BOTH endpoints)
-    // would mean nothing if a declaration could weaken one with no authority whatsoever.
+    // The other half of the corollary, which was missing. See docs/coordination.md §941.
     const dependency = await componentAt("weaken-dep", [gamma]);
     const dependant = await componentAt("weaken-app", [gamma]);
     await admin.relationships.create({
@@ -930,11 +791,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("a dependent pair in ONE wave compiles and then SERIALISES — the check ADR-0028 decision 6 replaced", async () => {
-    // `plan-compiler.ts` used to reject this outright (`topology_violates_dependency` -> 400 ->
-    // "auto-cancelled: plan compilation failed"). Increment 2 removed that refusal on the promise
-    // that the per-target hold would take the ordering over; this is the test that collects on it.
-    // Both components are targets of the SAME change, so both placements sit in the SAME wave — the
-    // exact shape the wave gate cannot express, because it issues one verdict for the whole wave.
+    // `plan-compiler.ts` used to reject this outright. See docs/coordination.md §942.
     const dependency = await componentAt("pair-dep", [gamma]);
     const dependant = await componentAt("pair-app", [gamma]);
 
@@ -970,15 +827,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("a FAILED target TERMINALIZES the wave even with a held target beside it", async () => {
-    // THE INVERSE OF THE HOLD'S INVARIANT, and a regression the hold introduced on the very shape
-    // ADR-0028 decision 6 re-opened. A held target is in flight, so a wave carrying one never
-    // reached `markWaveTerminal` — and with the dependency's own target FAILED in that same wave,
-    // "in flight" was permanent: the dependency is not coming back within this wave, so the hold
-    // could never clear. The change then sat in `executing` forever with NO auto-rollback, NO park,
-    // NO epitaph and no failure recorded anywhere, while the hold's `updated_at` bump re-served it
-    // every tick and occupied a BATCH_LIMIT slot for good. Before decision 6 this exact input was a
-    // loud `topology_violates_dependency` 400 at compile time, so silence here is strictly worse
-    // than what it replaced.
+    // The inverse of the hold's invariant, and its regression. See docs/coordination.md §943.
     const dependency = await componentAt("wedge-dep", [gamma]);
     const dependant = await componentAt("wedge-app", [gamma]);
     executorConfig.forcePhase[dependency.at(gamma)] = "failed";
@@ -1014,12 +863,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("the PURE hold still keeps a wave in flight — with nothing failed, nothing terminalizes", async () => {
-    // THE CONTROL for the case above, and the invariant the backoff gate's comment calls
-    // load-bearing: a hold must keep an otherwise-healthy wave open, or a change reports a clean
-    // release for a target that never ran. Both shapes are pinned, because the fix above reads two
-    // things — how many targets are still in flight, and how many of those are merely held.
-    //
-    // SHAPE 1: a held target beside a sibling that is genuinely still running.
+    // The control for the case above, and the invariant. See docs/coordination.md §944.
     const dependency = await componentAt("inflight-dep", [gamma]);
     const dependant = await componentAt("inflight-app", [gamma]);
     const change = await release(
@@ -1048,20 +892,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("a declared coupling with NO stage-shaped topology is NOT enforced — and SAYS SO (ADR-0028 decision 4)", async () => {
-    // THE FAIL-OPEN, AND THE EMPIRICAL ANSWER TO "does the common CI case land here?".
-    //
-    // `compileAndPersistPlan` only emits PLACEMENT-shaped wave targets when a stage-shaped release
-    // topology resolves for the change (`plan-service.ts`'s `resolveStagePlacements`). When pipeline
-    // resolution finds nothing at any rung — component, service, org default — `topologyObjectId` is
-    // null and `compilePlan` falls to its toposort path, whose waves name the change's OWN TARGETS,
-    // i.e. the components. A stage-scoped hold has no place to be scoped by, so the declaration
-    // orders nothing.
-    //
-    // This is exactly the single-target, webhook-born shape the feature exists for, and it hits the
-    // branch WHENEVER NO PIPELINE IS BOUND — having placements is not sufficient, the topology is
-    // what decides. That is why silence here was the finding: before this, `held` was false, no
-    // Decision was written, and the seam's only warn fires on `weightUnreadable`, so the author of
-    // the declaration had no surface at all telling them it did nothing.
+    // The fail-open, and whether the common CI case lands here. See docs/coordination.md §945.
     const dependency = await componentAt("nostage-dep", [gamma]);
     const dependant = await componentAt("nostage-app", [gamma]);
 
@@ -1133,15 +964,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     const dependency = await componentAt("nostage-flood-dep", [gamma]);
     const dependant = await componentAt("nostage-flood-app", [gamma]);
 
-    // A MALFORMED entry alongside the declaration, so the target is HELD and therefore stays
-    // `pending` across every tick — which is what makes "once" a real assertion instead of an
-    // artefact of the target triggering immediately and never being evaluated again.
-    //
-    // WRITTEN STRAIGHT ONTO THE STORED ROW, because no ingress accepts one any more: the typed
-    // field is Zod-validated, both halves of the report ingress refuse a malformed
-    // `stageDependencies` with a Decision, and `proposeChange` no longer stores a caller's raw
-    // `properties.stageDependencies` at all. That leaves exactly the population the narrower still
-    // exists for — a row written before those doors closed — so the fixture builds one.
+    // A malformed entry alongside, so the target stays pending. See docs/coordination.md §946.
     const change = await admin.changes.propose({
       name: `nostage-flood-${randomUUID().slice(0, 8)}`,
       targets: [dependant.id],
@@ -1170,17 +993,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
   });
 
   it("PINS THE KNOWN LIMITATION: a declaration is change-scoped, so it holds EVERY target of the change", async () => {
-    // ADR-0028 Non-goals, stated as a test rather than only as prose. `properties.stageDependencies`
-    // hangs off the CHANGE and carries no record of WHICH target an entry was declared for, so
-    // `reconcile.ts` parses the set once and evaluates it against every wave target. A change
-    // targeting [app, sibling] where only `app`'s CI declared `dependsOn: dependency` therefore
-    // holds SIBLING behind that dependency too.
-    //
-    // Unobservable for the 277-of-281 single-target case the declaration channel is written for, and
-    // wrong exactly for the multi-target case. It is pinned rather than fixed because there is no
-    // data to fix it from — the association was never carried — and the fix is an additive
-    // `forComponents?: string[]` on `StageDependencySchema`. When that lands, THIS test goes red,
-    // which is the whole point of writing it: a narrowing must flip an assertion, not slide through.
+    // The non-goals, stated as a test rather than only prose. See docs/coordination.md §947.
     const dependency = await componentAt("changescope-dep", [gamma]);
     const app = await componentAt("changescope-app", [gamma]);
     const sibling = await componentAt("changescope-sibling", [gamma]);
@@ -1258,11 +1071,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     expect(await waveTargetStatus(depChange.id, dependency.at(gamma))).toBe("succeeded");
     expect(firedFor(dependant.at(gamma))).toBe(1);
 
-    // THE PROPERTY, stated the way it is actually true: no row is ever a RESTATEMENT of the one
-    // before it. Across 14 ticks the hold's explanation legitimately changes — `never_deployed`
-    // becomes `behind` the moment the dependency's own release gives it a wave target here — and
-    // each of those is a genuinely different answer worth a row. What must never happen is the same
-    // answer written twice, which is what "per tick" would look like.
+    // THE PROPERTY, stated the way it is actually true. See docs/coordination.md §948.
     const all = await holdDecisions(change.id);
     expect(distinctDecisionStatements(all)).toBe(all.length);
     expect(all.length).toBeLessThan(TICKS + MORE_TICKS);

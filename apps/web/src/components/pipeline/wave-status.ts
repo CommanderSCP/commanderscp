@@ -1,16 +1,7 @@
 import type { BadgeProps } from "../ui/badge";
 import type { PromotionState } from "./PromotionArrow";
 
-/**
- * THE ONE wave-status vocabulary (design spec §2.13) — shared by the change detail wave
- * progression, the change pipeline view, and (after its own migration) the campaign wave board.
- *
- * MODULE CONTRACT for consumers that are migrated later (campaign-detail.tsx): everything here is
- * structural — helpers take a bare `status` string (wave/wave-target `status` is free-form on the
- * wire; the reconciliation loop only ever writes pending/running/succeeded/failed, DESIGN.md §9.3)
- * or a `{ status: string }`-shaped pair, so ChangeWave and CampaignWave both satisfy the inputs
- * without this module importing either type. No changes here are needed to adopt it.
- */
+/** THE ONE wave-status vocabulary (design spec §2.13). See docs/web.md §100. */
 
 export function formatDate(iso: string | null | undefined): string {
   return iso ? new Date(iso).toLocaleString() : "—";
@@ -53,14 +44,7 @@ export function waveStatusBorder(status: string): string {
   }
 }
 
-/**
- * Inter-wave promotion state, derived ONLY from wave status (coordination-ui-views.md Layer A).
- * Wave-to-wave promotion is automatic server-side reconcile — the gate/approval machinery is a
- * change-level concern surfaced on the FINAL arrow, so we do not attribute an approval/deny to a
- * specific inter-wave arrow (that would be inventing a per-wave gate the model does not have).
- * `pending` is the plain no-verdict connector (§2.13): nothing failed and nothing was denied,
- * there is simply no verdict to paint.
- */
+/** Inter-wave promotion state, derived ONLY from wave status. See docs/web.md §101. */
 export function wavePromotion(
   upstream: { status: string },
   downstream: { status: string }

@@ -18,14 +18,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * CRITICAL #5 (PR #7 review — "relay can permanently drop a NATS-bound event"): the relay must
- * never mark an outbox row `processed_at` until EVERY sink configured for `eventBusBackend` has
- * actually accepted it. Uses a controllable fake `NatsFanoutHandle` (not a real NATS
- * Testcontainer — events/event-bus.integration.test.ts already proves real JetStream parity; this
- * suite is about OUR relay code's mark-after-all-sinks guarantee specifically, independent of
- * real broker behavior) whose `publish()` can be toggled to fail on demand.
- */
+/** Never mark a row processed until every sink accepted it. See docs/events.md §30. */
 describe("outbox-relay: never marks a NATS-bound event processed unless the JetStream publish succeeded", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -64,16 +57,7 @@ describe("outbox-relay: never marks a NATS-bound event processed unless the JetS
   });
 
   it("a JetStream publish failure leaves the row unprocessed on every retry; once the sink recovers, the SAME row is delivered and marked processed", async () => {
-    // Hermetic starting point (this is a SHARED-Postgres, singleFork suite): every test file that
-    // creates objects writes outbox rows, and most of them run NO relay, so a large backlog of
-    // permanently-unprocessed rows accumulates ahead of anything this test publishes. The relay
-    // drains that backlog OLDEST-first, 100 rows per ~1s poll — so without this pre-clean, once the
-    // NATS sink "recovers" below the relay would have to grind through hundreds of stale backlog
-    // rows before it ever reaches our probe, blowing the recovery timeout (the exact flake this
-    // fixes). Marking the pre-existing backlog processed makes our probe the ONLY pending row, so
-    // the relay's behaviour is deterministic and every `publishCalls` entry is genuinely about our
-    // probe. It does NOT weaken the assertions: the "stays unprocessed while failing" half still
-    // catches a mutation that marked rows processed on failure.
+    // Hermetic starting point. See docs/events.md §31.
     await adminClient.query(`UPDATE outbox SET processed_at = now() WHERE processed_at IS NULL`);
 
     let shouldFail = true;

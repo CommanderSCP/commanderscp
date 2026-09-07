@@ -8,37 +8,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `placement` — one component at one deployment target (ADR-0026 D2/D3/D14, owner decision D17).
- *
- * The properties are the SOURCE OF TRUTH and the two edges are DERIVED. One fact in two places is
- * the cost of the shape, and every test below that touches a write asserts BOTH halves, because a
- * bug in this design does not look like an error — it looks like a placement that is fine until
- * something traverses it, or an edge pointing out of an object that no longer exists.
- *
- * **Mutation log** (each applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | drop the 0051 unique index | the duplicate test AND the race test fail |
- * | index without `deleted_at IS NULL` | "re-declared after withdrawal" fails |
- * | drop `placed_at` from the derived-edge list (create) | "both derived edges" fails |
- * | withdrawal skips the edges | "withdrawal removes the derived edges" AND "re-declared" fail |
- * | remove `placement` from `PAIR_BOUND_OBJECT_TYPE_IDS` | BOTH door tests fail |
- * | drop the component type-check in `createPlacement` | **all pass** — see below |
- *
- * That last row is recorded because it is a true negative, not a gap: the `places` edge's own
- * registered `to_types` (migration 0051) refuses a non-component one step later, inside the same
- * transaction, so the write is still rejected and nothing is stored. The explicit check earns its
- * place by failing BEFORE any write and by saying which endpoint was wrong — but it is not the only
- * guard, and a test asserting "this throws" cannot separate the two. Stated plainly rather than
- * dressed up as proof.
- *
- * The race test's history is also worth keeping: it originally passed with the 0051 index REMOVED
- * ENTIRELY, because two derived-URN creates of the same pair compute the same URN and
- * `objects_org_id_urn_key` serialised them incidentally. It measures the pair index only because it
- * now supplies distinct explicit URNs.
- */
+/** `placement` — one component at one deployment target. See docs/graph.md §144. */
 describe("placement: one component at one deployment target", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -65,7 +35,6 @@ describe("placement: one component at one deployment target", () => {
       deploymentTarget: prod.id
     });
 
-    // The source of truth.
     expect(placement.typeId).toBe("placement");
     expect(placement.properties.componentId).toBe(comp.id);
     expect(placement.properties.deploymentTargetId).toBe(prod.id);
@@ -170,15 +139,7 @@ describe("placement: one component at one deployment target", () => {
   });
 
   it("the DB itself enforces one placement per pair (race backstop)", async () => {
-    // EXPLICIT, DISTINCT URNs are load-bearing here, and this test asserted nothing without them.
-    // Two derived-URN creates of the same pair compute the SAME base URN, so `objects_org_id_urn_key`
-    // serialises them incidentally — the test passed with migration 0051's pair index removed
-    // entirely, i.e. it was measuring the wrong constraint. Distinct URNs take that constraint out
-    // of the picture and leave the pair index as the only thing that can hold.
-    //
-    // The race itself is not theoretical: 0049's mutation testing showed two concurrent creates
-    // both getting past an application-level check under READ COMMITTED. Here there is no
-    // application-level pre-check at all, so the index is the sole guard by construction.
+    // Explicit distinct URNs, without which this asserted nothing. See docs/graph.md §145.
     const comp = await createOrphanComponent(server, org, "pl-race");
     const tgt = await target("pl-race-target");
     const urnBase = `urn:scp:${org.orgId}:placement:pl-race`;
@@ -211,7 +172,6 @@ describe("placement: one component at one deployment target", () => {
       admin.placements.create({ component: comp.id, deploymentTarget: svc.id })
     ).rejects.toThrow();
 
-    // Nothing was written under either rejection.
     const all = await admin.placements.list({ deploymentTarget: tgt.id });
     expect(all.items).toHaveLength(0);
   });

@@ -15,47 +15,7 @@ import { objects, relationships } from "../db/schema.js";
 import { containmentChain } from "./containment.js";
 import { hasPermission } from "../authz/resolve.js";
 
-/**
- * AN OBJECT'S EDGES MUST NOT OUTLIVE THE OBJECT — AND A DELETED ANCESTOR MUST NOT GOVERN.
- *
- * ============================================================================================
- * THE PROPERTY, AND HOW IT WAS FOUND
- * ============================================================================================
- * `deleteObject` tombstoned the object ROW alone. Every `relationships` row touching it kept
- * `deleted_at IS NULL` — a live edge to a dead node.
- *
- * Measured on the live homelab (2026-08-02) during the `docs/proposals/post-import-configuration.md`
- * §6 pair merge: soft-deleting one
- * absorbed component took the estate from 0 dangling `contains` edges to 1, and it had to be removed
- * by hand. §6's own verification list demands "the absorbed component is soft-deleted with no live
- * `contains` edge", which says the hazard was anticipated and never enforced anywhere in code.
- *
- * It is not tidiness. The containment walk is BUILT from those edges and filtered only on the EDGE's
- * `deleted_at`, so a dangling edge keeps a deleted service on a live component's chain — and that
- * chain is what `matchPoliciesForTargets`, `containmentScopeIds` for freezes and `authz/resolve.ts`
- * both read.
- *
- * ============================================================================================
- * WHY THE FIX HAS TWO HALVES, AND WHY NEITHER IS SUFFICIENT ALONE
- * ============================================================================================
- *   the CASCADE (objects-repo) — stops NEW dangling edges. It cannot be complete: it refuses REPLICA
- *                                edges, because single-writer authority for those belongs to another
- *                                domain, and it obviously cannot fix rows already in a database.
- *   the FILTER (containment +   — makes a deleted ancestor stop governing regardless of why its edge
- *   authz)                       is still live. This is what covers the two cases the cascade can't.
- *
- * A fix that shipped only the cascade would read as complete and leave both gaps.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `objects-repo.ts`: drop the cascade block | the dangling-edge test FAILS (1 live edge to a dead node, exactly what was measured live) |
- * | `containment.ts`: drop `svc.deleted_at IS NULL` from route 2 | the deleted-service-still-governs test FAILS — the policy fires from a dead scope |
- * | `authz/resolve.ts`: drop the `parent_o.deleted_at IS NULL` join | the deleted-service-still-grants test FAILS — a role bound at a dead service still authorizes writes |
- * | `objects-repo.ts`: cascade WITHOUT the `originDomainId = self` filter | the replica-edge test FAILS with a single-writer conflict, taking the whole delete down with it |
- */
+/** AN OBJECT'S EDGES MUST NOT OUTLIVE THE OBJECT. See docs/graph.md §47. */
 describe("deleting an object tombstones its edges, and a deleted ancestor stops governing", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -83,7 +43,6 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
     return { component, service };
   }
 
-  /** Live edges touching `objectId` in either direction. */
   async function liveEdgesTouching(objectId: string) {
     return withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
@@ -99,19 +58,7 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
     );
   }
 
-  /**
-   * Tombstones an object BELOW THE DOORS — a bare `deleted_at` write that runs no cascade and no
-   * guard — leaving its `contains` edge LIVE with a dead `from_id`. That is the exact state a
-   * replica row, or any row predating the container-delete guard, is already in.
-   *
-   * It has to be surgery since the 2026-08-18 owner ruling (ADR-0038 clause 5): `DELETE` on a
-   * container that still has containment children answers 409 with the blockers named, so the
-   * live-child-under-dead-ancestor shape can no longer be REACHED through any door — which is the
-   * point of the guard, and why the reader-side pins below still matter: they are the
-   * defence-in-depth for the legacy/imported population. The write runs in its OWN committed
-   * transaction and is READ BACK, because a fixture that silently updates zero rows leaves the
-   * test measuring the fixed state and passing for the wrong reason.
-   */
+  /** Tombstones an object BELOW THE DOORS. See docs/graph.md §48. */
   async function tombstoneBelowTheDoors(objectId: string) {
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
@@ -157,11 +104,7 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
   });
 
   it("soft-deleting an object tombstones the edge it is the FROM side of", async () => {
-    // The cascade matches `from_id` OR `to_id`; a fix that only handled one direction would leave
-    // every component pointing at a dead service. DELIBERATE FLIP (2026-08-18, ADR-0038 clause 5):
-    // this case used to delete a service that still CONTAINED a component — the container-delete
-    // guard now refuses exactly that (pinned below), so the from_id direction is pinned on a
-    // non-containment edge instead: a childless service with a `depends_on` edge FROM it.
+    // The cascade matches both directions, not just one. See docs/graph.md §49.
     const upstream = await admin.object("service").create({ name: `cascade-from-up` });
     const downstream = await admin.object("service").create({ name: `cascade-from-down` });
     await admin.relationships.create({

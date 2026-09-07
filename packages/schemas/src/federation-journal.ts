@@ -2,48 +2,13 @@ import { createHash, sign as cryptoSign, verify as cryptoVerify } from "node:cry
 import type { SyncJournalEntry } from "./federation.js";
 import { canonicalJson, canonicalizeDeep } from "./canonical-json.js";
 
-/**
- * Sync-journal hash-chain + Ed25519 signing/verification (DESIGN.md §13) — deliberately NOT part
- * of this package's default `"."` export, for the exact reason `audit-chain.ts` isn't: it depends
- * on Node's `node:crypto`, and `@scp/schemas`'s default entry is imported by `apps/web` (browser
- * build) via `@scp/sdk`. Import via the `@scp/schemas/federation-journal` subpath instead
- * (apps/server's federation module, `packages/cli`'s `scp federation` commands), keeping
- * `node:crypto` out of any module graph Rollup resolves starting from the package's main entry.
- *
- * Pure functions throughout (BUILD_AND_TEST.md §4.1/§7 — `federation/journal` is one of the
- * modules held to ≥95% branch coverage): no I/O, table-driven-testable, safe to run both
- * server-side (writing/verifying the journal) and client-side (`scp federation import` verifying
- * a bundle before ever touching the DB).
- *
- * SECURITY-SENSITIVE (M6 PR body flag): `verifyJournalChain` is the fail-closed gate a tampered or
- * truncated segment must never pass — a bad signature, a broken hash link, a sequence gap, or a
- * reordering all return `valid: false`, and callers MUST reject the entire segment/bundle on any
- * such result (never apply a "mostly valid" prefix implicitly — callers that want partial-prefix
- * application must slice the input themselves BEFORE calling this and treat that as a deliberate
- * choice, not verification's default).
- */
+/** Sync-journal hash-chain + Ed25519 signing/verification. See docs/schemas.md §207. */
 
 /** Genesis `prev_hash` for the first entry of an origin domain's journal — mirrors
  *  `audit-chain.ts`'s `AUDIT_GENESIS_HASH` exactly (32 zero bytes, hex-encoded). */
 export const JOURNAL_GENESIS_HASH = "0".repeat(64);
 
-/** Deterministic JSON serialization (recursively sorted object keys) — an alias for the repo's
- *  single canonicalizer, `./canonical-json.ts` (read its doc comment; the reasoning lives there).
- *
- *  WHY `canonicalizeJournalEntry` NEEDS IT — SECURITY-SENSITIVE bug this fixes (caught by M6's own
- *  integration tests): `payload` is a free-form nested object that round-trips through a Postgres
- *  `jsonb` column, which does NOT guarantee preserving the original key insertion order. A
- *  row_hash computed with plain `JSON.stringify` at WRITE time (using the in-memory object's
- *  original key order) would then MISMATCH the same computation recomputed at VERIFY time against
- *  the entry as read back from the database — a false-positive "tampered" rejection on every
- *  single legitimately unmodified row, the moment it round-trips through storage.
- *
- *  This used to be a local copy of that helper, "duplicated (rather than imported) from
- *  `apps/server/src/graph/objects-repo.ts`'s identical helper because this package must stay
- *  server-independent". The module boundary was right; the duplication was not the way to keep it,
- *  and it is why a canonicalization defect that silently dropped `__proto__` subtrees — making two
- *  materially different payloads share one `rowHash` and one Ed25519 signature — existed in five
- *  files simultaneously. The shared home is inside THIS package, so the boundary still holds. */
+/** Deterministic JSON serialization. See docs/schemas.md §208. */
 export const canonicalStringify = canonicalJson;
 
 /** Deterministic canonical string for the *content* of a journal entry (everything except
@@ -92,11 +57,7 @@ function derPrivateKeyToKeyObject(privateKeyB64: string) {
   };
 }
 
-/** Signs a journal row's `rowHash` with the origin domain's Ed25519 private key (PKCS8 DER,
- *  base64). Signing the hash — rather than re-signing the full entry content — is sufficient: the
- *  hash is already a binding cryptographic commitment to `prevHash` (chain position) plus every
- *  content field, so a signature over it transitively authenticates the whole chain up to and
- *  including this entry. */
+/** Signs a journal row's hash with the origin's private key. See docs/schemas.md §209. */
 export function signJournalRowHash(privateKeyB64: string, rowHash: string): string {
   const signature = cryptoSign(
     null,
@@ -124,13 +85,7 @@ export function verifyJournalEntrySignature(
   }
 }
 
-/**
- * WHY THE FAILURE IS CODED, not just described. Two of these mean "the run I was shown is not
- * gap-free" — which is what a DELIBERATELY SCOPE-FILTERED sender produces — while the rest mean
- * "this content is not what its signer produced". Callers that must tell those two apart (see
- * `import-repo.ts`: a receiver at `full` facing a narrower sender) were otherwise left matching on
- * prose, which is exactly the kind of coupling that rots. `reason` stays the human string.
- */
+/** WHY THE FAILURE IS CODED, not just described. See docs/schemas.md §210. */
 export type JournalChainBreakCode =
   /** Contiguity only: a gap or a reorder against the expected next sequence. */
   | "sequence_gap"
@@ -161,63 +116,18 @@ export interface JournalChainVerification {
   brokenAt?: { id: string; sequence: number; reason: string; code: JournalChainBreakCode };
 }
 
-/**
- * Verifies hash-chain contiguity AND Ed25519 signature for a contiguous run of entries from ONE
- * origin domain, already sorted ascending by `sequence`. `resolvePublicKey` returns the public key
- * in force for a given entry (callers resolve this from their peer-key registry, honoring
- * rotation history — a segment signed before a rotation must still verify against the OLD key
- * that was current at signing time); returning `null` is treated as "no key available" and fails
- * closed.
- *
- * Checks, in order, for every entry: (1) `sequence` is exactly one more than the previous entry's
- * (or equals the caller-supplied starting sequence for the first entry) — catches gaps AND
- * reordering; (2) `prevHash` matches the running expected hash — catches truncation/splicing;
- * (3) `rowHash` recomputes correctly — catches content tampering; (4) the signature verifies
- * against the resolved public key — catches a forged row that happens to hash-chain correctly
- * (impossible without the private key, but checked independently regardless). ANY failure returns
- * `valid: false` immediately — the caller must reject the WHOLE input, never apply a valid prefix
- * implicitly.
- */
+/** Verifies chain contiguity and signature for a run. See docs/schemas.md §211. */
 export function verifyJournalChain(
   entries: SyncJournalEntry[],
   opts: {
     /** The last known-good `rowHash` this chain must continue from (omit/undefined = genesis).
      *  Ignored when `contiguous === false`. */
     expectedPrevHash?: string;
-    /** The sequence the first entry must equal (omit = accept whatever the first entry claims,
-     *  provided everything after it is contiguous — callers resuming from a cursor should pass
-     *  `cursor + 1` here so a caller can't be fed a segment that silently skips entries). When
-     *  `contiguous === false` this is a LOWER BOUND (first entry's sequence must be >= it) rather
-     *  than an exact match. */
+    /** The sequence the first entry must equal. See docs/schemas.md §212. */
     expectedStartSequence?: number;
-    /** Whether the run must be gap-free and prev_hash-linked (default true — a peer's contiguous own
-     *  journal). Pass `false` for a SCOPE-FILTERED bundle (MAJOR review fix — confidentiality:
-     *  scoped peers now receive ONLY their in-scope entries, so the sequence has deliberate gaps and
-     *  each entry's `prevHash` points at the omitted full-chain predecessor this side never sees).
-     *  In sparse mode every entry's `rowHash` and Ed25519 signature are STILL verified and `sequence`
-     *  must be strictly increasing — forgery/reorder are still caught; only OMISSION of in-scope
-     *  entries becomes undetectable, which is inherent to scoping (you cannot prove completeness of a
-     *  chain you are deliberately only shown part of) and is the documented scope tradeoff. */
+    /** Whether the run must be gap-free and prev_hash-linked. See docs/schemas.md §213. */
     contiguous?: boolean;
-    /**
-     * SECURITY-SENSITIVE — "I HOLD NO ANCHOR", said out loud instead of faked with genesis.
-     *
-     * `expectedPrevHash: undefined` means genesis, i.e. "this run must be the START of the chain".
-     * That is a real, checkable claim, and it is the WRONG one for a caller resuming mid-chain that
-     * simply never recorded a row hash (see `import-repo.ts`: a receiver whose own `sync_scope` was
-     * narrow advances its cursor with a null hash, because the range tail may be an entry it was
-     * never shown). Such a caller has nothing to compare against; comparing against genesis is not a
-     * weaker check, it is a check that can only ever FAIL, which is how a widened receiver used to
-     * wedge permanently.
-     *
-     * `true` therefore ADOPTS the first entry's `prevHash` as the anchor instead of comparing it,
-     * and chains strictly from there. It relaxes exactly one comparison, on the first entry only:
-     * `expectedStartSequence` still pins where the run must begin (so nothing can be skipped), every
-     * later entry's `prevHash` is still linked, and every `rowHash` and signature is still verified —
-     * so a run with a deleted MIDDLE entry is still refused. Callers must gate it on a LOCAL,
-     * AUTHENTICATED operator action, never on anything the sender supplied; passing it together with
-     * `expectedPrevHash` is a contradiction (the anchor wins is not defined — don't).
-     */
+    /** I hold no anchor, said out loud rather than faked. See docs/schemas.md §214. */
     anchorToFirstEntry?: boolean;
     resolvePublicKey: (entry: SyncJournalEntry) => string | null;
   }

@@ -18,48 +18,7 @@ import { getOrgRootObjectId } from "../graph/objects-repo.js";
 import { evaluateGovernanceGate } from "./gate-orchestrator.js";
 import { getSharedCelSandbox } from "./cel-sandbox.js";
 
-/**
- * M25.3 — THE INSTANCE-SCOPED (PLATFORM) FREEZE TIER, end to end against real Postgres
- * (drizzle/0086, docs/proposals/campaigns-rework.md §2, owner decision D1).
- *
- * The guarantee under test: *a freeze declared by this DEPLOYMENT'S OPERATOR, addressed by stage
- * coordinate and carrying no `org_id` at all, holds the targets it covers in EVERY org on the
- * instance — including an org that has declared no freeze of its own and cannot author or (by
- * default) override one.*
- *
- * ============================================================================================
- * WHAT EACH CASE IS FOR, AND WHY NONE OF THEM IS THE OBVIOUS ONE-DIRECTION SHAPE
- * ============================================================================================
- *  A. WIRING — the route is INSTALLED, not merely written. Delete the `registerInstanceFreezeRoutes`
- *     line in `app.ts` and this goes red; nothing else here would notice, because every other case
- *     could reach the table through the repo layer.
- *  B. THE TWO CREDENTIALS — an authenticated tenant Owner cannot write this surface; the operator
- *     token can. A one-directional version (only the success) would pass against a door with no
- *     lock at all.
- *  C. THE BLOCK ACROSS THE TIER BOUNDARY — an org with no freeze of its own, blocked.
- *  D. ADDRESSING, BOTH WIDTHS — `environment` alone reaches every region of it; `environment` +
- *     `region` reaches exactly one and admits its siblings (D5 per-target admission, proving that
- *     property is NOT tier-specific).
- *  E. THE OVERRIDE RULING, BOTH DIRECTIONS — the SAME org-root Owner holding `freeze:override` is
- *     REFUSED against a non-overridable platform freeze and ADMITTED once the operator sets
- *     `overridable`. Either direction alone is the vacuous shape: refusal alone passes against a
- *     freeze nobody can ever override, admission alone passes against no check at all.
- *  F. CRITICAL #2 ACROSS TIERS — a change covered by an org freeze AND a platform freeze needs
- *     BOTH satisfied, and satisfying one is not authority over the other.
- *  G. RLS UNDER A REAL LEAST-PRIVILEGED PRINCIPAL — `RawScpAppClient` authenticates as `scp_app`,
- *     NOT as the Testcontainers superuser. This is non-negotiable and it is why it exists:
- *     migrations 0029/0035/0036/0074 all shipped operator-write tables with NO WRITABLE PRINCIPAL
- *     AT ALL and the suite was green throughout, because the bootstrap user bypasses grants and
- *     RLS unconditionally. 0083 §2 then did it AGAIN. The `scp_operator` half is probed with
- *     `has_table_privilege` and `pg_policies` for the same reason — the superuser connection every
- *     other case runs on is structurally incapable of observing either.
- *
- * EVERY CASE USES A UNIQUE `environment` LABEL. The instance tier has no `org_id`, so within this
- * file's database (isolation is per FILE — see `vitest.integration.config.ts`) one case's freeze is
- * live for every other case. A shared environment name would make the cases order-dependent in a
- * way that reads as flake; a `matchAllEnvironments` freeze is authored in exactly ONE case and
- * lifted before that case returns.
- */
+/** M25.3 — THE INSTANCE-SCOPED. See docs/governance.md §235. */
 
 const OPERATOR_TOKEN = "m25-3-instance-freeze-operator-token";
 
@@ -128,16 +87,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
       OPERATOR_TOKEN
     );
 
-  /** The ORG-tier freeze beside the platform one, authored through the ordinary operator door.
-   *
-   *  M25.9 MOVED THIS OFF THE REPO SEAM. It used to insert the row directly with
-   *  `createdByActorId: org.orgId` — the ORG object, which is nobody's subject — and cases F and I
-   *  below then retract it as `admin`. Owner ruling D1 made lifting a freeze you did not declare
-   *  cost `freeze:override`, so a fixture attributed to the org root turned both of those lifts into
-   *  a 403 for a reason neither case is about. Authored through `POST /api/v1/freezes` as `admin`,
-   *  the creator IS the retracting subject and the lift stays the plain `freeze:write` act the
-   *  cases mean it to be. The platform tier's fixture already went through its own shipped door for
-   *  the same reason (see `platformFreeze`). */
+  /** The org-tier freeze beside the platform one. See docs/governance.md §236. */
   const orgFreezeAt = (scopeObjectId: string, name: string) =>
     admin.freezes.create({
       ...openWindow(),
@@ -159,18 +109,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
       })
     );
 
-  /** The LIFECYCLE edge, deliberately: it keeps any-target-frozen => block (there is no such thing
-   *  as accepting three quarters of a change) and it is the ONLY path on which the override loop is
-   *  reachable at all — `EvaluateWaveGateContext` carries no `overrideFreeze` field. That is the
-   *  proposal's "honest limit" and it is pre-existing, not created by M25.3.
-   *
-   *  `targetObjectIds` MUST BE THE CHANGE'S DECLARED TARGETS — components/services — and never a
-   *  placement, because that is what the production caller supplies. `coordination/gates.ts`'s
-   *  `evaluateLifecycleGate` builds this set as `targetObjectIdsOf(changeObject.properties)`; only
-   *  the WAVE boundary ever sees placements (the plan compiler expands targets into them). Passing
-   *  a placement here was a review finding: it made cases E and F green in a configuration the
-   *  lifecycle edge cannot produce, and it is the reason case E2 below exists — a component target
-   *  declares no stage coordinate, so at this edge ONLY a deployment-wide platform freeze matches. */
+  /** The LIFECYCLE edge, deliberately. See docs/governance.md §237. */
   const acceptGate = (
     targetObjectIds: string[],
     changeObjectId: string,
@@ -209,17 +148,11 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
       })
     );
 
-  // ============================================================================================
-  // A — WIRING. Built, and INSTALLED.
-  // ============================================================================================
   it("A: the operator door is registered on the running server (delete the app.ts line, this goes red)", async () => {
     const items = await admin.instanceFreezes.list();
     expect(Array.isArray(items)).toBe(true);
   });
 
-  // ============================================================================================
-  // B — TWO AUDIENCES, TWO CREDENTIALS. Both directions.
-  // ============================================================================================
   it("B: an org Owner cannot author a platform freeze; the operator token can — and the tenant can READ it", async () => {
     const key = uniq("b-two-credentials");
     const body: PutInstanceFreezeRequest = {
@@ -293,9 +226,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     ).rejects.toBeInstanceOf(ScpApiError);
   });
 
-  // ============================================================================================
   // C — THE POINT OF THE TIER: an org that declared nothing is still blocked.
-  // ============================================================================================
   it("C: a platform freeze blocks a wave in an org that has declared no freeze of its own", async () => {
     const env = uniq("c-env");
     const prod = await stage(env, "amer");
@@ -332,9 +263,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     expect(released.verdict, "a lift retires it on every path at once").toBe("allow");
   });
 
-  // ============================================================================================
   // D — ADDRESSING AT BOTH WIDTHS, and D5 per-target admission at the platform tier.
-  // ============================================================================================
   it("D: environment alone reaches every region of it; environment+region reaches exactly one and admits its siblings", async () => {
     const env = uniq("d-env");
     const amer = await stage(env, "amer");
@@ -371,7 +300,6 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     ).toBe("allow");
     await admin.instanceFreezes.lift(wide.key, { reason: "D: narrowing" }, OPERATOR_TOKEN);
 
-    // --- NARROW: environment + region.
     const narrow = await platformFreeze(uniq("d-narrow"), { environment: env, region: "amer" });
     const narrowGate = await waveGate(targets, change.id);
     expect(
@@ -386,9 +314,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     await admin.instanceFreezes.lift(narrow.key, { reason: "D: cleanup" }, OPERATOR_TOKEN);
   });
 
-  // ============================================================================================
   // E — THE OVERRIDE RULING. BOTH DIRECTIONS, SAME ACTOR.
-  // ============================================================================================
   it("E: an org-root Owner with freeze:override CANNOT override a non-overridable platform freeze, and CAN once the operator admits it", async () => {
     const env = uniq("e-env");
     const prod = await stage(env, "amer");
@@ -409,7 +335,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     // addressing form that reaches a component-shaped target, so it is the only form under which
     // this edge — the only edge the override loop runs on — can reach the ruling at all. Case E2
     // pins the other half of that fact. Authored and lifted inside this case, per the file header.
-    await platformFreeze(key, { allEnvironments: true }); // overridable defaults to false
+    await platformFreeze(key, { allEnvironments: true });
 
     const refused = await acceptGate(declared, change.id, owner.objectId, {
       reason: "E: incident bridge approved"
@@ -499,18 +425,10 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
       "nothing was overridden, because nothing matched — which is why `overridable` buys nothing for an environment-addressed freeze"
     ).toEqual([]);
 
-    // THE CONSEQUENCE, STATED SO IT CHANGES LOUDLY: `EvaluateWaveGateContext` carries no
-    // `overrideFreeze` (pre-existing, and true at the org tier too), so the override loop runs ONLY
-    // on `validating -> accepted`. Combine the two facts and `overridable: true` is exercisable for
-    // `allEnvironments` freezes and for nothing else. If a later change gives the wave boundary an
-    // override path, or expands a component target to its placements at the accept edge, this
-    // assertion goes red and the ADR-0040 §7 limit has to be rewritten rather than quietly lapsing.
+    // THE CONSEQUENCE, STATED SO IT CHANGES LOUDLY. See docs/governance.md §238.
     await admin.instanceFreezes.lift(key, { reason: "E2: cleanup" }, OPERATOR_TOKEN);
   });
 
-  // ============================================================================================
-  // F — CRITICAL #2 ACROSS THE TIER BOUNDARY.
-  // ============================================================================================
   it("F: an org freeze AND a platform freeze over one change both have to be satisfied", async () => {
     const env = uniq("f-env");
     const prod = await stage(env, "amer");
@@ -536,12 +454,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     });
     expect(neither.verdict).toBe("block");
 
-    // THE SHARP ARM, and the one the `nobody` arm above does NOT measure: an actor who holds
-    // `freeze:override` SOMEWHERE — enough to satisfy the org freeze at its own scope — and not at
-    // the org root, where the admitted platform freeze is checked. A Viewer proves nothing about
-    // the quantifier because it fails both halves; this principal fails exactly one, which is what
-    // "every freeze, at ITS OWN scope" means. Scope expansion runs DOWNWARD, so an Owner at the
-    // component reaches the component and never the root above it.
+    // The sharp arm the nobody case does not measure. See docs/governance.md §239.
     const componentOwner = await createTestUser(server, org, [
       { role: "Owner", scope: component.id }
     ]);
@@ -592,11 +505,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     const component = await componentAt("h-component", [prod]);
     const change = await propose("h-change", [component.id]);
 
-    // THE FIXTURE IS THE BUG: `readStageCoordinate` trims what the GRAPH declares and
-    // `instanceFreezeCovers` compares with `!==`, so an untrimmed `" env "` on the operator's side
-    // matched nothing at all while `PUT` returned 200 and `GET /v1/instance/freezes` listed the row
-    // cleanly. 0086's `instance_freezes_match_ck` cannot close it — `length(btrim(...)) > 0` TESTS
-    // a value, it does not STORE one.
+    // THE FIXTURE IS THE BUG. See docs/governance.md §240.
     const key = uniq("h-platform");
     const written = await platformFreeze(key, { environment: `  ${env}  `, region: " amer " });
     expect(
@@ -625,9 +534,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     ).rejects.toBeInstanceOf(ScpApiError);
   });
 
-  // ============================================================================================
   // I — THE D7 ROLLBACK EXEMPTION STOPS AT THE TIER BOUNDARY. Both directions, one freeze apart.
-  // ============================================================================================
   it("I: a rollback wave is exempt from an ORG freeze and is NOT exempt from a platform freeze", async () => {
     const env = uniq("i-env");
     const prod = await stage(env, "amer");
@@ -648,11 +555,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
       "D7 stands at the org tier — the org owns both sides of the 'broken release vs change window' trade"
     ).toBe("allow");
 
-    // DIRECTION TWO — A PLATFORM FREEZE IS NEVER STOOD ASIDE. `POST /v1/changes/{id}/rollback`
-    // requires `object:write` at the org and nothing else: no `freeze:override`, no reason, no
-    // operator token. A tier-blind D7 made that the CHEAPEST route past the freeze `checkFreeze`
-    // tells the caller "no tenant role can override, however privileged" — cheaper than the
-    // override it is contrasted with, which is the contradiction this arm pins.
+    // DIRECTION TWO — A PLATFORM FREEZE IS NEVER STOOD ASIDE. See docs/governance.md §241.
     const key = uniq("i-platform");
     await platformFreeze(key, { environment: env });
     const underBoth = await rollbackWaveGate(targets, change.id);
@@ -687,9 +590,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     ).toBe("allow");
   });
 
-  // ============================================================================================
   // G — RLS AND GRANTS UNDER A REAL LEAST-PRIVILEGED PRINCIPAL.
-  // ============================================================================================
   describe("G: the two barriers, measured as `scp_app` and not as the Testcontainers superuser", () => {
     it("scp_app can SELECT instance_freezes and cannot INSERT, UPDATE or DELETE", async () => {
       const key = uniq("g-probe");
@@ -732,16 +633,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     });
 
     it("scp_operator has BOTH halves — the write grant AND a FOR ALL policy with a WITH CHECK", async () => {
-      // BARRIER 2's other side, and the reason it is asserted separately: under FORCE ROW LEVEL
-      // SECURITY a grant with no applicable policy is denied every statement no matter what it was
-      // granted, and a policy with no grant is denied too. 0029/0035/0036/0074 shipped the read
-      // half only and NOTHING in the database could write them; 0083 §2 repeated it. The suite
-      // could not see either, because every operator write in it runs as a superuser.
-      //
-      // Probed by INTROSPECTION rather than by connecting as `scp_operator`, deliberately: the
-      // role is NOLOGIN by design (drizzle/0076 — a role that cannot authenticate fails closed if
-      // provisioning is skipped), so there is no password to connect with and `has_table_privilege`
-      // + `pg_policies` are the honest instruments.
+      // The other side of that barrier, asserted separately. See docs/governance.md §242.
       const client = new pg.Client({ connectionString: testDatabaseUrl() });
       await client.connect();
       try {

@@ -5,15 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FederationPeerStatus, OutpostConfig } from "@scp/schemas";
 import { render, fire } from "../test-support/render-dom";
 
-/**
- * R2 (PR #156 residual) — THE PANEL'S OTHER WRITE DOOR ALSO SENDS ITS PREMISE.
- *
- * `outpost-configuration-precondition.test.tsx` pins that reconcile carries `?ifClaimant=`. This
- * file is the same class of test for `tierMutation`: the trust-tier save button reads `config` off
- * screen and edits it, so the request must carry `expectedVersion` — the same optimistic-concurrency
- * premise, on the API's OTHER door for this object (`PATCH /federation/outposts/{peer}`, which has
- * always accepted `expectedVersion` and always declared 412; only this call site omitted it).
- */
+/** The panel's other write door also sends its premise. See docs/web.md §354. */
 
 const updateCalls: { peer: string; body: Record<string, unknown> }[] = [];
 let listed: OutpostConfig[] = [];

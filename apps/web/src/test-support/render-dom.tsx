@@ -1,33 +1,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
-/**
- * THE STRUCTURAL FIX FOR THE "WORDING, NOT BEHAVIOUR" CLASS (M16.2 phase B, round 3).
- *
- * WHY THIS EXISTS. Every component test in `apps/web` renders through `react-dom/server`'s
- * `renderToStaticMarkup` — a STRING. A string cannot fire a handler, so every behavioural guarantee
- * on this branch had to be pinned as an ATTRIBUTE or a LABEL beside the handler instead of as the
- * handler's own effect. That is not a pin: it is a second copy of the claim, and the two can
- * diverge silently. The measured proof — replacing `onClick={() => onReconcile(defaultKeep.objectId)}`
- * in `outpost-configuration.tsx` with `onClick={() => onReconcile(undefined)}`, i.e. restoring the
- * exact bare destructive verb the reconcile-default work exists to remove, left the whole web suite
- * GREEN, because the only thing asserted was the `data-keep` attribute rendered NEXT TO the handler.
- *
- * WHY A REAL DOM AND NOT A CLEVERER STRING TRICK. The alternative considered was hoisting the click
- * payload into an exported pure function and asserting that. It is cheaper, but it does not satisfy
- * the acceptance criterion: with no way to INVOKE the handler, `onReconcile(undefined)` written
- * directly in the JSX still goes unnoticed however the payload is computed elsewhere. Only actually
- * dispatching the event and observing the argument closes that gap — and it generalises: disabled
- * buttons really do swallow clicks, state updates really do re-render, so the next interaction
- * guarantee has somewhere to live instead of becoming another attribute.
- *
- * COST, STATED HONESTLY: one devDependency, `happy-dom` — chosen over `jsdom` as the far smaller of
- * the two, and used ONLY by test files that opt in with a `@vitest-environment happy-dom` docblock.
- * The default Vitest environment for `apps/web` is still Node, so every existing
- * `renderToStaticMarkup` test keeps running exactly as before with no environment cost. Nothing
- * here touches the network (charter principle 5); it is a dev-time dependency in the same class as
- * the Playwright/Chromium toolchain CI already vendors.
- */
+/** THE STRUCTURAL FIX FOR THE "WORDING, NOT BEHAVIOUR" CLASS. See docs/web.md §512. */
 
 /** Vitest's own signal that `act()` is being used correctly; React reads it off the global. */
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -52,15 +26,7 @@ export function fire(target: EventTarget, event: Event): void {
   });
 }
 
-/**
- * Type into a CONTROLLED `<input>`.
- *
- * Not `el.value = x; fire(input)`: React installs its own value setter on the element instance and
- * uses it to dedupe change events, so a plain assignment can leave the tracker believing nothing
- * changed and the `onChange` never fires — a silently vacuous test. Going through the PROTOTYPE
- * setter updates the DOM without touching React's tracker, so the dispatched `input` event is seen
- * as a real change. (React's `onChange` is wired to the native `input` event, not `change`.)
- */
+/** Type into a CONTROLLED `<input>`. Not `el.value = x; fire(input)`. See docs/web.md §513. */
 export function typeInto(input: HTMLInputElement, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (!setter)

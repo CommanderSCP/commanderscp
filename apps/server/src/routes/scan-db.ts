@@ -36,7 +36,6 @@ function requireCacheDir(): string {
 export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
-  // GET status — tenant-readable.
   typed.route({
     method: "GET",
     url: "/api/v1/instance/scan-db",
@@ -56,7 +55,6 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     }
   });
 
-  // GET staleness policy — tenant-readable.
   typed.route({
     method: "GET",
     url: "/api/v1/instance/scan-db/staleness-policy",
@@ -78,11 +76,7 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     }
   });
 
-  // PUT staleness policy — operator-only, over the `scp_operator` connection: `scp_app` has no write
-  // grant and, until 0076, the table had no write RLS policy for ANY role (drizzle/0036 — two
-  // independent barriers). This comment said "admin connection" and the code opened one, and both
-  // were wrong on the deployment shape it mattered on — api/worker pods carry no admin credential,
-  // so the write dialed `config.databaseUrl`'s localhost fallback (routes/operator-db.ts).
+  // PUT staleness policy. See docs/routes.md §400.
   typed.route({
     method: "PUT",
     url: "/api/v1/instance/scan-db/staleness-policy",

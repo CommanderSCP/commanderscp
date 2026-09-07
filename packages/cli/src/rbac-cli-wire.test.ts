@@ -3,27 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-/**
- * `scp role` / `role-binding` / `authz` / `operator-credential` / `idp` — THE ACTION BODIES
- * ACTUALLY CALL THE SDK.
- *
- * Registering a command and having it do something are different facts, and only the second one
- * matters. A `return;` inserted as the first statement of every action leaves a fully green package
- * unless something drives the Commander closures — this repo has paid for that once already
- * (`dependency-read-verbs-wire.test.ts`), so every verb here is driven through
- * `buildProgram().parseAsync([...])` against a stubbed `@scp/sdk`.
- *
- * The cases that are NOT merely call-count assertions, and why each exists:
- *
- *  - `--acknowledge` absent vs present-but-empty must reach the API as `undefined` vs `[]`. D7
- *    treats them as different statements — "I did not look" and "I looked and it is empty" — and
- *    the door refuses the first for a group subject. Defaulting one to the other in the CLI would
- *    silently convert a refusal into an admission.
- *  - `role update` must send `undefined` for flags the operator omitted, never `[]`. The API reads
- *    absent as "leave alone" and empty as "clear", so conflating them would silently widen where a
- *    role may be bound.
- *  - `operator-credential` verbs must REFUSE without a token rather than send an empty header.
- */
+/** The RBAC command bodies really do call the SDK. See docs/cli.md §137. */
 
 const rolesListCalls: number[] = [];
 const rolesCreateCalls: unknown[] = [];

@@ -13,20 +13,7 @@ import {
   type BindingType
 } from "./executor-bindings-repo.js";
 
-/**
- * Driving-case component merge (M12 P5d, docs/proposals/organize-after.md §2.4). Folds a LOSER
- * component into a SURVIVOR: the loser's executor bindings are re-pointed onto the survivor and the
- * loser is soft-deleted. This is the concrete homelab case — `scp connect argocd` imports one real
- * component as TWO Argo CD apps, each a separate orphan with its own `type='configuration'` binding,
- * that must become one component with distinct Type-keyed bindings (ADR-0007).
- *
- * Deliberately SCOPED to that case (proposal §2.4 / §4): the general graph-rewrite (re-pointing
- * relationship edges, jsonb references, role_bindings, freezes, source_mappings) is OUT until a
- * non-fresh case demands it. So the loser must be a freshly-imported orphan — bindings only, no live
- * relationship edges (guarded below). Owner ruling Q1: on a binding-Type COLLISION the merge REJECTS
- * and tells the operator to relabel one binding first (`scp executor repurpose`); it never guesses a
- * new Type.
- */
+/** Driving-case component merge. See docs/coordination.md §286. */
 
 /** Non-terminal change states — a binding must not be re-pointed while a change actively resolves it
  *  (reconcile resolves bindings fresh at trigger AND status-poll, so a mid-flight move silently

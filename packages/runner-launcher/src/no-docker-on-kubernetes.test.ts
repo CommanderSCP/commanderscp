@@ -13,31 +13,7 @@ import {
   runnerSpawns
 } from "./index.js";
 
-/**
- * ================================================================================================
- * M23.6 CLAUSES 1 AND 7 — THE TWO LEDGERS, AND THE CENSUS THAT KEEPS THEM COMPLETE
- * ================================================================================================
- *
- * The per-class arms live in each plugin's `runner-launcher-selection.test.ts`, because the clause
- * asks for "each of the three plugins" by name. What lives HERE is the thing those three arms rest
- * on and cannot check for themselves: that the ledgers see EVERYTHING.
- *
- * A gate built on "the spawn ledger was empty" is worth exactly as much as the guarantee that a
- * spawn cannot happen off-ledger. So:
- *   - `execFileAsync` — the package's only binding of `promisify(execFile)` — must be referenced
- *     EXACTLY ONCE, inside `spawnRunnerProcess`. A second direct call is a spawn no ledger sees.
- *   - `kubernetesConstructions += 1` must appear exactly twice, once in each of the Kubernetes
- *     module's two constructors, and that module must export exactly those two constructors.
- *   - the three managed plugins must import no process-spawning API of their own. A plugin that
- *     called `child_process` directly would bypass this package entirely, and the three
- *     selection tests would keep passing while the clause was false.
- *
- * WHY A SOURCE CENSUS RATHER THAN A RUNTIME CHECK. Both are "this never happens anywhere", and a
- * runtime check can only speak for the paths a test drives. `grep -rna`, deliberately: CLAUDE.md
- * §4.4b — some tracked source files carry literal NUL bytes and a plain recursive search drops them
- * with no output and exit 1, which is indistinguishable from "no such code exists". This file reads
- * the bytes itself rather than shelling out to a search tool, which sidesteps the hazard entirely.
- */
+/** M23.6 CLAUSES 1 AND 7. See docs/runner-launcher.md §322. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../..");
@@ -46,13 +22,7 @@ function read(relative: string): string {
   return readFileSync(resolve(REPO_ROOT, relative), "utf8");
 }
 
-/**
- * Comments removed, so a census counts CODE. This file's own subjects are heavily documented — the
- * Docker adapter's doc explains `execFile`'s three traps and the Kubernetes adapter's explains why
- * `maxBuffer` is an `execFile` concept it does not have — and a census that counted prose would be a
- * gate on how much a hazard is explained rather than on whether it exists. That is the inverse of
- * CLAUDE.md's rule: a comment naming a hazard is a signal to sweep, never the thing swept.
- */
+/** Comments removed, so a census counts CODE. See docs/runner-launcher.md §323. */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
 }
@@ -180,11 +150,7 @@ describe("M23.6 clause 7: nothing Kubernetes is CONSTRUCTED on the Docker path",
     const constructors = [...source.matchAll(/^export function (create[A-Za-z]+)\(/gm)].map(
       (m) => m[1]!
     );
-    // THREE NAMES, TWO COUNTED CONSTRUCTIONS. `createDefaultKubernetesIo` (M23.6) builds nothing of
-    // its own — it delegates to `createFetchKubernetesIo`, which is why the count above stays at two
-    // — and it exists because the three closures it now holds were, as an object literal inside
-    // `resolveRunnerLauncher`, the one stretch of the Kubernetes path NO test could reach. That is
-    // where a planted `spawnSync` ran a real `docker version` with every suite green.
+    // THREE NAMES, TWO COUNTED CONSTRUCTIONS. See docs/runner-launcher.md §324.
     expect(constructors.slice().sort()).toStrictEqual([
       "createDefaultKubernetesIo",
       "createFetchKubernetesIo",

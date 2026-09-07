@@ -2,45 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { OutpostConfig } from "@scp/schemas";
 
-/**
- * pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST (formerly "co-located"; GLOSSARY,
- * ADR-0021 D7 — the file name, the `coLocated` prop and the test ids keep the older spelling; the
- * RENDERED copy says "HQ outpost") on the M16 Outposts surfaces.
- *
- * A self-bound `outpost` record (`peerDomainId` = THIS instance's own domain) has NO
- * `federation_peers` row, so it can never be a `peers[]` entry and no peer-keyed cell can render it.
- * The census of every join from an outpost record to its peer row on the web side is:
- *   * the Outposts overview's table (peer rows) — self is NOT a row; its record is read off
- *     `FederationStatusResponse.selfOutpost` into the self-domain panel (`SelfOutpostLine`);
- *   * the per-outpost detail page (`findPeerStatus`) — for self's own id it renders the HQ-outpost
- *     card + the configuration section keyed on `selfDomain`, not "No peer … is paired";
- *   * the configuration section's DeclareConfigCard (peer role check) — the `coLocated` variant.
- *
- * WHAT IS PINNED, and how each would fail
- *   * `SelfOutpostLine` states three things three ways: a record (name, tier, the marker
- *     `HQ outpost · this instance`), `null` = "no outpost registered" + a declare link, `undefined`
- *     = "not reported" (an older server) — dropping the undefined arm reads an old server as "none".
- *   * The tier of a self record follows the same three-state honesty as a peer row: null → unknown
- *     marker, in `unknownFields` → `· unverified`, else the tier.
- *   * `SelfDomainPanel` still forbids every peer-row column for self.
- *   * `DeclareConfigCard coLocated` renders the declare control with the HQ-outpost copy and does
- *     NOT run the peer-role refusal (there is no peer) — but ONLY for `selfRole: "commander"`, the
- *     one role the server's self-shape door accepts (`outpost-binding.ts`; measured in
- *     `outpost-config-sync.integration.test.ts`): every other role renders the refusal and no
- *     control. Without `coLocated` a `commander`-role peer is still refused (the existing case in
- *     outpost-configuration.test.tsx). `SelfOutpostLine`'s `null` arm offers the declare link on
- *     the same condition and otherwise reads `declared at the commander`.
- *
- * MUTATION LOG (each applied ALONE, then reverted)
- * | Mutation | Result |
- * |---|---|
- * | `SelfOutpostLine`: treat `undefined` like `null` | the "not reported" case FAILS |
- * | `SelfOutpostTier`: ignore `unknownFields` | the unverified case FAILS (`data-tier-provenance="declared"`) |
- * | `DeclareConfigCard`: drop the `!coLocated &&` guard and pass `peer={{role:"commander"}}` | the HQ-outpost case FAILS (`config-role-not-outpost`) |
- * | `DeclareConfigCard`: drop the `selfRole !== "commander"` refusal | the "any OTHER role" case FAILS (`config-declare-save` rendered) |
- * | `SelfOutpostLine`: offer the declare link on every role | the "NON-commander role" case FAILS (`self-outpost-declare-link` present) |
- * | `SelfDomainPanel`: stop threading `selfOutpost` | the registered case FAILS (`data-self-outpost="unreported"`) |
- */
+/** pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST. See docs/web.md §404. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>

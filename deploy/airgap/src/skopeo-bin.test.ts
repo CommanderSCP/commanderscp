@@ -13,16 +13,7 @@ import {
 } from "@scp/cosign";
 import { REPO_ROOT } from "./repo-paths.js";
 
-/**
- * Parse a `tools/<pin>/pin.env` (each a single source of truth) as KEY=VALUE pairs. One PARSER for
- * every pin file — the file format is one format, and a parsing fix applied to a per-pin copy and
- * not its twin is the comment-proof bug class this function exists to prevent — while every
- * ASSERTION stays per-pin at the call sites, so separate pins keep separate verdicts (the budget
- * census's rule).
- *
- * Comment-proof, like cosign-bin.test.ts's twin: the key pattern is anchored to the start of the
- * trimmed line and admits only `[A-Z_0-9]`, so a `#`-prefixed line cannot become a pin.
- */
+/** Parse a `tools/<pin>/pin.env`. See docs/airgap.md §50. */
 function readPinEnv(relative: string): Record<string, string> {
   const text = readFileSync(path.join(REPO_ROOT, relative), "utf8");
   const out: Record<string, string> = {};
@@ -40,25 +31,7 @@ function readRepoFile(relative: string): string {
   return readFileSync(path.join(REPO_ROOT, relative), "utf8");
 }
 
-/**
- * The skopeo pin is a TRIPLE-string coupling — `tools/skopeo/pin.env`, the Dockerfile's build
- * ARG + COPY block, and `packages/cosign/src/skopeo-bin.ts`'s constants. Nothing at build or run
- * time forces those to agree, so a stale copy would silently mean "the image ships binary A
- * while the code asserts version B". These tests are that forcing function — the same shape as
- * cosign-bin.test.ts, which guards the cosign pin's quadruple coupling.
- *
- * IT SHARED THAT FILE'S DEFECT TOO. MEASURED 2026-08-17: commenting out `ARG SKOPEO_IMAGE=` in the
- * root Dockerfile and `d=/opt/scp/libexec/skopeo` in the wrapper left this file green at 10 passed
- * / 1 skipped, because `.toContain(…)` over raw text cannot tell a live line from a described one.
- * Every presence assertion below is therefore anchored with `@scp/source-census`'s `atLineStart` —
- * each of these lines genuinely begins its line, so the anchor costs nothing and a `#` prefix can
- * no longer satisfy it.
- *
- * THE LIMIT: anchoring fixes the comment case and no more (see the package doc). It cannot see a
- * `COPY` in a stage the final image never draws from, and it cannot tell that the vendored library
- * closure is complete. The assertion that cannot be talked out of is the fail-closed `skopeo
- * --version` check at the bottom of this file, which runs the resolved binary.
- */
+/** The skopeo pin is a TRIPLE-string coupling. See docs/airgap.md §51. */
 describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", () => {
   const pin = readPinEnv("tools/skopeo/pin.env");
 
@@ -93,18 +66,7 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
   });
 
   it("the image BUILD can be served by the mirror — the fourth consumer form, which had no guard", () => {
-    // ADDED 2026-08-18, after the pinned skopeo digest was DELETED from quay.io (404) and took every
-    // E2E job red at image build, five steps before a test ran. The second quay.io outage to do so.
-    //
-    // `tools/ci-mirror/images.list` mirrors every third-party image to GHCR so CI never pulls live,
-    // and enumerated three consumer forms. A DIGEST-PINNED `FROM` is a fourth, and neither mechanism
-    // reaches it: a `FROM …@sha256:…` resolves AT THE REGISTRY, so a local re-tag is invisible to it,
-    // and the `SCP_*_IMAGE_REF` vars are read by the installer scripts rather than by BuildKit. The
-    // census that produced forms 1-3 was a census of TEST consumers, and an image build is not a test.
-    //
-    // THIS ASSERTS THE THREE HALVES TOGETHER, because any one of them alone is silently inert: the
-    // Dockerfile must take the image from an ARG, compose must pass that ARG through, and the mirror
-    // must export it under that exact name.
+    // Added after the pinned digest vanished and took E2E red. See docs/airgap.md §52.
     const dockerfile = readRepoFile("Dockerfile");
     expect(dockerfile).toMatch(atLineStart("FROM ${SKOPEO_IMAGE} AS skopeo"));
 
@@ -134,12 +96,7 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
       "tools/ci-image/Dockerfile reintroduced a syntax directive — a live Docker Hub frontend pull"
     ).not.toMatch(/^#\s*syntax=/);
 
-    // A CENSUS, NOT A CASE — and this is the correction that matters. The first version of this
-    // guard read `deploy/compose/docker-compose.yml` BY NAME, and a second compose file
-    // (`docker-compose.federation.yml`, which e2e-m6 builds the very same Dockerfile with) had no
-    // `build.args` at all. One file fixed, one file still pulling quay.io live, and a green guard
-    // over the top. The property is "every compose file that BUILDS the root Dockerfile", so the
-    // population is discovered from disk rather than typed here.
+    // A CENSUS, NOT A CASE. See docs/airgap.md §53.
     const composeDir = path.join(REPO_ROOT, "deploy/compose");
     const builders = readdirSync(composeDir)
       .filter((name: string) => name.endsWith(".yml") || name.endsWith(".yaml"))
@@ -153,11 +110,7 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
     expect(builders.length).toBeGreaterThanOrEqual(2);
 
     for (const { rel, text } of builders) {
-      // PASS-THROUGH FORM, and the shape is the assertion. `- SKOPEO_IMAGE` with no value means
-      // "take it from the environment, and omit the arg entirely when unset", so a developer running
-      // `docker compose up` with no mirror still gets the Dockerfile's pinned default. Writing
-      // `SKOPEO_IMAGE=${SCP_SKOPEO_IMAGE_REF}` would pass an EMPTY string when unset and break `FROM`
-      // for everyone outside CI — which is why this pins the form and not merely the presence.
+      // PASS-THROUGH FORM, and the shape is the assertion. See docs/airgap.md §54.
       expect(text, `${rel} builds the root Dockerfile but does not pass SKOPEO_IMAGE`).toMatch(
         /^\s+- SKOPEO_IMAGE\s*$/m
       );
@@ -274,12 +227,7 @@ describe("skopeo pin: the version assertion FAILS CLOSED", () => {
   });
 });
 
-/**
- * The real thing: when a pinned skopeo is actually present (inside the runtime image, or wherever
- * SCP_SKOPEO_BIN points at an extracted pin), its reported version MUST equal the pin. Skips —
- * never falsely fails — where no pinned binary exists (dev machines and today's CI, whose PATH
- * skopeo serves the release-path suites and is deliberately unpinned).
- */
+/** The real thing. See docs/airgap.md §55. */
 const pinnedPresent = (() => {
   const resolved = resolveSkopeo();
   return resolved.pinned && skopeoReportedVersion(resolved.bin) !== null;

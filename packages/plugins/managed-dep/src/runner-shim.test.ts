@@ -6,27 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { applyManifestBump, type ManifestBumpSpec } from "./bump-edit.js";
 
-/**
- * M21.5 — THE RUNNER SHIM AND THE REFERENCE EDIT PRODUCE THE SAME BYTES.
- *
- * ================================================================================================
- * WHY THIS IS NOT OPTIONAL
- * ================================================================================================
- * `bump-edit.ts`'s `applyManifestBump` is the REFERENCE edit, and it is what every other test in
- * this package uses as a stand-in runner. That makes the whole orchestrator suite conditional on a
- * claim nothing checked: that `apps/runner-dep/run.sh` — the thing that actually runs in production
- * — agrees with it. If it does not, every bump is REFUSED by `verifyManifestBump` at run time while
- * the suite stays green, which is the "vacuous test" shape this repository has shipped before.
- *
- * So this runs the real shim, over the real fixtures, and requires BYTE-IDENTICAL output. It uses
- * `/bin/sh` and the host's `awk`; the production image is BusyBox and the script is POSIX
- * throughout, with no GNU-only constructs (no `sub()`/regex matching, no `-v`, no `sed -i`).
- *
- * The trailing-newline case is the one worth naming: awk always terminates its last record with a
- * newline, so a manifest that had none would come back one line longer and be refused by
- * `verifyManifestBump` with `line_count_changed` — a refusal an operator could do nothing about. The
- * shim restores the input's own byte shape, and the fixture below is what proves it.
- */
+/** The shim and the reference edit produce the same bytes. See docs/plugins.md §364. */
 
 const here = dirname(fileURLToPath(import.meta.url));
 const runSh = join(here, "..", "..", "..", "..", "apps", "runner-dep", "run.sh");
@@ -36,12 +16,7 @@ afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-/**
- * Run the shim exactly as `runEditorContainer` does: five argv strings and the file at /work/in —
- * plus the anchor pair when, and ONLY when, the spec carries one. The conditional append is the
- * production shape, not a test convenience: it is what makes an image that predates the anchor
- * receive a byte-identical five-operand command line (`run.sh`'s "VERSION SKEW" table).
- */
+/** Run the shim exactly as `runEditorContainer` does. See docs/plugins.md §365. */
 function runShim(
   content: string,
   spec: ManifestBumpSpec
@@ -176,12 +151,7 @@ describe.skipIf(process.platform === "win32")(
         }
       },
 
-      // ----------------------------------------------------------------------------------------
-      // M21.7 — the ANCHORED cases. Both implementations changed for these, so both must be
-      // compared, and the REFUSALS are compared too: agreement on the happy path is the half a
-      // fixture list gets for free, and a shim that "helpfully" edited where the reference refuses
-      // would be a wrong edit in somebody's repository that no test noticed.
-      // ----------------------------------------------------------------------------------------
+      // M21.7 — the ANCHORED cases. See docs/plugins.md §366.
       {
         name: "oci/values.yaml — a split shape, edited by the anchor (five other 1.2.3s untouched)",
         content: [
@@ -266,19 +236,7 @@ describe.skipIf(process.platform === "win32")(
         }
       },
       {
-        // A LINE NUMBER PAST EVERY AWK'S INTEGER RANGE — the ONE input where the three
-        // implementations do not compute the same number. The shell validator accepts it (digits
-        // only, no leading zero), so it reaches awk, where `anchor_line + 0` is a float that `%d`
-        // clamps: at 2^63-1 under the host's awk, at 2147483647 under the BusyBox awk the image
-        // actually runs (both measured), while the reference simply indexes `beforeLines[1e20 - 1]`
-        // and gets `undefined`. All three must refuse.
-        //
-        // WHAT THIS PINS, STATED HONESTLY: a PLATFORM property, not a code branch. No mutation of
-        // ours kills it — the case above is the one that kills the wrap mutation — and it is here
-        // because `run.sh` carried an explicit `anchor_nr > NR` guard that no mutation killed
-        // either, and it was deleted as dead code. Deleting a guard obliges someone to have checked
-        // the value range it nominally covered on every awk in play; this case is that check, kept
-        // permanently rather than done once and written into a comment.
+        // A LINE NUMBER PAST EVERY AWK'S INTEGER RANGE. See docs/plugins.md §367.
         name: "REFUSAL: an anchor line past every awk's integer range refuses on both sides",
         content: "image:\n  repository: acme/api\n  tag: 1.2.3\n",
         spec: {

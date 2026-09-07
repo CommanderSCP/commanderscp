@@ -1,27 +1,4 @@
-/**
- * The policy evaluator (DESIGN.md §10.1: "Evaluation is a PURE function (context in → verdict +
- * reason tree out), so explainability is the return value").
- *
- * Split into two phases (adversarial-review CRITICAL #1a / MAJOR #3):
- *
- *  1. `resolveFiredPolicies` — evaluates EACH contributor's CEL condition INDEPENDENTLY (never an
- *     AND across a name-group's contributors) and unions the effects of ONLY the contributors
- *     whose own condition fired. A higher-scope required contributor that fires has its effects
- *     enforced no matter what any other same-named contributor's condition did. A REQUIRED
- *     contributor whose condition ERRORS or TIMES OUT fails CLOSED (the group fires and blocks with
- *     a Decision naming the eval failure) — never fail-open. Advisory/recommended contributors
- *     whose condition errors are annotated and skipped. This is the only place the CEL sandbox is
- *     called; it needs no control-outcome/approval data, so a gate can run this FIRST to learn what
- *     to actually run/materialize.
- *  2. `evaluateFiredPolicies` — a PURE function over the already-resolved firing set plus a fully
- *     pre-gathered control-outcome/approval snapshot: same snapshot in ⇒ same verdict + reason tree
- *     out, always (BUILD_AND_TEST.md §8 M4's unit DoD).
- *
- * `evaluateGovernance` composes the two for callers that want one call (the unit tests, the
- * `policy-evaluate` dry-run). The gate orchestrator (governance/gate-orchestrator.ts) drives the
- * two phases separately so the firing set determines exactly which controls run and which approval
- * requests materialize.
- */
+/** The policy evaluator. See docs/governance.md §61. */
 import type { CelSandbox } from "./cel-sandbox.js";
 import {
   isAtLeastAsStrict,
@@ -82,17 +59,7 @@ export interface FiredPolicy {
   requireControls: string[];
   requireApprovals: EffectiveApprovalRequirement[];
   contributingPolicyVersions: Array<{ policyObjectId: string; policyVersion: number }>;
-  /** PROVENANCE ONLY — every contributor whose CEL condition could not be evaluated (parse error,
-   *  missing key, sandbox timeout), at EVERY enforcement level (advisory/recommended/required
-   *  alike). This does NOT affect `fired`, `enforcement`, `requireControls`, `requireApprovals` or
-   *  `contributingPolicyVersions`: the require*-effect semantics are unchanged (an advisory
-   *  contributor that can't be evaluated still only annotates, because an advisory effect can never
-   *  block anyway). It exists so consumers whose output is applied REGARDLESS of the authoring
-   *  policy's enforcement level — today, `scan-requirements.ts`'s scan-threshold CEILINGS, which
-   *  `scan-result-control` applies whatever enforcement authored them — can fail CLOSED on an
-   *  unevaluable condition instead of silently dropping the ceiling. Precise by construction: it
-   *  names ONLY the contributors that actually errored, never a sibling whose condition cleanly
-   *  evaluated FALSE. */
+  /** Provenance only: contributors whose condition errored. See docs/governance.md §62. */
   conditionErrorPolicyVersions: Array<{ policyObjectId: string; policyVersion: number }>;
   conditionResult: ConditionResultKind;
   conditionError?: string;
@@ -136,11 +103,7 @@ function effectKey(policyObjectId: string, policyVersion: number, effectIndex: n
   return `${policyObjectId}::${policyVersion}::${effectIndex}`;
 }
 
-/**
- * Phase 1 — evaluate each contributor's condition independently (see module doc). NO control /
- * approval data needed; the returned `requireControls`/`requireApprovals` are exactly what a gate
- * must run/materialize. `celContext` is `buildCelContext(context)` (built once by the caller).
- */
+/** Phase one: evaluate each contributor's condition alone. See docs/governance.md §63. */
 export async function resolveFiredPolicies(
   /** Only `evaluate` is ever called, and ONLY for a contributor that carries a `condition`. Typed
    *  structurally (M22.2) so a caller with no conditions to evaluate can pass a thunk that never
@@ -240,12 +203,7 @@ export async function resolveFiredPolicies(
   return out;
 }
 
-/**
- * Phase 2 — PURE: check each fired policy's effects against the gathered control-outcome / approval
- * snapshot and produce the verdict. A required, fired, unsatisfied policy blocks; a
- * recommended/advisory unsatisfied one only warns (DESIGN §10.1/§9.3). A required contributor's
- * condition-eval error is an unsatisfiable synthetic effect (fail closed).
- */
+/** Phase two, pure: check fired effects against outcomes. See docs/governance.md §64. */
 export function evaluateFiredPolicies(
   firedPolicies: FiredPolicy[],
   context: Pick<PolicyEvaluationContext, "controlOutcomes" | "approvals">
@@ -336,12 +294,7 @@ export function evaluateFiredPolicies(
   };
 }
 
-/**
- * One-call composition of the two phases — the unit tests and the `policy-evaluate` dry-run use
- * this. "Pure" here means "same context snapshot ⇒ same verdict + reason tree, always, with no
- * observable side effect" (the only async work is the deterministic, side-effect-free CEL sandbox
- * call), exactly BUILD_AND_TEST.md §8 M4's unit DoD.
- */
+/** One-call composition of the two phases. See docs/governance.md §65. */
 export async function evaluateGovernance(
   sandbox: CelSandbox,
   effectivePolicies: EffectivePolicy[],

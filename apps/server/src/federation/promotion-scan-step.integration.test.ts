@@ -31,77 +31,14 @@ import { ScanEvidenceSchema } from "@scp/schemas";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 import { asTrustDomainId } from "@scp/schemas";
 
-/**
- * M13.3a — THE E6 END-TO-END for the commander's promotion scan step (ADR-0020, proposal §13.3 DoD).
- * This is the integration proof the 13.3a DoD demands: "an ephemeral runner at the commander scans a
- * subject artifact pulled by digest over the allowlisted channel, `--network none` otherwise; the
- * emitted evidence parses via `ScanEvidenceSchema`, lands commander-resident, and the UNMODIFIED
- * M17.5/E6 machinery consumes it — a pipeline-less promotion scans → evaluates → signs → exports
- * end-to-end with zero gate-code changes; valid org-pipeline evidence short-circuits the managed run
- * (both ingresses proven); scanner selection follows the registry rows by artifact type, and an
- * unassigned type with no evidence still refuses at E6."
- *
- * REAL vs INJECTED, and WHY. The two scan-substantive verdicts run the REAL `scp-runner-scan`
- * container end-to-end through the DEFAULT server runner (`scanRunner` undefined ⇒
- * `createServerManagedScanRunner`) — the production path — against REAL subject images pushed to a
- * real `registry:2`:
- *   (a) CLEAN  — `alpine:3.20` (0 vulnerabilities in the baked DB) → real Trivy → PASS → E6 exports.
- *   (b) DIRTY  — `debian:11`   (6 CRITICAL / 19 HIGH in the baked DB) → real Trivy exceeds the
- *                fail-closed 0/0 threshold → FAIL → E6 refuses with a `decision_id`.
- * These two carry the container/pull/network proofs: the SERVER pulls the subject BY DIGEST over the
- * `SCP_ARTIFACT_OCI_REGISTRY_HOSTS`-allowlisted skopeo channel, docker-cp's the OCI layout INTO a
- * `--network none` runner, and the deposited `control_runs` evidence is digest-bound
- * (`artifactDigest` == the promoted digest, `digestMatch: true`) under the well-known managed-scan
- * control id — exactly the row the unchanged E6 gate reads.
- *
- * M13.3b adds the second managed-scan METHOD end-to-end through the same DEFAULT server runner, with
- * the runner image built ONCE (shared beforeAll — one oscap clean-pass + one oscap threshold-fail, no
- * rebuild loop): (f) debian:11 vs ssg-debian11 `standard` scans clean → digest-bound `scanner:openscap`
- * evidence → E6 exports; (g) oraclelinux:8 vs ssg-ol8 `standard` yields ≥1 HIGH-severity failed rule →
- * status fail → E6 refuses with a decision_id. The `rpm` executor Type is assigned `openscap` in the
- * instance scanner registry (registry-driven method selection), and `managedScanServerSettings().networkMode`
- * is asserted `none` (the offline oscap scan succeeding under it is the --network none proof).
- *
- * 13.3a's MACHINE-IMAGE arm adds the third managed-scan METHOD end-to-end through the same DEFAULT
- * server runner: (h) a clean ext4 disk image (alpine rootfs) scans clean via a real `trivy vm` →
- * digest-bound `scanner: trivy-vm` evidence → E6 exports; (i) a vulnerable disk image (debian:11
- * rootfs) breaches the fail-closed 0/0 threshold → status fail → E6 refuses with a decision_id. The
- * `infrastructure` executor Type resolves to `trivy-vm` in the seeded registry (drizzle/0048), so
- * method selection is registry-driven here too. (j) closes the DoD's remaining clause: a promotion
- * that crosses NO boundary schedules NO scan, proven against the same artifact that (i) refuses.
- *
- * The three WIRING verdicts inject a `ManagedScanRunner` (the seam the step exposes precisely so
- * these branches are hermetic and DB-drift-free): short-circuit (spy asserted NOT invoked),
- * fail-closed unassigned type (spy asserted NOT invoked), and the `digestMatch: false` evidence
- * branch (which the real runner can never reach — it refuses to even emit a report when the pulled
- * layout digest != the promoted digest, so only an injected report can drive the gate's
- * digest-mismatch refusal). Each drives the SAME deposit → E6-consumption path as (a)/(b).
- *
- * Build the runner image ONCE (beforeAll). Needs a reachable Docker daemon + network for the subject
- * pulls (the same integration tier that builds `scp-runner-iac` and pulls `registry:2`/postgres);
- * excluded from `pnpm test`, run via `pnpm test:integration`.
- */
+/** The commander's promotion scan step, end to end. See docs/federation.md §411. */
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_SCAN_CONTEXT = resolve(__dirname, "../../../../apps/runner-scan");
 const RUNNER_IMAGE_TAG = "scp-runner-scan:m13-3b-integration-test";
 
-/**
- * Where the subject fixtures below are PULLED FROM (charter principle 5: "Everything, CI included,
- * must run offline"; working convention: "Tests never touch the internet").
- *
- * These subjects reach the registry through `skopeo copy`, and skopeo talks to the registry
- * directly — it never consults the local Docker image store — so the local re-tag that keeps
- * Testcontainers off Docker Hub is invisible to it. Left as a literal `docker.io/library`, the
- * `beforeAll` below was a live, unauthenticated Docker Hub pull on the REQUIRED integration gate:
- * on 2026-08-15 it answered 502 and the whole suite aborted with ZERO individual test failures,
- * which reads as a mystery rather than an outage.
- *
- * CI exports this (see `scripts/ci-mirror.sh seed`) pointing at the GHCR mirror of exactly the
- * digests `tools/ci-mirror/images.list` pins. Unset — a developer's machine — it is upstream Docker
- * Hub, which is what keeps this suite runnable from a fresh clone with no GHCR credentials.
- */
+/** Where the subject fixtures below are pulled from. See docs/federation.md §412. */
 const SUBJECT_REGISTRY = process.env.SCP_TEST_SUBJECT_REGISTRY ?? "docker.io/library";
 
 /** A real, deterministically CLEAN subject (calibrated against the pinned Trivy DB: 0 findings). */
@@ -111,19 +48,7 @@ const CLEAN_SRC = `docker://${SUBJECT_REGISTRY}/alpine:3.20`;
  *  recent enough that they are NOT pruned from the DB the way EOL alpine's are. */
 const DIRTY_SRC = `docker://${SUBJECT_REGISTRY}/debian:11`;
 
-// --- OpenSCAP subjects (M13.3b — the second managed-scan method) ---------------------------------
-// Calibrated against the runner image's PINNED, content-addressed SSG content (oscap 1.4.0 /
-// scap-security-guide 0.1.74 — tools/openscap/pin.env, installed from the frozen Fedora GA release
-// repo, NOT the floating updates repo) using OSCAP_PROBE_ROOT over the runner-extracted image rootfs.
-// The mapping folds XCCDF high→high / medium→medium / low→low, critical stays 0 (XCCDF has none),
-// unknown/unset fold away:
-//   OSCAP CLEAN — debian:11 vs ssg-debian11 `anssi_np_nt28_minimal`: ZERO high/critical failed rules
-//                 (only low/medium fail, which are unbounded) → within the fail-closed 0/0 (high)
-//                 default → PASS. (Under SSG 0.1.74 the heavier `standard` profile carries one
-//                 high-severity fail on debian:11, so the clean case uses the ANSSI *minimal* profile —
-//                 the lightest baseline the pinned datastream ships — which is high-clean.)
-//   OSCAP DIRTY — oraclelinux:8 vs ssg-ol8 `standard`: ≥1 HIGH-severity fail (rpm-DB-checkable package
-//                 rules evaluate offline) → breaches maxHigh=0 → FAIL.
+// --- OpenSCAP subjects. See docs/federation.md §413.
 const OSCAP_CLEAN_SRC = `docker://${SUBJECT_REGISTRY}/debian:11`;
 const OSCAP_DIRTY_SRC = `docker://${SUBJECT_REGISTRY}/oraclelinux:8`;
 const SSG = "/usr/share/xml/scap/ssg/content";
@@ -132,28 +57,7 @@ const SSG = "/usr/share/xml/scap/ssg/content";
 const OSCAP_CLEAN_PROFILE = "xccdf_org.ssgproject.content_profile_anssi_np_nt28_minimal";
 const OSCAP_DIRTY_PROFILE = "xccdf_org.ssgproject.content_profile_standard";
 
-// --- MACHINE-IMAGE subjects (13.3a — the `trivy-vm` arm, owner decision D2) -----------------------
-//
-// A machine image is a DISK, not a layer stack, so these subjects are built rather than pulled: an
-// ext4 filesystem image carrying the OS release files + package DB that `trivy vm` reads. Built
-// ROOTLESSLY with `mke2fs -d` (populate-from-directory — no mount, no loop device, no privileged
-// container), so this runs on an ordinary CI worker. No partition table is written: `trivy vm`
-// accepts a bare filesystem image as well as an MBR/GPT-partitioned disk, and skipping the partition
-// table drops a `sfdisk`/`util-linux` dependency the base images do not all carry.
-//
-// Calibrated against the runner image's PINNED, baked Trivy DB, exactly like the container cases:
-//   MACHINE-IMAGE CLEAN — an alpine:3.20 rootfs: 0 findings -> within the fail-closed 0/0 -> PASS.
-//   MACHINE-IMAGE DIRTY — a debian:11 rootfs: 6 CRITICAL / 22 HIGH -> breaches 0/0 -> FAIL.
-// The DIRTY case is the one that matters most for this arm: `trivy vm` emits a result document whose
-// `Metadata` carries NO image digest and whose `ArtifactName` is a file path, so a parser that
-// quietly found nothing would report all-zero counts and masquerade as clean. A subject with KNOWN
-// non-zero findings is what makes the clean case's zeros meaningful.
-//
-// These three stay BARE TAGS, unlike the skopeo sources above, and deliberately: they are consumed
-// by `docker create`, which resolves a tag against the local image store first. CI pre-seeds those
-// exact tags from the GHCR mirror (`scripts/ci-mirror.sh seed`), so the daemon finds them locally
-// and never pulls — a registry prefix here would defeat that, not improve it. Both forms are pinned
-// by the same digests in `tools/ci-mirror/images.list`.
+// --- MACHINE-IMAGE subjects. See docs/federation.md §414.
 const MACHINE_IMAGE_CLEAN_BASE = "alpine:3.20";
 const MACHINE_IMAGE_DIRTY_BASE = "debian:11";
 /** Collect the files `trivy vm` needs into `/r`, per OS family (release files + the package DB). */
@@ -205,12 +109,7 @@ describe.runIf(await dockerAvailable())(
         throw new Error("skopeo binary not found (vendored or PATH)");
       skopeoBin = resolved.bin;
 
-      // LEVER 1: resolve the runner image ONCE (PULL the pre-built content-hash GHCR image in CI via
-      // SCP_RUNNER_SCAN_IMAGE_REF, else legacy-builder BUILD it locally as a dev fallback), and start
-      // the postgres-domain + a registry:2, in parallel. The DOCKER_BUILDKIT=0 legacy-builder
-      // reasoning (the single-daemon net=none session wedge, PR #126 — now scoped to the local
-      // fallback only) lives in resolveRunnerImage — same build path, just no longer paid on every
-      // CI run.
+      // LEVER 1: resolve the runner image ONCE. See docs/federation.md §415.
       let scanImageRef: string;
       [scanImageRef, domain, registry] = await Promise.all([
         resolveRunnerImage({
@@ -232,7 +131,6 @@ describe.runIf(await dockerAvailable())(
       cleanDigest = await pushSubject(CLEAN_SRC, cleanRepo);
       dirtyDigest = await pushSubject(DIRTY_SRC, dirtyRepo);
 
-      // OpenSCAP subjects.
       oscapCleanRepo = `${registryHost}/scp/oscap-clean`;
       oscapDirtyRepo = `${registryHost}/scp/oscap-dirty`;
       oscapCleanDigest = await pushSubject(OSCAP_CLEAN_SRC, oscapCleanRepo);
@@ -259,11 +157,7 @@ describe.runIf(await dockerAvailable())(
       await rm(vmCleanDisk, { force: true });
       await rm(vmDirtyDisk, { force: true });
 
-      // Assign the `openscap` method to the `rpm` executor Type for THIS domain's instance-scoped
-      // scanner registry (default seed is `rpm -> [trivy]`). Instance-scoped `scanner_assignments`
-      // is SELECT-only for the runtime role, so the write runs over the domain's SUPERUSER admin
-      // connection — the same path routes/scanner-assignments.ts uses in production. `image` stays
-      // `trivy` (the trivy cases below are untouched); `configuration` stays `[]` (the fail-closed case).
+      // Assigns the scan method to that Type for this domain. See docs/federation.md §416.
       const adminPool = new pg.Pool({ connectionString: domain.adminUrl });
       try {
         await adminPool.query(
@@ -414,18 +308,7 @@ describe.runIf(await dockerAvailable())(
       await rm(rootfsTar, { force: true });
     }
 
-    /**
-     * Package a disk as an OCI ARTIFACT — form (1) of `run.sh`'s declared machine-image packaging
-     * convention: one layer descriptor that IS the disk, carrying the SCP machine-image mediaType —
-     * and push it into the local registry. Returns the manifest digest.
-     *
-     * The layout is hand-authored rather than produced by a packaging tool because that is exactly
-     * what the convention is: nothing in the pull path is special-cased for machine images, so the
-     * SERVER pulls this with the same allowlisted `skopeo copy` it uses for a container image. The
-     * digest is computed from the manifest bytes we author (content-addressing, not a tool's word
-     * for it) and PROVEN by the round-trip: the server re-reads the landed layout's digest and
-     * refuses the scan unless it equals the promoted digest.
-     */
+    /** Package a disk as an OCI ARTIFACT. See docs/federation.md §417. */
     async function pushMachineImage(diskPath: string, destRepo: string): Promise<string> {
       const layoutDir = join(scratch, `oci-${randomUUID()}`);
       const blobs = join(layoutDir, "blobs", "sha256");
@@ -567,7 +450,6 @@ describe.runIf(await dockerAvailable())(
 
       expect(outcome.refused, outcome.refused ? outcome.reason : "expected export").toBe(false);
       if (outcome.refused) throw new Error(outcome.reason);
-      // The bundle carries the promoted OCI digest.
       expect(outcome.bundle.artifactDigests).toContain(cleanDigest);
 
       // The step deposited exactly the digest-bound, self-describing evidence the gate consumed.
@@ -577,7 +459,7 @@ describe.runIf(await dockerAvailable())(
       expect(run.status).toBe("pass");
       const ev = ScanEvidenceSchema.parse(run.evidence);
       expect(ev.scanner).toBe("trivy");
-      expect(ev.artifactDigest).toBe(cleanDigest); // digest-bound to the PULL == the promoted digest
+      expect(ev.artifactDigest).toBe(cleanDigest);
       expect(ev.expectedDigest).toBe(cleanDigest);
       expect(ev.digestMatch).toBe(true);
       expect(ev.severityCounts.critical).toBe(0);
@@ -657,9 +539,7 @@ describe.runIf(await dockerAvailable())(
       expect(await managedRunsFor(changeId)).toHaveLength(0);
     }, 60_000);
 
-    // -------------------------------------------------------------------------------------------
     // (d) FAIL-CLOSED — an ExecutorType with NO assigned scanner produces NO evidence ⇒ E6 refuses.
-    // -------------------------------------------------------------------------------------------
     it("(d) an artifact whose type has NO scanner assigned produces no managed evidence → E6 REFUSES (fail-closed)", async () => {
       // `configuration` resolves to `[]` in the seeded scanner registry (no managed scanner).
       const changeId = await proposeArtifactChange(cleanDigest, cleanRepo, "configuration");
@@ -680,13 +560,7 @@ describe.runIf(await dockerAvailable())(
       expect(await managedRunsFor(changeId)).toHaveLength(0);
     }, 60_000);
 
-    // -------------------------------------------------------------------------------------------
-    // (d2) RUNNER FAILURE IS DIAGNOSABLE — a genuine `{ ok: false }` (dispatch error, not "no
-    // scanner assigned") deposits NO evidence, exactly as (d), but records WHY as an audit event
-    // instead of a bare silent `continue`. `promotion-scan-step.ts`'s Phase B used to discard
-    // `result.reason` entirely: an operator reading a "no passing digest-bound evidence" refusal
-    // had no way to tell a genuine scan failure apart from "the runner never even ran".
-    // -------------------------------------------------------------------------------------------
+    // (d2) RUNNER FAILURE IS DIAGNOSABLE. See docs/federation.md §418.
     it("(d2) a runner/dispatch error deposits NO evidence but IS recorded as an audit event, reason intact", async () => {
       const changeId = await proposeArtifactChange(cleanDigest, cleanRepo, "image");
 
@@ -744,12 +618,7 @@ describe.runIf(await dockerAvailable())(
       expect(runs[0]!.status).toBe("fail");
     }, 60_000);
 
-    // -------------------------------------------------------------------------------------------
-    // (f) OPENSCAP CLEAN — real oscap scan at the commander passes the profile → digest-bound
-    //     `scanner: openscap` evidence → E6 exports. The `rpm` type resolves to `openscap` (seeded
-    //     above), so this exercises registry-driven scanner selection AND the second method
-    //     end-to-end through the DEFAULT server runner (real skopeo pull + real scp-runner-scan).
-    // -------------------------------------------------------------------------------------------
+    // (f) OPENSCAP CLEAN. See docs/federation.md §419.
     it("(f) OPENSCAP: a clean image passes the profile at the commander → digest-bound (scanner:openscap) → E6 EXPORTS", async () => {
       const changeId = await proposeArtifactChange(oscapCleanDigest, oscapCleanRepo, "rpm", {
         profile: OSCAP_CLEAN_PROFILE,
@@ -771,12 +640,12 @@ describe.runIf(await dockerAvailable())(
       const run = runs[0]!;
       expect(run.status).toBe("pass");
       const ev = ScanEvidenceSchema.parse(run.evidence);
-      expect(ev.scanner).toBe("openscap"); // self-describing: the SECOND method produced this verdict
-      expect(ev.artifactDigest).toBe(oscapCleanDigest); // digest-bound to the PULL == promoted digest
+      expect(ev.scanner).toBe("openscap");
+      expect(ev.artifactDigest).toBe(oscapCleanDigest);
       expect(ev.expectedDigest).toBe(oscapCleanDigest);
       expect(ev.digestMatch).toBe(true);
       expect(ev.severityCounts.critical).toBe(0); // XCCDF has no critical — always 0 (the mapping)
-      expect(ev.severityCounts.high).toBe(0); // clean of high-severity failed rules
+      expect(ev.severityCounts.high).toBe(0);
       expect(ev.scannerVersion).not.toBe("unknown"); // a REAL oscap ran (version stamped from the run)
     }, 180_000);
 
@@ -803,18 +672,11 @@ describe.runIf(await dockerAvailable())(
       expect(ev.scanner).toBe("openscap");
       expect(ev.digestMatch).toBe(true); // it WAS the promoted artifact — it failed on findings
       expect(ev.artifactDigest).toBe(oscapDirtyDigest);
-      expect(ev.severityCounts.high).toBeGreaterThan(0); // ≥1 high-severity failed rule
+      expect(ev.severityCounts.high).toBeGreaterThan(0);
       expect(ev.severityCounts.critical).toBe(0); // never a critical from XCCDF
     }, 180_000);
 
-    // -------------------------------------------------------------------------------------------
-    // (h) MACHINE IMAGE, CLEAN — the 13.3a `trivy-vm` arm end-to-end through the DEFAULT server
-    //     runner: a real DISK image pulled by digest over the allowlisted channel, scanned by a real
-    //     `trivy vm` inside a `--network none` runner → digest-bound `scanner: trivy-vm` evidence →
-    //     the UNCHANGED E6 machinery exports. The `infrastructure` executor Type resolves to
-    //     `trivy-vm` in the seeded registry (drizzle/0048), so this is registry-driven selection of
-    //     the machine-image method, not a hard-coded branch.
-    // -------------------------------------------------------------------------------------------
+    // (h) MACHINE IMAGE, CLEAN. See docs/federation.md §420.
     it("(h) MACHINE IMAGE: a clean disk image scans clean via `trivy vm` → (scanner:trivy-vm) → E6 EXPORTS", async () => {
       const changeId = await proposeArtifactChange(vmCleanDigest, vmCleanRepo, "infrastructure");
 
@@ -844,12 +706,7 @@ describe.runIf(await dockerAvailable())(
       expect(ev.scannerVersion).not.toBe("unknown"); // a REAL trivy ran (version stamped from the run)
     }, 300_000);
 
-    // -------------------------------------------------------------------------------------------
-    // (i) MACHINE IMAGE, VULNERABLE — the anti-vacuity half of (h). A `trivy vm` result document
-    //     differs from a `trivy image` one (no `Metadata` digest, an `ArtifactName` that is a file
-    //     path), so a parser that silently matched nothing would report all-zero counts and every
-    //     machine image would "scan clean". A subject with KNOWN findings proves the counts flow.
-    // -------------------------------------------------------------------------------------------
+    // (i) MACHINE IMAGE, VULNERABLE. See docs/federation.md §421.
     it("(i) MACHINE IMAGE: a vulnerable disk image over threshold → status FAIL → E6 REFUSES with a decision_id", async () => {
       const changeId = await proposeArtifactChange(vmDirtyDigest, vmDirtyRepo, "infrastructure");
 
@@ -870,19 +727,7 @@ describe.runIf(await dockerAvailable())(
       expect(ev.severityCounts.critical + ev.severityCounts.high).toBeGreaterThan(0);
     }, 300_000);
 
-    // -------------------------------------------------------------------------------------------
-    // (j) NO BOUNDARY CROSSING ⇒ NO SCAN SCHEDULED (13.3a DoD, "default-permissive = adoption
-    //     semantics only"). The commander's managed scan is a step of the CROSS-BOUNDARY export
-    //     journey. A change that never crosses a boundary — one that runs its whole lifecycle inside
-    //     the domain, `proposed -> ... -> accepted` — must schedule NO scan: no runner dispatch, no
-    //     managed evidence, no Decision about scanning. Adopting SCP must not silently start
-    //     scanning every in-domain release.
-    //
-    //     Non-vacuous BY CONSTRUCTION: the subject is the SAME artifact whose scan REFUSES in (i),
-    //     managed scanning is fully enabled, and the change's type resolves to a real scanner. The
-    //     test then EXPORTS the same change and asserts the scan does happen — so it fails both if
-    //     scanning leaked onto the in-domain path and if the boundary path stopped scanning.
-    // -------------------------------------------------------------------------------------------
+    // (j) NO BOUNDARY CROSSING ⇒ NO SCAN SCHEDULED. See docs/federation.md §422.
     it("(j) a promotion that crosses NO boundary schedules NO scan — and the same change DOES scan on export", async () => {
       const changeId = await proposeArtifactChange(vmDirtyDigest, vmDirtyRepo, "infrastructure");
 

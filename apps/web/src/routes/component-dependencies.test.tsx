@@ -11,22 +11,7 @@ import {
   unlockFixture
 } from "../test-support/dependency-fixtures";
 
-/**
- * THE DEPENDENCIES TAB — what it renders off the wire, and what it writes
- * (docs/proposals/dependency-subscription-ui.md §4/§5).
- *
- * Plain `renderToStaticMarkup`, no DOM: every pin here is on rendered markup or on a pure builder.
- * The Radix dialogs portal nothing under a string render, so the dialog BODIES are exported and
- * rendered directly (the precedent every pipeline write test follows). The interaction half — the
- * confirm click reaching `client.policies.create` — is `component-dependencies-writes.test.tsx`.
- *
- * MUTATIONS WATCHED TO FAIL (each applied alone, then reverted):
- *   - badge label read off a local recompute (`enabled ? "enabled" : anyDisable ? "opted out" : …`)
- *     instead of `subscription.reason` → "reads reason, never recomputes" RED
- *   - `IgnoredPill` returning null → "ignored contribution is never hidden" RED
- *   - the not-recorded branch rendering the "No dependencies declared" EmptyState → trichotomy RED
- *   - `buildOptOutPolicyRequest` moving the line into `scope` → payload pin RED
- */
+/** THE DEPENDENCIES TAB. See docs/web.md §209. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children, ...rest }: { children?: React.ReactNode; "data-testid"?: string }) => (

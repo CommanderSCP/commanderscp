@@ -7,33 +7,7 @@ import type {
   OutpostConfigReconcileResult
 } from "@scp/schemas";
 
-/**
- * M16.2 phase B (B3) — PER-OUTPOST CONFIGURATION, pinned on every PR.
- *
- * Four separate contracts live in this card and each has its own way of going wrong:
- *
- *  1. TRUST TIER — absent until set. A blank select that reads as `commercial` is the invented
- *     posture this milestone exists to prevent; and phase A has no clear-to-unknown verb, so the
- *     placeholder must never be submittable once a tier exists.
- *  2. AN UNVERIFIED SHADOW — must SAY it is one and offer the reconcile verb, and the edit must be
- *     gated on the MEASURED 409 (`outpost-handfill-wedge.integration.test.ts`: PATCH on a
- *     shadow-only peer answers 409 "read-only replica"), never quietly overwritten.
- *  3. POKE-MODE — labelled THIS SIDE ONLY. One toggle presented as controlling both sides is a claim
- *     about a database this instance cannot write.
- *  4. RECONCILE — the two removal outcomes must be visibly different, and a removal that PROPAGATES
- *     downstream must say so BEFORE it is taken.
- *
- * Also pinned: the "managed elsewhere" notes offer NO edit control at all (owner decision), because
- * an edit box that silently does nothing downstream is worse than no box.
- *
- * M25.7 RETIRED HALF OF THAT REASON. This header used to add "— freezes are TESTED never to ride the
- * journal (`coordination/service-board-precedence.integration.test.ts`)", which was true and pinned
- * until owner decision D6 gave an org-tier freeze a graph object so it CAN cross. The no-edit-control
- * ruling survives on the reason that did NOT change: a freeze is scoped at an object in the org's
- * containment graph and there is no "the outpost this freeze belongs to", so a per-outpost freeze
- * form would be structurally wrong rather than merely absent. The case below pins the REWRITTEN copy,
- * which is what makes this a rewrite rather than a silent deletion.
- */
+/** M16.2 phase B (B3) — PER-OUTPOST CONFIGURATION, pinned on every PR. See docs/web.md §355. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -190,13 +164,7 @@ describe("trust tier: absent until set, and never defaulted", () => {
   });
 
   it("treats an ABSENT tier key exactly like a null one — no empty badge, no orphan select", () => {
-    // `OutpostConfigSchema.trustTier` is required-nullable, and BEFORE ADR-0023 the generated SDK
-    // validated no response, so a server that omitted the key handed this component `undefined`
-    // (since ADR-0023 that body rejects at the SDK boundary; this drives the component directly,
-    // which is where the guard itself lives). Keyed on `=== null`, that fell through to the
-    // VALUE branch and rendered an empty `<Badge>` with no `data-trust-tier` attribute — a blank
-    // standing in for an unknown — while the select, initialised with `?? ""`, showed a value no
-    // option carried.
+    // That field is required-nullable, and what the SDK did before. See docs/web.md §356.
     const noKey = configFixture();
     delete (noKey as { trustTier?: unknown }).trustTier;
 
@@ -276,11 +244,7 @@ describe("trust tier: an unverified shadow is named, not overwritten", () => {
   });
 
   it("a shadow is still a shadow while ownDomainId is LOADING — no authority, no enabled edit", () => {
-    // THE WINDOW: `originIsSelf` absent (an older server) and `ownDomainId` not yet resolved.
-    // `isConfigForeign` answers FALSE there BY DESIGN — never fabricate a block on a write the server
-    // would accept — so gating the unverified marker on `foreign && provenance === "manual"` made a
-    // hand-typed shadow render `data-tier-unverified="false"` with an ENABLED edit control: a manual
-    // claim presented as this domain's own authority, for as long as the query took.
+    // THE WINDOW: `originIsSelf` absent. See docs/web.md §357.
     const loading = shadowFixture({ originIsSelf: undefined });
     expect(isConfigForeign(loading, undefined), "the premise: origin is undecidable here").toBe(
       false
@@ -307,19 +271,7 @@ describe("trust tier: an unverified shadow is named, not overwritten", () => {
     expect(tagWithAttr(html, 'data-testid="config-tier-save"')).toContain("read-only replica");
   });
 
-  /**
-   * ROUND 3 — W3 WAS APPLIED ONE FILE OVER AND NOT HERE.
-   *
-   * `outposts.tsx`'s `TrustTierCell` was fixed to OR the two signals the server emits for this one
-   * case; `TrustTierCard` still decided declared-vs-unverified from `provenance` ALONE. But
-   * `toOutpostConfig` (`outposts-repo.ts`) pushes `"trustTier"` into `unknownFields` in exactly two
-   * cases — no tier at all, or `provenance === "manual"` — so a config that HAS a tier and declares
-   * it unknown IS the shadow case, and `OutpostConfigSchema.provenance` is
-   * `.nullable().optional()`, so a well-formed response may simply omit the key.
-   *
-   * MEASURED before the fix: this config rendered BYTE-IDENTICAL to a signature-verified replica of
-   * the same tier — `data-tier-unverified="false"`, no shadow notice, edit control offered.
-   */
+  /** ROUND 3 — W3 WAS APPLIED ONE FILE OVER AND NOT HERE. See docs/web.md §358. */
   it("a tier the server DECLARES unknown is unverified even with the provenance key omitted", () => {
     const noProvenance = shadowFixture({ trustTier: "commercial" });
     delete (noProvenance as { provenance?: unknown }).provenance;
@@ -358,11 +310,7 @@ describe("trust tier: an unverified shadow is named, not overwritten", () => {
   });
 
   it("the OTHER direction: a manual shadow whose declaration is missing still READS as unverified", () => {
-    // The mirror of the test above, and it is not symmetric bookkeeping: the visible "unverified"
-    // word was rendered behind `tierUnknown && unverifiedShadow`, so an older server that sends
-    // `provenance: "manual"` but declares nothing left an operator with only an ATTRIBUTE and a
-    // badge VARIANT to tell a hand-typed claim from this domain's own assertion — neither of which
-    // anybody reads. Whenever the value is shown as unverified, it must SAY so.
+    // The mirror of the test above, and it is not symmetric bookkeeping. See docs/web.md §359.
     const undeclared = shadowFixture({ trustTier: "commercial", unknownFields: [] });
     expect(undeclared.provenance).toBe("manual");
     expect(undeclared.unknownFields).toHaveLength(0);
@@ -382,11 +330,7 @@ describe("trust tier: an unverified shadow is named, not overwritten", () => {
   });
 
   it("NO OVER-BLOCKING: an ordinary local config with no tier yet stays fully editable", () => {
-    // The guard rail on the fix above. A locally-authored config with NO tier ALSO declares
-    // `trustTier` unknown (`if (trustTier === null) unknownFields.push("trustTier")`), and it is the
-    // ordinary declare-then-set flow — so keying the unverified/edit-gate on the declaration ALONE
-    // would disable the very control this milestone exists to offer. `!isAbsent(config.trustTier)`
-    // is what keeps the two apart, and this is what fails if it is dropped.
+    // The guard rail on the fix above. See docs/web.md §360.
     const fresh = configFixture();
     expect(fresh.trustTier).toBeNull();
     expect(fresh.unknownFields).toContain("trustTier");
@@ -406,11 +350,7 @@ describe("trust tier: an unverified shadow is named, not overwritten", () => {
   });
 
   it("survives a response that omits unknownFields — an unknown, never a blank panel", () => {
-    // `unknownFields` is required-not-optional and BEFORE ADR-0023 the SDK validated no response, so
-    // `config.unknownFields.includes(...)` threw a TypeError and BLANKED THE WHOLE CARD — under the
-    // very response shape the guards here exist for. Fail loud beats fail dishonest; a white screen
-    // is neither. (Since ADR-0023 that body rejects at the SDK boundary; this case drives the
-    // component directly, where the guard itself lives.)
+    // That field is required, and what the SDK validated before. See docs/web.md §361.
     const noDeclaration = configFixture({ trustTier: "il5" });
     delete (noDeclaration as { unknownFields?: unknown }).unknownFields;
 
@@ -487,15 +427,7 @@ describe("managed elsewhere: shown, never editable", () => {
     expect(html).not.toContain("<button");
     expect(html).not.toContain("<input");
     expect(html).not.toContain("<select");
-    // …and it says where each one really is configured, so "no control here" is not a dead end.
-    //
-    // DELIBERATE INVERSION (M25.7, owner decision D6). This line asserted `"does NOT ride the sync
-    // journal"` — the operator-facing correction of M16.2's "syncs down" aspiration, true and
-    // load-bearing until D6 gave an org-tier freeze a graph object. Asserting the old sentence now
-    // would pin a lie in place; asserting nothing would let the note go silent. So it pins the two
-    // claims the rewritten copy actually makes: freezes are declared PER OBJECT and never per
-    // outpost (the structural reason there is no form here, which D6 did not touch), and reaching
-    // this outpost is CONDITIONAL on the declaring domain federating it (the part D6 changed).
+    // It says where each one is really configured. See docs/web.md §362.
     const text = visibleText(html);
     expect(text).toContain("never per outpost");
     expect(text).toContain("only if it was declared federating");
@@ -569,11 +501,7 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
   });
 
   it("the DEFAULT button does not route around the gate the per-row buttons enforce", () => {
-    // THE MEASURED BYPASS. With two locally-authored claimants both `reconcile-keep` buttons carried
-    // `disabled=""` — either choice drops a row this domain authored, whose tombstone PROPAGATES
-    // downstream to the outpost — while the bare `reconcile-default` button called the SAME
-    // destructive verb with no preview, no per-outcome block, no confirmation, and a label naming no
-    // consequence, and was fully clickable.
+    // THE MEASURED BYPASS. See docs/web.md §363.
     const localA = configFixture({ objectId: "44444444-4444-4444-8444-444444444444" });
     const localB = configFixture({ objectId: "55555555-5555-4555-8555-555555555555" });
     const tied = renderToStaticMarkup(
@@ -621,11 +549,7 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
   });
 
   it("no offered default can ever perform a downstream-propagating removal", () => {
-    // THE STRUCTURAL RULE, asserted over every arrangement of the three claimant kinds rather than
-    // over the two the review happened to render. `propagates-downstream` means dropping a row THIS
-    // domain authored — a journaled tombstone the outpost applies — and that choice must always be
-    // made explicitly, per row, behind the confirmation. So: whenever a default IS offered, its own
-    // preview contains no such outcome.
+    // The structural rule, over every arrangement of the keys. See docs/web.md §364.
     const kinds = {
       local: configFixture({ objectId: "44444444-4444-4444-8444-444444444444" }),
       local2: configFixture({ objectId: "55555555-5555-4555-8555-555555555555" }),
@@ -733,19 +657,7 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
     expect(html).not.toContain('data-testid="reconcile-removed-shadows"');
   });
 
-  /**
-   * ROUND 3 — THE SAME `=== null` HALF-GUARD, IN THE FILE WHOSE COMMIT IS TITLED "guard both,
-   * everywhere". `adoptedObjectId` is required-nullable, and BEFORE ADR-0023 the SDK validated no
-   * response. (Since ADR-0023 an omitted required key rejects at the SDK boundary; this case drives
-   * the component directly, where the guard itself lives.)
-   *
-   * MEASURED with `adoptedObjectId: undefined`, BOTH mirrors misfired at once:
-   *   * `!== null` was TRUE, so the panel emitted `<p data-testid="reconcile-adopted">Adopted
-   *     <code></code> as this domain's own configuration — it journals down to the outpost from now
-   *     on.</p>` — an EMPTY element inside a confident claim about a journaling side-effect; and
-   *   * `=== null` was FALSE, so the honest `reconcile-removed-none` branch was suppressed.
-   * The operator was told an adoption happened AND denied the statement that nothing did.
-   */
+  /** The same half-guard, in the file named for fixing it. See docs/web.md §365. */
   it("an ABSENT adoptedObjectId claims no adoption — and does not suppress 'nothing removed'", () => {
     const absent = {
       config: configFixture({ trustTier: "il5" }),
@@ -759,7 +671,6 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
     expect(html).not.toContain('data-testid="reconcile-adopted"');
     expect(visibleText(html)).not.toMatch(/Adopted\s+as this domain/);
     expect(visibleText(html)).not.toMatch(/journals down to the outpost/);
-    // The other mirror: the honest branch is reached.
     expect(html).toContain('data-testid="reconcile-removed-none"');
     expect(visibleText(html)).toContain("Nothing needed removing");
   });

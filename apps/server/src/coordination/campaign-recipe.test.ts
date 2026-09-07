@@ -9,16 +9,7 @@ import {
 } from "./campaign-recipe.js";
 import { KNOWN_EXECUTOR_MODULES } from "./executor-bindings-repo.js";
 
-/**
- * M25.4 — the READ side of the recipe, as pure functions (ADR-0041).
- *
- * The integration sibling proves the wire; this file proves the three decisions the wire depends on
- * and that a wire test could not isolate:
- *
- *   * a malformed recipe is a REFUSAL, never an absence,
- *   * an undeclared capability set is "cannot", never "can",
- *   * a managed actuator is refused even though it truthfully declares the verb (OQ-5).
- */
+/** M25.4 — the READ side of the recipe, as pure functions. See docs/coordination.md §150. */
 
 const recipe = (over: Record<string, unknown> = {}) => ({
   version: 1,
@@ -43,12 +34,7 @@ describe("resolveChangeRecipe: three outcomes, because two would lie", () => {
     expect(recipeTriggerParameters(resolved.recipe)).toEqual({ workflowId: "migrate-py3.yml" });
   });
 
-  /**
-   * THE LOAD-BEARING CASE OF THE WHOLE MODULE. If a present-but-unparseable recipe read as
-   * `none`, reconcile would trigger every one of 47 targets with a bare `sync` and no parameters,
-   * each run would succeed, and the campaign would go green having coordinated nothing. "Silence
-   * read as a pass" is the exact failure the M25 hold/freeze family exists to refuse.
-   */
+  /** THE LOAD-BEARING CASE OF THE WHOLE MODULE. See docs/coordination.md §151. */
   it.each([
     ["a future vocabulary version", { version: 2, trigger: { kind: "sync" } }],
     ["the forbidden rollback kind", { version: 1, trigger: { kind: "rollback" } }],
@@ -73,11 +59,7 @@ describe("executorSupportsTriggerKind: fail-closed on anything that is not a dec
     );
   });
 
-  /**
-   * An executor that does not say what it can do is not evidence that it can do this. A
-   * third-party plugin predating the field, or a malformed reply, must not be read as "supports
-   * everything" — that reading turns the refusal into a silent default-workflow dispatch.
-   */
+  /** An executor that says nothing is not evidence it can. See docs/coordination.md §152. */
   it.each([
     ["null capabilities", null],
     ["undefined capabilities", undefined],
@@ -114,20 +96,7 @@ describe("OQ-5: a recipe may not drive one of CommanderSCP's own actuators", () 
     expect(isRecipeForbiddenExecutorModule(undefined)).toBe(false);
   });
 
-  /**
-   * THE CENSUS PIN, and the reason this assertion is written against `KNOWN_EXECUTOR_MODULES`
-   * rather than against a hand-copied list.
-   *
-   * The refusal is only as complete as its membership. A FOURTH managed executor added later would
-   * join the binding allowlist (it must, or it cannot be provisioned at all) and would be invisible
-   * to `RECIPE_FORBIDDEN_EXECUTOR_MODULES` unless someone remembered both — which is the
-   * "incomplete call-site census" failure that produced this finding in the first place.
-   *
-   * `managed-` is the naming convention every member of the Managed Execution Exception follows
-   * (`scp-managed-iac`, `scp-managed-scan`, `scp-managed-dep`, all named in the charter). A module
-   * that acts under that grant WITHOUT the prefix would defeat this pin — so the convention is
-   * itself asserted below, giving a future author a red test rather than a silent hole.
-   */
+  /** The census pin, written against the known module list. See docs/coordination.md §153. */
   it("pins the forbidden set against the binding allowlist — a fourth managed module cannot land on only one", () => {
     const managedOnAllowlist = KNOWN_EXECUTOR_MODULES.filter((m) => m.startsWith("managed-"));
     expect(managedOnAllowlist.length).toBeGreaterThan(0); // the filter itself must not be vacuous
@@ -141,23 +110,8 @@ describe("OQ-5: a recipe may not drive one of CommanderSCP's own actuators", () 
   });
 });
 
-// ==================================================================================================
 describe("a malformed recipe's DETAIL is bounded at the producer (M25.4 review finding)", () => {
-  /**
-   * THE BYTE CAP CANNOT REACH THIS PATH, WHICH IS THE WHOLE FINDING.
-   *
-   * `CAMPAIGN_RECIPE_PARAMETERS_MAX_BYTES` is enforced in a `superRefine` on `CampaignRecipeSchema`,
-   * so it runs only when the document PARSES. The malformed branch is by definition the branch on
-   * which it did not — so before this bound, the one refusal path that renders author-controlled
-   * text had no cap on it at all.
-   *
-   * MEASURED, not hypothesised: 20,000 unrecognised keys produce ONE zod issue whose message
-   * enumerates every one of them — ~188 KB from a single strict-object failure. `POST /v1/changes`
-   * takes free-form `properties` and a `change` is deliberately outside the authoring guard, so
-   * that string was one authenticated call from being written four times permanently (Decision
-   * `inputContext`, Decision `reasonTree.summary`, the hash-chained audit `reason`, and the
-   * `audit_segment` payload that rides signed bundles to peers).
-   */
+  /** The byte cap cannot reach this path. See docs/coordination.md §154. */
   it("BOUNDS a 20,000-key failure that renders ~188KB unbounded", () => {
     const junk: Record<string, unknown> = { version: 1, trigger: { kind: "sync" } };
     for (let i = 0; i < 20_000; i += 1) junk[`k${i}`] = "v";

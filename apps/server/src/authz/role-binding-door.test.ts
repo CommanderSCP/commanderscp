@@ -17,34 +17,7 @@ import {
   type ReachedPrincipal
 } from "./role-binding-door.js";
 
-/**
- * ================================================================================================
- * THE ROLE-BINDING DOOR'S PURE REFUSALS — the half of the door that judges rows, not the database
- * ================================================================================================
- *
- * `role-binding-door.ts` is mostly transaction-bound and is exercised end to end by
- * `routes/rbac-role-binding-door.integration.test.ts` and `routes/rbac-administrative-floor.
- * integration.test.ts` against real PostgreSQL, which is where it belongs (CLAUDE.md: integration
- * tests never mock a DB). Nothing in this file mocks one. Every function below takes rows that have
- * ALREADY been fetched and returns a verdict over them — set difference, string comparison, an
- * own-property lookup — so a `TenantTx` would add nothing but a fixture.
- *
- * WHAT THIS LAYER CAN REACH THAT THE INTEGRATION LAYER CANNOT REACH CHEAPLY. An integration case
- * builds ONE membership through real `POST /relationships` calls and asserts one verdict. The
- * properties these predicates actually promise are quantified over inputs a fixture cannot
- * conveniently produce: an acknowledgement whose ids are in the wrong ORDER or DUPLICATED (the
- * docblock says "order is irrelevant; duplicates are irrelevant; the comparison is set equality"),
- * a `bindable_at` that is `[]` rather than `null`, a principal that is soft-deleted AND of a
- * non-bindable type at the same time (the "only one reason per principal" rule), a built-in role
- * whose name is `'toString'`. Each of those is one line here and a fixture there.
- *
- * WHAT IS DELIBERATELY NOT HERE: `missingPermissionsFor`, `assertMayWriteRoleBinding`,
- * `assertMayJoinRoleBearingSubject`, `principalsReachedBy`, `readableSubsetOf`,
- * `assertOrgRetainsAdministrativeFloor`, `objectTouchesRoleAuthority`, `lockOrgRoleAuthority` and
- * every function in `roles-repo.ts`. All of them ask PostgreSQL a question — the subset rule's whole
- * correctness is that it runs `hasPermission` per permission rather than reading the actor's role
- * rows, and a fake `tx` would let a wrong implementation pass. They stay in the integration layer.
- */
+/** THE ROLE-BINDING DOOR'S PURE REFUSALS. See docs/authz.md §70. */
 
 /** The four seeded shapes these predicates are asked about, as `roles` rows. */
 const builtIn = (name: string, over: Partial<BindableRole> = {}): BindableRole => ({
@@ -409,7 +382,6 @@ describe("assertGrantAcknowledgesEmpoweredPrincipals — D7 (owner ruling 2026-0
     const emptyGroup = [principal({ id: "g-1", depth: 0, typeId: "group" })];
     // `[]` is a TRUE statement at the moment of the grant, and is the seat-the-team-later flow.
     expect(() => ack(group, emptyGroup, [])).not.toThrow();
-    // `undefined` is not.
     expect(refusal(() => ack(group, emptyGroup, undefined)).status).toBe(422);
   });
 
@@ -498,13 +470,7 @@ describe("assertGrantAcknowledgesEmpoweredPrincipals — D7 (owner ruling 2026-0
 });
 
 describe("assertGrantReachesOnlyBindableMembers — §2b, over an already-walked closure", () => {
-  /**
-   * The function's own docblock: "`tx` is kept in the signature though nothing in here uses it:
-   * this is a door, and every other assert in this module takes the transaction it judges." So no
-   * transaction is passed. If this ever throws a TypeError instead of failing an assertion, the
-   * function stopped being pure and belongs in the integration layer — which is the signal, not a
-   * flake.
-   */
+  /** The function's own docblock. See docs/authz.md §71. */
   const NO_TX = undefined as unknown as TenantTx;
   const check = (subject: { id: string; typeId: string }, reached: ReachedPrincipal[]) =>
     assertGrantReachesOnlyBindableMembers(NO_TX, {

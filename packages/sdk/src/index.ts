@@ -1,8 +1,4 @@
-/**
- * @scp/sdk — generated core (`@hey-api/openapi-ts`, committed under src/generated) plus a thin
- * handwritten layer (auth, pagination) — DESIGN.md §15. The UI and CLI consume only this
- * package; nothing may bypass the public API.
- */
+/** @scp/sdk — generated core. See docs/sdk.md §58. */
 export { ScpClient } from "./client.js";
 export type {
   ScpClientOptions,
@@ -39,13 +35,7 @@ export type {
   ListServiceObjectsResponse,
   LoginData,
   LoginResponse,
-  // M23.1g: THE GENERATED shape of `GET /changes/{id}:explain`, re-exported so a consumer can pin
-  // itself to what the OpenAPI document actually says rather than to the hand-written
-  // `ChangeExplainResponse` alias above. The two are meant to agree; the point of offering this one
-  // is that `observed.truncation` has to be reachable through the GENERATED types alone — a signal
-  // a consumer can only read by importing `@scp/schemas` (or, worse, `@scp/runner-launcher`) is not
-  // an API-first signal (charter principle 3). `observed-truncation.integration.test.ts` is the
-  // consumer that proves it.
+  // The generated explain shape, re-exported so a consumer can pin. See docs/sdk.md §59.
   ExplainChangeResponse
 } from "./generated/index.js";
 
@@ -121,13 +111,7 @@ export type {
   ServiceBoardAsOf
 } from "@scp/schemas";
 
-// M4: Governance Engine — control runs/bindings, approvals (N-of-M quorum), freezes, and `scp
-// policy evaluate`'s dry-run response (BUILD_AND_TEST.md §8 M4). Policy/Control documents
-// themselves are plain typed-registry `GraphObject`s (already covered by the M2 exports above) —
-// this only adds the projection-table resources that have no graph-object equivalent. Until this
-// commit these were only ever re-exported informally (packages/cli/src/cli.ts imported them
-// straight from @scp/schemas — allowed by eslint's own restricted-imports rule, but not what
-// `@scp/sdk`'s own module doc above promises for a THIRD-PARTY consumer of this package).
+// M4: Governance Engine. See docs/sdk.md §60.
 export type {
   ControlOutcomeStatus,
   ControlRun,

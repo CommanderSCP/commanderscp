@@ -2,14 +2,7 @@ import { describe, expect, it } from "vitest";
 import { atLineStart, stripHashComments } from "./hash.js";
 import { stripComments } from "./ts.js";
 
-/**
- * NEGATIVE CONTROLS FOR THE `#`-LANGUAGE READERS.
- *
- * Every consumer of these helpers is a test that asserts something is PRESENT, and the whole class
- * of bug being fixed is such a test passing when it should not. So the helpers themselves are
- * proven to BITE — each case below is a real shape taken from the files that were measured
- * false-green on 2026-08-17 (package doc), not an invented one.
- */
+/** NEGATIVE CONTROLS FOR THE `#`-LANGUAGE READERS. See docs/source-census.md §9. */
 
 describe("atLineStart — a `#` prefix cannot satisfy a presence assertion", () => {
   const DOCKERFILE = [

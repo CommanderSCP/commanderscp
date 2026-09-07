@@ -1,17 +1,8 @@
-/**
- * The `scp iac scaffold` half of the estate-reading layer (team-pipeline-iac.md §7/D1, ADR-0047) —
- * turns a `discovery run` proposal into `@scp/iac`'s `ServiceSpec` shape, GROUPED into services by
- * the caller-supplied lookup table. Sibling to `iac-estate-reader.ts` (the `scp iac export` half);
- * split into its own file/commit because scaffold's grouping logic is genuinely independent of
- * export's live-graph reads — both hand their output to the SAME shared emitter
- * (`@scp/iac`'s `estate-program.ts`), landed first.
- */
+/** The `scp iac scaffold` half of the estate-reading layer. See docs/cli.md §124. */
 
 import type { GraphObject } from "@scp/schemas";
 
-// -------------------------------------------------------------------------------------------
 // `scp iac scaffold --from <execution-system-urn>` (§7/D1/ADR-0047)
-// -------------------------------------------------------------------------------------------
 
 /** Maps a live `execution-system` object's stored `properties.kind` (set at `scp connect`) to the
  *  discovery plugin module that reads it — the exact mapping the CLI's own `connect` flow already

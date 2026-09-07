@@ -13,28 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Stage-shaped compilation end to end, plus the silent hazards §1.5/§11 named.
- *
- * `compileAndPersistPlan` is called directly rather than driven through the reconcile loop: the
- * loop's job (locking, state transitions) is covered elsewhere, and calling the compiler service
- * lets each case assert the PERSISTED plan — which is the artifact that matters, and the one where
- * an empty wave being emitted-vs-omitted is observable.
- *
- * **Mutation log** (each applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | persist a skipped wave as `pending` | "born skipped" fails |
- * | `resolveStagePlacements` returns undefined (never classify as stage) | the two-wave and skipped tests fail |
- * | drop the mixed-shape refusal | "REFUSES a topology mixing places and non-places" fails |
- * | `parseTopologyWaves`: restore `return undefined` for a non-array | "a malformed document is refused" fails |
- * | `parseTopologyWaves`: allow `waves: []` | "an empty waves array is refused" fails |
- * | `parseTopologyWaves`: drop the unknown-key check | "an unknown wave key is refused" fails |
- * | `parseTopologyWaves`: drop the per-wave mode/targets checks | "a wave with a bad mode" fails |
- * | stop passing `declaredStageDependencies` from `plan-service.ts` | "the tombstoned edge" fails |
- * | pass `[]` for `declaredStageDependencies` (keep the parameter, drop the value) | the same test fails |
- */
+/** Stage-shaped compilation, plus the silent hazards named. See docs/coordination.md §912. */
 describe("stage-shaped compilation + malformed-topology loudness", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -181,24 +160,7 @@ describe("stage-shaped compilation + malformed-topology loudness", () => {
   });
 
   it("REFUSES a mutual declaration whose edge was TOMBSTONED — the compiler reads what the hold enforces", async () => {
-    // THE SILENT WEDGE, end to end, and the reason this arm is an integration test rather than one
-    // more `compilePlan` unit case: the unit tests hand the compiler its declarations directly, so
-    // they cannot tell whether `plan-service.ts` actually reads them off the change. This one starts
-    // from an HTTP propose and a real tombstone.
-    //
-    //  1. `a -> b` is minted and then SOFT-DELETED by an operator. `deleteRelationship` is a soft
-    //     delete and `relationships_org_type_from_to_key` is a plain UNIQUE, so the tombstone keeps
-    //     the key forever.
-    //  2. A change targeting [a, b] declares BOTH couplings. `materialiseStageDependencyEdges` mints
-    //     `b -> a` and SKIPS `a -> b`, whose tombstone it reads as "already materialised".
-    //  3. `loadDependsOnEdges` filters `deleted_at IS NULL`, so the compiler sees only `b -> a` — no
-    //     cycle — and the plan compiled clean.
-    //  4. At reconcile the declaration is CHANGE-scoped and applies to every target, so `a@gamma`
-    //     holds behind `b@gamma` and `b@gamma` holds behind `a@gamma`. Every target held, none
-    //     failed: the pure-hold return fires every tick and the change sits in `executing` forever
-    //     behind nothing louder than a watchdog warn.
-    //
-    // It must fail LOUDLY here instead, which is the epitaph ADR-0028 promises.
+    // The silent wedge, end to end rather than in a unit. See docs/coordination.md §913.
     const a = await componentWithPlacements("tombstone-a", [gamma, prod]);
     const b = await componentWithPlacements("tombstone-b", [gamma, prod]);
 
@@ -228,12 +190,7 @@ describe("stage-shaped compilation + malformed-topology loudness", () => {
 
     const topo = await topology("tombstone-gamma-then-prod", gammaThenProdDoc());
 
-    // ASSERTED ON `detail`, NOT ON THE MESSAGE. `badRequest(detail)` builds
-    // `new ProblemError(400, "Bad Request", { detail })` (`errors.ts`), so `err.message` is the
-    // literal "Bad Request" for EVERY 400 this route can raise — matching on it would pass for a
-    // malformed topology, an unknown target, or a plan with nothing to do, none of which is the
-    // refusal under test. The other refusal tests in this file use a bare `.rejects.toThrow()` and
-    // are weaker than they look for the same reason; this one pins the CAUSE.
+    // ASSERTED ON `detail`, NOT ON THE MESSAGE. See docs/coordination.md §914.
     const err = await compile(change, [a.id, b.id], topo.id).then(
       () => null,
       (e: unknown) => e as { status?: number; detail?: string }
@@ -267,18 +224,10 @@ describe("stage-shaped compilation + malformed-topology loudness", () => {
     expect(plan.waves.map((w) => w.targets.length)).toEqual([2, 2]);
   });
 
-  // -------------------------------------------------------------------------------------------
   // §1.5 / §11 — the malformed-topology property, all three instances
-  // -------------------------------------------------------------------------------------------
 
   it("REFUSES a malformed `waves` (not an array) instead of silently compiling one wave", async () => {
-    // Written by SURGERY, not the API, and that is the honest reachability story: the registered
-    // JSON Schema already rejects a non-array `waves` and a bad `mode` at the write door, so the
-    // API is not how a document like this arrives. What reaches `parseTopologyWaves` unvalidated is
-    // a document from another path — a federated `object_upsert` applied against a DIFFERENT
-    // schema version, a row predating a schema tightening, or the `topology_document` SNAPSHOT,
-    // which is copied into `change_plans` at compile time and which Ajv never re-validates.
-    // Before the fix every one of those compiled silently to a single anonymous wave.
+    // Written by surgery, which is the honest reachability. See docs/coordination.md §915.
     const component = await createTestComponent(admin, { name: "malformed-comp" });
     const topo = await topology("malformed-not-array", []);
     await writeRawProperties(topo.id, { waves: { oops: true } });

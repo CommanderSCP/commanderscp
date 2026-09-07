@@ -9,21 +9,7 @@ import {
   revokeLeafCert
 } from "./test-support/mtls-pki.js";
 
-/**
- * M9.3 (ADR-0001 §8, "CRL reload without a full restart") — proves the actual mechanism
- * `main.ts`'s `SIGHUP` handler relies on: `tls.Server#setSecureContext({ca, cert, key, crl})`
- * atomically swaps in a fresh CRL for all FUTURE handshakes on an already-listening server,
- * without restarting it.
- *
- * SCOPE NOTE (called out explicitly, not silently): this test builds a raw `https.createServer`
- * directly rather than spawning the compiled `scpd` binary and sending it a real `SIGHUP` OS
- * signal — doing the latter would require a child-process integration test in the style of
- * `test-support/cli-runner.ts`, a materially bigger investment for the same proof. What's
- * verified here is the load-bearing part: that `setSecureContext` genuinely changes which
- * certificates authenticate on the NEXT connection. `main.ts`'s `SIGHUP` wiring itself (re-running
- * `loadFederationServerMtlsConfig` and calling this same method) is straightforward glue on top,
- * not independently retested.
- */
+/** M9.3 (ADR-0001 §8, "CRL reload without a full restart"). See docs/federation.md §63. */
 describe.skipIf(!opensslAvailable())("federation server mTLS — CRL live reload mechanism", () => {
   let server: https.Server | undefined;
 

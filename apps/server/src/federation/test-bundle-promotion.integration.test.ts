@@ -16,60 +16,7 @@ import type {
 } from "./promotion-scan-step.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * D23 AT THE CROSSING — the test bundle rides the promotion manifest as an ordinary artifact, and
- * the ONE mint site stays one.
- *
- * ============================================================================================
- * WHY THIS NEEDED NO SCHEMA CHANGE, MEASURED RATHER THAN ASSUMED
- * ============================================================================================
- * `PromotionManifestSchema.artifacts[]` is already `{type: "oci"|"blob", digest, signatureRef?}`.
- * The test bundle IS an OCI artifact beside the image (D23; §14 resolution 9: "digest-native,
- * cosign-signed like every other artifact, riding the byte channel and registry replication
- * unchanged"), so it fits that shape as-is. Nothing was added to the wire, the manifest keeps its
- * `manifestVersion`, and an outpost one release behind reads a manifest whose only difference is one
- * more entry in a set it already iterates.
- *
- * ============================================================================================
- * THE MINT SITE, AND WHY "ONE" IS AN ASSERTION ABOUT **BEFORE** AS WELL AS AFTER
- * ============================================================================================
- * ADR-0045 D2: an `artifact` object is minted at promotion export (after the manifest is cosign
- * signed) and at promotion import (after verification passes), and NOWHERE ELSE — "a build report,
- * an `observe()` poll, a scan run — none of these creates an artifact object", because that is what
- * keeps the population bounded to promoted digests with no GC problem to solve later.
- *
- * So the natural-looking place to mint a test bundle — the moment a build REPORTS one — is exactly
- * the place D2 forbids. A test that only checked "an artifact object exists after export" would pass
- * just as happily on a build that minted at report time and again at export. This file therefore
- * pins the ABSENCE first: no artifact object for either digest exists while the change merely sits
- * proposed, and exactly one per digest exists afterwards.
- *
- * WHAT THAT ABSENCE DOES **NOT** COVER, MEASURED AND STATED. This file reaches `proposeChange`
- * directly, so its BEFORE assertion witnesses a mint site added at the propose door, at the scan
- * step, or anywhere else between propose and export — but NOT one added at the typed REPORT
- * ingress, which it never calls. Mutation M-c (mint the reported bundle in `webhook-processor.ts`)
- * was run and this file stayed GREEN while
- * `coordination/test-bundle-capture.integration.test.ts` case 1 went red naming the digest. The
- * single-mint-site claim is carried by the two files TOGETHER; neither is complete alone, and the
- * measured mutation table lives on that file.
- *
- * ============================================================================================
- * "SIGNATURE-VERIFIED PER HOP BUT NOT SCANNED" IS A COLLISION, AND IT IS TESTED AS ONE
- * ============================================================================================
- * E6 demands a current, digest-bound, floor-satisfying scan outcome for every SUBSTANTIVE artifact
- * before it may cross. D23 rules the bundle is never scanned (scan stays image-only per M13). Riding
- * `artifacts[]` as an `oci` entry, the bundle would be demanded a scan that by design will never
- * exist, and every promotion of a component that reports one would refuse forever, fail-closed.
- *
- * `substantiveArtifactsOf` resolves that by excluding the digest the change ITSELF DECLARED as its
- * bundle. B2 is the control that keeps the exclusion from being a hole: an unscanned OCI digest the
- * change did NOT declare as its bundle still refuses the export, naming that digest. Same digest
- * value, same runner, same everything else — only the declaration moves.
- *
- * Real PostgreSQL via Testcontainers in this file's OWN database (`createIsolatedDomain`); the
- * `ManagedScanRunner` is the injected seam the scan step exposes, so no Docker, no registry and no
- * real Trivy are involved.
- */
+/** D23 AT THE CROSSING. See docs/federation.md §553. */
 
 const IMAGE_DIGEST = `sha256:${"3a".repeat(32)}`;
 const BUNDLE_DIGEST = `sha256:${"5e".repeat(32)}`;

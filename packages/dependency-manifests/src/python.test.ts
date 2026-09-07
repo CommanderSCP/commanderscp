@@ -271,15 +271,7 @@ describe("parseRequirementsTxt", () => {
   });
 
   it("skips a pip OPTION line whose argument is itself a package name", () => {
-    // `--only-binary`/`--no-binary` take a distribution list, so their argument is the one option
-    // argument that would otherwise read as a requirement.
-    //
-    // HONEST NOTE on what this pins: there is exactly ONE mechanism now. The leading-`-` guard that
-    // used to sit in `flush()` was provably unreachable (PEP508_RE is anchored on `[A-Za-z0-9]`, so
-    // no `-` line could ever reach it) and has been deleted; this test pins the OBSERVABLE property,
-    // and the invariant it depends on is documented on PEP508_RE where it is enforced. Said out loud
-    // because a test that names a mechanism it does not exercise is the vacuous-test failure in its
-    // most convincing form.
+    // The one option argument that reads as a requirement. See docs/dependency-manifests.md §67.
     const parsed = parseRequirementsTxt(
       "--only-binary numpy\n--no-binary pandas\n-c constraints.txt\n--find-links ./wheels\nnumpy==2.0.1\n"
     );
@@ -288,11 +280,7 @@ describe("parseRequirementsTxt", () => {
   });
 
   it("drops ALL FOUR pip VCS schemes, not just git+", () => {
-    // The class is "a pip VCS scheme prefix", not "git+". pip documents git, hg, svn and bzr (pip
-    // docs, "VCS Support"); with only `git+` listed, the other three fell through to PEP508_RE and
-    // minted distribution rows literally named `hg`, `svn` and `bzr` — phantom packages no index
-    // resolves, attached to a real component. Asserted one scheme per line so a regression names
-    // which scheme regressed instead of collapsing into one empty-array failure.
+    // The class is "a pip VCS scheme prefix", not "git+". See docs/dependency-manifests.md §68.
     for (const line of [
       "git+https://example.invalid/x.git@v1\n",
       "hg+https://example.invalid/x\n",
@@ -306,11 +294,7 @@ describe("parseRequirementsTxt", () => {
   });
 
   it("NEGATIVE CONTROL: distributions whose names ARE those scheme words survive", () => {
-    // Without this the fix above passes just as well if the guard grew into a prefix test again.
-    // `svn`, `hgapi`, `bzrlib` and `gitpython` are all real PyPI distributions, and a component that
-    // declares `svn==1.0.1` must still get a row — it is the drop-a-real-package failure the
-    // httpx/httpcore case above was written for, one ecosystem-scheme over. `svn` is the sharp one:
-    // the coordinate is the bare scheme word.
+    // These fail again if the guard becomes a prefix test. See docs/dependency-manifests.md §69.
     expect(
       parseRequirementsTxt("svn==1.0.1\nhgapi==1.7.4\nbzrlib==2.7.0\ngitpython==3.1.43\n").map(
         (d) => d.coordinate
@@ -319,11 +303,7 @@ describe("parseRequirementsTxt", () => {
   });
 
   it("NEGATIVE CONTROL: the two valid PEP 508 forms that also contain `+` and `:` survive", () => {
-    // SCHEME_LINE_RE keys on `+`/`:` immediately after the leading token, so these are the inputs
-    // that would break if it were loosened to "contains a `+` or `:`" — and both are ordinary:
-    // a PEP 440 local version (`+cu118`, every CUDA wheel in existence) and a PEP 508 direct
-    // reference, whose URL carries a `:` and whose specifier the parser deliberately leaves
-    // unresolved rather than reading a version out of the path.
+    // Inputs that break if the scheme rule is loosened. See docs/dependency-manifests.md §70.
     const local = parseRequirementsTxt("torch==2.0.1+cu118\n");
     expect(local.map((d) => d.coordinate)).toEqual(["torch"]);
     expect(local[0]).toMatchObject({ declared: "==2.0.1+cu118", constraint: "pinned" });
@@ -334,17 +314,7 @@ describe("parseRequirementsTxt", () => {
   });
 
   it("refuses a scheme-shaped but MALFORMED line instead of naming a package after the scheme", () => {
-    // Neither of these is a URL (no `//`, no scheme colon) and neither is valid PEP 508 (`+` and `:`
-    // cannot follow a distribution name). Parsed as requirements they yield the coordinates `http`
-    // and `git` — a distribution named after the scheme of the URL somebody meant to type.
-    //
-    // This behaviour was UNPINNED IN EITHER DIRECTION: HEAD dropped both by accident (the old
-    // unanchored prefix test happened to catch them, while deleting httpx et al.), and narrowing the
-    // regex to require the delimiter turned them into phantom rows with nothing to notice. The
-    // deliberate choice is refusal, per `dockerfile.ts:209-214`: a wrong identity is worse than a
-    // missing one, and the same one guard (SCHEME_LINE_RE) delivers both verdicts because the
-    // OUTCOME for a well-formed and a malformed URL line is the same. Per-LINE refusal, not
-    // ManifestParseError — see the next assertion.
+    // Neither of these is a URL. See docs/dependency-manifests.md §71.
     expect(parseRequirementsTxt("http:example\n")).toEqual([]);
     expect(parseRequirementsTxt("git+https//broken\n")).toEqual([]);
     expect(parseRequirementsTxt("https:/example.invalid/x.whl\n")).toEqual([]);
@@ -358,13 +328,7 @@ describe("parseRequirementsTxt", () => {
 });
 
 describe("parseRequirementsTxt — which clause of a multi-clause specifier is the version", () => {
-  /**
-   * ADR-0032 §7's "skipped rather than guessed" applied to PEP 440 specifiers.
-   *
-   * Nothing pinned the clause-selection rule before: no test asserted `version` for ANY multi-clause
-   * specifier, so first-clause, last-clause and "whatever parses" were indistinguishable. The rule
-   * is now: the clause that denotes a FLOOR, or undefined.
-   */
+  /** Skipped rather than guessed, for PEP 440 clauses. See docs/dependency-manifests.md §72. */
   it("does not record an EXCLUDED version as the declared one", () => {
     // `packaging.SpecifierSet.__str__` sorts clauses, and `!` (0x21) sorts before `>` (0x3E), so
     // exclusion-first is what a pip-compile / PKG-INFO round-trip actually emits.

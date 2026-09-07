@@ -1,20 +1,4 @@
-/**
- * NOT A TEST FILE. Standalone entry point spawned BY `reaper.integration.test.ts` — never imported,
- * never run by vitest.
- *
- * Its whole job is to launch ONE real container through the REAL Docker adapter — the same
- * `createDockerRunnerLauncher().run()` production code path a managed executor's subprocess would
- * take — and then do nothing else, so the PARENT test can SIGKILL this process while `docker start
- * -a` is attached. That reproduces exactly the scenario M23.1 phase 4 exists for: the host's own
- * hang detector (`apps/server/src/plugin-host/host.ts`, sized by `call-policy.ts`)
- * `child.kill("SIGKILL")`s a subprocess mid-`trigger()`, no `finally` runs, and the container the
- * daemon already started keeps running with nothing left supervising it.
- *
- * Nothing in this file's OWN exit path matters — the whole point of the scenario is that this
- * process never gets the chance to run one. If `run()` ever resolves or rejects on its own (the
- * happy path, useful for the parent's OTHER negative-arm container — see the test file), this just
- * reports it and exits; the parent does not wait for that under the SIGKILL scenario.
- */
+/** NOT A TEST FILE. See docs/runner-launcher.md §395. */
 import { createDockerRunnerLauncher } from "./index.js";
 
 const [, , runId, image] = process.argv;

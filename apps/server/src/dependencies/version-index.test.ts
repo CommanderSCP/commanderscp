@@ -12,13 +12,7 @@ import {
 } from "./version-index.js";
 import type { FeedRead } from "./version-index-feed.js";
 
-/**
- * M21.4 — the NEVER-GUESS properties (ADR-0032 §7), pinned as pure-function tests.
- *
- * Every assertion below is about the same rule from a different angle: a version that cannot be
- * DETERMINED must produce NOTHING, with a legible reason. The failure these guard against is not a
- * crash — it is a plausible-looking wrong answer that makes a component look up to date.
- */
+/** M21.4 — the NEVER-GUESS properties. See docs/dependencies.md §409. */
 
 const line = (
   over: Partial<{ ecosystem: string; major: string; tagPattern: string | null }> = {}
@@ -37,11 +31,7 @@ const line = (
 const v = (...versions: string[]): DependencyIndexVersion[] =>
   versions.map((version) => ({ version }));
 
-/**
- * `queryLineHead` accepts ONLY a `ThirdPartyLine`, so even a test has to come through
- * `asThirdPartyLine` — which is the ingress split working (ADR-0032 §7): an INTERNAL line cannot be
- * handed to an index by anyone, including a test that means to.
- */
+/** The query accepts only a third-party line. See docs/dependencies.md §410. */
 const pollable = (
   over: Partial<{ ecosystem: string; coordinate: string; major: string; tagPattern: string | null }>
 ): ThirdPartyLine => {
@@ -65,16 +55,7 @@ const pollable = (
 
 describe("the ecosystem vocabulary is the same list on all THREE sides", () => {
   it("plugin-api's DependencyIndexEcosystem matches the Zod enum at RUNTIME", () => {
-    // M21.4 added a THIRD copy of one vocabulary (`@scp/schemas`' Zod enum, `@scp/dependency-
-    // manifests`' parser type, and now `@scp/plugin-api`'s plugin-contract type). The first two
-    // drifted already — `image` vs `oci` — with both sides fully green, because no test crossed the
-    // boundary; `packages/dependency-manifests/src/ecosystem-vocabulary.test.ts` exists for exactly
-    // that. This is the same check for the third copy.
-    //
-    // `INDEX_MODULE_BY_ECOSYSTEM` is what makes it a RUNTIME check rather than an erased type
-    // assertion: it is declared `Record<DependencyIndexEcosystem, PluginModule>`, so a missing key
-    // and an extra key are both compile errors, and its KEYS are therefore that type's members
-    // observable at runtime.
+    // M21.4 added a THIRD copy of one vocabulary. See docs/dependencies.md §411.
     expect(Object.keys(INDEX_MODULE_BY_ECOSYSTEM).sort()).toEqual(
       [...DependencyEcosystemSchema.options].sort()
     );
@@ -291,10 +272,6 @@ describe("resolveIndexInstanceConfig — indexes are operator config, and unset 
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// queryLineHead over a fake plugin host
-// -------------------------------------------------------------------------------------------
-
 function fakeHost(
   listVersions: () => Promise<DependencyIndexResult>,
   resolveDigest?: () => Promise<
@@ -404,11 +381,7 @@ describe("queryLineHead", () => {
       head: { version: "3.19.1", digest: `sha256:${"a".repeat(64)}` }
     });
 
-    // A digest that cannot be resolved does NOT void the observation — the tag is still the head,
-    // and the air-gap feed carries no digests at all, so requiring one would make an air-gapped
-    // estate unable to record an image head ever. It travels as an EXPLICIT null, never as an
-    // absent field: an absent one let the PREVIOUS version's digest stay beside the new tag, and the
-    // row then asserted a (tag, digest) pair that never existed in any registry (ADR-0032 §7).
+    // An unresolvable digest does not void the observation. See docs/dependencies.md §412.
     const withoutDigest = await queryLineHead(
       pollable({ ecosystem: "oci", coordinate: "registry.internal/acme/base", major: "3.19" }),
       {

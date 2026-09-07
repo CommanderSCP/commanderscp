@@ -11,24 +11,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { initFederationSelf } from "./self-repo.js";
 
-/**
- * M16.3 P1 ("PROVE IT SERVES") — grounding found the one-binary outpost-local UI was ASSUMED
- * "free by construction" and never actually verified. `app.ts` registers `@fastify/static` +
- * the SPA catch-all UNCONDITIONALLY (`registerHealthRoutes(app, deps); app.get("/healthz", ...);`
- * then the `webDistRoot` static registration — see `app.ts`'s module doc right above it), with no
- * gate on this org's/instance's federation role. This suite pins that a `role: outpost` domain
- * genuinely gets both halves of "the same one-binary UI, scoped to its local domain":
- *
- *   1. the SPA is served at all (GET '/' returns real `text/html`, not a 404/503 stub), and
- *   2. the outpost's OWN local-domain graph (a component that exists only here, never federated
- *      anywhere) round-trips through the generated SDK on that exact same running instance —
- *      i.e. this is not just a static file server bolted on beside a broken API.
- *
- * Deliberately integration-level, not browser/Playwright level (BUILD_AND_TEST.md: Playwright e2e
- * costs minutes where this costs seconds) — modeled on the `bootDomain` pattern in
- * `federation-poke-chain.integration.test.ts`, but far simpler: no mTLS, no second domain, no
- * federation transport at all is needed to prove "this one instance serves its own UI + API".
- */
+/** M16.3 P1 ("PROVE IT SERVES"). See docs/federation.md §323. */
 describe("M16.3 P1: an outpost instance serves its own local UI (apps/web/dist)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

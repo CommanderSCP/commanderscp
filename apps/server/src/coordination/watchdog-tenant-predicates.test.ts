@@ -75,33 +75,7 @@ function queriesIn(text: string): { table: string; clause: string }[] {
   return out;
 }
 
-/**
- * THE SECOND QUERY FORM — a raw `sql` template naming a tenant table in SQL rather than in Drizzle's
- * builder. `queriesIn` above cannot see one: it looks for `.from(<identifier>)`, and
- * ``sql`select … from objects where id = ${x}` `` contains no such call.
- *
- * MEASURED 2026-08-17, and this is why the function exists rather than a note saying "consider also".
- * Three mutations were run against this file:
- *
- *   G. drop `eq(objects.orgId, orgId)` from the executing arm (Drizzle form) → RED, correctly, on
- *      the real predicate check. Nothing to fix.
- *   H. REWRITE that same query as an unscoped `sql` template → RED, but only because the
- *      anti-vacuity floor saw the count fall from 3 to 2. The predicate check itself was blind.
- *   I. ADD an unscoped `sql` template read, leaving all three Drizzle queries in place → GREEN, 1/1.
- *
- * Mutation I is a cross-tenant read of `objects` sitting in the file, and the guard whose entire
- * purpose is to forbid exactly that passed. The vacuity floor was doing the work in H and there was
- * nothing left to do it in I — a floor detects REMOVAL, and the dangerous edit is an ADDITION.
- *
- * WHAT IS MATCHED: a `sql` template (or `sql.raw`) whose body names a tenant table after
- * `from`/`join`/`update`/`into`. The whole template body is the window, and the question is the same
- * one: does it mention `org_id` at all.
- *
- * THE FALSE-POSITIVE DIRECTION IS DELIBERATE. A template that legitimately needs no `org_id` — a
- * genuinely cross-tenant maintenance query — fails here and has to be exempted in
- * {@link CROSS_TENANT_BY_DESIGN} with a reason. That is a loud conversation rather than a silent
- * hole, and it is the correct direction for a guard whose failure mode is a tenant leak.
- */
+/** THE SECOND QUERY FORM. See docs/coordination.md §1021. */
 function sqlTemplatesIn(text: string): { table: string; clause: string }[] {
   const out: { table: string; clause: string }[] = [];
   // A `sql` tag followed by a backtick-delimited body. Nested `${}` may contain backticks in
@@ -157,11 +131,7 @@ describe("watchdog: tenant predicates", () => {
 
     expect(unscoped, "a raw SQL template against a tenant table, scoped by RLS alone").toEqual([]);
 
-    // NO VACUITY FLOOR HERE, deliberately, and the asymmetry is the point. `watchdog.ts` contains
-    // ZERO raw templates today, so a floor would have to assert `>= 0` — which asserts nothing — or
-    // be a standing red. The floor on the builder case exists because that count is nonzero and a
-    // drop to zero would be suspicious; here the honest guard is the exemption list above, which is
-    // empty and must stay argued-for.
+    // No vacuity floor here, and the asymmetry is the point. See docs/coordination.md §1022.
     expect(CROSS_TENANT_BY_DESIGN, "an exemption is a decision, not a default").toEqual([]);
   });
 });

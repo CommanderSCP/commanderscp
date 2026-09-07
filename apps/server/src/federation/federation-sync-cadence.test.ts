@@ -22,13 +22,7 @@ import {
 } from "./federation-sync.js";
 import { asTrustDomainId } from "@scp/schemas";
 
-/**
- * M14.4 (ADR-0009; owner decisions D1–D4, 2026-07-24) — UNIT coverage, no database, for the
- * scheduler mode's two PURE pieces: the sparse-interval knob and the per-peer due-gate truth table.
- * The DB-backed behavior (the atomic claim, the reconnect leg end to end, the forced poke tick) is
- * in `federation-sync.integration.test.ts`; this file pins the decision logic itself so a regression
- * shows up as a failing truth-table row rather than a subtly denser poll in production.
- */
+/** Unit coverage of the cadence rules, with no database. See docs/federation.md §145. */
 
 const FREQUENT = 60;
 const SPARSE = 900;
@@ -170,21 +164,12 @@ describe("M14.4 isPeerDue — the due-gate truth table", () => {
     expect(peerSyncCadence(neverSucceeded, inputs)).toBe("poll");
     expect(isPeerDue(neverSucceeded, T0, inputs)).toBe(true);
 
-    // One success re-arms sparse.
     expect(peerSyncCadence(pulledOk(120, proven), inputs)).toBe("poke");
     expect(isPeerDue(pulledOk(120, proven), T0, inputs)).toBe(false);
   });
 });
 
-/**
- * M14.4 fix (N6) — the D4 cert warning is RATE-LIMITED, not once-per-process.
- *
- * The warning is the ONLY operator-visible signal that this instance is silently running every
- * poke-mode peer at the frequent cadence because its client-cert material stopped resolving. Deduped
- * with no time window, a worker that emitted its single line at boot leaves someone debugging the
- * divergence six hours later with nothing in the log window they are looking at. It must recur — just
- * not once a minute per org.
- */
+/** The certificate warning is rate-limited, not once a process. See docs/federation.md §146. */
 describe("M14.4 D4 cert probe — never throws, warns, and RE-WARNS on an interval", () => {
   const MISSING = {
     SCP_FEDERATION_MTLS_CERT_FILE: path.join(tmpdir(), "scp-cadence-nope.crt"),
@@ -290,18 +275,7 @@ describe("M14.4 wakeFederationSyncNow — the poke wake is DISTINGUISHABLE and o
   });
 });
 
-/**
- * M14.4 fix — FORCE and RESCHEDULE are TWO INDEPENDENT FLAGS, unit-pinned at the handler level.
- *
- *  - the STARTUP tick FORCES past the due-gate (its DB-observable half is pinned in
- *    `federation-sync-loop.integration.test.ts`) but MUST still re-schedule: it is the tick that
- *    BOOTSTRAPS the interval chain, so collapsing the two flags into one boolean either kills the
- *    loop ("forced ⇒ no re-schedule") or duplicates interval jobs ("forced ⇒ re-schedule");
- *  - the re-schedule is keyed on "the batch contains a NON-POKE job", not on "no poke is present".
- *    pg-boss 10.4.2 defaults `batchSize` to 1 so a poke and an interval tick cannot arrive together
- *    TODAY — but with a larger batch the old rule would CONSUME the pending interval job and skip
- *    its re-schedule, permanently killing the self-rescheduling chain until process restart.
- */
+/** Force and reschedule are two independent flags. See docs/federation.md §147. */
 describe("M14.4 loop handler — force vs. reschedule are two flags", () => {
   /** A db whose org list is empty, so a sweep is a no-op and only the SCHEDULING is under test. */
   const emptyDb = { select: () => ({ from: async () => [] }) } as unknown as Db;
@@ -352,13 +326,7 @@ describe("M14.4 loop handler — force vs. reschedule are two flags", () => {
     expect(sends).toHaveLength(1);
     expect(sends[0]!.queue).toBe(FEDERATION_SYNC_QUEUE);
     expect(sends[0]!.data).toEqual({ reason: "startup" });
-    // IMMEDIATE AND UNKEYED — no startAfter, no singletonKey, no singletonSeconds, so pg-boss has no
-    // singleton slot to drop it into. This assertion was previously the exact inverse (it required
-    // `{singletonKey: "startup", singletonSeconds: 10}`), which pinned a real defect: `job_i4`
-    // counts COMPLETED jobs, so a worker restarting inside its own 10s window had this send silently
-    // dropped and came back with no pull-on-(re)connect at all. The shared "tick" key remains off
-    // limits for the separate reason the original note gave — a pending interval tick would absorb
-    // it — and unkeyed is immune to both.
+    // IMMEDIATE AND UNKEYED. See docs/federation.md §148.
     expect(sends[0]!.options ?? {}).toEqual({});
     await handle.stop();
   });

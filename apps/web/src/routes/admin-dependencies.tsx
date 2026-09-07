@@ -47,37 +47,7 @@ import { WhyLink } from "../components/decision/WhyLink";
 import { decisionIdOf } from "../components/decision/decision-format";
 import { ManagedAtCommanderNotice, type ReadState } from "./component-dependencies";
 
-/**
- * ADMIN › DEPENDENCIES — the org's dependency PRODUCER declarations
- * (docs/proposals/dependency-subscription-ui.md §12; ADR-0032 §7e; server route
- * `apps/server/src/routes/dependency-producers.ts`).
- *
- * "Dependency producers — which components this org publishes which coordinates from." A
- * declaration is PER COORDINATE (every major, present and future): it removes the coordinate from
- * third-party polling and CLEARS every covered line's observed head (both verbs — a stale head is an
- * M22 vendor-scan-rule input). The blast radius is the set of components subscribed to those lines,
- * unguessable from the request, which is why the dialogs here run `dryRun: true` FIRST and only
- * then offer the write: the Declare button is enabled only after a preview for the SAME
- * ecosystem / coordinate / producer, and editing any field invalidates it. Not a nicety.
- *
- * COMMANDER SITE ONLY (owner rule 2026-08-17: dependency automation happens only at the commander).
- * The nav carries the entry on the commander table alone; a direct URL on any other install-time
- * role renders `ManagedAtCommanderNotice` (the same reason-aware pointer the Dependencies tab
- * renders) and issues NO reads. On the commander the WIRE is honoured too: a list answer whose
- * `dependencyManagement.managedHere` is false renders the pointer with the server's reason and no
- * table — never an empty table that would read as "nothing declared".
- *
- * WRITES ARE OFFERED, REFUSALS RENDERED (M16.3 rule): Declare… and Retract… render for every viewer;
- * the server's own sentence is shown for every refusal — 400 (a `service`, not a `component`;
- * nothing to retract), 404 (producer unresolvable in this org), 403 (`policy:write` at the org
- * root), 409 (not a commander on the federation axis). A retraction stops FUTURE triggers only: the
- * REAL response's `openBumpAuthorships[]` are pull requests SCP already opened in other teams'
- * repositories and never closes, so that list is rendered as "still in flight" and the dialog stays
- * open on it until dismissed — it is the operator's take-away.
- *
- * Every name rendered (producer, declarer, subscribed components) is READ off the server's enriched
- * response (§12.6 Q1) — never looked up N+1 from here, never inferred.
- */
+/** ADMIN › DEPENDENCIES. See docs/web.md §170. */
 
 export const ECOSYSTEMS: readonly DependencyEcosystem[] = ["npm", "go", "maven", "python", "oci"];
 
@@ -116,14 +86,7 @@ export function formatRelative(iso: string, now: number = Date.now()): string {
   return `${n} ${chosen[1]}${n === 1 ? "" : "s"} ${suffix}`;
 }
 
-/**
- * How a producer verb's refusal is rendered (charter principle 6). 403 → names `policy:write` AT
- * THE ORG ROOT (the route's authority; custody of the producing component is deliberately not
- * enough) plus the server's detail; 409 → the server's sentence (not a commander on the federation
- * axis) plus a Why link when the problem carried a `decision_id`; 400 / 404 → the server's sentence
- * verbatim (a `service` is refused and the message says why; an unresolvable producer names the org).
- * Never a fabricated Why link.
- */
+/** How a producer verb's refusal is rendered. See docs/web.md §171. */
 export function producerWriteRefusal(error: unknown): { message: string; decisionId?: string } {
   if (error instanceof ScpApiError) {
     const detail = error.problem?.detail ?? error.message;
@@ -166,15 +129,9 @@ function RefusalAlert({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // The blast-radius report — shared by both dialogs. READ off the verb response, never derived.
-// -------------------------------------------------------------------------------------------
 
-/**
- * Per covered line: its major, the head that stood BEFORE (what the write clears — `headCleared`
- * says whether there was one), and the subscribed components BY NAME (id fallback; "none
- * subscribed" when empty). An empty `lines[]` is ordinary and says so in the exact §12.3.3 sentence.
- */
+/** Per covered line: its major, the head that stood BEFORE. See docs/web.md §172. */
 export function BlastRadiusReport({
   lines,
   verb
@@ -247,21 +204,10 @@ export function BlastRadiusReport({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// Declare… dialog.
-// -------------------------------------------------------------------------------------------
-
 /** The producer picker's data — the components list as the dialog sees it. */
 export type ComponentsRead = ReadState<readonly GraphObject[]>;
 
-/**
- * Cursor paging for the picker (dependency-subscription-ui.md §12 paging note). `components` above
- * carries only the pages read so far — the first page loads eagerly (`limit: 100`,
- * `ObjectListQuerySchema`'s max), and `onLoadMore` fetches the next one via the cursor the SERVER
- * returned (`nextCursor`), never a client-guessed offset. `loading` disables the affordance so a
- * double-click cannot start a second fetch — there is exactly one in-flight page at a time, never a
- * parallel unbounded loop.
- */
+/** Cursor paging for the picker. See docs/web.md §173. */
 export interface ComponentsLoadMore {
   hasMore: boolean;
   loading: boolean;
@@ -274,13 +220,7 @@ function componentMatches(c: GraphObject, query: string): boolean {
   return c.name.toLowerCase().includes(q) || c.urn.toLowerCase().includes(q) || c.id === q;
 }
 
-/**
- * The declare dialog's CONTENT, portal-free — exported for the test. Two steps, and the second is
- * GATED on the first: "Preview blast radius" runs the verb with `dryRun: true` and renders the
- * report; "Declare" runs it for real, and is enabled ONLY while a preview exists for the SAME
- * ecosystem / coordinate / producer (editing any field invalidates it). `run` is the SDK verb,
- * threaded in so the body stays provider-free.
- */
+/** The declare dialog's CONTENT, portal-free. See docs/web.md §174. */
 export function DeclareDialogBody({
   components,
   componentsLoadMore,
@@ -519,18 +459,7 @@ export function DeclareDialogBody({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// Retract… dialog.
-// -------------------------------------------------------------------------------------------
-
-/**
- * The retract dialog's CONTENT, portal-free — exported for the test. Runs the preview
- * (`dryRun: true`) on open — there is nothing to type, the report IS the question — and offers
- * Retract only once it has resolved. After the REAL retract the response's `openBumpAuthorships[]`
- * (bumps SCP already dispatched — pull requests in other teams' repositories that a retraction does
- * NOT close) is rendered as "still in flight" with the Decision id, and the body stays until
- * dismissed: that list is the operator's take-away.
- */
+/** The retract dialog's CONTENT, portal-free. See docs/web.md §175. */
 export function RetractDialogBody({
   producer,
   run,
@@ -708,9 +637,7 @@ export function RetractDialogBody({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // The table and the view (provider-free), and the page (hooks).
-// -------------------------------------------------------------------------------------------
 
 /** The dialog descriptions — Radix portals them away from a static render, so they are strings. */
 export const DIALOG_COPY = {
@@ -800,11 +727,7 @@ function ProducerRowView({
   );
 }
 
-/**
- * The page's whole rendering off an already-loaded, `managedHere: true` list. `producers` is the
- * unpaged org list; the ecosystem chips filter it client-side. Provider-free apart from the two
- * verb callbacks and the components read the declare dialog's picker needs.
- */
+/** The page's whole rendering off an already-loaded. See docs/web.md §176. */
 export function ProducersView({
   producers,
   components,
@@ -996,11 +919,7 @@ export function AdminDependenciesPage(): React.JSX.Element {
   // The picker's list — read only once the page is a real, managed-here commander page (the gate
   // below has let the list through), and only then: no read of any kind leaves a non-commander site.
   const managedHere = listQuery.data?.dependencyManagement.managedHere === true;
-  // `limit: 100` is ObjectListQuerySchema's MAX (packages/schemas/src/graph.ts) — a larger value is a
-  // 400 before auth, which is what every other components.list call site in this app also respects.
-  // The first page loads eagerly; an org with more than 100 components gets a "Load more" affordance
-  // (`ComponentsLoadMore`) that fetches subsequent pages via the SERVER's own `nextCursor` — never a
-  // client-guessed offset, and `useInfiniteQuery` guarantees at most one page in flight at a time.
+  // `limit: 100` is ObjectListQuerySchema's MAX. See docs/web.md §177.
   const componentsQuery = useInfiniteQuery({
     queryKey: ["components", "picker", { limit: 100 }],
     queryFn: ({ pageParam }: { pageParam: string | undefined }) =>

@@ -56,106 +56,13 @@ import {
   normalizeRepoIdentity
 } from "./manifest-reader.js";
 
-/**
- * M21.5 — THE THING THAT ACTUALLY PROPOSES AND DISPATCHES A BUMP (ADR-0032 §8/§9).
- *
- * ============================================================================================
- * WITHOUT THIS FILE, M21.5 WAS THREE FUNCTIONS NOBODY CALLED
- * ============================================================================================
- * `recordBumpChange`, `resolveEffectiveDelivery` and `buildBumpIntentParameters` were built, tested
- * and correct, and measured filterlessly at the time NOTHING in the tree constructed a `managed-dep`
- * `TriggerIntent`: no job, no route, no loop, no worker. A subscriber to a line whose head advanced
- * received nothing, forever, with no error anywhere. That is the fourth time in M21 something was
- * built and never installed, which is why the definition of done for this increment is WIRED — and
- * why the test that proves it drives the ROUTER and the JOB rather than the functions.
- *
- * ============================================================================================
- * THE SHAPE: ROUTE ON THE SHARED STREAM, WORK ON THIS CAPABILITY'S OWN QUEUE
- * ============================================================================================
- *   recordDependencyLineHead (the ONE write door, both ingresses)
- *      -> outbox `scp.dependency.line_head_advanced`   [same transaction as the head write]
- *      -> domain-events -> {@link advancedLineHeadRouter} (one cheap predicate + one enqueue)
- *      -> {@link DEPENDENCY_BUMP_QUEUE} -> this file's worker -> a change, then a dispatch.
- *
- * `boss.work()` is a COMPETING consumer, so this cannot be a second worker on `domain-events`: it
- * would steal roughly half of M21.4's internal-release events and receive roughly half of its own
- * (`events/pgboss.ts`'s `DomainEventRouter`). The router is the fan-out point and does no work —
- * a repository write's latency and retry budget must not sit on the shared event stream.
- *
- * WHY THE EVENT IS EMITTED AT THE WRITE DOOR rather than by each ingress is argued where it is
- * emitted (`dependency-inventory-repo.ts`): the two ingresses have already demonstrated that a rule
- * applied per caller regresses per caller.
- *
- * ============================================================================================
- * THE WORK-LIST IS M21.3'S RESOLUTION. THERE IS NO SECOND FILTER HERE.
- * ============================================================================================
- * `listSubscribedComponentLines` returns exactly the (component, line) pairs whose monotone AND
- * resolved TRUE, so an unsubscribed component is never bumped BY CONSTRUCTION (ADR-0032 §6). This
- * file writes no predicate over enablement — not a `WHERE`, not an `if`. The one narrowing it does
- * apply is `componentObjectIds`, which is a narrowing of the SCAN (the components that declare this
- * line, from the reverse index) and not of the ANSWER: every candidate still goes through the merge.
- *
- * ============================================================================================
- * IDEMPOTENT UNDER REDELIVERY, AT EVERY HOP
- * ============================================================================================
- * The outbox->pg-boss path is at-least-once and there are two hops that can redeliver. Nothing on
- * this path appends:
- *
- *  - a bump change is looked up BEFORE it is proposed (`findOpenBumpAuthorship`), keyed on the
- *    (component, manifest, coordinate, target version) SCP ITSELF RECORDED in
- *    `dependency_bump_authorships` — so a redelivery re-uses the existing change and its existing
- *    branch instead of minting a second, while two components subscribed to the SAME line each get
- *    their own (that function's header says why every field of that key has to be compared, and what
- *    happened when two of them were not);
- *  - the dispatch carries `idempotencyKey = <changeObjectId>`, which is what the plugin's own
- *    outcome cache keys on, and the branch it authors carries that same id — so a retry that gets
- *    past the cache still converges on one branch and one pull request;
- *  - the verdict goes through `insertDecisionIfChanged`, whose inputs here are stable facts only;
- *  - the head is RE-READ from the row rather than trusted from the event.
- *
- * ============================================================================================
- * THE ROLE GUARD — COMMANDER-ONLY, WITH ITS OWN REASON ON TOP OF THE SHARED ONE
- * ============================================================================================
- * Since ADR-0032 §7d (owner decision, 2026-08-17) EVERY dependency job is commander-only, so this
- * verdict is no longer the strict one in a split field — it is the shared rule, and the shared
- * reason lives in `commander-only.ts`: dependency automation exists to pull from PUBLIC
- * repositories, which a FIELD outpost has no need to do, because the resulting change is pushed down
- * the global pipeline the commander manages. ("Field" is load-bearing — an HQ outpost is the outpost
- * in the commander's own trust domain and is this very process; see `commander-only.ts`, which reads
- * that out of the code. Every deployment this guard actually refuses is a field outpost, so the
- * refusal strings below say "outpost" exactly.) (This paragraph used to open by contrasting M21.4's
- * two jobs, which "reached OPPOSITE verdicts on the federation axis"; they no longer do, and internal
- * detection no longer "runs everywhere" — §7d marks that clause reversed.)
- *
- * THIS JOB'S OWN REASON SURVIVES THE CONVERGENCE AND IS STILL WORTH STATING, because it is what
- * would keep the guard here even if the shared rule were ever relaxed: it does not merely READ from
- * the internet, it WRITES to somebody's source repository, with a credential, on a trigger nobody
- * watched. An air-gapped or high-side outpost must never do that. The guard is fail-CLOSED on an
- * UNDECLARED deployment, because `SCP_FEDERATION_ROLE` defaults to `commander` for deployments that
- * predate the setting — and that is exactly the population most likely to be air-gapped. It also
- * logs when it ALLOWS: a posture that writes to a user's repository must not be the invisible one.
- *
- * The process axis (`SCP_ROLE`) applies unchanged — background work belongs to `all`/`worker`.
- *
- * ============================================================================================
- * WHAT IT REFUSES TO GUESS
- * ============================================================================================
- * Every branch that cannot state the bump precisely records a NAMED reason and dispatches nothing.
- * A missed bump is visible (the component keeps declaring the old version); a wrong one is a commit
- * in somebody else's repository. The named reasons are {@link BumpRefusalReason} and each is its own
- * cause — a reason named after the branch that matched goes false the moment that branch covers a
- * second case (ADR-0032 §7b clause 6, charter principle 6).
- */
+/** The thing that actually proposes and dispatches a bump. See docs/dependencies.md §79. */
 
 export const DEPENDENCY_BUMP_QUEUE = "dependency-bump";
 
 /** The `decisions.kind` every dispatch verdict is filed under — also the key
  *  `insertDecisionIfChanged` compares the previous verdict on, so it must be a constant. */
 export const DEPENDENCY_BUMP_DECISION_KIND = "dependency_bump_dispatch";
-
-// -------------------------------------------------------------------------------------------
-// The role guard
-// -------------------------------------------------------------------------------------------
 
 export interface BumpDispatchRoleVerdict {
   allowed: boolean;
@@ -197,10 +104,6 @@ export function bumpDispatchRoleGuard(
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// The router
-// -------------------------------------------------------------------------------------------
-
 /** What {@link advancedLineHeadRouter} puts on {@link DEPENDENCY_BUMP_QUEUE}. */
 export interface BumpDispatchJob {
   orgId: string;
@@ -224,23 +127,7 @@ export function advancedLineHeadRouter(): DomainEventRouter {
       const lineId = event.subject;
       if (typeof lineId !== "string" || lineId === "") return;
       const job: BumpDispatchJob = { orgId: event.orgId, lineId };
-      // NO DEDUP OPTION, DELIBERATELY, AND THE COMMENT THAT USED TO BE HERE WAS FALSE.
-      //
-      // This passed `{ singletonKey: lineId }` and claimed it "collapses a redelivery of the SAME
-      // advance that arrives while an earlier job for it is still queued". It does not: pg-boss
-      // enforces `singleton_key` uniqueness through three PARTIAL indexes, every one of them scoped
-      // `WHERE ... policy = 'short' | 'singleton' | 'stately'` (`pg-boss/src/plans.js`). This queue
-      // is created with `boss.createQueue(name)` and therefore has the DEFAULT `standard` policy, for
-      // which no such index exists — so the key was recorded and ignored, and the sentence describing
-      // it was a control that did not exist.
-      //
-      // The queue keeps `standard`, and that is the deliberate half. `short` WOULD make the key bite,
-      // by REJECTING a send while an earlier job for the same key is still `created` — and this job's
-      // whole safety story is that it is idempotent and RE-DERIVES from the row rather than trusting
-      // the event, so collapsing was only ever an optimisation ("never the correctness argument", as
-      // the old comment itself said). Trading a queue's rejection semantics for an optimisation that
-      // is not load-bearing is the wrong direction; an inert option with a sentence explaining its
-      // importance is worse than neither.
+      // No dedup option, and the comment that was here was false. See docs/dependencies.md §80.
       await boss.send(DEPENDENCY_BUMP_QUEUE, job);
     }
   };
@@ -301,20 +188,7 @@ export type BumpPlan =
     }
   | { readonly due: false; readonly reason: BumpRefusalReason; readonly detail: string };
 
-/**
- * Is a bump due for THIS declaration, and what would it say?
- *
- * THE EDIT IS COMPOSED BY SUBSTITUTION, NOT BY FORMATTING. `component_dependencies.declared_version`
- * is what the manifest literally holds (`^1.2.3`, `~=1.4`, `v1.2.3`, `3.18-alpine`) and
- * `resolved_version` is the concrete version parsed OUT of it. The new text is the declaration with
- * that concrete substring replaced by the head — so `^1.2.3` becomes `^1.3.0` and keeps its range
- * operator, and `v1.2.3` keeps its `v`. Re-rendering a declaration from a parsed triple would
- * silently drop whatever the parser did not model, in a file this system then commits.
- *
- * A declaration whose resolved version is not a substring of it is REFUSED rather than reformatted:
- * the two columns disagree about what the file says, and every way of proceeding from there is a
- * guess about somebody else's manifest.
- */
+/** Is a bump due for THIS declaration, and what would it say? See docs/dependencies.md §81. */
 export function planBump(input: {
   line: Pick<DependencyLine, "ecosystem" | "major" | "tagPattern" | "latestVersion">;
   declaration: Pick<
@@ -392,26 +266,7 @@ export function planBump(input: {
       detail: `substituting '${head}' for '${resolved}' in '${declared}' changes nothing`
     };
   }
-  // A DECLARATION PINNED TWICE (ADR-0032 §8i). `alpine:3.19@sha256:…` in a Dockerfile and
-  // `{repository, tag, digest}` in a chart's values both name the release AND the bytes, and every
-  // container runtime resolves by the DIGEST when one is present — the tag is then a label. So an
-  // edit that moves the version text alone changes the manifest and not the image that runs: the
-  // pull request reads as an upgrade, delivers nothing, and leaves the file asserting one release
-  // in its tag and another's bytes in its digest.
-  //
-  // NOT GUESSED AT, EITHER WAY. The digest for `head` is known — `dependency_lines.latest_digest`,
-  // written by the same poll that moved `latest_version` and never inherited across a version
-  // change (`line-head.ts`) — so the data for a correct two-token edit exists. What does not exist
-  // is a one-line edit that carries it in the SPLIT shape, and `verifyManifestBump`'s "exactly ONE
-  // line differs" is a charter-enforcing refusal that is not widened to a pair as a side effect of
-  // this. Refused with its own name, and the follow-up is `split-shape-image-bumps.md` §11.
-  //
-  // ASKED BEFORE EDITABILITY, and the honest reason is narrower than it looks: EITHER order refuses
-  // the same set — a digest-pinned Dockerfile is a writable kind, so it reaches this check whichever
-  // side of it the allowlist question sits on. What the order decides is which reason the Decision
-  // CARRIES when both apply, and "your declaration pins bytes as well as a version" is a fact about
-  // the manifest the team owns, while "this build does not write that file kind" is a fact about
-  // SCP. The first is the one they can act on.
+  // A DECLARATION PINNED TWICE. See docs/dependencies.md §82.
   if (input.declaration.resolvedDigest !== null && input.declaration.resolvedDigest !== "") {
     return {
       due: false,
@@ -443,10 +298,6 @@ export function planBump(input: {
   return { due: true, fromVersion: declared, toVersion };
 }
 
-// -------------------------------------------------------------------------------------------
-// The job
-// -------------------------------------------------------------------------------------------
-
 export interface BumpDispatchLoopDeps {
   db: Db;
   host: PluginHost;
@@ -460,7 +311,6 @@ export interface BumpDispatchLoopDeps {
  *  integration test can assert the real function's own verdict rather than a copy of it. */
 export interface BumpDispatchOutcome {
   lineId: string;
-  /** Bumps actually dispatched to `scp-managed-dep`. */
   dispatched: {
     componentObjectId: string;
     manifestPath: string;
@@ -471,22 +321,13 @@ export interface BumpDispatchOutcome {
   skipped: { componentObjectId: string; manifestPath?: string; reason: string; detail: string }[];
 }
 
-/**
- * Run ONE queued job. Exported so an integration test drives the exact function the worker runs.
- *
- * PHASES, and the split is the one M21.4 §7c clause 2 already established: read in a transaction,
- * do provider I/O OUTSIDE any transaction, write in a transaction. Holding an RLS-scoped pooled
- * connection across a git round trip — against a 5s production `statement_timeout` and a bounded
- * pool — is the failure both M21.4 ingresses are arranged to avoid, and a repository WRITE is a
- * longer round trip than either of them.
- */
+/** Run ONE queued job. See docs/dependencies.md §83. */
 export async function runBumpDispatchJob(
   deps: BumpDispatchLoopDeps,
   job: BumpDispatchJob
 ): Promise<BumpDispatchOutcome> {
   const outcome: BumpDispatchOutcome = { lineId: job.lineId, dispatched: [], skipped: [] };
 
-  // ---- PHASE 1 (read) -----------------------------------------------------------------------
   const work = await withTenantTx(deps.db, job.orgId, async (tx) => {
     // RE-READ the line rather than trusting the event: at-least-once delivery means this can arrive
     // after a later observation has moved the head again, or after an operator repointed the line.
@@ -501,12 +342,7 @@ export async function runBumpDispatchJob(
     if (componentObjectIds.length === 0) return { line, candidates: [] };
 
     const subscribed = await listSubscribedComponentLines(tx, job.orgId, {
-      // The system actor, exactly as M21.4's two ingresses resolve. It has no `objects` row and so
-      // is a transitive `member_of` nothing — which is NOT, as this comment used to claim, the
-      // reason a GROUP-scoped `dependencySubscription` effect is refused at authoring time. Group
-      // scope's OWNING half ignores the actor entirely, so such a policy can match right here
-      // (ADR-0032 §6a-ii). The refusal is about a reach decided by mutable `owns` edges instead of
-      // by the author.
+      // The system actor, exactly as the two ingresses resolve. See docs/dependencies.md §84.
       actorObjectId: SYSTEM_ACTOR_ID,
       componentObjectIds
     });
@@ -567,12 +403,7 @@ export async function runBumpDispatchJob(
       );
     }
   } finally {
-    // PLUGIN INSTANCES DERIVED FROM A WORK-LIST NEED A LIFECYCLE (ADR-0032 §7c clause 4). These
-    // instances come from this job's own candidate list — up to one per component per org, started
-    // on demand — not from operator configuration that persists. Stopped from a RECEIPT of what this
-    // code started, never from a second derivation of what "should" be running. (The git-provider
-    // instances the delegation probe starts are the OTHER kind — ordinary binding instances the
-    // reconcile/observe loops also hold — and `manifest-reader.ts` documents why those are left up.)
+    // PLUGIN INSTANCES DERIVED FROM A WORK-LIST NEED A LIFECYCLE. See docs/dependencies.md §85.
     if (startedInstances.size > 0) {
       await deps.host.stopInstances([...startedInstances]).catch(() => undefined);
     }
@@ -637,23 +468,7 @@ async function dispatchForComponent(
     });
   if (dueDeclarations.length === 0) return;
 
-  // ONE (repository, ref) FOR THE WHOLE DISPATCH, AND IT IS GROUPED FOR RATHER THAN ASSUMED.
-  //
-  // The paragraph above states the invariant — observed_ref is the only honest base for an edit —
-  // and the code enforced it for the FIRST due declaration only: `dueDeclarations[0].observedRef`
-  // became `baseBranch` and every other declaration was then dispatched against it. A component may
-  // legitimately declare one line from several manifests observed in DIFFERENT repositories or at
-  // different refs — `ingestion-stamp-repo.ts` names the shape ("`acme/widgets` (a go.mod) and
-  // `acme/charts` (a Dockerfile) each produce their own pass") — and every such declaration after
-  // the first was edited on a branch it was never read at.
-  //
-  // REFUSED, NOT DISPATCHED PER GROUP, and the reason is the delegation verdict rather than effort.
-  // `readStandingDelegationVerdict` reads the LATEST `dependency_delegation` Decision for the
-  // COMPONENT: one verdict per component, not per repository. Probing two repositories in one run
-  // would write two verdicts under one subject, they would alternate on every advance, and an
-  // `allow` earned by repo B would then stand as the answer for repo A — a fail-open in the one
-  // guard that keeps two actuators off one file. Per-repository dispatch needs a per-repository
-  // verdict first; until then the honest answer is to author nothing and say why.
+  // One repository and ref for the dispatch, grouped for. See docs/dependencies.md §86.
   const sources = new Map<string, { repo: string | null; ref: string | null; paths: string[] }>();
   for (const { declaration } of dueDeclarations) {
     const key = JSON.stringify([declaration.observedRepo, declaration.observedRef]);
@@ -689,12 +504,7 @@ async function dispatchForComponent(
   }
   const source = [...sources.values()][0]!;
 
-  // AND THE BINDING MUST NAME THAT REPOSITORY. `pickComponentGitBinding` sorts the component's
-  // git-provider bindings by id and takes the first, which for a component bound to two
-  // repositories is an arbitrary choice — so without this the credential and the repository path
-  // could both come from a binding that has nothing to do with the manifest being edited.
-  // `observedRepo` NULL is "the repository was not recorded" (drizzle/0063), not a disagreement, so
-  // it falls through to the binding exactly as before.
+  // AND THE BINDING MUST NAME THAT REPOSITORY. See docs/dependencies.md §87.
   if (source.repo !== null && normalizeRepoIdentity(repo) !== normalizeRepoIdentity(source.repo)) {
     skip(
       "git_binding_names_another_repository",
@@ -704,28 +514,7 @@ async function dispatchForComponent(
     return;
   }
 
-  // ---- PHASE 2 (provider I/O, OUTSIDE any transaction) ---------------------------------------
-  // DOES THIS REPOSITORY ALREADY DELEGATE ITS DEPENDENCY UPDATES TO SOMEBODY ELSE?
-  //
-  // This is the WRITER the charter clause needed. `probeDependencyUpdateDelegation` and
-  // `recordDelegationProbe` existed with two readers and no producer, so "CommanderSCP refuses to
-  // enable dependency subscriptions for a component whose repository already delegates the same
-  // manifests to another dependency-update system" was enforced by nothing end to end: the
-  // authoring-time guard and the actuator re-check both read a verdict that was never written.
-  //
-  // It runs HERE, and here is the only place it can: answering it requires reading files out of the
-  // repository, `graph/objects-repo.ts`'s choke point runs inside a transaction holding two per-org
-  // advisory locks, and this is the one production path that already has the repository, the ref and
-  // the component's declared manifests in hand. The verdict is persisted as a Decision
-  // (`insertDecisionIfChanged` — this path repeats per advance, which is the write-amplification
-  // shape that cost 1.44 GB/day elsewhere), and BOTH readers then see it: the actuator seam below
-  // refuses this very dispatch, and the authoring choke point refuses the next enable.
-  //
-  // THE RESIDUAL, stated rather than hidden: a component that has never been a bump candidate has no
-  // verdict, so its first enable is not refused at authoring time. That is exactly what
-  // `delegation-detection.ts`'s "WHAT ABSENT MEANS" already declares ("no probe on record means NO
-  // DELEGATION HAS BEEN OBSERVED"), and it is why the actuator half exists — nothing is written to a
-  // delegating repository either way.
+  // Phase two: provider I/O, outside any transaction. See docs/dependencies.md §88.
   const baseRef = source.ref;
   if (!baseRef || !baseRef.startsWith("refs/heads/")) {
     skip(
@@ -754,12 +543,7 @@ async function dispatchForComponent(
   let probeFailure: string | undefined;
   try {
     const probe = await probeDependencyUpdateDelegation(reader, probeSubject);
-    // A PROBE THAT COULD NOT READ IS NOT A PROBE THAT FOUND NOTHING, and the two are byte-identical
-    // in the result unless this is asked: a bad credential, a provider 5xx and an egress refusal all
-    // yield `configs: []`, `collisions: []`, `delegated: false`. Treating that as "no delegation
-    // here" is the fail-OPEN this whole module exists to prevent, so it is a skip with its cause and
-    // NOTHING — no dispatch, and no `allow` Decision either (`recordDelegationProbe` refuses to
-    // write one, which is where the rule lives so a second producer inherits it).
+    // A probe that could not read is not one that found none. See docs/dependencies.md §89.
     if (delegationProbeIsInconclusive(probe)) {
       probeFailure = delegationProbeFailureDetail(probe);
     } else {
@@ -799,13 +583,7 @@ async function dispatchForComponent(
         outcome
       });
     } catch (err) {
-      // PER DECLARATION, so one component's refused bump cannot stop another's. A thrown refusal
-      // here is the delegation conflict (a 409 from `assertComponentNotDelegated`) or a provider
-      // failure; both are legible in the skip, and both are re-derivable on the next advance.
-      // `ProblemError.message` is the STATUS TEXT ("Conflict"); the sentence an operator can act on
-      // is in `detail`. Reading it here is what keeps the delegation refusal legible in the log and
-      // in the outcome, rather than reducing "this repository delegates to renovate.json" to a
-      // status word.
+      // Per declaration, so one refusal cannot stop another. See docs/dependencies.md §90.
       const detail =
         err instanceof ProblemError
           ? (err.detail ?? err.message)
@@ -836,20 +614,13 @@ async function dispatchOneBump(
 ): Promise<void> {
   const { orgId, line, candidate, declaration, repo, baseBranch } = input;
 
-  // ---- PHASE 3 (write) -----------------------------------------------------------------------
   const prepared = await withTenantTx(deps.db, orgId, async (tx) => {
     // THE OTHER HALF OF THE DELEGATION REFUSAL — the stored verdict this job may have just written,
     // read back at the choke point immediately before SCP would write to the repository. It throws
     // a 409 carrying the probe's `decision_id`, which the caller records as this candidate's skip.
     await assertComponentNotDelegated(tx, orgId, candidate.componentObjectId);
 
-    // ALREADY PROPOSED? A redelivery, or a second advance while the first bump's pull request is
-    // still open, must reuse the existing change — its branch is the provenance join and a second
-    // change would mean two branches, two pull requests and two releases for one bump.
-    //
-    // ASKED OF SCP'S OWN RECORD, not of `changes.source_ref`. The predecessor scanned every
-    // dependency-bump change in the org and compared jsonb keys a tenant can write; this is one
-    // indexed lookup over server-owned columns (`bump-authorship-repo.ts`, migration 0063).
+    // Already proposed: a redelivery, or a second advance. See docs/dependencies.md §91.
     const existing: BumpAuthorship | undefined = await findOpenBumpAuthorship(tx, orgId, {
       componentObjectId: candidate.componentObjectId,
       manifestPath: declaration.manifestPath,
@@ -869,30 +640,7 @@ async function dispatchOneBump(
       authoredHeadCommit: existing?.headCommit
     });
 
-    // ==========================================================================================
-    // M25.8 — THE FREEZE, AT THE SEAM WHERE THIS PATH CAN MERGE (owner decision D8)
-    // ==========================================================================================
-    // THIS FUNCTION CAN MERGE, and that is the whole reason the check is here rather than only in
-    // `bump-gate.ts`. `buildBumpIntentParameters` attaches `expectedHeadCommit` exactly when the
-    // resolved delivery is `auto_merge`, and `@scp/plugin-managed-dep`'s `publishBump` then takes
-    // its AUTO-MERGE TAIL through the same provider call the standalone merge action uses
-    // (`repo-write.ts`: "Both the publish tail and the standalone merge action reach the provider
-    // through here"). Guarding only the file named `bump-gate.ts` would have guarded ONE of the two
-    // acts named "merge" and left the other open — an instance fixed, not a class.
-    //
-    // A DOWNGRADE, NOT A REFUSAL, and that is D8 stated exactly: "a freeze blocks AUTO-MERGE; it does
-    // NOT block PR authoring". `pull_request` is already this resolver's more restrictive member and
-    // its own documented answer to "this must not merge unattended" — so the trigger below still
-    // fires, the branch is still authored and the pull request is still opened, and only the tail is
-    // withheld. Refusing the dispatch instead would withhold the visible, queued work D8 exists to
-    // preserve, and would ALSO withhold the pull request the component's checks need in order to run
-    // at all.
-    //
-    // REACHABLE, ON THE SECOND DISPATCH AND AFTER. A first dispatch has no authorship row, so no head
-    // commit, so `resolveEffectiveDelivery` has already downgraded and this asks nothing. A
-    // redelivery — or a second advance while the first bump's pull request is open, with a control
-    // that has since passed for its recorded head commit — is the case that grants, and it is the
-    // case that would have merged into a frozen org.
+    // M25.8 — THE FREEZE, AT THE SEAM WHERE THIS PATH CAN MERGE. See docs/dependencies.md §92.
     let mergeFreeze: BumpMergeFreezeVerdict | null = null;
     if (granted.delivery === "auto_merge") {
       mergeFreeze = await checkBumpMergeFreeze(tx, orgId, candidate.componentObjectId);
@@ -938,11 +686,7 @@ async function dispatchOneBump(
         effectiveDelivery: delivery.delivery,
         granularity: candidate.granularity,
         reused: existing !== undefined,
-        // M25.8 — ABSENT when nothing is frozen, so the context of an unfrozen org is byte-identical
-        // to what it was before this increment and no standing Decision is churned by the upgrade.
-        // Each entry carries the freeze's `endsAt` and NEVER `now`: this whole path re-runs on every
-        // head advance for the length of a window, and recording the clock instead of the boundary is
-        // what produced a measured 1.44 GB/day in production (ADR-0024).
+        // Absent when nothing is frozen, so the context matches. See docs/dependencies.md §93.
         ...(mergeFreeze ? { mergeDeferredByFreeze: mergeFreeze.freezes } : {})
       },
       reasonTree: {
@@ -975,27 +719,7 @@ async function dispatchOneBump(
     parameters: buildBumpIntentParameters(prepared.recordInput, prepared.authoredHeadCommit)
   });
 
-  // ---- PHASE 5 (record WHICH PULL REQUEST SCP OPENED) ----------------------------------------
-  // The merge is later addressed to this number rather than found by listing open pull requests on
-  // the branch — see `buildBumpMergeIntentParameters`. The only place the number exists is the
-  // authoring run's own outcome, so it is ASKED for here (`trigger()` runs this class synchronously
-  // to completion, so `status()` reports a finished run) and written to the server-owned authorship
-  // row. Recording it is what makes "the pull request SCP itself opened" a fact on disk instead of a
-  // search performed against a mutable provider.
-  //
-  // THE URL IS TAKEN FROM THE SAME OUTCOME, AND THIS IS THE ONLY MOMENT IT EXISTS. The plugin gets
-  // it from the provider's own response (`html_url` on the created pull request, or on the one its
-  // 422 retry path re-reads) and hands it back on the same `stateRef` as the number. Nothing
-  // downstream can recover it: `repo` + number composes a working link for github.com and for
-  // nothing else, and an outpost-local Gitea (M15) is both a different host AND a different path
-  // segment. A consumer that synthesised one would render a confidently-broken link on every
-  // Gitea-authored bump, so the honest value is captured here or not at all (migration 0066).
-  // `recordBumpPullRequest` decides what is storable — this path does not repair or compose one.
-  //
-  // A FAILURE HERE IS NOT A FAILED BUMP. The pull request may well exist; what is missing is our
-  // record of its number, and the consequence is that the merge gate refuses for lack of one — the
-  // fail-closed direction. So it is logged and swallowed rather than thrown, exactly as the rest of
-  // this per-declaration path treats a partial outcome.
+  // Phase five: record which pull request was opened. See docs/dependencies.md §94.
   try {
     const status = await executor.status(ref);
     const outcome = status.stateRef as
@@ -1021,25 +745,11 @@ async function dispatchOneBump(
   });
 }
 
-// -------------------------------------------------------------------------------------------
-// The loop
-// -------------------------------------------------------------------------------------------
-
 export interface BumpDispatchLoopHandle {
   stop(): Promise<void>;
 }
 
-/**
- * Register the capability's worker. Returns nothing the caller has to remember to wire: the ROUTER
- * is registered separately, by `events/domain-event-registry.ts` under `bumpDispatchRoleGuard` —
- * this same guard, by import rather than by copy — and a refused guard contributes NO router, so an
- * event is not even enqueued for a queue nothing will drain.
- *
- * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE — the same shape the version
- * poll, the internal-release loop and the inbox loop use, and for the same reason: a process that
- * merely skipped the work inside the handler would still hold a worker for a queue it will never
- * act on.
- */
+/** Register the capability's worker. See docs/dependencies.md §95. */
 export async function startBumpDispatchLoop(
   boss: PgBoss,
   deps: BumpDispatchLoopDeps

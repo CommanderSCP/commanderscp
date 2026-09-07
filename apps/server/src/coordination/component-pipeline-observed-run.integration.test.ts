@@ -10,15 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * component-journey-view.md §3 Segment 2 — the `observedRun` field of a component's pipeline,
- * through the real HTTP route. `POST /changes` stores `sourceRef` verbatim (only the two
- * server-owned keys are rejected — `routes/changes.ts`), so planting a realistic observe/webhook
- * -shaped `sourceRef` this way exercises exactly what `observed-run-facts.ts` reads off
- * `changes.source_ref` — the same seam a real webhook/poll delivery writes through
- * (`coordination/webhook-processor.ts#canonicalizeSourceRef`, `coordination/observe.ts#
- * ingestObservedEvents`).
- */
+/** component-journey-view.md §3 Segment 2. See docs/coordination.md §291. */
 describe("component pipeline: observedRun (§3 Segment 2 — the upstream build marker)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

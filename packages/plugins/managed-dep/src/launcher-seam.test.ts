@@ -13,23 +13,7 @@ import {
 } from "./write-test-support.js";
 import { __resetManagedDepOutcomes, createManagedDepExecutorPlugin } from "./index.js";
 
-/**
- * M23.1 — THE STANDING GATE THAT THE PORT IS INSTALLED, not merely present.
- *
- * See `@scp/plugin-managed-iac`'s file of the same name for why this is separate from
- * `launch-argv.golden.test.ts`. The golden proves the Docker bytes are unchanged; it would keep
- * passing if this plugin kept a private copy of the launch sequence and `@scp/runner-launcher` were
- * dead code beside it. Deleting the wiring — here, by injecting a launcher that throws — is the only
- * check that tells the two apart.
- *
- * WHERE THE FAILURE LANDS IS THIS PLUGIN'S OWN ANSWER, and pinning it is half the point: managed-dep
- * wraps the whole run in a try/catch, so a launcher failure becomes a FAILED outcome rather than a
- * rejection (managed-iac rejects out of `trigger()`; managed-scan rejects and leaves the run stuck
- * `pending`). Three call sites, three answers, all three preserved by the port.
- *
- * IT ALSO PINS THAT NO WRITE HAPPENED. A launch that never ran must not leave a commit or a pull
- * request behind, and the run credential must still be revoked.
- */
+/** The standing gate that the port is installed, not present. See docs/plugins.md §313. */
 
 // `reap` is stubbed on every fake below to satisfy the port — it is never called by a plugin
 // directly, only by the Docker adapter's own `run()` (see `@scp/runner-launcher`'s
@@ -136,18 +120,7 @@ describe("M23.1: managed-dep launches through the injected RunnerLauncher", () =
     const { ctx } = depCtx();
     const ref = await plugin.trigger(ctx, npmIntent("seam-2"));
 
-    // `toStrictEqual` on the WHOLE object: the absence of any further adapter-selection key is the
-    // assertion, because every key here joins the server-injected, never-tenant-settable class.
-    // The value is `"docker"` rather than `undefined` because `asConfig` already applied this
-    // package's own unit-test fallback before the resolver ever sees it — in production the server
-    // injects `SCP_MANAGED_RUNNER_DOCKER_BINARY` and the fallback is never reached.
-    // M23.2 UPDATED THIS LINE, AND IT WAS SUPPOSED TO. The comment above says "M23.2 is where that
-    // happens; M23.1 must not smuggle one in early" — so this assertion is the placeholder that
-    // makes the adapter-selection field arrive DELIBERATELY rather than by accident, and updating
-    // it is the act of arriving. It stays `toStrictEqual` on the WHOLE object for the reason it
-    // always was: every key here joins the server-injected, never-tenant-settable class and must
-    // move through all three enforcement layers in the same change. A FOURTH key appearing here
-    // still fails, which is the property being kept.
+    // `toStrictEqual` on the WHOLE object. See docs/plugins.md §314.
     expect(resolverSaw).toStrictEqual([
       { dockerBinary: "docker", runnerLauncher: undefined, kubernetes: undefined }
     ]);
@@ -208,11 +181,7 @@ describe("M23.1: managed-dep launches through the injected RunnerLauncher", () =
 
 describe("LOW-6: mkdir/mkdtemp are inside trigger()'s own try — a disk error is a FAILED outcome, never an unrecorded rejection", () => {
   it("a workspaceRoot the plugin cannot mkdir into records a FAILED outcome, reaches the launcher NEVER, and writes nothing to the repository", async () => {
-    // `occupied` is a FILE, not a directory — `mkdir(join(occupied, "nested"), { recursive: true })`
-    // therefore fails with ENOTDIR, reproducing the disk-error shape LOW-6 names (permissions,
-    // ENOSPC, or — as here — a path component that is not a directory at all). This used to run
-    // BEFORE `trigger()`'s own `try`, so the failure escaped as an unrecorded rejection and
-    // `status()` reported `pending` forever.
+    // `occupied` is a FILE, not a directory. See docs/plugins.md §315.
     const occupied = join(workspaceRoot, "occupied-by-a-file");
     await writeFile(occupied, "not a directory");
 

@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { glyphForType, hasGlyph } from "./graph-glyphs";
 
-/**
- * The canvas glyphs are the SAME drawings as the React icons — this suite pins the contract that
- * makes that true (encoded data URI, white stroke, real path data) and the honest absence for
- * types with no mark. The drawings themselves are pinned by eye; what regresses silently is the
- * plumbing, so the plumbing is what gets tests.
- */
+/** The canvas glyphs are the SAME drawings as the React icons. See docs/web.md §118. */
 describe("graph glyphs: the marks travel into the canvas unchanged", () => {
   it("every marked type yields an encoded SVG data URI with a white stroke", () => {
     for (const type of ["service", "assembly", "component", "organization", "outpost"]) {

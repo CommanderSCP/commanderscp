@@ -18,15 +18,7 @@ const { generateKeyPairSync } = await import("node:crypto");
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const mergePrivateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
 
-/**
- * The orchestrator's REFUSALS, unit-tested. Everything here is reachable without Docker and without
- * a network, which is deliberate: these are the checks that decide whether a container is launched
- * or a repository is touched at all, so they must be provable in the layer that always runs.
- *
- * (The trigger()-through-a-container path needs the `scp-runner-dep` image, which this repository
- * does not build yet — see `index.ts`'s "WHAT THIS INCREMENT DOES NOT SHIP". The verifier that
- * stands between that container and the repository is fully covered in `bump-edit.test.ts`.)
- */
+/** The orchestrator's REFUSALS, unit-tested. See docs/plugins.md §269. */
 
 const goodParams = {
   ecosystem: "npm",
@@ -69,14 +61,7 @@ describe("parseBumpDescriptor — what may be asked for", () => {
     expect(CONTENT_BEARING_KEYS).toContain("sourceFiles");
   });
 
-  /**
-   * These three used to pin the prose of this file's OWN `isSafeManifestPath`/`isSafeRepo`/
-   * `isSafeBranch` predicates. Those are gone: the descriptor is now validated with the SHARED
-   * asserts (`write-guard.ts` → `@scp/git-provider-core`), the same ones the write itself re-applies
-   * at the splice site. So the assertion moved to the structured REASON, which is both stronger than
-   * a message match and no longer this file's wording to own. The inputs are unchanged, so a
-   * refusal that stopped covering one of them still fails here.
-   */
+  /** These used to pin this file's own helpers, and now do not. See docs/plugins.md §270. */
   it("refuses a manifest path that escapes the repository", () => {
     for (const bad of ["../../etc/passwd", "/etc/passwd", "a/../../b", "a\\b"]) {
       expect(
@@ -232,11 +217,7 @@ describe("parseBumpMergeDescriptor — the merge target is DERIVED, never suppli
   });
 
   it("REFUSES a merge intent that names no pull request — there is no fallback to searching", () => {
-    // The number is the ADDRESS of the merge. Without it the only way to proceed is to list open
-    // pull requests on the head branch and take one, which is how provider ordering — or a second
-    // pull request somebody with write access opened from SCP's branch to a protected base —
-    // decides what gets merged. A merge intent that carries none did not come from the server's
-    // gate, so it is refused rather than completed by a search.
+    // The number is the ADDRESS of the merge. See docs/plugins.md §271.
     for (const pullRequestNumber of [undefined, 0, -3, 2.5, "7"]) {
       expect(() =>
         parseBumpMergeDescriptor({
@@ -291,18 +272,7 @@ describe("bumpBranchFor — the provenance contract's other half", () => {
   });
 });
 
-/**
- * ================================================================================================
- * `trigger()` ACTUALLY REACHES THE MERGE — the parser being right proves nothing about the verb
- * ================================================================================================
- * `parseBumpMergeDescriptor` and `mergeAuthoredBranch` could both be perfect while `trigger()` never
- * dispatched to them, which is M21's standing failure exactly. So this drives the REAL exported verb
- * with the REAL parameter object the server builds, against the recording http fixture — no Docker,
- * no workspace, no network — and asserts the provider call that came out the other end.
- *
- * That it needs no container is itself the property: a merge is not an edit, so the isolated runner
- * is not involved and `trigger()` must not touch the workspace on this path.
- */
+/** `trigger()` ACTUALLY REACHES THE MERGE. See docs/plugins.md §272. */
 describe("trigger() dispatches the merge action all the way to the provider", () => {
   beforeEach(() => __resetManagedDepOutcomes());
 

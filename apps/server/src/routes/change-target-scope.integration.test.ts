@@ -13,82 +13,7 @@ import { objects, roles } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 
-/**
- * THE READ-SURFACE BLOCKER, change half (docs/proposals/role-model.md §4.2, §8.4, increment 2.5a).
- *
- * `authz/resolve.ts`'s `scopeExpandCte` expands a checked scope UPWARD only, so an `authorize()`
- * pinned at `scopeObjectId: auth.orgId` is satisfiable by an ORG-ROOT binding and by nothing else.
- * Every change door was pinned that way, which made the whole point of the proposed purpose roles
- * unreachable: a principal administering one component could hold `object:read`/`object:write` and
- * still be 403'd reading, cancelling or accepting the release against their own component.
- *
- * §8.4: a change has NO usable scope of its own — `objects.domain_id` for a change is the org root
- * for every internal `proposeChange` caller — so these doors are scoped to the change's TARGETS,
- * read back off the persisted `properties.targets`.
- *
- *   * READ doors take `object:read` at ANY ONE target. A principal who can see one target is
- *     already told the whole list by `properties.targets`, so an every-target read bar buys nothing
- *     and would make reads strictly harder to satisfy than the writes they gate.
- *   * WRITE doors take `object:write` at EVERY target — otherwise the admin of one target of a
- *     five-target change accepts the release into the four they have no standing on.
- *
- * These tests are the safety net that did not exist: all 334 `403` occurrences across `apps/server`
- * tests were enumerated before this increment and ZERO pinned the org-root behaviour of any door
- * changed here (§8.5). Each assertion below was watched to fail against the org-root pin first.
- *
- * `Operator` bound at a component is the ComponentAdmin SHAPE for the two permissions these doors
- * demand (`object:read` + `object:write`) — the purpose roles themselves are a later increment
- * (§5 step 3) and seeding one here would test a migration this branch does not carry.
- *
- * ================================================================================================
- * THE ORG-ROOT ARM, AND THE MUTATION THAT PROVES THE LAST CASE IN THIS FILE
- * ================================================================================================
- * Scoping at the targets ALONE would not have been a pure widening. `scopeExpandCte` joins every
- * ANCESTOR `deleted_at IS NULL`, so a target whose containment parents are tombstoned expands to
- * the seed alone and matches NO binding — org-root Owner included — and a change's targets are read
- * back verbatim and never re-resolved. Both helpers therefore take `object:read`/`object:write` at
- * the ORG ROOT **or** at the targets, through the one shared definition in `authz/org-root-arm.ts`.
- *
- * MEASURED, not predicted (2026-08-26). Baseline: 26 passed. Mutation: `checkAtOrgRootOrScopes`'s
- * org-root arm disabled (`if (false && atOrgRoot)`), everything else untouched:
- *
- *   - "an org-root Owner still reaches a change whose target's ancestors are ALL tombstoned" FAILED
- *     at its first read assertion, verbatim: `subject '<owner>' lacks 'object:read' at the org root
- *     and at any target of change '<changeId>' (<targetId>)`, expected 403 to be 200. (It fails
- *     fast, so the control-runs, approvals, policy-evaluate and cancel legs below it are covered by
- *     the same mutation only once the assertion above them is relaxed.)
- *   - "GET /decisions?subjectId= — the same disjunction; unfiltered still needs the org-root arm"
- *     FAILED on the org-root Owner's unfiltered listing: expected 403 to be 200. Two cases, two
- *     different arms of the same helper, from one mutation.
- *   - The other 24 stayed GREEN — which is the point: every ordinary fixture in this file sits on
- *     components whose ancestors are LIVE, so nothing here could have caught the defect before the
- *     tombstoned case was written.
- *
- * ================================================================================================
- * THE ORDER OF THE TWO ARMS, AND THE SOFT-DELETE RESOLVE (2026-08-26, baseline 28 passed)
- * ================================================================================================
- * Two further defects, both found by adversarial review of the arm above, both fixed here and each
- * mutation-proven in BOTH directions. Messages verbatim.
- *
- *  M-A  `checkAtOrgRootOrChangeTargets` reads the target set FIRST and throws on it (the shape this
- *       increment shipped with): `if (!targetObjectIds) unestablishableChangeTargetSet(...)` moved
- *       above the `checkAtOrgRootOrScopes` call => "an org-root Owner READS and CANCELS a change
- *       whose persisted target set is unreadable" FAILED on the first shape: `change '<id>' has no
- *       readable target set (properties.targets must be a non-empty array of object ids), so
- *       authority over it cannot be established`, expected 403 to be 200. One `properties` write by
- *       a federation import was enough to 403 the principal with authority over everything.
- *  M-B  the opposite direction — an unreadable target set PASSES (`if (!targetObjectIds) return
- *       { ok: true }`) => "a component-bound principal is REFUSED on those same rows" FAILED on the
- *       first shape: expected 200 to be 403. Trap 4 is still live; the fix is the ORDER, not the
- *       removal of the refusal.
- *  M-C  `resolveChangeForScope` back to live rows only (drop the `includeDeleted` retry) => "a
- *       SOFT-DELETED change is still served where it was before" FAILED on
- *       `/changes/{id}/control-runs`: `change '<id>' not found`, expected 404 to be 200. Four doors
- *       took that 404 where they returned 200 before 2.5a.
- *  M-D  the tombstone 404 dropped from `GET /approvals?changeId=` (the ONE door that had one before
- *       2.5a) => the same case FAILED on its last leg: `{"items":[],"nextCursor":null}`, expected
- *       200 to be 404. Resolving tombstones is not the same as serving them everywhere.
- */
+/** THE READ-SURFACE BLOCKER, change half. See docs/routes.md §45. */
 describe("change doors are scoped to the change's targets, not to the org root", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -152,21 +77,13 @@ describe("change doors are scoped to the change's targets, not to the org root",
 
     adminA = await createTestUser(server, org, [{ role: "Operator", scope: componentA }]);
     adminB = await createTestUser(server, org, [{ role: "Operator", scope: componentB }]);
-    // A SECOND component-scoped principal, on a role that also holds `change:accept`
-    // (drizzle/0099). `Operator` deliberately does NOT, so from step 3 onward `adminA` can cancel
-    // but not accept — see the two `accept`/`rollback` cases below, which use this user for the
-    // "the SCOPE door opens" half and keep `adminA` for the refusals. Without the split, those two
-    // cases would have gone red on a PERMISSION change while claiming to be about SCOPE.
+    // A second component-scoped principal, on a role with accept. See docs/routes.md §46.
     acceptorA = await createTestUser(server, org, [{ role: "ComponentAdmin", scope: componentA }]);
   });
 
   afterAll(async () => {
     await server?.close();
   });
-
-  // ---------------------------------------------------------------------------------------
-  // READ doors — ANY ONE target
-  // ---------------------------------------------------------------------------------------
 
   it("GET /changes/:id — a component-scoped principal reads a change targeting THEIR component", async () => {
     const changeId = await propose("read-mine", [componentA]);
@@ -228,10 +145,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
     }
   });
 
-  // ---------------------------------------------------------------------------------------
-  // WRITE doors — EVERY target
-  // ---------------------------------------------------------------------------------------
-
   it("POST /changes/:id/cancel — a component-scoped principal cancels a single-target change of theirs", async () => {
     const changeId = await propose("cancel-mine", [componentA]);
     const res = await server.app.inject({
@@ -268,15 +181,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
   });
 
   it("POST /changes/:id/accept — the authority door OPENS for a single-target change of theirs", async () => {
-    // The change is `proposed`, and `proposed -> accepted` is not a legal edge, so the honest
-    // outcome once authority is granted is the state conflict. Asserting "409, not 403" is what
-    // makes this test fail loudly if the door goes back to demanding an org-root binding.
-    //
-    // THE PRINCIPAL IS `ComponentAdmin`, NOT `Operator`, SINCE drizzle/0099. The door now demands
-    // `object:write` AND `change:accept` at every target; Operator holds only the first, by design
-    // (role-model.md §5 step 3 — the one intentional breakage). Using a role that holds both keeps
-    // this case about the SCOPE walk, which is what it was written to measure. The permission half
-    // is measured next door, in both directions.
+    // The change is proposed, so that edge is not legal. See docs/routes.md §47.
     const changeId = await propose("accept-mine", [componentA]);
     const res = await server.app.inject({
       method: "POST",
@@ -312,26 +217,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
     expect(res.statusCode).not.toBe(403);
   });
 
-  // ---------------------------------------------------------------------------------------
-  // Trap 4 — an unreadable persisted target set refuses a SCOPED principal, and only a scoped one
-  //
-  // BOTH HALVES ARE LOAD-BEARING AND THEY PULL IN OPPOSITE DIRECTIONS, which is why the ORDER of
-  // the two arms is what these cases actually measure:
-  //
-  //   * `properties.targets` is read back off a PERSISTED row, and `federation/import-repo.ts`'s
-  //     `object_upsert` branch writes a peer's `properties` verbatim (`federation/scope-filter.ts`
-  //     whitelists `typeId === "change"` for it). An empty array must therefore never authorize by
-  //     being empty — `every` over `[]` is vacuously true, which would be a total bypass.
-  //   * The pre-2.5a check was `object:read`/`object:write` at `auth.orgId` and never read
-  //     `properties.targets` at all. So a principal bound at the org root who was served these rows
-  //     before must still be served them: a 403 there is an authorization failure reported to the
-  //     one principal with authority over everything, which is the outcome the re-scope must never
-  //     produce.
-  //
-  // `checkAtOrgRootOrChangeTargets` runs the ORG-ROOT ARM FIRST and only then inspects the target
-  // set, which is what lets both hold. The first cut of this increment read the target set first
-  // and threw on it, and 403'd the Owner on every one of the three rows below.
-  // ---------------------------------------------------------------------------------------
+  // An unreadable persisted target set refuses a scoped one. See docs/routes.md §48.
 
   /** The three shapes a persisted target set can take that `readChangeTargetScopeIds` calls
    *  unreadable — empty, absent, and malformed (non-array, and an array with a non-string entry). */
@@ -403,9 +289,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
     }
   });
 
-  // ---------------------------------------------------------------------------------------
   // The PURE-WIDENING control — an org-root Owner does everything exactly as before
-  // ---------------------------------------------------------------------------------------
 
   it("an org-root Owner reads, explains, cancels and rollbacks exactly as before", async () => {
     const changeId = await propose("owner-control", [componentA, componentB]);
@@ -459,10 +343,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
     expect(cancel.statusCode).toBe(403);
   });
 
-  // ---------------------------------------------------------------------------------------
-  // The governance-side change doors
-  // ---------------------------------------------------------------------------------------
-
   it("GET /changes/:idOrUrn/control-runs — target-scoped, and 404 for a change that does not exist", async () => {
     const changeId = await propose("control-runs", [componentA]);
     const mine = await server.app.inject({
@@ -486,14 +366,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
   });
 
   it("GET /changes/:idOrUrn/control-runs — an org-root Owner passing a NON-change id gets 404, NEVER 403", async () => {
-    // THE PURE-WIDENING REGRESSION. This door never validated its parameter: it handed the raw
-    // `idOrUrn` to `change_object_id = $1`, so any uuid that is not a change matched no rows and
-    // came back `200 []`. Re-scoping it to the change's TARGETS made an object with no targets hit
-    // the target-set refusal — a 403 telling a principal with authority over the entire org that
-    // they lack authority. `resolveChangeForScope` turns that back into the honest 404.
-    //
-    // Both spellings of "not a change" must answer identically, and neither may be 403:
-    // an object that exists but is not a change, and a uuid that names nothing at all.
+    // THE PURE-WIDENING REGRESSION. See docs/routes.md §49.
     for (const idOrUrn of [componentA, "00000000-0000-4000-8000-0000000000fc"]) {
       const res = await server.app.inject({
         method: "GET",
@@ -506,30 +379,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
   });
 
   it("a SOFT-DELETED change is still served where it was before — the 404 is 'not a change', never 'tombstoned'", async () => {
-    // ======================================================================================
-    // THE FOURTH ORG-ROOT 200 -> 404, and the line between the 404 that was decided and the one
-    // that was an accident.
-    //
-    // 2.5a made four doors reach their change through `resolveChangeForScope`, which resolved LIVE
-    // rows only: `/changes/{idOrUrn}/control-runs`, `/control-runs/{id}/findings`,
-    // `GET /approvals/{id}` and its `/votes`. NONE of them resolved a change at all before 2.5a —
-    // they authorized at the org root and went straight to their repo — so every one of them
-    // served a tombstoned change's rows to an org-root Owner and stopped. Meanwhile the five doors
-    // behind `getChange` never filtered `deleted_at` either (`changes-repo.ts`'s
-    // `fetchChangeWithObject` has no such clause), so the tombstone was never a 404 anywhere in
-    // this family. `resolveChangeForScope` therefore resolves tombstoned rows too, and hands back
-    // `deletedAt` so the ONE door that genuinely 404'd them before 2.5a can keep doing so.
-    //
-    // `GET /approvals?changeId=` is that one door: its pre-2.5a `getObjectByIdOrUrnAnyType`
-    // filtered tombstones. It re-applies the 404 itself, AFTER the read check, matching the
-    // pre-2.5a authorize-then-resolve order.
-    //
-    // WHY THE TOMBSTONE IS WRITTEN DIRECTLY, measured rather than asserted: `change` is one of
-    // `COORDINATION_TARGET_SCOPED_OBJECT_TYPE_IDS`, so every write verb of the generic object
-    // route refuses it — the refusal is exercised below rather than described — and there is no
-    // typed DELETE for a change. The only in-tree writer of this row shape is a federation
-    // `object_tombstone` import, whose two-instance fixture would measure the same single column.
-    // ======================================================================================
+    // The fourth case where a root read becomes a not-found. See docs/routes.md §50.
     const changeId = await propose("soft-deleted", [componentA]);
 
     const noApiDelete = await server.app.inject({
@@ -585,11 +435,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
   });
 
   it("a NON-change id and an unknown id are INDISTINGUISHABLE on the doors that take a caller-supplied changeId", async () => {
-    // `changeId` is caller-supplied on `GET /approvals`, and the scope check cannot run until the
-    // change is resolved — so the resolve necessarily happens before any authorization. The
-    // existence oracle that would otherwise open is closed by answering the same 404 for "no such
-    // object" and for "an object, but not a change". Probed as a principal with NO binding
-    // anywhere, which is the party the oracle would matter to.
+    // The change id is caller-supplied, so the check cannot run. See docs/routes.md §51.
     const nobody = await createTestUser(server, org, []);
     const details: string[] = [];
     for (const changeId of [componentA, "00000000-0000-4000-8000-0000000000fb"]) {
@@ -644,32 +490,10 @@ describe("change doors are scoped to the change's targets, not to the org root",
     expect(theirs.statusCode).toBe(403);
   });
 
-  // ---------------------------------------------------------------------------------------
   // Decisions — the DISJUNCTION, not a re-scope (role-model.md §8.6)
-  // ---------------------------------------------------------------------------------------
 
   it("the `audit:read` wide arm narrows NOBODY who can exist — every role with object:read has it", async () => {
-    // ============================================================================================
-    // THE ONE PLACE 2.5a's WIDE ARM IS NOT LITERALLY THE OLD CHECK, decided and pinned rather than
-    // left implicit. Pre-2.5a `GET /decisions/{id}` demanded `object:read` at the org root; the
-    // disjunction §8.6 specifies is `audit:read` at the org root OR `object:read` at the subject.
-    // So a principal holding org-root `object:read` and NOT `audit:read` would be newly refused.
-    //
-    // DECISION: keep `audit:read`, do not widen the arm to `object:read OR audit:read`.
-    //   * §8.6's whole point is that the DEPLOYMENT-WIDE read of every verdict ever recorded is an
-    //     auditor's capability, and `object:read` at the org root is held by four of the five
-    //     built-in roles. Adding it back to the wide arm re-opens exactly the escalation §8.6
-    //     names, and puts the door on the wrong permission just as role-model.md §5 step 3 starts
-    //     binding purpose roles in the field.
-    //   * The narrowing has NO POSSIBLE HOLDER today, which is what this case measures rather than
-    //     asserts: every seeded role carrying `object:read` also carries `audit:read`
-    //     (`drizzle/0002_rls_rbac_seed.sql`), and there is no custom-role API to author one that
-    //     does not. A behavioural test cannot construct the victim, so the property is pinned at
-    //     the source of the victims instead.
-    //
-    // If a future migration seeds `object:read` without `audit:read`, or a custom-role API lands,
-    // this goes red and the decision above has to be made again with a real principal in hand.
-    // ============================================================================================
+    // The one place the wide arm is not literally the old check. See docs/routes.md §52.
     const roleRows = await withTenantTx(server.deps.db, org.orgId, async (tx) =>
       tx.select({ name: roles.name, permissions: roles.permissions }).from(roles)
     );
@@ -767,16 +591,10 @@ describe("change doors are scoped to the change's targets, not to the org root",
     expect(unfilteredComponentAdmin.statusCode).toBe(403);
   });
 
-  // ---------------------------------------------------------------------------------------
   // The subject arm has to be REAL for the dominant subject — a CHANGE
-  // ---------------------------------------------------------------------------------------
 
   it("GET /decisions/:id — a Decision about a CHANGE is readable at the change's TARGETS", async () => {
-    // Almost every Decision in this system is about a change, and a change's containment chain
-    // runs to the org root — so a subject arm that checked `object:read` at `decision.subjectId`
-    // directly was satisfiable ONLY by an org-root binding, i.e. by exactly the principals the
-    // `audit:read` arm already admitted. Inert for the roles it was added for. The arm resolves a
-    // change subject to its targets, the same expression the sibling change doors scope at.
+    // Almost every Decision is about a change, and its chain. See docs/routes.md §53.
     const changeId = await propose("decision-about-a-change", [componentA]);
     const decisionId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const d = await insertDecision(tx, {
@@ -806,7 +624,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
     });
     expect(stranger.statusCode).toBe(403);
 
-    // …and the deployment-wide arm is untouched.
     const owner = await server.app.inject({
       method: "GET",
       url: `/api/v1/decisions/${decisionId}`,
@@ -827,11 +644,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
   });
 
   it("/changes/:id/explain and /decisions/:id agree — every row explain serves is gettable by the same principal", async () => {
-    // ONE DATASET, ONE BAR (the verdict-read rule in routes/changes.ts). `/explain` embeds
-    // `listDecisionsForSubject(change)` behind the change's target read bar; `/decisions/:id`
-    // serves the same rows. Two different bars over one dataset made "may I see why I was blocked"
-    // depend on which URL was opened — and charter principle 6 hands the blocked principal a
-    // `decision_id`, which is a reference to nothing if they are 403'd on it.
+    // ONE DATASET, ONE BAR. See docs/routes.md §54.
     const changeId = await propose("explain-agrees", [componentA]);
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       await insertDecision(tx, {
@@ -863,9 +676,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
     }
   });
 
-  // ---------------------------------------------------------------------------------------
   // §8.4's dedupe — "read `targetObjectIdsOf`, dedupe, `authorize` at each"
-  // ---------------------------------------------------------------------------------------
 
   it("a repeated target is authorized ONCE — the checked set is deduped", async () => {
     // A change may legitimately name the same object twice. Without the dedupe a write door runs
@@ -884,7 +695,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
     const detail = (refused.json() as { detail: string }).detail;
     // The refusal is about the permission, not about a malformed set…
     expect(detail).toContain("lacks 'object:read' at the org root and at any target of change");
-    // …and it names the repeated target exactly once.
     expect(detail.split(componentB).length - 1).toBe(1);
 
     // The duplicate is still a real target: its own admin reads the change.
@@ -896,26 +706,10 @@ describe("change doors are scoped to the change's targets, not to the org root",
     expect(allowed.statusCode).toBe(200);
   });
 
-  // ---------------------------------------------------------------------------------------
   // THE ORG-ROOT ARM — the widening is a DISJUNCTION, and this is the case that proves it
-  // ---------------------------------------------------------------------------------------
 
   it("an org-root Owner still reaches a change whose target's ancestors are ALL tombstoned", async () => {
-    // ======================================================================================
-    // THE CASE THAT MAKES `authz/org-root-arm.ts` NECESSARY RATHER THAN TIDY.
-    //
-    // `scopeExpandCte` seeds its walk with the raw uuid and never filters it, but joins every
-    // ANCESTOR `deleted_at IS NULL`. So the chain is CUT at the first tombstone and `scope_expand`
-    // collapses to the seed alone, which matches NO binding — the org-root Owner's included. A
-    // change's `properties.targets` are read back VERBATIM and deliberately never re-resolved
-    // (re-resolving would 404 "cancel the release against the component we just removed"), so a
-    // target-only check 403s the Owner on exactly the change an operator opens next.
-    //
-    // BUILT WITH ORDINARY API CALLS, in the order an operator would make them: create the domain,
-    // the service and the component; propose the change; then delete the component, its service
-    // and its domain. `deleteObject`'s orphan guard permits each delete precisely because every
-    // child is already a tombstone. Nothing below reaches into the database.
-    // ======================================================================================
+    // The case that makes the org-root arm necessary, not tidy. See docs/routes.md §55.
     const tag = Math.random().toString(36).slice(2, 8);
     const post = (url: string, payload: Record<string, unknown>) =>
       server.app.inject({ method: "POST", url, headers: bearer(org.adminToken), payload });

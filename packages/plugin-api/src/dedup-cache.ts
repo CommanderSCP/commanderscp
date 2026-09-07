@@ -1,15 +1,4 @@
-/**
- * File-backed JSON dedup-state cache — the write-to-temp+rename persistence shape every
- * `ExecutorPlugin` uses to survive a subprocess-host restart mid-wave without losing its
- * idempotency ledger (`trigger()`'s dedup map). Extracted after this exact triad — a module- or
- * instance-scoped in-memory fallback plus a `loadState`/`saveState` pair — was found
- * character-for-character duplicated across `@scp/plugin-argocd`, `@scp/plugin-argo-workflows`,
- * `@scp/plugin-pipeline-generic`, `@scp/plugin-managed-iac`, `@scp/plugin-fake-executor` and
- * `@scp/plugin-git-provider-core`: a bug fix to the atomic-write logic needed six manual copies.
- *
- * `normalize` exists only for `argo-workflows`, whose on-disk shape predates the `abortedNames`
- * field and backfills it on load; every other caller can omit it and get a plain `as T` cast.
- */
+/** File-backed JSON dedup-state cache. See docs/plugin-api.md §3. */
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";

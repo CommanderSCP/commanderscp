@@ -15,62 +15,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE DOOR INVARIANT (owner ruling 2026-08-18; ADR-0037 Consequences): after every write, every live
- * row's LONGEST containment route to the org root — over all four routes, the placement pair counted
- * — is at most `CONTAINMENT_WALK_MAX_DEPTH` (10) hops. A write that would leave ANY live row past it
- * is refused at the door with ONE message shape (400, "would exceed the supported containment depth
- * (10 hops, ADR-0037)"), the resulting depth named, the subtree named when the subtree is the reason.
- *
- * WHY. Since ADR-0037 every recursive walk refuses LOUDLY when a row exists past the bound. That made
- * a row AT hop eleven a row nobody could govern (`containmentChain` throws for it — policy matching,
- * freeze scoping, gate evaluation, ADR-0032 enablement) and, when the eleven-hop route was its ONLY
- * route, a row nobody could read, rename or move back either (RBAC's nothing-found becomes the loud
- * refusal). Measured before this round on the real HTTP doors: `POST /domains {domainId: <a domain
- * at hop ten>}` answered 201, and the org-root admin's own next `GET` of the row and the `PATCH` that
- * would have moved it back both answered **409**. The doors were letting the walks' ceiling be
- * crossed by exactly one row, because the create-side check had been carved out against the
- * PRE-ADR-0037 silently-truncating walk (`graph/containment.ts`'s retired `childIsNew` reasoning).
- *
- * THE FOUR DOORS, and what each case here pins (see `assertContainmentDepthAdmits` for the shared
- * arithmetic `hops(parent) + 1 + height(child) > bound`):
- *
- *   D1  `createObject` `domain_id`     — a domain / service / component created under a hop-ten
- *                                        parent (childIsNew: height 0)
- *   D2  `updateObject` `domain_id` MOVE — the moved row's SUBTREE counts (height walked downward),
- *                                        with one case per ARM of the downward walk: `domain_id`
- *                                        (D2-subtree), `contains` read forwards (D2-contains-arm),
- *                                        a placement naming the row as target (D2-target-arm); the
- *                                        component arm is D3's PUT-service case
- *   D3  `contains` edge                 — a component attached to a hop-ten container, an existing
- *                                        component (with a placement under it) moved to a hop-nine one
- *   D4  a placement's PAIR              — a placement of a hop-ten component, or at a hop-ten target;
- *                                        and its one bypass, federation hand-fill of a `placement`,
- *                                        now refused as the fifth pair-bound door
- *
- * Every refusal has a SHALLOW CONTROL that succeeds, so a refuse-everything mutation goes red; and a
- * row at EXACTLY the bound is asserted readable, because ten is a ceiling, not a ban.
- *
- * MUTATION LOG (each applied ALONE, then reverted — recorded in the round summary too):
- *   | skip refusal 2 when `childIsNew` (the pre-ruling carve-out) | D1 ×3, D4 ×2 and the IaC twin go red |
- *   | delete the downward walk in `assertContainmentDepthAdmits`   | D2-subtree, D2-contains-arm, D2-target-arm and D3-subtree go red |
- *   | neuter the downward walk's `contains` arm (`type_id = 'contains-never'`) | D2-contains-arm goes red (was 29/29 green before it existed — verifier M6b) |
- *   | drop the downward walk's `deploymentTargetId` branch (`OR FALSE`)  | D2-target-arm goes red (was 29/29 green before it existed — verifier M6c) |
- *   | drop the downward walk's `componentId` branch                    | D3-subtree goes red |
- *   | drop the downward walk's `domain_id` arm                         | D2-subtree goes red |
- *   | delete the `assertContainmentDepthAdmits` call in the `contains` door | D3 ×3 go red |
- *   | delete the pair loop in `createPlacement`                    | D4 ×2 go red |
- *   | delete the pair-bound refusal in `handFillObject`             | the hand-fill case goes red (201, a live placement row) |
- *   | refuse everything (`rowDepth > 0`)                            | every control goes red |
- *
- * Run from `apps/server` with the integration config and READ THE FILE LIST vitest prints — the
- * default config excludes `*.integration.test.ts` and a scoped run without it reports green having
- * executed nothing:
- *
- *   DOCKER_HOST=unix://$HOME/.colima/default/docker.sock TESTCONTAINERS_RYUK_DISABLED=true \
- *     npx vitest run --config vitest.integration.config.ts \
- *       src/graph/containment-depth-doors.integration.test.ts
- */
+/** THE DOOR INVARIANT. See docs/graph.md §20. */
 describe("containment depth doors — no write may leave a live row past the bound (ADR-0037, 2026-08-18)", () => {
   let server: TestServer;
 
@@ -141,10 +86,6 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(res.body).not.toContain("exceeds the supported containment depth");
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // The ceiling is a ceiling
-  // ---------------------------------------------------------------------------------------------
-
   it("a row at EXACTLY the bound is readable by the org admin, and its chain is complete", async () => {
     const org = await createTestOrg(server, "depth-ceiling");
     const domains = await domainChain(org, "ceiling");
@@ -158,9 +99,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(Math.max(...chain.map((e) => e.depth))).toBe(CONTAINMENT_WALK_MAX_DEPTH);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D1 — createObject domain_id
-  // ---------------------------------------------------------------------------------------------
 
   it("D1: a domain created under a hop-ten domain is refused; under hop nine it lands", async () => {
     const org = await createTestOrg(server, "depth-d1-domain");
@@ -272,9 +211,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(ok.status, ok.body).toBe(200);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D2 — updateObject domain_id MOVE, the subtree counted
-  // ---------------------------------------------------------------------------------------------
 
   it("D2: moving a domain with a three-deep subtree under hop seven is refused NAMING the subtree; under hop six it lands and every row stays readable", async () => {
     const org = await createTestOrg(server, "depth-d2-subtree");
@@ -303,7 +240,6 @@ describe("containment depth doors — no write may leave a live row past the bou
     expectDoorRefusal(refused, D, d7, 8);
     expect(refused.body).toContain("its own subtree is at least 3 deep");
     expect(refused.body).toContain(`depth ${8 + 3}`);
-    // Nothing moved.
     const stillRoot = await call(org.adminToken, "GET", `/api/v1/domains/${D}`);
     expect((stillRoot.json() as { domainId: string | null }).domainId).toBe(org.orgId);
 
@@ -342,13 +278,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect((await call(org.adminToken, "GET", `/api/v1/services/${svcId}`)).status).toBe(200);
   });
 
-  // The two D2 cases above hang the moved row's subtree off `domain_id` (D2-subtree) or off nothing
-  // (D2-row). The downward walk has THREE MORE arms — `contains` edges read forwards, and a placement
-  // naming the row as component or as target — and each arm needs a case whose subtree hangs off THAT
-  // arm alone, or deleting the arm leaves the suite green while a hop-eleven row lands (verifier
-  // mutations M6b/M6c, 2026-08-18: neutering the `contains` arm or the `deploymentTargetId` arm left
-  // 29/29 green; only the `domain_id` and `componentId` arms had a pin). The `componentId` arm is
-  // pinned by D3's PUT-service case below; these two pin the other two.
+  // The two D2 cases above hang the moved row's subtree off `domain_id`. See docs/graph.md §21.
 
   it("D2 (`contains` arm): moving a service whose subtree hangs off `contains` edges — service -> assembly -> component — is refused naming the subtree; one hop shallower it lands with the component at exactly the ceiling", async () => {
     const org = await createTestOrg(server, "depth-d2-contains-arm");
@@ -388,7 +318,6 @@ describe("containment depth doors — no write may leave a live row past the bou
     expectDoorRefusal(refused, svcId, d8, 9);
     expect(refused.body).toContain("its own subtree is at least 2 deep");
     expect(refused.body).toContain(`depth ${9 + 2}`);
-    // Nothing moved.
     const still = await call(org.adminToken, "GET", `/api/v1/services/${svcId}`);
     expect((still.json() as { domainId: string | null }).domainId).toBe(org.orgId);
 
@@ -467,9 +396,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(Math.max(...chain.map((e) => e.depth))).toBe(CONTAINMENT_WALK_MAX_DEPTH);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D3 — the `contains` edge
-  // ---------------------------------------------------------------------------------------------
 
   it("D3: a component attached to a hop-ten container is refused; attached to a hop-nine one it lands", async () => {
     const org = await createTestOrg(server, "depth-d3-attach");
@@ -496,7 +423,6 @@ describe("containment depth doors — no write may leave a live row past the bou
       domainId: null
     });
     expectDoorRefusal(refused, /object '/, svc10, CONTAINMENT_WALK_MAX_DEPTH + 1);
-    // Rolled back with the refusal: no half-created component.
     const list = await call(org.adminToken, "GET", `/api/v1/components?limit=100`);
     expect(list.status, list.body).toBe(200);
     expect(JSON.stringify(list.json())).not.toContain("d3att-deep");
@@ -610,9 +536,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(ok.status, ok.body).toBe(201);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D4 — the placement pair
-  // ---------------------------------------------------------------------------------------------
 
   it("D4: a placement of a hop-ten COMPONENT is refused (route 3); of a hop-nine one it lands", async () => {
     const org = await createTestOrg(server, "depth-d4-component");
@@ -698,9 +622,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     ).toBe(200);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D4's ONE bypass — federation hand-fill (closed 2026-08-18)
-  // ---------------------------------------------------------------------------------------------
 
   it("hand-fill: a placement cannot be hand-filled at all (fifth pair-bound door) — the one path that used to plant a hop-eleven placement past D4; a non-pair-bound hand-fill through the same paired peer still lands", async () => {
     const org = await createTestOrg(server, "depth-handfill");

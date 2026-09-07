@@ -30,38 +30,7 @@ import {
   governanceMoveRungScopeCheck
 } from "../governance/move-rung-write.js";
 
-/**
- * THE `governance:move` LATTICE'S API SURFACE (charter principle 3: API → SDK → CLI → IaC → UI).
- * Proposal `governance-reach-on-containment-move.md` §9.2; owner ruling 2026-08-18.
- *
- * Five verbs, and the split between them is an AUTHORITY split, not a convenience one:
- *
- *  - the two READS about an org's own lattice need `object:read` (seeing which of your containers is
- *    governed is reading your graph);
- *  - the two RUNG WRITES need `policy:write` AT-OR-ABOVE the subject — enabling a rung is a
- *    governance-authoring act, held to the same bar as authoring a policy, and `policy:write` is
- *    Administrator/Owner only (drizzle/0010:174);
- *  - the INSTANCE write needs the deployment OPERATOR TOKEN and nothing a tenant can hold, because
- *    the instance rung binds every org on the deployment. Byte-for-byte the
- *    `dependency_subscription_unlock` shape (`routes/dependency-subscriptions.ts`): tenant-readable
- *    `GET`, operator-only `PUT` through a raw admin pool, because `scp_app` has neither a write grant
- *    nor a write RLS policy on that table (drizzle/0083 §2, two independent barriers).
- *
- * THE EXPLAIN READ ANSWERS ABOUT ONE OBJECT'S CHAIN, AND A MOVE HAS TWO ENDS. `enforced: false` here
- * does NOT promise a move of this object is ungoverned — the destination's chain is ORed in at the
- * door. Said on the schema too (`packages/schemas/src/governance-move.ts`), because a consumer that
- * gets this wrong builds a UI that promises a move will succeed and then shows a 403.
- *
- * WHY THE EXPLAIN READ SITS UNDER `/objects/:type/:idOrUrn/` RATHER THAN `/objects/:idOrUrn/`:
- * `routes/objects-generic.ts` already claims `:type` at that position, and find-my-way refuses a
- * second parameter NAME in a position it has already bound — a one-segment form would fail at
- * registration, not at request time. `/objects/:type/:idOrUrn/health` is the existing precedent for
- * a per-object sub-resource and this follows it exactly.
- *
- * EVERY WRITE RECORDS A DECISION AND AN AUDIT EVENT IN THE SAME TRANSACTION (charter principle 6) —
- * and that is now true of a SECOND door, `iac/plans-repo.ts`'s apply (proposal §9.6 Q4), because both
- * go through `governance/move-rung-write.ts` rather than each assembling the act for itself.
- */
+/** THE `governance:move` LATTICE'S API SURFACE. See docs/routes.md §221. */
 
 const RungParamSchema = z.object({ idOrUrn: z.string().min(1) });
 const ObjectEnforcementParamSchema = z.object({
@@ -124,16 +93,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
     }
   });
 
-  // THE LIST READ — the whole lattice this org can act on, instance state included.
-  //
-  // AUTHORIZED AT THE ORG ROOT (`scopeObjectId: auth.orgId`), NOT at each rung's own subject. This
-  // is a narrower bar than the explain read's per-object `object:read` above: a domain-scoped
-  // Administrator who can enable/disable a rung on their own domain (a `policy:write`-at-that-scope
-  // act) may still lack `object:read` at the org root and so cannot list the org's whole lattice,
-  // including the rung they themselves just set. That is a server-authorization decision, not a bug
-  // this route comment fixes — flagged here so a UI consumer knows the 403 it may see is expected,
-  // not a wiring defect, and states the requirement instead of a caller having to infer it from the
-  // `authorize()` call below.
+  // THE LIST READ. See docs/routes.md §222.
   typed.route({
     method: "GET",
     url: "/api/v1/governance/move-enforcement/rungs",
@@ -299,7 +259,6 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
     }
   });
 
-  // THE INSTANCE RUNG — tenant-readable.
   typed.route({
     method: "GET",
     url: "/api/v1/instance/governance-move-enforcement",
@@ -355,12 +314,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
       const auth = await requireAuth(deps, request);
       await requireInstanceOperator(deps, request, "the instance governance:move rung");
 
-      // `withOperatorDb`, NOT an inline `createPool(config.databaseUrl)` — role-model.md §5 step 9.
-      // The inline form was wrong twice: `databaseUrl` is the ADMIN connection, which the hardened
-      // Helm shape never gives api/worker pods (so `loadConfig` fell back to its localhost literal
-      // and this dialled 127.0.0.1 inside its own pod, returning a bare 500), and `scp_app` holds
-      // SELECT only on this FORCE-RLS table anyway. drizzle/0102 adds the grant + `operator_write`
-      // policy that make the `scp_operator` connection able to write it.
+      // An operator connection, never an inline pool. See docs/routes.md §223.
       await withOperatorDb(deps.config, "the governance:move instance rung", async (client) => {
         await client.query(
           `INSERT INTO governance_move_instance_rung (id, enabled, updated_at)

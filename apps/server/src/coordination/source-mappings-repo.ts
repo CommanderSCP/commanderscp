@@ -86,11 +86,7 @@ export async function createSourceMapping(
   return toSourceMapping(row);
 }
 
-/**
- * Flips the ONE mutable field on this table (migration 0063, PATCH .../mappings/:id) — the
- * operator's pause switch. Scoped by `(orgId, sourceKind, id)`, matching the route's addressing;
- * a miss on any of the three throws 404 rather than silently patching nothing.
- */
+/** Flips the ONE mutable field on this table. See docs/coordination.md §907. */
 export async function setSourceMappingEnabled(
   tx: TenantTx,
   orgId: string,
@@ -116,12 +112,7 @@ export async function setSourceMappingEnabled(
   return toSourceMapping(row);
 }
 
-/**
- * Sets or clears the DECLARED scope of one mapping (migration 0066, §10.6; PATCH
- * .../mappings/:id/scope). Same `(orgId, sourceKind, id)` addressing and 404 rule as the pause
- * switch above, and for the same reason: a label change on one row must never reach a
- * byte-identical sibling. `null` clears the declaration. A label only — nothing here re-routes.
- */
+/** Sets or clears the DECLARED scope of one mapping. See docs/coordination.md §908. */
 export async function setSourceMappingScope(
   tx: TenantTx,
   orgId: string,
@@ -144,18 +135,7 @@ export async function setSourceMappingScope(
   return toSourceMapping(row);
 }
 
-/**
- * Reads ONE mapping by the same `(orgId, sourceKind, id)` addressing the two by-id setters above
- * use, and throws the SAME 404 when it misses — so a caller that reads before it writes cannot
- * change what a missing row answers.
- *
- * It exists for the AUTHORIZATION step in `routes/change-sources.ts`. A source mapping has no
- * containment scope of its own; the object whose authority governs it is the COMPONENT it binds a
- * repo/path pattern to, and that id can only be learned by reading the row. Reading first is also
- * what keeps an unknown id answering 404 rather than 403: `authz/resolve.ts`'s `scopeExpandCte`
- * seeds its CTE with the raw uuid and never checks existence, so scoping at an id that names
- * nothing expands to a one-row set that no binding matches — not even the org root Owner's.
- */
+/** Reads one mapping by the same addressing the setters use. See docs/coordination.md §909. */
 export async function getSourceMapping(
   tx: TenantTx,
   orgId: string,
@@ -205,27 +185,7 @@ export interface DeleteSourceMappingsMatchingInput {
   type: ExecutorType;
 }
 
-/**
- * Deletes EVERY `source_mappings` row matching the full identity tuple — the prune primitive IaC
- * apply needs (docs/proposals/post-import-configuration.md §8 C1), and the first delete path this
- * table has had (hence migration 0049's DELETE grant). A HARD delete: like `executor_bindings`, a
- * source mapping is correlation config, not an audited graph object, and the table carries no
- * `deleted_at`.
- *
- * "EVERY matching row", not "one", is deliberate. The table has no unique constraint, and
- * `POST /discovery/accept` inserts unconditionally, so an estate can hold several byte-identical
- * mappings (the homelab does). Deleting one would leave a plan that reports `deletes=1` while the
- * survivor still correlates — and it would come back as a prune candidate on the next plan forever,
- * so the manifest would never converge. Returns the number of rows removed so the caller can tell a
- * real prune from a no-op.
- *
- * `refPattern` is part of the tuple and MUST stay part of it (ADR-0030 §1). It is a routing
- * discriminator, so two mappings can differ ONLY by it — `refs/heads/dev` → the dev pipeline,
- * `refs/heads/main` → the production one, same component, same repo, same path, same Type. A tuple
- * that ignored the ref would match BOTH, so pruning the dev mapping would silently take the
- * production route with it and report a `deleted` count the caller reads as success. The `is null`
- * branch below is what keeps a ref-agnostic prune from reaching a ref-scoped row.
- */
+/** Deletes every row matching the identity tuple, for prune. See docs/coordination.md §910. */
 export async function deleteSourceMappingsMatching(
   tx: TenantTx,
   input: DeleteSourceMappingsMatchingInput
@@ -253,14 +213,7 @@ export async function deleteSourceMappingsMatching(
   return rows.length;
 }
 
-/**
- * Sets the declared scope on EVERY `source_mappings` row matching the identity tuple — the IaC
- * apply primitive for a `source-mapping` `update` verdict (§10.6). Same tuple, same `is null`
- * branches and same "every matching row" reasoning as `deleteSourceMappingsMatching` above: the
- * table has no unique constraint, so a manifest's declaration must converge all of the byte-identical
- * rows that share the tuple, or the next plan proposes the same update forever. Returns the number of
- * rows converged so the caller can tell a real update from a tuple that vanished underneath it.
- */
+/** Sets the declared scope on every matching row. See docs/coordination.md §911. */
 export async function setSourceMappingScopeMatching(
   tx: TenantTx,
   input: DeleteSourceMappingsMatchingInput,

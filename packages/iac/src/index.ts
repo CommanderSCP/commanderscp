@@ -1,11 +1,4 @@
-/**
- * `@scp/iac` — CDK-style TypeScript constructs that synthesize a deterministic desired-state
- * manifest via PURE synth (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15). No API calls, no
- * randomness, no wall-clock reads in `synth()` — works fully offline, so IaC programs can be
- * authored/synthesized in CI or across an air gap and applied later (`scp plan`/`scp apply`,
- * `packages/cli`), exactly like a CDK cloud assembly being `cdk deploy`'d separately from where
- * it was synthesized.
- */
+/** The constructs that synthesize a deterministic manifest. See docs/iac.md §263. */
 // `App` is synth plumbing (D15a) — `new Stack("name")` auto-creates one internally and it never
 // appears in user code, so it is module-internal to `construct.ts` and NOT exported here.
 export { Stack, ResourceConstruct, Construct } from "./construct.js";
@@ -67,11 +60,7 @@ export {
   RollingRollout
 } from "./behaviors.js";
 
-// RBAC (role-model.md — the IaC rung). `RoleBinding` refuses a group/team subject at synth: D7's
-// acknowledgement is a statement about a membership at a moment, and a manifest can only carry a
-// snapshot that goes stale and trains its author to stop reading the refusal. Groups are granted
-// through `scp role-binding grant-preview` + `create`. The L1 doors (`Stack.addRoleBinding`,
-// `addRole`) stay available for a subject referenced by URN from outside the program.
+// RBAC (role-model.md — the IaC rung). See docs/iac.md §264.
 export { RoleBinding, OrgRole } from "./rbac.js";
 export type { RoleBindingProps, OrgRoleProps } from "./rbac.js";
 export type {
@@ -180,29 +169,14 @@ import { canonicalJson } from "./canonical.js";
 import { productsModuleSource } from "./products.js";
 import type { InfraProductScope } from "./infra.js";
 
-/**
- * Writes the canonical JSON manifest to disk — the interchange point between IaC authoring
- * (pure, offline synth) and server-side reconciliation (`scp plan`/`scp apply`, `POST /plans`),
- * exactly like `cdk synth` writing a cloud-assembly directory that `cdk deploy` reads separately.
- * Uses recursively-sorted-key canonical JSON (`canonicalJson`), not plain `JSON.stringify`, so the
- * file's bytes are stable even when caller-supplied `properties`/`labels` objects were built with
- * different key insertion order — the same byte-identical-output guarantee `synth()` itself makes.
- */
+/** Writes the canonical JSON manifest to disk. See docs/iac.md §265. */
 export async function synthToFile(target: Stack, filePath: string): Promise<void> {
   const manifest = target.synth();
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, canonicalJson(manifest) + "\n", "utf8");
 }
 
-/**
- * Writes an infra/configuration pipeline's D20 products module to disk — the same impure-I/O layer
- * `synthToFile` is for the manifest, and for the same reason: `productsModuleSource` itself (like
- * `Stack.synth()`) does no I/O, so a caller who only wants the text (a test, a different write
- * target) calls that directly. `synthToFile` and this are typically called side by side against one
- * pipeline's `Stack`/scope — "alongside its manifest" (D20) — but neither calls the other; a repo's
- * CI publishes the written module as its own package (D10), independent of the manifest's own
- * `scp plan`/`scp apply` path.
- */
+/** Writes a pipeline's products module to disk. See docs/iac.md §266. */
 export async function synthProductsModuleToFile(
   scope: InfraProductScope,
   filePath: string

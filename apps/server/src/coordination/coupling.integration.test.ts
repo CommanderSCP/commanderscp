@@ -18,18 +18,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Coupled pipelines (M12 P4B — docs/proposals/coupled-pipelines.md). A change declaring
- * `requires: [{key, at}]` parks in `waiting` and is released to `executing` only once ANOTHER change
- * reaches `validating`/`accepted` and `provides` that key at that object. Real reconcile loop, real
- * Postgres, real (default fake-executor) execution — a change with no binding still drives to
- * `validating` via the shared default instance, so no executor wiring is needed here.
- *
- * The decisive behaviours: a waiter PARKS (does not execute) while its prerequisite is outstanding;
- * it RELEASES the moment the correct provider validates; a provider of the same key at a DIFFERENT
- * object does NOT release it (the `at` is load-bearing); and a bad `at` is a 404 at propose, never a
- * silent forever-wait.
- */
+/** Coupled pipelines: a change declaring what it requires. See docs/coordination.md §389. */
 describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 P4B)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -155,7 +144,6 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
       }
     ]);
 
-    // Provide it; the waiter releases.
     const provider = await admin.changes.propose({
       name: "explain provider",
       targets: [infra.id],
@@ -188,12 +176,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     ).rejects.toMatchObject({ status: 404 }); // getObjectByIdOrUrnAnyType 404s on an unresolvable ref
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M12 P4B close-out — REPORT-INGRESS COUPLING THREADING (coupled-pipelines.md §3.8, §6#1).
-  // The CI report (`scp change-source report` → `POST /change-sources/{sourceKind}/report`) is
-  // THE declaration channel for a pipeline (a raw provider push webhook cannot carry a key), so a
-  // report-declared coupling must behave IDENTICALLY to `POST /changes`' typed fields.
-  // -----------------------------------------------------------------------------------------
+  // M12 P4B close-out. See docs/coordination.md §390.
 
   /** Polls until the loop's processor has consumed the given ingress event, and returns its row. */
   const processedEvent = (eventId: string) =>
@@ -346,20 +329,12 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     expect((refusals[0]!.reasonTree as { summary: string }).summary).toContain("malformed");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M12 P4B close-out — FAIL-CLOSED on malformed STORED `requires` (coupled-pipelines.md §6#14).
-  // Propose-time typed validation refuses junk at the API, so a malformed stored entry can only
-  // arrive PAST the schema (federation peer skew, legacy row, operator surgery) — injected here
-  // with raw SQL exactly as such a row would exist in the wild. The change must be treated as
-  // UNSATISFIABLE: park in waiting, never release, never crash the sweep for its siblings, and
-  // wait-status must name the offending entry.
-  // -----------------------------------------------------------------------------------------
+  // M12 P4B close-out. See docs/coordination.md §391.
 
   it("a waiter whose stored requires is corrupted PARKS (never releases, never executes), the sweep keeps serving healthy waiters, and wait-status names the malformed entry", async () => {
     const infra = await createTestComponent(admin, { name: "malformed-infra" });
     const app = await createTestComponent(admin, { name: "malformed-app" });
 
-    // A well-formed waiter parks first…
     const corrupted = await admin.changes.propose({
       name: "will be corrupted",
       targets: [app.id],
@@ -496,12 +471,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     ]);
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
-  // M12 P4B close-out — ROLLBACK EXEMPTION (coupled-pipelines.md §3.4): a rollback change NEVER
-  // parks and inherits NEITHER half of a coupling. Today that is true because rollback.ts happens
-  // not to spread the original's properties — an accident a tidy-up refactor could undo. This
-  // pins it as behaviour.
-  // -----------------------------------------------------------------------------------------
+  // M12 P4B close-out. See docs/coordination.md §392.
 
   it("a rollback of a coupled change neither waits nor inherits provides/requires — even when the original's prerequisite is no longer satisfied", async () => {
     const infra = await createTestComponent(admin, { name: "rollback-infra" });
@@ -533,7 +503,6 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     // A rollback change auto-accepts once its waves succeed (reconcile's completeExecution).
     await reaches(rollback.id, "accepted");
 
-    // Inherited NEITHER half of the coupling.
     const rolled = await admin.changes.get(rollback.id);
     expect(rolled.properties.requires).toBeUndefined();
     expect(rolled.properties.provides).toBeUndefined();
@@ -548,15 +517,10 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     expect(explained.waitStatus).toBeNull();
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
-  // M12 P4B close-out — STARVATION (coupled-pipelines.md §3.5 hazard): the waiting sweep serves
-  // oldest-`updated_at` first with a batch cap of 25 (reconcile's BATCH_LIMIT). Without the
-  // round-robin bump, >25 stuck waiters with frozen `updated_at` would occupy every batch slot
-  // forever and a releasable waiter behind them would never even be EVALUATED.
-  // -----------------------------------------------------------------------------------------
+  // M12 P4B close-out. See docs/coordination.md §393.
 
   it("a releasable waiter behind >BATCH_LIMIT stuck waiters still releases (round-robin bump)", async () => {
-    const STUCK_COUNT = 26; // one more than reconcile.ts's BATCH_LIMIT (25)
+    const STUCK_COUNT = 26;
     const scope = await createTestComponent(admin, { name: "starvation-scope" });
     const app = await createTestComponent(admin, { name: "starvation-app" });
 
@@ -596,12 +560,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     expect(await stateOf(stuck[0]!)).toBe("waiting");
   }, 240_000);
 
-  // -----------------------------------------------------------------------------------------
-  // M12 P4B Phase 4 ergonomics close-out — KEY-REUSE WARN (coupled-pipelines.md §6#8): "key reuse
-  // fails open" — if more than one change satisfies the same requirement key at the same `at`,
-  // the chosen provider id is otherwise silently arbitrary. The release Decision must record every
-  // qualifying provider, not just the one it pinned, WITHOUT ever blocking the release.
-  // -----------------------------------------------------------------------------------------
+  // M12 P4B Phase 4 ergonomics close-out. See docs/coordination.md §394.
 
   it("two providers of the same key@scope, one waiter: releases exactly once, and the release Decision records the ambiguity", async () => {
     const infra = await createTestComponent(admin, { name: "ambiguous-infra" });
@@ -621,21 +580,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     });
     await reaches(providerB.id, "validating");
 
-    // Both providers already validate BEFORE the waiter exists — required so the sweep sees BOTH
-    // qualifying providers on the waiter's FIRST evaluation. A waiter proposed normally at this
-    // point would skip `waiting` entirely: `advanceCoordinatedChanges` checks satisfaction AT the
-    // coordinated->{waiting,executing} routing decision (reconcile.ts §"one whose prerequisites
-    // are ALREADY satisfied — proceeds straight to executing"), so it would never touch the
-    // `waiting -> executing` release path `ambiguousProvidersFor` hangs off — the same reason the
-    // proposed-first ordering doesn't work here either: proposing the waiter before ANY provider,
-    // then creating the two providers one at a time, races the sweep against providerB's creation
-    // (as soon as providerA alone validates, the very next tick already finds the requirement
-    // satisfied and releases before providerB exists — confirmed empirically, not a hypothetical).
-    // So the waiter is materialized directly IN `waiting`, exactly the raw-insert technique the
-    // malformed-requires tests above use for the same reason — but ALSO given a compiled plan
-    // (`compileAndPersistPlan`, normally produced by the `evaluated -> coordinated` step this raw
-    // insert bypasses), because without one `reconcileExecutingChange` finds no wave to run and
-    // the change would hang in `executing` forever rather than ever reaching `validating`.
+    // Both providers already validate BEFORE the waiter exists. See docs/coordination.md §395.
     const waiterObjectId = uuidv7();
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const appRow = await tx.select().from(objects).where(eq(objects.id, app.id));
@@ -711,11 +656,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     const infra = await createTestComponent(admin, { name: "unambiguous-infra" });
     const app = await createTestComponent(admin, { name: "unambiguous-app" });
 
-    // Waiter proposed FIRST (no provider exists yet) so it genuinely PARKS in `waiting` and its
-    // release goes through `advanceWaitingChanges` — the one place `ambiguousProvidersFor` runs —
-    // rather than the already-satisfied-at-propose-time fast path (`advanceCoordinatedChanges`
-    // proceeding straight to `executing`), which pins no `satisfiedRequirements`/`ambiguousProviders`
-    // at all. Same ordering as the pre-existing "parks, then releases" tests above.
+    // Waiter proposed FIRST. See docs/coordination.md §396.
     const waiter = await admin.changes.propose({
       name: "waiter with exactly one qualifying provider",
       targets: [app.id],
@@ -742,11 +683,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     expect((release!.inputContext as Record<string, unknown>).ambiguousProviders).toBeUndefined();
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
-  // M12 P4B Phase 4 ergonomics close-out — "DID YOU MEAN?" (coupled-pipelines.md §3.7): for an
-  // UNSATISFIED requirement, wait-status additionally lists the `provides` keys that DO exist at
-  // that `at` object — the typo-diagnosis aid `listProvidedKeysAtScope` exists for.
-  // -----------------------------------------------------------------------------------------
+  // M12 P4B Phase 4 ergonomics close-out. See docs/coordination.md §397.
 
   it("explain's wait status lists 'did you mean' provided keys for an outstanding (typo'd) requirement, at the SAME scope only", async () => {
     const infra = await createTestComponent(admin, { name: "didyoumean-infra" });
@@ -801,11 +738,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     });
     await reaches(provider.id, "validating");
 
-    // A change at the SAME scope whose `provides` is a bare scalar, not an array — the shape
-    // `jsonb_array_elements_text` cannot unnest. The typed API (Zod array) makes this unreachable
-    // through POST /changes, so it is materialized past validation with raw SQL, exactly the
-    // federation-skew / corrupted-legacy-row shape the malformed-`requires` machinery fail-closes
-    // on (coupled-pipelines.md §10) — mirrored here on the `provides` side.
+    // A change whose `provides` is a bare scalar, not an array. See docs/coordination.md §398.
     const junkProvider = await admin.changes.propose({
       name: "junk provides scalar",
       targets: [infra.id]

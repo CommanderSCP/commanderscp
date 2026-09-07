@@ -2,13 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import type { ScopedHttpClient, ScopedHttpRequest, ScopedHttpResponse } from "@scp/plugin-api";
 
-/**
- * Test-only `ScopedHttpClient` backed by `node:http`/`node:https` — NOT `fetch`. Same reasoning
- * as `@scp/plugin-argocd`'s/`@scp/plugin-terraform`'s identical helper (verified empirically
- * while writing those suites: `nock@13.5.x`, pinned here too, does not intercept Node's native
- * `fetch`/undici — only the `http`/`https` core modules it patches). Exercises this package's
- * real `ctx.http.request()` wire path exactly as production does; only the transport differs.
- */
+/** Test-only `ScopedHttpClient` backed by `node:http`/`node:https`. See docs/plugins.md §557. */
 export function createNodeHttpTestClient(): ScopedHttpClient {
   return {
     request(req: ScopedHttpRequest): Promise<ScopedHttpResponse> {

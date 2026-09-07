@@ -3,18 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 
-/**
- * The soft-tint status system (design spec §1.5/§2.2) — six tones, no solid saturated fills.
- *
- * `unknown` is the ONLY sanctioned rendering of the honesty pill ("unobservable where an operator
- * should notice"): its literal `text-amber-700` and `border-dashed` classes are test-pinned
- * (`service-board-honesty.test.tsx`) and must never be renamed. Structurally-expected absence is
- * NOT a badge — it renders as `—` in `text-slate-400` with a `title=""` tooltip (spec §1.5).
- *
- * The legacy names (`default`/`secondary`/`destructive`/`outline`/`info`/`success`) are deprecated
- * ALIASES onto tones so untouched call sites keep compiling mid-migration; they are deleted at the
- * end of group E (spec §2.2).
- */
+/** The soft-tint status system (design spec §1.5/§2.2). See docs/web.md §106. */
 const badgeVariants = cva(
   // whitespace-nowrap: a rounded-full pill that wraps to two or three lines renders as an egg
   // (owner bug report, 2026-08-11 — the outposts table). A badge is a label; if its text is long

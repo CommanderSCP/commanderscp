@@ -8,12 +8,7 @@ import {
   isGovernanceLabelKey
 } from "./governance-labels.js";
 
-/**
- * The PURE halves of the reserved governance label namespace. The wiring — that every write door
- * actually reaches these — is a separate file (`governance-label-write-doors.integration.test.ts`),
- * deliberately: this repo's dominant defect is a component that is built, unit-tested green, and
- * never installed, and a unit test that calls the guard directly cannot tell the difference.
- */
+/** The PURE halves of the reserved governance label namespace. See docs/governance.md §145. */
 describe("governanceLabelDelta", () => {
   const GOV = `${GOVERNANCE_LABEL_PREFIX}tier`;
 

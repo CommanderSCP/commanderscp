@@ -1,23 +1,4 @@
-/**
- * ==================================================================================================
- * THE ADVERSARIAL CORPUS — ONE TABLE, TWO LAYERS
- * ==================================================================================================
- *
- * WHY IT IS A MODULE AND NOT A CONST IN A TEST FILE (M23.1f clause 4). Every one of these shapes was
- * asserted only against PROXIES — `isWellFormed()`, "no NUL", "under 8,000 characters" — in a pure
- * unit test with no database anywhere near it. The clause the corpus exists to satisfy is "zero rows
- * refused by a REAL Postgres", and the non-vacuity control for it is "the PRE-BOUND shape IS
- * refused", which only a real server can answer. Two tests in two packages need the same table, and
- * a second copy of it is a copy that goes stale in the direction that matters: the layer that gets
- * the new hostile shape is the one whose author was thinking about it.
- *
- * `persisted-json-bound.test.ts` reads it for the proxies, cheaply, on every PR;
- * `apps/server`'s `persisted-json-postgres-corpus.integration.test.ts` reads it for the real answer.
- *
- * EVERY ONE OF THESE IS SOMETHING AN `ExecutionStatus` OFF THE JSON-RPC BOUNDARY CAN ACTUALLY BE:
- * the plugin host types that response with a BARE CAST — `call<ExecutionStatus>("status", …)` — with
- * no runtime validation anywhere on the path, so "the plugin promised a `string[]`" is not a fact.
- */
+/** THE ADVERSARIAL CORPUS. See docs/runner-launcher.md §1. */
 
 /** An escape, not a literal: a NUL byte in a tracked source file is dropped by every
  *  recursive search this repository runs (CLAUDE.md). */
@@ -102,17 +83,7 @@ export const ADVERSARIAL_PERSISTED_JSON: ReadonlyArray<{ name: string; value: un
     }
   }
 ];
-/**
- * ==================================================================================================
- * LAYER 2 — THE ALPHABETS THE PROXIES CANNOT SEPARATE (M23.1f clause 4)
- * ==================================================================================================
- * The table above was built against the proxies: `isWellFormed`, no-NUL, under budget. These were
- * built against the QUESTION — "is there a byte sequence a bounded value can still carry that
- * PostgreSQL's `jsonb` input refuses?" — and each names the specific refusal it is probing for.
- * Measured against real PostgreSQL 16: 0 of the whole corpus refused after the bound; 9 of it
- * refused BEFORE, split `unsupported Unicode escape sequence` and
- * `invalid input syntax for type json`.
- */
+/** LAYER 2 — THE ALPHABETS THE PROXIES CANNOT SEPARATE. See docs/runner-launcher.md §2. */
 export const ADVERSARIAL_ALPHABETS: ReadonlyArray<{ name: string; value: unknown }> = [
   // U+2028/U+2029 are valid JSON string content and invalid JavaScript source — a driver that
   // interpolated rather than parameterised would break here and nowhere else.
@@ -133,12 +104,7 @@ export const ADVERSARIAL_ALPHABETS: ReadonlyArray<{ name: string; value: unknown
   },
   { name: "U+FFFD beside a raw high surrogate", value: { revision: "\uFFFD\uD83D\uFFFD" } },
   { name: "ZWJ emoji sequences", value: { revision: "\u{1F469}\u200D\u{1F4BB}".repeat(64) } },
-  // A key and a value that are the bound's OWN markers: a round trip must not read them as a cut.
-  // THE LITERAL, NOT THE CONSTANT, AND DELIBERATELY. Importing `PERSISTED_JSON_ELIDED_KEY` from
-  // `./index.js` makes a module cycle — `index.ts` re-exports this file — and a cycle here resolves
-  // to `undefined` at module-evaluation time, which turns the whole corpus into an empty array in
-  // any consumer that imports it through the package entry. That is a vacuous sweep with no symptom.
-  // `persisted-json-bound.test.ts` asserts this literal still equals the constant.
+  // A key and a value that are the bound's OWN markers. See docs/runner-launcher.md §3.
   {
     name: "the bound's own markers as data",
     value: { __scpElided: "not ours", revision: "\u2026 12 more" }

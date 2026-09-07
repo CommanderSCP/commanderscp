@@ -27,22 +27,7 @@ import {
 import { PeerSettingsSection } from "./outpost-settings";
 import { OutpostConfigurationSection } from "./outpost-configuration";
 
-/**
- * `/federation/outposts/$peerDomainId` — M16.2 phase B, one outpost.
- *
- * THE AUTHORITY SPLIT IS THE PAGE'S STRUCTURE, not a footnote on it (ADR-0022). An outpost exists
- * TWICE in a commander's database and each half owns disjoint facts, so the page has one section per
- * half and each section names the door it writes through:
- *
- *   * STATUS (this file, below) — the reading, from `GET /federation/status`. Read-only.
- *   * SETTINGS (B2) — the `federation_peers` ROW: identity, mTLS/transport, reachability. Written
- *     through the structurally KEYLESS `PATCH /v1/federation/peers/{id}`, never through pair/re-pair
- *     (a re-pair with a different `publicKey` is a KEY ROTATION that hard-revokes the old key).
- *   * CONFIGURATION (B3) — the `outpost` GRAPH OBJECT: the commander-declared `trustTier`, which
- *     rides `object_upsert` down to the outpost as a read-only replica.
- *
- * Consumes ONLY the generated SDK (charter principle 3).
- */
+/** `/federation/outposts/$peerDomainId` — M16.2 phase B, one outpost. See docs/web.md §393. */
 
 /** The one peer-status row this page is about, or `null` when the id names no paired peer. */
 export function findPeerStatus(
@@ -138,14 +123,7 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
   );
 }
 
-/**
- * THE HQ OUTPOST'S own card (pipeline-substrate-registry-scan.md §10.5; formerly "co-located" —
- * GLOSSARY, ADR-0021 D7) — rendered when the
- * route's id is THIS instance's own trust domain. There is no peer row behind it, so NONE of the
- * status cells apply (nothing syncs to or from self, no transport, no poke): the card states what
- * `federation_self` and `FederationStatusResponse.selfOutpost` actually know and nothing more — the
- * same discipline as the Outposts page's self-domain panel.
- */
+/** THE HQ OUTPOST'S own card. See docs/web.md §394. */
 export function SelfOutpostCard({
   self,
   selfOutpost

@@ -2,17 +2,7 @@ import { describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { probeScheduleId } from "./continuous-probe-retractions-repo.js";
 
-/**
- * `probeScheduleId` IS THE JOIN BETWEEN TWO CALLERS THAT NEVER MEET. The driver derives it to
- * DECLARE a schedule; `deleteHook` derives it to record a RETRACTION for one, in a different
- * transaction, possibly on a different replica, possibly weeks apart. If the two ever disagree the
- * retraction names an id the executor never heard of and the orphaned cron keeps firing — silently,
- * which is exactly the failure migration 0111 exists to end.
- *
- * So the properties below are about the derivation itself, at the unit layer, rather than about
- * either caller: the integration case (`pipeline-hook-admission.integration.test.ts` property 5d)
- * proves the two agree TODAY, and these prove why they will keep agreeing.
- */
+/** The schedule id joins two callers that never meet. See docs/coordination.md §338. */
 describe("probeScheduleId", () => {
   const component = "01a05810-2983-71ef-9328-8d0c044f0a48";
 
@@ -29,15 +19,7 @@ describe("probeScheduleId", () => {
   });
 
   it("separates components MINTED IN THE SAME BURST — the collision the old derivation had", () => {
-    // THE CASE THAT FOUND IT, and it is the ordinary shape rather than a corner: an IaC apply
-    // creates a whole stack's components in one transaction, and the previous derivation used
-    // `componentObjectId.slice(0, 8)`. Object ids are uuidv7, whose first 12 hex characters are the
-    // 48-bit millisecond clock — so the first 8 are its top 32 bits and hold steady for ~65 seconds.
-    // Every component in one apply shared them, and two `canary` probes became one schedule.
-    //
-    // Real ids from `uuid`'s own v7, not hand-written strings: the property is about what the
-    // generator produces, and a fixture that invented two conveniently-different uuids would pass
-    // against the broken derivation.
+    // The case that found it, and it is the ordinary shape. See docs/coordination.md §339.
     const ids = Array.from({ length: 200 }, () => uuidv7());
     expect(new Set(ids.map((id) => id.slice(0, 8))).size, "control: prefixes DO collide").toBe(1);
     expect(new Set(ids.map((id) => probeScheduleId(id, "canary"))).size).toBe(ids.length);

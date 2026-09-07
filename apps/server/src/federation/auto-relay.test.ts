@@ -14,14 +14,7 @@ import {
   type AutoRelayJobData
 } from "./auto-relay.js";
 
-/**
- * M13.1b — the auto-relay's CONFIG SURFACE, unit-level. Every knob here decides how much unattended
- * work happens at a cross-domain boundary and how much permanent record a failing promotion leaves
- * behind, so each assertion pins a NUMBER a mutation would move, not a shape.
- *
- * DEFAULT-OFF is the load-bearing one: an instance whose operator never set `SCP_RETRANS_AUTO_RELAY=1`
- * must NEVER create the queue, never tick, and never move a byte across the boundary.
- */
+/** M13.1b — the auto-relay's CONFIG SURFACE, unit-level. See docs/federation.md §34. */
 describe("M13.1b auto-relay config", () => {
   const saved = { ...process.env };
   afterEach(() => {
@@ -144,7 +137,6 @@ describe("M13.1b auto-relay config", () => {
     // i.e. a hot loop around a multi-GB skopeo pull).
     expect(autoRelayBackoffSeconds(0)).toBe(60);
     expect(autoRelayBackoffSeconds(-5)).toBe(60);
-    // Monotonic non-decreasing across the whole live range.
     for (let n = 1; n < 30; n += 1) {
       expect(autoRelayBackoffSeconds(n + 1)).toBeGreaterThanOrEqual(autoRelayBackoffSeconds(n));
     }
@@ -158,23 +150,7 @@ describe("M13.1b auto-relay config", () => {
   });
 });
 
-/**
- * M13.1b — THE RE-SCHEDULE MATRIX, the M14.4 rule applied to this loop (its sibling proof for the
- * sync loop is `federation-sync-cadence.test.ts`'s "force vs. reschedule are two flags").
- *
- * WHY IT MATTERS HERE. pg-boss computes a singleton slot from `now()` AT INSERT, so a poke wake
- * landing in a different slot than the already-pending interval tick is NOT deduped. If a poke tick
- * re-scheduled, every poke would leave a second pending interval job and the "reliable floor" would
- * quietly densify — at a CDS boundary, where each tick can pull GBs through skopeo. And the inverse
- * regression is worse and completely silent: if an INTERVAL tick stopped re-scheduling, the
- * self-rescheduling chain dies at the first tick and the boundary stalls forever with no error
- * anywhere. Both directions have to be pinned, which is why this is a matrix and not one case.
- *
- * The batch cases exist because the keying is "the batch contains a NON-POKE job", not "no poke is
- * present": pg-boss 10.4.2 defaults `batchSize` to 1, so a mixed batch is hardening rather than a
- * live bug — but a future `batchSize > 1` would otherwise let one poke consume the pending interval
- * job AND suppress its re-schedule, permanently killing the chain until a process restart.
- */
+/** The re-schedule matrix, the same rule applied to this loop. See docs/federation.md §35. */
 describe("M13.1b auto-relay loop — force vs. re-schedule", () => {
   /** A db whose org list is empty, so the sweep is a no-op and only SCHEDULING is under test. */
   const emptyDb = { select: () => ({ from: async () => [] }) } as unknown as Db;

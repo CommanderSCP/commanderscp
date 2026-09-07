@@ -12,20 +12,7 @@ import {
   type ExecutorBindingRow
 } from "./executor-bindings-repo.js";
 
-/**
- * The observe()-DRIVER (M10.2, DESIGN §12 "poll-vs-push equivalence"). The reconcile loop
- * (`reconcile.ts`) only calls `status()` on already-coordinating changes and processes INBOUND
- * webhook rows — so before this loop, an executor SCP cannot be *reached from* (air-gapped,
- * tailnet-only, most self-hosted) was invisible: nothing created Changes from it. This loop closes
- * that gap on the PULL side, and it is deliberately thin because `ExecutorEvent.correlation` already
- * carries the SAME hint fields (`repo`/`path`/`correlationKey`) that `source_mappings` match against:
- *
- *   observe() → normalize into `change_source_events` → [existing] processChangeSourceEvents → Change
- *
- * i.e. observed events ride the EXACT queue + propose/gate/wave/decision/audit path the inbound
- * webhook route feeds — zero new coordination machinery, and a bounded pull cadence (default 60s,
- * NOT the 1s reconcile tick) to respect external-API rate limits.
- */
+/** The observe driver, for poll-versus-push equivalence. See docs/coordination.md §564. */
 
 export const OBSERVE_QUEUE = "coordination-observe-tick";
 
@@ -34,60 +21,15 @@ export const OBSERVE_TICK_INTERVAL_SECONDS = Math.max(
   Number(process.env.SCP_OBSERVE_TICK_INTERVAL_SECONDS ?? 60)
 );
 
-/**
- * The `source_kind` an observed event is filed under so `matchComponentForSource` can find the
- * operator's `source_mappings` row. The executor plugin module name IS the source kind for the
- * change-detecting executors (`github`/`argocd`/`terraform`), matching what the inbound webhook
- * route uses in its `:sourceKind` path param and what operators register their mappings under.
- */
+/** The source kind an observed event is filed under. See docs/coordination.md §565. */
 function sourceKindForModule(pluginModule: string): string {
   return pluginModule;
 }
 
-/**
- * The observe cursor — an ISO-8601 watermark **per event kind**, serialized as a JSON object.
- *
- * **It used to be one scalar watermark for the whole instance, and that STARVED an entire resource.**
- * A git-provider adapter polls two resources with different time bases and merges them
- * (`git-provider-core`: `[...pollCommits(since), ...pollRuns(since)]`) — commits are stamped with
- * the author date, workflow runs with the run's creation time. A CI run is always created AFTER the
- * commit that triggered it, so the run dragged the single watermark past its own commit, and the
- * next `?since=` query excluded that commit **permanently**. Every push whose CI started in the same
- * poll window was silently skipped — not delayed, skipped.
- *
- * Observed on the homelab: commit `bfddca9` at `02:32:14Z` was never ingested because the
- * `workflow_run` it triggered, at `02:32:17Z`, advanced the shared cursor three seconds past it.
- *
- * Keying by `ev.kind` fixes it for every provider at once, because the split is the same everywhere:
- * `pollCommits` emits `push`, `pollRuns` emits `workflow_run`, gitea's package poll emits `custom`,
- * and argocd emits only `sync` (a single-resource adapter, unaffected either way).
- *
- * **Backward compatible.** A stored legacy scalar (`"2026-08-02T02:32:17Z"`) is read as the starting
- * watermark for EVERY kind, so the first tick after this ships behaves exactly as before and then
- * lets each kind diverge. Nothing re-ingests, and a kind that has never been seen starts from the
- * legacy value rather than from the beginning of time — which is what stops a first-run flood.
- */
+/** The observe cursor. See docs/coordination.md §566. */
 export type ObserveWatermarks = Record<string, string>;
 
-/**
- * A watermark map is keyed by `ExecutorEvent.kind` — a string a PLUGIN supplies, i.e. foreign
- * input — so every one of these maps is built on a NULL PROTOTYPE and every lookup into one is
- * own-key-only. Without that, `kind === "__proto__"` walks straight into
- * `Object.prototype`'s `__proto__` accessor and this module stops working:
- *
- *   - `next[ev.kind] = ev.occurredAt` stores NOTHING (the setter ignores a string), so
- *     `advanceWatermarks` becomes a permanent no-op for that kind. MEASURED on the base commit:
- *     four consecutive ticks of a `__proto__`-kind event left the mark set at `[]` while a control
- *     kind advanced normally — the cursor never moves, so the provider is re-polled from the same
- *     point forever and every event in the window is re-fetched on every tick, indefinitely.
- *   - `watermarkFor(marks, "__proto__")` returned `Object.prototype`, which then reached the
- *     provider stringified as `?since=[object Object]`.
- *   - `serializeCursorToken` dropped the key from the persisted token entirely.
- *
- * `kind` is not validated against an allow-list anywhere (the doc above lists `push`,
- * `workflow_run`, `custom`, `sync`, but `custom` exists precisely so a plugin can invent one), so
- * the fix belongs here rather than in a validator.
- */
+/** A watermark map is keyed by `ExecutorEvent.kind`. See docs/coordination.md §567. */
 function emptyWatermarks(): ObserveWatermarks {
   return Object.create(null) as ObserveWatermarks;
 }
@@ -135,7 +77,6 @@ export function watermarkFor(marks: ObserveWatermarks, kind: string): string | u
   return ownMark(marks, kind) ?? ownMark(marks, "_legacy");
 }
 
-/** ISO-8601 lexicographic max, advanced INDEPENDENTLY per event kind. */
 export function advanceWatermarks(
   events: ExecutorEvent[],
   current: ObserveWatermarks
@@ -158,39 +99,7 @@ export function serializeCursorToken(marks: ObserveWatermarks): string {
   return JSON.stringify(sorted);
 }
 
-/**
- * The dedupe identity of ONE observed event — what makes two polls of the same event the same row,
- * and two genuinely different events two rows.
- *
- * **This used to be `correlationKey ?? commitSha ?? artifactDigest ?? kind:occurredAt`, and that was
- * wrong in a way that silently disabled observe-based ingestion.** `correlationKey` is a GROUPING
- * key by design — it is what `linkToCoordinatedChange` collects related changes under — so for many
- * providers it is deliberately STABLE across events:
- *
- *   - `pollCommits` (github, gitea, gitlab) sets the literal `"refs/heads/*"` — constant per repo
- *   - argocd sets `app.metadata.name` — constant per app
- *   - github's `deployment` webhook sets `deployment.environment` — constant per environment
- *
- * Because it was checked FIRST and was always present, `commitSha` was never reached, and every
- * event sharing a group collapsed onto one dedupe key. Exactly one row per (instance, group) was
- * ever ingested and everything after it was rejected as a duplicate — forever, not per poll window.
- * Measured on the homelab: **4 push events ingested in total** (one per repo, all on the day the
- * bindings were created) against 402 workflow runs, which escaped only because `run-${id}` happens
- * to be unique; and **62 argocd events for 61 bound applications**, newest a week stale.
- *
- * The fix keeps the grouping key in the identity — two different groups must never collide — and
- * adds whatever actually DISCRIMINATES events within that group:
- *
- *   - a `commitSha`/`artifactDigest` when present: a true per-event identity (one commit, one
- *     artifact), so `refs/heads/*` + sha is unique per commit and `run-N` + sha stays unique per run
- *   - otherwise `occurredAt` — the PROVIDER's timestamp, not `now()`. That distinction is what makes
- *     this safe: re-polling an unchanged event yields the same provider timestamp and therefore the
- *     same key, while a genuinely new one (argocd's next reconcile) yields a new key.
- *
- * Changing the key format does not re-ingest history: every poller filters by its observe cursor
- * (`?since=` for github commits, `created_at > sinceIso` for runs, `reconciledAt > sinceTime` for
- * argocd), so events already past the cursor are never re-fetched to be re-keyed.
- */
+/** The dedupe identity of ONE observed event. See docs/coordination.md §568. */
 export function observedEventIdentity(ev: ExecutorEvent): string {
   const c = ev.correlation ?? {};
   const group = c.correlationKey ?? ev.kind;
@@ -200,15 +109,7 @@ export function observedEventIdentity(ev: ExecutorEvent): string {
   return `${group}|${discriminator}`;
 }
 
-/**
- * Normalize observed events into `change_source_events`. The payload carries the event's structured
- * `correlation` at top level so `webhook-processor.ts`'s generic `extractHint` (which reads
- * `payload.repo`/`.path`/`.correlationKey`) correlates it exactly as a `scp change report` caller
- * would — no `x-github-event` header is set, so github's header-driven parse falls back to generic.
- * `dedupeKey` includes the instance id so overlapping poll windows (and two instances of the same
- * module) never double-propose; `signatureVerified: true` because this is SCP's own trusted poll,
- * not an unauthenticated inbound delivery.
- */
+/** Normalize observed events into `change_source_events`. See docs/coordination.md §569. */
 export async function ingestObservedEvents(
   tx: TenantTx,
   orgId: string,
@@ -300,12 +201,7 @@ async function saveCursor(
     });
 }
 
-/**
- * Poll every observe-capable executor instance in one org. Bindings sharing a `pluginInstanceId`
- * share observe scope (identical configured source), so we dedupe to one poll per instance. Each
- * instance is isolated in its own try/catch — a dead/rate-limited executor never stalls the others
- * or the tick.
- */
+/** Poll every observe-capable executor instance in one org. See docs/coordination.md §570. */
 export async function observeOrgTick(
   db: Db,
   orgId: string,
@@ -370,7 +266,6 @@ export async function observeOrgTick(
   }
 }
 
-/** Every org, one tick — mirrors `runReconcileSweep`. */
 export async function runObserveSweep(db: Db, host: PluginHost, masterKey: Buffer): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {

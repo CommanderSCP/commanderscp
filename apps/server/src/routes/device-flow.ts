@@ -34,13 +34,7 @@ function sendDeviceFlowError(
   });
 }
 
-/**
- * SCP's own RFC 8628-shaped device-authorization flow for the CLI (M2 step 2 Part C) — see
- * auth/device-flow.ts's module doc for why this is SCP's own flow rather than a proxy to the
- * upstream IdP's device grant. `verificationUri` points at this server's own web UI/API (the
- * browser-side approval page itself lands with the Web UI in a later M2 step — this API is
- * fully exercisable headlessly in the meantime, per BUILD_AND_TEST.md §8 M2 item 3).
- */
+/** SCP's own RFC 8628-shaped device-authorization flow for the CLI. See docs/routes.md §141. */
 export function registerDeviceFlowRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 

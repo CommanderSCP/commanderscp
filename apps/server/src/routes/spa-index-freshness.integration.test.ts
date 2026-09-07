@@ -4,37 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { listenTestServer, type ListeningTestServer } from "../test-support/harness.js";
 
-/**
- * THE SPA SHELL IS SERVED FRESH — `/` and every deep link agree on what `index.html` currently is.
- *
- * The defect this pins is an ASYMMETRY, not staleness in the abstract. `app.ts` serves one document
- * from two places: `GET /` comes from `@fastify/static` (which reads the file per request), while
- * every SPA client-side route falls through to the low-priority `app.get("/*")` catch-all. That
- * catch-all used to memoize the file into a process-lifetime `let cachedIndexHtml`, so the two
- * sources answered differently the moment the file changed underneath a running server.
- *
- * WHY THAT MATTERS, concretely: rebuilding the web app under a running server (the ordinary local
- * loop) makes Vite emit new content-hashed asset filenames and delete the old ones. `/` then
- * correctly referenced the new bundle while `/services/anything` kept handing out HTML pointing at
- * files that no longer existed — two 404s, a blank page, and nothing at all in the server log. It
- * reproduces under plain `curl`, so it is not browser caching.
- *
- * WHAT THIS TEST PINS — the PROPERTY ("a deep link reflects what is on disk now"), not the symptom
- * ("asset hashes match"). Asserting on hashes would pass against a server that happened to have
- * cached the right generation, and would need rewriting every time the bundler's naming changed.
- * Writing a sentinel and demanding it come back is the property stated directly.
- *
- * HERMETIC BY CONSTRUCTION. `webDistRoot` is resolved from `__dirname` in `app.ts` and is not
- * injectable, so this test writes a real `apps/web/dist/index.html`, exercises the server against
- * it, and restores the previous state exactly in `finally` — including deleting the file (and the
- * directory) when they did not exist, which is the case in any CI job that runs server tests
- * without building the web app first. It therefore neither depends on a prior `pnpm --filter
- * @scp/web build` nor leaves one damaged.
- *
- * MUTATION-PROVEN: restoring the `cachedIndexHtml ??= await readFile(...)` memoization makes the
- * second assertion in the first test go red (the deep link keeps serving generation 1), while the
- * `/`-vs-deep-link agreement test also fails. Applied alone and reverted.
- */
+/** THE SPA SHELL IS SERVED FRESH. See docs/routes.md §413. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST_ROOT = path.resolve(__dirname, "../../../web/dist");

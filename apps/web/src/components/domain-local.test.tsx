@@ -2,11 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-// House pattern (outposts-honesty.test.tsx): `Link` throws outside a RouterProvider, so it is
-// stubbed — but UNLIKE the bare-anchor stub there, this one interpolates `params` into `to`, because
-// the EndpointName tests below assert the href. What that pins is that the component CHOSE the link
-// branch and fed it the right registry basePath + object id; TanStack's own interpolation is
-// covered by the E2E spec against the real router.
+// House pattern (outposts-honesty.test.tsx). See docs/web.md §37.
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({
@@ -40,25 +36,7 @@ import {
   PublishConfirmBody
 } from "./domain-local";
 
-/**
- * M20 (ADR-0031) — pins the three properties of the domain-local UI that a refactor could silently
- * lose without a compile error:
- *
- * 1. The publish card is gated on the OBJECT's `domainLocal` bit and nothing else — no federation
- *    role ever enters the decision. The commander-side guarantee is structural (the object never
- *    arrives), so the only correct client-side condition is the bit itself; a role check would be
- *    the conditional-view failure mode M16.3's census found.
- * 2. The confirm copy states irreversibility in the exact terms ADR-0031 §6 uses ("one-way",
- *    "no un-publish") — this is the safety copy for an action that cannot be undone, so its
- *    presence is behaviour, not wording. (Phrasing may move between elements; the CLAIMS may not
- *    disappear.)
- * 3. Nothing in this module offers an inverse. There is deliberately NO un-publish control to
- *    assert on; instead we assert the module renders no button/verb containing "un-publish".
- *
- * Plain `renderToStaticMarkup`, no jsdom — same harness as replica-origin.test.tsx. Radix's
- * dialog portals render nothing statically, which is why the confirm body is exported and
- * asserted directly.
- */
+/** The three properties of this UI a refactor could lose. See docs/web.md §38. */
 
 function renderWithQueryClient(node: React.JSX.Element): string {
   const queryClient = new QueryClient();
@@ -190,11 +168,7 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
     expect(html).toContain("publish");
   });
 
-  // The sweep report's link decision is derived ENTIRELY from `otherEndpointUrn`'s type segment,
-  // and the no-link branch depends on a server-side FALLBACK (a vanished endpoint degrades the
-  // urn to the raw id), not on a contract. These pin both branches so a change to that fallback —
-  // or to the urn shape — breaks a test here instead of shipping a dead link (M20 author's
-  // caveat, 2026-08-13).
+  // The link decision is derived entirely from the urn. See docs/web.md §39.
   it("sweep endpoint with a routable urn renders a LINK into its registry page", () => {
     const html = renderToStaticMarkup(
       <EndpointName

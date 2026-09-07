@@ -8,36 +8,20 @@ export interface ListenNotification {
 }
 
 export interface ReconnectingListenClientOptions {
-  /** Postgres connection string for the dedicated LISTEN connection. */
   connectionString: string;
   /** Channels this client subscribes to on every (re)connection. Static constants only — these
    *  are interpolated directly into `LISTEN <channel>`, which does not accept a bind parameter. */
   channels: string[];
   /** Fired for every NOTIFY delivered on any subscribed channel. */
   onNotification: (notification: ListenNotification) => void;
-  /**
-   * Fired after every successful (re)connection has re-issued every `LISTEN`, INCLUDING the very
-   * first connection. A caller with nothing to catch up on (the outbox relay's wake listener —
-   * its 1s poll fallback already covers a missed NOTIFY) can leave this unset; the SSE bridge
-   * (proposal §7.1 item 1) uses it to broadcast a resync to locally-connected clients, since a gap
-   * in this LISTEN connection is exactly a gap in what `sseHub` could have received.
-   */
+  /** Fired after every successful. See docs/events.md §25. */
   onReconnect?: () => void;
   /** Logged, never thrown. Covers both a failed connection attempt and a runtime error on an
    *  already-established one. */
   onError?: (err: unknown) => void;
-  /** Floor of the reconnect backoff. Default 250ms. */
   minBackoffMs?: number;
-  /** Ceiling of the reconnect backoff. Default 5000ms. */
   maxBackoffMs?: number;
-  /**
-   * How long a connection must STAY up before the backoff is reset to its floor. Default 5000ms.
-   * Without this, a connection that dies immediately after every connect (an on-path attacker
-   * RST-ing the socket, review finding SEC-5) reset the backoff to the floor on each connect and
-   * reconnected every `minBackoffMs` — each reconnect firing `onReconnect`, which on the SSE bridge
-   * is a full unscoped cache-invalidation broadcast. Resetting only after the connection has proven
-   * stable makes a flapping connection back off toward `maxBackoffMs` instead.
-   */
+  /** How long a connection must stay up before backoff resets. See docs/events.md §26. */
   stabilityWindowMs?: number;
   /** Injectable for tests. Production default constructs a real `pg.Client`. */
   createClient?: (connectionString: string) => pg.Client;
@@ -51,20 +35,7 @@ export interface ListenClientHandle {
   stop(): Promise<void>;
 }
 
-/**
- * A reusable reconnecting `LISTEN` client (proposal multi-region-instance-resilience.md §7.1 item
- * 1, fixing §4-A5): wraps one dedicated `pg.Client`. On a connection error OR an unexpected clean
- * end (`pg_terminate_backend` closes without necessarily emitting `error` first — both paths must
- * reconnect, which is why this listens for both events, not just `error`), it reconnects with
- * capped exponential backoff, re-issues every `LISTEN`, and calls `onReconnect`.
- *
- * BUG A5, restated: the old outbox relay held a raw `pg.Client` whose `on('error')` only logged
- * (events/outbox-relay.ts, pre-M26.1). Any Postgres blip — a restart, a failover, a load
- * balancer idle-timeout — silently and permanently demoted that process to its 1s poll fallback,
- * with nothing in the logs saying so was now the *only* thing driving it. This client is the fix,
- * shared by the relay's own wake listener and the new SSE bridge (events/sse-bridge.ts) rather
- * than fixed in one place and left broken in the other.
- */
+/** A reusable reconnecting `LISTEN` client. See docs/events.md §27. */
 export function startReconnectingListenClient(
   opts: ReconnectingListenClientOptions
 ): ListenClientHandle {

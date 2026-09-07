@@ -20,39 +20,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * §14 RESOLUTION 7 — A HOOK RUN DISPATCHES ON THE `test` LANE, FALLING BACK TO `build`.
- *
- * ============================================================================================
- * WHAT THIS CLOSES, AND THE PART THAT IS EASY TO GET HALF-RIGHT
- * ============================================================================================
- * A hook run resolved its executor with no lane at all, so a coordinated test always ran on the
- * DEPLOY target's executor and pointing tests at a separate Argo Workflows instance was not
- * expressible. Increment 5 (rounds B1/B2) landed the lane column, `resolveLaneBinding`'s read-time
- * fallback, and a lane-aware `resolveExecutorPluginInstance`; this is the consuming half.
- *
- * THERE ARE TWO SEAMS, NOT ONE, and wiring only the obvious one is worse than wiring neither:
- *   - `resolveExecutorPluginInstance` decides WHICH PLUGIN INSTANCE the run executes on;
- *   - the binding lookup beside it supplies the `externalRef` the run is claimed with.
- * Passing the lane to the second and not the first produces a run whose row says `test` while it
- * executes on the build lane's instance — two halves of one dispatch disagreeing, silently, in a
- * shape that reads as correct in the database. Case 2 asserts the INSTANCE for exactly that reason;
- * asserting the row alone would pass against that bug.
- *
- * THE THIRD SEAM IS THE POLL, and its failure is quiet rather than loud: the poll re-resolves from
- * the same derived carrier and REFUSES to poll an instance that is not the one the run was claimed
- * under. A trigger on `test` with a poll on the default `build` would not error — it would decide
- * the binding had changed and leave every run in flight forever, logging once per tick.
- *
- * ============================================================================================
- * THE FIXTURE WARNING THAT SHAPED THIS FILE
- * ============================================================================================
- * The increment-5 session measured that a lane test whose fixture declares NO HOOK never reaches
- * the guard it means to prove — their own mutation deleting the guard SURVIVED because of it, and
- * they fixed the test rather than the log. Every case here declares a real hook and drives the real
- * `ensureHookRunTriggered`, and every assertion names WHICH instance resolved rather than that the
- * call succeeded.
- */
+/** A hook run dispatches on the test lane, else build. See docs/coordination.md §545. */
 describe("hook runs dispatch on the test lane (§14 res 7)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -122,18 +90,7 @@ describe("hook runs dispatch on the test lane (§14 res 7)", () => {
     return { subjectId: subject.id, hookId };
   }
 
-  /** Drives the REAL trigger path and returns the persisted run row.
-   *
-   *  A REAL `change` OBJECT, not a synthetic uuid. The first draft of this helper used
-   *  `randomUUID()` on the reading that `change_object_id` carried no foreign key — the column is
-   *  declared without an inline `references()`, so a grep of `schema.ts` says so. It was wrong:
-   *  `pipeline_hook_runs_change_object_id_fkey` exists and the INSERT failed 23503. Recorded rather
-   *  than quietly corrected, because the general shape is the one this repo keeps paying for — the
-   *  absence of a thing in the place you looked is not its absence, and Postgres was the second
-   *  implementation that settled it.
-   *
-   *  Minted through `createObject` rather than the report ingress: the ingress would need the
-   *  reconcile loop and a second thing to wait on, and this file asserts nothing about correlation. */
+  /** Drives the real trigger path with a real change. See docs/coordination.md §546. */
   async function trigger(subjectId: string, hookId: string) {
     const change = await inOrg((tx) =>
       createObject(tx, {
@@ -171,11 +128,7 @@ describe("hook runs dispatch on the test lane (§14 res 7)", () => {
   }
 
   it("1. FALLBACK: with only a BUILD binding, the run still dispatches — on the build instance", async () => {
-    // THE ADDITIVE PROPERTY, and the case that protects every estate in existence. The fallback is
-    // read-time and the reconciler deliberately does NOT materialise a test row, so a hand-authored
-    // estate carries build rows only. Without the fallback this asks for a lane nothing declares,
-    // `resolveExecutorPluginInstance` returns undefined, and `ensureHookRunTriggered` throws its
-    // loud-unbound refusal on EVERY hook run in the estate.
+    // The additive property that protects every existing estate. See docs/coordination.md §547.
     const { subjectId, hookId } = await subjectWithHook();
     const buildInstance = await bind(subjectId, "build");
 
@@ -238,13 +191,7 @@ describe("hook runs dispatch on the test lane (§14 res 7)", () => {
   });
 
   it("6. THE POLL resolves the same lane the trigger claimed — otherwise the run sits in flight forever", async () => {
-    // THE QUIET SEAM, and the reason it needs its own case: the poll re-resolves the instance from
-    // the derived carrier and REFUSES to poll one that is not the instance the run was claimed
-    // under. A poll on the default `build` while the trigger claimed on `test` therefore does not
-    // error — it decides the binding changed, logs once, and leaves the run non-terminal FOREVER.
-    //
-    // MEASURED: unwiring the poll's lane alone left all five earlier cases GREEN. This case is what
-    // makes that mutation fail, and without it the seam was wired on faith.
+    // THE QUIET SEAM, and the reason it needs its own case. See docs/coordination.md §548.
     const { subjectId, hookId } = await subjectWithHook();
     await bind(subjectId, "build");
     const testInstance = await bind(subjectId, "test", "succeeded");

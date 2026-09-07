@@ -12,52 +12,7 @@ import { isUuid } from "../graph/objects-repo.js";
 import { sqlIn } from "../graph/sql-helpers.js";
 import type { MatchedPolicy, PolicyEffect, PolicyEnforcement } from "./policy-model.js";
 
-/**
- * The impure "gather" half of policy resolution (DESIGN.md §10.1) — everything here touches the
- * database; `policy-model.ts`'s `resolvePolicies` is the pure merge that consumes this file's
- * output. Kept deliberately separate per BUILD_AND_TEST.md §4.1's "anything testable as a pure
- * function must be written as a pure function."
- *
- * Resolution walks the target's containment chain (org → domain → service → [assembly] → component
- * — the assembly rung is OPTIONAL and arrives via the same generic `contains` walk — DESIGN
- * §10.1; `graph/containment.ts`'s `containmentChain`, shared with the gate orchestrator so a policy
- * and a freeze can never disagree about what contains what) and, at every ancestor, checks every
- * `policy`-typed graph object in the org for a scope match (explicit `objectRef`, label `selector`,
- * or `group` — DESIGN §7's `member_of` expansion, reused). Org
- * policy counts are expected to be small (dozens, not thousands) — a full scan per gate check is the
- * honest, simple MVP choice; a materialized `governed_by`-indexed lookup is a natural later
- * optimization behind this exact same function signature if profiling ever shows it's needed
- * (DESIGN §5's own "escape hatch" precedent for named queries).
- *
- * ============================================================================================
- * GROUP SCOPE HAS TWO HALVES — AND SHIPPING ONLY ONE OF THEM WAS A FAIL-OPEN
- * ============================================================================================
- * DESIGN §10.1 has always said a group-scoped policy "applies when the change's **acting or owning
- * subject** is a `member_of` that group". Until 2026-08-15 this file implemented only the ACTING
- * half (`isMemberOf(actor, group)`), so `scope.group` meant, exactly and only, *"the human whose
- * credential is on the request that triggered this evaluation is transitively in this group"*.
- *
- * That reading is fine for a policy that GRANTS or ROUTES. It is a FAIL-OPEN for a policy that
- * CONSTRAINS, because **a constraint that fails to match is a constraint that does not apply**.
- * Every enforcing consumer of this function is a constraint:
- *   - `gate-orchestrator.ts` `evaluateGovernanceGate` — fewer `requireControls`/`requireApprovals`,
- *     and a group-scoped `emergencyPolicy` that misses leaves an emergency change UNGATED;
- *   - `scan-requirements.ts` `resolveEffectiveScanThreshold` — the shipped ADR-0016/M17.5 gate,
- *     whose per-severity MIN silently loses a group-scoped scan CEILING, leaving the effective
- *     threshold LOOSER than the operator authored. No error, no log; the gate just permits more.
- * So a non-member could evade a group's own gate simply by being the one to push the button.
- *
- * Worse, the acting half is STRUCTURALLY INERT wherever the actor is `SYSTEM_ACTOR_ID` (the nil
- * UUID, which is `member_of` nothing): `coordination/reconcile.ts`'s wave-boundary gate,
- * `campaign-reconcile.ts`, `shouldAutoRollback`, and `prewarmGovernanceForChange` all pass it. The
- * same document therefore governed the `validating → accepted` edge and NOT the wave boundaries of
- * the very same change.
- *
- * The OWNING half (below, `via: "ownerGroup"`) closes both. It is deliberately ADDITIVE — it only
- * ever adds matches, never removes one — so for every consumer the change is monotonically
- * TIGHTENING and no gate that fired before can stop firing. See ADR-0016 §2a for the decision, the
- * before/after, and the migration note.
- */
+/** The impure "gather" half of policy resolution. See docs/governance.md §273. */
 
 interface PolicyCandidate {
   id: string;
@@ -125,11 +80,7 @@ async function isMemberOf(
     SELECT subject_id AS id, depth FROM subject_expand
     WHERE subject_id = ${groupObjectId}::uuid OR depth >= ${WALK_TRUNCATION_PROBE_DEPTH}
   `);
-  // ADR-0037 asymmetry: a match found within the bound is valid regardless of what else the
-  // frontier was doing — membership is a reachability fact. Only NON-membership can be fabricated
-  // by a cut walk, and a fabricated "not a member" here makes a group-scoped REQUIRED policy
-  // silently not apply: fail-open, the worst direction this repo knows (ADR-0026). So: match wins;
-  // no-match with a still-expanding frontier refuses; clean no-match stays false.
+  // A match found within the bound is valid regardless. See docs/governance.md §274.
   if (result.rows.some((r) => r.id === groupObjectId && r.depth < WALK_TRUNCATION_PROBE_DEPTH)) {
     return true;
   }
@@ -143,32 +94,7 @@ async function isMemberOf(
   return false;
 }
 
-/**
- * DESIGN §10.1's **OWNING**-subject half of group scope: which of `chainObjectIds` are OWNED by
- * `groupObjectId` — either directly (the group itself holds the `owns` edge) or through any
- * transitive `member_of` member of it (a team, a user, a service account).
- *
- * DIRECTION. `isMemberOf` above expands a subject UPWARD to the groups it belongs to; this expands
- * a group DOWNWARD to its members. Same `member_of` closure, walked the other way, because here the
- * group is the known end and the owners are not.
- *
- * WHY IT ANCHORS ON THE CONTAINMENT CHAIN, NOT ON THE TARGET ALONE. Ownership scope inherits
- * downward exactly as `objectRef` and `selector` scope do: if a group owns a SERVICE, its policy
- * governs that service's components. Restricting the match to a direct `owns` edge on the target
- * itself would make ownership scope the only scope kind that does not inherit — and would fail open
- * on every component whose ownership is recorded at the service, which is the normal shape
- * (`routes/ownership.ts`). Note `owns`'s registered `to_types` (`0002_rls_rbac_seed.sql:173-176`)
- * are service/component/domain/deployment-target/contract and deliberately EXCLUDE `organization`,
- * so this can never match at the org root — an ownership match is always strictly more specific
- * than the unscoped/acting-subject anchor.
- *
- * NO ARBITRARY DEPTH BOUND, DELIBERATELY. `UNION` (not `UNION ALL`) over a bare `member_id` makes
- * this cycle-safe by construction: a row already produced is never re-produced, so a `member_of`
- * cycle terminates the recursion instead of spinning. `isMemberOf` above caps at `depth < 10`
- * because it carries a `depth` column, which defeats `UNION`'s own dedup and forces a cap; that
- * silent-truncation property is a KNOWN, SEPARATELY-TRACKED defect at six sites and is not touched
- * here. This function does not add a seventh.
- */
+/** DESIGN §10.1's **OWNING**-subject half of group scope. See docs/governance.md §275. */
 async function ownedByGroupOrItsMembers(
   tx: TenantTx,
   orgId: string,
@@ -206,14 +132,7 @@ export interface MatchPoliciesInput {
   actorObjectId: string;
 }
 
-/**
- * The shared walk both `matchPoliciesForTargets` and `matchPoliciesForTargetsByTarget` run —
- * candidates, chains, the ownership cache and the four scope-kind branches, all identical. Only
- * WHAT HAPPENS WITH A MATCH differs between the two callers (one flat dedup vs. one dedup per
- * target), so that is the only thing factored out as a callback. Keeping this walk in ONE place is
- * deliberate: two copies of one containment/scope predicate drifting apart is exactly how this file
- * describes the group-scope fail-open ever having shipped (module doc above).
- */
+/** The shared walk both matchers run. See docs/governance.md §276. */
 async function walkPolicyMatches(
   tx: TenantTx,
   input: MatchPoliciesInput,
@@ -296,14 +215,7 @@ async function walkPolicyMatches(
           }
         }
 
-        // (b) THE OWNING-SUBJECT HALF (ADR-0016 §2a, 2026-08-15) — "this rule governs work ON what
-        // this group owns." Independent of who is acting, which is exactly why it closes the
-        // fail-open (module doc). It DOES have a real anchor — the owned object on the chain — so it
-        // records at that object's true depth rather than at the org root. That is not cosmetic:
-        // `scan-requirements.ts` derives the six-tier explainability label from
-        // `matchedAt.objectId`'s type, so anchoring a service-ownership match at the org root would
-        // report an org-tier ceiling for a service-tier requirement (ADR-0016 §5's promise that a
-        // blocked promotion can show WHICH tier set the binding floor).
+        // (b) THE OWNING-SUBJECT HALF (ADR-0016 §2a, 2026-08-15). See docs/governance.md §277.
         const owned = await ownedForGroup(groupId);
         if (owned.size > 0) {
           for (const [targetId, chain] of chains) {
@@ -337,28 +249,7 @@ function matchedPolicyOf(
   };
 }
 
-/**
- * Gathers every policy that matches ANY of `targetObjectIds`' containment chains (or the actor's
- * group membership), each annotated with WHERE/HOW it matched — ready to hand to
- * `policy-model.ts`'s `resolvePolicies` for the stricter-wins merge. Deduplicates a policy that
- * matches the same target-chain-object more than once.
- *
- * THAT DEDUP IS NOT THEORETICAL, and this comment used to say it was ("can't happen with today's
- * three match kinds"). The scope keys are independent `if`s, not `else if`s, so a document carrying
- * two of them matches on OR and CAN record the same (policy, object) twice — e.g.
- * `{objectRef: <a service>, group: <the group that owns it>}`. The surviving `via` names the FIRST
- * branch that matched, not the only one (branch order: objectRef → selector → group → ownerGroup).
- * The MATCH is right either way (the entry, its anchor and its depth are identical whichever branch
- * produced it); only the provenance LABEL is lossy, and it is lossy in a documented, deterministic
- * direction. Widening `via` to a set would change the shape of every persisted reason tree and is
- * deliberately left out of this change.
- *
- * DEDUPES ACROSS TARGETS, on purpose: this is the UNION every caller here wants except one
- * (`binding-policy/reconcile-bindings.ts`'s per-target attribution — see
- * `matchPoliciesForTargetsByTarget` below, which exists BECAUSE this dedup is unsafe for that
- * caller: two targets sharing a common ancestor matched by the same policy would collapse into one
- * entry with no record of which target(s) it covers).
- */
+/** Gathers every policy matching any target's chain. See docs/governance.md §278. */
 export async function matchPoliciesForTargets(
   tx: TenantTx,
   input: MatchPoliciesInput
@@ -372,18 +263,7 @@ export async function matchPoliciesForTargets(
   return [...matches.values()];
 }
 
-/**
- * The per-target-attributed sibling of `matchPoliciesForTargets`, for callers that need to know
- * WHICH target a match covers rather than the flat union — today just
- * `binding-policy/reconcile-bindings.ts`'s `gatherContributions`, which used to call the function
- * above once per target (one full policy-table scan + group-ownership resolution per target) purely
- * to get this attribution. Runs the SAME shared walk once for the whole `targetObjectIds` list —
- * one scan, one ownership resolution — and dedupes PER TARGET (`${policyId}::${objectId}` within
- * each target's own list) rather than across all of them, so the result for each target is
- * identical to what an isolated single-target call to `matchPoliciesForTargets` would have
- * returned. Every id in `targetObjectIds` gets an entry, even an empty one, so a caller can index
- * the result without deciding what a missing key means (mirrors `freezesByTarget`'s contract).
- */
+/** The per-target-attributed sibling of that matcher. See docs/governance.md §279. */
 export async function matchPoliciesForTargetsByTarget(
   tx: TenantTx,
   input: MatchPoliciesInput

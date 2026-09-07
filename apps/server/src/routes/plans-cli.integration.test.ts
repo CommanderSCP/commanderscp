@@ -28,13 +28,7 @@ interface PlanJsonOutput {
   diff: { summary: { creates: number; updates: number; deletes: number; noops: number } };
 }
 
-/**
- * BUILD_AND_TEST.md §8 M2 DoD (b), literal wording: "an `@scp/iac` stack applied twice is a
- * no-op the second time (plan shows zero actions) ... integration + a CLI-driven test." Uses
- * `startCliSession` (test-support/cli-runner.ts) to spawn the REAL BUILT `scp` binary, same
- * pattern as `graph/custom-type.integration.test.ts`'s CLI half — a genuine black-box exercise of
- * `scp plan`/`scp apply`, not an in-process shortcut.
- */
+/** BUILD_AND_TEST.md §8 M2 DoD (b), literal wording. See docs/routes.md §307. */
 describe("plans: CLI-driven no-op-on-second-apply (DoD (b))", () => {
   let server: ListeningTestServer;
 
@@ -88,7 +82,6 @@ describe("plans: CLI-driven no-op-on-second-apply (DoD (b))", () => {
         noops: 1
       });
 
-      // `scp plan-status` round-trips the second apply's plan id.
       const status = await cli.runJson<PlanJsonOutput>(["plan-status", secondApply.planId]);
       expect(status.status).toBe("applied");
     } finally {

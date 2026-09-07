@@ -18,104 +18,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * THE DRIFT DETECTOR — upward and downward must be EXACT INVERSES (role-model.md §8.3)
- * ================================================================================================
- *
- * `authz/resolve.ts` walks containment UPWARD from one object and asks "is a binding on this
- * chain?". `authz/readable-scope.ts` walks the SAME containment DOWNWARD from the subject's
- * bindings and asks "which objects does this authority reach?". Every get-by-id door runs the
- * first; since increment 2.5b every LIST door runs the second. §8.3 names the invariant that ties
- * them together and that nothing else in the tree enforces:
- *
- *      for every subject S and every object O:   hasPermission(S, O)  ⟺  O ∈ readableSet(S)
- *
- * **A route present upward but not downward is not a "narrower list".** It is an object that
- * `GET /objects/{id}` hands over at its own id and that `GET /objects/{type}` omits from every
- * page — which an operator debugs as a caching bug, a replication bug or a UI bug, because those
- * are what "the API has it but the list does not" looks like from outside. The opposite drift
- * (downward reaching further than upward) is a read leak on the same silent terms.
- *
- * The two walks are hand-synced ACROSS FILES on routes 1 and 2 (`graph/containment.ts`'s header
- * records that they already drifted once, taking a service-scoped freeze OPEN and a service-scoped
- * approval CLOSED with them, from one root cause), and share ONE fragment for routes 3 and 4. So
- * this file exists to make any future divergence fail loudly here, on its first run, rather than
- * in production as a mystery.
- *
- * ------------------------------------------------------------------------------------------------
- * HOW THIS DIFFERS FROM `authz/readable-scope.integration.test.ts`, WHICH ALSO ASSERTS THE PAIR
- * ------------------------------------------------------------------------------------------------
- * That file pins the invariant over a fixture that was DESIGNED for it — every rung named, every
- * route deliberately placed. A designed fixture proves the routes someone thought of. This one is
- * generated: a pseudo-random containment tree of mixed kinds, mixed parent routes and mixed depths,
- * whose shape nobody chose, plus an INDEPENDENT test-side model of reachability (below) that agrees
- * with neither production walk by construction. The three-way agreement is the point:
- *
- *   1. SQL upward   (`hasPermission`)                — production
- *   2. SQL downward (`readableObjectFilterFor`)      — production
- *   3. a JS breadth-first walk over the rows as they are actually PERSISTED  — this file only
- *
- * (1) vs (2) catches one walk changing. (3) catches BOTH changing together, which is precisely
- * what "hand-synced across two files" invites — a route deleted from `scopeExpandCte` AND from
- * `containmentChildrenSql` in the same edit leaves (1) and (2) in perfect agreement about an
- * authority that silently shrank.
- *
- * > ⚠️ Model (3) is a fourth expression of the four containment routes, and CLAUDE.md's standing
- * > rule ("do not hand-write a fourth copy of the containment walk") is about PRODUCTION code,
- * > where a copy is a thing that can drift unnoticed and be believed. Here it is the control: an
- * > oracle that agrees with the code under test is worthless, so this one is deliberately written
- * > from the persisted rows (three flat, non-recursive `SELECT`s) with the recursion in JS. It is
- * > ~25 lines, it is in one place, and if a FIFTH route is ever added it must be added here too —
- * > by design, because that edit is exactly the moment somebody should be made to prove the new
- * > route was taught to both walks.
- *
- * ------------------------------------------------------------------------------------------------
- * THE SHAPE IS RANDOM; THE RUN IS NOT
- * ------------------------------------------------------------------------------------------------
- * The tree is built from a seeded PRNG with a FIXED default seed, so CI is deterministic — a test
- * whose fixture changes per run reports failures nobody can reproduce, and this one is a gate, not
- * a fuzzer. Set `SCP_DRIFT_SEED` to re-shape it (a good thing to do while changing either walk);
- * the seed is printed in every failure message so a red run is reproducible from its own output.
- *
- * ------------------------------------------------------------------------------------------------
- * TWO STATES DELIBERATELY ABSENT FROM THE GENERATED TREE — the invariant is NOT universal
- * ------------------------------------------------------------------------------------------------
- * The invariant holds exactly on a LEGAL, LIVE estate. Two states diverge on purpose, both already
- * characterised and pinned by name in `authz/readable-scope.integration.test.ts`, and both are kept
- * OUT of this fixture because including them would make the object-by-object sample red for a
- * reason that is not drift:
- *
- *   1. A TOMBSTONED ROW reached by route 1. `scopeExpandCte`'s SEED is raw — no lookup, no liveness
- *      filter — so `hasPermission` walks up from a soft-deleted row to its live parent and answers
- *      TRUE at that row's own id, while every downward arm filters children live and omits it.
- *      Inert: no list door serves tombstones (they all filter `deleted_at IS NULL`), so there is no
- *      row the API hands over that a list hides. **Nothing here is ever deleted**, which is why
- *      this file's sample can assert plain equality.
- *   2. AN ORG-ROOT ALLOW CARRYING A DENY BELOW IT. The filter short-circuits to `null` (the whole
- *      org), while `hasPermission` in ISOLATION at a denied object answers false. That is not a
- *      defect but the thing that keeps the DOORS in agreement: `authz/org-root-arm.ts` evaluates
- *      the org-root arm first and deliberately never consults a below-root deny, so get-by-id
- *      admits those objects too. No subject here holds that combination.
- *
- * If either is ever "fixed", both halves have to move together — and this note is where to start.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied ALONE to production code, measured 2026-08-26, then reverted
- * ------------------------------------------------------------------------------------------------
- * A drift detector that survives an arm being deleted is worthless, so every arm was deleted.
- *
- * | Mutation | Measured result |
- * |---|---|
- * | `containmentChildrenSql`: delete ARM 1 (the `domain_id` inverse) | **6 fail.** The invariant reports **25** disagreements; the model case 3 rows; `route 1 (domain_id)`; the deny case (`expected false to be true` — the ALLOWED sibling vanished with it); `a malformed effect does not SUBTRACT either`; and the depth case (`the row exactly at the bound must be readable: expected false to be true`). |
- * | `containmentChildrenSql`: delete ARM 2 (the `contains` inverse) | **4 fail.** The invariant reports **46** disagreements; the model case 8 rows; `route 2 … TWO HOPS` (`expected [ Array(1) ] to include '…'`); and pagination (`expected [] to deeply equal [ …(12) ]` — the service-bound principal's whole page is gone). |
- * | `containmentChildrenSql`: delete ARM 3 (the placement pair, routes 3 + 4) | **4 fail.** The invariant reports **17**; the model case 8; `route 3 (placement -> component)`; `route 4 (placement -> deployment-target)`. |
- * | `readableObjectFilterSql`: drop the deny descend and the `EXCEPT` | **3 fail.** The invariant reports **6**; the model case 1; the deny case names the row: `… is below the deny and must be absent from the list: expected true to be false`. Deny goes INERT on every list while still refusing at get-by-id — a deny that fails OPEN. |
- * | `partitionReadableRoots`: `effect === "allow"` → `effect !== "deny"` | **3 fail.** The invariant reports **12**; the model case 2; the malformed case: `ALLOW: the list must be empty: expected [ …(6) ] to deeply equal []`. A binding that grants NOTHING at get-by-id would hand over a whole subtree on every list. |
- * | `listObjects`: accept `readableFilter` and never push it into `conditions` (the "built, never installed" shape) | **1 fail — and exactly the right one.** Only the pagination case runs through the real HTTP door, and only it goes red: `expected [ …(27) ] to deeply equal [ …(12) ]`. |
- * | `insertMalformedEffectRoleBinding`: skip its `INSERT` — the FIXTURE, not production code | **File failed, `15 skipped`** — the guard throws in `beforeAll` with `insertMalformedEffectRoleBinding did not land … Every assertion resting on this row would have passed VACUOUSLY.` (Note the reporting shape: a dead `beforeAll` here reads as SKIPPED, never as failed tests. A run summary of `15 skipped` is a red file, not a quiet one.) With that read-back guard ALSO removed: **0 fail, 15 passed** — `a malformed effect grants NOTHING` is satisfied by there being no binding at all. Since drizzle/0096 this fixture has to drop a CHECK to write its row, so it is now the piece that can silently no-op; the guard is what keeps this suite from measuring nothing. |
- * | THE DISQUALIFIED DESIGN, simulated in this file: no filter in the query, `items` filtered in the handler | **1 fail, on the CONTRACT rather than on the row set** — `page 1 returned 0 of 5 rows but still carries a nextCursor — the filter was applied AFTER the LIMIT`. §8.2's measured production failure, reproduced at fixture scale. |
- */
+/** THE DRIFT DETECTOR. See docs/authz.md §3. */
 
 /** Default fixed so CI is reproducible; override to re-shape the tree. See the header. */
 const SEED = Number(process.env.SCP_DRIFT_SEED ?? 20260826);
@@ -141,9 +44,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
 
   const uniq = (p: string) => `${p}-${randomUUID().slice(0, 8)}`;
 
-  // ---------------------------------------------------------------------------------------------
   // Probes — the two production walks, and the test-side model.
-  // ---------------------------------------------------------------------------------------------
 
   /** The UPWARD walk at ONE object. Throws `walkDepthExceeded` (409) rather than returning false
    *  when a refusal cannot be trusted (ADR-0037) — the depth cases below depend on that. */
@@ -153,13 +54,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     );
   }
 
-  /**
-   * The DOWNWARD walk, run the way a list door runs it: the filter composed into a query over live
-   * rows, i.e. `o.id IN (…)` before any LIMIT.
-   *
-   * `null` is returned AS `null`, never as a set. It means NO FILTER (the org-root short-circuit),
-   * which is the opposite of the empty set, and every caller here has to say which one it expects.
-   */
+  /** The downward walk, run the way a list door runs it. See docs/authz.md §4. */
   async function readableIds(orgId: string, subjectObjectId: string): Promise<string[] | null> {
     return withTenantTx(server.deps.db, orgId, async (tx) => {
       const filter = await readableObjectFilterFor(tx, {
@@ -189,17 +84,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     });
   }
 
-  /**
-   * MODEL (3) — the containment graph read straight out of the tables, as three FLAT selects, with
-   * no recursion anywhere in SQL. Parent -> children, over the same four routes the two production
-   * walks use, expressed once, here, and nowhere else in test code.
-   *
-   * Route 1 `objects.domain_id`; route 2 the `contains` edge read forwards; routes 3+4 a live
-   * placement's `componentId` and `deploymentTargetId` PROPERTIES (the source of truth per
-   * ADR-0026 D17 — the `places`/`placed_at` edges are derived). Only LIVE children are recorded,
-   * matching both walks: upward the ancestor JOIN filters `deleted_at IS NULL`, downward every arm
-   * does.
-   */
+  /** The containment graph read as three flat selects. See docs/authz.md §5. */
   async function loadChildMap(orgId: string): Promise<ChildMap> {
     return withTenantTx(server.deps.db, orgId, async (tx) => {
       const map: ChildMap = new Map();
@@ -244,15 +129,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     });
   }
 
-  /** Model (3)'s walk: breadth-first from `roots`, bounded by the SAME constant both production
-   *  walks use — a node found at depth `CONTAINMENT_WALK_MAX_DEPTH` is included, and is not
-   *  expanded. `Set` dedupes on FIRST arrival, so a DAG node (a component reachable via its domain
-   *  at depth 1 and via its service at depth 2) is visited once, at its SHORTEST depth. The
-   *  production `UNION`s do NOT do that — their recursive rows are `(id, depth)` pairs, so such a
-   *  node is emitted twice and its subtree walked twice (measured, PostgreSQL 16). The two still
-   *  agree on the only thing compared here, MEMBERSHIP, and they agree at the BOUND too: shortest
-   *  depth is what decides whether a node is within `CONTAINMENT_WALK_MAX_DEPTH` hops, and a
-   *  duplicate arrival deeper down can only be expanded to rows the shorter route already reached. */
+  /** Model (3)'s walk. See docs/authz.md §6. */
   function descendModel(
     children: ChildMap,
     roots: readonly string[],
@@ -275,16 +152,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     return seen;
   }
 
-  /** A role binding written with an ARBITRARY `effect` — the one thing here not built through the
-   *  API, because no door will ever write anything but 'allow'/'deny'.
-   *
-   *  Since drizzle/0096 the DATABASE refuses anything else too (`role_bindings_effect_check`), so a
-   *  malformed value is routed to `insertMalformedEffectRoleBinding` — which builds the row THE ONLY
-   *  WAY IT CAN STILL EXIST (a privileged path with the CHECK momentarily dropped, i.e. what a
-   *  pre-0096 `pg_dump` restores or a DBA does) rather than pretending the shape went away. See that
-   *  helper's doc for why the constraint does not retire these cases: it stops the row being
-   *  written, not the row being READ, and the resolver's exact-string classification is the inner
-   *  layer that keeps it harmless. Legal effects still take the ordinary path, unchanged. */
+  /** A role binding written with an ARBITRARY `effect`. See docs/authz.md §7. */
   async function bindRaw(
     orgId: string,
     subjectId: string,
@@ -316,10 +184,6 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     });
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // The generated estate.
-  // ---------------------------------------------------------------------------------------------
-
   /** Every object the fixture generated, with the depth it was built at (for legality only — the
    *  walks derive their own). */
   interface Built {
@@ -347,7 +211,6 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
   let subjects: Record<string, string>;
   /** The scoped subjects' allow/deny roots, as the fixture INTENDED them — model (3)'s seed. */
   let intendedRoots: Record<string, { allow: string[]; deny: string[] }>;
-  /** A client for the pagination principal. */
   let pageClient: ScpClient;
 
   const viewerAt = async (...scopes: { scope: string; effect?: "allow" | "deny" }[]) =>
@@ -373,11 +236,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     };
     const kind = (k: string) => built.filter((b) => b.kind === k);
 
-    // ---- the four routes, placed deliberately ------------------------------------------------
-    // A generated tree can omit a route by chance, and a drift detector that silently stopped
-    // covering route 4 is exactly the failure this file exists to catch elsewhere. So the four
-    // routes are ALSO built by hand, named, and asserted individually below; the generated tree is
-    // what surrounds them.
+    // The four routes, placed deliberately rather than generated. See docs/authz.md §8.
     const rDomain = add(
       (await admin.object("domain").create({ name: uniq("r-domain") })).id,
       "domain",
@@ -469,12 +328,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     for (let i = 0; i < 5; i += 1) {
       const component = pick(kind("component"));
       const target = pick(kind("target"));
-      // Delimiter is '|', deliberately NOT NUL. This is a throwaway dedupe key for the loop
-      // below: never split apart, never persisted, never crossing a boundary. A uuid contains
-      // only hex and hyphens, so '|' cannot collide any more than NUL can -- and a NUL here
-      // would add this file to scripts/nul-census.mjs's permanent set, after which every
-      // recursive census in the repo silently drops one more file. The NUL delimiters in
-      // plan-diff.ts and friends ARE correct and load-bearing; this one would buy nothing.
+      // Delimiter is '|', deliberately NOT NUL. See docs/authz.md §9.
       const key = `${component.id}|${target.id}`;
       if (placed.has(key)) continue;
       placed.add(key);
@@ -531,7 +385,6 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     }
     page = { service: pageService, readable, unreadable };
 
-    // ---- subjects ----------------------------------------------------------------------------
     const generatedRoot = pick(built.filter((b) => b.kind !== "placement"));
     const denyAllow = route.domain;
     const denyRoot = route.service;
@@ -649,11 +502,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     ).toEqual([]);
   }, 300_000);
 
-  /**
-   * MODEL (3). Catches the drift the test above cannot: both production walks changed together.
-   * The oracle is built from the persisted rows by three flat selects and a JS breadth-first walk,
-   * so it shares no SQL, no fragment and no file with either walk under test.
-   */
+  /** MODEL (3). Catches the drift the test above cannot. See docs/authz.md §10. */
   it("both walks agree with an INDEPENDENT model of the persisted containment graph", async () => {
     const live = await liveObjects(org.orgId);
     const liveIds = new Set(live.map((o) => o.id));
@@ -747,11 +596,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
   // 3. §8.3 hazard: DENY IS A SUBTRACTION, NOT AN ABSENCE.
   // ---------------------------------------------------------------------------------------------
 
-  /**
-   * ⚠️ MUTATION-PROVEN (header table): removing the deny descend + `EXCEPT` from
-   * `readableObjectFilterSql` fails this test AND the invariant test — deny goes INERT on every
-   * list door while still refusing on get-by-id. A deny that fails OPEN.
-   */
+  /** ⚠️ MUTATION-PROVEN (header table). See docs/authz.md §11. */
   it("a deny below an allow subtracts its whole subtree from the list, exactly as it does at get-by-id", async () => {
     const subject = subjects.denied!;
     const readable = await readableIds(org.orgId, subject);
@@ -780,26 +625,9 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     expect(await readableIds(org.orgId, subjects.denyOnly!)).toEqual([]);
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // 4. §8.3 hazard: A `role_bindings.effect` THAT IS NEITHER 'allow' NOR 'deny'.
-  //    `role_bindings_effect_check` (drizzle/0096) refuses one at the database now; these rows are
-  //    built through `insertMalformedEffectRoleBinding`, which reproduces the only way one can
-  //    still exist — pre-dating the constraint, in a restored dump. See `bindRaw` above.
-  // ---------------------------------------------------------------------------------------------
+  // A binding effect that is neither allow nor deny. See docs/authz.md §12.
 
-  /**
-   * `hasPermission` classifies in JS — `effects.includes('deny')`, then `effects.includes('allow')`
-   * — so ANY other string grants nothing and denies nothing. A filter written `effect <> 'deny'`
-   * mirrors that function while being strictly LOOSER than it: the same row that is refused at
-   * get-by-id would hand over a whole subtree on every list door.
-   *
-   * ⚠️ MUTATION-PROVEN (header table): `partitionReadableRoots`'s `effect === "allow"` relaxed to
-   * `effect !== "deny"` fails both cases here and the invariant test.
-   *
-   * `''` is covered as well as `'ALLOW'` deliberately: `<> 'deny'` and `= 'allow'` differ on EVERY
-   * other string, and the empty string is the one a bad migration default or a truncated write
-   * produces, where `'ALLOW'` is the one a human types.
-   */
+  /** `hasPermission` classifies in JS. See docs/authz.md §13. */
   it("a malformed effect grants NOTHING — 'ALLOW' and '' alike, upward and downward", async () => {
     for (const [name, subject] of [
       ["ALLOW", subjects.malformedUpper!],
@@ -826,24 +654,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
   // 5. PAGINATION EXACTNESS — the property that disqualified per-row post-filtering (§8.2).
   // ---------------------------------------------------------------------------------------------
 
-  /**
-   * §8.2 rejected per-row post-filtering on PAGINATION, not on cost: every list repo is
-   * keyset-paginated with `.limit(query.limit + 1)` and derives `nextCursor` from the last
-   * UNFILTERED row, so a filter applied to the returned page is applied AFTER the LIMIT. Measured
-   * on a 20,910-object estate: an assembly-bound principal's 5 readable components at cursor ranks
-   * 97/140/254/339/440 of 18,500 give ONE row on page 1 and ZERO on pages 6 through 185, each
-   * carrying a valid `nextCursor`, while 27 of 30 `apps/web` list call sites fetch exactly one page.
-   *
-   * "The subject sees only their subtree" does NOT catch that — it passes on one small page. These
-   * are the assertions that separate a query-side filter from a post-filter:
-   *
-   *   - a page that carries a `nextCursor` is FULL;
-   *   - no page is empty while promising more;
-   *   - the walk terminates, and returns each readable row exactly once.
-   *
-   * 12 readable components interleaved 2:1 with 6 unreadable ones at `limit=5` — so no page is
-   * homogeneous, and the last page is deliberately SHORT (2 rows) with a null cursor.
-   */
+  /** §8.2 rejected per-row post-filtering on PAGINATION, not on cost. See docs/authz.md §14. */
   it("readable rows paginate exactly: full pages, honest cursor, no empty page with a nextCursor", async () => {
     const seen: string[] = [];
     let cursor: string | undefined;
@@ -878,42 +689,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
   // 6. §8.3 hazard: DOWNWARD TRUNCATION. Its own org, because the estate has to be ILLEGAL.
   // ---------------------------------------------------------------------------------------------
 
-  /**
-   * ================================================================================================
-   * WHAT WAS DECIDED, AND WHAT THIS PINS
-   * ================================================================================================
-   * ADR-0037 converts an untrustworthy UPWARD refusal at depth > `CONTAINMENT_WALK_MAX_DEPTH` into
-   * a loud `walkDepthExceeded` (409). Downward there is no such conversion and — per
-   * `authz/readable-scope.ts`'s decision block — deliberately none: a row past the bound is simply
-   * absent from the list. §8.3 warns that the two walks disagreeing SILENTLY is the failure mode,
-   * so the decision is pinned here rather than left as prose.
-   *
-   * WHAT THE TWO DIRECTIONS ACTUALLY DO, measured below:
-   *
-   *   - MEMBERSHIP AGREES. Both walks are bounded by the same constant with the same `depth <`
-   *     shape, so `descend(root)` and `scopeExpand(object)` truncate at exactly the same hop count:
-   *     a row 10 hops below its binding is readable BOTH ways, and a row 11 hops below is refused
-   *     BOTH ways. There is no row the list hides that get-by-id would have handed over.
-   *   - ONLY LOUDNESS DIFFERS. At 11 hops the upward door answers **409**, not 200 and not 403,
-   *     because the refusal cannot be trusted; the list simply omits the row.
-   *   - THE ORG-ROOT PRINCIPAL — the one who can actually repair such a row — short-circuits to
-   *     `null` and still sees it, exactly as today.
-   *
-   * ================================================================================================
-   * WHY THIS ORG IS BUILT PARTLY BY HAND, AND WHY IT IS A SEPARATE ORG
-   * ================================================================================================
-   * A live row past the bound CANNOT be created through the API: `assertContainmentDepthAdmits`
-   * refuses it at all three write doors, on create AND on move (`containment-depth-doors.
-   * integration.test.ts` is that door's own gate). It exists in exactly two ways — a federation
-   * import, which is carved out because the receiver does not referee a peer-authored containment,
-   * and legacy rows predating ADR-0037. So the last two links are planted with a direct `UPDATE`,
-   * the same "no API can write this, which is the hazard" exception the malformed-`effect` bindings
-   * take.
-   *
-   * It gets its OWN ORG because a past-the-bound row makes `hasPermission` THROW for every subject
-   * at that row — it is a property of the row's chain, not of the caller — which would take the
-   * object-by-object invariant test above with it.
-   */
+  /** Depth beyond the bound is loud upward, and what that pins. See docs/authz.md §15. */
   describe("a row past CONTAINMENT_WALK_MAX_DEPTH (the federated/legacy estate)", () => {
     let deepOrg: TestOrg;
     let chain: string[];
@@ -996,27 +772,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
       );
     });
 
-    /**
-     * ================================================================================================
-     * `?scopeObjectId=` RE-SEEDS THE BOUND — the one case where the hint is NOT a subset
-     * ================================================================================================
-     * `authz/list-door-scope.ts` documents the hint as "a narrowing of your own results, never a
-     * widening", justified by "every row below the hint is below your allow root too". That holds
-     * for membership and FAILS for the BOUND, because both descends are bounded
-     * `CONTAINMENT_WALK_MAX_DEPTH` FROM THEIR OWN SEED: a hint `k` hops below the allow root pushes
-     * the horizon `k` hops deeper.
-     *
-     * This is the truncation case the three tests above do not reach — they all measure the UNHINTED
-     * filter. Measured here instead of argued: the binding is at hop 1, the hint at hop 3, and the
-     * hop-12 row that "must be absent from the list" two tests up comes BACK when the hint is
-     * supplied, because it is 9 hops below the hint and 11 below the binding.
-     *
-     * TOLERATED, NOT FIXED — the same trade `readable-scope.ts`'s decision block already takes:
-     * unreachable on a legally-built estate (every write door keeps live rows within the bound of
-     * the org root), and where it does fire the extra rows are inside the caller's OWN allow subtree
-     * and answer 409 rather than 200 at get-by-id. Pinned so that changing it later — by
-     * intersecting the two descends, say — is a red test and a deliberate act.
-     */
+    /** `?scopeObjectId=` RE-SEEDS THE BOUND. See docs/authz.md §16. */
     it("a hint re-seeds the bound: the hinted list is NOT a subset of the unhinted one", async () => {
       const pastBound = chain[CONTAINMENT_WALK_MAX_DEPTH + 1]!;
       const hint = chain[2]!; // hop 3 — two hops below the binding at hop 1.
@@ -1053,7 +809,6 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
       ).toBe(true);
       expect(hinted.has(chain[0]!), "control: the hint excludes rows ABOVE it").toBe(false);
 
-      // The exception itself.
       expect(unhinted.has(pastBound), "unhinted: 11 hops below the binding, past the bound").toBe(
         false
       );

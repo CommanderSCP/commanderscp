@@ -44,50 +44,9 @@ import {
   type ReadTreeAtRefResult
 } from "@scp/git-provider-core";
 
-/**
- * `@scp/plugin-gitea` — the Gitea `ExecutorPlugin` (M15.1b, ADR-0014 follow-on to M15.1a's
- * `@scp/git-provider-core` extraction). This package is a **thin Gitea ADAPTER** over the same
- * provider-neutral core the github plugin is built on: everything provider-neutral (the
- * idempotency/dedup cache, the observe cursor protocol, correlation-hint normalization, the
- * dispatch-then-persist trigger dance, the `ExecutorPlugin` assembly) lives in
- * `@scp/git-provider-core`; everything Gitea-wire-specific lives here as a `GitProviderAdapter`.
- * The github adapter (`@scp/plugin-github`'s `githubAdapter`) is the reference implementation.
- *
- * GITEA-SPECIFIC WIRE FACTS (how this differs from github — the whole reason a separate adapter
- * exists rather than reusing githubAdapter):
- *   - AUTH is a Personal Access Token, sent `Authorization: token <PAT>` — NOT github's App-JWT →
- *     installation-token exchange. There is no JWT flow at all here.
- *   - BASE REST URL is `<instanceUrl>/api/v1` (a self-hosted instance host, not a fixed api.github.com).
- *   - Gitea Actions is deliberately GitHub-Actions-COMPATIBLE (`.gitea/workflows/*.yml`,
- *     `workflow_dispatch`), so the trigger(dispatch) → observe(runs) → status-phase logic MIRRORS
- *     github and REUSES the core; only the endpoint paths + auth header differ. See the
- *     LOAD-BEARING ASSUMPTION note below.
- *   - Webhook signatures are a BARE-HEX HMAC-SHA256 in `X-Gitea-Signature` (NO `sha256=` prefix —
- *     the one place neither github's verifier nor the server's generic `sha256=<hex>` verifier
- *     works), so this package ships its own verifier (`verifyGiteaWebhookSignature`).
- *   - Gitea run status is a SINGLE enum (`success`/`failure`/`cancelled`/…) that already encodes
- *     the conclusion, unlike github's split `status` + `conclusion` — so `mapGiteaStatusToPhase`
- *     switches on one field (passing `conclusion = null` through the core's two-arg hook shape).
- *   - observe() additionally surfaces PACKAGE/OCI pushes (Gitea's package registry), emitting
- *     `ExecutorEvent.correlation.artifactDigest` for image pushes — the registry-promotion
- *     correlation key (ADR-0013). github never populated `artifactDigest`; this is new here.
- *
- * LOAD-BEARING ASSUMPTION — CONFIRM WITH A LIVE DRILL (honest coverage note, mirrors the github
- * package's own "nightly live-sandbox proves wire fidelity" split): every request/response shape
- * below is exercised deterministically against `nock` fixtures built from Gitea's PUBLISHED REST
- * API docs (Swagger) — this package never talks to a real Gitea instance in its own suite. The
- * shapes marked `ASSUMED (Gitea Actions)` inline are the ones whose exact field names/paths are
- * version-dependent in Gitea and MUST be confirmed against a real running Gitea before this
- * executor is trusted in production: specifically (1) the workflow-dispatch path returning 204,
- * (2) the runs-list response carrying a `workflow_runs[]` array, and (3) the single-run status GET.
- * The auth header, `/api/v1` base, packages-list shape, and bare-hex webhook signature are NOT
- * assumptions — those are documented and stable. Nothing here is fabricated; where a shape is
- * uncertain it is flagged as an assumption rather than invented.
- */
+/** `@scp/plugin-gitea` — the Gitea `ExecutorPlugin`. See docs/plugins.md §145. */
 
-// -------------------------------------------------------------------------------------------
 // Config + auth (Personal Access Token — `Authorization: token <PAT>`)
-// -------------------------------------------------------------------------------------------
 
 export interface GiteaConfig {
   /** The Gitea instance base URL, e.g. `https://gitea.example.com` (NO trailing slash, NO
@@ -101,7 +60,6 @@ export interface GiteaConfig {
   serverUrl?: string;
   owner: string;
   repo: string;
-  /** `SecretsAccessor` key holding the Personal Access Token. */
   tokenSecretKey?: string;
   /** Fallback for tests/fixtures only — a plaintext PAT in config (never used in production; real
    *  deployments must use `tokenSecretKey`). */
@@ -167,12 +125,7 @@ async function giteaApiHeaders(
   };
 }
 
-/**
- * `maxResponseBytes` defaults to {@link DEFAULT_API_RESPONSE_MAX_BYTES} — bounding EVERY call
- * through this function, not just `readFileAtRef`'s (M21.2 review MAJOR 5's fix, applied to the
- * one funnel every Gitea REST call in this adapter goes through). `readGet`'s contents fetch
- * overrides it with the tighter, decode-bound-derived ceiling from `resolveMaxResponseBytes`.
- */
+/** The response ceiling defaults so every call is bounded. See docs/plugins.md §146. */
 async function api(
   ctx: PluginContext,
   config: GiteaConfig,
@@ -195,16 +148,9 @@ async function api(
   return { status: response.status, body: response.body, headers: response.headers ?? {} };
 }
 
-// -------------------------------------------------------------------------------------------
 // Webhook signature verification (fail-closed) — Gitea's BARE-HEX X-Gitea-Signature.
-// -------------------------------------------------------------------------------------------
 
-/** Gitea signs webhook deliveries as an HMAC-SHA256 of the RAW request body, emitted as a **bare
- *  hex string** in `X-Gitea-Signature` — with NO `sha256=` prefix (this is the concrete reason the
- *  github verifier and the server's generic `sha256=<hex>` verifier both fail against Gitea, and
- *  why this dedicated verifier exists). Verification MUST run against the raw bytes, never a
- *  re-serialized JSON round-trip (whitespace/key-order differences break the HMAC). `timingSafeEqual`
- *  throws on a length mismatch, which we treat as "signature mismatch" — fail-closed either way. */
+/** Gitea signs deliveries as a bare hex HMAC of the raw body. See docs/plugins.md §147. */
 export function verifyGiteaWebhookSignature(
   rawBody: Buffer,
   signatureHeader: string | undefined,
@@ -225,18 +171,9 @@ export function verifyGiteaWebhookSignature(
   }
 }
 
-/** Gitea's populated shape of the provider-neutral `GitProviderEventHint`. */
 export type GiteaEventHint = GitProviderEventHint;
 
-/**
- * Maps a Gitea webhook event name + payload to a correlation hint (null = ignore). Gitea's webhook
- * payloads are largely GitHub-shaped for the git events (`push`/`pull_request`/`release`), with its
- * own `package` event for registry pushes. Only the events a `source_mappings` correlation cares
- * about are recognized; anything else yields `null` (ignored, not an error).
- *
- * `package` (Gitea's registry publish event) carries `package.name`/`package.version`/`package.type`;
- * for a container package a `sha256:`-shaped version IS the artifact digest (see `pollPackages`).
- */
+/** Maps a Gitea webhook event name + payload to a correlation hint. See docs/plugins.md §148. */
 export function mapGiteaWebhookEventToHint(
   eventName: string,
   payload: unknown
@@ -293,15 +230,9 @@ export function mapGiteaWebhookEventToHint(
 // normalization, and verb assembly are provided by `@scp/git-provider-core`.
 // -------------------------------------------------------------------------------------------
 
-/**
- * ASSUMED (Gitea Actions) — a Gitea Actions run as returned by the runs-list / single-run
- * endpoints. Gitea aims for GitHub-Actions compatibility, but the EXACT field set is version-
- * dependent; the load-bearing fields this adapter reads are `id`, `status`, `head_sha`,
- * `html_url`, `created_at`. Gitea's run `status` is a SINGLE enum (no separate `conclusion`).
- */
+/** ASSUMED (Gitea Actions). See docs/plugins.md §149. */
 interface GiteaActionRun {
   id: number;
-  /** unknown|waiting|running|success|failure|cancelled|skipped|blocked (Gitea ActionRunStatus). */
   status: string;
   html_url?: string;
   head_sha?: string;
@@ -319,7 +250,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   // client-side — which makes reading only the first page worse here than on github, not better:
   // every commit past the page boundary is dropped and the cursor moves on regardless. Paginated
   // (Gitea spells it `page`/`limit`) under the same budget — see MAX_POLL_PAGES.
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ limit: String(POLL_PAGE_SIZE), page: String(page) });
     const { status, body } = await api(
@@ -347,25 +278,14 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
       });
     }
     if (commits.length < servedPageSize) break; // shorter than the SERVED page — the last page.
-    if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
+    if (sinceMs === undefined) break;
     const oldest = commits[commits.length - 1]?.commit?.author?.date;
     if (oldest && new Date(oldest).getTime() <= sinceMs) break;
   }
   return events;
 }
 
-/**
- * Page size and per-poll page ceiling for the list resources `observe()` polls, mirroring the
- * github adapter's constants of the same name (the defect and its bound are identical; each adapter
- * keeps its own copy because the query parameter NAMES differ per provider).
- *
- * POLL_PAGE_SIZE is what we ASK for, never what we get: Gitea clamps every list to `[api]
- * MAX_RESPONSE_ITEMS` (default 50) in `ListOptions.SetDefaultValues`, so a stock server answers
- * `limit=100` with 50. Ending the walk on a page shorter than the REQUESTED size therefore stops on
- * page 1 against every default install — the exact defect pagination was added to close — so each
- * loop learns the SERVED page size from page 1 and ends on a page shorter than that (or empty, or
- * at the budget). Same reasoning for any instance-configured ceiling on the sibling adapters.
- */
+/** Page size and per-poll page ceiling for the polls. See docs/plugins.md §150. */
 const POLL_PAGE_SIZE = 100;
 const MAX_POLL_PAGES = 5;
 
@@ -376,7 +296,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ limit: String(POLL_PAGE_SIZE), page: String(page) });
     const { status, body } = await api(
@@ -411,13 +331,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   return events;
 }
 
-/**
- * ASSUMED shape is minimal here — a Gitea package (registry) list item. `GET /packages/{owner}` is
- * documented + stable; the fields read (`name`, `version`, `type`, `created_at`, `repository`) are
- * from the published Package model. For a container package a `sha256:`-shaped `version` IS the
- * OCI manifest digest — that (and ONLY that) is surfaced as `artifactDigest`; a tag-shaped version
- * is surfaced as a `correlationKey` and `artifactDigest` is left undefined (never fabricated).
- */
+/** ASSUMED shape is minimal here. See docs/plugins.md §151. */
 interface GiteaPackage {
   type?: string;
   name?: string;
@@ -597,27 +511,7 @@ function giteaCapabilities(): ExecutorCapabilities {
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)) — reading a file BODY, which neither this
-// package nor github's could do before. `discover()` below hits the same contents route but reads
-// only `entry.name`/`entry.type` off a directory listing; it never decodes a blob.
-//
-// GITEA WIRE FACTS: Gitea's contents API is deliberately GITHUB-COMPATIBLE, which is why this
-// mirrors the github adapter's two-step shape rather than inventing one —
-//   - `GET /api/v1/repos/{owner}/{repo}/contents/{filepath}?ref={ref}` returns, for a blob, a
-//     `ContentsResponse` with `type: "file"`, `encoding: "base64"`, `size`, `content`, and `sha`
-//     (the BLOB sha, same as github — NOT a commit sha). A directory returns an ARRAY.
-//   - The commit a ref resolves to comes from `GET /api/v1/repos/{owner}/{repo}/commits?sha={ref}
-//     &limit=1`, the SAME documented, stable list-commits endpoint `pollCommits` above already
-//     uses — the first element's `sha`. This is preferred over the contents response's
-//     `last_commit_sha` field on two grounds: `last_commit_sha` means "last commit that TOUCHED
-//     THIS FILE", which is a different fact from "what the ref resolved to" (so using it would make
-//     gitea's `commitSha` mean something else than github's and gitlab's), and it is a
-//     comparatively recent addition whose presence varies by Gitea version.
-//
-// Everything else — the decode bound, the base64/UTF-8 gates, the redirect and egress-guard
-// classifiers — comes from `@scp/git-provider-core`, so all three providers refuse identically.
-// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)). See docs/plugins.md §152.
 
 /** A Gitea `ContentsResponse` for a FILE path — GitHub-compatible field names; `sha` is the blob. */
 interface GiteaContentFile {
@@ -629,14 +523,7 @@ interface GiteaContentFile {
   path?: string;
 }
 
-/** A single authenticated GET on the read path. Same two folded-in failure modes as the github
- *  adapter's `readGet`: a 3xx arriving as a STATUS is refused with an explanation by
- *  `assertNoRedirect`, and anything thrown by `ctx.http.request` is re-thrown by
- *  `wrapProviderRequestError` naming whether it was a refused redirect (`redirect: "error"`,
- *  subprocess-entry.ts:285,295) or an egress-guard denial. The egress case matters MORE here than
- *  for github: a Gitea instance is self-hosted by definition, and `gitea` is deliberately not in
- *  `OPERATOR_PLANE_MODULES` (subprocess-entry.ts:210-215), so an in-cluster Gitea on a private
- *  address is blocked. That control is not weakened here — only explained. */
+/** A single authenticated GET on the read path. See docs/plugins.md §153. */
 async function readGet(
   ctx: PluginContext,
   config: GiteaConfig,
@@ -653,15 +540,7 @@ async function readGet(
   }
 }
 
-/**
- * What resolving a ref costs a caller: either a commit sha, or a minimal not_found shape — deliberately
- * NARROWER than `ReadFileAtRefNotFound`/`ReadTreeAtRefNotFound` (`missing` is always `"ref"` here,
- * never `"path"`/`"unknown"`, since resolving a ref cannot fail any other way) so each caller can
- * widen it into its OWN result shape (one carries `path`, the batch does not) without a cast.
- * Shared between `readFileAtRef` (one file) and `readFilesAtRef` (a whole batch reads ONE
- * resolution and re-uses it — ADR-0030's `(repo, path, ref)` identity is per FILE, but the commit
- * a batch is read AT is one shared fact, the same way `ReadTreeAtRefFound.commitSha` says).
- */
+/** What resolving a ref costs a caller. See docs/plugins.md §154. */
 type RefResolution =
   | { outcome: "resolved"; commitSha: string }
   | { outcome: "not_found"; missing: "ref"; detail: string };
@@ -801,14 +680,7 @@ async function readFileAtRef(
   assertSafeRepo("gitea", repo, 2);
   assertSafeRepoPath("gitea", request.path);
   assertSafeRef("gitea", request.ref);
-  // `repo` reaches the routes below UNENCODED, deliberately — same call as the github adapter
-  // makes, for the same reason. `encodePathSegments(repo)` was a provable IDENTITY given
-  // `assertSafeRepo`'s `[A-Za-z0-9._-]` charset (all URL-unreserved): a call that READ as the
-  // control while the assert above was the entire control, and that no test could tell apart from
-  // its own deletion. The coupling it claimed to defend (a later relaxation of `REPO_SEGMENT`
-  // letting an un-encoded repo reach a URL) is pinned where that charset lives — git-provider-core
-  // read-file.test.ts's "every character assertSafeRepo accepts is URL-identity" test. `path` and
-  // `ref` below still encode for real; their charsets do contain characters needing an escape.
+  // `repo` reaches the routes below UNENCODED, deliberately. See docs/plugins.md §155.
   const repoPath = repo;
 
   const resolution = await resolveGiteaRefToCommit(
@@ -836,14 +708,7 @@ async function readFileAtRef(
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. Gitea's own
-// tree listing is GITHUB-COMPATIBLE: `GET /repos/{o}/{r}/git/trees/{sha}?recursive=true` returns
-// EVERY entry in ONE response (no page/per_page for the recursive form), capped by Gitea's own
-// internal ceiling and flagged `truncated: true` if it hit that ceiling — there is no follow-up
-// page to ask for, so a truncated response is refused here as `maxEntriesScanned` rather than
-// silently matching only what arrived.
-// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12). See docs/plugins.md §156.
 
 interface GiteaTreeEntry {
   path?: string;
@@ -951,11 +816,7 @@ async function readFilesAtRef(
   return { outcome: "found", requestedRef: request.ref, commitSha, files };
 }
 
-/** observe() for gitea layers package/OCI pushes on top of the core's commits+runs poll — the core
- *  factory's built-in observe only calls `pollCommits`+`pollRuns`, so we assemble the plugin from
- *  the adapter and then WRAP `observe` to also fold in `pollPackages`. Everything else (trigger/
- *  status/abort/describeCapabilities) is the core's assembly untouched. `readFileAtRef` is an
- *  adapter-only hook (ADR-0032 §9) — the factory never turns it into a fifth executor verb. */
+/** Layers package pushes on top of the core commits and runs. See docs/plugins.md §157. */
 export const giteaAdapter: GitProviderAdapter = {
   sourceKind: "gitea",
   authorize: (ctx) => giteaApiHeaders(ctx, asConfig(ctx.config)),
@@ -993,27 +854,8 @@ export function createGiteaExecutorPlugin(): ExecutorPlugin {
   return giteaExecutorPlugin;
 }
 
-// -------------------------------------------------------------------------------------------
-// DiscoveryPlugin (M15.3a — port of github's discover(); DESIGN §11/§12 — "repo/topology scan
-// proposing Service/Component objects and source_mappings"; NEVER auto-commits, only proposes).
-// Reuses this package's own `GiteaConfig`/`api()` — Gitea's contents API is GitHub-COMPATIBLE at
-// `<baseUrl>/api/v1/repos/{owner}/{repo}/contents/{path}` (same response entry shape), so the
-// marker-file topology walk is identical to github's; only the `sourceKind` differs. The discovered
-// `sourceMapping.sourceKind` is `'gitea'` — matching the gitea EXECUTOR's `source_kind` (the
-// `giteaAdapter.sourceKind` above) so an accepted component's `source_mappings` row actually
-// correlates observed gitea events (push/run/package). This closes the observe-correlation gap for
-// gitea: without a gitea-kinded source_mapping, pulled gitea events correlate against nothing.
-//
-// NOTE (follow-up): github's discover omits `sourceMapping.type`, so it defaults to `'configuration'`
-// server-side; this increment keeps that same default for gitea rather than inferring `'image'` for
-// container-registry-backed components. Inferring type from the marker set (e.g. a Dockerfile → an
-// image source) is a deliberate LATER increment. Generalizing this walk into `@scp/git-provider-core`
-// (a `discover` hook on `GitProviderAdapter`) is also deferred until a second git provider needs it —
-// two impls (github + gitea) now exist, so that extraction is the natural next step, but it is NOT
-// this PR's scope.
-// -------------------------------------------------------------------------------------------
+// Discovery: a port of the GitHub adapter's scan. See docs/plugins.md §158.
 
-/** A Gitea contents-API entry — GitHub-compatible shape (`name`/`path`/`type`). */
 interface RepoContentEntry {
   name: string;
   path: string;
@@ -1094,10 +936,6 @@ export const giteaDiscoveryPlugin: DiscoveryPlugin = { discover };
 export function createGiteaDiscoveryPlugin(): DiscoveryPlugin {
   return giteaDiscoveryPlugin;
 }
-
-// -------------------------------------------------------------------------------------------
-// Manifest
-// -------------------------------------------------------------------------------------------
 
 // `baseUrl` is intentionally NOT in `required` (M15.3b): a Mode-A `kind=gitea` execution-system
 // binding supplies the base URL as the injected `serverUrl` fallback instead. `owner`/`repo` stay

@@ -4,24 +4,7 @@ import { UpdateFederationPeerRequestSchema } from "@scp/schemas";
 import type { FederationPeer, UpdateFederationPeerRequest } from "@scp/schemas";
 import { ScpApiError } from "@scp/sdk";
 
-/**
- * M16.2 phase B (B2) — THE SETTINGS FORM WRITES THROUGH THE KEYLESS DOOR, on every PR.
- *
- * THE DEFECT THIS PREVENTS. `POST /federation/peers` REQUIRES `publicKey` and treats a DIFFERENT
- * value as a KEY ROTATION: it supersedes the peer's current key window and hard-revokes the old key
- * at the applied-sequence anchor. A settings form that reads a peer, changes one field and re-pairs
- * therefore rotates that peer's trust anchor — with a 200, and no signal anywhere. Phase A built
- * `PATCH /v1/federation/peers/{id}` (structurally keyless) for this form; this file pins that the
- * form actually uses it.
- *
- * THE OTHER HALF OF THE PROOF is server-side, in
- * `apps/server/src/federation/peer-patch.integration.test.ts` ("B2: the WHOLE settings-form save …"),
- * which sends this form's full field set against a real Postgres and asserts `federation_peer_keys`
- * is byte-identical afterwards: no new window row, the existing row's `superseded_at` still NULL. The
- * two halves meet at `PEER_SETTINGS_PATCH_KEYS`, asserted below to be a subset of the PATCH body's
- * own schema — so the field set this form can send is checked against the contract rather than
- * against a comment.
- */
+/** The settings form writes through the keyless door. See docs/web.md §395. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -89,7 +72,6 @@ describe("peer settings: the body can only carry transport fields", () => {
     const { patch } = await savePeerSettings(doors, peer, draft);
 
     expect(doors.updatePeer).toHaveBeenCalledTimes(1);
-    // THE ASSERTION THIS FILE EXISTS FOR.
     expect(doors.pair).not.toHaveBeenCalled();
 
     const [sentId, sentBody] = doors.updatePeer.mock.calls[0]!;
@@ -177,11 +159,7 @@ describe("peer settings: the rendered form", () => {
     );
   }
 
-  /** The text an operator actually reads — every tag stripped out (so a match cannot be satisfied by
-   *  an attribute or a `title` tooltip instead of the visible copy), the apostrophe entity
-   *  `renderToStaticMarkup` emits for a literal `'` decoded back (so an assertion can be written the
-   *  way the copy is actually read), and whitespace collapsed (tag stripping otherwise leaves doubled
-   *  spaces at every element boundary, e.g. around <strong>). */
+  /** The text an operator actually reads. See docs/web.md §396. */
   function visibleText(html: string): string {
     return html
       .replace(/<[^>]*>/g, " ")
@@ -269,25 +247,7 @@ describe("peer settings: the rendered form", () => {
   });
 });
 
-/**
- * Y4 — THE X7 CLASS, CLOSED FOR `syncScope`.
- *
- * `syncScope` is required-not-optional on `FederationPeer` and BEFORE ADR-0023 the SDK validated no
- * response, so `peer.syncScope.mode` was a bare dereference of a promise nothing enforced at
- * runtime — the same read that white-screened the outposts pages. Here it would kill the Settings
- * card, which is the only door an operator has to fix the peer whose response is malformed.
- *
- * SINCE ADR-0023 a body omitting `syncScope` no longer reaches this card through
- * `client.federation.status()` — it rejects at the SDK boundary and `/federation` renders the
- * diagnosis (`federation-status-crash.test.tsx` pins that). These cases drive the COMPONENT
- * directly, which is the only level at which the guard itself — as opposed to the boundary in front
- * of it — can be pinned, and the level that still decides what happens for any other source of a
- * peer (a cached snapshot, a future unspec'd feed).
- *
- * The guard must not become the OTHER failure: substituting a default mode would tell the operator
- * the peer exports everything, and — since the patch builder omits an UNCHANGED mode — a form left
- * alone would keep whatever the real scope is while displaying a different one.
- */
+/** Y4 — THE X7 CLASS, CLOSED FOR `syncScope`. See docs/web.md §397. */
 describe("Y4: a peer whose response omits `syncScope` neither crashes nor invents a scope", () => {
   /** A peer with the `syncScope` KEY DELETED, as a server predating the field would send it. */
   function peerWithoutSyncScope(): FederationPeer {

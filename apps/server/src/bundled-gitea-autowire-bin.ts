@@ -1,34 +1,4 @@
-/**
- * Bundled Gitea auto-wire entrypoint (M15.1c — the "zero token plumbing" step of Mode B for the
- * default bundled registry, ADR-0012). `deploy/helm`'s bundled-gitea-autowire Job runs exactly
- * `node dist/bundled-gitea-autowire-bin.js` as a Helm `post-install,post-upgrade` hook when
- * `bundledExecutor.gitea.enabled`. It mints a SCOPED (never admin) Gitea API token — least-
- * privilege scopes, only what a coordinator needs to push code + packages — and stores it in SCP's
- * encrypted secret store so an operator can bind any graph object to a git-provider / registry
- * executor with `--secret-refs '{"tokenSecretKey":"<key>"}'` and no manual token creation.
- *
- * Mirrors bundled-argocd-autowire-bin.ts. Why a DB-seed bin (like migrate-bin.ts) rather than the
- * public API: this is INSTALL-TIME bootstrap plumbing, run by the operator's `helm install` (not by
- * scpd at runtime), so it uses the same admin `DATABASE_URL` + `SCP_SECRETS_MASTER_KEY` the
- * migrations Job already uses — no bootstrap PAT chicken-and-egg. It never holds Gitea's admin
- * password at runtime: it reads the SCP-generated admin secret once, basic-auths to mint a SCOPED
- * token, and stores only that token — exactly what the credential-asymmetry invariant permits.
- *
- * Idempotent: re-running (e.g. a `helm upgrade`) DELETEs any pre-existing token of the same name
- * (Gitea rejects a duplicate token NAME with HTTP 400) and re-mints, then overwrites the stored
- * token. The per-object executor BINDING is deliberately NOT seeded here — bindings attach to a
- * graph object the operator creates later; the value delivered here is that the token already
- * exists, so the bind is a single command with no token step.
- *
- * Env contract (all injected by the Helm hook Job):
- *   SCP_GITEA_SERVER_URL         in-cluster Gitea API base (http, behind NetworkPolicy), e.g.
- *                                http://scp-gitea-http.scp-gitea.svc:3000
- *   SCP_GITEA_ADMIN_SECRET_NS    namespace of the SCP-generated Gitea admin secret (scp-gitea)
- *   SCP_GITEA_ADMIN_SECRET_NAME  gitea-admin-secret (keys: username, password)
- *   SCP_GITEA_TOKEN_NAME         the name to give the minted token (scp-coordinator)
- *   SCP_GITEA_TOKEN_SECRET_KEY   the SCP secret key to store the token under
- *   DATABASE_URL, SCP_SECRETS_MASTER_KEY   admin DB + master key (same as migrate-bin)
- */
+/** Bundled Gitea auto-wire entrypoint. See docs/server.md §29. */
 import { readFile } from "node:fs/promises";
 import { eq } from "drizzle-orm";
 import { loadConfig } from "./config.js";

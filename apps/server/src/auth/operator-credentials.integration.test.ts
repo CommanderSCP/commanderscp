@@ -8,26 +8,11 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * INSTANCE-TIER CREDENTIALS — role-model.md §5 step 9 / §3B
- * ================================================================================================
- *
- * Replaces the single shared `SCP_OPERATOR_TOKEN` with named, hashed, individually revocable,
- * optionally expiring credentials.
- *
- * THE PROPERTY THAT MATTERS MOST IS THE ONE A HAPPY-PATH TEST MISSES: a credential that has been
- * revoked, or has expired, must stop opening doors — not the door that minted it, but the REAL
- * instance-tier doors whose blast radius is the whole deployment. So the tests below drive
- * `PUT /api/v1/instance/governance-move-rung`, an actual operator surface, rather than only the
- * credential CRUD. A credential API that mints correctly and is not consulted by anything is the
- * "built, never installed" defect wearing a security feature's name.
- */
+/** A revoked or expired credential must stop opening the door. See docs/auth.md §31. */
 describe("instance operator credentials (role-model.md §5 step 9)", () => {
   let server: TestServer;
   let org: TestOrg;
   let admin: pg.Client;
-  /** The bootstrap env token the harness configures. */
   let bootstrapToken: string;
 
   const RUNG_URL = "/api/v1/instance/governance-move-enforcement";
@@ -262,13 +247,7 @@ describe("instance operator credentials (role-model.md §5 step 9)", () => {
       }
     });
 
-    // THE ESCALATION THIS CLOSES. `scp_app` must stamp `last_used_at` on the request path, so it
-    // needs UPDATE — and a BLANKET update grant would let anything running as the request-serving
-    // role clear `revoked_at` and bring a revoked credential back to life, which is exactly the
-    // capability this table exists to provide. The grant is therefore column-scoped.
-    //
-    // Asserted as `scp_app` specifically, because the harness's ordinary connection is the
-    // Testcontainers SUPERUSER, which bypasses grants and RLS and would make this pass vacuously.
+    // THE ESCALATION THIS CLOSES. See docs/auth.md §32.
     const app = new pg.Client({ connectionString: server.deps.config.runtimeDatabaseUrl });
     await app.connect();
     try {

@@ -11,38 +11,8 @@ import {
 } from "../test-support/harness.js";
 import { startCliSession } from "../test-support/cli-runner.js";
 
-/**
- * BUILD_AND_TEST.md §8 M1 DoD (d): "audit chain verifies (via the `scp audit verify` path)
- * after 10,000 mixed writes". Writes go straight through the repo layer (graph/objects-repo.ts,
- * graph/relationships-repo.ts) — each call is its own `withTenantTx` transaction, exactly like a
- * real API request, just without 10,000 real HTTP round trips — so this is still exercising the
- * production write path (and its per-org advisory-lock chain serialization) end to end.
- * Verification itself goes through the real `scp` CLI binary against the real API, per the DoD
- * wording ("via the scp audit verify path").
- */
-/**
- * WRITERS IN FLIGHT AT ONCE. Each write is still its own `withTenantTx` transaction through the
- * production repo layer — what changes is only that the TEST stops idling on a round trip between
- * every one of them, and that is why this is a flakiness fix rather than a speed-up.
- *
- * 10,000 strictly sequential writes make this test's runtime a measure of per-round-trip LATENCY:
- * ~8 round trips each (BEGIN, `SET LOCAL ROLE`, `set_config`, the chain's `pg_advisory_xact_lock`,
- * the tail SELECT, the row INSERT, the audit INSERT, COMMIT), all of them blocking, none of them
- * overlapping. Latency is exactly what degrades when the suite runs 4 forks wide on a busy box, so
- * a fixed wall-clock budget over that shape is a throughput assertion nobody meant to write —
- * measured on 2026-08-17 as 125s passing and 181s timing out against a 180s budget, on unmodified
- * main, with no code change in between.
- *
- * With writers in flight the serialized floor is the part `appendAuditEvent` holds the per-org
- * advisory lock for (lock -> tail read -> audit insert -> COMMIT) and everything else overlaps, so
- * the run is bounded by work the SERVER does rather than by how promptly this process is scheduled
- * to issue its next statement. 8 sits under `pg.Pool`'s default max of 10.
- *
- * IT ALSO STRENGTHENS THE TEST, which is the reason to prefer it over simply enlarging the budget:
- * `appendAuditEvent`'s advisory lock exists precisely so that CONCURRENT writers cannot observe a
- * stale tail and fork the chain, and until now every one of these 10,000 appends was sequential —
- * the serialization was never actually put under contention by the test that verifies the chain.
- */
+/** BUILD_AND_TEST.md §8 M1 DoD (d). See docs/audit.md §1. */
+/** WRITERS IN FLIGHT AT ONCE. See docs/audit.md §2. */
 const WRITER_CONCURRENCY = 8;
 
 /** Runs `worker(0..count-1)` with at most {@link WRITER_CONCURRENCY} in flight. Index-addressed
@@ -175,11 +145,7 @@ describe("audit chain: 10,000 mixed writes", () => {
         })
       );
 
-      // Directly corrupt a row as the admin/superuser connection — the append-only guard trigger
-      // (drizzle/0002_rls_rbac_seed.sql) blocks UPDATE unconditionally, so the trigger has to be
-      // disabled first; this simulates an attacker with raw filesystem/superuser access to the
-      // database, which is exactly the threat model the hash chain (not the trigger alone)
-      // defends against.
+      // Directly corrupt a row as the admin/superuser connection. See docs/audit.md §3.
       const admin = new pg.Client({ connectionString: testDatabaseUrl() });
       await admin.connect();
       await admin.query("ALTER TABLE audit_events DISABLE TRIGGER audit_events_no_update_delete");

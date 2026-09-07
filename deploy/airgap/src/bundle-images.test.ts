@@ -15,21 +15,7 @@ import { renderOfflineInstallDoc } from "./offline-install-doc.js";
 import { run } from "@scp/cosign";
 import type { BundleImage } from "./types.js";
 
-/**
- * The gate behind M21.7 item 1: for two releases the air-gap bundle carried ONE of the product's
- * three managed-execution runner images. `scp-runner-scan` (M13.3b) and `scp-runner-dep` (M21.5)
- * were built by `apps/runner-*`, published by `publish-images.yml`, referenced by
- * `deploy/helm/values.yaml` — and absent from every bundle, so on a disconnected install those two
- * executors had no image to run. Charter principle 5 makes air-gap first-class.
- *
- * The PROPERTY that allowed it: nothing enumerated the class "runner images the product ships", so
- * the bundle's list and the repo's runners could disagree indefinitely and no test could notice.
- * These assertions close the class rather than the two instances — a fourth runner added under
- * `apps/` and left out of the bundle fails here on its first CI run.
- *
- * Deliberately NOT asserted anywhere below: a COUNT of images, or their ORDER. Both would go green
- * on the wrong list. Every assertion names the specific image it is about.
- */
+/** The gate behind M21.7 item 1. See docs/airgap.md §2. */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(HERE, "..");
@@ -41,12 +27,7 @@ const TSX_BIN = path.join(PACKAGE_ROOT, "node_modules", ".bin", "tsx");
 const bundledNames = BUNDLE_IMAGE_SPECS.map((s) => s.name);
 
 describe("every runner image the repo builds is carried by the bundle", () => {
-  /**
-   * The census is taken from the FILESYSTEM, not from a list in this file: `apps/runner-*` is the
-   * set of runner images that exist, and it is not something a change to `bundle-images.ts` can
-   * quietly shrink. (A filter here would be where the next missing runner hides — CLAUDE.md
-   * "Census by property, not by symptom".)
-   */
+  /** The census is taken from the filesystem, not a list here. See docs/airgap.md §3. */
   const runnerAppDirs = readdirSync(APPS_DIR, { withFileTypes: true })
     .filter((e) => e.isDirectory() && e.name.startsWith("runner-"))
     .map((e) => e.name)
@@ -88,22 +69,7 @@ describe("every runner image the repo builds is carried by the bundle", () => {
 });
 
 describe("build-bundle, run for real, carries what the canonical list says", () => {
-  /**
-   * THE WIRING PROOF. Everything above tests the LIST; this RUNS the entrypoint and reads the list
-   * it actually resolved. A `bundle-images.ts` that names all three runners while
-   * `build-bundle.ts` keeps a hardcoded array of its own is precisely the "component built, never
-   * installed" defect this repo keeps shipping, and only running the entrypoint can rule it out.
-   *
-   * IT RUNS `src/build-bundle.ts` UNDER tsx — NOT `dist/build-bundle.js`, which is what it used to
-   * do and which made the proof only as fresh as the last `tsc`. Under the exact command this
-   * package's README documents (`pnpm --filter @scp/airgap test` — vitest directly, NOT through
-   * turbo, so `dependsOn: ["build"]` never runs), a stale `dist/` passed while the source was
-   * broken: reverting `resolveImageSources` to a hardcoded three-image array and NOT rebuilding
-   * left this suite green. A wiring proof that can pass against a build nobody just made is not a
-   * proof of anything. Nothing is given up by driving the source: `dist/build-bundle.js` is `tsc`
-   * output of this exact file and of nothing else, and the `build`/`typecheck` tasks cover that
-   * compile step.
-   */
+  /** THE WIRING PROOF. See docs/airgap.md §4. */
   const runCli = (args: string[]): { name: string; source: string }[] => {
     if (!existsSync(TSX_BIN)) {
       throw new Error(
@@ -142,11 +108,7 @@ describe("build-bundle, run for real, carries what the canonical list says", () 
     expect(listed.map((l) => l.name).filter((n) => !bundledNames.includes(n))).toEqual([]);
   });
 
-  /**
-   * Every stem probed in ONE run, each with a ref unique to that stem: this proves the
-   * flag->image mapping is a bijection, which eleven separate single-flag runs would not — two
-   * stems that both wrote the same option key would each pass alone and only disagree here.
-   */
+  /** Every stem in one run, proving the mapping is a bijection. See docs/airgap.md §5. */
   const probed = runCli([
     "--list-images",
     ...BUNDLE_IMAGE_SPECS.flatMap((s) => [
@@ -171,13 +133,7 @@ describe("build-bundle, run for real, carries what the canonical list says", () 
 });
 
 describe("install.sh can address every bundled image by the shell stem manifest.sh emits", () => {
-  /**
-   * install.sh does not know any image's name: it loops over `$BUNDLE_IMAGE_NAMES` and derives
-   * each variable stem with `printf '%s' "$name" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_'`.
-   * manifest.ts derives the same stem with a JS regex. Two independent implementations of one rule,
-   * and the new names are the first to exercise a doubled hyphen path (`scp-runner-scan` ->
-   * SCP_RUNNER_SCAN), so they are checked by RUNNING the bash pipeline rather than by restating it.
-   */
+  /** install.sh does not know any image's name. See docs/airgap.md §6. */
   const images: BundleImage[] = BUNDLE_IMAGE_SPECS.map((spec, i) => ({
     name: spec.name,
     sourceRef: spec.defaultRef,
@@ -218,17 +174,7 @@ describe("install.sh can address every bundled image by the shell stem manifest.
     expect(sh).toMatch(/^SCP_RUNNER_DEP_DIGEST=/m);
   });
 
-  /**
-   * The M21.7 class, INVERTED. Above: an image the bundle carries that install.sh cannot address.
-   * Here: an image install.sh addresses that the bundle does not carry — the same disagreement
-   * from the other side, and the one that fails at 3am on a disconnected cluster with
-   * `SCP_RUNNER_X_DIGEST: unbound variable` under `set -u`.
-   *
-   * install.sh's verify/push loops are generic over `$BUNDLE_IMAGE_NAMES`, but its step-4 helm
-   * wiring necessarily names stems literally (each maps to a different chart value or env var).
-   * Those literals are read OUT OF THE REAL SCRIPT here rather than restated, so a stem added to
-   * install.sh without an image behind it fails on its first run.
-   */
+  /** The M21.7 class, INVERTED. Above. See docs/airgap.md §7. */
   it("every image stem install.sh names literally is a stem manifest.sh emits", () => {
     const installSh = readFileSync(
       fileURLToPath(new URL("../assets/install.sh", import.meta.url)),
@@ -252,22 +198,12 @@ describe("install.sh can address every bundled image by the shell stem manifest.
   });
 });
 
-/**
- * KNOB EXTRACTION, SHARED BY EVERY SURFACE THAT PRESCRIBES ONE.
- *
- * Hoisted out of the install.sh describe below because install.sh is not the only place that tells
- * an operator what to set: the SAME activation guidance is rendered into the bundled
- * `docs/OFFLINE_INSTALL.md` (`offline-install-doc.ts`), which `deploy/airgap/README.md` calls "the
- * one to actually read" and which ships INSIDE the bundle, on the far side of the gap. When only
- * install.sh was gated, the identical no-op instruction could be reintroduced in the doc and the
- * whole suite stayed green — measured. One definition, both surfaces.
- */
+/** KNOB EXTRACTION, SHARED BY EVERY SURFACE THAT PRESCRIBES ONE. See docs/airgap.md §8. */
 
 /** `SCP_MANAGED_SCAN_RUNNER_IMAGE=…` — an env var presented as something to set. */
 const envKnobs = (text: string): string[] => [
   ...new Set([...text.matchAll(/\b(SCP_[A-Z0-9_]+)=/g)].map((m) => m[1]!))
 ];
-/** `managedDep.runnerImage=…` / `postgres.evalInCluster.enabled=…` — a Helm values path. */
 const chartKnobs = (text: string): string[] => [
   ...new Set(
     [...text.matchAll(/\b([a-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+)=/g)].map((m) => m[1]!)
@@ -299,49 +235,15 @@ const definedChartValues = new Set([
   ...chartValuePaths("deploy/helm-bundled")
 ]);
 
-/**
- * The env vars the server actually reads — the one module all three managed classes read from.
- *
- * READ WITH COMMENTS STRIPPED, and that is the whole point of the check. MEASURED 2026-08-17: with
- * `runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE` commented out of that module, this file
- * stayed green at 87/87 — because the module also DOCUMENTS the variable in a doc comment eight
- * lines above the read ("SCP_MANAGED_DEP_RUNNER_IMAGE — the vetted, pinned `scp-runner-dep`
- * image…"). So "verify the lever, not just the signal" was verifying a third thing: the PROSE about
- * the lever. `@scp/source-census` exists so this package and `apps/server` share one reader rather
- * than each carrying a copy of the stripper.
- *
- * THE LIMIT, stated where the assertion is: stripping proves the module still MENTIONS the variable
- * in code. It cannot prove the value is used, reaches a runner, or is read on the path an operator's
- * compose install takes — `process.env.X` assigned to a field nobody consumes would satisfy every
- * assertion below. What proves the rest is `runner-image.integration.test.ts`, which launches the
- * runner for real.
- */
+/** The env vars the server actually reads. See docs/airgap.md §9. */
 const executorBindingsSource = (): string =>
   readStripped(path.join(REPO_ROOT, "apps/server/src/coordination/executor-bindings-repo.ts"));
 
 describe("every knob install.sh prescribes is a lever in the mode it prints it in", () => {
-  /**
-   * M21.7 item 1's follow-up defect, and the reason this whole describe exists: the block that
-   * tells an air-gapped operator how to switch on `scp-runner-scan` was printed ONLY under
-   * `--mode helm`, and named `SCP_MANAGED_SCAN_RUNNER_IMAGE`. Under helm the only lever an
-   * operator has is a chart value, and the chart has none for that env var (helm/README.md,
-   * "Still NOT settable"), so the instruction did nothing — silently, with no error, on the far
-   * side of an air gap where "it didn't take" is expensive to discover. An instruction that
-   * silently no-ops is worse than no instruction at all: it reads as coverage.
-   *
-   * The PROPERTY, not the instance: a knob is only real in the mode whose deployment mechanism can
-   * carry it. Chart values are levers under helm and mean nothing under compose; env vars on the
-   * `scp` service are levers under compose (and VM — `scp.platform`'s Ansible role runs install.sh
-   * with `--mode compose`) and mean nothing under helm. So both directions are asserted for both
-   * modes, over the text install.sh ACTUALLY PRINTS, extracted from the real script.
-   */
+  /** The scan-runner activation block was printed under one flag. See docs/airgap.md §10. */
   const installSh = readFileSync(path.join(PACKAGE_ROOT, "assets", "install.sh"), "utf8");
 
-  /**
-   * install.sh's step 4 is one top-level `if [[ "$MODE" == "helm" ]] ... else ... fi`; every
-   * nested `else`/`fi` inside it is indented, so slicing on the column-0 keywords yields exactly
-   * the text an operator in each mode sees.
-   */
+  /** install.sh's step 4 is one top-level. See docs/airgap.md §11. */
   const HELM_IF = '\nif [[ "$MODE" == "helm" ]]; then\n';
   const openIdx = installSh.indexOf(HELM_IF);
   const elseIdx = installSh.indexOf("\nelse\n", openIdx);
@@ -409,12 +311,7 @@ describe("every knob install.sh prescribes is a lever in the mode it prints it i
     expect(chartKnobs(echoed(regions.helm)).length).toBeGreaterThan(0);
   });
 
-  /**
-   * VERIFY THE LEVER, NOT JUST THE SIGNAL. The compose-mode instruction is only real if the
-   * product reads that env var. All three managed classes read theirs in one module — deliberately
-   * the only place this looks, and deliberately named in `turbo.json`'s inputs for this package, so
-   * the two stay in step: move the read and this fails loudly rather than going quietly stale.
-   */
+  /** VERIFY THE LEVER, NOT JUST THE SIGNAL. See docs/airgap.md §12. */
   it("finds compose-mode env knobs at all (guards the per-knob cases below from being empty)", () => {
     // `it.each([])` runs nothing and reports nothing — a deleted compose block would silently
     // delete its own coverage. Named here so that becomes a failure instead.
@@ -466,24 +363,7 @@ describe("every knob install.sh prescribes is a lever in the mode it prints it i
 });
 
 describe("the prose docs point at the canonical list instead of restating it", () => {
-  /**
-   * The M21.7 commit said README.md and DESIGN §16 "stop restating the list and point at it", and
-   * then both went on restating it — README's contents tree enumerated all eleven images, DESIGN
-   * §16 enumerated them one sentence before the paragraph explaining that enumerating them
-   * anywhere else is how `scp-runner-scan` and `scp-runner-dep` were missed for two releases. A
-   * doc contradicting its own next paragraph is this repo's recurring shape, and nothing failed
-   * when it happened, because nothing looked.
-   *
-   * WHY "MUST NOT NAME THEM ALL" RATHER THAN "MUST NAME THEM ALL": a doc that carries the whole
-   * inventory has to be maintained in lockstep with `bundle-images.ts` forever, and the failure
-   * mode when it isn't — a list that LOOKS complete and is one image short — is precisely the bug.
-   * A doc that carries a POINTER cannot go stale. So the gate is on the restatement itself: the
-   * moment a doc names every image again, it fails here.
-   *
-   * The bundled, operator-facing `docs/OFFLINE_INSTALL.md` is the deliberate exception, and it is
-   * exempt because it is not prose: `offline-install-doc.ts` GENERATES its contents tree from the
-   * same array, and the describe below holds it to naming every image.
-   */
+  /** Both docs kept restating the list they promised to point at. See docs/airgap.md §13. */
   const designDoc = readFileSync(path.join(REPO_ROOT, "docs/DESIGN.md"), "utf8");
   const sec16Start = designDoc.indexOf("\n## 16. Deployment & Packaging\n");
   const sec16End = designDoc.indexOf("\n## 17.", sec16Start);
@@ -531,12 +411,7 @@ describe("the operator-facing offline install doc lists what actually crossed th
     expect(doc).toContain(`    ${name}/`);
   });
 
-  /**
-   * The case above is a doc<->spec CONSISTENCY check: drop an image from the spec and both sides
-   * shrink together, so it goes green on the wrong list. This one is anchored to the runner class
-   * instead (which `RUNNER_IMAGE_NAMES` holds against `apps/runner-*`), so the inventory an
-   * operator reads cannot quietly lose a runner.
-   */
+  /** The case above is a doc<->spec CONSISTENCY check. See docs/airgap.md §14. */
   it.each(RUNNER_IMAGE_NAMES)("names the runner %s in the contents tree", (name) => {
     expect(doc).toContain(`    ${name}/`);
   });
@@ -553,18 +428,7 @@ describe("the operator-facing offline install doc lists what actually crossed th
     expect(doc.slice(start)).toContain(name);
   });
 
-  /**
-   * THE CASE ABOVE ONLY CHECKS THE RUNNER'S NAME IS PRESENT, NEVER WHAT THE DOC TELLS THE OPERATOR
-   * TO SET. That gap was measured: rewriting the scan runner's activation cell to
-   * `helm: --set managedScan.runnerImage=<printed ref>` — a chart value NEITHER shipped chart
-   * defines, so the exact silent no-op M21.7 item 1 was written to remove — left the whole
-   * @scp/airgap suite green (10 files, 139 passed, 0 failed).
-   *
-   * This doc is the higher-consequence surface of the two: install.sh's guidance scrolls past once,
-   * while `docs/OFFLINE_INSTALL.md` ships inside the bundle and is the thing an air-gapped operator
-   * actually reads. So it gets the SAME two-directional check install.sh's describe runs, over the
-   * same extraction — a knob is real only in the mode whose deployment mechanism can carry it.
-   */
+  /** Naming the runner is not checking what to set. See docs/airgap.md §15. */
   const runnerSection = (): string => {
     const start = doc.indexOf("## The managed-execution runner images");
     if (start < 0) throw new Error("offline install doc: runner section heading is gone");

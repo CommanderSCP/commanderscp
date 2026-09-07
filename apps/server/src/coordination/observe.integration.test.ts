@@ -17,12 +17,7 @@ import { upsertExecutorBinding } from "./executor-bindings-repo.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { parseCursorToken, runObserveSweep, watermarkFor } from "./observe.js";
 
-/**
- * M10.2 — the observe()-DRIVER end-to-end (BUILD_AND_TEST.md §8 M10 item 2 DoD): a bound,
- * observe-capable executor's `observe()` output creates a Change with NO inbound webhook; the
- * cursor persists and advances; a re-poll is a no-op. Real Postgres (Testcontainers, global-setup),
- * a REAL subprocess plugin host running `@scp/plugin-fake-executor`, never mocked.
- */
+/** M10.2 — the observe()-DRIVER end-to-end. See docs/coordination.md §563. */
 describe("observe()-driver: pull-based change detection (no inbound webhook)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -92,7 +87,6 @@ describe("observe()-driver: pull-based change detection (no inbound webhook)", (
     expect((afterFirst[0]!.payload as { repo?: string }).repo).toBe(REPO);
     expect(afterFirst[0]!.processedAt).toBeNull();
 
-    // Cursor persisted + advanced to the event watermark.
     const cursor = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()

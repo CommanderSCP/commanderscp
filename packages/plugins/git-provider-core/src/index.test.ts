@@ -1,11 +1,4 @@
-/**
- * `@scp/git-provider-core` unit tests — the provider-neutral machinery, exercised with a FAKE
- * adapter (no HTTP, no real provider). These cover the shared logic the GitHub plugin's own `nock`
- * suite would otherwise be the only proof of, so the core is independently covered before a second
- * provider (Gitea, M15.1b) rides on it: the dedup/idempotency cache (in-memory + file-backed), the
- * dispatch-then-persist trigger dance, the observe cursor protocol + event concatenation, and
- * correlation-hint normalization.
- */
+/** `@scp/git-provider-core` unit tests. See docs/plugins.md §78. */
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,10 +134,6 @@ beforeEach(() => {
   __resetInMemoryDedupState();
 });
 
-// -------------------------------------------------------------------------------------------
-// normalizeCorrelation
-// -------------------------------------------------------------------------------------------
-
 describe("normalizeCorrelation", () => {
   it("maps every hint field onto the correlation, leaving absent fields undefined", () => {
     expect(normalizeCorrelation({ repo: "a/b", commitSha: "sha1", correlationKey: "k" })).toEqual({
@@ -165,9 +154,7 @@ describe("normalizeCorrelation", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() dedup / idempotency — in-memory
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() idempotency (in-memory dedup)", () => {
   it("a second trigger() with the SAME idempotencyKey returns the SAME ref and never re-calls triggerCI", async () => {
@@ -209,9 +196,7 @@ describe("trigger() idempotency (in-memory dedup)", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() dedup / idempotency — file-backed (crash-safe: re-reads from disk each call)
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() idempotency (file-backed dedup)", () => {
   let dir: string;
@@ -261,10 +246,6 @@ describe("trigger() idempotency (file-backed dedup)", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// observe() cursor protocol + event concatenation
-// -------------------------------------------------------------------------------------------
-
 describe("observe() cursor + concatenation", () => {
   it("passes since.token as the ISO watermark to BOTH pollers and concatenates commits then runs", async () => {
     const { adapter, calls } = buildFakeAdapter();
@@ -288,10 +269,6 @@ describe("observe() cursor + concatenation", () => {
     expect(calls.pollRuns).toEqual([undefined]);
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// status/abort/describeCapabilities delegation
-// -------------------------------------------------------------------------------------------
 
 describe("verb delegation to the adapter", () => {
   it("status() delegates to adapter.getStatus with the ref", async () => {
@@ -321,13 +298,7 @@ describe("verb delegation to the adapter", () => {
     });
   });
 
-  /**
-   * NEGATIVE CONTROL, and the point of the whole assertion: `readFileAtRef` must NOT appear on the
-   * assembled `ExecutorPlugin`. ADR-0032 §9 and charter principle 1 hold that the four verbs ARE the
-   * structural enforcement of "coordination, not execution"; a fifth key here becomes a fifth verb
-   * in every consumer of an `ExecutorPlugin`. The positive half (the hook exists and is reachable on
-   * the ADAPTER) is asserted alongside so this cannot pass by the hook simply not existing.
-   */
+  /** NEGATIVE CONTROL, and the point of the whole assertion. See docs/plugins.md §79. */
   it("does NOT surface readFileAtRef as an ExecutorPlugin verb — the four-verb set is unchanged (ADR-0032 §9)", async () => {
     const { adapter } = buildFakeAdapter();
     const plugin = createExecutorPluginFromAdapter(adapter);
@@ -346,30 +317,7 @@ describe("verb delegation to the adapter", () => {
     expect(result.outcome).toBe("found");
   });
 
-  /**
-   * ================================================================================================
-   * `GitProviderAdapter` IS READ-ONLY, AND A WRITE HOOK MAY NOT REAPPEAR ON IT (owner decision
-   * 2026-08-15; ADR-0032 §9)
-   * ================================================================================================
-   * §9 justifies this adapter's existence as an escape hatch on TWO things: the `ExecutorPlugin`
-   * object is unchanged, AND — in its own words — "It also only READS." M21.5 briefly grew
-   * `createBranch`/`putFileOnBranch`/`openPullRequest` here, which contradicts the second half of
-   * that argument: extending the same mechanism to writes leaves the verb set intact while moving
-   * repository-write authority into a package every git-provider plugin loads and that is not one of
-   * the charter's enumerated managed classes. The write authority therefore lives inside
-   * `scp-managed-dep` (`packages/plugins/managed-dep`), where the charter's containment
-   * preconditions actually bind, and this interface reads.
-   *
-   * The absence is pinned TWO ways, because they fail at different times and catch different edits:
-   *
-   *  - the TYPE-LEVEL pin fails `tsc` the moment a write hook is DECLARED on the interface, which is
-   *    the edit that would reopen this. A runtime `in` check cannot see an interface at all;
-   *  - the key-set assertion in the test above already fails if such a hook were also surfaced as a
-   *    fifth verb.
-   *
-   * The read hook is asserted PRESENT in the same breath, so this cannot go green by the whole
-   * capability quietly disappearing — the vacuous-pass shape this repository has been bitten by.
-   */
+  /** The adapter is read-only, and a write hook may not return. See docs/plugins.md §80. */
   it("declares NO repository-write hook — §9's escape hatch is justified by 'It also only READS'", () => {
     // Type-level: this alias is `never` unless the interface is free of all three, so the assignment
     // below is what makes a reintroduced hook a COMPILE error rather than a comment nobody reads.

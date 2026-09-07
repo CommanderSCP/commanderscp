@@ -3,22 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComponentPipelineResponse } from "@scp/schemas";
 
-/**
- * THE DELETE-THE-WIRING GATE for the correlated-infrastructure section (owner decision,
- * 2026-08-24). `component-pipeline-correlated-infra.test.tsx` proves `CorrelatedInfraSection`
- * renders every claim correctly — by mounting the SECTION directly. That leaves the one line that
- * makes the feature real (`ComponentPipelinePage`'s `showsCorrelatedInfra(lane) ?
- * <CorrelatedInfraSection …>` mount) covered by nothing: the review lens's delete-the-wiring
- * mutation removed it and the whole suite stayed green — the repo's recorded dominant failure
- * class (a component built, tested directly, installed nowhere). This file closes that gate at
- * the PAGE level, through the same mock harness `change-pipeline-hold.test.tsx` established:
- * mock the two hooks and `useQuery`, render the REAL page, and assert on what MOUNTS.
- *
- * MUTATION-PROVEN (re-run when touching the mount): removing the
- * `showsCorrelatedInfra(lane) ? <CorrelatedInfraSection …> : null` lines from
- * `component-pipeline.tsx` reds the first test here by name while the section's own direct tests
- * stay green — which is exactly the gap this file exists to close.
- */
+/** The delete-the-wiring gate for the correlated section. See docs/web.md §244. */
 const COMPONENT_ID = "3d4e5f6a-7b8c-4d9e-8f0a-1b2c3d4e5f6a";
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({

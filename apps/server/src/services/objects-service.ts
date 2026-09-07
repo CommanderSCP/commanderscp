@@ -18,29 +18,12 @@ import type { GraphObject } from "@scp/schemas";
 // here; the codec itself now lives in `../pagination.ts` since every M1 list endpoint needs it.
 export { decodeCursor, encodeCursor } from "../pagination.js";
 
-/**
- * ADR-0023: the M0 wire shape is the WHOLE graph object plus M0's `type` discriminator — see
- * `ServiceObjectSchema`'s doc comment for why a subset was a live contract violation (the SDK's
- * `client.object("service")` calls the generic `createObject`/`listObjects`, which this static
- * route shadows, and those declare a full `GraphObject`).
- */
+/** The wire shape is the whole graph object plus its type. See docs/services.md §1. */
 function toServiceObject(row: GraphObject): ServiceObject {
   return { ...row, type: "service" };
 }
 
-/**
- * `POST/GET /api/v1/objects/service` (M0's contract, unchanged) — reimplemented on the M1 graph
- * substrate (BUILD_AND_TEST.md §8 M1 item 10: "upgrading their implementation to the new
- * substrate is expected"). A plain `service`-typed graph object under the hood, so anything
- * created here is equally visible through the generic `/objects/{type}` endpoint family.
- *
- * RBAC-enforced (object:write) and Idempotency-Key-aware exactly like the generic create —
- * Fastify's router prefers this literal static route over the parametric `/objects/:type` for
- * the exact path `/objects/service`, so this is the ONLY handler that ever runs for that path;
- * it must carry full parity (authorization, idempotency, domainId/properties/labels/custom
- * id-urn support), not a stripped subset, or those capabilities would silently be unavailable
- * for the 'service' type specifically.
- */
+/** `POST/GET /api/v1/objects/service` (M0's contract, unchanged). See docs/services.md §2. */
 export async function createServiceObject(
   deps: AppDeps,
   orgId: string,
@@ -50,12 +33,7 @@ export async function createServiceObject(
   idempotencyKey: string | undefined
 ): Promise<ServiceObject> {
   const created = await withTenantTx(deps.db, orgId, async (tx) => {
-    // The declared parent, resolved ONCE and used for both the permission scope and the write
-    // (`graph/containment-parent-authz.ts` — a wire `null` means the org root, never "detach").
-    // The parity note above is exactly why this is here: this handler shadows the generic
-    // `/objects/:type` create for the `service` type, so every guard that door grows has to be
-    // grown here too. It was NOT, and a `POST /objects/service {"domainId": null}` wrote a
-    // detached, permanently unreachable row while the generic door wrote an org-root child.
+    // The declared parent, resolved once for both scope and write. See docs/services.md §3.
     const scopeObjectId = await resolveDeclaredContainmentParent(tx, {
       orgId,
       subjectObjectId: actorObjectId,
@@ -110,12 +88,7 @@ export async function listServiceObjects(
   query: { cursor?: string | undefined; limit: number }
 ): Promise<ServiceObjectListResponse> {
   const page = await withTenantTx(deps.db, orgId, async (tx) => {
-    // THE DOOR A `routes/*.ts` CENSUS CANNOT SEE (role-model.md §8.1): `routes/objects.ts` has zero
-    // `authorize(` calls and Fastify prefers its literal `/objects/service` over the parametric
-    // `/objects/:type`, so this is the ONLY handler that ever runs for that path — and the check is
-    // spelled `scopeObjectId: orgId`, with no `auth.` prefix, one directory away. It gets the same
-    // treatment as the three doors a string census does find, or the legacy service list would keep
-    // 403-ing every scoped principal after the others stopped.
+    // THE DOOR A `routes/*.ts` CENSUS CANNOT SEE (role-model.md §8.1). See docs/services.md §4.
     const check: PermissionCheck = {
       orgId,
       subjectObjectId: actorObjectId,

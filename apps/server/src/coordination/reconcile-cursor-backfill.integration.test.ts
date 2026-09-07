@@ -16,29 +16,7 @@ const migrationsFolder = path.resolve(__dirname, "../../drizzle");
  *  letting the suite quietly stop excluding it. */
 const MIGRATION_TAG = "0058_reconcile_cursor";
 
-/**
- * MIGRATION 0058's BACKFILL, which every other integration suite is blind to.
- *
- * Every suite in this repo migrates a FRESH database, where `changes` is empty when 0058 runs — so
- * its `UPDATE changes SET reconcile_cursor_at = updated_at` touches zero rows and the whole
- * backfill is exercised by nothing. The 354 coordination tests passing says only that the DDL is
- * valid. This suite is the one that runs the statement against rows that already exist, which is
- * the only state a real deploy is ever in.
- *
- * WHAT GOES WRONG WITHOUT IT is not a crash — it is a silent fairness failure that looks exactly
- * like normal operation. `ADD COLUMN ... NOT NULL DEFAULT now()` stamps every pre-existing row with
- * the deploy instant, so the entire live queue collapses into one tie broken by nothing. On the
- * homelab that means a change that had been waiting for its turn since 2026-07-19 becomes
- * indistinguishable from one proposed a second before the deploy, and `ORDER BY reconcile_cursor_at
- * ASC LIMIT 25` picks 25 of them by whatever order the planner feels like. The scheduler would not
- * error, log, or fail a health check; it would just quietly stop being fair, in a deploy whose whole
- * purpose was protecting fairness.
- *
- * Driven the same way as `federation-sync.integration.test.ts`'s 0038 test: migrate a scratch
- * database with a copy of the drizzle folder whose journal has THIS migration removed, write
- * `changes` rows against that older schema with deliberately spread-out `updated_at` values, then
- * run the REAL folder — which therefore applies exactly one migration — and read the new column.
- */
+/** The migration backfill every other suite is blind to. See docs/coordination.md §731. */
 describe("migration 0058 — the round-robin cursor backfills from `updated_at` on an existing database", () => {
   it("seeds every pre-existing row's cursor from its `updated_at`, preserving the live queue ORDER", async () => {
     const dbName = `reconcile_cursor_backfill_${Date.now()}`
@@ -67,20 +45,7 @@ describe("migration 0058 — the round-robin cursor backfills from `updated_at` 
     const journal = JSON.parse(await readFile(journalPath, "utf8")) as {
       entries: { idx: number; tag: string }[];
     };
-    // EVERYTHING STRICTLY BEFORE THIS MIGRATION — located BY TAG, never by a numeric cut-off.
-    //
-    // The tag lookup is the original design and stays: a renumber must not silently stop excluding
-    // the migration under test, which would leave this file "verifying" a backfill it never ran.
-    // Asserting the tag is present is what makes that safe.
-    //
-    // The `slice` replaced a `filter(tag !== MIGRATION_TAG)` that kept LATER migrations in the
-    // scratch schema (M20.1, when 0059 landed). Drizzle's migrator applies by ascending `when` and
-    // records the newest applied timestamp, so a scratch DB carrying 0059 has already moved its
-    // watermark PAST 0058 — the upgrade step then applies nothing, the column never appears, and the
-    // failure surfaces as `column "reconcile_cursor_at" does not exist` rather than as anything
-    // resembling its cause. "Everything except this one" is also not a state any real database is
-    // ever in; "everything before this one" is exactly the pre-upgrade state being modelled, and it
-    // lets the upgrade apply this migration AND its successors in their real order.
+    // EVERYTHING STRICTLY BEFORE THIS MIGRATION. See docs/coordination.md §732.
     const targetIdx = journal.entries.findIndex((e) => e.tag === MIGRATION_TAG);
     expect(journal.entries.map((e) => e.tag)).toContain(MIGRATION_TAG);
     const truncated = journal.entries.slice(0, targetIdx);
@@ -128,7 +93,6 @@ describe("migration 0058 — the round-robin cursor backfills from `updated_at` 
         );
       }
 
-      // THE UPGRADE.
       await migrate(drizzle(pool), { migrationsFolder });
 
       const after = await pool.query<{

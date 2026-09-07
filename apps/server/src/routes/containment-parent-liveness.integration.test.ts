@@ -9,60 +9,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE VALIDATION HALF OF A `domain_id` WRITE — "does this id still name a LIVE object in this org?"
- *
- * `graph/containment-parent-authz.ts` owns the AUTHORIZATION half of a containment-parent move and
- * says so at length. Its own module doc named the other half and assigned it to the repo — this is
- * what it said BEFORE this file existed, quoted because the gap is exactly the gap between the
- * sentence and the code:
- *
- *   > What the repo owns is the invariant half: `resolveContainmentParent` (called from here) is
- *   > what rejects a `domainId` naming an object outside the org, and `createObject` still resolves
- *   > the default parent for itself.
- *
- * `createObject` does exactly that (`objects-repo.ts`, `resolveContainmentParent` on line 1 of its
- * body). `updateObject` did NOT. Its `domain_id` write was
- *
- *     const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
- *
- * — the caller's value, straight onto the column. Every guard that ran afterwards asked a different
- * question, and the one that looks closest is the one that made this hard to see:
- * `assertRootedContainmentParent` walks `containmentChain(parentId)`, and that walk **deliberately
- * does not filter `deleted_at` on its seed row** ("the TARGET itself is not filtered — governance may
- * legitimately be evaluated over a deleted object"). So a TOMBSTONED parent whose own ancestors are
- * alive seeds the walk, reaches the org root through them, and is pronounced rooted. The refusal
- * that exists for precisely this value — `resolveContainmentParent`'s `deleted_at IS NULL` filter,
- * whose comment records the incident it was installed for — never ran on the update path at all.
- *
- * ## Why that is the unrecoverable state, not a cosmetic one
- *
- * `authz/resolve.ts`'s `scopeExpandCte` joins `parent_o.deleted_at IS NULL` on every hop. A row
- * parented under a tombstone therefore has its scope expansion terminate at itself: no ancestor
- * binding, **not even the org root Owner's**, reaches it again. It cannot be read, edited, moved
- * back or deleted through the API by anyone, while governance keeps matching it (policy matching
- * reads `properties.scope`, never placement). That is byte-for-byte the state
- * `resolveContainmentParent`'s comment measured — `DELETE /domains/{d}` then
- * `PATCH /services/{s} {domainId: d}` answering 200 — reached here through a different door.
- *
- * ## Which door, and why the HTTP doors alone were not the whole story
- *
- * Every HTTP door calls `resolveDeclaredContainmentParent`, which calls `resolveContainmentParent`,
- * so the doors were closed. **IaC apply is not a door in that sense.** `POST /plans` resolves the
- * manifest's `domainId` ONCE, at plan-compute time, and PERSISTS the resolved value in the plan's
- * diff; `POST /plans/{id}/apply` — a separate request, arbitrarily later — replays that stored value
- * through `updateObject` without ever calling the helper. Soft-delete the parent in between and the
- * stale pointer is written. That asymmetry is the whole defect: `createObject` re-validates at APPLY
- * time (it calls `resolveContainmentParent` itself), so the same TOCTOU on the CREATE branch is
- * already refused, and only the UPDATE branch was open. `containment-root-source-and-create-rooting`
- * pins the create half; this file pins the update half.
- *
- * ## Installation, and how it is proved
- *
- * Deleting the `resolveContainmentParent` call from `updateObject` must make the first test below
- * fail. It asserts the ROW, not the status code: an unreachable row is exactly the one a read API
- * would hide, so "the GET 403s" would pass whether or not the write landed.
- */
+/** THE VALIDATION HALF OF A `domain_id` WRITE. See docs/routes.md §90. */
 describe("updateObject validates that a new containment parent is still live", () => {
   let server: TestServer;
 
@@ -104,7 +51,6 @@ describe("updateObject validates that a new containment parent is still live", (
     serviceId: string;
     serviceUrn: string;
     serviceName: string;
-    /** Live when the plan is computed. */
     domainId: string;
     planId: string;
   }
@@ -174,10 +120,6 @@ describe("updateObject validates that a new containment parent is still live", (
     expect(res.statusCode, res.body).toBe(200);
   }
 
-  // -------------------------------------------------------------------------------------------
-  // THE GAP
-  // -------------------------------------------------------------------------------------------
-
   it("POST /plans/{id}/apply refuses a stored move onto a parent soft-deleted since plan time", async () => {
     const f = await makePlannedMove("liveness-iac-toctou");
 
@@ -239,11 +181,7 @@ describe("updateObject validates that a new containment parent is still live", (
     expect(await domainIdOf(org, serviceId)).toBe(org.orgId);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // THE DOOR HALF, PINNED. It was already closed (`resolveDeclaredContainmentParent` ->
-  // `resolveContainmentParent`), and the repo-side guard must not be the only thing holding it —
-  // if this ever starts depending on the repo check, the door regressed.
-  // -------------------------------------------------------------------------------------------
+  // THE DOOR HALF, PINNED. See docs/routes.md §91.
 
   it("PATCH /services/{id} refuses a move onto a tombstoned parent at the door", async () => {
     const org = await createTestOrg(server, "liveness-http-door");

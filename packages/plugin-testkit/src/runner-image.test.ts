@@ -1,18 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-/**
- * `resolveRunnerImage` HAD NO TESTS, and it is not a stub: it decides whether a real-Docker
- * integration test pulls a pre-built image or spends minutes building one, and it is called from
- * three integration suites. The CI branch — `process.env[refEnvVar]` set by the `runner-images` job
- * — is pure, needs no daemon, and is the branch every CI run takes.
- *
- * THE ASSERTION THAT MATTERS IS THE ABSENCE: with a ref present, NO `docker build` may be spawned.
- * A regression that fell through to the build would still return a usable image locally and would
- * only show up as CI minutes, which is exactly the kind of thing nothing notices.
- *
- * WHAT IT DOES NOT COVER: the fallback build arm (it spawns `docker build` for real) and the
- * `DOCKER_BUILDKIT=0` env it passes are asserted here only through the recorded call, not executed.
- */
+/** `resolveRunnerImage` HAD NO TESTS, and it is not a stub. See docs/plugin-testkit.md §10. */
 
 const execFileCalls: { file: string; args: string[] }[] = [];
 

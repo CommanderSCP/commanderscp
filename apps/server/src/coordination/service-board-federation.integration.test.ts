@@ -16,44 +16,7 @@ import {
 import { proposeChange } from "./changes-repo.js";
 import { buildServiceBoard } from "./service-board.js";
 
-/**
- * REGRESSION: the service board must never FABRICATE an all-clear on a domain that does not drive
- * the change (the "not driven here" honesty rule).
- *
- * THE DEFECT this pins, reproduced side-by-side on two genuinely separate Postgres databases (the
- * `createIsolatedDomain` topology `federation.integration.test.ts` uses — real pairing, real signed
- * `exportSyncBundle` -> `importSyncBundle`), same service, same moment:
- *
- *   commander -> { releasing: 1, blocked: 0, stable: 0 }, changeState 'proposed'
- *   outpost   -> { releasing: 0, blocked: 0, stable: 1 }, latestChangeId null      <-- the lie
- *
- * The outpost reported STABLE — green — while a release was in flight through its own components.
- * Not an empty view: a fabricated all-clear, synthesized from tables the outpost never had. Every
- * table the board reads for a row's detail (`change_plans`/`change_waves`/`change_wave_targets`,
- * `changes`, `decisions`, `approval_requests`) is a LOCAL projection that never rides the sync
- * journal, so the old `latestChangeIdByComponent` join found nothing and the row fell through to
- * `stable` with all-false attention.
- *
- * WHAT THE OUTPOST GENUINELY KNOWS (so the honest state is "not driven here", NOT a bare "unknown"):
- *   - the change's graph OBJECT replicates (`objects-repo.ts` emits `object_upsert` for `change`);
- *   - `properties.targets` — the resolved component object ids `proposeChange` stamps on that object
- *     — replicates verbatim with it, giving a real component -> change edge;
- *   - `objects.origin_domain_id` is the cryptographically verified exporter, so
- *     `origin_domain_id !== self.domainId` IS, by construction, "this domain does not drive it";
- *   - `properties.federationState` carries the lifecycle state the origin last reported.
- *
- * WHAT IT GENUINELY CANNOT KNOW: waves, block Decisions, approvals, and any freeze the driving
- * domain declared WITHOUT `federate: true`. Those are named in `row.unknownFields` rather than
- * emitted as false/[]/null and called an observation.
- *
- * (`freezes` sat in the projection-table list above until M25.7 / owner decision D6, which gave a
- * freeze a graph object so an org-tier one can cross. Nothing about THIS defect or its fix depends
- * on that: the lie was about the CHANGE, and a freeze the peer chose not to federate is still
- * invisible here — which is why the freeze caveat is board-level and unconditional on any peer.)
- *
- * The assertions below are POSITIVE on purpose — asserting only "not stable" would also pass on an
- * empty view, which is precisely the failure mode this test exists to distinguish.
- */
+/** The board must never fabricate an all-clear. See docs/coordination.md §856. */
 describe("service board honesty across a federation link (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
@@ -203,11 +166,7 @@ describe("service board honesty across a federation link (Testcontainers, two da
     });
     expect(local).toEqual({ changes: "0", waveTargets: "0" });
 
-    // ...and the evidence store stays EMPTY on a full-scope link — the negative control for
-    // drizzle/0040. Both the change's `object_upsert` and its `change_status` ride this bundle, in
-    // that journal order, so nothing is ever unattached. A mechanism that recorded a row here would
-    // make every healthy federated board declare `summary.stable` unobservable forever, which
-    // over-claims ignorance — the same dishonesty in the opposite direction.
+    // ...and the evidence store stays EMPTY on a full-scope link. See docs/coordination.md §857.
     const unattached = await withTenantTx(outpost.db, outpost.orgId, async (tx) => {
       const rows = await tx.execute<{ n: string }>(
         sql`SELECT count(*)::text AS n FROM federation_unattached_change_status WHERE org_id = ${outpost.orgId}::uuid`

@@ -28,19 +28,7 @@ export function executionSystemInstanceId(executionSystemId: string): string {
 /** RESERVED plugin-instance-id namespace: only `executionSystemInstanceId()` may mint ids under it. */
 export const EXECUTION_SYSTEM_INSTANCE_PREFIX = "execution-system:";
 
-/**
- * Refuse a caller-chosen `pluginInstanceId` inside the reserved execution-system namespace.
- *
- * `PluginHostInstanceConfig.id` is ONE flat keyspace, and `SubprocessPluginHost.start()` silently
- * skips an id that is already registered (host.ts — deliberate idempotency). Execution-system instance
- * ids are deterministic (`execution-system:<uuid>`), so without this guard a tenant could create an
- * INLINE binding whose `pluginInstanceId` squats the id a legitimate execution-system-backed instance
- * will later use: whichever config spawns first wins for the life of the process, and every subsequent
- * (correctly-resolved) start() for the real system is silently discarded — quietly re-pointing that
- * system's trigger/observe/status/abort traffic at a tenant-controlled config. The window reopens on
- * every worker restart. Inline bindings never get an internal-egress grant, so this is a hijack of
- * coordination traffic rather than an SSRF — but it is exactly as unacceptable, and free to close.
- */
+/** Refuse an instance id inside the reserved namespace. See docs/coordination.md §434. */
 export function assertNotReservedInstanceId(pluginInstanceId: string): void {
   if (pluginInstanceId.startsWith(EXECUTION_SYSTEM_INSTANCE_PREFIX)) {
     throw new Error(
@@ -50,13 +38,7 @@ export function assertNotReservedInstanceId(pluginInstanceId: string): void {
   }
 }
 
-/**
- * `executor_bindings` — the registry-object gap `coordination/executor-config.ts`'s M3 doc
- * comment named explicitly ("that lands once ExecutorPlugin config becomes a registry object,
- * alongside GitHub/ArgoCD/Terraform in M7"): binds a Component/DeploymentTarget graph object to a
- * concrete, configured `ExecutorPlugin` instance. Modeled directly on `governance/controls-repo.ts`'s
- * `control_bindings` (1:1 binding per graph object, same upsert-by-lookup shape).
- */
+/** `executor_bindings`, the registry-object gap it fills. See docs/coordination.md §435. */
 
 /** WHICH pipeline a binding drives — the routing Type (ADR-0007). Closed set, re-exported from the
  *  schemas contract so the repo and the wire share one definition. */
@@ -66,20 +48,7 @@ export type BindingType = ExecutorType;
  *  an inline literal at each call site) keeps the default checkable in one place (ADR-0007). */
 export const DEFAULT_BINDING_TYPE: BindingType = "configuration";
 
-/**
- * Turns a loaded `execution-system` object into the (module, instance id) identity a binding to it
- * must carry, rejecting anything that isn't a bindable system. Lives HERE rather than inline in
- * `routes/executors.ts` because IaC apply (docs/proposals/post-import-configuration.md §8 C1) became
- * a second door that writes execution-system-backed bindings, and both doors must derive the same
- * identity and refuse the same inputs — a check that lives in one route handler is a check the next
- * write path silently doesn't have.
- *
- * CALL ORDER MATTERS AND IS THE CALLER'S JOB: authorize `object:write` at `sys.id` BEFORE calling
- * this. Every rejection below discloses the object's type or properties, so calling it first would
- * turn it into a type/existence oracle for objects the caller may not read (the reason
- * `bindTargetToExecutionSystem` authorizes before its own checks, and the reason `plans-repo.ts`
- * defers this to `executePlanDiff`, after every `authorize()` has run).
- */
+/** Turns an execution-system object into a binding identity. See docs/coordination.md §436. */
 export function executionSystemBindingIdentity(
   sys: { id: string; typeId: string; properties: unknown },
   reference: string
@@ -145,28 +114,13 @@ function toRow(row: {
   };
 }
 
-/**
- * The binding driving ONE pipeline of a target, resolved by its routing Type (ADR-0007). `type` is
- * required-by-default rather than optional-and-arbitrary: before P3 this did `.limit(1)` with no
- * ORDER BY, which was fine under UNIQUE(org,target) but would return an ARBITRARY row once a target
- * can hold several Types. Every caller must say which pipeline it means; the default resolves the
- * 'configuration' binding.
- */
+/** The binding driving one pipeline, resolved by its Type. See docs/coordination.md §437. */
 export async function getExecutorBinding(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string,
   type: BindingType = DEFAULT_BINDING_TYPE,
-  /**
-   * ADR-0046 §4 / §14 res 7 — WHICH LANE. Defaults to `"build"`, which is what every caller in the
-   * dispatch path means and what every row was before lanes existed.
-   *
-   * FILTERED, NOT MERELY STORED, and that distinction is the whole point. Before it, this was a
-   * `.limit(1)` over `(org, target, type)` — with two lanes present that returns an ARBITRARY row,
-   * so a deploy could dispatch to the test-lane executor and nothing would say so. Same shape as
-   * the pre-P3 bug this file's own upsert comment records ("binding a component's second pipeline
-   * silently destroyed the first"), one dimension further along.
-   */
+  /** ADR-0046 §4 / §14 res 7 — WHICH LANE. See docs/coordination.md §438. */
   lane: ExecutorLane = "build"
 ): Promise<ExecutorBindingRow | undefined> {
   const rows = await tx
@@ -184,14 +138,7 @@ export async function getExecutorBinding(
   return rows[0] ? toRow(rows[0]) : undefined;
 }
 
-/**
- * WHERE fragment: the binding's target object is still LIVE (not soft-deleted). A binding whose
- * target was soft-deleted must NOT be returned — `observe.ts` (via `listExecutorBindings`) would
- * otherwise poll the gone target's plugin instance every tick forever (M12 P5c bug; there is no
- * `executor_bindings.deleted_at`, so the binding row outlives its target unless a query excludes it).
- * A correlated EXISTS keeps the SELECT binding-columns-only so `toRow` is unchanged. Applied to BOTH
- * list functions — a soft-deleted target should surface no bindings anywhere.
- */
+/** WHERE fragment: the binding's target object is still LIVE. See docs/coordination.md §439. */
 function targetObjectIsLive(tx: TenantTx) {
   return exists(
     tx
@@ -220,13 +167,7 @@ export async function listExecutorBindingsForTarget(
   return rows.map(toRow);
 }
 
-/**
- * All executor bindings for an org whose target is still LIVE — the observe()-driver
- * (`coordination/observe.ts`) enumerates these, dedupes by `pluginInstanceId` (bindings sharing an
- * instance share observe scope), and polls each observe-capable instance once per tick. The
- * live-target filter is load-bearing: without it, soft-deleting a component leaves its binding polled
- * forever (M12 P5c).
- */
+/** Every binding in an org whose target is still live. See docs/coordination.md §440. */
 export async function listExecutorBindings(
   tx: TenantTx,
   orgId: string
@@ -238,14 +179,7 @@ export async function listExecutorBindings(
   return rows.map(toRow);
 }
 
-/**
- * Every binding whose target is one of `targetObjectIds` — the IaC ownership-scoped pool (C1: a
- * binding belongs to the stack that owns its target object). Keeps `targetObjectIsLive`: the caller
- * derives these ids from live object rows, so it is redundant today, but the property this filter
- * exists for ("a soft-deleted target should surface no bindings ANYWHERE", M12 P5c) holds for every
- * list function or none — omitting it here because one caller happens to be safe is exactly how the
- * next caller inherits the bug.
- */
+/** Every binding whose target is one of `targetObjectIds`. See docs/coordination.md §441. */
 export async function listExecutorBindingsForTargets(
   tx: TenantTx,
   orgId: string,
@@ -265,19 +199,7 @@ export async function listExecutorBindingsForTargets(
   return rows.map(toRow);
 }
 
-/**
- * Resolves the bound target's `domainLocal` flag for the `subjectDomainLocal` argument every audit
- * append below needs (ADR-0031 S2 / M20.2) — one cheap `objects` read by id, keyed exactly the way
- * every write door here already keys its own row (`orgId`, `targetObjectId`). None of the four
- * binding-identity write doors in this module load the target OBJECT for any other reason (they only
- * ever touch `executor_bindings`, itself keyed by the target's id), so this is resolved HERE, at the
- * one place the audit call already lives, rather than threaded as a parameter through every route and
- * `iac/plans-repo.ts` call site — the same reasoning `UpsertExecutorBindingInput.actorObjectId`'s doc
- * comment gives for centralizing the audit write itself: one door covered once, not five that could
- * drift. Missing target (should not happen inside a transaction that is itself mutating that target's
- * binding) reads `false` — the pre-existing behavior of journaling unconditionally — rather than
- * inventing a new failure mode for an edge case that was never previously distinguished.
- */
+/** Resolves the bound target's locality for the audit append. See docs/coordination.md §442. */
 async function targetDomainLocal(
   tx: TenantTx,
   orgId: string,
@@ -309,16 +231,7 @@ export interface UpsertExecutorBindingInput {
    *  omitted (NULL) for a hand-authored binding, which is what keeps the reconciler's prune off
    *  one-offs. Provenance is read from the row, never inferred from what matches now. */
   managedByPolicyId?: string | null;
-  /** WHO/WHAT REQUEST is doing this write — carried through to `executor.binding.put`'s audit event
-   *  (2026-08-25 gap: PUT and DELETE binding wrote no audit event at all; the only executor-ish
-   *  audit action ever written was `change.wave_target.no_executor`, a READ-time observation, not a
-   *  record of the binding itself changing). Threaded HERE rather than appended at each call site,
-   *  the same "one shared write, every caller covered" idiom `objects-repo.ts`'s `createObject` and
-   *  `relationships-repo.ts`'s `createRelationship` already use (M6's audit-repo doc: "zero
-   *  additional call-site wiring anywhere else in the codebase") — this is the ONE function every
-   *  binding write already funnels through (the typed routes AND `iac/plans-repo.ts`'s apply-time
-   *  create/update loop), so putting the audit call here covers both doors in one change instead of
-   *  two that could drift. */
+  /** WHO/WHAT REQUEST is doing this write. See docs/coordination.md §443. */
   actorObjectId: string;
   requestId: string;
 }
@@ -400,35 +313,8 @@ export async function upsertExecutorBinding(
   return row;
 }
 
-/**
- * Deletes a target's binding for one Type (M12 P5c) — a HARD delete (executor_bindings has no
- * soft-delete column; a binding is config, not an audited graph object). Detaching a binding is the
- * primitive that was missing: before P5c a binding could be created and repointed but never removed,
- * so a stale/mis-imported binding polled forever. Returns the deleted row (for the route to report),
- * or undefined if no such binding exists (the route 404s).
- *
- * WRITES `executor.binding.delete` in THIS transaction, same reasoning as `upsertExecutorBinding`'s
- * doc — this is the one function both the DELETE route and `iac/plans-repo.ts`'s apply-time prune
- * funnel through, so the audit event needs writing here once, not per caller. A no-op delete (no
- * such binding) writes NOTHING — there is no row to name, and the route 404s instead.
- */
-/**
- * THE LANE FALLBACK, IN ONE PLACE (ADR-0046 section 4; proposal section 14 resolution 7).
- *
- * Ask for a lane; get that lane's binding, or the BUILD lane's when the requested lane is not
- * separately declared. The result says which happened.
- *
- * WHY THIS IS A HELPER AND NOT TWO LINES AT EACH CALL SITE. There are two consumers by design — the
- * reconciler, which must not report a spurious GAP for a test lane the build lane already covers,
- * and the hook-run dispatcher, which must not fail to dispatch because a domain never separated its
- * lanes. Written twice, one copy later grows a condition the other does not, and the divergence is
- * invisible: both still return a binding, just different ones.
- *
- * FALLBACK IS READ-TIME, NEVER STORED. The reconciler writes rows only for lanes someone actually
- * declared. Materialising a test-lane row that merely duplicates the build lane would double every
- * target's rows and leave two records to keep in step — and it would be wrong for the estates that
- * have no binding policy at all, which is every estate today.
- */
+/** Deletes a target's binding for one Type (M12 P5c). See docs/coordination.md §444. */
+/** THE LANE FALLBACK, IN ONE PLACE. See docs/coordination.md §445. */
 export async function resolveLaneBinding(
   tx: TenantTx,
   orgId: string,
@@ -454,18 +340,7 @@ export async function deleteExecutorBinding(
   // callers (the DELETE route, `iac/plans-repo.ts`'s apply-time prune) already hold both.
   actorObjectId: string,
   requestId: string,
-  /**
-   * WHICH LANE to delete. Defaults to `"build"`, which is what both existing callers (the DELETE
-   * route and `iac/plans-repo.ts`'s apply-time prune) mean.
-   *
-   * THIS PARAMETER CLOSES A DEFECT THE LANE COLUMN OPENED, and it is worth stating plainly because
-   * the column shipped one commit earlier (migration 0105): this DELETE was keyed on
-   * `(org, target, type)`, so once a target held two lanes it deleted BOTH ROWS and then audited
-   * exactly one of them — `.returning()` destructures the first. The identity grew a dimension and
-   * three consumers had to grow with it; `getExecutorBinding` and `upsertExecutorBinding` were
-   * updated with the column, and this one was not. Latent rather than live (nothing wrote a test
-   * lane until the reconciler existed), and fixed before the reconciler starts pruning per lane.
-   */
+  /** WHICH LANE to delete. See docs/coordination.md §446. */
   lane: ExecutorLane = "build"
 ): Promise<ExecutorBindingRow | undefined> {
   const [deleted] = await tx
@@ -493,21 +368,7 @@ export async function deleteExecutorBinding(
   return row;
 }
 
-/**
- * Relabels which pipeline a target's binding drives (M12 P5c): moves the (target, fromType) binding
- * to (target, toType). The motivating case is a discovery-imported binding defaulted to
- * 'configuration' that is actually an `infrastructure` pipeline — and it is exactly the
- * merge-collision resolution owner ruling Q1 mandates ("relabel one first, don't guess"). Rejects
- * (409) if the target already holds a binding at toType: UNIQUE(org,target,type) forbids two, and the
- * caller must delete/repurpose that one first — surfaced as a clear conflict, not a raw
- * unique-violation. A same-type relabel is an idempotent no-op. Returns undefined if no (target,
- * fromType) binding exists (route 404s).
- *
- * AUDITED (`executor.binding.retype`) — same census that added `.put`/`.delete`: PATCH is a third
- * binding-identity write door (the only one reachable through the typed routes besides PUT/DELETE)
- * and was equally silent. The idempotent same-type no-op returns early and writes NOTHING — nothing
- * changed, so there is nothing to record.
- */
+/** Relabels which pipeline a target's binding drives. See docs/coordination.md §447. */
 export async function setExecutorBindingType(
   tx: TenantTx,
   orgId: string,
@@ -545,24 +406,7 @@ export async function setExecutorBindingType(
   return updated;
 }
 
-/**
- * Re-points a binding onto a DIFFERENT target object (M12 P5d merge) — moves the binding from its
- * current target onto `newTargetObjectId`, keeping its Type. The caller (`mergeComponents`) verifies
- * the destination has no binding at this Type first (owner Q1: reject-and-relabel, no
- * auto-collision); this still catches a concurrent racer at `UNIQUE(org,target,type)` and surfaces
- * the same one-per-Type 409 rather than a raw unique-violation.
- *
- * AUDITED (`executor.binding.repoint`) — CORRECTING THE PREMISE THE PRIOR VERSION OF THIS COMMENT
- * EXCUSED ITSELF ON. That version left this door silent on the claim that "`POST
- * /v1/components/{id}/merge` writes NO audit event at all today, for the merge OR any of its side
- * effects". That premise is false: `mergeComponents` (component-merge-repo.ts) already
- * soft-deletes the loser through `deleteObject`, which writes a `component.delete` audit event in
- * the SAME transaction, and records the merge itself as a `transition` Decision
- * (`insertDecision`). The merge IS audit-visible. The binding REPOINT was the one genuinely
- * invisible side effect — this is the FOURTH binding-identity write door (PUT/DELETE/PATCH being
- * the other three, all audited), reached only from `mergeComponents`, and closing it beats
- * excusing it now that the excuse it was left open on does not hold.
- */
+/** Re-points a binding onto a DIFFERENT target object. See docs/coordination.md §448. */
 export async function repointExecutorBindingTarget(
   tx: TenantTx,
   orgId: string,
@@ -600,17 +444,7 @@ export async function repointExecutorBindingTarget(
   return updated;
 }
 
-/**
- * `executor_bindings.plugin_module` is a free-form string at the schema layer (validated no
- * further than "non-empty" by the route's Zod schema) — this is the only thing standing between
- * an attacker/misconfigured-operator-controlled binding and `host.start()` provisioning an
- * arbitrary subprocess module. Mirrors `governance/control-runner.ts`'s identical
- * `KNOWN_CONTROL_MODULES` allowlist pattern, scoped to the modules that are actually
- * `ExecutorPlugin`s (excludes `webhook-control` — a `ControlPlugin` — and `github-discovery`/
- * `gitea-discovery`/`gitlab-discovery`/`webhook-notify`/`smtp-notify`, which are `DiscoveryPlugin`/`NotificationPlugin`
- * and would only ever produce a confusing "unknown method" RPC failure if a wave target were bound
- * to one).
- */
+/** The module is free-form at the schema layer, checked here. See docs/coordination.md §449. */
 export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "fake-executor",
   "github",
@@ -622,58 +456,17 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "pipeline-generic",
   "managed-iac",
   "managed-scan",
-  // M21.5 — the third managed executor (charter `scp-managed-dep` amendment 2026-08-13). It joins
-  // this list for the same reason `managed-scan` did: the allowlist is checked at BOTH write time
-  // (`routes/executors.ts`) and dispatch time (`resolveExecutorPluginInstance`, below), and missing
-  // either end fails closed as a confusing "unknown method" RPC error rather than a legible refusal.
-  // Its ORDINARY dispatch is server-side and binding-free — see `managedDepServerSettings` for why
-  // it needs no executor `type`.
+  // M21.5 — the third managed executor. See docs/coordination.md §450.
   "managed-dep"
 ];
 
-/**
- * BEING ON THE ALLOWLIST ABOVE AND HAVING A CONFIG SCHEMA ARE TWO DIFFERENT PROPERTIES, and only
- * the first was ever checked. The allowlist decides WHICH MODULE may be provisioned; the manifest
- * decides WHAT CONFIG that module may be provisioned with. `fake-executor`, `pipeline-generic` and
- * `managed-scan` passed the first and failed the second, and `validatePluginConfig` skipped a
- * module it had no manifest for — so their binding configs were stored entirely unvalidated. The
- * sharpest consequence: `@scp/plugin-managed-scan` runs `execFile(config.dockerBinary ?? "docker")`,
- * and `dockerBinary` is not among the keys `resolveExecutorPluginInstance` injects, so a tenant
- * binding could name any host executable.
- *
- * Asserted HERE, at module load, because this file is where the allowlist lives — the invariant
- * belongs beside the list it constrains, not in a test that a future edit can be made without
- * running. Adding a module below without a manifest now fails at BOOT, naming the module.
- */
+/** Being allowlisted and having a config schema differ. See docs/coordination.md §451. */
 assertEveryModuleHasManifest(KNOWN_EXECUTOR_MODULES, "KNOWN_EXECUTOR_MODULES");
 
-/**
- * AND THE SECOND PROPERTY OF THE SAME MANIFEST, checked in the same place and at the same moment,
- * because the first one on its own is not enough (M23.1c).
- *
- * `assertEveryModuleHasManifest` above answers "may this module's config be validated at all". This
- * answers "is the one tenant-settable number in that config BOUNDED" — and for the three managed
- * classes it is load-bearing twice over: the plugin's `execFile` timeout is what stops a wedged
- * runner, and the plugin HOST derives that module's `trigger` RPC budget from the very same bounds
- * (`plugin-host/call-policy.ts`). All three shipped `{ type: "integer", minimum: 1000 }` with no
- * ceiling, so a tenant with plain `object:write` on a Component could set 2^31 and remove both.
- *
- * Beside the allowlist, at module load, for the reason the assertion above it is: a missing ceiling
- * is a defect the moment it is committed, and deleting one degrades SILENTLY (that module's trigger
- * reverts to the 10s hang detector that SIGKILLs a live `tofu apply`) rather than failing anything.
- */
+/** The second property of that manifest, checked here too. See docs/coordination.md §452. */
 assertManagedTimeoutSchemas();
 
-/**
- * Exported (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): until
- * now this check ran ONLY here, at dispatch time (`resolveExecutorPluginInstance`, below) — a
- * binding with an unknown/wrong-kind `pluginModule` (e.g. `webhook-control`, a `ControlPlugin`, or
- * a typo) was accepted uncomplainingly by `PUT /executors/:idOrUrn/binding` and only ever surfaced
- * as a confusing failure the next time the coordination engine tried to trigger that target.
- * `routes/executors.ts`'s binding-create handler now calls this SAME function at WRITE time —
- * defense in depth, mirroring the discovery-create route's `KNOWN_DISCOVERY_MODULES` check it was
- * always inconsistent with.
- */
+/** Exported for the create-time module allowlist. See docs/coordination.md §453. */
 export function isKnownExecutorModule(value: string): value is PluginModule {
   return (KNOWN_EXECUTOR_MODULES as string[]).includes(value);
 }
@@ -682,40 +475,8 @@ export interface ResolvedExecutorInstance {
   instanceConfig: PluginHostInstanceConfig;
 }
 
-/**
- * OPERATOR/SERVER-GOVERNED settings read straight from the scpd process env — NEVER from a tenant
- * binding (adversarial-review CRITICAL #1: image/network/workspace for managed-iac must not be
- * tenant-suppliable). Read here (server-side code, full process.env) rather than threaded through
- * `config.ts` + the whole reconcile call chain, because these are pure deployment/operator knobs
- * and the plugin subprocess never sees `process.env` (host.ts's `minimalChildEnv` strips it) — the
- * ONLY channel to the plugin is the config this function injects them into.
- *
- *  - SCP_MANAGED_IAC_RUNNER_IMAGE  — the vetted, pinned `scp-runner-iac` image (unset ⇒ Mode 2 is
- *    not enabled; a managed-iac binding then fails closed with a clear error rather than defaulting
- *    to some tenant-influenceable value).
- *  - SCP_MANAGED_IAC_NETWORK_MODE  — `docker --network` (default "none").
- *  - SCP_MANAGED_IAC_WORKSPACE_ROOT — operator root the plugin derives per-(org,target) workspaces
- *    under.
- *  - SCP_PLUGIN_STATE_DIR — durable per-instance dedup-cache root (MAJOR #4): a stable on-disk
- *    path (default under the OS temp dir; operators mount a persistent volume for cross-restart
- *    durability) so an executor's idempotency cache survives a subprocess restart rather than
- *    silently degrading to in-memory-only.
- */
-/**
- * SCP_INTERNAL_EGRESS_HOSTS — the operator's allowlist of hostnames a plugin may reach even when they
- * resolve to a loopback/private address (an in-cluster Argo CD ClusterIP, an on-prem executor by
- * RFC1918 name). Comma-separated hostnames (NOT URLs, NOT CIDRs), e.g.
- * `argocd-server.argocd.svc.cluster.local`. Unset (the default) ⇒ NO plugin may ever reach an internal
- * address — the pre-existing SSRF posture (egress-guard.ts, MAJOR #6) is completely unchanged.
- *
- * This is the HARD security boundary for internal egress, and it lives here — at the same host-level,
- * operator-configured, NEVER-tenant-suppliable trust tier as SCP_MANAGED_IAC_RUNNER_IMAGE above —
- * precisely BECAUSE it must not depend on graph/RBAC state being right. An execution-system's
- * `allowInternalEgress` property (layer 2) is a per-system DECLARATION of intent, not a grant: a
- * tenant who sets it on a system pointing at an un-allowlisted host gets nothing. Both layers must
- * agree (`resolveInternalEgress`), so a mistake in who-can-write-what can never become an SSRF.
- * See docs/adr/0003-internal-egress-for-execution-systems.md.
- */
+/** Operator-governed settings, read from the process env. See docs/coordination.md §454. */
+/** The operator's allowlist of hostnames a plugin may reach. See docs/coordination.md §455. */
 function internalEgressHostAllowlist(): Set<string> {
   return new Set(
     (process.env.SCP_INTERNAL_EGRESS_HOSTS ?? "")
@@ -725,12 +486,7 @@ function internalEgressHostAllowlist(): Set<string> {
   );
 }
 
-/**
- * Layer 1 (operator env allowlist) AND layer 2 (the execution-system's declared intent) must BOTH
- * permit, else no internal egress. Fail-closed on every edge: not declared, unparseable serverUrl, or
- * a host the operator never allowlisted ⇒ false. Exported so the discovery path (routes/executors.ts)
- * resolves it identically to the binding path — one function, one answer.
- */
+/** Both layers must permit it, not either one alone. See docs/coordination.md §456. */
 export function resolveInternalEgress(
   serverUrl: string | undefined,
   declaredByExecutionSystem: boolean
@@ -757,23 +513,7 @@ function managedIacServerSettings(): {
   };
 }
 
-/**
- * SERVER/OPERATOR-GOVERNED `scp-managed-scan` runner settings (ADR-0020 §1) — the exact same
- * never-tenant-suppliable trust tier as `managedIacServerSettings` above. The commander's promotion
- * scan step (`federation/promotion-scan-step.ts`) reads these directly; a tenant managed-scan
- * binding (should one ever be created) has them injected here, spread LAST, so tenant config can
- * never influence WHAT image runs or on WHICH network.
- *
- *  - SCP_MANAGED_SCAN_RUNNER_IMAGE  — the vetted, pinned `scp-runner-scan` image (unset ⇒ managed
- *    scanning is not enabled; a managed-scan binding then fails closed with a clear error).
- *  - SCP_MANAGED_SCAN_NETWORK_MODE  — `docker create --network` (default "none" — the runner reaches
- *    no hosts; the SERVER, not the runner, pulls the scan subject's bytes).
- *  - SCP_MANAGED_SCAN_WORKSPACE_ROOT — operator root the promotion scan step derives per-run scratch
- *    directories (pulled OCI layout + evidence sink) under.
- *  - SCP_MANAGED_SCAN_DB_CACHE — (M13.3b-ii) operator DB cache dir the runner's Trivy DB is
- *    pre-loaded from (a PVC in Helm). Unset ⇒ the runner uses the image-baked DB (fail-closed
- *    fallback, as stale as the image), and there is no staleness gate.
- */
+/** Server-governed managed-scan runner settings. See docs/coordination.md §457. */
 export function managedScanServerSettings(): {
   runnerImage: string | undefined;
   networkMode: string;
@@ -812,62 +552,14 @@ function managedRunnerDockerBinary(): string {
   return value && value.length > 0 ? value : "docker";
 }
 
-/**
- * WHICH LAUNCHER ADAPTER EVERY MANAGED EXECUTOR USES (M23.2) — operator/server-governed, the same
- * trust tier as `SCP_MANAGED_RUNNER_DOCKER_BINARY`, and EXPLICIT rather than detected.
- *
- * ANYTHING OTHER THAN THE EXACT STRING `"kubernetes"` IS DOCKER, including a typo. That direction is
- * chosen deliberately: the failure mode of a mistyped value is "the deployment keeps doing what it
- * did before", not "managed execution silently switches substrate". A Kubernetes deployment whose
- * value did not take is diagnosable in one step — nothing works, and `scpd` ships no docker binary —
- * whereas a compose deployment nudged onto Jobs it has no API server for is not.
- */
+/** WHICH LAUNCHER ADAPTER EVERY MANAGED EXECUTOR USES. See docs/coordination.md §458. */
 function managedRunnerLauncherKind(): "docker" | "kubernetes" {
   return process.env.SCP_MANAGED_RUNNER_LAUNCHER?.trim() === "kubernetes" ? "kubernetes" : "docker";
 }
 
-/**
- * THE KUBERNETES LAUNCHER'S DEPLOYMENT SETTINGS — read here, from the environment, for exactly the
- * reason `managedDepServerSettings` gives: the plugin subprocess never sees `process.env`
- * (`host.ts`'s `minimalChildEnv` strips it), so injected config is the ONLY channel these values
- * have.
- *
- * THE WORKSPACE VOLUME IS A CLOSED UNION BUILT HERE, never operator-supplied JSON. This object lands
- * verbatim inside a pod spec the worker POSTs with its own service-account token, so "whatever JSON
- * the operator put in an env var" would be an arbitrary-volume-mount primitive wearing a config
- * field's clothes — a `hostPath: /` away from reading the node. Two shapes, and only two: an RWX
- * PersistentVolumeClaim (production; owner decision 5 makes RWX a documented prerequisite) and a
- * host path (the kind-based test harness, which has no RWX storage class to offer).
- *
- * RETURNS `undefined` WHEN THE LAUNCHER IS DOCKER, so nothing about Kubernetes reaches a plugin on a
- * compose deployment — and returns `undefined` when the launcher is Kubernetes and the settings are
- * incomplete, so the resolver's named refusal is what an operator sees rather than a half-built
- * manifest.
- */
-/**
- * THE DEPLOYMENT'S POD CONVENTIONS FOR THE RUNNER JOB (M23.5) — parsed into a CLOSED shape here,
- * never handed through as operator JSON.
- *
- * THE CENSUS, NOT THE TWO FIELDS THAT WERE REPORTED. `deploy/helm` creates six pods. Five are Helm
- * templates and every one of them sets `.Values.imagePullSecrets`, `.Values.image.pullPolicy` and a
- * `resources` block, because a human wrote the same lines into each. The sixth — the runner Job — is
- * built by `jobManifest()` from settings that described a namespace, a workspace and two booleans and
- * nothing about the pod, so it inherited NONE of them. The missing thing was the channel; this is it.
- *
- * WHY IT IS PARSED RATHER THAN PASSED. These strings land verbatim inside a pod spec the worker
- * POSTs with its own service-account token — the same reason `workspaceVolume` below is a closed
- * union built here instead of operator JSON. The distinction that makes `resources` acceptable where
- * a raw `volumes[]` would not be: a ResourceRequirements is a flat map of validated resource names to
- * validated quantities, naming no path, no object and no host. The worst a malformed one can do is
- * make the pod unschedulable.
- *
- * AND A MALFORMED VALUE THROWS RATHER THAN BEING DROPPED. A silently-dropped `imagePullSecret` is
- * `ErrImagePull` minutes into a promotion with nothing anywhere naming the cause — which is the exact
- * failure this whole block exists to end. The chart cannot produce one (it renders these from typed
- * values); a hand-rolled deployment can, and it gets the variable name and the offending value.
- */
+/** THE KUBERNETES LAUNCHER'S DEPLOYMENT SETTINGS. See docs/coordination.md §459. */
+/** THE DEPLOYMENT'S POD CONVENTIONS FOR THE RUNNER JOB. See docs/coordination.md §460. */
 const DNS_1123_SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
-/** A Kubernetes resource NAME: `cpu`, `memory`, `ephemeral-storage`, `nvidia.com/gpu`. */
 const K8S_RESOURCE_NAME = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(\/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?$/;
 /** A Kubernetes QUANTITY: `250m`, `1`, `512Mi`, `1.5`, `2Gi`, `1e3`. Deliberately narrow — anything
  *  this does not match is refused rather than sent to the API server to be rejected there. */
@@ -990,17 +682,7 @@ function managedRunnerKubernetesSettings(): KubernetesLauncherSettings | undefin
     namespace,
     workspaceRoot,
     workspaceVolume,
-    // THE GRANTED CAPABILITY (owner decision 2026-08-20, ADR-0035 §6). Enabling it here is only
-    // half the change: without `secrets: create,delete` in the chart's Role the Secret POST 403s, so
-    // the chart renders the RBAC and sets this variable from the SAME value.
-    //
-    // THE CODE DEFAULT STAYS `false` WHILE THE CHART DEFAULT IS `true`, AND THAT ASYMMETRY IS
-    // DELIBERATE. This flag does not mean "per-run Secrets are a good idea"; it means "the RBAC to
-    // create them EXISTS in this namespace", and only the thing that rendered the RBAC knows that.
-    // The chart does, so it says so. A hand-rolled Kubernetes deployment that never applied a Role
-    // does not, and for it the honest answer is the named refusal at step `secret-env` rather than a
-    // 403 from inside a promotion, minutes in. Absent env var => the deployment made no such claim.
-    // See `KubernetesRunnerLauncherConfig.perRunSecrets`.
+    // THE GRANTED CAPABILITY. See docs/coordination.md §461.
     perRunSecrets: process.env.SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS?.trim() === "true",
     // OFF BY DEFAULT AND THAT IS A FINDING, not a preference: none of apps/runner-{iac,scan,dep}
     // has a `USER` line, so `true` makes every managed run fail with CreateContainerConfigError
@@ -1016,16 +698,7 @@ function managedRunnerKubernetesSettings(): KubernetesLauncherSettings | undefin
   };
 }
 
-/** Exported so the commander's promotion scan step, which constructs a `managed-scan` plugin context
- *  directly rather than through a binding, resolves the SAME operator-governed binary. Two code
- *  paths reading one knob; the alternative is a setting that silently applies to half the runs.
- *
- *  M23.2 WIDENS IT TO THE WHOLE LAUNCHER SLICE rather than adding a second function beside it. The
- *  reason is the defect this function already exists to prevent: `dockerBinary` shipped injected on
- *  the binding path and absent on the binding-free one, so an operator's podman applied to some of
- *  the runs. A launcher SELECTION with the same shape would mean the commander's own promotion scan
- *  stayed on Docker forever while bound executors moved to Jobs — the same bug with a larger blast
- *  radius. One function, every caller. */
+/** Exported for the commander's promotion scan step. See docs/coordination.md §462. */
 export function managedRunnerSettings(): {
   dockerBinary: string;
   runnerLauncher: "docker" | "kubernetes";
@@ -1100,23 +773,12 @@ export function managedDepServerSettings(): {
   return {
     runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE,
     workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep"),
-    // THE OPERATOR'S RUNTIME AND, SINCE M23.2, THE WHOLE LAUNCHER SLICE — and it belongs in THIS
-    // function rather than only at the binding injection site below, because this class has TWO
-    // construction paths and the binding one is the rare one:
-    // `dependencies/managed-dep-instance.ts` builds the ordinary, binding-free dispatch. Returning
-    // it here is what makes both paths read the same knobs — the alternative, which is what
-    // shipped, is a setting that silently applies to some of the runs.
+    // The operator's runtime, and now the whole launcher slice. See docs/coordination.md §463.
     ...managedRunnerSettings()
   };
 }
 
-/**
- * Root for every executor instance's durable dedup/idempotency file. EXPORTED for
- * `test-support/plugin-state-isolation.integration.test.ts` only, which asserts that a test process
- * is not writing into the fixed machine-global default — the check that keeps
- * `test-support/plugin-state-dir.ts` from being a setup file nobody wired in (delete that
- * `setupFiles` entry and that test dies, which is the point).
- */
+/** Root for every executor instance's durable dedup file. See docs/coordination.md §464. */
 export function pluginStateDir(): string {
   return process.env.SCP_PLUGIN_STATE_DIR ?? join(tmpdir(), "scp-plugin-state");
 }
@@ -1125,21 +787,7 @@ function sanitizeInstanceId(instanceId: string): string {
   return instanceId.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
-/**
- * Resolves `targetObjectId`'s configured executor binding into a ready-to-provision
- * `PluginHostInstanceConfig` — secret refs decrypted via `secrets/secrets-repo.ts`'s
- * `resolveSecretRefs`, plus two server-governed injections that MUST NOT come from the tenant:
- *
- *   1. A durable per-instance dedup `statePath` (MAJOR #4) — always set, so no executor's
- *      idempotency cache ever silently degrades to in-memory-only across a subprocess restart.
- *   2. For managed-iac, the vetted runnerImage/networkMode/workspaceRoot (CRITICAL #1) — spread
- *      LAST so they win over anything in `binding.config` (the tenant config schema already
- *      rejects those fields at create/update, but overriding here is defence in depth).
- *
- * Returns `undefined` when no binding is configured (caller falls back to the shared default
- * fake-executor instance) OR the module isn't a known `ExecutorPlugin`. Throws (fails closed) if a
- * managed-iac binding is used while Mode 2 isn't enabled (no runner image configured).
- */
+/** Resolves a target's binding into a provisionable instance. See docs/coordination.md §465. */
 export async function resolveExecutorPluginInstance(
   tx: TenantTx,
   input: {
@@ -1151,35 +799,11 @@ export async function resolveExecutorPluginInstance(
      *  supplies this from the wave target, so reconcile starts the instance for the pipeline it is
      *  about to trigger. */
     type?: BindingType;
-    /**
-     * WHICH LANE to dispatch to (ADR-0046 §4, §14 res 7). Defaults to `"build"`, which is every
-     * deploy caller and every estate that has not separated its lanes.
-     *
-     * THIS IS THE SEAM THAT DECIDES DISPATCH, and it must go through the SAME fallback rule as
-     * everything else or the two halves of one dispatch can disagree. The concrete failure, found
-     * by the increment-8 session while reading the lane work: a caller that resolved a test-lane
-     * row for its `externalRef` but left THIS function on its `build` default would pin the run to
-     * the build lane's plugin instance while the row said `test` — a run that reads as correctly
-     * test-laned in the database and executes on the deploy executor. Worse than honest build-only
-     * behaviour, because it looks right.
-     *
-     * Note this is the OPPOSITE hazard to the one `getExecutorBinding`'s own `lane` doc records.
-     * That one was an ARBITRARY row; the lane filter closed it. This one is a row PINNED to build,
-     * which the same filter created — the fix for a widened identity has to reach every consumer of
-     * it, and this is the third.
-     */
+    /** WHICH LANE to dispatch to (ADR-0046 §4, §14 res 7). See docs/coordination.md §466. */
     lane?: ExecutorLane;
   }
 ): Promise<ResolvedExecutorInstance | undefined> {
-  // DELIBERATELY LITERAL, and this is load-bearing rather than an oversight (ADR-0026 amendment).
-  // Both callers already pass the object that CARRIES the binding: `observe.ts` passes
-  // `binding.targetObjectId` from a binding it is iterating, and `reconcile.ts` passes the object
-  // `resolveBindingForTarget` resolved the binding ONTO — the placement, not the component. So the
-  // placement fallback belongs at the point where a WAVE TARGET is interpreted, not here, and adding
-  // it here would make this module depend on `binding-resolution.ts` which depends on it.
-  // ONE FALLBACK RULE, shared with every other consumer (`resolveLaneBinding`) rather than spelled
-  // out again here: a `test` request with no test declaration resolves to the build lane's row, and
-  // an AMBIGUOUS test lane is refused upstream rather than silently substituted.
+  // Deliberately literal, and that is load-bearing. See docs/coordination.md §467.
   const resolved = await resolveLaneBinding(
     tx,
     input.orgId,
@@ -1190,11 +814,7 @@ export async function resolveExecutorPluginInstance(
   if (!resolved) return undefined;
   const binding = resolved.row;
 
-  // Resolve the effective plugin identity + config from one of two sources:
-  //   - execution-system-backed (M12 P2): a shared `execution-system` graph object supplies the
-  //     module (its `kind`), serverUrl, and token — so many bindings coordinate one system without
-  //     re-specifying its URL/token, and all share ONE plugin instance (hence one observe poll).
-  //   - inline (pre-M12, unchanged): the binding itself carries module/config/secretRefs.
+  // Resolve the plugin identity and config from one of two. See docs/coordination.md §468.
   let pluginModule: string = binding.pluginModule;
   let pluginInstanceId = binding.pluginInstanceId;
   let tenantConfig = (binding.config ?? {}) as Record<string, unknown>;

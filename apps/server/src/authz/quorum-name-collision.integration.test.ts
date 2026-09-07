@@ -13,33 +13,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * THE QUORUM BYPASS — role-model.md §5 step 10's gate (owner decision, 2026-08-27)
- * ================================================================================================
- *
- * `hasRoleAtScope` resolves approval-quorum eligibility by NAME. It joined `roles` and matched
- * `rl.name` with NO `org_id` predicate on the roles row, while the `role_bindings` half was
- * org-filtered — and `roles`' RLS is `USING (org_id = current_org OR org_id IS NULL)`, so the join
- * matched the shared built-in `Approver` OR an org's own row of the same name.
- *
- * An org able to author a ZERO-PERMISSION role named 'Approver' would therefore make its holders
- * eligible quorum voters everywhere a policy names Approver — granting nothing and deciding
- * everything. That is why the proposal gates custom roles behind closing this: shipping the
- * authoring API without the predicate turns a documented hazard into a live one in the same
- * release.
- *
- * ------------------------------------------------------------------------------------------------
- * THE FIXTURE WRITES THE COLLIDING ROLE BY HAND, AND THAT IS THE POINT
- * ------------------------------------------------------------------------------------------------
- * There is no API that mints a role named 'Approver' for an org — `role-binding-door.ts`'s
- * `builtInNameCollisionReason` refuses it at the authoring door that step 10 adds. So this test
- * goes UNDER that door with a superuser INSERT, because the property under test is what the
- * RESOLVER does when such a row exists, not what the door refuses. A restored dump, a hand-written
- * row, or a future door with a gap all produce this state; the resolver has to be safe against it
- * on its own, and a test that could only build the row through the door would be asserting the
- * door's behaviour twice and the resolver's never.
- */
+/** THE QUORUM BYPASS. See docs/authz.md §32. */
 describe("approval-quorum eligibility resolves BUILT-IN role names only", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -86,7 +60,7 @@ describe("approval-quorum eligibility resolves BUILT-IN role names only", () => 
     const roleRows = await admin.query(
       `SELECT id, org_id FROM roles WHERE name = 'Approver' ORDER BY org_id NULLS FIRST`
     );
-    expect(roleRows.rowCount).toBe(2); // the built-in singleton AND the org's impostor
+    expect(roleRows.rowCount).toBe(2);
     const bindingRows = await admin.query(
       `SELECT id FROM role_bindings WHERE role_id = $1 AND subject_id = $2`,
       [customRoleId, impostor.objectId]

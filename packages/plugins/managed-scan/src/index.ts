@@ -32,47 +32,7 @@ import {
   type RunnerResult
 } from "@scp/runner-launcher";
 
-/**
- * `@scp/plugin-managed-scan` — the `scp-managed-scan` executor, the thin orchestrator behind the
- * commander's **promotion scan step** (ADR-0020 §1, proposal §13.3, charter's Managed Execution
- * Exception 2026-07-23 amendment). It MIRRORS `@scp/plugin-managed-iac` exactly in shape: a thin
- * orchestrator that launches an ephemeral single-shot runner container from a SEPARATE image
- * (`scp-runner-scan`, `apps/runner-scan`) and copies evidence out — it contains no scanner itself
- * (the scanner exists ONLY in the runner image, exactly as `tofu` exists only in `scp-runner-iac`).
- *
- * WHAT THIS PLUGIN DOES (and does NOT): it runs one scan container per `trigger()` — `docker create
- * --network none` (server-injected, default `none`), `docker cp` the SERVER-pulled OCI image layout
- * IN, `start -a`, `docker cp` the runner's `/work/out` evidence back OUT to a server-controlled
- * directory, `rm -f`. It does NOT pull the subject's bytes (the SERVER does that, by digest, over
- * the allowlisted skopeo channel — the runner has NO network) and it does NOT parse the Trivy result
- * into `ScanEvidence` (the COMMANDER does that, where `ScanEvidenceSchema` and the M17.5 threshold
- * resolution live — same split as scp-runner-iac, where the orchestrator persists evidence the
- * ephemeral container produced). So this plugin adds NO new verb (charter principle 1): `observe()`
- * returns `[]`, `trigger()` runs the container, `status()`/`abort()` report it.
- *
- * SECURITY MODEL (mirrors managed-iac's adversarial-review CRITICAL #1): `dockerBinary` decides WHAT
- * EXECUTABLE runs, and `runnerImage`/`networkMode`/`workspaceRoot` decide what image runs and on
- * which network — they are **operator/server-governed, NEVER tenant-suppliable**. The manifest
- * `configSchema` below is `additionalProperties: false` and lists ONLY `timeoutMs`, so a binding that
- * tries to set any of them is rejected at create/update; the server injects them into this plugin's
- * config when it provisions the instance (`coordination/executor-bindings-repo.ts`'s
- * `resolveExecutorPluginInstance`, spread LAST so they win). The runner is launched with NO docker
- * socket mount, NO bind mount (the workspace is `docker cp`'d in/out, never mounted — a host-path
- * escape is structurally impossible), and the server-fixed `--network` (default `none` — the runner
- * reaches no hosts).
- *
- * THAT SCHEMA IS ONLY A GATE IF THE SERVER RUNS IT. It did not, for this module: `managed-scan` was
- * on `KNOWN_EXECUTOR_MODULES` but absent from `apps/server`'s `MANIFEST_BY_MODULE`, and
- * `validatePluginConfig` returned early for a module it had no manifest for — so a tenant binding
- * could set `dockerBinary` to any host path and this plugin would `execFile` it. The paragraph above
- * described a protection that was never wired up. Both halves are now pinned by tests
- * (`plugin-manifests-fail-closed.test.ts`): the schema refuses the governed keys, AND every
- * allowlisted executor module is asserted to HAVE a manifest.
- *
- * SYNCHRONOUS TRIGGER (deliberate v1 simplification, exactly as managed-iac): `trigger()` runs the
- * container to completion; a scan is a short, read-only analysis of an artifact already materialized
- * locally, so there is nothing to poll or abort by the time a ref exists.
- */
+/** The managed-scan executor, a thin orchestrator. See docs/plugins.md §467. */
 
 export interface ManagedScanConfig {
   /** SERVER-INJECTED (never tenant): the vetted, pinned `scp-runner-scan` image reference. */
@@ -85,17 +45,7 @@ export interface ManagedScanConfig {
    *  injected by `resolveExecutorPluginInstance` from `SCP_MANAGED_RUNNER_DOCKER_BINARY`, so the
    *  `?? "docker"` below is a fallback for this package's own unit tests, not a tenant hook. */
   dockerBinary?: string;
-  /**
-   * SERVER-INJECTED (never tenant) — WHICH LAUNCHER ADAPTER RUNS THIS PLUGIN'S RUNNER (M23.2).
-   *
-   * Absent, or anything other than `"kubernetes"`, means the Docker adapter — so a deployment that
-   * does not opt in behaves byte-identically, which is what makes a second adapter safe to merge.
-   * The same TWO INDEPENDENT DEFENCES `dockerBinary` has apply here from day one: this plugin's
-   * manifest is `additionalProperties: false` with these keys absent, so a binding carrying either
-   * is rejected at the write door (`plugin-manifests-runner-launcher.test.ts` pins the refusal by
-   * name), and the server injects them LAST so a regression in the write door downgrades from a
-   * launcher swap to an accepted-but-overwritten key.
-   */
+  /** SERVER-INJECTED (never tenant). See docs/plugins.md §468. */
   runnerLauncher?: "docker" | "kubernetes";
   /** SERVER-INJECTED (never tenant): the Kubernetes launcher's deployment settings. Required when
    *  {@link runnerLauncher} is `"kubernetes"` — the resolver refuses BY NAME when it is missing,
@@ -106,16 +56,7 @@ export interface ManagedScanConfig {
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_NETWORK_MODE = "none";
 
-/** The methods this runner image ships — `trivy` (container images), `openscap` (compliance), and
- *  `trivy-vm` (the 13.3a MACHINE-IMAGE arm: the runner resolves the disk image carried by the pulled
- *  OCI layout and `trivy vm`s it). A `trigger()` naming any other method fails closed here rather
- *  than launching a container that would `exit 2`.
- *
- *  Deliberately mirrors — and must stay in step with — the server's `RUNNER_SUPPORTED_METHODS`
- *  (`promotion-scan-step.ts`). The duplication is structural, not laziness: this package does not
- *  depend on `@scp/schemas` (a plugin runs behind the subprocess isolation host and carries the
- *  minimum surface), so the set is exported instead and the SERVER-side test pins the containment
- *  that actually matters — every method the server dispatches must be one this plugin will run. */
+/** The methods this runner image ships. See docs/plugins.md §469. */
 export const SUPPORTED_SCAN_METHODS: readonly string[] = ["trivy", "openscap", "trivy-vm"];
 const SUPPORTED_METHODS = new Set(SUPPORTED_SCAN_METHODS);
 
@@ -145,11 +86,7 @@ function asConfig(config: unknown): ManagedScanConfig {
 export interface ManagedScanIntentParameters {
   /** The scan METHOD (registry-selected per artifact type): `"trivy"`, `"trivy-vm"` or `"openscap"`. */
   method: string;
-  /** HOST path to the OCI image layout the SERVER pulled by digest (copied INTO the container's
-   *  `/work/image`). The runner has no network and pulls nothing. For `trivy-vm` this layout carries
-   *  the MACHINE IMAGE (a disk-image layer, or a tar layer containing one — run.sh's packaging
-   *  convention); the copy-in seam itself is identical, so the machine-image arm adds no new
-   *  ingress and no new egress. */
+  /** HOST path to the OCI image layout the SERVER pulled by digest. See docs/plugins.md §470. */
   inputDir: string;
   /** HOST path the runner's `/work/out` evidence is copied back into (the commander reads
    *  `<outputDir>/result.json` for trivy AND trivy-vm — a `trivy vm` run emits the same native Trivy
@@ -163,11 +100,7 @@ export interface ManagedScanIntentParameters {
   /** OpenSCAP only — the ABSOLUTE path (inside the runner image) of the SSG datastream to evaluate
    *  against (e.g. `/usr/share/xml/scap/ssg/content/ssg-debian11-ds.xml`). Ignored by trivy. */
   datastream?: string;
-  /** M13.3b-ii — SERVER-provided HOST path to a pre-loaded Trivy DB cache dir (a Trivy `--cache-dir`
-   *  layout: `<dir>/db/{trivy.db,metadata.json}`). When set, it is `docker cp`'d into the runner at
-   *  `/work/db` and `SCP_SCAN_DB_DIR=/work/db` is set, so run.sh points Trivy at the pre-loaded DB
-   *  INSTEAD of the image-baked default. Unset ⇒ the runner uses the baked DB (fail-closed fallback).
-   *  Server-governed like inputDir; a tenant cannot supply it (the promotion scan step resolves it). */
+  /** A server-provided host path to a preloaded scanner cache. See docs/plugins.md §471. */
   scanDbDir?: string;
   /** M13.3b-ii — OPTIONAL SERVER-provided HOST path to a pre-loaded SSG/SCAP content dir, copied to
    *  `/work/scap` with `SCP_SCAN_SCAP_DIR=/work/scap`. Rarely used: SSG has no OCI upstream to
@@ -175,16 +108,7 @@ export interface ManagedScanIntentParameters {
   scanScapDir?: string;
 }
 
-/**
- * Launch the single-shot scan container. COPY the pulled layout in / evidence out (never bind-mount;
- * mirrors managed-iac's CRITICAL #1 fix + the dind-share fix). The ONE place the runner image is
- * executed — with the server-fixed `--network` (default `none`), no docker.sock, no `-v`.
- *
- * M23.1: the create/copy-in/start/copy-out/remove sequence itself lives in `@scp/runner-launcher`,
- * shared with `@scp/plugin-managed-iac` and `@scp/plugin-managed-dep`. What stays HERE is what is
- * this plugin's own — the one-to-three copy-in shape, the two conditional `-e` pairs that pair with
- * them, the 32 MiB buffer, and a copy-out that is `on-success` + `propagate`.
- */
+/** Launch the single-shot scan container. See docs/plugins.md §472. */
 async function runScanContainer(
   config: ManagedScanConfig,
   resolveLauncher: ResolveRunnerLauncher,
@@ -196,12 +120,7 @@ async function runScanContainer(
   scanArgs: string[],
   preload: { scanDbDir?: string; scanScapDir?: string }
 ): Promise<RunnerResult> {
-  // When the server provides a pre-loaded DB / SCAP dir (M13.3b-ii) we set the env that steers
-  // run.sh to it — still `--network none`, still copied IN and not mounted, so a host-path escape
-  // stays structurally impossible. THE `-e` PAIRS AND THE COPIES ARE INDEPENDENTLY CONDITIONAL and
-  // in a FIXED order (DB then SCAP for the env, subject/DB/SCAP for the copies); the golden's
-  // "middle case" exists because a launcher that emitted both whenever EITHER was present would
-  // otherwise pass.
+  // When the server provides a pre-loaded DB / SCAP dir. See docs/plugins.md §473.
   const env: string[] = [];
   if (preload.scanDbDir) env.push("SCP_SCAN_DB_DIR=/work/db");
   if (preload.scanScapDir) env.push("SCP_SCAN_SCAP_DIR=/work/scap");
@@ -232,23 +151,12 @@ async function runScanContainer(
     // operator-allowlisted registry pulls"), so the operator setting is legitimate. Server-injected
     // (default "none"), never tenant.
     networkMode: config.networkMode,
-    // BOTH `SCP_SCAN_*_DIR` ARE CONTAINER PATHS, NOT SECRETS, so they stay on the command line as
-    // `-e` and this plugin's five golden `create` lines do not move by a byte beyond the name and
-    // labels. The secrecy split is not a "hide the environment" reflex; it is the axis the
-    // Kubernetes adapter must branch on, and mislabelling a path as a secret would cost a Secret
-    // object per run for nothing.
+    // Both are container paths, not secrets, so they stay in argv. See docs/plugins.md §474.
     env,
     // NO CREDENTIAL AT ALL. A scan reads bytes the server already pulled; the runner holds nothing.
     secretEnv: [],
     copyIn,
-    // ONLY ON SUCCESS, AND NOT GUARDED — the opposite of managed-iac on both axes. A failed scan
-    // must produce NO evidence (fail-closed: the commander writes none and E6 then refuses), and a
-    // failed copy-out propagates as a rejection rather than being swallowed by the launcher.
-    // M23.0 recorded that the rejection then left the run reporting `pending` forever, and this
-    // comment claimed the defect was deliberately preserved. IT IS NOT, AND THAT IS MEASURED:
-    // M23.1 phase 2's `withRecordedOutcome` (below) catches the rejection and records `failed` —
-    // `launch-argv.golden.test.ts`'s "A FAILED COPY-OUT IS NOT SWALLOWED" case fails the second
-    // `docker cp` and asserts `status()` reports `failed`.
+    // ONLY ON SUCCESS, AND NOT GUARDED. See docs/plugins.md §475.
     copyOut: {
       containerPath: "/work/out",
       hostDir: outputDir,
@@ -262,37 +170,18 @@ async function runScanContainer(
   });
 }
 
-// -----------------------------------------------------------------------------------------
 // ExecutorPlugin — NO new verb (charter principle 1). observe() is inert; trigger() runs one scan.
-// -----------------------------------------------------------------------------------------
 
 // Synchronous-trigger outcome cache, keyed by externalId (in-memory — a scan is a fresh,
 // stateless, read-only analysis per promotion journey; there is no cross-restart idempotency to
 // preserve the way a live `apply` needs one, so no durable statePath is required here).
 const outcomes = new Map<string, { succeeded: boolean; detail: BoundedDetail }>();
 
-/**
- * BOUNDING ONE ENTRY DID NOT BOUND THE MAP (MEDIUM, M23.0 verification pass 7 finding M1). Same
- * property managed-iac's durable ledger had, in RAM: nothing here pruned anything, ever, so a
- * long-lived plugin instance accumulated one ~4 KB entry per scan for the life of the process.
- *
- * A LOOSER CAP THAN THE DURABLE ONE, deliberately. managed-iac re-parses its whole ledger on every
- * poll, so its size is CPU per tick; this is a `Map.get`, O(1) whatever the size, and it is lost on
- * restart anyway. The cost here is memory alone: {@link RUN_OUTCOME_CACHE_MAX_IN_MEMORY} x ~4.2 KB,
- * about 4 MB worst case. Treating the two caches as one problem would either waste memory here or
- * re-introduce the parse cost there.
- *
- * WHAT AN ENTRY MUST OUTLIVE: `trigger()` runs the scan synchronously to completion before writing
- * the entry, so the only reader left is reconcile's next `status()` poll.
- */
+/** BOUNDING ONE ENTRY DID NOT BOUND THE MAP. See docs/plugins.md §476. */
 function recordOutcome(
   ctx: PluginContext,
   externalId: string,
-  // A PLAIN `string`, not {@link BoundedDetail} — the M3 boundary move. The brand stays on what is
-  // STORED (`outcomes`' value type, so no reader can be handed a megabyte) and this is the only
-  // thing that mints one. A brand on a FIELD forces a conversion at every literal that builds the
-  // record, which is how one concept came to have 26 manual call sites across four packages, most
-  // of them pinned by no failing test.
+  // A PLAIN `string`, not {@link BoundedDetail}. See docs/plugins.md §477.
   outcome: { succeeded: boolean; detail: string }
 ): void {
   outcomes.set(externalId, { succeeded: outcome.succeeded, detail: boundDetail(outcome.detail) });
@@ -360,12 +249,7 @@ async function trigger(
   const scanArgs: string[] =
     method === "openscap" ? [params.profile ?? "", params.datastream ?? ""] : [];
 
-  // EVERY PATH OUT OF THE REST OF THIS FUNCTION RECORDS AN OUTCOME (M23.1 phase 2). Before this,
-  // nothing below caught a rejection: a launcher failure escaped `trigger()` as a rejection, no
-  // outcome was ever cached, and `status()` reported `pending` forever — indistinguishable from
-  // "still running". `redact` is the identity function because this plugin holds no credential —
-  // a scan reads bytes the server already pulled, `secretEnv` is always `[]` — so there is nothing
-  // for it to strip; that absence is a fact about managed-scan, not a shortcut taken here.
+  // EVERY PATH OUT OF THE REST OF THIS FUNCTION RECORDS AN OUTCOME. See docs/plugins.md §478.
   await withRecordedOutcome(
     {
       record: (succeeded, detail) => {
@@ -393,15 +277,7 @@ async function trigger(
       );
       recordOutcome(ctx, externalId, {
         succeeded: result.succeeded,
-        // THE SUCCESS ARM IS NOT `runnerOutcomeDetail`, DELIBERATELY: on success this plugin
-        // records where the EVIDENCE landed rather than a Trivy report that can run to 32 MiB. The
-        // FAILURE arm is, because `result.stderr` was the empty string for a budget-killed scan and
-        // for a `docker` that never spawned alike — see `classifyRunnerFailure`.
-        // NOT `.slice(0, 2000)`. That front-slice was unreachable-by-construction for this plugin:
-        // the port appends the runner's last words AFTER `err.message`, which carries the whole of
-        // stderr, so at EVERY output size the 2000 characters kept here were Node's `Command failed:`
-        // preamble and the diagnosis was thrown away. The bound now lives where the string is
-        // composed and keeps the END.
+        // THE SUCCESS ARM IS NOT `runnerOutcomeDetail`, DELIBERATELY. See docs/plugins.md §479.
         detail: result.succeeded
           ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
           : `managed-scan: ${method} scan FAILED — ${runnerOutcomeDetail(result)}`
@@ -450,24 +326,9 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-/**
- * THE LAUNCHER SEAM (M23.1). `resolveLauncher` defaults to the Docker adapter — the only one that
- * exists until M23.2 — and is a FACTORY PARAMETER rather than a config field on purpose. Adapter
- * selection is not tenant-facing, and a new config field would have to join the server-injected,
- * never-tenant-settable class in all three enforcement layers (this manifest's `configSchema`,
- * `validatePluginConfig` at the four write doors, and the LAST-wins injection sites) for behaviour
- * no caller can yet ask for. THIS PLUGIN IS THE REASON THAT RULE IS WRITTEN DOWN: it shipped a live
- * RCE by sitting on `KNOWN_EXECUTOR_MODULES` with no manifest, so `dockerBinary` was tenant-settable
- * and `execFile`d.
- */
+/** THE LAUNCHER SEAM. See docs/plugins.md §480. */
 export function createManagedScanExecutorPlugin(
-  // THE DEFAULT IS THE SELECTING RESOLVER, NOT THE DOCKER ONE — M23.2, AND THIS LINE IS THE WIRING.
-  // `subprocess-entry.ts` constructs this plugin with NO argument, so whatever stands here is what
-  // every production run uses. While it was `resolveDockerRunnerLauncher`, an operator could set
-  // `runnerLauncher: "kubernetes"` through every layer of the chart and every managed run would
-  // still shell out to a `docker` binary the `scpd` image does not ship — a feature correctly built
-  // and installed nowhere, which is this repository's dominant defect class (CLAUDE.md). Delete
-  // this and `runner-launcher-selection.test.ts`'s named case for this plugin dies.
+  // THE DEFAULT IS THE SELECTING RESOLVER, NOT THE DOCKER ONE. See docs/plugins.md §481.
   resolveLauncher: ResolveRunnerLauncher = resolveRunnerLauncher
 ): ExecutorPlugin {
   return {
@@ -481,12 +342,7 @@ export function createManagedScanExecutorPlugin(
 
 export const managedScanExecutorPlugin: ExecutorPlugin = createManagedScanExecutorPlugin();
 
-/**
- * Manifest `configSchema` is the TENANT-facing surface only — `additionalProperties: false` so a
- * binding that tries to set the server-governed `dockerBinary`/`runnerImage`/`networkMode`/
- * `workspaceRoot` fields is REJECTED at create/update. The server injects those fields into this
- * plugin's runtime config itself (executor-bindings-repo.ts's `managedScanServerSettings`).
- */
+/** Manifest `configSchema` is the TENANT-facing surface only. See docs/plugins.md §482. */
 export const manifest: PluginManifest = {
   id: "managed-scan",
   kind: "executor",
@@ -495,11 +351,7 @@ export const manifest: PluginManifest = {
     type: "object",
     additionalProperties: false,
     properties: {
-      // BOUNDED AT BOTH ENDS (M23.1c). The `maximum` is the half that was missing: with only a
-      // floor, a tenant could set 2^31 and make the runner unkillable by its own timeout AND
-      // unbound the plugin-host RPC budget derived from it. Enforced at every write door by
-      // `validatePluginConfig` (Ajv honours `maximum`), and clamped again host-side for rows
-      // stored before the ceiling existed.
+      // BOUNDED AT BOTH ENDS. See docs/plugins.md §483.
       timeoutMs: {
         type: "integer",
         minimum: MANAGED_RUN_TIMEOUT_MIN_MS,

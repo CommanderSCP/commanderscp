@@ -18,57 +18,7 @@ import { getLatestCampaignPlan } from "./campaign-plan-service.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 
-/**
- * A MALFORMED RELEASE TOPOLOGY MUST FAIL AS LOUDLY ON THE CAMPAIGN PATH AS ON THE CHANGE PATH.
- *
- * ============================================================================================
- * THE PROPERTY, AND WHY THIS SUITE EXISTS AT ALL
- * ============================================================================================
- * `parseTopologyWaves` used to return `undefined` for anything it did not understand, and
- * `compilePlan` reads `undefined` as "no topology" and falls back to a bare toposort. So a junk
- * topology compiled CLEANLY to one anonymous wave: the operator saw a topology attached, a plan
- * compiled and a release run, with nothing anywhere saying the document was garbage. A
- * silently-ignored configuration is worse than a rejected one.
- *
- * That was fixed on the change side, and the fix named the property precisely — one property, three
- * instances. It was then applied to ONE of the property's TWO call sites. `campaign-plan-service.ts`
- * held its own copy of the parser, in the exact pre-fix shape, so every instance stayed live for
- * campaigns: a junk topology ran as one undifferentiated wave, exactly as before.
- *
- * The parser is now a shared module (`topology-waves.ts`) rather than a second copy, which is the
- * only form of the fix that cannot regress the same way. These tests are the campaign half of the
- * evidence — the change half lives in `stage-compilation.integration.test.ts`.
- *
- * ============================================================================================
- * WHAT IS ASSERTED, AND WHY IT IS NOT THE ERROR MESSAGE
- * ============================================================================================
- * The campaign path does not throw to a caller: `campaign-reconcile.ts` catches a compile fault,
- * records a `plan_diff` block Decision and retries next tick. So the observable behaviour of the fix
- * is the pair "NO plan compiled" + "a blocking Decision exists" — and the first half is the one that
- * matters, because compiling a WRONG plan is the failure being fixed. Asserting the message text
- * would pin wording rather than behaviour; a test that stays green while the campaign silently runs
- * one anonymous wave is exactly the kind this codebase has been burned by.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | restore `campaign-plan-service.ts`'s own lenient `parseTopologyWaves` | the three malformed tests FAIL — each compiles a 1-wave plan instead of refusing, which is precisely the bug |
- * | `topology-waves.ts`: drop the `waves.length === 0` branch | the EMPTY-array test FAILS (a plan compiles) |
- * | `topology-waves.ts`: drop the unknown-key check | the unknown-key test FAILS (a plan compiles) |
- * | `topology-waves.ts`: throw on an ABSENT `waves` key too | the non-regression test FAILS — refusing a topology-less campaign would break the overwhelming majority of real ones |
- *
- * TWO of these tests were WRONG when first written, and both were caught by mutation rather than by
- * reading — which is the whole argument for running them:
- *
- *  1. the fixture surgery ran INSIDE the creating transaction, on the surgeon's own connection, so
- *     it updated nothing and the topology stayed `{}` — a legal document. The test would have
- *     compiled a plan and passed while measuring an empty document.
- *  2. the unknown-key case named a made-up target id, so `compilePlan` refused it for a reason that
- *     had nothing to do with the parser. It stayed GREEN under a mutation removing the very guard it
- *     claimed to test. It now names the campaign's real target, isolating the guard.
- */
+/** A malformed topology must fail as loudly on either path. See docs/coordination.md §227. */
 describe("a malformed release topology is refused on the CAMPAIGN path too", () => {
   let server: TestServer;
   let sandbox: CountingCelSandbox;
@@ -90,18 +40,7 @@ describe("a malformed release topology is refused on the CAMPAIGN path too", () 
     return JSON.parse(JSON.stringify(document).replaceAll("__TARGET__", componentId));
   }
 
-  /**
-   * Privileged fixture surgery, bypassing Ajv — and the honest reachability story for two of the
-   * four cases below.
-   *
-   * `release-topology`'s registered property schema (migration 0007 §9) already rejects a non-array
-   * `waves` and a bad `mode` at the write door, so the API is NOT how such a document arrives. What
-   * reaches the parser unvalidated comes from elsewhere: a federated `object_upsert` applied against
-   * a DIFFERENT schema version, a row predating a schema tightening, or the `topology_document`
-   * SNAPSHOT copied into `campaign_plans` at compile time, which Ajv never re-validates. The other
-   * two cases — an empty `waves` array and an unknown wave key — the registered schema PERMITS, so
-   * they arrive through the front door and need no surgery at all.
-   */
+  /** Privileged fixture surgery, bypassing Ajv. See docs/coordination.md §228. */
   async function writeRawProperties(objectId: string, properties: unknown) {
     const surgeon = new pg.Client({ connectionString: testDatabaseUrl() });
     await surgeon.connect();
@@ -115,23 +54,7 @@ describe("a malformed release topology is refused on the CAMPAIGN path too", () 
     }
   }
 
-  /**
-   * A campaign over one real component, carrying `document` as its release topology. When `document`
-   * is one the registered schema refuses, pass `viaSurgery` — the topology is created empty and the
-   * document is written underneath it by `compileOnce`, AFTER this transaction commits.
-   *
-   * `__TARGET__` anywhere in `document` is replaced with the real component id. That is not sugar:
-   * a wave naming a target the change does not carry makes `compilePlan` itself refuse, so a test
-   * written with a made-up target id passes whether or not the PARSER validates anything — which is
-   * exactly how the unknown-key case below was first written, and it stayed green under a mutation
-   * that removed the guard it claimed to test.
-   *
-   * The commit ordering is load-bearing and was also got wrong once here: the surgeon holds its OWN connection,
-   * so an UPDATE issued while this transaction is still open cannot see the uncommitted row and
-   * silently updates NOTHING. The topology then stays `{}`, which parses as "no waves key at all" —
-   * a perfectly legal document — and the test compiles a plan and passes for entirely the wrong
-   * reason. It was caught only because the assertion pointed at `null`.
-   */
+  /** A campaign over one component, carrying a topology. See docs/coordination.md §229. */
   async function campaignWithTopology(
     org: TestOrg,
     label: string,

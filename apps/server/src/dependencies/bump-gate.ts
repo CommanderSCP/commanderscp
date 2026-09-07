@@ -24,147 +24,13 @@ import { listSubscribedComponentLines } from "./subscription-resolution.js";
 import { pickComponentGitBinding, startManagedDepInstance } from "./managed-dep-instance.js";
 import { checkBumpMergeFreeze } from "./bump-merge-freeze.js";
 
-/**
- * M21.5 — THE AUTO-MERGE LINK: what asks the delivery question a SECOND time, and what actuates the
- * answer (ADR-0032 §8c, charter `scp-managed-dep` amendment).
- *
- * ============================================================================================
- * WHAT WAS MISSING, AND WHY IT WAS THREE THINGS RATHER THAN ONE
- * ============================================================================================
- * `resolveEffectiveDelivery` was built correct and unreachable. It grants `auto_merge` only on a
- * governed control run that evidences the component's OWN checks passed FOR THE BUMP'S OWN COMMIT —
- * both narrowings right, and both satisfiable only after the branch exists and CI has concluded on
- * it. Nothing in the tree produced that moment:
- *
- *   1. NO CONTROL EVER RAN ON A BUMP CHANGE. `control_runs` rows are deposited by the gate machinery
- *      on a lifecycle edge or a wave boundary; `coordination/reconcile.ts` prewarms governance only
- *      for changes sitting in `validating`, and a bump change sits at `proposed` from the moment
- *      `proposeChange` writes it. So the evidence the grant requires could not exist.
- *   2. NOTHING RE-EVALUATED THE CHANGE AFTER ITS PULL REQUEST WAS OPENED. The only trigger was a
- *      line's head advancing, an advance to a different version is a DIFFERENT change, and a
- *      restatement deliberately emits nothing.
- *   3. THERE WAS NO MERGE. The only merge in the tree was the tail of an authoring run — reachable
- *      only by a run that had just created the very commit it would merge, which is the one commit a
- *      control cannot have passed beforehand.
- *
- * This file is (1) and (2); (3) is `@scp/plugin-managed-dep`'s `action: "merge"`.
- *
- * ============================================================================================
- * (1) THE GATE IS THE EXISTING GATE. NO SECOND GATE PATH IS CREATED.
- * ============================================================================================
- * ADR-0032 §8: "Auto-merge's CI-green condition is expressed as a governed control so the EXISTING
- * gate machinery decides, not new code." So this job calls
- * `governance/gate-orchestrator.ts`'s `prewarmGovernanceForChange` — the same function
- * `coordination/reconcile.ts` calls for a validating change, unchanged — which resolves the
- * component's effective policies, evaluates each contributor's own condition, and runs the required
- * controls those FIRED policies name, threading the change's own `commit_sha` into every control
- * context. What comes out is ordinary `control_runs` rows with ordinary evidence, which
- * `resolveEffectiveDelivery` then reads exactly as it always did.
- *
- * WHAT THIS DELIBERATELY DOES NOT DO IS ADVANCE THE CHANGE. Driving a bump down the deploy lifecycle
- * to make gates fire would coordinate a release nobody asked for: a bump is a proposed edit to a
- * manifest, not a deployment of anything. `prewarmGovernanceForChange` is the right seam precisely
- * because it RUNS controls and materialises approvals while transitioning nothing — its own doc
- * calls that out ("Runs (never blocks, never writes a Decision)"), and `reconcile.ts` relies on the
- * same property.
- *
- * A CONSEQUENCE WORTH STATING: if an org's policies name no required control for this component, no
- * control run appears, `resolveEffectiveDelivery` finds nothing, and the bump is delivered as a pull
- * request. That is the charter clause working, not a gap — "automatic merge is permitted only where
- * a governed control evidences that the component's own checks passed", and an org that has declared
- * no such control has evidenced nothing. Absence is never permission.
- *
- * ============================================================================================
- * (2) THE TRIGGER IS AN OBSERVED EVENT ABOUT THE BUMP, AND IT IS EMITTED AT ONE DOOR
- * ============================================================================================
- *   a provider webhook -> change_source_events
- *     -> processChangeSourceEvents -> matchAuthoredBumpChange (BOTH routes: the authored ref, and
- *        the bump's own recorded head commit)
- *     -> outbox `scp.dependency.bump_observed`   [in the ingress transaction]
- *     -> domain-events -> {@link observedBumpRouter} (one cheap predicate, one enqueue, no work)
- *     -> {@link DEPENDENCY_BUMP_GATE_QUEUE} -> this file's worker.
- *
- * WHICH REAL EVENT CARRIES "THE CHECKS WENT GREEN", measured rather than assumed:
- * `@scp/plugin-github`'s `mapEvent` maps `push`, `pull_request`, `workflow_run`, `deployment` and
- * `release` — `check_suite`/`check_run` are not mapped at all — and `workflow_run` carries
- * `commitSha: workflow_run.head_sha` with NO ref. That is the conclusion event, and reaching it
- * needed two additive changes stated here rather than left to be discovered: `ExtractedHint` now
- * carries `commitSha` (the adapter had always produced one and ingress dropped it), and
- * `matchAuthoredBumpChange` gained a head-commit route so a ref-less CI event attaches to the bump
- * whose commit it names instead of minting a second, unrelated change. Gitea maps no workflow event
- * and GitLab maps `Pipeline Hook`; neither matters for this path, because a bump can only be
- * authored through a GitHub App (`repo-write.ts`'s `resolveRepoWriter` refuses the other two by
- * name).
- *
- * A ROUTER, NOT A SECOND WORKER — `boss.work()` is a COMPETING consumer, so a second `work()` on
- * `domain-events` would steal roughly half of M21.4's and M21.5's events and receive roughly half of
- * its own (`events/pgboss.ts`'s `DomainEventRouter`). It is likewise its OWN queue rather than a
- * second worker on `dependency-bump`, for the identical reason.
- *
- * IDEMPOTENT AND RE-DERIVED. Nothing is trusted from the event but the change id: the claim, the
- * head commit, the delegation verdict, the subscription and the control runs are all re-read. A
- * redelivery therefore reaches the same answer, and a merge that already happened finds no OPEN pull
- * request and refuses (the plugin never re-opens one).
- *
- * ============================================================================================
- * (3) FAIL-CLOSED, IN EVERY DIRECTION THE CHARTER NAMES
- * ============================================================================================
- * "Delivery is a pull request by default, and automatic merge is permitted only where a governed
- * control evidences that the component's own checks passed." Every one of these is a REFUSAL with
- * its own named cause ({@link BumpGateRefusal}), never a fallthrough:
- *
- *   * SCP recorded no authorship for this change                         -> no merge
- *   * the recorded ref is not the ref this change's own bump would author -> no merge
- *   * no head commit observed back yet                                    -> no merge
- *   * SCP never recorded which pull request it opened                     -> no merge
- *   * the component has NO conclusive delegation verdict on record        -> no merge
- *   * the repository delegates its dependency updates to somebody else    -> no merge
- *   * the subscription no longer resolves, or resolves to `pull_request`  -> no merge
- *   * the governed gate does not grant `auto_merge` for THIS commit       -> no merge
- *
- * ============================================================================================
- * EVERY ONE OF THOSE INPUTS IS A FACT SCP ITSELF RECORDED (migration 0063)
- * ============================================================================================
- * The repository, the base branch, the component, the line, the branch's head commit and the pull
- * request number are read from `dependency_bump_authorships` — server-owned storage written only by
- * the actuator, by the ingress that observes SCP's own branch back, and by this file.
- *
- * They used to be read from `changes.source_ref.scp_authored`. `source_ref` is the raw delivery
- * payload plus a few lifted keys and is writable verbatim by ANY authenticated principal through
- * `POST /api/v1/changes`; the event that starts this job is producible through
- * `POST /change-sources/{kind}/report`. So a tenant could fabricate a "bump" naming any repository
- * and have this job merge into it with SCP's credential — a confused deputy, and one no amount of
- * validating that field could close. A change with no authorship row is not a bump change and stops
- * at the first refusal below.
- *
- * THE DELEGATION RULE IS STRICTER HERE THAN AT THE AUTHORING SEAM, and deliberately.
- * `assertComponentNotDelegated` refuses when a standing verdict SAYS delegated; absence of a verdict
- * is permissive there, because the authoring path is the thing that produces the verdict in the
- * first place (ADR-0032 §8b's stated residual). A merge produces nothing and requires more: an
- * INCONCLUSIVE probe writes no verdict at all, so "no verdict" is exactly what an unreadable
- * repository looks like, and the requirement here is a POSITIVE, conclusive "this repository does
- * not delegate". Absence of evidence is not evidence.
- *
- * ============================================================================================
- * THE ROLE GUARD IS THE DISPATCHER'S, AND IT IS IMPORTED RATHER THAN RESTATED
- * ============================================================================================
- * `bumpDispatchRoleGuard` asks "may this process write to a source repository with a credential?"
- * and answers commander-only, fail-closed on an undeclared `SCP_FEDERATION_ROLE`. That is the same
- * question this job asks — merging is a repository write, and a strictly more consequential one than
- * opening a pull request — so the guard is the same object, not a copy of its verdict. A copy is
- * where the two would drift, and the direction they would drift is toward an outpost merging into
- * somebody's default branch.
- */
+/** M21.5 — THE AUTO-MERGE LINK. See docs/dependencies.md §108. */
 
 export const DEPENDENCY_BUMP_GATE_QUEUE = "dependency-bump-gate";
 
 /** The `decisions.kind` every merge verdict is filed under — also the key `insertDecisionIfChanged`
  *  compares the previous verdict on, so it must be a constant. */
 export const DEPENDENCY_BUMP_MERGE_DECISION_KIND = "dependency_bump_merge";
-
-// -------------------------------------------------------------------------------------------
-// The router
-// -------------------------------------------------------------------------------------------
 
 /** What {@link observedBumpRouter} puts on {@link DEPENDENCY_BUMP_GATE_QUEUE}. */
 export interface BumpGateJob {
@@ -197,10 +63,6 @@ export function observedBumpRouter(): DomainEventRouter {
     }
   };
 }
-
-// -------------------------------------------------------------------------------------------
-// The job
-// -------------------------------------------------------------------------------------------
 
 export type BumpGateRefusal =
   /** SCP recorded no authorship for this change — so whatever `source_ref` claims, this instance did
@@ -256,7 +118,6 @@ export interface BumpGateOutcome {
    *  subscription could never merge — see the module doc). */
   gateEvaluated: boolean;
   merged: boolean;
-  /** Absent exactly when `merged` is true. */
   refusal?: BumpGateRefusal;
   /** The sentence an operator can act on. Recorded on the Decision. */
   detail: string;
@@ -272,16 +133,7 @@ export interface BumpGateLoopDeps {
   >;
 }
 
-/**
- * Run ONE queued job. Exported so an integration test drives the exact function the worker runs.
- *
- * PHASES, and the split is the one ADR-0032 §7c clause 2 established: read in a transaction, do
- * provider I/O OUTSIDE any transaction, write in a transaction. The governance prewarm is the
- * exception and it is the SHIPPED exception — `coordination/reconcile.ts` calls it inside a
- * transaction too, because `ensureControlRun` writes its `control_runs` row in the same transaction
- * that decided it, which is what makes a control outcome a durable historical fact rather than
- * something a crash can lose after the external call was already made.
- */
+/** Run ONE queued job. See docs/dependencies.md §109. */
 export async function runBumpGateJob(
   deps: BumpGateLoopDeps,
   job: BumpGateJob
@@ -302,21 +154,11 @@ export async function runBumpGateJob(
     return { changeObjectId, gateEvaluated, merged: false, refusal, detail };
   };
 
-  // ---- PHASE 1 (read) -----------------------------------------------------------------------
-  // Everything is RE-READ, and every fact that leads to a repository write is read from SCP'S OWN
-  // RECORD (`dependency_bump_authorships`) rather than from `changes.source_ref`, which any
-  // authenticated principal can write. The event carries a change id and nothing else is trusted
-  // from it.
+  // Phase one: the read. See docs/dependencies.md §110.
   const facts = await withTenantTx(deps.db, orgId, async (tx) => {
     const authorship = await readBumpAuthorship(tx, orgId, changeObjectId);
     if (!authorship) return { kind: "no_authorship" as const };
-    // ALREADY MERGED — and this is checked FIRST, before any refusal can be recorded.
-    //
-    // A merge produces its own provider events: the merge commit's push to the base branch, and
-    // whatever CI runs on it. Those correlate straight back to this bump (the head-commit route) and
-    // re-run this job. That second run finds no OPEN pull request and would record
-    // `withheld / merge_refused`, so the LATEST Decision for a bump that DID merge said it did not —
-    // charter principle 6 inverted, on the one irreversible action in the whole feature.
+    // Already merged, and this is checked first of all. See docs/dependencies.md §111.
     if (authorship.mergedAt) return { kind: "already_merged" as const, authorship };
     if (authorship.authoredRef !== bumpRefFor(changeObjectId)) {
       return { kind: "ref_mismatch" as const, authorship };
@@ -416,15 +258,7 @@ export async function runBumpGateJob(
       changeObjectId,
       targetObjectIds: [componentObjectId],
       actorObjectId: SYSTEM_ACTOR_ID,
-      // CONTROLS ONLY. `prewarmGovernanceForChange` exists to make a change's gate outcomes READABLE
-      // by the time a human calls `POST /changes/{id}/accept` — which is why it also MATERIALISES
-      // every firing policy's approval requests. That is right for a change on its way through the
-      // lifecycle and wrong here: a bump change is deliberately never advanced (a bump is not a
-      // deployment), so nothing will ever consume those approval requests and every bump would leave
-      // a permanently-pending approval task in somebody's queue, once per firing policy, forever.
-      //
-      // The CONTROLS are what this job needs — they are the evidence the charter's clause is about —
-      // and they are unaffected.
+      // Controls only, and why the prewarm is narrowed. See docs/dependencies.md §112.
       materializeApprovals: false
     })
   );
@@ -451,31 +285,7 @@ export async function runBumpGateJob(
     );
   }
 
-  // ---- PHASE 3b (M25.8 — THE FREEZE, owner decision D8) --------------------------------------
-  // THE LAST QUESTION BEFORE THE ONE IRREVERSIBLE ACT, and its position is the argument.
-  //
-  // It is asked AFTER the governed gate rather than with the cheap refusals above, and that costs a
-  // control run during a freeze window on purpose: the gate's `control_runs` rows are the evidence
-  // the grant reads, and depositing them WHILE the window stands is what makes "pull requests
-  // accumulate during the freeze and merge when it closes" true on the NEXT attempt instead of
-  // requiring CI to conclude all over again afterwards. It also keeps the two refusals distinct — a
-  // bump refused here has been proven safe and is held by the calendar, which is a different sentence
-  // from `not_evidenced` and resolves by a different act.
-  //
-  // AND "THE NEXT ATTEMPT" IS A THING SOMETHING PRODUCES (M25.8b). This job is enqueued by
-  // `observedBumpRouter` off a PROVIDER WEBHOOK about the bump's branch, and a freeze expiring,
-  // being lifted or being shortened touches no repository — so for one release the refusal below
-  // promised a retry nothing scheduled, and every bump refused inside a window was stranded for
-  // ever. `dependencies/bump-freeze-redrive.ts` is the producer: a 60s sweep that re-asks
-  // `checkBumpMergeFreeze` for exactly the bumps this refusal named and re-enqueues them here.
-  //
-  // It is asked AFTER the binding check for the complementary reason: a component with no git
-  // binding can never merge, freeze or no freeze, and reporting `frozen` for it would promise an
-  // outcome at `endsAt` that will not arrive.
-  //
-  // NOT A PAUSE, and the honest boundary is `freeze-hold.ts`'s: `ExecutorPlugin` has no
-  // advance/pause/resume verb (ADR-0008 forbids adding one). A freeze withholds a call SCP has not
-  // made yet; it cannot un-merge one already handed to a provider.
+  // Phase three-b: the freeze. See docs/dependencies.md §113.
   const frozen = await withTenantTx(deps.db, orgId, (tx) =>
     checkBumpMergeFreeze(tx, orgId, componentObjectId)
   );
@@ -491,11 +301,7 @@ export async function runBumpGateJob(
     });
   }
 
-  // ---- PHASE 4 (actuate — outside any transaction) -------------------------------------------
-  // THIS RUN's own plugin-instance namespace. `bump-dispatch.ts` is a concurrent consumer of the
-  // same component binding and also stops its instances in a `finally`; a shared id meant either
-  // job could tear down the other's subprocess mid-RPC — including the `status()` call below, which
-  // is issued AFTER the provider may already have merged. See `managed-dep-instance.ts`.
+  // Phase four: actuate, outside any transaction. See docs/dependencies.md §114.
   const runToken = randomUUID();
   let phase: string;
   let detail: string;
@@ -521,20 +327,12 @@ export async function runBumpGateJob(
         pullRequestNumber
       })
     });
-    // ASKED, NOT ASSUMED — and asked with the ref the plugin ITSELF returned rather than one this
-    // file recomposed from the idempotency key. `trigger()` returns the run ref, this class runs
-    // synchronously to completion, so `status()` is the honest record of whether the merge HAPPENED
-    // rather than of whether a dispatch was made. A provider refusal (branch protection, a required
-    // review, a check that went red since the gate) is a `failed` phase with the reason in `detail`.
+    // ASKED, NOT ASSUMED. See docs/dependencies.md §115.
     const status = await executor.status(ref);
     phase = status.phase;
     detail = status.detail ?? "";
   } catch (err) {
-    // A THROW HERE USED TO LEAVE NO DECISION AT ALL — the one class of merge refusal where charter
-    // principle 6's "every blocked response carries a `decision_id`" was not honoured. The
-    // reachable causes are ordinary: the runner image is not configured on this deployment, the
-    // binding cannot be resolved, the plugin host is unreachable. Nothing merged, and an operator
-    // must be able to see why from the same place every other refusal is recorded.
+    // A THROW HERE USED TO LEAVE NO DECISION AT ALL. See docs/dependencies.md §116.
     return refuse(
       "merge_dispatch_failed",
       `the merge was authorised but the dispatch itself failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -553,11 +351,7 @@ export async function runBumpGateJob(
       { headCommit, pullRequestNumber, controlObjectId: resolution.controlObjectId }
     );
   }
-  // THE MERGE HAPPENED — record that BEFORE the Decision, because it is what stops the merge's own
-  // provider events from re-running this job and overwriting the verdict below with a refusal. A
-  // crash between the two leaves the merge stamped and the Decision missing, which is the
-  // recoverable direction: the next observed event returns "already merged" and writes nothing,
-  // rather than writing "not merged" about a merge that happened.
+  // THE MERGE HAPPENED. See docs/dependencies.md §117.
   await withTenantTx(deps.db, orgId, (tx) => markBumpMerged(tx, orgId, changeObjectId)).catch(
     (err) => {
       console.error(
@@ -584,19 +378,7 @@ export async function runBumpGateJob(
   };
 }
 
-/**
- * One Decision per verdict, through `insertDecisionIfChanged`.
- *
- * WHY `IfChanged` AND WHY THE INPUTS ARE STABLE FACTS ONLY: this path repeats per observed event on
- * the bump's branch, which is the write-amplification shape that cost 1.44 GB/day elsewhere in this
- * tree. A redelivered event, or a second CI event on the same commit, re-derives the same refusal
- * and writes no new row.
- *
- * WRITTEN AFTER THE ATTEMPT, not before it: a Decision that recorded "merge authorised" and then
- * failed to say what happened is the record charter principle 6 is least useful as. The cost is that
- * a crash between the provider's merge and this write leaves the merge unrecorded — recoverable,
- * because the next observed event re-runs the job and finds no OPEN pull request.
- */
+/** One Decision per verdict, and why it is if-changed. See docs/dependencies.md §118. */
 async function recordMergeVerdict(
   deps: BumpGateLoopDeps,
   orgId: string,
@@ -631,23 +413,11 @@ async function recordMergeVerdict(
   });
 }
 
-// -------------------------------------------------------------------------------------------
-// The loop
-// -------------------------------------------------------------------------------------------
-
 export interface BumpGateLoopHandle {
   stop(): Promise<void>;
 }
 
-/**
- * Register the capability's worker. The ROUTER is registered separately, by
- * `events/domain-event-registry.ts` under the SAME guard as the dispatcher's, and a refused guard
- * contributes no router — so an event is not even enqueued for a queue nothing will drain.
- *
- * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE, the same shape every other
- * background loop uses and for the same reason: a process that merely skipped the work inside the
- * handler would still hold a worker for a queue it will never act on.
- */
+/** Register the capability's worker. See docs/dependencies.md §119. */
 export async function startBumpGateLoop(
   boss: PgBoss,
   deps: BumpGateLoopDeps

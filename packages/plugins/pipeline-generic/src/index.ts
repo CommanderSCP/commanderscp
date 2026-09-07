@@ -14,35 +14,7 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 
-/**
- * `@scp/plugin-pipeline-generic` — M10.6's generic pipeline executor (BUILD_AND_TEST.md §8 M10.6:
- * "extract `@scp/plugin-pipeline-generic` from the terraform Mode-1 shape (Mode 1 becomes a
- * preset)"), extracted verbatim from `@scp/plugin-terraform`'s Mode-1 implementation (DESIGN.md
- * §12's "the org's pipeline remains the executor... Trigger: kick the org's pipeline"). Covers the
- * entire CI/CD/IaC long tail — any pipeline that can POST a JSON body and answer a JSON status —
- * at zero marginal engineering per system, air-gap-friendly via the pull-side CLI/webhook report
- * path (`POST /change-sources/{sourceKind}/report`, ADR-0002 §7).
- *
- * `@scp/plugin-terraform` is now a PRESET of this package (same defaults, own manifest `id`) —
- * see that package's module doc. A future GitLab-CI-generic/Jenkins-generic preset follows the
- * exact same pattern: a thin config-defaults wrapper around `createPipelineGenericExecutorPlugin`.
- *
- * `trigger()`/`status()`/`abort()` are configured URL templates (the same escape-hatch shape
- * `@scp/plugin-webhook-control` established for "POST somewhere, interpret the response") rather
- * than hardcoded against one vendor's API. The default `statusField`/`succeededValues`/
- * `failedValues` vocabulary matches Terraform Cloud's own `Run` status enum (the most structured
- * of Mode 1's three original targets — TFC, Atlantis, a GitHub Actions workflow wrapping tofu); a
- * preset for a pipeline with a different vocabulary overrides those fields in its own config.
- *
- * `observe()` is intentionally a no-op ([]): this executor's actual observe path is INBOUND, not
- * polled — either `scp change report --plan-json` (packages/cli) or a native webhook, both landing
- * through the SAME `POST /change-sources/{sourceKind}/report`/webhook ingress every other source
- * kind uses (routes/change-sources.ts). The DISCIPLINE that separates this from a "call any URL"
- * bus is that inbound path's REQUIRED structured-evidence schema
- * (`ChangeReportRequestSchema`/`SbomRefSchema`, `additionalProperties:false` as of M10.6) — see
- * `packages/schemas/src/executors.ts` — never this plugin, which has no evidence-shape opinion of
- * its own.
- */
+/** The generic pipeline executor plugin. See docs/plugins.md §513. */
 
 export interface PipelineGenericConfig {
   /** URL to POST to kick the pipeline — a run-creation call, a generic webhook, or a
@@ -54,11 +26,11 @@ export interface PipelineGenericConfig {
    *  always report "pending" (a pipeline relying purely on inbound `scp change report`/webhooks
    *  for completion, with no pollable run-status API, sets no `statusUrl`). */
   statusUrl?: string;
-  abortUrl?: string; // same `{externalId}` templating
+  abortUrl?: string;
   runIdField?: string; // default "id" — the field in trigger()'s response body holding the run id
   statusField?: string; // default "status" — the field in status()'s response body
-  succeededValues?: string[]; // default: Terraform Cloud's terminal-success values
-  failedValues?: string[]; // default: Terraform Cloud's terminal-failure values
+  succeededValues?: string[];
+  failedValues?: string[];
   statePath?: string;
 }
 
@@ -101,24 +73,7 @@ interface DedupState {
   keys: Record<string, { externalId: string; url?: string }>;
 }
 
-/**
- * THE LEDGER IS BOUNDED. `state.keys` is keyed by `idempotencyKey`, and `reconcile.ts` sets that to
- * the wave-target id — a fresh value per (change x wave target) — so with a persistent `statePath`
- * this map grew by one permanent entry per target ever triggered, forever. That is not only disk:
- * `loadState` `JSON.parse`s the WHOLE file on every `trigger()`/`status()`, so the cost is
- * O(total history ever) paid on every poll. `@scp/plugin-managed-iac` found and fixed exactly this
- * in its own structurally identical cache (measured there at 500 keys: 2 MB); the fix never
- * travelled to this package, which `@scp/plugin-terraform` is a preset of and so inherits.
- *
- * Oldest-first eviction, keeping the most recent {@link DEDUP_CACHE_MAX_KEYS}. What an entry must
- * outlive is the reconcile poll that follows its own `trigger()` plus a crash-and-retry window in
- * which the same key is re-issued; dropping an entry a retry then asks for re-triggers a pipeline
- * that already ran, so the bound is set far above anything that can be in flight.
- *
- * REPLICATED, NOT IMPORTED: `@scp/runner-launcher`'s `pruneOutcomeRecord` is the same six lines,
- * but a plugin package depends only on `@scp/plugin-api` — pulling in the container-launching
- * package for a helper would be a far worse trade. Noted as a candidate for a shared extraction.
- */
+/** THE LEDGER IS BOUNDED. See docs/plugins.md §514. */
 const DEDUP_CACHE_MAX_KEYS = 200;
 
 function pruneDedupState(state: DedupState): void {
@@ -246,20 +201,7 @@ export function createPipelineGenericExecutorPlugin(): ExecutorPlugin {
   return pipelineGenericExecutorPlugin;
 }
 
-/**
- * The tenant-facing config surface for this plugin AND for every preset built on it
- * (`@scp/plugin-terraform` today). `additionalProperties: false` is load-bearing rather than
- * tidiness, and it is what a permissive schema had been costing:
- *
- *  - `statePath` is SERVER-GOVERNED — `resolveExecutorPluginInstance` injects it for every executor
- *    instance and spreads it LAST — so it is deliberately absent here, the same shape by which
- *    `managed-iac`'s schema refuses `runnerImage`/`networkMode`/`workspaceRoot`. Without
- *    `additionalProperties: false` the absence achieved nothing: an unlisted key was simply stored.
- *  - the general property: a config key no schema names is a key no reviewer has ever had to
- *    reason about. `PipelineGenericConfig` is the whole contract this plugin reads; anything else in
- *    a binding is either a typo (silently inert — the `runIdField` typo that makes every run report
- *    the wrong external id) or an attempt at a field the plugin does not offer.
- */
+/** The tenant-facing config surface, shared by every preset. See docs/plugins.md §515. */
 export const pipelineGenericConfigSchema: Record<string, unknown> = {
   type: "object",
   required: ["triggerUrl"],

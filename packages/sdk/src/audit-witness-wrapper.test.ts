@@ -4,17 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScpClient } from "./client.js";
 import { ScpResponseValidationError } from "./errors.js";
 
-/**
- * Federation audit witness (multi-region-instance-resilience.md §7.2.7) —
- * `client.federation.listAuditWitnesses()`, the post-failover peers-witness comparison's read
- * surface (resilience runbook §7.2 step 5). The route already existed; only the hand-written
- * `ScpClient` wrapper (and the CLI command on top of it) was missing.
- *
- * Driven through the REAL generated client against a loopback HTTP server, same harness as
- * `dependency-read-surface-wrappers.test.ts` — DELETE THE WIRING: this test dies if the wrapper
- * line is removed from `client.ts`, points at the wrong generated request, or drops the
- * `originDomainId` query param on the way through.
- */
+/** Federation audit witness. See docs/sdk.md §2. */
 
 function wellFormedAuditWitnesses(): unknown {
   return {

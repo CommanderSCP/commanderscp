@@ -2,12 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { federationPeerSanUri, parsePeerDomainIdFromSanUri } from "./mtls-enforcement.js";
 
-/**
- * Pure-function coverage for the SAN URI identity scheme (ADR-0001 — `urn:scp:domain:<domainId>`,
- * chosen over `spiffe://` and over the certificate's CN). No DB, no TLS socket — the fail-closed
- * behavior these guard (reject on ANY parse ambiguity) is what `mtls.integration.test.ts` proves
- * end-to-end against a real TLS connection; this file is the fast, exhaustive edge-case sweep.
- */
+/** Pure-function coverage for the SAN URI identity scheme. See docs/federation.md §296. */
 describe("federation SAN URI identity (ADR-0001)", () => {
   it("round-trips a domain id through federationPeerSanUri -> parsePeerDomainIdFromSanUri", () => {
     const domainId = randomUUID();

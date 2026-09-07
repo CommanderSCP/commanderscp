@@ -4,71 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { atLineStart, readHashStripped } from "@scp/source-census";
 
-/**
- * SCANNER PIN DRIFT GATE (mirrors deploy/airgap/src/cosign-bin.test.ts's role for cosign): the single
- * sources of truth are `tools/trivy/pin.env` and `tools/openscap/pin.env`; `apps/runner-scan/Dockerfile`'s
- * `ARG TRIVY_IMAGE` / `ARG OPENSCAP_IMAGE` defaults carry copies. This test fails the build if a copy
- * drifts — so the runner image can never be built FROM anything but the vetted, human-verified pins.
- * Pure text parsing — no Docker, runs in the fast `pnpm test` layer. It is also a FAIL-CLOSED VERSION
- * check: an unset/blank pin (the old stub state) fails the suite.
- *
- * ================================================================================================
- * WHY THE DOCKERFILE IS READ THROUGH `@scp/source-census` AND NOT `readFileSync`
- * ================================================================================================
- * MEASURED 2026-08-17: commenting out `ARG TRIVY_IMAGE=` and `ARG OPENSCAP_IMAGE=` in
- * `apps/runner-scan/Dockerfile` left this file green at 7/7. `readPin` below was already immune (it
- * skips `#` lines), but every Dockerfile assertion read raw text, so a drift gate over the pins that
- * decide WHICH SCANNER BINARY RUNS could be satisfied by a comment.
- *
- * The oscap-version case was worse than a hypothetical: `apps/runner-scan/Dockerfile` carries TWO
- * prose comments (lines 42 and 85) that quote the assertion — ``oscap --version | grep -qF "(oscap)
- * ${OPENSCAP_PINNED_VERSION}"`` — verbatim, to explain it. The unanchored search below matched those
- * comments, so the RUN step doing the actual fail-closed check could have been deleted outright with
- * this suite still green. That is the "well-written comment naming a hazard" trap from CLAUDE.md,
- * live: the documentation of a control was standing in for the control.
- *
- * Two readers, because the shapes differ: `atLineStart` for the `ARG …=` lines (which begin their
- * line, so a `#` cannot precede them), and `readHashStripped` for the `RUN` block, whose live lines
- * are CONTINUATIONS starting `&& oscap …` / `\` and therefore cannot be anchored at all.
- *
- * AND THE LIMIT: this fixes the comment case and no more. It still cannot see a `FROM` stage the
- * final image never draws from, a `RUN` behind a shell condition that is never true, or the same
- * text inside a heredoc. What the pin CANNOT be talked out of is the build itself — the
- * `oscap --version | grep -qF` step fails the image build on drift, and `scanner-containment.test.ts`
- * proves the scanners exist nowhere else.
- *
- * ================================================================================================
- * THAT BACKSTOP CLAIM, VERIFIED RATHER THAN ASSERTED (2026-08-17)
- * ================================================================================================
- * "The build itself is the real gate" is exactly the shape of claim that turns out to be false — a
- * signal that is read while no actuator exists. So it was checked, and it holds. Both halves:
- *
- *   THE STEP IS REAL. `apps/runner-scan/Dockerfile` names the version assertion three times: lines
- *   42 and 85 are the PROSE COMMENTS described above, and line 90 is the live `RUN` continuation
- *   that pipes a `--version` call into `grep -qF` against `${OPENSCAP_PINNED_VERSION}`.
- *   `readHashStripped` removes whole-line `#` comments, so 42 and 85 are gone by the time the
- *   assertion below runs and only line 90 can satisfy it. That is the M21.7 fix doing its job,
- *   confirmed by reading the stripped text rather than by trusting the change.
- *
- *   THE QUOTE THAT USED TO BE HERE WAS ITSELF A CONTAINMENT VIOLATION, which is worth leaving a
- *   note about rather than silently rewording. This paragraph originally reproduced line 90
- *   verbatim, `&&` and all — and `scanner-containment.test.ts` failed it, because a scanner name in
- *   shell COMMAND POSITION inside a `packages/**` file is exactly what that gate forbids, and its
- *   invocation detector reads RAW on purpose so a comment cannot hide one. The gate was right: a
- *   file explaining a control had started to look like the control. Describe the step; do not
- *   re-type it. (`packages/source-census`'s own fixture was fixed for the same reason in fb3e1a2,
- *   by renaming its sample binary to a neutral placeholder.)
- *
- *   THE BUILD ACTUALLY RUNS, ON EVERY PR. CI job 4c ("Prebuild + publish runner images to GHCR")
- *   builds `apps/runner-scan` with no main-only guard — its own comment: "Runs on every push/PR …
- *   so a PR that touches a runner Dockerfile or a scanner pin rebuilds + republishes before the
- *   integration job pulls it." A version drift therefore fails a PR check, not just a release.
- *
- * The one thing neither half covers: DELETING the `RUN` step. The build would then succeed with no
- * assertion at all, and only the census below would notice — which is precisely why it is anchored
- * to the code rather than reading raw text, and why it is worth keeping now that the prose comments
- * can no longer satisfy it.
- */
+/** SCANNER PIN DRIFT GATE. See docs/plugins.md §494. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../../..");

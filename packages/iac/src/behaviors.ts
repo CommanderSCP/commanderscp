@@ -1,36 +1,4 @@
-/**
- * TYPED PIPELINE BEHAVIOURS (L2) — `Workflow`, the four test hooks, and the two rollout strategy
- * classes, as thin sugar over the increment-8 contract in `@scp/schemas`.
- *
- * ================================================================================================
- * THE GRAMMAR THESE FOLLOW, AND WHERE IT COMES FROM
- * ================================================================================================
- * D15(b) as amended by D17: **a `Workflow` scopes to its pipeline, which carries repo + branch;
- * `path:` is within that repo; a test hook scopes to the `Workflow`.** That scope chain IS how a
- * test knows where the code and the template live — so the repo is not repeated on every hook, and
- * it cannot drift from the pipeline's own source mapping, because it is read from the same place.
- *
- * D8's rule then applies at the boundary: **inference at synth, explicitness at apply.** The
- * construct infers `repo` and `branch` from the scope chain; the MANIFEST always carries them
- * literally. Nothing server-side ever infers.
- *
- * D16(3): durations are the `Duration` value class on every duration-shaped prop (`every`,
- * `maxAge`, `quietWindow`, `pauseBetween`), percentages are plain numbers on self-describing props
- * (`weightPercent`, `batchPercent`). Never `"5m"`, never `"25%"`.
- *
- * D16(6): every construct exports its props interface, optionals carry `@default`, and the types
- * those props use are the contract's own — one vocabulary from authoring to wire, so a prop cannot
- * drift from what plan/apply accepts. Where a construct is a natural singleton per scope, `id`
- * defaults to the construct kind and is typed only when declaring same-kind siblings.
- *
- * ================================================================================================
- * WHY THESE EMIT THROUGH THE L1 DOORS
- * ================================================================================================
- * Every construct here ends in `stack.addPipelineHook(...)` / `addRollout(...)` — the same L1
- * hatches a hand-authoring caller uses. D16(1)'s "an L1-authored entry and its L2 equivalent
- * synthesize identically" is then true by construction rather than by two code paths agreeing,
- * which is the same reason `addManifestEntry` entries sort in beside typed constructs' objects.
- */
+/** TYPED PIPELINE BEHAVIOURS. See docs/iac.md §172. */
 
 import type {
   ManifestPipelineHook,
@@ -41,21 +9,11 @@ import type {
 import { Construct, type Stack } from "./construct.js";
 import type { Duration } from "./duration.js";
 
-/**
- * The scope chain a behaviour needs: which stack to declare into, and which component the
- * declaration is ABOUT.
- *
- * A pipeline scoped to a SERVICE (D8's shared-rung exception) has no component — `PipelineBase`
- * says so at length for source mappings and placements, and hooks are in the same position: the
- * contract keys every hook on `componentUrn`, and which components inherit a service-rung pipeline
- * is decided at READ time, not at this program's synth time. So such a pipeline reports
- * `componentUrn: undefined` and the constructs below refuse, naming the reason.
- */
+/** The scope chain a behaviour needs. See docs/iac.md §173. */
 export interface BehaviorHost {
   readonly stack: Stack;
   /** The pipeline's repo (D18 — always explicit on the pipeline itself). */
   readonly repo: string;
-  /** The pipeline's branch, if it declared one. */
   readonly branch?: string;
   /** The component this pipeline is attached to, or `undefined` at the shared rung. */
   readonly componentUrn?: string;
@@ -114,13 +72,7 @@ export interface WorkflowProps {
   readonly branch?: string;
 }
 
-/**
- * WHERE A TEST'S CODE AND TEMPLATE LIVE. Scopes to a pipeline and inherits its repo and branch;
- * the test hooks scope to this.
- *
- * It declares nothing on its own — a workflow nobody gates on is not a manifest entry, it is an
- * unused file — so this construct emits no manifest entry by itself. The hooks under it do.
- */
+/** WHERE A TEST'S CODE AND TEMPLATE LIVE. See docs/iac.md §174. */
 export class Workflow extends Construct {
   readonly ref: WorkflowRef;
   /** Re-exposed so a hook scoped to this workflow finds the host by walking `scope` upward. */
@@ -160,14 +112,7 @@ function workflowOf(scope: Construct, what: string, path: string): Workflow {
   );
 }
 
-/**
- * POST-MERGE — gates entry to WAVE 1, and fires on merge to the pipeline's branch.
- *
- * It does NOT gate the artifact reaching the registry, and the contract says why at length: D22 puts
- * build → unit → scan → sign → push inside the team's own workflow, so SCP first sees the artifact
- * when the build reports a digest. The build-internal gate is DISPLAYED by `scp iac render`, not
- * enforced here.
- */
+/** Post-merge gates entry to the first wave, on merge. See docs/iac.md §175. */
 export class PostMergeTest extends Construct {
   constructor(scope: Workflow, id = "postMerge") {
     super(scope, id);
@@ -227,11 +172,7 @@ export class PostDeployTest extends Construct {
 export interface ContinuousTestProps {
   /** The cron cadence Argo Workflows runs this probe on. Descriptive: SCP does not schedule it. */
   readonly every: Duration;
-  /**
-   * Evidence older than this reads as ABSENT — not stale-pass, and not fail. Required, because it
-   * is the entire reason the hook exists: a probe that last succeeded six hours ago is evidence
-   * that nobody has looked, not that the target is healthy.
-   */
+  /** Evidence older than this reads as ABSENT. See docs/iac.md §176. */
   readonly maxAge: Duration;
 }
 
@@ -275,13 +216,7 @@ export interface BakeAlarmsProps {
   readonly stage?: string;
 }
 
-/**
- * BAKE ALARMS — a declared quiet window that must pass alarm-free after a target deploys.
- *
- * Scopes to the PIPELINE, not to a `Workflow`: it triggers nothing, so it has no template to point
- * at. It consumes signals that already exist (the rollout executor's analysis, plus pushed alarm
- * state), which is why the contract gives it no `workflow` field at all.
- */
+/** Bake alarms: a quiet window that must pass alarm-free. See docs/iac.md §177. */
 export class BakeAlarms extends Construct {
   constructor(scope: Construct, id = "bakeAlarms", props: BakeAlarmsProps) {
     super(scope, id);

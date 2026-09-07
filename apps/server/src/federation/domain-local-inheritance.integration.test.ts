@@ -8,40 +8,13 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M20.5 (ADR-0031 §6a) — LOCALITY IS INHERITED AT CREATE, ONE HOP, ALONG EITHER CONTAINMENT ROUTE.
- *
- * ## Why this is a door census and not three happy-path cases
- *
- * §6a's one-hop rule is sound only *by induction*: reading the immediate parent equals what a full
- * ancestor walk would return **because every intermediate container was itself stamped at its own
- * create**. The ADR names the precondition explicitly and calls it load-bearing — every create door
- * must funnel through `createObject`'s containment-parent resolution or
- * `createComponentInService`'s container resolution.
- *
- * A door that resolves a parent by itself would produce a **shared object inside a domain-local
- * subtree**: no error, no leak at the moment of creation, and a silent hole the next time that object
- * is journaled. That is the M20.1 eight-door census one level up, and it is why every create door
- * that can name a container is exercised here rather than sampled.
- *
- * ## The two routes, and why both are needed
- *
- * `containment.ts` walks two parent routes, and an object can arrive under a container by either:
- *   - **`domain_id`** — resolved by `createObject` before the insert;
- *   - **`contains`** — the edge does not exist yet when `createObject` runs (it is written *after*
- *     the object), so `createComponentInService` reads the container and threads the flag in.
- *
- * Only testing the first would leave the component path — the one an operator actually uses for
- * "everything under this service is domain-local" — completely unguarded.
- */
+/** Locality is inherited at create, one hop, either route. See docs/federation.md §100. */
 describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both containment routes", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
   let admin: ScpClient;
 
-  /** A domain-local containment DOMAIN — route 1's container. */
   let localDomainId: string;
-  /** An ordinary containment domain, the control. */
   let sharedDomainId: string;
 
   const uniq = (p: string) => `${p}-${randomUUID().slice(0, 8)}`;
@@ -83,9 +56,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     await server?.close();
   });
 
-  // ---------------------------------------------------------------------------------------------
   // ROUTE 1 — the `domain_id` parent, across every door that accepts one.
-  // ---------------------------------------------------------------------------------------------
 
   it("POST /objects/{type} — a child of a domain-local container is domain-local without saying so", async () => {
     const res = await post("/api/v1/objects/service", {
@@ -150,9 +121,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(res.body).domainLocal).toBe(true);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // ROUTE 2 — the `contains` parent. The edge does not exist when `createObject` runs.
-  // ---------------------------------------------------------------------------------------------
 
   it("POST /components — a component created into a domain-local SERVICE inherits", async () => {
     const service = await admin
@@ -190,9 +159,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(res.body).domainLocal).toBe(false);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // THE INDUCTION — the property that makes one hop sufficient.
-  // ---------------------------------------------------------------------------------------------
 
   it("INDUCTION: a GRANDCHILD is domain-local, because the intermediate was stamped at its own create", async () => {
     // domain(local) -> service(inherits) -> component(inherits from the service).
@@ -205,7 +172,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     });
     expect(service.statusCode).toBe(201);
     const serviceObj = JSON.parse(service.body);
-    expect(serviceObj.domainLocal).toBe(true); // base: the intermediate really is stamped
+    expect(serviceObj.domainLocal).toBe(true);
 
     const component = await post("/api/v1/components", {
       name: uniq("grandchild"),
@@ -215,9 +182,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(component.body).domainLocal).toBe(true); // step
   });
 
-  // ---------------------------------------------------------------------------------------------
   // THE REFUSAL — an explicit opt-out inside a local subtree.
-  // ---------------------------------------------------------------------------------------------
 
   it("an explicit domainLocal:false inside a domain-local container is REFUSED, not silently overridden", async () => {
     // Both silent options are worse than a 400. Honouring the `false` puts a federating object inside
@@ -243,9 +208,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(res.body).domainLocal).toBe(false);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // M20.7 (ADR-0031 §6c) — WHY, not just whether. Three exhaustive states, no discriminator field.
-  // ---------------------------------------------------------------------------------------------
 
   it("PROVENANCE: an INHERITED object names the container it inherited from, with a resolvable urn", async () => {
     const res = await post("/api/v1/objects/service", {

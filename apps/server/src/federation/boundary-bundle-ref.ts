@@ -1,48 +1,7 @@
 import { z } from "zod";
 import { PromotionManifestSchema } from "@scp/schemas";
 
-/**
- * M16.1 (I1) — THE PER-CHANGE JOIN between a change and the bundle transfers that carried it.
- *
- * ## Why this exists
- *
- * `bundle_transfers` (`schema.ts`, drizzle/0034) is a PER-HOP observational ledger: one row per
- * `.scpbundle` this instance produced or consumed, keyed on `(org, peer, direction, kind)` with a
- * `checksum` — and deliberately NO change/component column. The boundary segment needs the opposite
- * cut: "which transfers carried THIS change?".
- *
- * A **promotion** bundle is 1:1 with a change (`exportPromotionBundle` gathers exactly one change),
- * and the ledger row already records that bundle's `checksum`. Correlating by checksum is the same
- * join the inbox loop already relies on (`inbox-loop.integration.test.ts` matches a processed file
- * to its ledger row by checksum). So the join is made by STAMPING the bundle checksum onto the
- * change's existing JSONB `sourceRef` — no new column, no migration.
- *
- * ## Where the stamp is written
- *
- * - EXPORT (the promoting instance, `promotion-repo.ts::exportPromotionBundle` phase 4) — appends
- *   the checksum of the bundle it just produced. Several peers ⇒ several checksums, hence a list.
- * - IMPORT (the receiving instance, `promotion-repo.ts::applyPromotionImport`) — sets the list to
- *   exactly the checksum of the bundle the change arrived in (1:1 by construction).
- *
- * ## Why the exported payload is STRIPPED
- *
- * The bundle's `change.sourceRef` is snapshot BEFORE the export's own stamp is written, but a
- * RE-export of an already-exported change would otherwise carry the earlier hop's checksums into
- * the canonical bundle string and change the Ed25519 checksum of an otherwise identical bundle.
- * {@link withoutBoundaryBundleChecksums} removes the key from the exported payload so a bundle stays
- * byte-identical to what it would have been before this key existed, forever. The exporter's own
- * checksums are local observational bookkeeping and mean nothing on the far side anyway — the
- * receiver stamps the checksum IT observed.
- *
- * ## What this is NOT
- *
- * It is not authority. The journal's own sequence/hash chain is what makes replication safe; this
- * key is read-only decoration for the boundary segment: one instance's ledger rows are its own, so
- * no peer should ever build a segment out of another's stamp. Exactly how far that holds is stated
- * precisely on `changes-repo.ts::stampBoundaryBundleChecksum` — the export-side stamp is genuinely
- * un-journalled, the IMPORT-side one does ride the `change_status` payload, and the reason that
- * leak is harmless is a property of the `change_status` import path, not of this key.
- */
+/** The per-change join between a change and its transfers. See docs/federation.md §49. */
 
 /** The `sourceRef` key holding the checksums of the promotion bundles that carried this change. */
 export const BOUNDARY_BUNDLE_CHECKSUMS_KEY = "boundaryBundleChecksums";
@@ -82,27 +41,9 @@ export function withoutBoundaryBundleChecksums(
   return rest;
 }
 
-// ---------------------------------------------------------------------------------------------
 // §9.4 (pipeline-substrate-registry-scan.md) — WHAT THE COMMANDER SIGNED, persisted at export.
-// ---------------------------------------------------------------------------------------------
 
-/**
- * The `sourceRef` key holding one record PER EXPORT of this change: the peer it was addressed to,
- * when, the bundle checksum (the same value `boundaryBundleChecksums[]` carries — the join key
- * between the two lists), the SELF-BINDING promotion manifest the commander built, its detached
- * cosign signature, and the fingerprint of the instance key that signed it.
- *
- * WHY IT EXISTS. Before this key the exporter persisted NOTHING of what it signed: the manifest and
- * `manifestSignature` were created in `exportPromotionBundle` phase 3, placed in the returned bundle,
- * and forgotten; only the IMPORTER stored them (on the imported change). So the commander could say
- * "exported (checksum …)" and could not say "signed WHAT, for WHOM, with WHICH key" — the Build/Scan &
- * sign tiles' PM/sign facts had no source. Same lock, same UPDATE, same non-journalled bare write as
- * the checksum stamp (`changes-repo.ts::stampBoundaryBundleChecksum`).
- *
- * WHY THE EXPORTED PAYLOAD IS STRIPPED. Exactly the reason `withoutBoundaryBundleChecksums` exists:
- * a re-export must stay byte-identical, and one peer's signed manifest is local bookkeeping that
- * means nothing to another peer (which verifies the manifest it RECEIVES, as a sibling of the bundle).
- */
+/** The key holding one record per export of this change. See docs/federation.md §50. */
 export const PROMOTION_EXPORTS_KEY = "promotionExports";
 
 /** One stamped export record — the shape written by `withPromotionExport` and read back leniently
@@ -118,12 +59,7 @@ export const PromotionExportStampSchema = z.object({
 });
 export type PromotionExportStamp = z.infer<typeof PromotionExportStampSchema>;
 
-/** The export records stamped on a change's `sourceRef`, defensively read: entries that do not
- *  parse are COUNTED (`unparseable`) rather than dropped silently or fabricated — the projection
- *  states the count in `unknownFields`. A MISSING key (`undefined`/`null`) is `[]` with
- *  `unparseable: 0`; a key that is PRESENT but not a list is one unreadable value (`unparseable: 1`)
- *  — the same honesty rule `artifact-facts.ts` applies to a malformed `sbom`: something is stored
- *  under the key, so its absence must not be claimed. */
+/** The export records on a change, read defensively. See docs/federation.md §51. */
 export function promotionExportsOf(sourceRef: unknown): {
   entries: PromotionExportStamp[];
   unparseable: number;
@@ -169,21 +105,9 @@ export function withPromotionExport(
   return base;
 }
 
-// ---------------------------------------------------------------------------------------------
 // THE SERVER-OWNED `sourceRef` KEYS — what a caller may NOT plant.
-// ---------------------------------------------------------------------------------------------
 
-/**
- * Both keys above are written by exactly one server-side writer (`changes-repo.ts::
- * stampBoundaryBundleChecksum`, and the promotion importer for its own received checksum), and the
- * component pipeline RENDERS them as facts — "exported (checksum …)", "manifest signed for <peer>
- * (key <fp>)". `proposeChange` stores a caller's `sourceRef` VERBATIM (DESIGN §8: the delivery
- * payload is kept as-is), so without this list an org proposer could plant a stamp through
- * `POST /changes` and the Scan & sign tile would claim a signing that never happened. The two
- * UNTRUSTED doors refuse/strip these keys; the engine's own callers (federation import — which
- * legitimately writes the import-side checksum — rollback, campaign fan-out) call `proposeChange`
- * directly and are not filtered.
- */
+/** Both keys above have exactly one server-side writer. See docs/federation.md §52. */
 export const SERVER_OWNED_SOURCE_REF_KEYS: readonly string[] = [
   BOUNDARY_BUNDLE_CHECKSUMS_KEY,
   PROMOTION_EXPORTS_KEY

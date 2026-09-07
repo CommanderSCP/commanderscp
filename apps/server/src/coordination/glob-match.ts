@@ -1,10 +1,4 @@
-/**
- * A minimal glob matcher for `source_mappings.repo_pattern`/`path_pattern` (DESIGN.md §9.2).
- * Deliberately tiny rather than a new dependency (CLAUDE.md priority 1, Simplicity): supports
- * `*` (any run of characters except `/`) and `**` (any run of characters including `/`) —
- * enough to express "org/repo-*" or "services/**\/Dockerfile" style patterns without a glob
- * library.
- */
+/** A minimal glob matcher for the mapping patterns. See docs/coordination.md §543. */
 export function globMatch(pattern: string, value: string): boolean {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   // A single alternation-ordered replace — `**` is tried before `*` at every position, so there

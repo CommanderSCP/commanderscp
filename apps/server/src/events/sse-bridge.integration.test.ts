@@ -20,16 +20,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE CROSS-PROCESS PROOF (proposal multi-region-instance-resilience.md §7.1 item 1, closing
- * §4-A1). The relay and the bridge here run against SEPARATE `pg.Pool`s / separate dedicated LISTEN
- * connections — deliberately mirroring outbox-relay.integration.test.ts's own convention for
- * simulating "two processes sharing one Postgres" — so the only channel between them is the
- * `scp_sse_events` NOTIFY this suite exists to prove. Both still run in one Node process (as every
- * integration test here does; there is no real OS process boundary to cross in a test), but that is
- * exactly the same honest simplification `outbox-relay.integration.test.ts` already makes: the
- * thing under test is the POSTGRES boundary, not an OS one.
- */
+/** THE CROSS-PROCESS PROOF. See docs/events.md §53. */
 describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -149,11 +140,7 @@ describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", (
     };
     sseHub.on(org.orgId, onEvent);
     try {
-      // The bridge's dedicated LISTEN connection is identifiable by the literal query it issued and
-      // never issues again (startReconnectingListenClient's connect() runs exactly one `LISTEN
-      // scp_sse_events` per connection and nothing else on that client) — Postgres retains the last
-      // query text for an idle backend in `pg_stat_activity.query`. Scoped to this worker's own
-      // database (vitest.integration.config.ts: one private database per test FILE).
+      // The dedicated listen connection is identifiable by its query. See docs/events.md §54.
       const findListenerPid = () =>
         adminClient.query<{ pid: number }>(
           `SELECT pid FROM pg_stat_activity
@@ -209,21 +196,7 @@ describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", (
   }, 30_000);
 });
 
-/**
- * THE WIRING PROOF. `main.ts` starts `startSseBridge` for EVERY role because `app.listen()` there
- * is itself unconditional — an api-role process genuinely serves `GET /events/stream` and has
- * nothing else that can ever feed its `sseHub` now that the relay's direct `sseHub.publish` call is
- * gone (outbox-relay.ts's doc comment). This test calls that SAME production function
- * (`startSseBridge`) directly against a `role=api` server — the idiom
- * `plugin-host/host-bootstrap.integration.test.ts` established for exactly this shape of proof
- * ("these tests therefore call the PRODUCTION wiring directly rather than relying on the harness")
- * — and, unlike that precedent, demonstrates the NEGATIVE case in the same run: an api-role process
- * with a real relay running elsewhere but NO bridge started against it receives nothing, and the
- * identical event published afterward IS received the moment `startSseBridge` is called. Removing
- * the `startSseBridge(...)` call from this test (as opposed to from `main.ts`, which is the one
- * link every loop-wiring test in this tree still accepts checking only as text —
- * background-work.ts's own doc comment says so) turns the SECOND assertion into a timeout.
- */
+/** THE WIRING PROOF. See docs/events.md §55. */
 describe("wiring: an api-role process depends ENTIRELY on the bridge for sseHub delivery", () => {
   it("receives nothing before startSseBridge is called, and the SAME event type immediately after", async () => {
     const apiServer = await buildTestServer({ role: "api" });
@@ -257,11 +230,7 @@ describe("wiring: an api-role process depends ENTIRELY on the bridge for sseHub 
           data: { probe: true }
         })
       );
-      // POSITIVE SIGNAL for a negative assertion (integration-sleep-census.test.ts's property): the
-      // relay stamps `processed_at` when it has relayed the row, and the removed direct-publish
-      // path ran BEFORE that stamp inside the same relayOnce() — so once the stamp is visible,
-      // a still-empty `received` proves the old path is gone, with no fixed budget to go vacuous
-      // under contention or spuriously red on a slow box.
+      // POSITIVE SIGNAL for a negative assertion. See docs/events.md §56.
       await waitUntil(
         async () => {
           const res = await adminClient.query<{ processed_at: Date | null }>(

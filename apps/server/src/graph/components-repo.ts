@@ -26,19 +26,7 @@ export interface CreateComponentInServiceInput {
   domainLocal?: boolean;
 }
 
-/**
- * Strict component create (M12 P5a, docs/proposals/organize-after.md): the component object AND its
- * `service --contains--> component` edge, written in ONE transaction, so a component created
- * DIRECTLY always belongs to a service (owner ruling). Imports (discovery/accept, federation,
- * overlay) call `createObject` directly and never reach this path, so they stay permissive by
- * construction.
- *
- * Modeled on `coordination/campaign-repo.ts`'s `proposeCampaign` — the same object +
- * both-endpoint authz + edge + Decision shape (NOT campaign/change, which store targets as a
- * properties array). The `contains` cardinality (one_to_many) plus migration 0022's partial unique
- * index enforce one-service-per-component for free, and `createRelationship`'s endpoint-type check
- * rejects a `service` ref that isn't a service.
- */
+/** Strict component create. See docs/graph.md §15. */
 export async function createComponentInService(
   tx: TenantTx,
   input: CreateComponentInServiceInput
@@ -75,22 +63,7 @@ export async function createComponentInService(
     domainId: input.domainId,
     properties: input.properties ?? {},
     labels: input.labels,
-    // M20.5 (ADR-0031 §6a) — THE SECOND CONTAINMENT ROUTE. `createObject` inherits from the
-    // `domain_id` parent; it cannot see this one, because the `contains` edge to `service` does not
-    // exist yet — it is written below, AFTER the object. So the container's locality has to be read
-    // here and passed in.
-    //
-    // `service` is already loaded and type-checked above, so this costs no extra query. Combined
-    // with the caller's own declaration, mirroring §4's either-endpoint rule: a component is
-    // domain-local if it says so OR if the thing containing it is.
-    //
-    // Note this is the reason `domainLocal` is threaded rather than inferred later: making the
-    // component local when the EDGE is created would be a shared -> domain-local flip, which §6
-    // refuses permanently. It has to be true at create or never.
-    // M20.5 kept only the caller's own declaration here; M20.7 (ADR-0031 §6c) passes the container
-    // SEPARATELY so `createObject` can tell "the operator declared this" from "it followed its
-    // service". Folding them into one boolean, as M20.5 did, still produced a domain-local component
-    // but lost which of the two made it one — the entire question the provenance field answers.
+    // M20.5 (ADR-0031 §6a) — THE SECOND CONTAINMENT ROUTE. See docs/graph.md §16.
     domainLocal: input.domainLocal,
     ...(service.domainLocal
       ? { domainLocalInheritedFrom: { id: service.id, urn: service.urn } }
@@ -122,7 +95,6 @@ export interface SetComponentServiceInput {
   orgId: string;
   actorObjectId: string;
   requestId: string;
-  /** id or URN of the component to (re)assign. */
   componentIdOrUrn: string;
   /** id or URN of the service the component should belong to after this call. */
   serviceIdOrUrn: string;
@@ -135,28 +107,7 @@ export interface SetComponentServiceResult {
   outcome: "assigned" | "moved" | "noop";
 }
 
-/**
- * Idempotent atomic assign-or-move of a component into a service (M12 P5b, docs/proposals/
- * organize-after.md) — the one verb behind `PUT /components/{idOrUrn}/service`. It sets the
- * component's sole `contains` parent to `serviceIdOrUrn` whether the component currently has NO
- * service (ASSIGN — the 50-orphan homelab case), a DIFFERENT one (MOVE — re-parent), or the SAME
- * one (NOOP). Idempotent-set (not a create-only "assign") is deliberate: bulk-organizing orphans
- * must be safely re-runnable, and the generic `POST /relationships` already covers create-only-409.
- *
- * MOVE is atomic (owner ruling Q6): the old `contains` edge is soft-deleted and the new one created
- * in the SAME transaction, so the RBAC/policy/freeze walks that traverse `contains`
- * (authz/resolve.ts, governance/policy-resolve.ts, graph/containment.ts) never observe the component
- * orphaned — and the migration-0022 partial unique index (which filters `deleted_at IS NULL`)
- * permits the new edge only because the old one is already soft-deleted within this tx. A two-request
- * delete-then-create would momentarily strip the component from every scope; this closes that window.
- *
- * Both-endpoint authority, but WIDER than create-strict: the component PRE-EXISTS (unlike
- * `createComponentInService`'s fresh object), so the actor needs `relationship:write` over the
- * COMPONENT and the NEW service, PLUS the OLD service on a move (it loses a child). Cloning
- * create-strict's service-only check would under-authorize — assign needs 2 scopes, move needs 3.
- * A component whose current `contains` edge is a federation replica cannot be moved locally:
- * `deleteRelationship` refuses to mutate a read-only replicated edge (409), surfaced here unchanged.
- */
+/** Idempotent atomic assign-or-move of a component into a service. See docs/graph.md §17. */
 export async function setComponentService(
   tx: TenantTx,
   input: SetComponentServiceInput
@@ -201,16 +152,7 @@ export async function setComponentService(
     });
   }
 
-  // THE SECOND, OPT-IN BAR (proposal §9.2 door (c), owner ruling 2026-08-18). This verb is the
-  // `contains`-route move: the MOVED object is the component, the DESTINATION the new service or
-  // assembly. Checked here rather than only at the generic `/relationships` doors because this route
-  // never touches them — it calls `deleteRelationship`/`createRelationship` directly, which is the
-  // shape that let #244's containment fix ship inert on one of its three routes.
-  //
-  // An ASSIGN (no current edge) is a move too under this bar, and deliberately: the component's
-  // governance reach changes exactly as much when it acquires its first container as when it swaps
-  // one. `governance/move-enforcement.ts` decides whether any rung applies; a deployment with none
-  // pays one singleton read.
+  // THE SECOND, OPT-IN BAR. See docs/graph.md §18.
   await assertGovernanceMoveAdmits(tx, {
     orgId: input.orgId,
     subjectObjectId: input.actorObjectId,

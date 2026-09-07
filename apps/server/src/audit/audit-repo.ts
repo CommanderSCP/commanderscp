@@ -20,33 +20,11 @@ export interface AppendAuditEventInput {
   reason?: string | null;
   decisionId?: string | null;
   requestId: string;
-  /**
-   * M20.2 (ADR-0031 §2) — true when the SUBJECT of this audited action is a domain-local object, so
-   * the `audit_segment` journal entry below is withheld from every peer.
-   *
-   * SUPPLIED BY THE CALLER, never looked up here. The callers that mutate an object already hold its
-   * row, and making the audit path issue a query per event would put a read in the hot path of every
-   * audited action in the system to serve a small minority of them.
-   *
-   * THIS IS NOT OPTIONAL POLISH. The audit segment carries `subjectId` — the object's id — so
-   * without it a domain-local object's *identity* crosses on every single mutation even though its
-   * `object_upsert` is withheld. `domain-local-invisibility.integration.test.ts` found exactly that:
-   * the graph entries were correctly filtered and the id sailed out in the audit stream beside them.
-   *
-   * The LOCAL audit row is written unchanged either way — this withholds the entry from the journal,
-   * never from this domain's own hash-chained audit log, which stays complete and verifiable
-   * (charter principle 6). Locality is about what leaves, not about what is recorded.
-   */
+  /** Domain-local subject: withhold this entry from peers. See docs/audit.md §4. */
   subjectDomainLocal?: boolean;
 }
 
-/**
- * Appends one link to the org's hash chain, in the caller's transaction — DESIGN.md §4.3:
- * "written in the same transaction as the audited action". `pg_advisory_xact_lock` serializes
- * chain appends per org (held until COMMIT/ROLLBACK), so concurrent writers can never observe a
- * stale tail and fork the chain, and `seq` (see schema.ts) makes "the tail" unambiguous even
- * when two events share a millisecond timestamp.
- */
+/** Appends one link to the org's hash chain, in the caller's tx. See docs/audit.md §5. */
 export async function appendAuditEvent(tx: TenantTx, input: AppendAuditEventInput): Promise<void> {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${input.orgId}))`);
 
@@ -101,21 +79,7 @@ export async function appendAuditEvent(tx: TenantTx, input: AppendAuditEventInpu
     rowHash
   });
 
-  // M6 (DESIGN §13: "audit segments ride the federation journal, so cross-domain actions are
-  // audit-complete on both sides of a trust boundary"). Piggybacked on the ONE call site every
-  // audited action already funnels through, so every audit event — object/relationship/change/
-  // policy/approval/freeze/rollback mutations alike — automatically gets an `audit_segment`
-  // journal entry with zero additional call-site wiring anywhere else in the codebase.
-  // M20.2 (ADR-0031 §2 as corrected) — a domain-local subject's audit event is allocated NO journal
-  // sequence. The local `auditEvents` row above is written unconditionally and its hash chain stays
-  // complete and verifiable (charter principle 6): locality governs what LEAVES this domain, never
-  // what this domain records about itself.
-  //
-  // This one is easy to miss and was: the graph entries were correctly withheld while the object's
-  // id sailed out in the audit stream beside them, because `subjectId` IS the object id.
-  // `domain-local-invisibility.integration.test.ts` found it by searching the serialized bundle for
-  // the id rather than by checking which rows landed — which is why that assertion is written that
-  // way.
+  // Audit segments ride the federation journal to the peer side. See docs/audit.md §6.
   if (!input.subjectDomainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
@@ -153,11 +117,7 @@ function toAuditEvent(row: typeof auditEvents.$inferSelect): AuditEvent {
   };
 }
 
-/**
- * Cursor pagination in chain order (`seq`) — the order `scp audit verify` needs to re-walk the
- * chain (DESIGN.md §4.3). The cursor opaquely encodes `seq` (not `created_at`/`id` like every
- * other list endpoint) since that's the one column guaranteed to be a total, gapless order here.
- */
+/** Cursor pagination in chain order (`seq`). See docs/audit.md §7. */
 export async function listAuditEvents(
   tx: TenantTx,
   orgId: string,

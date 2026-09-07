@@ -147,7 +147,6 @@ export function producerFixture(
   };
 }
 
-/** One covered line in a declare/retract report. */
 export function lineImpactFixture(
   over: Partial<DependencyProducerLineImpact> = {}
 ): DependencyProducerLineImpact {

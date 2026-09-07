@@ -31,13 +31,7 @@ async function runCli(args: string[], env: Record<string, string>): Promise<void
   await execFileAsync(process.execPath, [CLI_BIN, ...args], { env: { ...process.env, ...env } });
 }
 
-/**
- * Compose-stack-only specs (BUILD_AND_TEST.md §8 M2 DoD (a) literal wording; scripts/e2e-web.sh).
- * Skipped entirely for the LOCAL target (`pnpm --filter @scp/web test:e2e`, no
- * `PLAYWRIGHT_BASE_URL`) — that Testcontainers-backed server has neither `SCP_SEED_DEMO` data
- * nor a built `packages/cli/dist/bin.js` alongside it. Requires `pnpm build` (for the CLI binary)
- * in addition to `pnpm --filter @scp/web build` — scripts/e2e-web.sh does both.
- */
+/** Compose-stack-only specs, per the literal wording. See docs/web.md §24. */
 test.describe("seeded demo data (compose stack only)", () => {
   test.skip(!process.env.PLAYWRIGHT_BASE_URL, "compose-stack only — see scripts/e2e-web.sh");
 

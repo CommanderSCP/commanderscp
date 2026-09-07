@@ -1,23 +1,4 @@
-/**
- * 13.2b — the `s3-compatible` DeliveryTarget client (proposal §13.2, owner decision D3: AWS SDK v3).
- *
- * The put/list/get half of the provider dispatch in `delivery-target.ts`. Isolated here so the AWS
- * SDK import lives behind one seam (delivery-target.ts stays db-free and provider-agnostic), and so
- * the S3 path is exercised as a unit against MinIO.
- *
- * WHY the AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/lib-storage`) and not a hand-rolled PutObject
- * (owner decision D3): relay tarballs are multi-GB, and `lib-storage`'s managed MULTIPART upload is
- * the difference between a working drop and a hand-rolled one that fails on large bodies; first-party
- * SigV4 correctness (chunked/streaming signing edge cases) and built-in retry/backoff are exactly the
- * surface an unattended boundary loop must not get subtly wrong. The vendoring cost is real, but the
- * air-gap principle constrains RUNTIME NETWORK CALLS, not dependency size — the SDK is vendored at
- * build time like everything else (charter principle 5), and S3 stays OPTIONAL (Postgres is the only
- * required stateful dependency, principle 4). MinIO/S3-compatibles are reached via the `endpoint`
- * override + `forcePathStyle`.
- *
- * CREDENTIALS are resolved from the vault by the caller (ADR-0019 §3 artifact-store class,
- * `deliveryTargetSecretKey`) and passed in — never read from `process.env`/argv/config, never logged.
- */
+/** 13.2b — the `s3-compatible` DeliveryTarget client. See docs/federation.md §73. */
 import { Readable } from "node:stream";
 import {
   S3Client,
@@ -34,23 +15,12 @@ export interface S3DeliveryCredentials {
   secretAccessKey: string;
 }
 
-/**
- * The region an S3-compatible put/list/get signs under. Real AWS S3 needs the bucket's true region;
- * MinIO and most S3-compatibles ignore it but still require a value for SigV4. Operator-overridable
- * via `SCP_DELIVERY_S3_REGION` (default `us-east-1`). This is signing metadata, not an egress target
- * — it never widens which endpoint/bucket is reachable (that is the `SCP_DELIVERY_S3_ENDPOINTS`
- * allowlist's job), so it needs no allowlist.
- */
+/** The region an S3-compatible put/list/get signs under. See docs/federation.md §74. */
 export function deliveryS3Region(): string {
   return process.env.SCP_DELIVERY_S3_REGION || "us-east-1";
 }
 
-/**
- * Build a per-operation `S3Client` for one resolved location. `forcePathStyle: true` so a MinIO/
- * S3-compatible endpoint addresses `<endpoint>/<bucket>/<key>` (virtual-hosted-style would require
- * per-bucket DNS the operator's CDS S3 rarely has). The client is disposable — callers `destroy()`
- * it after the single operation (an unattended loop opens no long-lived connection pool).
- */
+/** Build a per-operation `S3Client` for one resolved location. See docs/federation.md §75. */
 function makeS3Client(loc: ResolvedS3Location, creds: S3DeliveryCredentials): S3Client {
   return new S3Client({
     endpoint: loc.endpoint,
@@ -63,12 +33,7 @@ function makeS3Client(loc: ResolvedS3Location, creds: S3DeliveryCredentials): S3
   });
 }
 
-/**
- * PUT a channel artifact via managed multipart (`lib-storage` `Upload`). `body` may be a Buffer,
- * string, or a stream — `Upload` chunks a large body into parts automatically, so a multi-GB relay
- * tarball drops without a hand-rolled PutObject. `partSize` is overridable for tests that force the
- * multipart path with a small threshold; production uses the SDK default (5 MiB minimum part).
- */
+/** PUT a channel artifact via managed multipart. See docs/federation.md §76. */
 export async function s3Put(
   loc: ResolvedS3Location,
   creds: S3DeliveryCredentials,
@@ -92,13 +57,7 @@ export async function s3Put(
   }
 }
 
-/**
- * LIST the object BASENAMES under a location's prefix — names only, never full keys or paths, so the
- * §13.1a inbox surface (and its `resolveUnderDir` traversal guard) survives across providers. Keys
- * are paginated fully; each key has the prefix stripped, and any key naming a nested "subdirectory"
- * (a `/` after the prefix) is skipped — the two channel artifacts are always flat objects, exactly
- * as `listInbox`'s filesystem path lists only regular files, never subdirectories.
- */
+/** LIST the object BASENAMES under a location's prefix. See docs/federation.md §77. */
 export async function s3List(
   loc: ResolvedS3Location,
   creds: S3DeliveryCredentials

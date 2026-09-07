@@ -1,37 +1,4 @@
-/**
- * `pom.xml` — the project's own `<dependencies>` block.
- *
- * **Two Maven features are explicitly OUT OF SCOPE for this increment, and both are reported as
- * `unresolved` rather than guessed:**
- *
- * 1. **Parent-POM inheritance / `<dependencyManagement>`.** A `<dependency>` with no `<version>` is
- *    not under-specified — its version is supplied by a parent POM or a `<dependencyManagement>`
- *    section, quite possibly in a *different file in a different repository*. Resolving that means
- *    fetching and merging the parent chain, which is dependency RESOLUTION: exactly the work
- *    ADR-0032 §8 puts out of bounds ("Manifest-only edits. No lockfile resolution.") and exactly
- *    the I/O this package refuses to do.
- * 2. **Property interpolation** — `<version>${spring.version}</version>`. The value may come from
- *    this POM's `<properties>`, from a parent's, from a profile that is only active on some
- *    machines, from `-Dspring.version=…` on the command line, or from a `settings.xml`. Even the
- *    subset that *is* resolvable from this one file is only a DEFAULT. An interpolated version is
- *    therefore reported unresolved.
- *
- * Both are stated here as a scope boundary rather than discovered during implementation, per
- * ADR-0032's own standard for the lockfile limit ("a real functional limit … stated as a scope
- * boundary, not discovered during implementation"). A dependency reported `unresolved` is still a
- * real inventory row — the coordinate is known and the reverse query "which components declare
- * org.springframework:spring-core?" still answers correctly. Only the *version* is withheld, and
- * withholding it is what stops an actuator writing a confidently wrong number into someone's POM.
- *
- * **Only the project's own `<dependencies>`.** `<dependencyManagement><dependencies>` declares
- * versions for dependencies that may never be used, `<build><plugins>` are build-tool plugins, and
- * `<profiles>` are conditionally active. Each is excluded by matching the FULL element path
- * (`project/dependencies/dependency`) rather than the element name — a name-matching parser reads
- * all four blocks as one and reports dependencies the module does not have.
- *
- * **Maven scopes** map as: `compile` (the default) and `runtime` -> `runtime`; `test` -> `dev`;
- * `provided` and `system` -> `build` (available while compiling, deliberately not packaged).
- */
+/** `pom.xml`: the project's own dependencies block. See docs/dependency-manifests.md §65. */
 import { ManifestParseError, type DeclaredDependency, type DependencyScope } from "./types.js";
 import { parseComparableVersion } from "./version.js";
 
@@ -54,7 +21,6 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
-/** One `<dependency>` element's collected child text. */
 interface RawDependency {
   groupId?: string;
   artifactId?: string;
@@ -64,25 +30,7 @@ interface RawDependency {
   line?: number;
 }
 
-/**
- * Walk the document, tracking the full element path, and hand each `<dependency>` element's
- * children to `onChild`.
- *
- * A hand-written walker rather than an XML library for the same reason as `toml-lite.ts`: charter
- * principle 5 (offline, vendored, no runtime network) and a deliberately dependency-free package.
- * It handles comments, CDATA, processing instructions, self-closing elements and namespace
- * prefixes.
- *
- * WHAT IT REFUSES, precisely — the claim is narrowed to what is actually checked, because the
- * broader "throws on a malformed document" it used to make was false: it never compared a closing
- * tag to the stack top, so `<version>1.0</version></wrong>` was accepted as well-formed:
- * - an unterminated comment, CDATA section, declaration or tag;
- * - a closing tag that does not match the innermost open element;
- * - a closing tag with nothing open (stack underflow);
- * - a document that ends with elements still open.
- * It is NOT a validating parser: attributes, entity declarations, duplicate roots, encoding and
- * schema conformance are all unchecked, and a POM that passes here is not thereby valid XML.
- */
+/** Walk the document, tracking the full element path. See docs/dependency-manifests.md §66. */
 function walk(
   content: string,
   onDependency: (dep: RawDependency, path: readonly string[]) => void
@@ -243,7 +191,6 @@ function assignChild(dep: RawDependency, name: string, value: string): void {
 
 /** `[1.0,2.0)`, `(,1.0]`, `[1.0,)` — a Maven version RANGE, as opposed to the usual soft pin. */
 const MAVEN_RANGE_RE = /^[[(].*[\])]$/;
-/** `${anything}` anywhere in the version text. */
 const INTERPOLATION_RE = /\$\{[^}]*\}/;
 
 /**

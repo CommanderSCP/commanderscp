@@ -1,13 +1,4 @@
-/**
- * `CHECKSUMS.txt` generation/parsing — the coreutils `sha256sum`-format manifest the milestone
- * brief asks for ("checksums file, e.g. sha256sum-format CHECKSUMS.txt"). Kept dependency-free
- * (`node:crypto`/`node:fs` only) and pure enough to unit test without touching skopeo/cosign.
- *
- * Format: one line per file, `<64-hex-char sha256>  <path relative to bundle root>\n` (two
- * spaces, matching `sha256sum`'s own output so `sha256sum -c CHECKSUMS.txt` — a tool every
- * Linux/macOS box already has — works as a manual sanity check even without this package's own
- * verify-bundle.ts).
- */
+/** CHECKSUMS.txt in sha256sum format, dependency-free. See docs/airgap.md §19. */
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -52,11 +43,7 @@ export async function listFilesRecursive(root: string): Promise<string[]> {
   return out;
 }
 
-/**
- * Compute a CHECKSUMS.txt-shaped entry list for every file under `bundleRoot`, excluding the
- * checksums file itself and its signature (they can't checksum themselves, and the signature
- * file's own integrity is what covers CHECKSUMS.txt).
- */
+/** Entries for every bundle file, excluding itself and its sig. See docs/airgap.md §20. */
 export async function computeChecksums(
   bundleRoot: string,
   excludeRelativePaths: string[] = ["CHECKSUMS.txt", "CHECKSUMS.txt.sig"]
@@ -71,7 +58,6 @@ export async function computeChecksums(
   return entries;
 }
 
-/** Render entries as `sha256sum -c`-compatible text. */
 export function formatChecksums(entries: ChecksumEntry[]): string {
   return entries.map((e) => `${e.digest}  ${e.relativePath}`).join("\n") + "\n";
 }
@@ -102,11 +88,7 @@ export interface ChecksumMismatch {
   reason: "digest-mismatch" | "missing-on-disk" | "unexpected-extra-file";
 }
 
-/**
- * Verify every entry in `expected` against the real files under `bundleRoot`. Returns an empty
- * array on success. This is the function verify-bundle.ts's exit code hinges on — it must never
- * silently pass a bundle where a file was added, removed, or modified.
- */
+/** Verify every entry; the installer's exit code hinges on it. See docs/airgap.md §21. */
 export async function verifyChecksums(
   bundleRoot: string,
   expected: ChecksumEntry[]

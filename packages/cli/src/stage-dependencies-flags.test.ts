@@ -3,14 +3,7 @@ import { describe, expect, it } from "vitest";
 import { StageDependencySchema } from "@scp/schemas";
 import { buildProgram, parseStageDependenciesFlags } from "./cli.js";
 
-/**
- * ADR-0028 increment 1 — the CLI half of the declaration channel (charter principle 3: API → SDK →
- * CLI → IaC → UI). `scp change-source report` is THE channel a microservice's CI declares through,
- * so the flags are the surface an engineer actually types.
- *
- * Every parse result is validated against `StageDependencySchema` itself rather than a retyped
- * literal, so a future schema change cannot leave the flag parser emitting a shape the API refuses.
- */
+/** ADR-0028 increment 1 — the CLI half of the declaration channel. See docs/cli.md §144. */
 function findCommand(root: Command, path: string[]): Command | undefined {
   let current: Command | undefined = root;
   for (const name of path) {

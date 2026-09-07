@@ -9,23 +9,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Service-scoped RBAC (model P2 — docs/proposals/service-component-model.md; the `contains` edge is
- * migration 0021). DESIGN §7 has always documented the containment chain as
- * `component -> service -> domain -> organization`, but until now `authz/resolve.ts` walked
- * `objects.domain_id` ONLY — components and services are siblings under a domain, so a service-scoped
- * role binding reached NOTHING. The claim was real; the behaviour was not.
- *
- * This is an AUTHORIZATION change, so these tests are the gate. They must prove three things, and the
- * last two matter more than the first — a too-permissive walk is a privilege-escalation bug:
- *
- *   1. a binding at a SERVICE reaches its components (the new capability);
- *   2. a binding at a COMPONENT does NOT reach the service (no upward leak);
- *   3. a binding at a COMPONENT does NOT reach a SIBLING component (no lateral leak).
- *
- * The asymmetry is structural: `contains` is registered service -> component, and the walk follows it
- * backwards (to_id -> from_id), so a service is an ancestor of its components and never the reverse.
- */
+/** Service-scoped RBAC across the `contains` edge. See docs/authz.md §76. */
 describe("RBAC: a service-scoped binding reaches its components (and nothing else)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

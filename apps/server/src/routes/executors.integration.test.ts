@@ -10,15 +10,7 @@ import {
 } from "../test-support/harness.js";
 import { MANIFEST_BY_MODULE } from "../plugin-host/plugin-manifests.js";
 
-/**
- * M7 plugin-configuration surface (routes/executors.ts, routes/change-sources.ts's webhook-secret
- * addition) — real HTTP round trips via the SDK against a real Testcontainers Postgres, on every
- * PR at integration cost, without waiting on the heavier scripts/e2e-m7.sh job. This is the
- * permanent regression coverage for the exact bug scripts/e2e-m7.sh caught manually once: migration
- * 0014 originally never granted `scp_app` DELETE on `secrets`/`notification_bindings` — a gap no
- * unit test or Testcontainers-with-schema-created-fresh-per-suite test would catch unless it
- * actually exercises the DELETE route end to end, which this file now does permanently.
- */
+/** M7 plugin-configuration surface. See docs/routes.md §162. */
 describe("M7: executor/notification bindings, secrets, plugin manifests, discovery (never auto-commits)", () => {
   let server: ListeningTestServer;
 
@@ -109,8 +101,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       externalRef: "my-app"
     });
     expect(b1.executionSystemId).toBe(sys.id);
-    expect(b1.pluginModule).toBe("fake-executor"); // from the system's `kind`
-    expect(b1.pluginInstanceId).toBe(`execution-system:${sys.id}`); // shared instance key
+    expect(b1.pluginModule).toBe("fake-executor");
+    expect(b1.pluginInstanceId).toBe(`execution-system:${sys.id}`);
     expect(b1.externalRef).toBe("my-app");
 
     // A SECOND component on the SAME system gets the SAME instance id — so they share one observe
@@ -172,11 +164,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     ).rejects.toBeInstanceOf(ScpApiError);
   });
 
-  // THE `accept` BINDING-IMPORT CASE IS GONE WITH ITS ROUTE (ADR-0047). It proved that importing a
-  // proposal ALSO created the proposed execution-system bindings — import and coordinate in one
-  // step (M12 P3b). There is no one-step import now: the scaffolder emits a manifest whose
-  // `executorBindings` collection lands through `POST /plans` + apply, which
-  // `plans.integration.test.ts`'s C1 round trip covers on the door that still exists.
+  // THE `accept` BINDING-IMPORT CASE IS GONE WITH ITS ROUTE. See docs/routes.md §163.
 
   it("notification binding PUT/list/DELETE round-trips", async () => {
     const org = await createTestOrg(server, "m7-notify-binding");
@@ -222,11 +210,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     );
   });
 
-  // "…THE ONLY PATH THAT WRITES" WAS TRUE, AND IS NOW TRUE MORE STRONGLY. This case proved that a
-  // proposal's objects did not exist until someone explicitly accepted it — discovery alone never
-  // wrote. With `POST /discovery/accept` removed (ADR-0047) discovery cannot write AT ALL: the only
-  // way a proposal becomes estate is a human committing scaffolded IaC and applying it. The case is
-  // removed because its subject is gone, not because the property weakened.
+  // The only-path-that-writes claim, now true more strongly. See docs/routes.md §164.
 
   it("webhook signature verification is fail-closed once a secret is configured: bad signature 401s and is never persisted, a valid one is accepted and correlates", async () => {
     const org = await createTestOrg(server, "m7-webhook-sig");
@@ -313,7 +297,6 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     expect(first.accepted).toBe(true);
     expect(second.eventId).toBe(first.eventId);
 
-    // Exactly one row exists for this org+sourceKind+deliveryId.
     const { withTenantTx } = await import("../db/tenant-tx.js");
     const { changeSourceEvents } = await import("../db/schema.js");
     const { and, eq } = await import("drizzle-orm");
@@ -331,11 +314,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     expect(rows).toHaveLength(1);
   });
 
-  // ---------------------------------------------------------------------------------------
-  // Typed first-party report ingress (M12 P4B Phase 1) — the typed, PAT-authenticated counterpart
-  // to the raw `/webhook` route (routes/change-sources.ts). Same persist-then-process pipeline,
-  // real generated SDK contract, and — critically — NOT subject to the webhook's HMAC gate.
-  // ---------------------------------------------------------------------------------------
+  // Typed first-party report ingress (M12 P4B Phase 1). See docs/routes.md §165.
   it("a typed report persists a change_source_event and correlates into a Change via its source mapping", async () => {
     const org = await createTestOrg(server, "p4b-report-correlates");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -388,7 +367,6 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     await admin.changeSources.putWebhookSecret("terraform", { secret: "a-configured-secret" });
 
-    // The typed route: accepted.
     const res = await admin.changeSources.report("terraform", { status: "planned", repo: "x/y" });
     expect(res.accepted).toBe(true);
 
@@ -408,11 +386,11 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     const body = { status: "applied" as const, repo: "dedupe/repo", artifactDigest: "sha256:aaaa" };
 
     const first = await admin.changeSources.report("terraform", body);
-    const again = await admin.changeSources.report("terraform", body); // byte-identical
-    expect(again.eventId).toBe(first.eventId); // deduped to the SAME event
+    const again = await admin.changeSources.report("terraform", body);
+    expect(again.eventId).toBe(first.eventId);
 
     const different = await admin.changeSources.report("terraform", { ...body, status: "errored" });
-    expect(different.eventId).not.toBe(first.eventId); // a distinct result is a distinct event
+    expect(different.eventId).not.toBe(first.eventId);
 
     const { withTenantTx } = await import("../db/tenant-tx.js");
     const { changeSourceEvents } = await import("../db/schema.js");
@@ -455,9 +433,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     for (const wrongModule of [
       "bogus-module-that-does-not-exist",
       "webhook-control", // a real module, but a ControlPlugin, not an ExecutorPlugin
-      "github-discovery", // a real module, but a DiscoveryPlugin
+      "github-discovery",
       "gitea-discovery", // a real module, but a DiscoveryPlugin (M15.3a — must be excluded too)
-      "webhook-notify", // a real module, but a NotificationPlugin
+      "webhook-notify",
       "smtp-notify"
     ]) {
       await expect(
@@ -556,12 +534,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       image: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,
       net: process.env.SCP_MANAGED_IAC_NETWORK_MODE,
       root: process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT,
-      // The fourth server-governed knob. It was previously left AMBIENT while the assertion below
-      // pinned the literal `"docker"` — so this test failed on any host that had actually
-      // configured a runtime (`SCP_MANAGED_RUNNER_DOCKER_BINARY=podman`), which is exactly the
-      // RHEL/air-gapped deployment shape the setting exists for. Controlled here like its three
-      // siblings, and set to a value that is NOT the default so the assertion proves the value was
-      // INJECTED FROM THE KNOB rather than passing vacuously against the fallback.
+      // The fourth server-governed knob. See docs/routes.md §166.
       runner: process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY
     };
     process.env.SCP_MANAGED_IAC_RUNNER_IMAGE = "scp-runner-iac:vetted-server-pinned";
@@ -590,8 +563,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
 
       const cfg = resolved!.instanceConfig.config as Record<string, unknown>;
       expect(cfg.runnerImage).toBe("scp-runner-iac:vetted-server-pinned"); // NOT attacker/evil
-      expect(cfg.networkMode).toBe("none"); // NOT host
-      expect(cfg.workspaceRoot).toBe("/srv/scp/managed-iac"); // NOT /
+      expect(cfg.networkMode).toBe("none");
+      expect(cfg.workspaceRoot).toBe("/srv/scp/managed-iac");
       expect(typeof cfg.statePath).toBe("string"); // durable dedup path always injected (MAJOR #4)
       // Defence in depth for the key that is now refused AND injected: `dockerBinary` selects the
       // executable this plugin `execFile`s, so the write-door schema is no longer its only guard.
@@ -605,34 +578,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     }
   });
 
-  /**
-   * ============================================================================================
-   * THE OPERATOR'S RUNTIME REACHES *EVERY* MANAGED EXECUTOR — the knob, measured (2026-08-16)
-   * ============================================================================================
-   * `SCP_MANAGED_RUNNER_DOCKER_BINARY` selects the executable every managed executor `execFile`s.
-   * It exists for two reasons, and both are load-bearing:
-   *
-   *  1. DEPLOYMENT. Regulated, air-gapped and FedRAMP/IL estates are largely RHEL, where a Docker
-   *     daemon is frequently disallowed and rootless podman is the sanctioned runtime. Rootless
-   *     podman is verified against the real runners (docs/container-runtimes.md) — but ONLY for the
-   *     executors the setting actually reaches.
-   *  2. DEFENCE IN DEPTH. Injecting it server-side means a future regression in the write-door gate
-   *     downgrades from remote code execution to an accepted-but-inert config key (see
-   *     `managedRunnerDockerBinary`'s doc). That argument holds only where the injection happens.
-   *
-   * WHY THIS IS A LOOP OVER AN ENUMERATED LIST rather than one more assertion in the test above.
-   * The injection is written once PER MODULE, as a separate `if (pluginModule === …)` arm, so the
-   * property is only ever as complete as the last person to add a managed class remembered to make
-   * it. When this test was written that had already failed: `managed-iac` and `managed-scan` set
-   * `dockerBinary`, and `managed-dep` — added later, and which `execFile`s
-   * `config.dockerBinary ?? "docker"` exactly like its siblings — did not, on ANY of its three
-   * construction paths. An operator setting the knob got podman for two executors and a silent
-   * `docker` for the third: on a podman-only host, dependency bumps fail while everything else
-   * works, and the second defence above is simply absent for that class.
-   *
-   * Adding a fourth managed executor therefore fails HERE until it is wired, which is the point —
-   * the list is the census, and a census with no entry for a module is how the third one was missed.
-   */
+  /** THE OPERATOR'S RUNTIME REACHES *EVERY* MANAGED EXECUTOR. See docs/routes.md §167. */
   it("server-injects the operator's runtime binary into EVERY managed executor module", async () => {
     const { withTenantTx } = await import("../db/tenant-tx.js");
     const { upsertExecutorBinding, resolveExecutorPluginInstance } =
@@ -696,24 +642,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     }
   });
 
-  /**
-   * THE SAME REFUSAL, FOR THE MODULES THAT NEVER HAD IT. The managed-iac tests above passed while
-   * three sibling modules on the very same `KNOWN_EXECUTOR_MODULES` allowlist — `managed-scan`,
-   * `pipeline-generic`, `fake-executor` — had no manifest at all, so `validatePluginConfig` found no
-   * schema and returned early. Every key of their binding configs was stored unread.
-   *
-   * `managed-scan` is the one with teeth: `@scp/plugin-managed-scan` runs
-   * `execFile(config.dockerBinary ?? "docker", …)`, and `dockerBinary` was NOT among the keys
-   * `resolveExecutorPluginInstance` injects — so a tenant `PUT /executors/{id}/binding` naming any
-   * host path reached arbitrary code execution on the SCP host, across the exact boundary the plugin
-   * sandbox exists to hold. Proven HERE, at the HTTP write door, not only against
-   * `validatePluginConfig`: a unit test cannot show that the door still calls it.
-   *
-   * MUTATION-PROVEN: restoring shipped main for one module — drop `"managed-scan"` from
-   * `MANIFEST_BY_MODULE`, restore `validatePluginConfig`'s `if (!manifest) return;`, and disable the
-   * `assertEveryModuleHasManifest` boot check — makes this test fail with "promise resolved
-   * { …(11) } instead of rejecting": the binding carrying `dockerBinary: "/tmp/pwn.sh"` is STORED.
-   */
+  /** THE SAME REFUSAL, FOR THE MODULES THAT NEVER HAD IT. See docs/routes.md §168. */
   it("REJECTS server-governed config on the modules that previously had NO manifest at all", async () => {
     const org = await createTestOrg(server, "manifestless-modules-reject");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -774,27 +703,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     }
   });
 
-  /**
-   * M23.1c — THE TENANT-SETTABLE RUN BUDGET IS CAPPED, AT THE DOOR, ON EVERY MANAGED CLASS.
-   *
-   * All three managed manifests shipped `timeoutMs: { type: "integer", minimum: 1000 }` with NO
-   * maximum, and the value is settable by any org member with plain `object:write` on a Component.
-   * Two consequences, and the second is why the cap is a prerequisite rather than hygiene:
-   *
-   *  1. `execFile`'s `timeout` is the only thing that stops a wedged `docker start -a`. At 2^31 ms
-   *     (24.9 days) the runner is unkillable by its own timeout.
-   *  2. The plugin HOST now derives that module's `trigger` RPC budget from the same number
-   *     (`plugin-host/call-policy.ts`), so an unbounded config is an unbounded budget — and
-   *     `subprocess-entry.ts` answers one RPC at a time, so that instance's `status()`/`observe()`/
-   *     `abort()` would head-of-line block behind it for the duration.
-   *
-   * PROVEN AT THE HTTP WRITE DOOR, not against `validatePluginConfig`: a unit test cannot show that
-   * the door still calls it, and "a config schema that is authored but never registered" is exactly
-   * how this repo shipped a live RCE (see the `managed-scan` test above).
-   *
-   * MUTATION-PROVEN: delete `maximum` from `@scp/plugin-managed-iac`'s manifest and this test fails
-   * with "promise resolved … instead of rejecting" for that module — the 2^31 binding is STORED.
-   */
+  /** The tenant-settable run budget is capped at the door. See docs/routes.md §169. */
   it("REJECTS an over-cap timeoutMs at the binding write door, on every managed module", async () => {
     const org = await createTestOrg(server, "managed-timeout-cap");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });

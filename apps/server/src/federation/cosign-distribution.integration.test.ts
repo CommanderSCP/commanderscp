@@ -13,24 +13,7 @@ import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolat
 import { asTrustDomainId } from "@scp/schemas";
 import { TrustDomainId } from "@scp/schemas";
 
-/**
- * M17.3 E5 — DISTRIBUTION of SCP's cosign VERIFICATION public key to peers so they can LATER (E6 /
- * M17.4) verify the commander's cosign-signed promotion manifest. This increment adds NO signing and
- * NO verification — it proves the PLUMBING:
- *
- *  - the LOCAL cosign public key is surfaced by `getFederationStatus`, lazily provisioned, and the
- *    PRIVATE half never appears in status or any API-facing shape;
- *  - pairing CARRIES the peer's cosign pubkey and PERSISTS it onto `federation_peer_keys`, retrievable
- *    per-peer;
- *  - ROTATION (a changed cosign pubkey) reuses the EXISTING supersede/key-window mechanic — the old
- *    cosign key is retained in its superseded window exactly as the Ed25519 key is;
- *  - the exchange is FILE-ONLY / air-gap friendly: one side's status output + the other side's pair
- *    request is sufficient, with NO new transport and no live connection;
- *  - it is ADDITIVE — an OLD pair request lacking a cosign pubkey still pairs, and never strips one.
- *
- * Uses genuinely-separate-database isolated domains (test-support/isolated-domain.ts), matching
- * federation.integration.test.ts, and a FAKE cosign generator (unique offline PEMs, no subprocess).
- */
+/** Distribution of the cosign verification key to peers. See docs/federation.md §59. */
 
 /** A fake cosign generator returning a UNIQUE keypair per call, whose PRIVATE PEM shouts "PRIVATE"
  *  and "DO-NOT-LEAK" so any accidental exposure is trivially detectable in an assertion. */
@@ -165,7 +148,6 @@ describe("M17.3 E5: cosign public-key distribution (Testcontainers)", () => {
     expect(current?.publicKey).toBe(ed.publicKey);
     expect(current?.cosignPublicKey).toBe(peerCosign);
 
-    // Surfaced by getPeerByIdOrName and listPeers.
     const byId = await withTenantTx(commander.db, commander.orgId, (tx) =>
       getPeerByIdOrName(tx, commander.orgId, selfOutpost.domainId)
     );
@@ -294,7 +276,6 @@ describe("M17.3 E5: cosign public-key distribution (Testcontainers)", () => {
       );
       expect(c0?.cosignPublicKey).toBeNull();
 
-      // Now register a cosign key.
       const cosign = "-----BEGIN PUBLIC KEY-----\nADDITIVE-COSIGN\n-----END PUBLIC KEY-----\n";
       await withTenantTx(domain.db, domain.orgId, (tx) =>
         pairPeer(tx, {

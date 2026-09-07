@@ -18,27 +18,12 @@ type EdgeRow = {
   to_id: string;
 };
 
-/**
- * Generic bounded `/graph/traverse` (DESIGN.md §5) — direction, relationship-type set, depth ≤
- * 10, org-scoped. Backs the UI graph explorer / custom tooling where a named query doesn't fit.
- *
- * Two steps: (1) a recursive CTE walks `direction` edges from `objectId` up to `maxDepth`,
- * building the visited node set; (2) the returned edge set is the *induced subgraph* on that
- * node set (every live relationship with both endpoints visited) — richer than just the tree
- * edges used to reach each node, which is what a graph explorer actually wants to render.
- */
+/** Generic bounded `/graph/traverse` (DESIGN.md §5). See docs/graph.md §194. */
 export async function traverse(
   tx: TenantTx,
   orgId: string,
   req: TraverseRequest,
-  /**
-   * The caller's readable object-id set (`object:read` scope), or `null` for an org-root reader who
-   * may read everything. When a Set, the returned objects/edges are intersected with it, so a
-   * sub-org-scoped principal never sees an object it lacks `object:read` on — the same authority
-   * `GET /objects/{type}/{id}` enforces, which the org-only walk otherwise bypassed (2026-08-31
-   * security review; role-model.md §8.6a). `graph:query` gates whether the traversal may run at all;
-   * this gates which of its results are visible. Resolved once in routes/graph.ts.
-   */
+  /** The caller's readable object-id set. See docs/graph.md §195. */
   readableIds: ReadonlySet<string> | null
 ): Promise<TraverseResult> {
   const relTypes = req.relTypes ?? null;
@@ -98,14 +83,7 @@ export async function traverse(
   };
 }
 
-/**
- * Induced-subgraph edges over an explicit object-id set (DESIGN.md §5). The named graph queries
- * (`impact-of`/`blast-radius`/…) return only the reachable object SET, never the edges among it;
- * this returns exactly the live relationships whose BOTH endpoints are in `ids` — the same
- * induced-subgraph edge set {@link traverse}'s step (2) computes over its own visited set, but for
- * a caller-supplied node set. One round-trip, org-scoped, soft-delete-aware. The result carries no
- * `objects` (the caller already holds them from the query that produced `ids`) — only the edges.
- */
+/** Induced-subgraph edges over an explicit object-id set. See docs/graph.md §196. */
 export async function subgraph(
   tx: TenantTx,
   orgId: string,

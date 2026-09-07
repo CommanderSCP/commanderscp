@@ -1,42 +1,4 @@
-/**
- * CDK-exact duration value class (team-pipeline-iac.md D16(3)) — `Duration.seconds(n)`,
- * `.minutes(n)`, `.hours(n)`, `.days(n)`. Every duration prop in this grammar (`every:`, `maxAge:`,
- * `pauseBetween:`, a `BakeAlarms` quiet window, …) takes one of these, never a `"5m"` string and
- * never a bespoke ad hoc wrapper. Percentages stay plain numbers on self-describing props
- * (`batchPercent: 25`, CDK's `minHealthyPercent` pattern) — there is deliberately no `Percent`
- * class alongside this one; a number already says what it is when the prop name does.
- *
- * ## Canonical form
- *
- * Every `Duration`, regardless of which factory built it, normalizes to a total-milliseconds count
- * internally — `Duration.minutes(5)` and `Duration.seconds(300)` are indistinguishable once built,
- * which is exactly what makes an embedded duration byte-stable in a synthesized manifest (the goal
- * statement's determinism requirement) no matter which unit an author happened to write.
- * `toJSON()` returns that count, so `JSON.stringify` (and anything that calls it, including
- * `JSON.stringify`-based equality checks in tests) serializes a `Duration` as one canonical number.
- *
- * `canonicalJson`'s `canonicalizeDeep` (`@scp/schemas/canonical-json`, re-exported from
- * `./canonical.js`) walks own enumerable object keys and does **not** call `toJSON()` — it is not
- * `JSON.stringify`, it is the recursive key-sorter `Stack.synth()` runs the ASSEMBLED manifest
- * through. A raw `Duration` instance left inside a manifest's `properties` would therefore NOT
- * canonicalize through this class's `toJSON()`; a construct that embeds one must resolve it to a
- * plain value first (`duration.toMilliseconds()`), exactly the same discipline `resolveUrn()`
- * already imposes on construct references before they reach `properties`. No construct in this
- * package embeds a `Duration` into a manifest yet (the constructs that will — `Workflow`,
- * `ContinuousTest`, `BakeAlarms`, the rollout classes — ship in a later increment against this
- * class); this doc note is here so that increment does not rediscover the hazard.
- *
- * UPDATE: the L1 half of that increment has landed — `Stack.addPipelineHook`/`addRollout`/
- * `addConvergence` and the three manifest collections `synth()` now assembles. Those doors take
- * the contract's own plain-number seconds (`everySeconds`, `maxAgeSeconds`, `quietWindowSeconds`,
- * `pauseSeconds`), so they still embed no `Duration`. The hazard above becomes live only when the
- * typed L2 constructs accept a `Duration` prop and must resolve it before it reaches the entry.
- *
- * ## Validation
- *
- * Every factory rejects a non-integer or negative amount at CONSTRUCTION time, loudly — never a
- * silently-clamped or silently-truncated duration reaching synth.
- */
+/** CDK-exact duration value class (team-pipeline-iac.md D16(3)). See docs/iac.md §253. */
 export class Duration {
   private constructor(private readonly millis: number) {}
 

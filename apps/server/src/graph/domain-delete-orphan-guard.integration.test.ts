@@ -8,23 +8,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE ROUTE-1 ORPHAN GUARD (objects-repo.ts::deleteObject, measured incident 2026-08-13).
- *
- * Deleting a domain whose live children name it via `objects.domain_id` used to succeed — and
- * every such child then 403'd on UPDATE and DELETE forever (org-root admin included), because the
- * authz scope expansion joins parents on `deleted_at IS NULL` and a `domain_id` chain has exactly
- * one upward path: the tombstone dead-ends it. Two API calls to permanent, admin-proof garbage.
- *
- * The guard refuses the delete with the blockers NAMED.
- *
- * SINCE THE OWNER RULING OF 2026-08-18 IT COVERS ALL THREE DEPENDENT ROUTES (proposal
- * governance-reach-on-containment-move.md §9.3): `domain_id` children, `contains` children, and
- * placements naming the row. The last test in this file used to be the CONTROL asserting route 2
- * still cascaded; it is inverted here with the reason written in, and the wider surface —
- * placements, the `federationImport` / `removedForeignShadow` carve-outs, an assembly, an empty
- * container — lives in `graph/container-delete-guard.integration.test.ts`.
- */
+/** THE ROUTE-1 ORPHAN GUARD. See docs/graph.md §50. */
 describe("domain delete orphan guard (route-1 containment)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -87,18 +71,7 @@ describe("domain delete orphan guard (route-1 containment)", () => {
   });
 
   it("route-2 (contains) children now REFUSE the delete too — the owner ruling that retired the asymmetry", async () => {
-    // THIS TEST IS THE INVERSION OF A CONTROL, AND THE REASON IS WRITTEN WHERE THE OLD REASON WAS.
-    //
-    // It used to assert the opposite: "route-2 (contains) children still CASCADE — deleting a
-    // service with components succeeds", pinning that the route-1 guard "cannot quietly widen".
-    // That control was doing its job — the widening is not quiet, it is an OWNER RULING
-    // (2026-08-18, docs/proposals/governance-reach-on-containment-move.md §9.3 / §9.6 Q3-A) taken
-    // after the measurement that the cascade tombstones the EDGES and leaves the children LIVE and
-    // detached from every authority, governance and audit chain.
-    //
-    // What the suite protects now is the CARVE-OUT SET, not the asymmetry: a `federationImport`
-    // delete with children must still land or a peer's bundle wedges, and that case lives in
-    // `container-delete-guard.integration.test.ts` alongside the `removedForeignShadow` twin.
+    // This test is the inversion of a control, and why. See docs/graph.md §51.
     const service = await admin.services.create({ name: uniq("cascade-svc") });
     const component = await admin.components.create({
       name: uniq("cascade-comp"),

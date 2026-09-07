@@ -1,13 +1,4 @@
-/**
- * Wires `@scp/plugin-fake-executor` into `@scp/plugin-testkit`'s generic `ExecutorPlugin`
- * conformance suite (BUILD_AND_TEST.md §4.2: "every shipped plugin runs the relevant `@scp/
- * plugin-testkit` suite in its own package tests"). The suite itself lives in plugin-testkit and
- * knows nothing about fake-executor specifics — this file is only the fixture factory.
- *
- * The factory sets a per-call `statePath` (a fresh temp file) and provides `restart` (MAJOR #4) so
- * the suite's cross-restart dedup test genuinely reads durable on-disk state rather than the
- * first instance's in-process memory.
- */
+/** Wires this plugin into the generic executor conformance suite. See docs/plugins.md §59. */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext } from "@scp/plugin-api";

@@ -5,23 +5,7 @@ import { createPool } from "./client.js";
 import { provisionPgBossRole, provisionRuntimeRole } from "./provision.js";
 import { testDatabaseUrl } from "../test-support/harness.js";
 
-/**
- * B9 — the credential-clobber guard (multi-region-instance-resilience.md §4-B9, §7.4).
- * `provisionRuntimeRole`/`provisionPgBossRole` run on every boot (main.ts Phase 1 / migrate-bin.ts
- * — see their doc comments); before this guard they unconditionally `ALTER ROLE ... PASSWORD`ed,
- * so a second member cluster installed against the SAME shared database with its OWN
- * independently-generated password would silently clobber the first cluster's live credentials on
- * every one of ITS boots. These tests prove: create-if-absent, skip-if-already-correct (no
- * clobber), refuse-on-mismatch (naming the hazard, and — the load-bearing assertion — leaving the
- * live credential untouched), the explicit opt-in reset, and that a non-auth connectivity failure
- * during the verification probe propagates instead of being misread as "needs a reset."
- *
- * Deliberately never touches `scp_app`/`scp_pgboss` themselves: those are CLUSTER-GLOBAL roles
- * already provisioned (and relied upon) by the rest of this suite via global-setup.ts. Every test
- * here provisions its own throwaway, per-test-unique role name instead — `pg_roles` is cluster-
- * wide, not per-database, and this file's own worker database is one of several sharing the same
- * Testcontainers Postgres cluster.
- */
+/** B9 — the credential-clobber guard. See docs/db.md §13. */
 describe("B9: provisionRuntimeRole / provisionPgBossRole password-clobber guard", () => {
   const adminUrl = testDatabaseUrl();
   const adminPool = createPool(adminUrl);
@@ -80,11 +64,7 @@ describe("B9: provisionRuntimeRole / provisionPgBossRole password-clobber guard"
   });
 
   it("a role that already exists but was created NOLOGIN (the migration shape, e.g. drizzle/0002's `CREATE ROLE scp_app NOLOGIN ...`) gets LOGIN + the configured password on first provisioning, with no verification misfire", async () => {
-    // Mirrors what the migrations actually leave behind BEFORE first boot ever provisions a
-    // login role — a NOLOGIN role has no live password to clobber, so this must NOT be treated
-    // as a re-provisioning needing verification (a NOLOGIN role rejects every password with the
-    // same class-28 SQLSTATE a real mismatch would, so this case would otherwise be misread as
-    // "the configured password doesn't match" and refuse on every fresh install).
+    // Mirrors what migrations leave before first boot provisions. See docs/db.md §14.
     const client = await adminPool.connect();
     try {
       await client.query(
@@ -148,11 +128,7 @@ describe("B9: provisionRuntimeRole / provisionPgBossRole password-clobber guard"
   it("a connectivity-class failure (not auth) during the probe propagates rather than being read as a mismatch", async () => {
     await provisionRuntimeRole(adminPool, role, "pw-1");
 
-    // CONNECTION LIMIT 0 makes every future connection attempt as this role fail with "too many
-    // connections for role" (SQLSTATE 53300, class 53 "insufficient resources") REGARDLESS of
-    // whether the password is correct — a connectivity-class failure, distinct from the class-28
-    // auth failures the guard treats as "needs a reset." Re-provisioning with the SAME (correct)
-    // password must still hit this during the verification probe and propagate it as-is.
+    // Connection limit zero makes every future attempt fail loudly. See docs/db.md §15.
     const client = await adminPool.connect();
     try {
       await client.query(`ALTER ROLE ${client.escapeIdentifier(role)} CONNECTION LIMIT 0`);
@@ -175,17 +151,7 @@ describe("B9: provisionRuntimeRole / provisionPgBossRole password-clobber guard"
   });
 
   it("(PV-1, §7.5 credential-clobber) two clusters CONCURRENTLY provisioning a NOLOGIN role with DIFFERENT passwords: exactly one wins, the other is forced onto verify-or-refuse — never a silent clobber", async () => {
-    // The exact bootstrap race B9 must survive: two member clusters' migration Jobs run against the
-    // same shared cluster while the role is still the migration-created NOLOGIN shell. Without the
-    // per-role advisory lock (review finding PV-1), both read `rolcanlogin = false`, both take the
-    // "first provisioning" branch, and both blindly ALTER — the later commit silently clobbers the
-    // earlier's credential with no error. The lock serializes read-decide-write, so the second
-    // caller re-reads AFTER the first committed LOGIN and hits the verify-or-refuse path instead.
-    //
-    // Iterated over fresh roles: the unlocked outcome is timing-dependent (sometimes the second
-    // SELECT happens to land after the first COMMIT and refuses anyway), so a single shot could pass
-    // even against the bug. Repeating makes the without-lock double-clobber reliably surface — every
-    // iteration must show the deterministic one-wins-one-refuses shape the lock guarantees.
+    // The exact bootstrap race B9 must survive. See docs/db.md §16.
     const ITERATIONS = 8;
     for (let i = 0; i < ITERATIONS; i++) {
       const raceRole = `scp_provision_race_${randomUUID().replace(/-/g, "_")}`;

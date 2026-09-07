@@ -12,36 +12,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { initFederationSelf } from "./self-repo.js";
 
-/**
- * M16.2 phase A, REVIEW ROUND 4 (H2) — RBAC COVERAGE FOR EVERY NEW FEDERATION ROUTE.
- *
- * WHY THIS FILE EXISTS. A lens removed ALL SIX `authorize(...)` blocks from the routes this milestone
- * added (peers GET + PATCH, outposts POST / GET-list / GET-one / PATCH) and the ENTIRE federation
- * integration suite stayed GREEN — 24 files, 231 tests. `peer-patch.integration.test.ts`'s
- * "G1/G2: … requires federation:write" asserted only 401 (anonymous) and 404 (unknown peer): both fire
- * with the permission check deleted, so the title described the code and the assertions pinned nothing.
- * "Wording, not behaviour" is this repo's second recurring bug source, and the E1 side-door refusals
- * (`/objects/outpost` → 403, plan-apply → `federation:write`) all rest on the claim that these routes are
- * gated on `federation:*` rather than plain `object:write`. That claim needed a witness.
- *
- * TWO ACTORS, because the write and read gates are different permissions and each needs a witness that
- * can ONLY fail on that gate:
- *
- *   * `operator` — the built-in `Operator` role AT THE ORG ROOT. drizzle/0002 gives it `object:write`
- *     and `relationship:write`; drizzle/0012 adds `federation:read` to every built-in role but adds
- *     `federation:write` to Administrator/Owner ONLY. So it holds `object:write` and NOT
- *     `federation:write` — the review's exact actor — and a 403 from it on a WRITE route means precisely
- *     "object:write is not enough here", which is the whole argument the E1 side-door refusals make.
- *
- *   * `selfScoped` — `Owner`, bound at SELF scope. It holds `federation:read` as a permission but has no
- *     authority AT THE ORG ROOT, which is the scope every one of these routes checks. It is the only way
- *     to witness the READ gate at all: no built-in role lacks `federation:read`, so an actor that fails
- *     on the permission alone does not exist. A 403 from it therefore proves the `authorize(...)` call
- *     RUNS and its `scopeObjectId` is honored — delete the block and the call returns 200.
- *
- * MUTATION-PROVEN: deleting the `authorize(...)` block from ANY of these routes turns its case red
- * (each route is asserted independently, so a single deletion is caught by a single named test).
- */
+/** RBAC coverage for every new federation route. See docs/federation.md §329. */
 describe("M16.2 H2: every new federation route rejects object:write-only (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
