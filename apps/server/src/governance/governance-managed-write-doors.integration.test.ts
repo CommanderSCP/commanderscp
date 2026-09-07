@@ -495,15 +495,15 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     }
   }, 120_000);
 
-  it("CENSUS: the set's docblock NAMES the federation-import path — the door its previous version omitted", async () => {
-    // Deliberately the only source assertion in this file. See docs/governance.md §167.
+  it("CENSUS: the subsystem doc NAMES the federation-import path — the door the census's previous version omitted", async () => {
+    // The set's long-form doc moved to docs/governance.md §152 when the subsystem docs were
+    // consolidated. The CLAIM is unchanged and still enumerates every door, so the census reads it
+    // where it now lives — an assertion left pointing at a file the prose has left is how a census
+    // stops censusing. See docs/governance.md §167.
     const { readFile } = await import("node:fs/promises");
-    const source = await readFile(
-      new URL("./governance-managed-types.ts", import.meta.url),
-      "utf8"
-    );
-    expect(source).toContain("federation/import-repo.ts");
-    expect(source).toContain("object_upsert");
+    const doc = await readFile(new URL("../../../../docs/governance.md", import.meta.url), "utf8");
+    expect(doc).toContain("federation/import-repo.ts");
+    expect(doc).toContain("object_upsert");
   });
 
   it("DOOR 5: hand-fill is out of an Operator's reach entirely — it needs federation:write", async () => {
