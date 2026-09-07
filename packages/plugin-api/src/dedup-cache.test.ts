@@ -4,12 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createFileBackedJsonCache } from "./index.js";
 
-/**
- * Six executor plugins (`argocd`, `argo-workflows`, `pipeline-generic`, `managed-iac`,
- * `fake-executor`, `git-provider-core`) each carried their own copy of this write-to-temp+rename
- * dedup-state triad; this pins the ONE shared implementation's contract so a future fix to the
- * atomic-write logic lands everywhere at once instead of needing six manual edits.
- */
+/** Six executor plugins. See docs/plugin-api.md §2. */
 describe("createFileBackedJsonCache", () => {
   let dir: string;
 

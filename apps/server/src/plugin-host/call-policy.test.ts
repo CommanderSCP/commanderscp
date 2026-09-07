@@ -21,15 +21,7 @@ import {
 import type { RunnerLauncherKind } from "@scp/runner-launcher";
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
-/**
- * M23.1c — the per-method RPC budget, and the manifest ceiling it is derived from.
- *
- * The end-to-end proof that the budget reaches a real managed run lives in
- * `managed-trigger-budget.test.ts` (a real `managed-iac` through a DEFAULT-constructed host). This
- * file covers the parts that test cannot reach in reasonable wall-clock time: the arithmetic, the
- * clamp on rows stored before the ceiling existed, and the boot assertion whose absence is what
- * would let a deleted `maximum` degrade SILENTLY back to the 10s SIGKILL.
- */
+/** The per-method RPC budget and the ceiling it derives from. See docs/plugin-host.md §1. */
 
 const HANG_DETECTOR_MS = 10_000;
 
@@ -49,13 +41,7 @@ function timeoutMaximumFor(module: string): number {
 }
 
 describe("managed executor timeoutMs is bounded at BOTH ends, on every managed module", () => {
-  /**
-   * A LOOP OVER THE ENUMERATED LIST, not three assertions about `managed-iac`. The defect record
-   * named one plugin; the property was in all three, each declaring its own copy of
-   * `{ type: "integer", minimum: 1000 }` with no ceiling. A census that fixes the instance instead
-   * of the class is this repository's recurring bug source (CLAUDE.md, "census by property"), and a
-   * fourth managed class fails here until it carries the same bounds.
-   */
+  /** A loop over the enumerated list, not three assertions. See docs/plugin-host.md §2. */
   it.each(MANAGED_EXECUTOR_MODULES)("%s publishes a bounded, sane timeoutMs", (module) => {
     const schema = MANIFEST_BY_MODULE[module]?.configSchema as {
       properties?: { timeoutMs?: { type?: unknown; minimum?: unknown; default?: unknown } };
@@ -131,13 +117,7 @@ describe("resolveCallPolicy", () => {
     ]);
   });
 
-  /**
-   * THE CLAMP IS FOR ROWS THAT ALREADY EXIST. `maximum` refuses a bad value at the write door, and a
-   * write door only ever sees new writes: a binding stored while the schema was
-   * `{ minimum: 1000 }` with no ceiling — including the 2^31 that motivated the cap — is still in
-   * the database and is never re-validated on read. Without this the ceiling would be true only of
-   * deployments that had never been configured.
-   */
+  /** THE CLAMP IS FOR ROWS THAT ALREADY EXIST. See docs/plugin-host.md §3. */
   it("clamps a stored timeoutMs that predates the ceiling, instead of trusting it", () => {
     const maximum = timeoutMaximumFor("managed-iac");
     expect(
@@ -169,16 +149,7 @@ describe("resolveCallPolicy", () => {
   });
 });
 
-/**
- * THE BOOT GATE, and why it is not redundant with the schema test above.
- *
- * If a `maximum` is ever deleted, nothing FAILS — `resolveCallPolicy` stops recognising that module
- * as managed and quietly hands its `trigger` the 10s hang detector back. That is the M23.1c defect,
- * restored on exactly one plugin, with a green suite. So the degradation has to be made loud at the
- * one moment it can be: module load, beside the allowlist, in
- * `coordination/executor-bindings-repo.ts`. These two tests assert BOTH halves — that the gate
- * fires, and that the thing it is guarding against really is silent.
- */
+/** The boot gate, and why the schema test does not cover it. See docs/plugin-host.md §4. */
 describe("assertManagedTimeoutSchemas (the boot gate)", () => {
   const saved = new Map<string, { configSchema: unknown }>();
 
@@ -220,41 +191,15 @@ describe("assertManagedTimeoutSchemas (the boot gate)", () => {
   });
 });
 
-/**
- * ================================================================================================
- * M23.1e — THE CROSS-PACKAGE RELATIONSHIPS THAT USED TO BE COMMENTS THAT DRIFTED
- * ================================================================================================
- * Two numbers in `@scp/runner-launcher` and one here have to stand in a fixed order, and every
- * previous phase expressed that order in prose. `RUNNER_REAP_GRACE_MS`'s own doc said it plainly:
- * "nothing enforces the relationship automatically, precisely because nothing CAN import across
- * that boundary." That is true from the LAUNCHER's side and false from this one — `apps/server`
- * depends on `@scp/runner-launcher`, never the reverse — so the gate belongs here.
- *
- * IT IS NOT PEDANTRY. Every one of M23.1e's HIGH defects was a number sized against a quantity that
- * had since changed, with a well-written comment still asserting the old arithmetic. A comment
- * naming a hazard is a signal to sweep, not evidence it was handled (CLAUDE.md).
- */
+/** Cross-package numbers that used to be drifting comments. See docs/plugin-host.md §5. */
 describe("M23.1e: the grace constants stand in the order the cleanup path needs", () => {
   it("MANAGED_TRIGGER_GRACE_MS EXCEEDS the teardown it exists to protect", () => {
-    // The Docker adapter's `finally { docker rm -f }` is capped at RUNNER_REMOVE_TIMEOUT_MS. A grace
-    // merely EQUAL to it (which is what 30_000 was) is spent entirely by one worst-case teardown,
-    // leaving zero for the `withRecordedOutcome` write and `saveState` that the grace exists to make
-    // room for — so the host SIGKILLs the subprocess at precisely the moment the ledger entry would
-    // have landed.
-    //
-    // THIS ARM IS ABOUT ONE TEARDOWN AND THAT IS NOW ITS LIMIT, said plainly because it read as the
-    // whole gate and was not: it is true of an adapter whose teardown is one call, and M23.5 found
-    // the Kubernetes teardown had become three with this still green. The per-kind arms below are
-    // the gate; this one is kept because the Docker default is what most deployments run.
+    // A grace merely equal to the remove timeout is not enough. See docs/plugin-host.md §6.
     expect(MANAGED_TRIGGER_GRACE_MS).toBeGreaterThan(RUNNER_REMOVE_TIMEOUT_MS);
   });
 
   it("RUNNER_REAP_GRACE_MS EXCEEDS MANAGED_TRIGGER_GRACE_MS — never reapable while its owner may live", () => {
-    // A container's `scp.launcher.deadline` is `runDeadline + RUNNER_REAP_GRACE_MS`; the host gives
-    // up on the subprocess at `runDeadline + MANAGED_TRIGGER_GRACE_MS`. If the stamp expired FIRST,
-    // there would be a window in which a peer launcher sees a container as `foreign AND past
-    // deadline` — the exact predicate `reap()` destroys on — while the process that owns it is
-    // still alive and still running `tofu apply`. That is HIGH-2 arriving through the other door.
+    // The container's deadline against when the host gives up. See docs/plugin-host.md §7.
     expect(RUNNER_REAP_GRACE_MS).toBeGreaterThan(MANAGED_TRIGGER_GRACE_MS);
   });
 
@@ -263,24 +208,7 @@ describe("M23.1e: the grace constants stand in the order the cleanup path needs"
   });
 });
 
-/**
- * ================================================================================================
- * M23.5 HIGH-2 — THE ORDERING HOLDS FOR EVERY ADAPTER, NOT FOR THE ONE THAT EXISTED WHEN IT WAS
- * WRITTEN
- * ================================================================================================
- *
- * `MANAGED_TRIGGER_GRACE_MS` was 60s, chosen in prose as "two worst-case teardowns" of
- * `RUNNER_REMOVE_TIMEOUT_MS`, and gated by `grace > RUNNER_REMOVE_TIMEOUT_MS` — ONE teardown. The
- * Kubernetes `finally` is three bounded calls, so sixty seconds of bounded work consumed the whole
- * grace and left nothing for the outcome write it exists to protect. The number was gated; the
- * MODEL was not, and nothing knew the teardown had grown.
- *
- * THE GATE IS NOW `it.each` OVER THE KINDS, so an adapter cannot be added without its ordering
- * being checked, and `teardown-model.test.ts` in the launcher counts what each adapter's `finally`
- * ACTUALLY issues against the declared count these numbers are derived from. Between them: adding a
- * fourth teardown step reddens the census by name, and correcting the count moves every number
- * here.
- */
+/** The ordering holds for every adapter, not just one. See docs/plugin-host.md §8. */
 const LAUNCHER_KINDS = Object.keys(RUNNER_POST_DEADLINE_CALLS) as RunnerLauncherKind[];
 
 describe("M23.5: the grace is derived from what teardown costs ON THE ADAPTER IN USE", () => {
@@ -357,20 +285,7 @@ describe("M23.5: the grace is derived from what teardown costs ON THE ADAPTER IN
   });
 });
 
-/**
- * ================================================================================================
- * MEDIUM (verification pass 5) — THE CEILING IS ONE NUMBER AND BOTH SIDES OF THE RPC APPLY IT
- * ================================================================================================
- *
- * `resolveCallPolicy` clamped the HOST's budget and nothing else. The plugin on the other side of
- * the same RPC read the same stored row and handed `config.timeoutMs ?? DEFAULT_TIMEOUT_MS` to
- * `RunnerSpec.timeoutMs` untouched, so above the ceiling the two numbers were not two views of one
- * budget — they were hours apart, in the direction that defeats `reap()`.
- *
- * THIS FILE IS WHERE THAT RELATIONSHIP CAN BE CHECKED AT ALL. `@scp/runner-launcher` may not import
- * from the server (the dependency only goes one way), which is the same reason the grace-ordering
- * arms below live here rather than beside the constants they relate.
- */
+/** MEDIUM (verification pass 5). See docs/plugin-host.md §9. */
 describe("MEDIUM (pass 5): the host's budget and the launcher's run are clamped to the SAME ceiling", () => {
   /** A row the pre-ceiling `{ minimum: 1000 }` schema admitted, still in the database, never
    *  re-validated on read. 4 hours — the value the defect was measured at. */

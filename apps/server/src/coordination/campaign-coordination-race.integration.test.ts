@@ -24,42 +24,7 @@ import { createObject } from "../graph/objects-repo.js";
 import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 
-/**
- * THE CAMPAIGN RECONCILER HAD ZERO ADVISORY-LOCK COVERAGE (`campaign-coordination-lock.ts`) — the
- * second home of the property `change-coordination-lock.ts` closed on the change side back in M8,
- * left behind because the fix was made where the symptom appeared rather than everywhere the
- * property lived (CLAUDE.md, "census by property, not by symptom").
- *
- * `reconcileOneCampaign` reads the latest plan in one transaction and, on `null`, compiles and
- * persists one in a second. The Helm chart's default is `worker replicaCount=2` and every 1 s tick
- * runs this loop, so two overlapping ticks reading `null` is the ordinary case.
- *
- * AND THE CAMPAIGN SIDE HAD NO BACKSTOP AT ALL, which is why this is worse than the change-side
- * original rather than a copy of it. `campaign_plans` carries a plain btree index on
- * `(org_id, campaign_object_id)` and NO unique constraint (drizzle/0011_campaigns.sql:40), and a
- * campaign has no transition-guarded state machine to serialise on (`campaign-status.ts`). Nothing
- * throws. Both racing ticks COMMIT a complete plan — two `campaign_plans` rows, two full sets of
- * waves and wave targets, and (because each set fans out) two member Changes per target with two
- * `coordinates` edges. The change side at least produced a loud wrongful cancel; this produced
- * silence.
- *
- * ## Why the assertions are hard COUNTS
- *
- * Every duplicate-row bug of this shape passes a "the latest one looks right" check —
- * `getLatestCampaignPlan` serves exactly one row by `(created_at DESC, id DESC)` no matter how many
- * exist. So each arm counts rows, mirroring `coordination.integration.test.ts`'s
- * `evaluated->coordinated` race arm ("exactly ONE plan is ever persisted", `expect(plans).toHaveLength(1)`).
- *
- * ## Why there is no wrongful-cancel arm
- *
- * Stated plainly rather than implied: the campaign path has NO equivalent of the change side's
- * catch-and-cancel fallback, so the lock closes nothing of that kind here. `reconcileOneCampaign`'s
- * compile `catch` writes a `plan_diff` block Decision through `insertDecisionIfChanged` and returns
- * — a campaign has no `cancelled` state to be wrongfully moved to. What the two paths DO share is
- * the duplicate-plan half, and the "loser is a clean no-op, not a compile failure" property: the
- * third arm below asserts the race leaves NO `plan_diff` block Decision behind, which is the
- * campaign-shaped version of "never wrongfully cancelled".
- */
+/** THE CAMPAIGN RECONCILER HAD ZERO ADVISORY-LOCK COVERAGE. See docs/coordination.md §79. */
 describe("campaign reconciliation is single-flight across concurrent replica ticks", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -256,11 +221,7 @@ describe("campaign reconciliation is single-flight across concurrent replica tic
   }, 60_000);
 
   it("the campaign's own normalisation write-back happens exactly ONCE under N concurrent ticks", async () => {
-    // The URN-shaped-targets campaign — the IaC-authored shape, and the only one whose compile path
-    // reaches the `updateObject` that rewrites the campaign's own `properties.targets`. That write
-    // bumps `objects.version` unconditionally (`objects-repo.ts`: `existing.version + 1`, with no
-    // content-hash short-circuit and no `expectedVersion` guard on this call), so the version is a
-    // direct, mutation-visible count of how many ticks performed it.
+    // The URN-shaped-targets campaign. See docs/coordination.md §80.
     const { campaignId, targetIds } = await makeCampaign("race-urn", 2, true);
     const before = await campaignObjectRow(campaignId);
 
@@ -280,14 +241,7 @@ describe("campaign reconciliation is single-flight across concurrent replica tic
   it("the loser is a clean no-op: it neither throws, nor logs a failure, nor records a compile fault", async () => {
     const { campaignId } = await makeCampaign("race-clean", 2);
 
-    // EVERY per-campaign failure in this file funnels through `logCampaignError`, which is the ONLY
-    // place `reconcileCampaignsOrgTick`'s swallowed errors become visible at all — so a spy on
-    // `console.error` is the assertion that a losing tick "did not throw" in the sense that
-    // actually matters. Measured against the lock-removed mutant, the losers really do land here:
-    //   `[campaign-reconcile] ... target ... propose failed (will retry next tick): ... 409
-    //    urn 'urn:scp:...:change:race-clean-campaign-race-clean-comp-1' is already in use`
-    // — a duplicate plan fanning the same target out twice and colliding on the member change's
-    // deterministic URN.
+    // Every per-campaign failure funnels through one logger. See docs/coordination.md §81.
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     let settled: PromiseSettledResult<void>[];
     let campaignErrorLines: string[];
@@ -303,17 +257,7 @@ describe("campaign reconciliation is single-flight across concurrent replica tic
     expect(settled.filter((s) => s.status === "rejected")).toEqual([]);
     expect(campaignErrorLines).toEqual([]);
 
-    // `reconcileOneCampaign`'s compile `catch` is the campaign-side analogue of the change side's
-    // catch-and-cancel: it records the failure as a `plan_diff` block Decision and retries. A tick
-    // that lost the race must never land there — losing a race is not a compilation fault. (The
-    // change side proved the same property by asserting the change never reached `cancelled`; a
-    // campaign has no `cancelled` state, so this Decision is where the equivalent damage would show.)
-    //
-    // HONEST ABOUT ITS OWN STRENGTH: this half alone SURVIVED the lock-removal mutant, and that is
-    // a true fact about the code rather than a weak test — the duplicate plans commit cleanly and
-    // the damage surfaces one layer later, at the fan-out, which is what the log assertion above
-    // catches. Kept because it pins the direction the fix must never drift in (a lock whose loser
-    // fell into the compile catch would be the change-side wrongful-cancel bug, re-created).
+    // The compile catch is the campaign-side catch-and-cancel. See docs/coordination.md §82.
     const written = await blockDecisionsFor(campaignId);
     expect(written.filter((d) => d.kind === "plan_diff" && d.verdict === "block")).toEqual([]);
 

@@ -14,22 +14,7 @@ import { federationPeerKeys, syncCursors } from "../db/schema.js";
 import { initFederationSelf } from "./self-repo.js";
 import { getCursor } from "./cursors-repo.js";
 
-/**
- * M16.2 phase A (E4) — `PATCH /v1/federation/peers/{id}`: THE NARROW, STRUCTURALLY KEYLESS PEER WRITE.
- *
- * WHY IT MATTERS. Before this increment the only peer write was `POST /federation/peers`, whose body
- * REQUIRES `publicKey` and treats a different value as a KEY ROTATION: it supersedes the current key
- * window at the applied-sequence anchor and hard-revokes the old key. A Settings form that read a peer,
- * changed one field and re-paired would rotate that peer's trust anchor the moment it dropped or
- * mangled the key. This suite pins both halves of the fix:
- *
- *   (a) a PATCH leaves `federation_peer_keys` COMPLETELY UNCHANGED — no new window row, the existing
- *       row's `superseded_at` still NULL — and the NON-VACUITY CONTROL right beside it shows the same
- *       assertions DO catch a real rotation when a re-pair performs one;
- *   (b) EVERY pair-time guard still fires on the new path. The census (G1–G11, with each guard's
- *       disposition) lives on `updatePeerTransport` in `peers-repo.ts`; the behavioural ones are
- *       exercised here.
- */
+/** M16.2 phase A (E4) — `PATCH /v1/federation/peers/{id}`. See docs/federation.md §352. */
 describe("M16.2 E4: PATCH /federation/peers/{id} — transport only, never key material (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -160,21 +145,7 @@ describe("M16.2 E4: PATCH /federation/peers/{id} — transport only, never key m
     expect(await liveKeyWindowCount(domainId)).toBe(1);
   });
 
-  /**
-   * M16.2 phase B (B2) — THE SAME DoD, OVER THE WHOLE SETTINGS-FORM SAVE.
-   *
-   * The case above patches ONE field. A settings form does not: it saves every transport field the
-   * operator can see, in one request, and it is the multi-field save an implementer is tempted to
-   * build on `POST /federation/peers` ("just send the peer back") — which is the re-pair that
-   * rotates the trust anchor. So the field set the UI can actually send
-   * (`apps/web/src/routes/outpost-settings.tsx`'s `PEER_SETTINGS_PATCH_KEYS`, plus `pokeMode`, which
-   * B3's configuration card sends through this same door) is exercised here as one body, against a
-   * real database.
-   *
-   * `deliveryTarget` is deliberately NOT in this body: `SCP_DELIVERY_ROOTS` is unset on this test
-   * server, so every per-peer directory is refused before storage — which is its own case, "GUARD
-   * G4" below. A refusal writes nothing, so it could not exercise this one anyway.
-   */
+  /** The same requirement, over the whole settings-form save. See docs/federation.md §353. */
   it("B2: the WHOLE settings-form save (name+baseUrl+syncScope+pokeMode at once) leaves federation_peer_keys byte-identical", async () => {
     const { domainId, publicKey } = await pairFresh({
       baseUrl: "https://outpost-form.example.test",
@@ -400,13 +371,7 @@ describe("M16.2 E4: PATCH /federation/peers/{id} — transport only, never key m
     expect(patched.pairedAt).toBe(before.pairedAt);
   });
 
-  // TITLE CORRECTED IN REVIEW ROUND 4 (H2). This case used to be titled "…requires federation:write"
-  // while asserting only 401 (anonymous) and 404 (unknown peer) — BOTH of which still fire with the
-  // route's `authorize(...)` block deleted, so the title described the code and the assertions pinned
-  // nothing. The permission gate is now witnessed for real, on THIS route and the five others this
-  // milestone added, by `outposts-rbac.integration.test.ts` (an `object:write` actor without
-  // `federation:write`, mutation-proven route by route). What is left here is what this file can
-  // honestly claim: authentication, and that a PATCH never conjures a peer row.
+  // TITLE CORRECTED IN REVIEW ROUND 4. See docs/federation.md §354.
   it("G1: the PATCH is AUTHENTICATED (401 anonymous), and an unknown peer is a 404 that creates nothing", async () => {
     const { domainId } = await pairFresh();
 

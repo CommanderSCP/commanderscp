@@ -18,47 +18,9 @@ import { SkeletonRows } from "../components/ui/skeleton";
 import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 import { ConnectArgoCdPage, normalizeServerUrl } from "./connect-argocd";
 
-/**
- * `/connect/$kind` — B1 of `docs/proposals/outpost-ui.md` §4 Lane B: generalizes the M19.1
- * "Connect Argo CD" wizard (`connect-argocd.tsx`) over the server's OWN discovery-module catalog
- * instead of one Argo-CD-shaped page, so `gitea`/`gitlab` (discovery plugins that already ship —
- * `KNOWN_DISCOVERY_MODULES`, `apps/server/src/routes/executors.ts` — with no wizard and no CLI
- * shortcut) stop dead-ending in "hand-assemble `secrets.put` + `execution-system` create +
- * `discovery.run` + `discovery.accept`" (outpost-ui.md §4, measured state).
- *
- * =============================================================================================
- * "ARGO CD KEEPS ITS TESTIDS" — WHY THIS FILE NEVER RENDERS THE ARGO CD FORM ITSELF
- * =============================================================================================
- * `router.tsx` keeps the STATIC `/connect/argocd` route pointing at the original, untouched
- * `ConnectArgoCdPage` — static beats dynamic in this router's own precedence (the same rule that
- * keeps `/services/{id}/board` alive beside the index route), so a browser hitting
- * `/connect/argocd` always resolves there FIRST and never reaches this file at all. `kind ===
- * "argocd"` below still dispatches to that same page defensively (so this route degrades
- * correctly if the static one is ever removed), but in normal operation it is dead code. This is
- * why B3/B4 below (triage, target rows) do not show up for an Argo CD import today — see risks in
- * the section G4 handoff.
- *
- * =============================================================================================
- * WHY `github` IS NOT IN THE CONNECTABLE SET, EVEN THOUGH IT HAS A DISCOVERY IMPLEMENTATION
- * =============================================================================================
- * `github-discovery`'s config REQUIRES `appId`+`installationId`+`owner`+`repo` and authenticates
- * with a GitHub App PRIVATE KEY — `privateKeySecretKey` in its configSchema, never
- * `tokenSecretKey`. The execution-system-backed discovery merge this wizard relies on for
- * credential handling (`POST /discovery/run`'s `config.executionSystemId` branch,
- * `routes/executors.ts`) is hardcoded to forward exactly ONE secret-bearing field off the
- * persisted system: `tokenSecretKey` (`effectiveSecretRefs = props.tokenSecretKey ? {...} : {}`).
- * A `kind: "github"` execution-system would register fine and then fail to authenticate at
- * discovery time with no field telling it why — the private key secret ref never reaches the
- * plugin. `connectableKinds` below derives the connectable set from the manifests themselves
- * (never a hand-maintained list), so `github` is excluded by that derivation, not a hardcoded
- * exception — see its doc comment.
- */
+/** `/connect/$kind` — B1 of `docs/proposals/outpost-ui.md` §4 Lane B. See docs/web.md §330. */
 
-// -----------------------------------------------------------------------------------------------
-// Deriving the connectable set and its form fields FROM the server's own manifest catalog — never
-// invented, mirroring plugins.tsx's `SchemaForm` (a separate, minimal copy: that file is owned by
-// a different section of this same round, so this does not import from it).
-// -----------------------------------------------------------------------------------------------
+// The connectable set and its fields come from the manifests. See docs/web.md §331.
 
 interface ConfigSchemaProperty {
   type?: string;
@@ -105,18 +67,10 @@ export function systemsOfKind(systems: GraphObject[] | undefined, kind: string):
   );
 }
 
-/** Fields NOT collected by the run-time config form: `serverUrl`/`tokenSecretKey` are Step-1
- *  system fields (the execution-system-backed merge injects them at discovery time), and
- *  `baseUrl` is the SAME resolution's explicit-override half (`resolveProviderBaseUrl` in
- *  `packages/plugins/git-provider-core`) — collecting it too would just be a second, confusing
- *  "URL" field doing what the Step-1 Server URL already does via the persisted system. */
+/** Fields NOT collected by the run-time config form. See docs/web.md §332. */
 const RUN_FIELD_EXCLUDE = new Set(["serverUrl", SYSTEM_SECRET_FIELD, "baseUrl"]);
 
-/** `gitlab-discovery`'s JSON Schema declares no `required` array at all — `discover()`'s
- *  `projectPathOf` needs `projectPath` OR (`owner` AND `repo`), an OR a flat `required` list can't
- *  express (packages/plugins/gitlab/src/index.ts). Asked for like every other git-provider module
- *  here rather than left to a schema that can't say it; `projectPath` stays optional, for a
- *  nested-group self-hosted layout. */
+/** One schema declares no required array at all. See docs/web.md §333. */
 const CLIENT_REQUIRED_OVERRIDE: Record<string, string[]> = { gitlab: ["owner", "repo"] };
 
 export interface RunField {
@@ -158,11 +112,7 @@ function defaultSecretKey(kind: string, name: string): string {
   return `${name.trim() || kind}-${kind}-token`;
 }
 
-// -----------------------------------------------------------------------------------------------
-// The doors — same discipline as `connect-argocd.tsx`'s `ConnectDoors`: a structural interface a
-// test can hand a double to, and (b3) the two more doors this wizard's triage step needs, copied
-// from `registry-detail.tsx`'s `ComponentServiceCard` rather than importing that page.
-// -----------------------------------------------------------------------------------------------
+// The doors — same discipline as `connect-argocd.tsx`'s `ConnectDoors`. See docs/web.md §334.
 
 export interface ConnectKindDoors {
   putSecret(key: string, value: string): Promise<unknown>;
@@ -499,11 +449,7 @@ export function EnumerateStepGeneric({
 
 type ProposalObject = DiscoveryProposal["objects"][number];
 
-/** One row per proposed object type, in first-seen order — generalizes `proposalTypeCounts`
- *  (`connect-argocd.tsx`) into groups so a `deployment-target` object (B4: "where a discovery
- *  module proposes targets … accept them alongside components") gets its own section with the
- *  IDENTICAL row/skip treatment as `component` — see the section G4 handoff for why no shipped
- *  discovery module actually emits one today. */
+/** One row per proposed object type, in first-seen order. See docs/web.md §335. */
 export function groupObjectsByType(objects: ProposalObject[]): Array<[string, number[]]> {
   const order: string[] = [];
   const byType = new Map<string, number[]>();
@@ -517,17 +463,7 @@ export function groupObjectsByType(objects: ProposalObject[]): Array<[string, nu
   return order.map((typeId) => [typeId, byType.get(typeId)!]);
 }
 
-/**
- * Filters a proposal down to the CHECKED objects, dropping any `bindings`/`sourceMappings` that
- * name a skipped object (`objectName` match — exact, the SAME key `POST /discovery/accept` itself
- * resolves them by). `relationships` is left untouched: the caller only offers skip when
- * `proposal.relationships.length === 0` (see `ReviewStepGeneric`), because a relationship
- * references its endpoints by a `fromUrn`/`toUrn` each plugin constructs internally and never
- * exposes as a stable per-object key — dropping an object that a relationship still points at
- * would submit a proposal with a dangling endpoint and `POST /discovery/accept` would 404
- * resolving it. That is the "do not fake it client-side" boundary for B4/B3 skip: real, but only
- * where it is safe.
- */
+/** Filters a proposal to the checked objects, dropping the rest. See docs/web.md §336. */
 export function filterProposal(
   proposal: DiscoveryProposal,
   uncheckedIndices: Set<number>
@@ -548,14 +484,7 @@ export function ReviewStepGeneric({
 }: {
   proposal: DiscoveryProposal;
 }): React.JSX.Element {
-  // THE STEP THAT USED TO WRITE. It called `discovery.accept`, which committed the proposal
-  // straight into the graph — the path that made the homelab's ~50 imported components RBAC
-  // orphans, because nothing asked which service they belonged to.
-  //
-  // It now emits IaC (ADR-0047). The grouping question is asked HERE, before anything exists, which
-  // is the whole of the fix: "the orphan problem is solved at authoring time, where a human is
-  // present." The post-import orphan-triage screen this wizard used to end on is gone with it —
-  // there are no orphans to triage when a component cannot be emitted without a service.
+  // THE STEP THAT USED TO WRITE. See docs/web.md §337.
   return (
     <Card>
       <CardHeader>
@@ -572,19 +501,7 @@ export function ReviewStepGeneric({
   );
 }
 
-/*
- * THE POST-IMPORT ORPHAN TRIAGE IS GONE, AND THAT IS THE POINT (ADR-0047).
- *
- * `zipCreatedObjects`, `ImportedRow`, the per-component service picker and `ImportSummaryGeneric`
- * existed to repair what the accept path produced: components already written to the graph with no
- * owning service, which the operator then had to find and fix one at a time. The homelab's ~50
- * imported components are why that screen was built.
- *
- * With discovery demoted to a scaffolder there is nothing to repair. Grouping is asked BEFORE
- * anything exists (`ScaffoldPanel`), and a component with no service is simply not emitted — a
- * `Component` cannot be constructed without one. A triage screen for a state that can no longer be
- * reached would be dead code that reads as a safety net.
- */
+// THE POST-IMPORT ORPHAN TRIAGE IS GONE, AND THAT IS THE POINT. See docs/web.md §338.
 
 export function ConnectGenericPage({
   kind,

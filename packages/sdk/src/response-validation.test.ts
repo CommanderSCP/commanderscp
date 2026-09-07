@@ -4,17 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScpClient } from "./client.js";
 import { ScpApiError, ScpResponseValidationError } from "./errors.js";
 
-/**
- * ADR-0023 — response validation at the SDK boundary.
- *
- * These tests drive the REAL generated client against a real (loopback-only) HTTP server, so what
- * is under test is the shipped path: `sdk.gen.ts`'s per-operation `responseValidator` → the
- * generated client's error channel → `response-validation.ts`'s interceptor → `unwrap()`.
- *
- * `GET /federation/status` is the operation four consecutive review rounds of PR #155 each found a
- * NEW unguarded dereference in (`peer.syncScope` three times over, `recentTransfers` once). It is
- * the regression the boundary exists to make impossible to reach a component.
- */
+/** ADR-0023 — response validation at the SDK boundary. See docs/sdk.md §61. */
 
 const PEER_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -89,12 +79,7 @@ function wellFormedObject(): JsonObject {
     originDomainId: OBJECT_ID,
     revision: 1,
     provenance: null,
-    // M20.1 (ADR-0031) — required on the wire. Added HERE, in the shared well-formed fixture,
-    // rather than to the dedup test's expected issue list: that test's subject is that a union
-    // reports each missing field ONCE, and it names the fields it omits by `delete`-ing them
-    // explicitly. Keeping its missing set exactly {revision, urn} preserves what it measures;
-    // widening the expectation instead would have quietly turned it into a test that also
-    // tracks the object's field count.
+    // M20.1 (ADR-0031) — required on the wire. See docs/sdk.md §62.
     domainLocal: false,
     // M20.7 (ADR-0031 §6c). Added HERE, in the shared well-formed fixture, for the same reason
     // `domainLocal` was: the union-dedup test names its omissions by `delete`-ing them, so its
@@ -240,15 +225,7 @@ describe("SDK response validation (ADR-0023)", () => {
     expect(error.status).toBe(403);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // Unions. `@hey-api`'s zod plugin emits `z.union([...])` for every operation declaring two 2xx
-  // codes — all 11 upsert-by-urn operations (200 updated / 201 created), i.e. exactly the write
-  // path `packages/iac` drives. zod 4 collapses a failed union into ONE top-level
-  // `invalid_union` issue and hides the per-branch issues in a nested `errors: ZodIssue[][]`,
-  // so reading `error.issues` alone names NO field and the promise `ScpResponseValidationError`
-  // makes ("naming BOTH the operation and the offending field(s)") is void precisely where it
-  // matters most.
-  // -------------------------------------------------------------------------------------------
+  // Unions: the upsert-by-urn operations declare two 2xx codes. See docs/sdk.md §63.
 
   it("names the offending FIELD when the operation's response schema is a union", async () => {
     // `PUT /objects/{type}/{urn}` — 200 | 201, so `zUpsertObjectByUrnResponse` is a `z.union`.
@@ -301,12 +278,7 @@ describe("SDK response validation (ADR-0023)", () => {
     expect(object).toEqual(body);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // Empty bodies. `client.gen.ts` returns `{}` for ANY 2xx with `status === 204` or
-  // `Content-Length: 0` WITHOUT running `responseValidator` — the one bypass of "fails once".
-  // The shipped Fastify server never emits it; a proxy/ingress/CDN in front of an instance can,
-  // and that is this product's deployment shape.
-  // -------------------------------------------------------------------------------------------
+  // Empty bodies are the one bypass of fail-once validation. See docs/sdk.md §64.
 
   function serve(status: number, headers: Record<string, string>, payload = ""): void {
     server.removeAllListeners("request");

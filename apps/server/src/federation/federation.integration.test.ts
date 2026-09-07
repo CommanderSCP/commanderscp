@@ -59,31 +59,9 @@ import { PromotionBundleSchema } from "@scp/schemas";
 import { TrustDomainId } from "@scp/schemas";
 import { asTrustDomainId } from "@scp/schemas";
 
-/**
- * M6 Federation Basics — Testcontainers integration coverage (BUILD_AND_TEST.md §8 M6 DoD).
- *
- * Each "domain" is a GENUINELY SEPARATE Postgres DATABASE (test-support/isolated-domain.ts),
- * within the same Testcontainers container — faithfully matching DESIGN.md §13's real topology
- * (two federation domains are two separate SCP instances, each with its OWN database; there is no
- * shared `objects` table between them). This also sidesteps a real structural fact this milestone
- * surfaced: `objects.id` is a single GLOBAL primary key (not composite with `org_id`), which is
- * completely safe within one instance's one database but would collide the moment two "domains"
- * sharing ONE physical table tried to replicate the SAME id (exactly what federation import does
- * by design, for single-writer authority) into each other's rows.
- *
- * The real two-domain E2E (scripts/e2e-m6.sh) additionally proves this holds across two actually
- * separate scpd+postgres COMPOSE stacks with no network path between them at all; this file
- * covers the cryptographic/authority logic exhaustively at the integration layer, where
- * Testcontainers makes tight iteration and adversarial tampering easy to express.
- */
+/** M6 Federation Basics. See docs/federation.md §182. */
 
-/** Rebuilds a promotion bundle's OUTER checksum/signature over tampered content, using the
- *  EXPORTING domain's real key — simulating "the exporting domain itself included a bad
- *  attestation" (a bug, or a malicious/compromised exporter), which is a DIFFERENT threat than
- *  "someone tampered with an otherwise-legitimate bundle in transit" (already covered by the
- *  sync-bundle tamper tests). Without this, mutating `bundle.approvals` post-hoc leaves the OUTER
- *  checksum stale, so `importPromotionBundle`'s bundle-level check rejects it before ever
- *  reaching the per-attestation validation this is meant to exercise. */
+/** Rebuilds the outer checksum over tampered content. See docs/federation.md §183. */
 function resignPromotionBundle(
   bundle: PromotionBundle,
   exporterPrivateKeyB64: string
@@ -417,12 +395,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
   });
 
   it("SECURITY: single-writer authority — a signed bundle cannot forge authorship of a THIRD domain's object on the CREATE path", async () => {
-    // The exploit this guards (CRITICAL review finding): a legitimately-paired peer X (domainA)
-    // signs a bundle entry for a BRAND-NEW urn whose `originDomainId` claims some OTHER domain P.
-    // On the create path `createObject` writes `originDomainId` verbatim (the update-path 409 check
-    // only protects EXISTING rows), so without the fix the victim (domainB) would believe P
-    // authoritatively owns an object X actually forged — and an inflated revision would then
-    // permanently 409-block P's real future updates. A signer may only vouch for its OWN authorship.
+    // The exploit this guards (CRITICAL review finding). See docs/federation.md §184.
     const fabricatedParentDomainId = uuidv7(); // 'P' — a domain X does not own and never signed as
     const forgedUrn = `urn:scp:${domainA.orgName}:service:forged-authorship-${randomUUID()}`;
 
@@ -638,25 +611,13 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
   it("hand-filled commander-origin config reconciles correctly when a signed bundle later arrives", async () => {
     const urn = `urn:scp:${domainA.orgName}:service:handfill-target-${Date.now()}`;
 
-    // The authorization-only subject this direct-repo call has to supply for itself. It has to be a
-    // REAL bound subject now: `assertObjectWriteAuthorityForHandFill` resolves org-root
-    // `object:write` against it, and the bare org-root OBJECT this case used to pass carries no role
-    // bindings at all, so it resolves to a default deny. `createApprover` is generically "a `user`
-    // object plus a built-in role bound at the org root" despite its name; Administrator is the role
-    // that actually holds hand-fill's two permissions (`object:write` from `drizzle/0002`,
-    // `federation:write` from `drizzle/0012`).
+    // The authorization-only subject this direct call supplies. See docs/federation.md §185.
     const filler = await createApprover(domainB, "Administrator");
 
     const handFilled = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       handFillObject(tx, {
         orgId: domainB.orgId,
-        // M21.7 — the subject the governance-authority, policy-scope and governance-label refusals
-        // resolve, never the synthetic import actor `handFillObject` hands to the upsert. `service`
-        // is not governance-managed and carries no governance labels here, so none of those three
-        // fire; the governance cases are asserted in
-        // `governance-managed-write-doors.integration.test.ts` and
-        // `governance-label-write-doors.integration.test.ts`, and the `object:write` bar every
-        // hand-fill clears in `handfill-object-write-authority.integration.test.ts`.
+        // The subject those three refusals resolve against. See docs/federation.md §186.
         actorObjectId: filler.objectId,
         peerIdOrName: domainA.orgName,
         typeId: "service",
@@ -721,24 +682,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       importSyncBundle(tx, domainB.orgId, bundle)
     );
 
-    // A REAL subject holding org-root `policy:write`, not the org-root object id this file uses as a
-    // synthetic actor elsewhere. TWO independent checks now demand that, and this one author
-    // satisfies both:
-    //
-    //  - M21.7/#244 — `createOverlay` gained the governance permission check the three type guards
-    //    beside it always implied (`federation/overlay-repo.ts` — an Operator was minting live
-    //    org-wide policies through this door). The refusal itself is asserted in
-    //    `governance/governance-managed-write-doors.integration.test.ts`.
-    //  - This PR — `createOverlay` now also runs `assertPolicyScopeWithinAuthority` for a `policy`
-    //    overlay (this route was one of the two doors that check never reached), and this overlay
-    //    declares no `scope`, which means org-wide: exactly the bar that check enforces.
-    //
-    // The org-root OBJECT holds no role bindings, so the old actor is refused by both. `Administrator`
-    // carries org-root `policy:write` (`drizzle/0010_governance.sql:174-175` grants it to
-    // Administrator and Owner), and `createApprover` binds at the org root — which is the scope
-    // `assertPolicyScopeWithinAuthority` requires for an unscoped policy. This case is about overlay
-    // MECHANICS (replicated base, merged view, base never mutated); an authorized author is what lets
-    // it reach them.
+    // A real subject holding the permission, not the root id. See docs/federation.md §187.
     const policyAuthor = await createApprover(domainB, "Administrator");
 
     const { overlay } = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -820,11 +764,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       importSyncBundle(tx, domainB.orgId, bundle)
     );
 
-    // M21.7 — an AUTHORIZED policy author (see the overlay round-trip case above for why). The point
-    // of this case is that `policy:write` is not a licence to WEAKEN a base policy: the actor clears
-    // the new governance permission check and is still refused by
-    // `assertPolicyOverlayOnlyAddsStrictness`, with a 400 rather than a 403. Passing an unauthorized
-    // actor here would make it green off the permission refusal and prove nothing about strictness.
+    // M21.7 — an AUTHORIZED policy author. See docs/federation.md §188.
     const strictnessAuthor = await createApprover(domainB, "Administrator");
     await expect(
       withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -908,12 +848,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
   });
 });
 
-/**
- * M25.4 — the campaign recipe a promoted change carries (ADR-0041 §2). Nested `inputs` on purpose:
- * a shallow bag would survive a naive `{...props}` copy that a deep-strip bug still breaks, so the
- * fixture asks the harder question. The keys are `github`-shaped because the recipe crosses the
- * boundary VERBATIM — no cross-provider translation happens on the promotion path either.
- */
+/** M25.4 — the campaign recipe a promoted change carries. See docs/federation.md §189. */
 const PROMOTED_RECIPE = {
   version: 1,
   trigger: {
@@ -959,12 +894,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
        *  exercise the promotion-import strip (§8 Q2). The target doubles as the `at` scope because
        *  `requires[].at` must resolve in domain A at propose time. */
       coupling?: boolean;
-      /** ADR-0028: propose the change with a declared `stageDependencies` naming a second object
-       *  in domain A, to exercise the promotion-import strip. A separate object rather than the
-       *  change's own target, because a self-declaration mints no `depends_on` edge and would make
-       *  the fixture answer an easier question than the real one. A COMPONENT specifically:
-       *  `dependsOn` is refused for anything else at propose time, since only a component can be
-       *  placed and therefore only a component can ever be held against. */
+      /** Proposes a change declaring a stage dependency. See docs/federation.md §190. */
       stageCoupling?: boolean;
       /** M25.4 (ADR-0041 §2): propose the change carrying a campaign RECIPE in `properties`, to
        *  exercise the other side of the same strip — the keys promotion must NOT remove. */
@@ -1064,16 +994,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     };
   }
 
-  /** Insert a `trivy` scan control run for `changeId`. Defaults to the PASSING, digest-bound outcome
-   *  the M17.3 E6 export gate re-checks (status pass + digestMatch + scanned digest == promoted); the
-   *  overrides let a test seed a FAILED or digest-mismatched outcome to exercise the fail-closed path.
-   *
-   *  `pluginModule` NAMES THE PRODUCER, and is not fixture decoration. E6 admits a scan outcome by
-   *  which control produced it (`scan-evidence.ts`), so a row with no module — which is what this
-   *  helper used to write — is no longer evidence about anything. The honest fixture for
-   *  "org-pipeline evidence" is the module that actually produces it. The gate's REFUSAL of the
-   *  no-module and wrong-module shapes is pinned in `scan-evidence.test.ts` and by the
-   *  "webhook-control cannot manufacture a crossing" case below. */
+  /** Insert a `trivy` scan control run for `changeId`. See docs/federation.md §191. */
   async function seedScanOutcome(
     changeId: string,
     ociDigest: string,
@@ -1146,14 +1067,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("S10 PRECONDITION PIN: an imported promotion's change object is LOCALLY originated (origin != provenance), so the single-writer guard permits B to drive it", async () => {
-    // THE REGRESSION THIS EXISTS TO PREVENT (S10, `enforceLocalChangeAuthority`'s doc comment):
-    // that guard refuses a change whose graph object's `originDomainId` is not this domain. It is
-    // only safe to key on `originDomainId` BECAUSE `importPromotionBundle` calls `proposeChange`
-    // FRESH in the receiver — control genuinely transfers, and the exporting domain is recorded
-    // separately as `changes.imported_from_domain`. A guard keyed on `importedFromDomain` instead
-    // would refuse B every verb on every change it ever accepted by promotion. Nothing pinned that
-    // precondition before: it was an argument in a comment, and a refactor of `importPromotionBundle`
-    // that stamped the exporter as the origin would have broken promotion acceptance silently.
+    // THE REGRESSION THIS EXISTS TO PREVENT. See docs/federation.md §192.
     const { changeId } = await proposeApprovedChangeInA();
     const result = await importPromotionBundle(
       domainB.db,
@@ -1224,13 +1138,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
     const result = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
 
-    // 1. `requires` is STRIPPED on import (owner ruling: the commander already enforced the
-    //    coupling; its promotion IS the go-ahead — re-evaluating locally would be redundant or
-    //    deadlock). With zero requirements the routing guard sends the change coordinated ->
-    //    executing, never `waiting` (guard behaviour pinned by coupling.integration.test.ts).
-    // 2. `provides` is PRESERVED VERBATIM — this pins promotion-repo's properties spread against a
-    //    refactor: a promoted infra change must still be able to satisfy a LOCALLY-authored waiter
-    //    in the receiving domain.
+    // 1. `requires` is STRIPPED on import. See docs/federation.md §193.
     const imported = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       getObjectByIdOrUrnAnyType(tx, domainB.orgId, result.localChangeObjectId)
     );
@@ -1292,25 +1200,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(importedRow[0]!.state).toBe("proposed");
   });
 
-  /**
-   * M25.4 / ADR-0041 §2 — THE OTHER SIDE OF THE STRIP: the keys promotion must NOT remove.
-   *
-   * The two cases above pin what promotion DOES strip. Nothing pinned the complement, and the
-   * complement is where a campaign recipe lives. `promotion-repo.ts` destructures exactly
-   * `requires` and `stageDependencies` off `bundle.change.properties` and spreads the rest through;
-   * a future THIRD key added to that destructuring would silently take the recipe with it if it
-   * were ever mis-typed, or a refactor to an allowlist ("copy these keys") would drop it outright.
-   *
-   * THE FAILURE IS SILENT AND GREEN, which is why it earns a test rather than a comment. The
-   * outpost's reconcile would find no recipe on the imported change, fall back to `kind: "sync"`
-   * with no parameters, dispatch each target's DEFAULT pipeline, watch every run succeed, and mark
-   * the wave `succeeded`. The commander would report a migration that reached the outpost and never
-   * happened there. There is no error anywhere on that path.
-   *
-   * Deliberately asserted through the SAME reader the actuator uses (`resolveChangeRecipe`) and not
-   * only against the raw key — the lesson the `stageDependencies` case above records: a strip that
-   * left the value somewhere the reader no longer finds would pass a key check and fail here.
-   */
+  /** M25.4 / ADR-0041 §2 — THE OTHER SIDE OF THE STRIP. See docs/federation.md §194. */
   it("M25.4 round-trip: promotion PRESERVES `properties.recipe` byte-for-byte — pinning the strip list against a future third key", async () => {
     const { changeId } = await proposeApprovedChangeInA(undefined, { recipe: true });
 
@@ -1345,14 +1235,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("ADR-0028 round-trip: promotion STRIPS `stageDependencies`, and records WHY rather than losing the coupling silently", async () => {
-    // WHAT THIS PREVENTS. A promoted change is re-proposed LOCALLY with this domain's own origin, so
-    // reconcile's foreign-origin skip does not exclude it and the outpost really would evaluate the
-    // coupling. But `change_wave_targets`/`observed_state` are journaled by nothing and
-    // `relationship_upsert` ships only under sync scope `full`; under any narrower scope the
-    // depended-on component is not here at all, every verdict resolves to `not_placed` -> SATISFIED,
-    // and the release fires with no hold and NO RECORD — the silent fail-open ADR-0028's own
-    // Consequences call the worst available answer. Stripping defers the open federation ruling (D5)
-    // instead of shipping it.
+    // WHAT THIS PREVENTS. See docs/federation.md §195.
     const { changeId, stageDependsOnId } = await proposeApprovedChangeInA(undefined, {
       stageCoupling: true
     });
@@ -1376,13 +1259,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(parsed.stageDependencies).toEqual([]);
     expect(parsed.malformed).toEqual([]);
 
-    // The strip is an engine verdict, so it is EXPLAINABLE (charter principle 6) — recorded under the
-    // HOLD's own kind, so the row says which mechanism removed the declaration rather than leaving an
-    // unexplained absence. An operator reaches it by the promoted change (`scp change explain <id>`,
-    // or `scp decision list --subject-id <change-id>`) or, since ADR-0028 increment 4, without the
-    // change id at all: `scp decision list --kind stage_dependency`. That filter now exists — see
-    // `promotion-repo.ts`'s note, and `decisions-kind-filter.integration.test.ts` for its own test.
-    // The verdict below is what distinguishes THIS row from a hold under the same kind.
+    // The strip is an engine verdict, so it is EXPLAINABLE. See docs/federation.md §196.
     const stripDecisions = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       tx
         .select()
@@ -1467,12 +1344,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     const { changeId } = await proposeApprovedChangeInA();
     const bundle = await exportBundleA(changeId);
 
-    // Re-sign the SAME attestation record but with the URN swapped (binding mismatch) — the
-    // per-attestation signature IS valid (genuinely produced by domain A's real key over the
-    // tampered record), isolating the `approvedObjectUrn` BINDING check specifically, independent
-    // of signature validity. The OUTER bundle is likewise re-signed by A's real key, simulating
-    // "the exporter itself attached an attestation for the wrong object" rather than in-transit
-    // tampering (already covered above).
+    // Re-sign the SAME attestation record but with the URN swapped. See docs/federation.md §197.
     const key = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       ensureInstanceKey(tx, domainA.orgId)
     );
@@ -1510,11 +1382,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(result.approvalsRejected).toBe(1);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M17.3 (E3) — the TYPED artifact set. The crux is COMPATIBILITY: `artifacts[]` is the rich
-  // source, `artifactDigests` its backward-compatible flat projection, and the typed set takes
-  // NO part in the Ed25519 checksum/signature (EXPAND phase). NO cosign/signing is introduced.
-  // -----------------------------------------------------------------------------------------
+  // M17.3 (E3) — the TYPED artifact set. The crux is COMPATIBILITY. See docs/federation.md §198.
 
   const OCI_DIGEST = "sha256:" + "a".repeat(64);
   const SBOM_DIGEST = "sha256:" + "b".repeat(64);
@@ -1590,11 +1458,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   it("E3 OLD->NEW: a v1 bundle with NO artifacts[] imports cleanly (optional, undefined)", async () => {
     const { changeId } = await proposeApprovedChangeInA();
     const bundle = await exportBundleA(changeId);
-    // No tracked artifacts → the top-level ENVELOPE `artifacts` field is undefined (NOT []), so it
-    // is dropped from the CHECKSUM-relevant canonical string and the envelope stays byte-identical to
-    // a v1 bundle. (M17.3 E6 adds a checksum-EXCLUDED `promotionManifest` sibling that legitimately
-    // enumerates the — here empty — artifact set, so the whole-bundle JSON is no longer the right
-    // proxy; assert the E3 invariant precisely on the checksum payload instead.)
+    // No tracked artifacts means undefined, not an empty array. See docs/federation.md §199.
     expect(bundle.artifacts).toBeUndefined();
     expect(JSON.stringify(promotionChecksumPayload(bundle))).not.toContain('"artifacts"');
     expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
@@ -1631,11 +1495,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(blob?.format).toBe("cyclonedx");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // ADR-0045 — `artifact` as a first-class object type, minted at the promotion boundary.
-  // Reuses this describe's own domainA/domainB E5/E6-paired harness (`proposeApprovedChangeInA`,
-  // `exportBundleA`) rather than a new one — the promotion machinery IS the minting machinery.
-  // -----------------------------------------------------------------------------------------
+  // Artifact as a first-class type, minted at the boundary. See docs/federation.md §200.
 
   it("ADR-0045 D2: export mints artifact objects with EXACT identity (digest, artifactType), never fabricated", async () => {
     const digest = "sha256:" + randomUUID().replace(/-/g, "").padEnd(64, "0");
@@ -1845,12 +1705,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M17.3 (E6) — the CAPSTONE. Export HARD-REFUSES (with a decision_id) every cross-boundary
-  // promotion lacking a passing, digest-bound scan for each SUBSTANTIVE artifact (SBOM EXEMPT), and
-  // co-signs a SELF-BINDING cosign manifest (no swap vector) that is EXCLUDED from the Ed25519
-  // checksum. SCP signs only its OWN manifest (coordinate-not-execute). Uses REAL cosign.
-  // -----------------------------------------------------------------------------------------
+  // M17.3 (E6) — the CAPSTONE. See docs/federation.md §201.
 
   it("E6 HARD-GATE: a substantive artifact with a FAILED scan is REFUSED at export with a decision_id", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, {
@@ -1876,23 +1731,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(decision.kind).toBe("promotion-export-scan-gate");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M20 (ADR-0031 §7) — DOMAIN-LOCALITY IS INERT AT E6, AND THE SECOND EGRESS IS GUARDED.
-  //
-  // ADR-0031 §7 makes locality VISIBILITY ONLY: it grants no scan exemption, relaxes no gate, and is
-  // read by no governance path. That claim is exactly the thing ADR-0018 §1 rejected a per-artifact
-  // `dev` bit for — a bit that could be lifted onto a boundary-crossing artifact — so it needs a
-  // witness rather than a comment. ADR-0018 §4 imposed the same obligation on its own label.
-  //
-  // Two complementary properties, and they must not be confused with each other:
-  //
-  //   (a) INERTNESS. Setting or clearing `domain_local` anywhere changes NO E6 outcome. The refusal
-  //       for a missing scan is byte-identical; a passing scan still exports.
-  //   (b) ENFORCEMENT AT THE SECOND EGRESS. A domain-local change is refused a crossing OUTRIGHT,
-  //       under its OWN decision kind, BEFORE the scan step runs — so it is never "exempted from
-  //       scanning", it is denied the crossing. `exportPromotionBundle` does not read the journal,
-  //       so §2's never-journal withholding does not reach it; this is the guard that does.
-  // -----------------------------------------------------------------------------------------
+  // Locality is inert here, and the second egress is guarded. See docs/federation.md §202.
 
   it("M20 SECOND EGRESS: a DOMAIN-LOCAL change is refused promotion outright — under its own decision kind", async () => {
     const { changeId, targetId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, {
@@ -2032,22 +1871,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("E6 PRODUCER IDENTITY: a webhook-control row carrying BYTE-PERFECT scan evidence does NOT authorize a crossing — the SAME evidence from scan-result-control does", async () => {
-    // THE BYPASS THIS CASE EXISTS TO CLOSE, end to end against a real database.
-    //
-    // `control_runs.evidence` is persisted VERBATIM from whatever a bound ControlPlugin returns
-    // (`governance/control-runner.ts`: `evidence = outcome.evidence ?? {}`), and
-    // `@scp/plugin-webhook-control` returns `body.status` and `body.evidence` verbatim from an
-    // operator-configured URL. So a `webhook-control` binding pointed at an endpoint answering
-    // `{"status":"pass","evidence":{…digestMatch:true, artifactDigest:<the promoted digest>…}}`
-    // deposits exactly the row below — and while E6 identified a scan outcome by the SHAPE of its
-    // evidence, that row satisfied the boundary gate in full. A control binding is authored at
-    // `policy:write` SCOPED AT A CONTROL OBJECT (routes/governance.ts), which is strictly weaker
-    // than the operator authority that sets the instance floors ADR-0016 §3 makes tenant-unwritable
-    // precisely so a tenant cannot loosen them.
-    //
-    // THE TWO HALVES DIFFER IN ONE FIELD. Same change shape, same digest, byte-identical evidence —
-    // only `plugin_module` differs. That is what makes this a test of the admission rule and not of
-    // something incidental about the fixture.
+    // The bypass this case closes, against a real database. See docs/federation.md §203.
     const forged = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
     await seedScanOutcome(forged.changeId, OCI_DIGEST, { pluginModule: "webhook-control" });
     const refusal = await exportPromotionBundle(domainA.db, {
@@ -2079,12 +1903,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("E6 RECENCY: a LATER failing scan supersedes an earlier pass (refused) — and a later PASS clears an earlier fail (exports)", async () => {
-    // The gate used to accept ANY historical passing row, forever: `controlOutcomes.some(...)` with
-    // no ordering. A re-scan that FAILED — new CVEs, a tightened ceiling, an expired ADR-0033 grant
-    // — did not supersede it, so an artifact stayed authorized to cross on a verdict that no longer
-    // held. Both directions are asserted, because only the pair pins "latest wins": objecting-only
-    // supersession would make every re-evaluation a one-way ratchet and leave a fixed artifact
-    // permanently blocked.
+    // The gate used to accept ANY historical passing row, forever. See docs/federation.md §204.
     const control = randomUUID();
 
     const stale = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
@@ -2250,18 +2069,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     ).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M18 (ADR-0018) — THE LEAKAGE TEST. Domain-local dev/beta pipelines are exempt from the E6
-  // scan gate ONLY because they never reach `exportPromotionBundle` (no peer target) — the
-  // exemption is a property of the PATH, never a per-artifact tag (ADR-0018 §1). This proves the
-  // two guarantees the ADR promises: (1) a dev-built digest that IS later promoted to a peer is
-  // REFUSED at E6 exactly like any other unscanned artifact, with a block Decision + decision_id
-  // hash-chained into the audit log in the same transaction — the "exemption" does not follow the
-  // artifact across a boundary (ADR-0018 §2); and (2) an operator-style dev/local classification
-  // label is INERT for enforcement — forging or removing it changes NO gate outcome, because
-  // `evaluatePromotionScanGate` has exactly two pure inputs (substantive artifacts + control-run
-  // scan outcomes) and reads no classification/origin field at all (ADR-0018 §4).
-  // -----------------------------------------------------------------------------------------
+  // M18 (ADR-0018) — THE LEAKAGE TEST. See docs/federation.md §205.
 
   const DEV_DIGEST = "sha256:" + "d".repeat(64);
 
@@ -2307,11 +2115,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("LABEL INERTNESS: a forged dev/local classification on an UNSCANNED artifact does NOT grant an exemption — still REFUSED, identically to the unlabeled case", async () => {
-    // Stuff a plausible operator-label shape (ADR-0018 §4 / ADR-0030 §2) directly onto the change's
-    // sourceRef — the most literal "forge the label onto a boundary-crossing artifact" a caller
-    // could attempt. The gate must ignore it. The REAL declared column (`source_mappings.
-    // classification`, migration 0057) is covered separately below; this case keeps the forged-shape
-    // axis, which is the one an attacker actually controls.
+    // Stuff a plausible operator-label shape. See docs/federation.md §206.
     const { changeId } = await proposeApprovedChangeInA(
       { artifact_digest: DEV_DIGEST, classification: "dev", origin: "local", devPipeline: true },
       { seedScan: false }
@@ -2325,14 +2129,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(outcome.refused).toBe(true);
     if (!outcome.refused) throw new Error("expected refusal");
 
-    // Byte-identical refusal reason to the UNLABELED case — the forged label contributed nothing to
-    // the gate's evaluation.
-    //
-    // The baseline is now PRODUCED rather than quoted. This assertion used to be `toBe(<the exact
-    // sentence>)`, which made it a test of the gate's prose: it went red on a gate change that never
-    // touched label handling, and it would have stayed green if the unlabeled case had started
-    // refusing for some *different* reason that happened to keep the same words. What the case is
-    // about is that the two refusals AGREE, so it exports the unlabeled one and compares.
+    // Byte-identical refusal reason to the UNLABELED case. See docs/federation.md §207.
     const { changeId: unlabeledChangeId } = await proposeApprovedChangeInA(
       { artifact_digest: DEV_DIGEST },
       { seedScan: false }
@@ -2365,43 +2162,14 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(JSON.stringify(bundle.promotionManifest)).not.toContain("classification");
     expect(JSON.stringify(bundle.promotionManifest)).not.toContain("devPipeline");
 
-    // CORRECTION (2026-08-01): an earlier version of this comment also claimed the label "never
-    // enters the checksum payload". IT DOES — `promotionChecksumPayload` includes `change`
-    // wholesale, and the label lives in `change.sourceRef`. That was a false statement sitting
-    // next to true assertions, which is the most durable kind of wrong comment, so it is pinned
-    // here as a fact rather than deleted.
-    //
-    // It is not a defect: ADR-0018 §4 permits DESCRIPTIVE labels, and being inside the checksum is
-    // the SAFE direction — it means a label cannot be altered in flight without invalidating the
-    // signature. Inertness is about what the GATE reads, not about what is covered by integrity
-    // protection. The two assertions above, plus the refusal case in the test before this one, are
-    // what actually establish it.
+    // Correction: an earlier version of this comment overclaimed. See docs/federation.md §208.
     const checksumPayload = JSON.stringify(promotionChecksumPayload(bundle));
     expect(checksumPayload).toContain("classification");
     expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
   });
 
   it("LABEL INERTNESS (the REAL column): a dev-classified, dev-ref source mapping grants no exemption — refused identically, and identically again once the label is removed", async () => {
-    // ADR-0030 §3, the clause this milestone turns on. The previous case forges a label onto a
-    // sourceRef; this one uses the GENUINE declared surface — a `source_mappings` row with
-    // `classification: 'dev'` and `ref_pattern: 'refs/heads/dev'`, written exactly as an operator
-    // writes it — and proves E6 does not read it.
-    //
-    // The three-way comparison is the point. Refusing once proves little on its own; what proves
-    // INERTNESS is that the refusal is BYTE-IDENTICAL with the label present, with it cleared, and
-    // with no mapping at all. If `classification` ever became a gate input, exactly one of these
-    // three would diverge.
-    //
-    // WHAT THIS IS MUTATION-PROVEN AGAINST, precisely — because the difference matters. Making the
-    // gate honour a dev-branch ORIGIN (`sourceRef.ref` containing "dev" ⇒ pass), which is the
-    // rejected alternative in ADR-0018 and the literal reading of the branch-grants-the-exemption
-    // direction, REDS this case and nothing else in the file. That is the hazard it exists to catch.
-    //
-    // The mapping-presence axis is weaker and is NOT claimed as mutation-proven: the change here is
-    // built directly by `proposeApprovedChangeInA` rather than correlated FROM this mapping, so the
-    // row establishes "a dev-classified mapping exists in the org" rather than "this change came
-    // from one". Closing that gap needs a correlation-driven fixture — worth doing when a
-    // classification-consuming code path exists to justify it; today none does.
+    // ADR-0030 §3, the clause this milestone turns on. See docs/federation.md §209.
     const component = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       createObject(tx, {
         orgId: domainA.orgId,
@@ -2499,23 +2267,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("the instance-scoped floor is not a LABEL and never exempts — but it does bind at E6 on findings that breach it", async () => {
-    // CORRECTED 2026-08-17, and the correction is the interesting part.
-    //
-    // This case used to assert that "E6 never reads scan_requirement_floors — a completely different
-    // mechanism from the E6 boundary gate", and it stayed GREEN through the change that made that
-    // sentence false, because every fixture it exercises reports ZERO findings and zero breaches no
-    // ceiling. A test that cannot distinguish the property it names from the property it happens to
-    // exercise is a test of the fixture. What it genuinely established is the LABEL-INERTNESS half —
-    // the floor neither exempts an unscanned artifact nor blocks a clean one — and that half is
-    // unchanged and kept below, now beside the case that tells the two apart.
-    //
-    // WHY THE GATE READS THE FLOOR NOW. The four org-and-below tiers of ADR-0016's chain are
-    // tenant-authored policy data, and `scan-result-control` will fall back to a tenant-authored
-    // per-binding `config.threshold` when the gate threads no scoped ceiling — so "the control said
-    // pass" can mean "pass against a ceiling the beneficiary wrote". The two ABOVE-org tiers are
-    // different in kind: `scan_requirement_floors` is operator-write / tenant-read precisely so no
-    // tenant can loosen it, and E6 is the operator's boundary. Those, and only those, are re-checked
-    // here. The six-tier resolution is deliberately NOT re-run (see `scan-evidence.ts`).
+    // Corrected later, and the correction is the interesting part. See docs/federation.md §210.
     const adminPool = new pg.Pool({ connectionString: domainA.adminUrl });
     try {
       await adminPool.query(
@@ -2698,11 +2450,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       { type: "blob", digest: sbomDigest }
     ]);
 
-    // B's E6 re-check (the exporter's OWN predicate, read-only — `evaluateScanCoverage`): `not_run`
-    // with no scan evidence at B; ONE passing, digest-bound scan of the IMAGE from an ADMITTED
-    // producer (`scan-result-control` — the module NAMES the producer, it is not fixture decoration,
-    // see `seedScanOutcome`) makes it `pass` — a re-export from B would not be refused over the SBOM
-    // blob's digest, which was never a substantive artifact.
+    // The exporter's own read-only re-check of scan coverage. See docs/federation.md §211.
     expect(atB.artifact!.exportGate).toBe("not_run");
     await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       insertControlRun(tx, {
@@ -2740,16 +2488,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
-// M17.4(a) / M15.2 — RECEIVER-side verification of the commander's cosign-signed promotion
-// manifest at bundle import (the OUTPOST's universal pre-deploy validation, ADR-0011). ONE gate
-// runs at every receiving hop; the outpost NEVER re-scans — receiver-side never-re-scan is
-// UNCHANGED; the one scan now executes at the commander before signing, per promotion journey
-// (ADR-0020). Fail-closed over signature + set-equality + the tie + self-binding + a downgrade
-// defense. Part-(b) (per-artifact
-// BYTE verify where the operator-loaded bytes land) runs later as the PRE-DEPLOY gate — see
-// coordination/pre-deploy-gate.integration.test.ts; byte TRANSPORT itself remains M15.5.
-// ---------------------------------------------------------------------------------------------
+// Receiver-side verification of the signed promotion manifest. See docs/federation.md §212.
 describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () => {
   let commander: IsolatedDomain;
   let outpostWithKey: IsolatedDomain;
@@ -3037,11 +2776,7 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
           e.action === "federation.import.entry_dropped" && e.subjectId === anchorBeforeSync!.id
       )
     ).toHaveLength(0);
-    // Filtered to THIS anchor's id, not counted globally — this describe block's shared
-    // commander/outpostWithKey pair means the ordinary sync step above also carries every OTHER
-    // still-unsynced commander-minted artifact from earlier `it()`s in this suite, each of which
-    // may ALSO collide with its own already-imported anchor and adopt (correctly) — this
-    // assertion is about THIS digest's anchor specifically.
+    // Filtered to THIS anchor's id, not counted globally. See docs/federation.md §213.
     expect(
       dropped.items.filter(
         (e) => e.action === "artifact.update" && e.subjectId === anchorBeforeSync!.id
@@ -3100,12 +2835,7 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
   });
 });
 
-// ============================================================================================
-// M14.1 — per-peer poke-mode flag (ADR-0009; proposal docs/proposals/outpost-poke.md §Config).
-// Default-off, tri-state on re-pair (mirrors deliveryTarget), and the pair-time transport-identity
-// guard: setting poke-mode TRUE requires an https/mTLS-capable peer baseUrl (full endpoint
-// enforcement is M14.2 — here we prove the EARLY pair-time refusal).
-// ============================================================================================
+// M14.1 — per-peer poke-mode flag. See docs/federation.md §214.
 describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
   let commander: IsolatedDomain;
   let peerSelf: FederationSelf;
@@ -3225,12 +2955,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
     expect(row.pokeMode).toBe(true);
   });
 
-  // ------------------------------------------------------------------------------------------
-  // M14.3 HARDENING — the guard must validate the EFFECTIVE POST-WRITE state, not the input
-  // transition. baseUrl and pokeMode MERGE with OPPOSITE rules on re-pair (baseUrl: request wins
-  // when present; pokeMode: tri-state, EXISTING wins when absent), so a guard keyed off
-  // `input.pokeMode === true` checked a DIFFERENT tuple than the one actually persisted.
-  // ------------------------------------------------------------------------------------------
+  // The guard must validate the effective post-write state. See docs/federation.md §215.
 
   it("REGRESSION: re-pair downgrading baseUrl to plain-http with pokeMode OMITTED is REJECTED", async () => {
     // THE BUG: pokeMode omitted -> `input.pokeMode === true` was false -> the guard was skipped
@@ -3284,19 +3009,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
   });
 });
 
-/**
- * M14.4 fix (N5) — `GET /federation/status` must report the cadence the SCHEDULER is actually
- * running, in the one case where the two used to disagree.
- *
- * The status endpoint was added in M14.4 precisely so an operator could SEE cadence divergence, but
- * it derived `hasClientCerts` from the CHEAP PRESENCE CHECK (`federationClientMtlsConfigured` — are
- * the env paths set?) while the scheduler derives it from the never-throwing RUNTIME PROBE (did the
- * material actually READ off disk?). Those answers differ in exactly the situation owner decision D4
- * exists for: `SCP_FEDERATION_MTLS_CERT_FILE`/`_KEY_FILE` still set, the mounted secret rotated away.
- * The scheduler correctly falls back to the FREQUENT cadence and warns; the endpoint reported
- * `effectiveCadence: 'poke'` — the operator-facing view saying the exact opposite of what the process
- * was doing. Both now call the same probe, so they agree by construction.
- */
+/** Status must report the cadence the scheduler actually uses. See docs/federation.md §216. */
 describe("M14.4 GET /federation/status effectiveCadence — agrees with the scheduler's D4 probe", () => {
   let domain: IsolatedDomain;
   let peerDomainId: TrustDomainId;

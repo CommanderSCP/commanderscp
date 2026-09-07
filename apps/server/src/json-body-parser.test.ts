@@ -5,32 +5,10 @@ import { buildApp } from "./app.js";
 import { createDb, createPool } from "./db/client.js";
 import { loadConfig } from "./config.js";
 
-/**
- * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
- * that three named keys are absent only proves those three are absent; this proves NOTHING was
- * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
- * so it is checked rather than assumed.
- */
+/** Snapshot every Object.prototype key, not three named ones. See docs/server.md §65. */
 const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
 
-/**
- * THE WIRING TEST for the global `application/json` content-type parser registered in `app.ts`.
- *
- * Deliberately routed through the real `buildApp` rather than calling the guard directly:
- * `util/safe-json.test.ts` already proves the guard rejects poisoned input, and a guard that is
- * correct but not installed is this repo's dominant failure mode. Delete the
- * `assertNoPrototypePoisoning` call from `app.ts`'s parser and the "REFUSES" cases here die while
- * every test in `util/safe-json.test.ts` stays green — which is the point of having both.
- *
- * `buildApp` never touches the database at construction time (`pg.Pool` connects lazily), and a
- * body rejected by the content-type parser never reaches a route handler, so this needs no
- * Postgres and belongs in the unit layer.
- *
- * The probe route is registered by this test rather than borrowed from the application, because
- * the parser is registered per content-type GLOBALLY, not per-route — every route in the process
- * shares the one under test, so any route demonstrates it, and a locally declared one keeps the
- * test independent of route-level auth and schema validation.
- */
+/** The wiring test for the global JSON content-type parser. See docs/server.md §66. */
 
 describe("app.ts JSON body parser", () => {
   let app: FastifyInstance;
@@ -81,11 +59,7 @@ describe("app.ts JSON body parser", () => {
       });
     });
 
-    /**
-     * The regression this whole change exists for. On the base commit this exact request returned
-     * 201 Created from `POST /services` and stored `{"ok":1}` — accepted, silently partially
-     * discarded, reported as success. The parser must never again answer 2xx here.
-     */
+    /** The regression this whole change exists for. See docs/server.md §67. */
     it("NEVER accepts-and-strips: the response is a refusal, not a partial success", async () => {
       const res = await post('{"ok":1,"__proto__":{"polluted":"yes"}}');
       expect(res.statusCode).not.toBe(201);
@@ -120,11 +94,7 @@ describe("app.ts JSON body parser", () => {
   });
 
   describe("malformed JSON", () => {
-    /**
-     * Was 500 Internal Server Error on the base commit: the parser rethrew a raw `SyntaxError`,
-     * which carries no `statusCode`, so `setErrorHandler` fell through to its catch-all and
-     * reported a client typo as a server fault.
-     */
+    /** Was 500 Internal Server Error on the base commit. See docs/server.md §68. */
     it("is 400, not 500", async () => {
       const res = await post("{not json");
       expect(res.statusCode).toBe(400);

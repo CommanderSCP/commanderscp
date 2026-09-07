@@ -2,13 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ManifestParseError } from "./types.js";
 import { parsePomXml } from "./pom-xml.js";
 
-/**
- * A real-shaped Spring Boot POM: a parent, a properties block, a `<dependencyManagement>` import,
- * the project's own `<dependencies>`, a `<build><plugins>` block and a `<profiles>` section.
- *
- * Four of those five blocks contain `<dependency>`-shaped or `<version>`-shaped elements that a
- * name-matching parser would happily report.
- */
+/** A real-shaped Spring Boot POM. See docs/dependency-manifests.md §63. */
 const SPRING_POM = `<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -231,12 +225,7 @@ describe("parsePomXml", () => {
   });
 
   it("decodes XML entities in the fields it reads, in the right order", () => {
-    // `decodeEntities` survived being made a no-op: no fixture carried an entity in a field the
-    // walker actually reads. Maven coordinates do not normally contain one, but every child value
-    // the walker collects goes through this function, so a silent no-op would corrupt any that did.
-    //
-    // The ORDER is the substantive property: `&amp;` must be replaced LAST, or `&amp;lt;` decodes
-    // all the way to `<` — a double-decode that turns escaped text into markup.
+    // `decodeEntities` survived being made a no-op. See docs/dependency-manifests.md §64.
     const pom =
       "<project><dependencies><dependency>" +
       "<groupId>a&amp;b</groupId><artifactId>c&amp;lt;d</artifactId><version>1.0</version>" +

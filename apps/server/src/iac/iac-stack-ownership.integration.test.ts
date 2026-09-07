@@ -9,53 +9,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * IaC STACK OWNERSHIP IS NOT WRITABLE BY ITS SUBJECT (drizzle/0068)
- * ================================================================================================
- *
- * THE PROPERTY. A governance decision whose match key is writable by its own subject, at a weaker
- * permission than the one that authored the constraint. Here the decision is the IaC PRUNE POOL —
- * which live rows an apply DELETES — and the match key WAS the `scp:managed-by`/`scp:stack` pair in
- * the row's own `labels`, writable at plain `object:write` AT THE OBJECT, validated by nothing.
- *
- * Both directions were reproduced against these exact doors before the fix; the cases below are
- * those reproductions with their expectations inverted, so the file reads as what it measured:
- *
- *   R1 ENROLMENT — an Operator bound at ONE object, holding no IaC authority at all, PATCHed two
- *   label keys onto it. The stack's UNCHANGED manifest then proposed deleting it, over the reason
- *   "previously managed by this stack, no longer present in the desired manifest", which was false.
- *   The apply executed that delete and the object 404'd.
- *
- *   R2 ESCAPE — the object's owner stripped the two keys. The object left the pool, so when its
- *   stack later dropped it from the manifest to decommission it, ZERO deletes were proposed. It
- *   survived its own decommission with nothing in the diff to notice.
- *
- * WHY THIS FILE IS AN INTEGRATION TEST AND NOT A UNIT TEST. `plan-diff.test.ts` proves the
- * predicate DECIDES correctly and cannot prove it is WIRED — a suite that calls `isStackManaged`
- * directly stays green with every installation deleted, which is this repo's dominant defect class.
- * So every case here drives real HTTP doors: `PATCH /objects/{type}/{id}`, `POST /plans`,
- * `POST /plans/{id}/apply`.
- *
- * INSTALLATION PROVEN BY MUTATION — MEASURED, and the results are recorded as observed rather than
- * as intended. Each was applied against an otherwise-green suite and the named cases FAILED:
- *
- *   m1. `fetchManagedObjects` back to `labels @> managedLabels(stack)`                -> R2
- *   m2. the object prune's `isStackManaged(existing.managedByStack, …)` back to the
- *       two-label test                                                               -> R2
- *   m1+m2 together (i.e. the whole pre-0068 object read path restored)               -> R1, R2
- *   m3. delete the `stampObjectStackOwnership` call in `executePlanDiff`             -> R2, A1
- *   m4. narrow that stamp to `action === "create"` (drop `update`/`noop`)            -> A1
- *   m5. delete the `stampRelationshipStackOwnership` call                            -> E1
- *   m6. `fetchManagedRelationships` back to the label containment test               -> E1, E2
- *
- * READ m1 AND m2 CAREFULLY — the result is more interesting than "both are wired". Neither ALONE
- * revives R1, because the two are independent gates over the same fact: the pool QUERY selects on
- * the column, and the prune PREDICATE re-tests it. Reverting one leaves the other refusing the
- * enrolled object. R1 needs both reverted, which is exactly what the composite row shows. That is
- * defence in depth rather than a gap, but it does mean neither mutation alone is a complete
- * installation proof for R1, and saying so is the point of listing the composite.
- */
+/** IaC STACK OWNERSHIP IS NOT WRITABLE BY ITS SUBJECT. See docs/iac.md §52. */
 describe("IaC stack ownership is server-written, not tenant-written", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -222,14 +176,7 @@ describe("IaC stack ownership is server-written, not tenant-written", () => {
   });
 
   it("A1 ADOPTION VIA A NOOP: declaring a pre-existing object owns it even when the diff has nothing to change", async () => {
-    // The branch that is easy to miss and impossible to see from the outside. Under the old scheme,
-    // adoption happened as a SIDE EFFECT of merging the marker labels — so a declared object was
-    // never a `noop` on the apply that adopted it. Ownership is now explicit, which means `noop`
-    // has to be stamped on purpose. Skipping it would leave the object declared-but-unowned:
-    // undeletable by the very stack that declares it, i.e. the ESCAPE direction reached by accident.
-    //
-    // The object is pre-seeded WITH the marker labels, which is what makes its first plan a `noop`
-    // and is also the state a pre-0068 estate is full of.
+    // The branch that is impossible to see from the outside. See docs/iac.md §53.
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
     const adopteeUrn = `urn:scp:${stackName}-pre:service:adoptee`;
 

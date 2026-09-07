@@ -12,32 +12,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { objects, relationships } from "../db/schema.js";
 
-/**
- * DECLARING PLACEMENTS IN IaC (C1, ADR-0026) — the four decisions, enforced end to end.
- *
- * The design is in docs/proposals/iac-placements.md; §6 records the rulings. This file exists because
- * three of the four are only real if APPLY enforces them, and one of them is destructive.
- *
- * ============================================================================================
- * WHY A TYPED COLLECTION AT ALL — the assertion the whole feature rests on
- * ============================================================================================
- * A placement cannot be a raw `objects[]` entry: that door is refused for pair-bound types (#207)
- * because it stores unresolved UUIDs and writes NO derived edges, leaving an island invisible to
- * every traversal. So the first test asserts the DERIVED EDGES exist after apply — not merely that a
- * row appeared. A create path that produced the row without the edges would satisfy a row-count
- * check and reintroduce exactly what #207 closed.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | apply via `createObject` instead of `createPlacement` | the derived-edges test FAILS — the row exists, the edges do not |
- * | make an ABSENT collection skip pruning | the absent-collection test FAILS here AND three `plans.integration` C1 prune tests fail — absent is the only way `synth()` can say "none", so it must prune |
- * | drop the Q2 binding check from the prune path | the TOCTOU test FAILS (the placement is deleted and the binding orphaned) |
- * | move the placement prune BEFORE the binding prune | the remove-both test FAILS — a manifest legitimately dropping both is refused, which is the ordering bug this file caught during development |
- * | scope the owned pool on the deployment-target instead of the component | the foreign-component test FAILS |
- */
+/** DECLARING PLACEMENTS IN IaC (C1, ADR-0026). See docs/iac.md §43. */
 describe("IaC placements (C1)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -143,14 +118,7 @@ describe("IaC placements (C1)", () => {
   });
 
   it("removes BOTH when the manifest declares neither the placement nor its binding", async () => {
-    // THIS REPLACES THE ORIGINAL Q2 TEST, and the change is deliberate rather than a regression.
-    //
-    // Q2 ruled that pruning a placement carrying a binding REFUSES, on the stated grounds that "the
-    // manifest cannot even name it (its target is the placement)". A manifest CAN now name it, by
-    // the pair — so silence means "I declare none", the binding is pruned first, and the placement
-    // then prunes cleanly. That is exactly how `sourceMappings` on an owned component have always
-    // behaved; making bindings-on-placements the one collection that cannot be removed through IaC
-    // would be the inconsistency, not this.
+    // This replaces the original case, and the change is deliberate. See docs/iac.md §44.
     const stackName = `pl-q2-both-${uuidv7().slice(0, 8)}`;
     const { manifest, comp } = baseManifest(stackName, {
       placements: [{ componentUrn: comp0(stackName), deploymentTargetUrn: tgt0(stackName) }],
@@ -225,14 +193,7 @@ describe("IaC placements (C1)", () => {
   });
 
   it("an ABSENT placements collection prunes the same as an empty one — they are the same thing", async () => {
-    // NOT a quirk, and I got this backwards first. `Stack.synth()` OMITS a collection when empty
-    // (construct.ts), so an absent key is the ONLY way an author can say "this stack has no
-    // placements". If absent meant "assert nothing", the LAST placement could never be removed
-    // through IaC — you could add the final one and never take it away.
-    //
-    // `@scp/schemas`'s "an absent collection must not read as 'prune everything'" is about a pre-C1
-    // or hand-rolled manifest staying VALID, not about suppressing prune. Reading it the other way,
-    // I "fixed" a non-bug and broke three plans.integration tests that assert exactly this.
+    // NOT a quirk, and I got this backwards first. See docs/iac.md §45.
     const stackName = `pl-absent-${uuidv7().slice(0, 8)}`;
     const { manifest, comp } = baseManifest(stackName, {
       placements: [{ componentUrn: comp0(stackName), deploymentTargetUrn: tgt0(stackName) }]

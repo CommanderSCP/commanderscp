@@ -18,13 +18,7 @@ import {
 import type { Db } from "../db/client.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 
-/**
- * M21.4 BLOCKER A — the fan-out point that turns `scp.change.transitioned` into internal detection.
- *
- * The predicate and the routing are pinned separately from the detection itself because they are
- * the half that decides whether detection ever RUNS. Before this, `detectInternalReleases` had no
- * production caller at all and `scp.change.transitioned` had no server-side consumer.
- */
+/** The fan-out point that turns the event into detection. See docs/dependencies.md §239. */
 
 function event(overrides: Partial<DomainEventJob> = {}): DomainEventJob {
   return {
@@ -94,28 +88,7 @@ describe("acceptedChangeRouter", () => {
   });
 });
 
-/**
- * THE ROLE REASONING, AFTER THE 2026-08-17 REVERSAL (ADR-0032 §7d).
- *
- * This block used to assert "runs on EVERY federation role, including an outpost and a retrans
- * node", and it was green, because the guard really did allow them. The owner's decision changed
- * the question, not the mechanics: dependency automation exists to pull from PUBLIC repositories,
- * which a FIELD outpost has no need to do, because the resulting change is pushed down the global
- * pipeline the commander manages. A field outpost RECEIVES a dependency bump through the ordinary
- * promotion path and never originates one — so it detects no internal releases either. ("Field" is
- * the qualifier that makes the sentence true: an HQ outpost is the outpost in the COMMANDER'S OWN
- * trust domain and is this process, so its releases ARE detected here. Every deployment this guard
- * refuses has DECLARED `SCP_FEDERATION_ROLE=outpost` — `commander-only.ts` reads that out of the
- * code.)
- *
- * The measurement the old block rested on survives and is now a STATED COST rather than a
- * counter-argument (ADR-0032 §7d clause 2): the wave-target evidence really does exist only where
- * the change executed, so an internal line released to prod only at a FIELD outpost keeps a NULL
- * head — an honest "not observed", never a wrong version. A component that releases to prod in the
- * HQ domain is unaffected: that evidence is written locally, and the derivation runs here.
- *
- * Shape matched to `bump-dispatch.test.ts`'s role-guard block, because these are now one guard.
- */
+/** THE ROLE REASONING, AFTER THE 2026-08-17 REVERSAL. See docs/dependencies.md §240. */
 describe("internalReleaseDetectionRoleGuard — commander-only since ADR-0032 §7d", () => {
   const base = {
     role: "worker" as const,
@@ -152,11 +125,7 @@ describe("internalReleaseDetectionRoleGuard — commander-only since ADR-0032 §
   });
 });
 
-/**
- * THE WIRING. A correct predicate nothing consults is this codebase's most-shipped defect, so the
- * binding between THIS router and THIS guard is asserted, which the generic registry census in
- * `domain-event-routers.test.ts` structurally cannot do.
- */
+/** The wiring: a predicate nothing consults is the defect. See docs/dependencies.md §241. */
 describe("the internal-release router is registered under this capability's own guard", () => {
   it("pairs the router with `internalReleaseDetectionRoleGuard`, by identity", () => {
     const entries = DOMAIN_EVENT_ROUTERS.filter((entry) => entry.factory === acceptedChangeRouter);
@@ -182,19 +151,7 @@ describe("the internal-release router is registered under this capability's own 
   });
 });
 
-/**
- * THE WORKER HALF ACTUALLY CONSULTS THE GUARD — MEASURED, NOT ASSUMED.
- *
- * Deleting `startInternalReleaseLoop`'s `if (!guard.allowed) return` left the whole suite green:
- * every integration test boots the loop as a declared commander, so the refusal branch is never
- * taken, and the router census above covers only the ROUTER half. The guard was computed, logged,
- * and structurally ignorable — present but not consulted.
- *
- * A REFUSED ROLE MUST NEVER CREATE THE QUEUE, not merely skip work inside the handler: a process
- * that created it would hold a pg-boss worker for a queue it will never act on, and would drain
- * events the router (equally refused there) should never have enqueued. Same shape as
- * `version-poll.test.ts`'s "a refused role returns an inert handle and NEVER CREATES THE QUEUE".
- */
+/** THE WORKER HALF ACTUALLY CONSULTS THE GUARD. See docs/dependencies.md §242. */
 describe("startInternalReleaseLoop consults the guard before it touches pg-boss", () => {
   function recordingBoss() {
     return {

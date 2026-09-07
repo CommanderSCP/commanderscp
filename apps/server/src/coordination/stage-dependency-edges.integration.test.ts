@@ -12,19 +12,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ADR-0028 increment 2 — declared stage dependencies become `depends_on` edges.
- *
- * This is the "derive the dependency charts instead of guessing" half of the owner's ask, and it is
- * the only half there can be: nothing SCP observes carries inter-component dependency data (decision
- * 7), so the CI declaration IS the chart's source. What is proved here is the part that cannot be
- * read off the code — that the SAME declaration arriving on every push converges rather than
- * accumulating or erroring, that a declaration never DELETES anything, and that `consumes` edges are
- * left where they were.
- *
- * No reconcile loop: every assertion is about what `proposeChange` writes, and a running loop would
- * only add unrelated contention.
- */
+/** Declared stage dependencies become `depends_on` edges. See docs/coordination.md §927. */
 describe("stage dependencies: the depends_on edges (ADR-0028 increment 2)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -75,11 +63,7 @@ describe("stage dependencies: the depends_on edges (ADR-0028 increment 2)", () =
     // The direction is the declaration's direction: the DECLARING component depends on the named
     // one. Reversed, impact analysis would answer every "what breaks if B changes" backwards.
     expect(await edgesBetween(b.id, a.id)).toHaveLength(0);
-    // No per-dependency semantics ride on the edge — relationship `properties` are discarded on four
-    // legs of the way in and relationships have no update path, so anything stored here would be a
-    // value nobody could ever change. `properties.stageDependencies` on the change stays the only
-    // source of a QUALIFIED dependency; where the hold reads the edge itself (both endpoints targets
-    // of one change, ADR-0028 decision 6) it applies the plain `succeeded` test.
+    // No per-dependency semantics ride on the edge. See docs/coordination.md §928.
     expect(edges[0]!.properties).toEqual({});
   });
 
@@ -195,12 +179,7 @@ describe("stage dependencies: the depends_on edges (ADR-0028 increment 2)", () =
   });
 
   it("a DELETED edge is not re-created, and the re-declaring push still succeeds", async () => {
-    // `relationships_org_type_from_to_key` is a plain UNIQUE and deletes are SOFT, so a tombstoned
-    // edge permanently occupies the key — no create can ever replace it. The behaviour that matters
-    // is therefore not "the edge comes back" (it cannot) but "the release is not collateral damage":
-    // an operator's one-off deletion must not turn every subsequent push of that microservice into a
-    // 409. THE DECLARED coupling is unaffected either way — the hold reads it off the change's own
-    // properties, which no edge deletion touches.
+    // A plain unique plus soft deletes means resurrection. See docs/coordination.md §929.
     const b = await createTestComponent(admin, { name: `tomb-b-${randomUUID().slice(0, 8)}` });
     const a = await createTestComponent(admin, { name: `tomb-a-${randomUUID().slice(0, 8)}` });
 

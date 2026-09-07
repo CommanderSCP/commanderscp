@@ -9,28 +9,7 @@ import {
   dependencyProducerOpenBumpRow
 } from "./cli.js";
 
-/**
- * `scp dependency-producers` — THE CLI HALF OF THE PRODUCER DECLARATION (ADR-0032 §7e).
- *
- * Charter principle 3 is API → SDK → CLI, so a capability that stops at the SDK is a parity hole.
- * What only this layer can hold:
- *
- *  1. **THE THREE VERBS EXIST, AND `--dry-run` IS ARGUMENT-LESS ON BOTH WRITES.** A
- *     `--dry-run <bool>` with a default is how "the operator said nothing" silently becomes a value,
- *     and here the two values are "look" and "change every subscriber's upstream". The list is
- *     CLOSED, because a fourth verb that quietly retracted (a `--producer none`) would be exactly
- *     the destructive default the API refused to build.
- *
- *  2. **THE FORMATTERS ARE HONEST ABOUT ABSENCE AND ABOUT WHAT WAS LOST.** They are exported and
- *     called DIRECTLY here for the reason `cli-absent-formatters.test.ts` records at length: a
- *     mapper written inline in a Commander `.action()` closure is unreachable by any test, so its
- *     guards are correct and completely unheld.
- *
- *  3. **THE `dependencyManagement` CAVEAT IS HELD IN BOTH DIRECTIONS.** M21.7's measured failure was
- *     an inline note whose condition, when inverted, warned the healthy deployment and went SILENT
- *     on the one it exists for — with the whole suite green. A conditional caveat is only held when
- *     both arms are pinned.
- */
+/** The CLI half of the producer declaration. See docs/cli.md §107. */
 function findCommand(root: Command, path: string[]): Command | undefined {
   let current: Command | undefined = root;
   for (const name of path) {

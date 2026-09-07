@@ -14,19 +14,7 @@ import {
   unlockFixture
 } from "../test-support/dependency-fixtures";
 
-/**
- * WHAT THE CLICK SENDS — the request `client.policies.create` actually receives from the wired-up
- * page, not the builder's return value (component-dependencies.test.tsx pins that half).
- *
- * DELETE-THE-WIRING: the page's `mutationFn` is the ONLY thing that turns a confirm into a policy
- * write. Replace it with a no-op (or point it at another client method) and every case here dies
- * — the enable and opt-out confirms then send nothing, and the refusal case never sees the 409.
- * Also pinned here: the SDK methods the page READS from (unlock / inventory / bumps) — stub any one
- * out and the render fails on that read.
- *
- * The SDK, the route param, the auth context and `@tanstack/react-router`'s Link are stubbed;
- * everything else is the real component tree (Radix dialogs included) in a real DOM.
- */
+/** WHAT THE CLICK SENDS. See docs/web.md §208. */
 
 const createCalls: CreateObjectRequest[] = [];
 let createImpl: (req: CreateObjectRequest) => Promise<unknown> = async (req) => ({

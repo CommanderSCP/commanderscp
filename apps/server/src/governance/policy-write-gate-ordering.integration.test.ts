@@ -11,42 +11,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ==================================================================================================
- * PIN — OWNED BY THE M21.7 SESSION. DO NOT "FIX" THIS IN A UI MILESTONE.
- * ==================================================================================================
- *
- * `POST /api/v1/policies` (routes/typed-registries.ts, the shared typed-registry factory) authorizes
- * `policy:write` at `resolveDomainId(body.domainId) ?? org` FIRST, and only THEN runs the
- * scope-authority check (`assertPolicyScopeWithinAuthority`: an `objectRef`-scoped policy needs
- * `policy:write` at-or-above THAT object). RBAC scope expansion walks UPWARD only. So a principal
- * whose `policy:write` binding sits AT a component — the exact "component team enables its own
- * dependency subscription" shape ADR-0032 §6 describes — is refused at the FIRST gate whenever the
- * body omits `domainId`, before the check that would have admitted them ever runs.
- *
- * This file MEASURES that ordering and pins it as it stands today, so that:
- *   - the M21.6 web client knows it must send `domainId` = THE COMPONENT ITSELF with an
- *     objectRef-scoped policy (case 2 below: any org object is accepted as `domainId`, RBAC expands
- *     upward from it so component-, domain- and org-bound administrators all pass, and the policy
- *     lands contained by the component where its team can PATCH/DELETE it — the containment domain
- *     refuses the component-bound team, case 3), and its 403 copy names "policy:write at this
- *     component (or above)";
- *   - whoever changes the ordering (the M21.7 session has taken it to the owner) sees exactly which
- *     assertion flips and updates this pin deliberately, rather than the behaviour drifting behind
- *     a UI-milestone commit.
- *
- * Nothing here is a statement that the ordering is RIGHT. It is a statement of what the server
- * DOES, measured, so nothing else in this round is built on a guess about it.
- *
- * THE TRIPWIRE (M21.7 session decision, 2026-08-16): the FIRST case — 403 WITHOUT `domainId` for a
- * component-bound `policy:write` — is deliberately kept as measured and is the assertion that fires
- * if anyone lands the "ergonomic default" (authorize a bounded `objectRef` policy at-or-above the
- * ref when the body omits `domainId`) WITHOUT an owner decision. The M21.7 derivation found that
- * default splits AUTHORIZED SCOPE from WRITTEN CONTAINMENT: `assertMayDeclareDomainLocal` would run
- * at the component while the row lands at the org root — a policy the component team was allowed
- * to author but could never PATCH/DELETE (those routes authorize at the policy's own id). If that
- * case flips to 201, stop: either the owner decided, or the split just shipped.
- */
+/** PIN — OWNED BY THE M21.7 SESSION. See docs/governance.md §281. */
 describe("PIN (M21.7-owned): POST /policies authorizes policy:write at domainId ?? org BEFORE the scope-authority check", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

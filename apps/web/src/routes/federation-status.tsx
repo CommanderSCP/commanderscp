@@ -37,29 +37,7 @@ function transferStatusBadge(status: string): React.JSX.Element {
   );
 }
 
-/**
- * `/federation` — read-only federation status view (BUILD_AND_TEST.md §8 M6 item 7, "commander
- * federation status UI"; DESIGN.md §13). Consumes ONLY `client.federation.status()`/`.self()`
- * (the generated SDK, per CLAUDE.md's API -> SDK -> CLI/IaC -> UI parity principle) — the exact
- * same endpoints `scp federation status`/`scp federation self` call. Deliberately read-only:
- * pairing, export, import, hand-fill, and overlay authoring all involve carrying a real bundle
- * file (or an out-of-band public-key exchange for air-gapped peers) across a gap this browser
- * tab has no access to, so those stay CLI-only workflows (DESIGN §13) — this page is "what does
- * federation look like right now," not "drive a sync from the browser."
- *
- * Per FederationStatusResponseSchema's own doc comment (packages/schemas/src/federation.ts):
- * `lastSyncedAt` reflects this domain's own last-applied cursor, never a live probe of the peer
- * (air-gapped peers may not be reachable at all) — every timestamp below is labeled "as of", not
- * "live."
- *
- * EVERY QUERY HERE HAS THREE STATES, NOT TWO (ADR-0023). Since the SDK validates responses, a body
- * that does not match the contract REJECTS the `queryFn` — so `isError` is now a reachable state
- * for a 200 response, not only for a 4xx/5xx or a dead network. A page that branches only on
- * `isLoading` and `data` renders an EMPTY card for exactly the fault the boundary exists to
- * report, which is how the diagnosis dies in the query cache instead of reaching an operator. Both
- * cards below therefore render `QueryErrorNotice`, which prints the operation and the offending
- * field verbatim.
- */
+/** `/federation` — read-only federation status view. See docs/web.md §343. */
 export function FederationStatusPage(): React.JSX.Element {
   const selfQuery = useQuery({
     queryKey: federationSelfKey(),
@@ -71,22 +49,10 @@ export function FederationStatusPage(): React.JSX.Element {
     queryFn: () => client.federation.status()
   });
 
-  // `GET /federation/self` always succeeds — `ensureFederationSelf` (federation/self-repo.ts)
-  // lazily provisions a domain identity with role "unset" the very first time anything reads it,
-  // well before an operator necessarily runs `scp federation init` (DESIGN §13: "every row is
-  // born federation-ready"). "unset" is the actual not-yet-opted-in signal, not a missing
-  // response.
+  // `GET /federation/self` always succeeds. See docs/web.md §344.
   const notInitialized = selfQuery.data?.role === "unset";
 
-  // `?? []` — the LAST unguarded consumer of `FederationStatusResponse.peers` (Z5). `peers` is
-  // required-not-optional, and BEFORE ADR-0023 the SDK validated no response, so a body without the
-  // key resolved the query and `statusQuery.data && data.peers.length` threw. The SDK now REJECTS
-  // that body at the boundary, so this guard is no longer what stands between the page and a
-  // white screen — the `isError` branch below is. It stays anyway: it is the correct reading of a
-  // body this component is handed by any other route (a test double, a future cached snapshot),
-  // and defence in depth against a shape the contract does not yet forbid costs one operator.
-  // `peersLoaded` keeps the loaded-vs-loading distinction the two branches below need, which a bare
-  // `?? []` would have collapsed into "no peers paired yet" while still fetching.
+  // The last unguarded consumer of that peer list. See docs/web.md §345.
   const peers = statusQuery.data?.peers ?? [];
   const peersLoaded = statusQuery.data !== undefined;
 
@@ -233,19 +199,7 @@ export function FederationStatusPage(): React.JSX.Element {
   );
 }
 
-/**
- * The one write surface this page owns: `POST /federation/init` — the commander-config gap the
- * owner flagged (2026-08-11). Everything else about "the commander's own config" deliberately
- * lives elsewhere: per-outpost config is authored on each outpost's detail page and syncs down as
- * commander-origin data, and instance-level operator settings (scan floors, tokens) are
- * deployment env — not a tenant surface. The federation IDENTITY is the one self-config fact in
- * the graph, it is set exactly once, and API-first parity (charter principle 3) says the UI must
- * be able to do what `scp federation init` does.
- *
- * Once initialized the identity renders read-only above — the API exposes no rename/re-role, and
- * offering an edit the server would refuse is the "UI offers writes the server 403s" defect class
- * (M16.3) this repo already paid for once.
- */
+/** The one write surface this page owns: `POST /federation/init`. See docs/web.md §346. */
 function FederationInitForm(): React.JSX.Element {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");

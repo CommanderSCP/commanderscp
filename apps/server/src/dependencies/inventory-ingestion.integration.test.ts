@@ -44,39 +44,7 @@ import {
   type InventoryIngestionLoopHandle
 } from "./inventory-ingestion-loop.js";
 
-/**
- * M21.2 — DEPENDENCY-INVENTORY INGESTION AGAINST REAL POSTGRES (ADR-0032 §4, §6).
- *
- * ============================================================================================
- * WHAT THIS FILE IS FOR
- * ============================================================================================
- * `upsertComponentDependency` and `pruneComponentDependencies` had NO non-test caller, so
- * `component_dependencies` was empty on every real deployment and every capability above it —
- * the enablement work-list, the version poll, internal detection's manifest-path lookup — resolved
- * over nothing. Four earlier M21 components failed the same way and every one had passing tests,
- * because the tests called the component directly.
- *
- * So the assertions here are about the REAL PATH: the worker's own job function
- * (`runInventoryIngestionJob`), driving the real change row, the real `source_ref`, the real
- * enablement resolution and the real repo functions. Only the git provider is faked — and it is
- * faked with a RECORDER, not a mock, because the load-bearing claim about a disabled component is
- * that NOTHING WAS FETCHED, and the only honest evidence for that is an empty recording.
- *
- * ============================================================================================
- * THE FIVE PROPERTIES
- * ============================================================================================
- *  1. WIRED — the exact function the pg-boss worker calls, given the change id its router enqueues,
- *     writes the component's inventory. Deleting the wiring makes this red.
- *  2. GATED BY CONSTRUCTION — a component with no enabling subscription produces ZERO recorded
- *     reads, and the caller cannot opt out of that.
- *  3. UNREADABLE IS NOT EMPTY — each failure mode separately: a 404 HTML body, an LFS pointer, a
- *     truncated file, a size refusal, a reader throw, a missing REF. Every one leaves the existing
- *     inventory intact. A missing PATH is the one case that does prune, because it is the one case
- *     that is evidence about the manifest.
- *  4. IDEMPOTENT — a second pass over unchanged manifests adds no row, deletes no row, preserves
- *     `created_at`, and writes NO new Decision.
- *  5. PRUNE IS PER MANIFEST PATH — re-reading a `go.mod` never deletes what a `Dockerfile` declared.
- */
+/** Dependency-inventory ingestion against real Postgres. See docs/dependencies.md §268. */
 describe("M21.2 dependency-inventory ingestion (ADR-0032 §4/§6)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -106,14 +74,7 @@ describe("M21.2 dependency-inventory ingestion (ADR-0032 §4/§6)", () => {
     }
   }
 
-  /**
-   * A recording fake git provider.
-   *
-   * IT RECORDS EVERY CALL, and that is the point rather than a convenience: "a disabled component is
-   * never fetched" is an assertion about calls that did NOT happen, and a mock's `not.toHaveBeenCalled`
-   * proves the same thing only if the mock is the ONLY route to the provider. A recorder that the
-   * ingestion is handed, and whose log is asserted empty, is evidence about this run.
-   */
+  /** A recording fake git provider. See docs/dependencies.md §269. */
   function recordingReader(files: Record<string, string | ReadFileAtRefResult>) {
     const reads: { repo: string | undefined; path: string; ref: string }[] = [];
     const read = async (request: ReadFileAtRefRequest): Promise<ReadFileAtRefResult> => {
@@ -207,15 +168,7 @@ require (
     );
   }
 
-  /**
-   * An ACCEPTED change targeting `componentObjectId`, carrying the canonical `source_ref` keys the
-   * webhook ingress now lifts.
-   *
-   * The state is set directly because this file is about ingestion, not about the acceptance gate —
-   * and it is READ BACK, because a fixture that silently did not apply would make every assertion
-   * below pass for the wrong reason (`changes` is under `org_isolation` RLS, so a write on the bare
-   * pool matches zero rows and says so nowhere).
-   */
+  /** An accepted change targeting it, with the canonical ref. See docs/dependencies.md §270. */
   async function acceptedChange(
     componentObjectId: string,
     sourceRef: Record<string, unknown>
@@ -323,11 +276,7 @@ require (
         { orgId: org.orgId, changeObjectId: changeId }
       );
 
-      // THE WIRING ASSERTION. The job read the change row, resolved its target to this component,
-      // passed the enablement gate and reached the provider — which legibly refuses, because this
-      // test org has no git-provider binding for `acme/widgets` and SCP will not read one repo with
-      // another binding's credential (`manifest-reader.ts`). Every hop except the provider is real,
-      // and the refusal is the receipt that the last hop was attempted.
+      // THE WIRING ASSERTION. See docs/dependencies.md §271.
       expect(outcome.verdict).toBe("evaluated");
       expect(outcome.components.map((c) => c.componentObjectId)).toEqual([component]);
       const attempted = outcome.components[0]!;
@@ -551,11 +500,7 @@ require (
     });
 
     it("an unexpanded Git-LFS pointer — valid text that the one non-throwing parser would ACCEPT", async () => {
-      // ON `requirements.txt` DELIBERATELY. A pointer handed to `parseGoMod` throws and lands in the
-      // parse-error arm anyway, so a go.mod case would pass with the LFS guard deleted and prove
-      // nothing. `parseRequirementsTxt` NEVER throws (the format has no required construct to miss),
-      // so the pointer's own lines would become this component's python inventory and the prune
-      // would then delete the real declarations. This is the case the guard exists for.
+      // ON `requirements.txt` DELIBERATELY. See docs/dependencies.md §272.
       const { component, before } = await seeded("lfs", {
         "requirements.txt": "requests==2.31.0\nurllib3==2.2.1\n"
       });
@@ -768,17 +713,7 @@ require (
     expect(await inventoryOf(component)).toEqual([]);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // 5b. M21.7 — AN IMAGE PINNED IN HELM VALUES
-  //
-  // THE WIRING GATE FOR THIS ROUND. `parseKubernetesImages` is a pure function with its own unit
-  // suite, and that suite stays green whether or not anything ever calls it — which is this
-  // repository's single most common defect and M21's own record (six components built and never
-  // installed, one of them a live RCE). The only thing that installs a parser is its entry in
-  // `MANIFEST_PARSERS`, and these tests reach it through `ingestComponentManifests`: delete
-  // `["values.yaml", …]` from that map and the first one goes red, because the candidate path is
-  // never generated, the file is never read, and no row is written.
-  // -------------------------------------------------------------------------------------------
+  // An image pinned in Helm values, and the wiring gate. See docs/dependencies.md §273.
   describe("an image pinned in a chart's values.yaml (M21.7)", () => {
     /** The chart-directory shape a real estate has: the Argo CD importer writes
      *  `pathPattern = <src.path>/**`, and `repoManifestScope` takes `chart` as the probe prefix. */
@@ -861,12 +796,7 @@ require (
     });
 
     it("an ORDINARY chart's furniture is `ok`, not a component-wide `partial` (M21.7 round 5)", async () => {
-      // THE HONESTY MECHANISM ONLY WORKS IF IT IS QUIET. A values file's `sources[].repository`, a
-      // Kafka client's `schemaRegistry.registry`, a `<<:` merging resource presets and a `tag` used
-      // as a pod label each used to mint either a phantom dependency or an unresolved declaration —
-      // and a file whose declarations are all unresolved stamps the manifest `unsupported` and the
-      // component `partial`. That fires on ordinary charts, and a warning that fires on everything
-      // is a warning nobody reads.
+      // THE HONESTY MECHANISM ONLY WORKS IF IT IS QUIET. See docs/dependencies.md §274.
       const component = await chartComponent("values-ordinary-furniture");
       const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
         source: "backfill",
@@ -1030,11 +960,7 @@ require (
     const OTHER_REPO = "acme/charts";
 
     it("a release from the SECOND repo does not delete the first repo's inventory", async () => {
-      // THE BLOCKER, in the shape no path-scoped rule can resolve: BOTH mappings constrain no path,
-      // so both passes probe exactly the same root candidates. Repo A has the `go.mod`, repo B has
-      // the `Dockerfile`, and each pass therefore sees the OTHER's manifest as `not_found: "path"`
-      // — the one branch that prunes. Attribution has to be on the row (`observed_repo`) or it is
-      // not recoverable at all.
+      // THE BLOCKER, in the shape no path-scoped rule can resolve. See docs/dependencies.md §275.
       const component = await componentWithMapping("two-repo-root", null, REPO);
       await addMapping(component, null, OTHER_REPO);
       await enable(component);
@@ -1170,11 +1096,7 @@ require (
   // 8. AN INCOMPLETE BODY IS NOT AN EMPTY MANIFEST
   // -------------------------------------------------------------------------------------------
   it("a PARTIAL body is refused upstream and prunes nothing — the case no parser can see", async () => {
-    // `parseRequirementsTxt` cannot throw (its format has no required construct to miss), so a body
-    // cut in half parses "successfully" as FEWER dependencies and the prune deletes the rest. The
-    // structural guard for that is the byte count, not the text — `decodeBoundedBase64` refuses a
-    // payload shorter than the size the provider declares, and it arrives here as a refusal, which
-    // this module already treats as "the file is there and was not read".
+    // `parseRequirementsTxt` cannot throw. See docs/dependencies.md §276.
     const component = await componentWithMapping("partial", null);
     await enable(component);
     const full = "requests==2.31.0\nurllib3==2.2.1\nboto3==1.34.0\n";
@@ -1214,12 +1136,7 @@ require (
   // 9. TWO PASSES ARE ORDERED — an older one may not land last
   // -------------------------------------------------------------------------------------------
   it("an OLDER pass that lands after a newer one writes NOTHING and prunes nothing", async () => {
-    // Nothing orders two passes: both delivery hops are at-least-once and the queue is a competing
-    // consumer, so a retry of an earlier accept can arrive after a later one. Applied out of order,
-    // the older pass prunes each manifest down to what the OLDER commit declared.
-    //
-    // The interleave is REAL here, not simulated by editing a timestamp: the old pass's reader
-    // blocks inside phase 2 until the newer pass has fully committed, then returns.
+    // Nothing orders two passes. See docs/dependencies.md §277.
     const component = await componentWithMapping("ordering", null);
     await enable(component);
     const OLD_GO_MOD = GO_MOD.replace(/\tgithub.com\/spf13\/cobra v1.8.0\n/, "");
@@ -1323,15 +1240,7 @@ require (
     });
 
     it("does not carry the gate's WITNESS, which is not a function of what the component declares", async () => {
-      // The dedup key used to include the witness — ONE line the merge happened to be satisfied on,
-      // taken as the first selector out of `matchPoliciesForTargets`' UNORDERED result. Two
-      // identical runs could therefore disagree, and `insertDecisionIfChanged` compares against the
-      // LATEST row, so an alternating value appends forever (ADR-0024's measured 1.44 GB/day).
-      //
-      // The order is now canonical (pinned behaviourally in `component-ingestion-gate.test.ts`,
-      // where reversing the candidate list must produce the same witness) AND the Decision does not
-      // carry it at all. This asserts the second half against the PERSISTED row: `contributions`
-      // survives, so "which level decided this" is still answerable, and the witness does not.
+      // The dedup key used to include the witness. See docs/dependencies.md §278.
       const component = await componentWithMapping("witness-free", null);
       await enable(component);
       const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
@@ -1388,26 +1297,7 @@ require (
   // -------------------------------------------------------------------------------------------
   // 11. THE PRODUCTION PATH, END TO END — a domain event puts ROWS IN THE TABLE
   // -------------------------------------------------------------------------------------------
-  /**
-   * EVERY TEST ABOVE CALLS `ingestComponentManifests` (or the job function) DIRECTLY, and the one
-   * that claimed to be "the real path" reached the provider and had EVERY READ FAIL — the rows it
-   * asserted came from a separate call with a hand-supplied reader. So the suite proved the repo
-   * layer and proved nothing about the path that fills the table in production.
-   *
-   * Two distinct gaps close here, and they are distinct on purpose:
-   *
-   *  A. THE WIRING IS EXECUTED. Deleting `startInventoryIngestionLoop`'s `boss.createQueue` AND its
-   *     `boss.work` left the ENTIRE suite green — only a substring match on `main.ts` still passed,
-   *     and a substring match is not a test of behaviour. This drives the real loop over a real
-   *     pg-boss, from the exact payload `events/outbox-relay.ts` puts on the domain-event queue.
-   *
-   *  B. A ROW REACHES THE TABLE THROUGH IT. The manifest read goes through
-   *     `createGitProviderManifestReader` -> the repo's own git binding -> `host.gitFileRead`, so
-   *     the only thing faked is the provider itself.
-   *
-   *   outbox -> domain-events -> inventoryIngestionRouter -> dependency-inventory-ingestion queue
-   *          -> this loop's worker -> ingestComponentManifests -> component_dependencies
-   */
+  /** EVERY TEST ABOVE CALLS `ingestComponentManifests`. See docs/dependencies.md §279. */
   describe("the production path: a domain event lands rows (wiring + end to end)", () => {
     let boss: Awaited<ReturnType<typeof startPgBoss>> | undefined;
     let loop: InventoryIngestionLoopHandle | undefined;
@@ -1476,11 +1366,7 @@ require (
       loop = await startInventoryIngestionLoop(boss, {
         db: server.deps.db,
         host: recordingHost(),
-        // THE POSTURE THE LOOP REQUIRES, STATED BY THE FIXTURE RATHER THAN INHERITED (ADR-0032 §7d).
-        // Ingestion is commander-only and FAIL-CLOSED on an undeclared `SCP_FEDERATION_ROLE`, and
-        // the harness deliberately leaves that env var unset — so `server.deps.config` alone is a
-        // defaulted, UNdeclared commander and this loop would return an inert handle, silently.
-        // That is the guard working; the fixture has to declare the posture it wants to test.
+        // The posture the loop requires, stated by the fixture. See docs/dependencies.md §280.
         config: {
           ...server.deps.config,
           role: "all" as const,
@@ -1591,18 +1477,7 @@ require (
       expect(fileReads.some((r) => r.request.repo === DISABLED_REPO)).toBe(false);
     }, 60_000);
 
-    /**
-     * THE SAME WIRING QUESTION, ASKED OF THE STAMP (M21.7).
-     *
-     * The stamp's whole purpose is to explain an EMPTY inventory, so a test that asserts rows
-     * cannot notice the stamp is missing — and "built, and nothing calls it" is this milestone's
-     * dominant defect, six times over. This therefore drives the production path end to end
-     * (the outbox payload -> router -> queue -> worker -> `ingestComponentManifests`) and asserts
-     * the STAMP: for a component that ingests, and for one the gate refuses.
-     *
-     * Deleting the `recordIngestionStamp` call from `inventory-ingestion.ts` makes this test RED at
-     * the `waitUntil`. No test that calls the repo function directly can do that.
-     */
+    /** THE SAME WIRING QUESTION, ASKED OF THE STAMP. See docs/dependencies.md §281. */
     it("the loop STAMPS what it ingested — and stamps a refused component too", async () => {
       const stamped = await wiredComponent("wired-stamped");
       const refused = await wiredComponent("wired-refused", DISABLED_REPO);
@@ -1664,12 +1539,7 @@ require (
   // -------------------------------------------------------------------------------------------
   // 12. THE STAMP — WHICH OF THREE MEANINGS THIS COMPONENT'S EMPTY INVENTORY HAS (M21.7, 0065)
   // -------------------------------------------------------------------------------------------
-  /**
-   * `component_dependencies.observed_at` is per ROW, so a component with no rows carries no
-   * timestamp anywhere and three truths look identical: never ingested; ingested and genuinely
-   * declares nothing; ingestion ran and every manifest was unreadable. Each test below pins ONE of
-   * those readings against real Postgres, through the real ingestion.
-   */
+  /** That timestamp is per row, so no rows means none. See docs/dependencies.md §282. */
   describe("the ingestion stamp", () => {
     /** A component that is enabled and mapped at the repo root — the ordinary subject. */
     async function enabledComponent(label: string): Promise<string> {
@@ -1757,11 +1627,7 @@ require (
 
       const stamp = await stampOf(component);
       expect(stamp?.outcome).toBe("unreadable");
-      // `rowsWritten` is the SUM of `manifests[].rows` over the MERGED set, not what this pass
-      // wrote. It is 0 here because this component has exactly one repository, whose slice the
-      // failed pass just replaced with an `unreadable` entry carrying `rows: 0` — so the only
-      // contribution to the sum is 0. The `component_dependencies` rows themselves survive
-      // (asserted next): "unreadable is not empty" is about the inventory, not about this column.
+      // The row count is the sum over the merged set. See docs/dependencies.md §283.
       expect(stamp?.rowsWritten).toBe(0);
       expect((await inventoryOf(component)).length).toBe(2);
       expect(stamp?.manifests.some((m) => m.path === "go.mod" && m.outcome === "unreadable")).toBe(
@@ -1817,11 +1683,7 @@ require (
     });
 
     it("a refusal for a repository this component is NOT MAPPED TO leaves the good stamp standing", async () => {
-      // THE DEFECT THIS PINS: the refusal above and the good pass below are about DIFFERENT FACTS —
-      // "this repository is not this component's" versus "this component's manifests cannot be
-      // read" — and the stamp used to write the first over the second. An accepted change reaching
-      // a component from an unmapped repo is ordinary (`source_mappings` is a glob-matched
-      // correlation), so a healthy component's receipt was destroyed by the next unrelated release.
+      // THE DEFECT THIS PINS. See docs/dependencies.md §284.
       const component = await enabledComponent("stamp-unmapped-over-good");
       await ingestComponentManifests(server.deps.db, org.orgId, {
         source: "backfill",
@@ -2042,23 +1904,7 @@ require (
     });
 
     it("CONCURRENT passes over different repositories do not lose each other's slices", async () => {
-      // The merge is a READ-MODIFY-WRITE, so it is only correct while it is serialised: two passes
-      // that both read the pre-state would each write a row missing the other's slice, and the
-      // per-repository merge would be defeated at the write by the very race it exists to survive.
-      // `recordIngestionStamp` therefore takes the same transaction-scoped advisory lock
-      // `ingestComponentManifests`' phase 3 already holds.
-      //
-      // WHAT THIS TEST DOES AND DOES NOT PIN. It pins the per-repository MERGE under concurrency.
-      // It does NOT pin the lock line inside `recordIngestionStamp`: every pass that writes a slice
-      // arrives through phase 3, which already holds that lock, so deleting the
-      // `pg_advisory_xact_lock` from `recordIngestionStamp` leaves this test GREEN (measured, 3 of
-      // 3 runs). That line is defence in depth for the one writer outside phase 3 — the gate
-      // refusal — and the residue is stated in full in the doc comment above
-      // `recordIngestionStamp` in `ingestion-stamp-repo.ts`. Read that before assuming a mutation
-      // here would catch you.
-      //
-      // Eight repositories rather than two: a lost update needs an interleaving, and one pair can
-      // serialise by luck where eight cannot.
+      // The merge is read-modify-write, so it must serialise. See docs/dependencies.md §285.
       const component = await componentWithMapping("stamp-concurrent", null, "acme/repo-0");
       const repos = Array.from({ length: 8 }, (_, i) => `acme/repo-${i}`);
       for (const repo of repos.slice(1)) await addMapping(component, null, repo);
@@ -2148,25 +1994,7 @@ require (
       );
       expect(visible).toEqual([]);
 
-      // WITH CHECK: nor can a stranger WRITE a row stamped with this org's id. Without that half a
-      // policy is a read filter only, and a stranger could plant a receipt on somebody else's
-      // component.
-      //
-      // TWO THINGS THIS TEST HAD TO LEARN BY MUTATION rather than by reading the policy, both of
-      // which had left the earlier version asserting almost nothing:
-      //
-      //  1. THE SUBJECT MUST HAVE NO ROW YET. Aimed at a component that already had one, the
-      //     refusal came from the upsert's ON CONFLICT DO UPDATE meeting a row the USING clause
-      //     hides — Postgres refuses that with 42501 too, whatever WITH CHECK says.
-      //  2. THE STATEMENT MUST BE A PLAIN INSERT. `recordIngestionStamp` is an upsert, and for an
-      //     INSERT ... ON CONFLICT Postgres also checks the policy's USING qual against the
-      //     PROPOSED row — so a cross-org upsert is refused ("new row violates row-level security
-      //     policy", `ExecWithCheckOptions`) even with `WITH CHECK (true)` installed. MEASURED: no
-      //     route through the write door can distinguish the WITH CHECK half at all.
-      //
-      // Hence both writes below. The raw INSERT isolates WITH CHECK — it is the only statement
-      // whose refusal that clause alone produces, and `WITH CHECK (true)` lets it through. The
-      // write door then proves the real writer is refused as well, which `USING (true)` breaks.
+      // Nor can a stranger write a row stamped with this org. See docs/dependencies.md §286.
       const control = await enabledComponent("stamp-rls-control");
       await inOrg((tx) =>
         recordIngestionStamp(tx, org.orgId, {

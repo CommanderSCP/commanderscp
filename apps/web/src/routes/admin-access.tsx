@@ -24,37 +24,7 @@ import {
 } from "../components/ui/table";
 import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 
-/**
- * ADMIN › ACCESS — roles, role bindings, and "what may I do here"
- * (docs/proposals/role-model.md §5 steps 5, 6, 10; server routes
- * `apps/server/src/routes/role-bindings.ts` and `routes/authz.ts`; SDK facades `client.roles`,
- * `client.roleBindings`, `client.authz`).
- *
- * ================================================================================================
- * WHY THIS PAGE EXISTS AT ALL, AND WHY IT IS NOT A PERMISSION MATRIX
- * ================================================================================================
- * The cumulative ladder was guessable — Viewer < Operator < Approver < Administrator < Owner — so a
- * UI could infer a principal's whole permission set from a rank. drizzle/0099's five purpose roles
- * are deliberately NOT ordered: SecurityOfficer holds `scan:override` and no `object:write`;
- * OrgAdmin holds `policy:write` and NOT `scan:override`; neither is above the other. There is
- * nothing left to infer, which is why step 6 built `GET /authz/effective` and why this page asks
- * the server rather than computing anything client-side.
- *
- * ================================================================================================
- * THE OFFER-THE-WRITE RULE (M16.3), APPLIED
- * ================================================================================================
- * Every write here renders for every viewer, and the SERVER'S OWN REFUSAL SENTENCE is what tells
- * them no. This page never hides a button behind a client-side permission guess — a guess that is
- * wrong in the permissive direction is a phantom control, and one wrong in the restrictive
- * direction hides a capability the viewer actually has. The refusals this API produces are written
- * to be read (they name the missing permission and the scope), so showing them is better than
- * pre-empting them.
- *
- * ONE DELIBERATE EXCEPTION, and it is the same one Admin › Governance makes: instance-tier
- * OPERATOR CREDENTIALS are not offered here. Their write is gated by `x-scp-operator-token`, a
- * deployment credential this browser never holds and should never be asked to hold. The section
- * names the CLI verb instead of rendering a form that could only ever 403.
- */
+/** ADMIN › ACCESS. See docs/web.md §162. */
 export function AdminAccessPage(): JSX.Element {
   const auth = useAuth();
   // `/auth/me`'s orgId IS the org root object id (ADR-0021 D4), which is the scope a viewer most
@@ -222,14 +192,7 @@ function BindingsSection({
   );
 }
 
-/**
- * "What may I do here" — `GET /authz/effective`, which answers about the CALLER and nobody else.
- *
- * There is no subject picker on purpose. The endpoint takes no `subjectId`, because a
- * caller-chosen authorization anchor is one the caller sets to whatever admits them — the defect
- * the neighbouring grant-preview was rewritten twice to remove. "Who else has authority here" is a
- * real question and a different one.
- */
+/** "What may I do here". See docs/web.md §163. */
 function EffectiveSection({ defaultScope }: { defaultScope: string }): JSX.Element {
   const [scope, setScope] = useState(defaultScope);
   const [submitted, setSubmitted] = useState(defaultScope);
@@ -325,16 +288,7 @@ function EffectiveSection({ defaultScope }: { defaultScope: string }): JSX.Eleme
   );
 }
 
-/**
- * READ-NOTHING, OFFER-NOTHING — deliberately, and the same call Admin › Governance makes for the
- * instance rung.
- *
- * Every operator-credential verb is gated by `x-scp-operator-token`: a deployment credential this
- * browser never holds and should not be taught to. Rendering a form here could only ever produce a
- * 403, and rendering a LISTING would require sending that token from a browser — so the section
- * names the CLI instead. Present rather than omitted, because an operator looking for this surface
- * should find out where it lives rather than conclude it does not exist.
- */
+/** Read nothing, offer nothing, and the same call elsewhere. See docs/web.md §164. */
 function OperatorCredentialsSection(): JSX.Element {
   return (
     <Card>

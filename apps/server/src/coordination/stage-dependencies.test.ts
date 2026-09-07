@@ -1,20 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { stageDependenciesOf } from "./changes-repo.js";
 
-/**
- * ADR-0028 increment 1 — the read-back narrower for `properties.stageDependencies`.
- *
- * The contract under test is `requiresOf`'s, deliberately: NARROW AND COLLECT. A malformed entry is
- * returned under `malformed` rather than dropped, because dropping one fails OPEN — the release
- * would deploy with no hold at all, ahead of the very component its author named — and it is
- * RETURNED rather than thrown, because a throw in the per-target executing loop would let one
- * corrupt row wedge every other target in the same tick.
- *
- * Every malformed shape below is unreachable through the API (propose-time Zod validation plus
- * `dependsOn`/`atTargets` resolution). They can only arrive PAST it: a version-skewed federation
- * peer replaying properties verbatim, or a legacy row. That is exactly why the narrower, and not the
- * request schema, is the thing that has to be right here.
- */
+/** The read-back narrower for declared stage dependencies. See docs/coordination.md §924. */
 describe("stageDependenciesOf — narrow and collect (ADR-0028)", () => {
   it("absent, null, and an empty array all read as 'no stage dependencies'", () => {
     expect(stageDependenciesOf(undefined)).toEqual({ stageDependencies: [], malformed: [] });

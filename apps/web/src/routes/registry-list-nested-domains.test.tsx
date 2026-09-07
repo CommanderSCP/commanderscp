@@ -2,17 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { buildCreatePayload, orderDomainOwnedFirst, ParentDomainField } from "./registry-list";
 
-/**
- * G2 (outpost-ui.md §5(b), owner decision 2026-08-13): the domains registry's create form gains an
- * optional "Parent domain" picker, and wires `domainId` into the create payload only when the
- * operator actually chose one.
- *
- * Plain `renderToStaticMarkup`, no router — `RegistryListPage` itself needs a router
- * (`useBasePathParam`), so this file pins the two pieces that DON'T: the picker's own conditional
- * rendering (pulled out as `ParentDomainField`, house pattern per domain-local.test.tsx's
- * publish-card empty-string check) and the payload-shaping rule (`buildCreatePayload`, a pure
- * function so the wiring claim is testable without a live mutation).
- */
+/** The domains registry and its nesting, by owner decision. See docs/web.md §464. */
 describe("registry-list.tsx: nested-domains parent picker (G2)", () => {
   it("ParentDomainField renders the picker, with its testid and top-level placeholder, when shown", () => {
     const html = renderToStaticMarkup(
@@ -105,12 +95,7 @@ describe("registry-list.tsx: nested-domains parent picker (G2)", () => {
   });
 });
 
-/**
- * OWNERSHIP-SHAPED ORDERING (outpost-ui.md §9, owner 2026-08-14) — the outpost's catalog lists put
- * the containers THIS domain owns first, so an operator finds where to hang shared domain IaC/CaC
- * without scanning past commander replicas. Pinned as a pure function: the rule keys ONLY on
- * `originDomainId` vs the instance's own domain — never on labels or names.
- */
+/** OWNERSHIP-SHAPED ORDERING (outpost-ui.md §9, owner 2026-08-14). See docs/web.md §465. */
 describe("registry-list.tsx: domain-owned rows first (outpost catalog)", () => {
   const SELF = "11111111-1111-4111-8111-111111111111";
   const OTHER = "22222222-2222-4222-8222-222222222222";

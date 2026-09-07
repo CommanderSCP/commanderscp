@@ -23,22 +23,7 @@ import { findGraphIntegrityIssues } from "../graph/integrity-repo.js";
 import { GraphQueryTimeoutError, withStatementTimeout } from "../graph/query-timeout.js";
 import { badRequest, requestTimeout } from "../errors.js";
 
-/**
- * The caller's readable object-id set for graph READS. `graph:query` (authorized per-route below)
- * decides whether a traversal may RUN from a given root; it does NOT constrain the RESULT SET, which
- * the org-only queries otherwise returned in full — the enumeration bypass role-model.md §8.6a
- * tracked (a component-scoped principal reading its parent service + siblings via traverse, which
- * `GET /objects/{type}/{id}` refuses). This resolves the subject's `object:read` scope through the
- * SAME production door every list uses (`readableScopeForListDoor`) and materializes it to a Set the
- * query functions intersect their output with.
- *
- *  - `null`  → org-root reader: read everything, no post-filter (behaviour identical to before).
- *  - a Set   → the ids this subject may read; results are narrowed to it.
- *  - throws 403 → the subject holds no `object:read` anywhere (so has nothing to see).
- *
- * No `?scopeObjectId=` hint is passed: a traversal can legitimately reach readable objects OUTSIDE
- * the query root's own subtree, so the filter must be the subject's FULL readable set.
- */
+/** The caller's readable object-id set for graph READS. See docs/routes.md §245. */
 async function readableObjectIdSet(
   tx: TenantTx,
   orgId: string,
@@ -58,15 +43,7 @@ async function readableObjectIdSet(
   return new Set(rows.rows.map((r) => r.id));
 }
 
-/**
- * Max connections for the ISOLATED graph-query pool (main.ts wires `deps.graphDb` to a pool sized by
- * this). The traverse/named-query/subgraph/integrity handlers run RECURSIVE CTEs (depth ≤ 10, edge
- * fan-out) whose cost is driven by GRAPH SHAPE and the caller's parameters, not by request volume —
- * an authenticated caller can fire several expensive traversals and, on the shared request pool (pg
- * default max 10, `connectionTimeoutMillis: 5000`), turn every OTHER tenant's ordinary request into
- * a checkout TIMEOUT. Same isolation rationale as the SSE pools (main.ts). A small cap means a
- * starved graph pool degrades only graph reads, never request serving or coordination. Imported by
- * main.ts so the number and this paragraph cannot drift apart. */
+/** Max connections for the ISOLATED graph-query pool. See docs/routes.md §246. */
 export const GRAPH_QUERY_POOL_MAX = Math.max(1, Number(process.env.SCP_GRAPH_QUERY_POOL_MAX ?? 4));
 
 /**
@@ -167,11 +144,7 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
     }
   });
 
-  // Induced-subgraph edges over a caller-supplied object-id set. POST (not GET) because the id
-  // list can be large (up to 2000 uuids) — too long for a querystring. Read-only despite the verb;
-  // authorized identically to the named queries (`graph:query` scoped to `objectId`, the root the
-  // caller is exploring). Lets the UI render the REAL edges among a named query's result set
-  // instead of a synthesized hub-and-spoke star (routes/graph-explorer.tsx).
+  // Induced-subgraph edges over a caller-supplied object-id set. See docs/routes.md §247.
   typed.route({
     method: "POST",
     url: "/api/v1/graph/subgraph",
@@ -216,18 +189,7 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
     }
   });
 
-  // Rows that outlived the object they hang off (`graph/integrity-repo.ts` has the full rationale).
-  //
-  // READ-ONLY, and there is deliberately NO companion repair endpoint. Repair is performed by the
-  // ordinary DELETE doors, each of which already writes its audit event and journal entry in the
-  // same transaction as the delete. A bulk-repair endpoint would be a SECOND way to destroy rows,
-  // and the cheap version of it would skip both — which is precisely the failure principle 6 exists
-  // to prevent, and which raw SQL cleanup of this same backlog would also have caused.
-  //
-  // Authorized as `graph:query` scoped to the ORG, not to an object: the report spans the whole
-  // tenant, so there is no single root to scope it to. `graph:query` rather than `audit:read`
-  // because this is graph structure — the same class of data the named queries already return —
-  // and a caller who may traverse the graph may see which of its rows are stranded.
+  // Rows that outlived the object they hang off. See docs/routes.md §248.
   typed.route({
     method: "GET",
     url: "/api/v1/graph/integrity",

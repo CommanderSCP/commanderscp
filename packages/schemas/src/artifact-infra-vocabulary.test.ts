@@ -9,13 +9,7 @@ import {
 } from "./pipeline-behaviors.js";
 import { CATEGORY_OF_TYPE, ExecutorTypeSchema, type ExecutorType } from "./executors.js";
 
-/**
- * D24 vocabulary: `ArtifactClassSchema`, `InfraKindSchema`, `RolloutTargetClassSchema` and the
- * artifact-class x infra-kind compatibility matrix (`pipeline-behaviors.ts`). Every test here pins a
- * PROPERTY the doc comments on those declarations state, not a mechanic — the point is that each one
- * must fail if the derivation is ever replaced by a hand-written second list (the exact failure mode
- * the provisional declarations this file replaces were written to avoid, per their own doc comments).
- */
+/** The artifact and infrastructure vocabulary schemas. See docs/schemas.md §1. */
 
 describe("CATEGORY_OF_TYPE is a total map over ExecutorType", () => {
   it("has exactly one entry per ExecutorType member — no more, no fewer", () => {

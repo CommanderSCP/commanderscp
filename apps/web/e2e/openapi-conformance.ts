@@ -2,23 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * M16.2 phase B (B4) — THE NO-BYPASS MATCHER.
- *
- * Charter principle 3: "The UI and CLI consume only the generated SDK; nothing may bypass the public
- * API." Reading the source catches a hand-written `fetch("/api/v1/…")` only if a reviewer notices
- * it. `outposts-no-bypass.spec.ts` checks it from the OUTSIDE instead — it captures every request
- * the browser makes while walking the Outposts UI and asks, of each one, whether the EMITTED
- * OpenAPI document declares that method+path.
- *
- * This module is the "whether" half, kept separate from the spec on purpose: the spec was main-only
- * (every E2E job in `.github/workflows/ci.yml` is gated on `push` to `main`), and a matcher that
- * silently accepted everything would turn that whole check into a no-op with nothing failing.
- * `openapi-conformance.test.ts` runs it under Vitest on every PR, including the cases that must be
- * REJECTED.
- *
- * No Playwright import here — that is what makes it unit-testable.
- */
+/** M16.2 phase B (B4) — THE NO-BYPASS MATCHER. Charter principle 3. See docs/web.md §17. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -51,15 +35,7 @@ export function loadOpenApiDocument(
 
 const HTTP_METHODS = ["get", "put", "post", "patch", "delete", "head", "options"];
 
-/**
- * `/federation/outposts/{peerDomainId}` → an anchored regex matching one concrete path SEGMENT per
- * template parameter.
- *
- * `[^/]+` rather than `.+` is the load-bearing part: with `.+`, the template
- * `/federation/outposts/{peerDomainId}` would also match
- * `/federation/outposts/anything/at/all/undeclared`, and the whole sweep would accept paths the
- * contract does not declare.
- */
+/** A path template becomes an anchored regex for one match. See docs/web.md §18. */
 export function templateToRegExp(template: string): RegExp {
   const escaped = template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`^${escaped.replace(/\\\{[^/]+?\\\}/g, "[^/]+")}$`);
@@ -84,17 +60,7 @@ export function undeclaredCalls(operations: Operation[], captured: ApiCall[]): A
   return captured.filter((call) => !isDeclaredOperation(operations, call));
 }
 
-/**
- * The sweep's pass condition: EVERY captured call is a declared operation. Empty is the pass.
- *
- * This used to subtract an exemption list holding the one known gap — `GET /api/v1/events/stream`,
- * the SSE live-update channel, which was registered as a raw `app.get` the emitter never saw and
- * opened by `use-event-stream.ts` with a hand-built URL and a raw `EventSource` on every page. The
- * SSE API-parity work closed it at the source: the operation is declared in
- * `tools/openapi/openapi.v1.json` and `apps/web` consumes it through the generated SDK, so it is
- * now matched by `isDeclaredOperation` like every other call. The exemption mechanism is deleted
- * along with the exemption — an empty carve-out list is an invitation to refill it.
- */
+/** The sweep's pass condition. See docs/web.md §19. */
 export function unexpectedCalls(operations: Operation[], captured: ApiCall[]): ApiCall[] {
   return undeclaredCalls(operations, captured);
 }

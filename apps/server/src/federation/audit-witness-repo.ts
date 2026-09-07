@@ -4,19 +4,7 @@ import type { TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationAuditWitness } from "../db/schema.js";
 
-/**
- * FEDERATION AUDIT WITNESS (multi-region-instance-resilience.md §7.2.7). Records that this domain
- * SAW a peer's audit-chain entry at a given origin sequence, from the `audit_segment` journal entries
- * that importers used to discard. INFORMATIONAL — a witness NEVER blocks an import (import-repo.ts
- * calls this from inside the apply loop but treats a witness as enrichment, not a gate).
- *
- * Idempotent by `(org, origin, sequence)`: re-importing the same segment (an idempotent re-delivery)
- * updates nothing and re-records nothing new. The content hash is asserted UNCHANGED on conflict —
- * a peer that presented a DIFFERENT hash at a sequence it once witnessed would be a fork, but that is
- * rail 4's job on the live path; here the witness is a passive detector the runbook reads later, so a
- * conflicting re-witness simply keeps the first (earliest) observation rather than silently rewriting
- * history.
- */
+/** FEDERATION AUDIT WITNESS. See docs/federation.md §20. */
 export async function recordAuditWitness(
   tx: TenantTx,
   input: {

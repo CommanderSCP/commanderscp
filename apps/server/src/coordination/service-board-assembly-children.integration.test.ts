@@ -12,33 +12,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE BOARD OVER AN ASSEMBLY CHILD (migration 0055, `intermediate-grouping.md` D3).
- *
- * The board's child list was `typeId === "component"`. The moment `contains` admitted
- * `service → assembly`, that filter made an assembly child — and therefore every component under it —
- * SILENTLY ABSENT from its parent's board: a service could hold most of its estate behind an assembly
- * and render as if it held nothing there. The board still looked correct, which is the whole hazard.
- *
- * D3 chose DIRECT children plus a per-child summary over flattening every descendant, so the fix is
- * NOT "walk deeper". This test pins both halves of that choice at once, because either one failing
- * alone is a wrong board:
- *   1. the assembly APPEARS, with a count of its own components;
- *   2. the assembly's components do NOT appear as `rows` — `rows` stays per-component-of-THIS-service.
- *
- * The count is asserted as a NUMBER OTHER THAN ZERO AND OTHER THAN the direct-child count, so a
- * hardcoded 0, a `?? 0` that never fills, or a count that accidentally reports the service's own
- * children all fail rather than coincide.
- *
- * MUTATION LOG (each applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | drop the `assemblyObjects` filter + `childAssemblies` (i.e. restore the pre-0055 board) | "the assembly child appears" FAILS — this is the regression being fixed |
- * | `componentCount: assemblyCounts.get(a.id) ?? 0` -> `componentCount: 0` | "with a count of its own components" FAILS (expects 2) |
- * | count query's `inArray(fromId, assemblies)` -> `inArray(toId, assemblies)` | count comes back 0 -> FAILS; the edge direction is load-bearing |
- * | `maxDepth: 1` -> `maxDepth: 2` in the traverse | "the assembly's components are NOT rows" FAILS — 2 extra rows appear, which is the flattening D3 rejected |
- */
+/** THE BOARD OVER AN ASSEMBLY CHILD. See docs/coordination.md §848. */
 describe("service board with an assembly child", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

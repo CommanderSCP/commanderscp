@@ -21,15 +21,7 @@ import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
  *  the puller's `federation-sync-pull` kind so the two sides' Decisions never collide. */
 export const FEDERATION_EXPORT_DECISION_KIND = "federation-export-divergence";
 
-/**
- * A detected journal fork/rollback on the EXPORT path (divergence rails 1/2, §7.2). Thrown by
- * `exportSyncBundle` and caught by the `/exports` route, which turns it into the `journal_divergence`
- * 409 AND records the persist-on-change Decision — the two are split because the throw rolls back the
- * export's own read transaction, so the Decision must be written in a SEPARATE committed tx (exactly
- * as the puller's `recordSyncBlock` does). `rail` is a STABLE discriminator: it is what the Decision
- * dedups on, so a peer stuck in divergence writes ONE Decision, not one per 60s retry as its live
- * tail moves underneath it (the 1,440-Decisions/day amplification `recordSyncBlock` also guards).
- */
+/** A detected journal fork/rollback on the EXPORT path. See docs/federation.md §114. */
 export class JournalDivergenceDetected extends Error {
   constructor(
     readonly rail: "export-tail" | "anchor",
@@ -42,22 +34,7 @@ export class JournalDivergenceDetected extends Error {
   }
 }
 
-/**
- * `scp federation export` (DESIGN.md §13 file transport). Builds a signed, checksummed
- * `.scpbundle` (a single bounded JSON document — see `packages/schemas/src/federation.ts`'s
- * module doc for why this is deliberately NOT a tar/zip archive) covering this domain's OWN
- * journal entries since a cursor.
- *
- * SECURITY-SENSITIVE (M6 review fix — MAJOR: confidentiality). The exported bundle contains ONLY
- * the entries in the peer's configured sync scope. Previously the FULL journal range was shipped
- * to every peer and scope was applied only at IMPORT/apply time — so a `policies_only` /
- * `status_only` / `custom` peer, scoped precisely FOR confidentiality, still received the complete
- * plaintext graph on disk / in transit and could read everything. Scope is now enforced HERE, at
- * export; import re-applies the same filter as defense-in-depth. `throughSequence` still reflects
- * the FULL range's tail (not the last in-scope entry), so the importer's cursor advances past
- * out-of-scope entries and never re-requests them; the scope-filtered chain is therefore SPARSE
- * (deliberate sequence gaps), verified with `verifyJournalChain({ contiguous: false })` on import.
- */
+/** `scp federation export`. See docs/federation.md §115. */
 export async function exportSyncBundle(
   tx: TenantTx,
   orgId: string,
@@ -70,11 +47,7 @@ export async function exportSyncBundle(
   const since = sinceSequence ?? 0;
   const tail = await ownJournalTail(tx, orgId);
 
-  // DIVERGENCE RAIL 1 (§7.2) — the STRICT half, no new wire data: a cursor can never legitimately
-  // outrun the origin's own tail, so `since > tail.sequence` is proof this domain's journal was
-  // rolled back (a lost-tail after an async-replication failover). The `since == tail.sequence`
-  // boundary is rail 2's job (the hash comparison below). Retained rows mean a healthy cursor always
-  // sits at or below the tail.
+  // DIVERGENCE RAIL 1. See docs/federation.md §116.
   if (since > tail.sequence) {
     throw new JournalDivergenceDetected(
       "export-tail",
@@ -85,11 +58,7 @@ export async function exportSyncBundle(
     );
   }
 
-  // DIVERGENCE RAIL 2 (§7.2) — anchor verification, full-scope pullers only (they alone send a real
-  // `lastAppliedRowHash`): the entry THIS domain now holds at the puller's cursor height must be the
-  // one the puller anchored to. A different rowHash there means the tail was rolled back and
-  // re-minted. Fires only on a PRESENT-but-different anchor (append-only journals mean a covered
-  // height is populated); ambiguous absence never refuses.
+  // DIVERGENCE RAIL 2. See docs/federation.md §117.
   if (lastAppliedRowHash !== undefined && since > 0) {
     const anchor = await ownJournalEntryAtSequence(tx, orgId, since);
     if (anchor && anchor.rowHash !== lastAppliedRowHash) {
@@ -161,17 +130,7 @@ export async function exportSyncBundle(
   return { header, entries, checksum, bundleSignature, tailAttestation };
 }
 
-/**
- * Records the persist-on-change Decision (+ hash-chained audit event) for an EXPORT-side journal
- * divergence, in its OWN committed transaction — the export's read tx has already rolled back by the
- * time this runs (the `/exports` route calls this from its catch). Mirrors the puller's
- * `recordSyncBlock` exactly, including WHY persist-on-change matters here: a refused pull snaps the
- * peer to the 60s cadence, so without dedup a single stuck peer would mint ~1,440 Decision+audit
- * pairs per day (the same incident `recordSyncBlock`'s doc names). The dedup content is STABLE per
- * `(peer, rail)` — the live tail is deliberately NOT in it, so the Decision is written once and not
- * restated as the exporter's own tail advances underneath the standing divergence. Returns the
- * standing Decision's id either way (charter principle 6 — a blocked response always carries one).
- */
+/** Records the persist-on-change Decision. See docs/federation.md §118. */
 export async function recordExportDivergence(
   db: Db,
   args: { orgId: string; peerIdOrName: string; divergence: JournalDivergenceDetected }

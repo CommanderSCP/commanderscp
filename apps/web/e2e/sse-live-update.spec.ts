@@ -3,14 +3,7 @@ import { expect, test } from "@playwright/test";
 import { ScpClient } from "@scp/sdk";
 import { adminCredentials, apiBaseUrl, baseUrl, loginAsAdmin } from "./fixtures.js";
 
-/**
- * Smoke test 3 — the core mechanism DoD (a) tests (BUILD_AND_TEST.md §8 M2 item 2): with
- * `/services` already open, create a NEW service via the API WITHOUT reloading the page, and
- * assert it appears within a short timeout. `expect(...).toBeVisible()` is Playwright's built-in
- * auto-retrying (polling) assertion — deliberately NOT a `page.reload()`, which would defeat the
- * point of testing SSE (routes/events.ts -> events/sse-hub.ts -> apps/web's
- * src/lib/use-event-stream.ts query-cache invalidation).
- */
+/** Smoke test 3. See docs/web.md §30. */
 test("SSE live update: a service created via the API appears in /services without a reload", async ({
   page
 }) => {

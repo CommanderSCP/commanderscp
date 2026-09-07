@@ -15,14 +15,7 @@ export interface PlacementRow {
   targetObjectId: string;
 }
 
-/**
- * Every live placement in the org, as (component, target) pairs.
- *
- * NOT PAGINATED, and not filtered by a readable scope. Both are deliberate and both differ from
- * `listPlacements`, which serves an HTTP list door: this runs as the engine, over the whole domain,
- * and its answer is only correct if it sees ALL of it. A page would silently under-bind, and a
- * readable-scope filter would make the domain's routing depend on some user's permissions.
- */
+/** Every live placement in the org: unpaginated, unscoped. See docs/binding-policy.md §2. */
 export async function listPlacementRows(tx: TenantTx, orgId: string): Promise<PlacementRow[]> {
   const rows = await tx
     .select({
@@ -44,13 +37,7 @@ export async function listPlacementRows(tx: TenantTx, orgId: string): Promise<Pl
     }));
 }
 
-/**
- * Which lanes each component needs resolved.
- *
- * `build` ALWAYS; `test` only where the component declares a test hook. That is what keeps an
- * estate with no hooks from being reported as missing a test lane it has no use for — the gap list
- * is only worth reading if everything in it is a real gap.
- */
+/** Which lanes each component needs resolved. See docs/binding-policy.md §3. */
 export async function listHookLanes(
   tx: TenantTx,
   orgId: string,

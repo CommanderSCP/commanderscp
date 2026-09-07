@@ -1,17 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { artifactSetOfSourceRef, substantiveArtifactsOf } from "./artifact-facts.js";
 
-/**
- * THE SELF-EXEMPTION PROBE. `substantiveArtifactsOf` exempts the declared test bundle from the E6
- * scan gate (D23: the bundle is signature-verified per hop but never scanned). The reporter supplies
- * BOTH `artifactDigest` and `testBundle.digest` on the SAME report, so the exemption is keyed on a
- * value the subject controls.
- *
- * The first form of that filter claimed in its own comment that "an image digest can never fall
- * through it". It could: naming the image as its own test bundle collapsed the substantive set to
- * EMPTY and the image crossed a boundary with NO scan demanded. These tests are the disproof, kept
- * permanently so the claim cannot be re-made.
- */
+/** THE SELF-EXEMPTION PROBE. See docs/coordination.md §9. */
 const IMAGE = `sha256:${"a".repeat(64)}`;
 const BUNDLE = `sha256:${"b".repeat(64)}`;
 

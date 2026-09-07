@@ -9,21 +9,7 @@ import type {
   GovernanceMoveRungWriteResponse
 } from "@scp/schemas";
 
-/**
- * `scp governance move-enforcement …` — THE ACTION BODIES ACTUALLY CALL THE SDK.
- *
- * `governance-move-cli.test.ts` proves the six verbs are REGISTERED and pins the pure formatters;
- * neither reaches a Commander `.action()` closure. The `dependency-read-verbs-wire.test.ts` lesson
- * ("component built, never installed" one layer down — a `return;` inserted first in the action left
- * a fully green package) applies exactly the same way here, so every verb is driven through
- * `buildProgram().parseAsync([...])` against a stubbed `@scp/sdk`.
- *
- * MUTATIONS WATCHED TO FAIL (each applied alone, then reverted): `return;` as the first statement of
- * every action → that verb's call-count assertion goes RED (no SDK call, nothing printed); dropping
- * the `--enabled` parse guard in `instance set`'s action → the "rejects a non-boolean" case goes RED;
- * dropping the `SCP_OPERATOR_TOKEN` guard → the "refuses without a token" case goes RED and the SDK
- * is called anyway (the negative assertion on `setInstanceCalls` catches it).
- */
+/** `scp governance move-enforcement …`. See docs/cli.md §114. */
 
 const enforcementCalls: { type: string; idOrUrn: string }[] = [];
 const rungsCalls: number[] = [];

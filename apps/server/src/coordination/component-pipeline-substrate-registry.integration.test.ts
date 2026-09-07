@@ -13,35 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * pipeline-substrate-registry-scan.md §9.1 (the target SUBSTRATE FACET on the wire) and §9.2 (the
- * per-site REGISTRY via `publishes_to`) — through the real HTTP route against real Postgres, with
- * migration 0065 applied by the harness.
- *
- * WHAT EACH TEST PINS, AND WHY IT IS NOT VACUOUS
- *   - facet on a PLACED and an UNPLACED stage: the server builds ONE `deploymentTarget` literal and
- *     pushes it into both arrays; a fix applied to only one array (the census-by-property hazard)
- *     fails whichever half it missed. A target with no facet reads null everywhere — the ABSENCE of a
- *     declaration, never a value inferred from `name` (the fixture name here embeds a fake region on
- *     purpose).
- *   - registry none / declared / ambiguous: three states, each asserted on `state` AND on the
- *     identity fields, so "always declared" or "pick the first of two" both fail.
- *   - a `publishes_to` edge to a `domainLocal:true` execution-system NEVER journals (M20.3, the
- *     construction §9.2 relies on for "one registry per site"), with a CONTROL edge to a shared
- *     system that DOES — so the assertion cannot pass by the journal simply being empty.
- *   - a non-string `properties.repository` yields null, not a crash: the API refuses one (0065's
- *     property schema, Ajv at write) so the row is written underneath — the "row this validator never
- *     saw" case (pre-0065 data, a replica) the typeof guard exists for.
- *
- * MUTATION LOG (each applied ALONE, then reverted)
- * | Mutation | Result |
- * |---|---|
- * | drop `substrate` from the `deploymentTarget` literal (server) | typecheck fails; forcing it through with `null` — the placed AND unplaced facet tests FAIL on `substrate` |
- * | resolve `state: "declared"` from `rows[0]` when >1 edge | the ambiguous test FAILS (`state`, and `name` non-null) |
- * | skip the `domainLocal`-endpoint journal check in relationships-repo | the never-journals test FAILS — a `relationship_upsert` row names the edge |
- * | read `repository` without the string guard | the non-string test FAILS with `repository: 42` on the wire (zod response validation would also refuse it) |
- * | drop `isNull(relationships.deletedAt)` from the `publishes_to` where-clause | the deleted-edge test FAILS (`declared`, edgeCount 1 after the delete) |
- */
+/** The target substrate facet, and the per-site registry. See docs/coordination.md §292. */
 describe("component pipeline: the substrate facet (§9.1) and the per-site registry (§9.2)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

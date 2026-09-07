@@ -2,13 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ScanEvidenceSchema, ScanMethodSchema, usesTrivyDb } from "./supply-chain.js";
 import { PutScannerAssignmentRequestSchema, ScannerAssignmentSchema } from "./executors.js";
 
-/**
- * M13.3a — the scanner-method enum widening + scanner-assignment registry schemas (ADR-0020 §2).
- * These are the SCHEMA-level invariants the build rests on: the enum accepts every shipped method
- * (`trivy`, `openscap`, and the 13.3a machine-image arm `trivy-vm`), the evidence-widening is
- * additive (a `trivy` document still parses, the newer ones parse too), the Trivy-DB predicate
- * classifies every enum member, and the registry write body validates the executor Type + methods.
- */
+/** The scanner method enum and the assignment registry. See docs/schemas.md §392. */
 
 describe("ScanMethodSchema", () => {
   it("accepts trivy, openscap and trivy-vm", () => {
@@ -27,13 +21,7 @@ describe("ScanMethodSchema", () => {
   });
 });
 
-/**
- * `usesTrivyDb` is the ONE predicate every Trivy-DB-dependent concern routes through (the M13.3b-ii
- * offline pre-load seam, the staleness gate, the `scanDb*` evidence fields). Its whole reason to
- * exist is that a `method === "trivy"` comparison would let the machine-image arm slip past the
- * staleness gate and scan against an unclassified DB — so it is pinned EXHAUSTIVELY over the enum:
- * a new method added without a decision about its DB dependence fails here, not in production.
- */
+/** The one predicate every database-dependent concern uses. See docs/schemas.md §393. */
 describe("usesTrivyDb — exhaustive over ScanMethodSchema", () => {
   it("is true for every Trivy-family method and false for OpenSCAP", () => {
     expect(usesTrivyDb("trivy")).toBe(true);

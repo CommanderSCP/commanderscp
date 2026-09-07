@@ -5,25 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FederationPeerStatus, OutpostConfig } from "@scp/schemas";
 import { render } from "../test-support/render-dom";
 
-/**
- * WHAT THE CLICK SENDS TO THE SERVER — the request, not the handler argument.
- *
- * `outpost-configuration-interaction.test.tsx` proves the buttons pass the survivor they NAMED into
- * `onReconcile`. That stops at the panel's boundary: the wired-up card turns that argument into an
- * actual `reconcileOutpost` call, and the argument it adds there — the `?ifClaimant=` precondition —
- * is invisible to every test above it. Without this file, a build that computes a perfect preview
- * and then issues an UNGUARDED call passes the whole web suite.
- *
- * THE TWO FAILURES IT GUARDS, both silent 200s without the token:
- *   * the ADOPT-SHADOW control sends no `keep`, so the server re-derives the survivor from rows read
- *     inside its own transaction — a locally-authored claimant that appeared since this card's query
- *     resolved outranks the shadow, and the entered value the button promised to keep is DROPPED;
- *   * naming the shadow with `keep` instead makes that concurrent row surplus, and removing a row
- *     this domain authored journals a tombstone that PROPAGATES to the outpost.
- *
- * The SDK and `@tanstack/react-router` are stubbed; everything else is the real component tree in a
- * real DOM, so the assertion is on the call the card actually made.
- */
+/** WHAT THE CLICK SENDS TO THE SERVER. See docs/web.md §351. */
 
 const reconcileCalls: { peer: string; opts: Record<string, unknown> }[] = [];
 let listed: OutpostConfig[] = [];
@@ -112,14 +94,7 @@ async function settle(): Promise<void> {
   });
 }
 
-/**
- * Wait for a CONDITION, never for a fixed delay.
- *
- * A single `settle()` after render was enough on a fast machine and NOT on a loaded CI runner,
- * where the two queries (`self`, `listOutposts`) had not both resolved before the click — the test
- * then failed looking for a control that simply had not rendered yet. A fixed sleep long enough to
- * be safe everywhere is also a fixed cost paid on every run; polling is both faster and correct.
- */
+/** Wait for a CONDITION, never for a fixed delay. See docs/web.md §352. */
 async function waitUntil(check: () => boolean, what: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
     if (check()) return;

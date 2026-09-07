@@ -5,28 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ScpClient } from "@scp/sdk";
 import { render } from "../test-support/render-dom";
 
-/**
- * LANE A — the init form offers exactly the roles this instance could honestly hold.
- *
- * OWNER DECISION 2026-08-24, reversing this file's earlier premise. The form USED to offer
- * `retrans` for API-first parity, with a hint shown while it was selected. But a real retrans
- * deployment never serves this UI at all (`app.ts` gates SPA registration on
- * `federationRole !== "retrans"` — M16.3 P3, `retrans-no-spa.integration.test.ts`), so on ANY
- * instance where this form can render, declaring an org retrans is by construction a stray config —
- * it idles relay machinery on a non-boundary box and flips the org's dependencyManagement to
- * `managedHere: false`. The server now refuses it at the init door unless the deployment declares
- * `SCP_FEDERATION_ROLE=retrans` (`apps/server/src/federation/init-role-door.integration.test.ts`),
- * and the form stops offering what every instance able to show it would refuse.
- *
- * What this file pins:
- *   1. the select offers exactly commander|outpost — no retrans option to walk into the 400;
- *   2. the retrans role stays DISCOVERABLE — a persistent note names where it actually lives
- *      (the CDS-boundary deployment + CLI), so the absence reads as structural, never as a
- *      hidden capability (design-system honesty: structurally-expected absence is explained).
- *
- * Driven through the real wired-up `FederationStatusPage` with a real `ScpClient` over a stubbed
- * `fetch`, mirroring `federation-status-crash.test.tsx`'s pattern.
- */
+/** The init form offers only roles this instance could hold. See docs/web.md §342. */
 const realClient = new ScpClient({ baseUrl: "/api/v1" });
 vi.mock("../lib/client", () => ({ client: realClient }));
 

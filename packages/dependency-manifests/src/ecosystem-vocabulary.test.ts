@@ -1,31 +1,4 @@
-/**
- * THE TWO ECOSYSTEM VOCABULARIES MUST BE THE SAME LIST.
- *
- * This test exists because they were not. M21.2's parsers and its schema/migration were built in
- * parallel by separate agents, and the container ecosystem was named `"image"` in
- * `dependency-manifests/types.ts` and `"oci"` in `@scp/schemas/dependencies`. Both sides were fully
- * green: the parsers proved they emit what they say, and the repo layer proved it stores what it
- * accepts. Neither test crossed the boundary, so nothing failed — until ingestion (M21.3) would have
- * tried to write a Dockerfile-derived row and been rejected by the Zod enum and the DB check
- * constraint at the same time. Every `FROM` line in the estate, silently unsubscribable.
- *
- * That is the "vacuous tests" failure mode in its cross-package form: a suite that is green for the
- * wrong reason because the property it asserts is *local* while the property that matters is a
- * *contract between two modules*. The fix is not to have renamed one constant — it is this file,
- * which makes the next divergence a red test instead of a runtime rejection.
- *
- * WHY THE RUNTIME IMPORT IS DEV-ONLY. `@scp/dependency-manifests` is deliberately dependency-free at
- * runtime: the parsers are pure string->data functions, which is what lets them be unit-tested with
- * no database, no network and no plugin host. Importing `@scp/schemas` for real would drag Zod into
- * that. So the schema is a devDependency and appears only here, in the one place whose whole job is
- * to compare the two lists.
- *
- * `oci`, NOT `image`, is the agreed spelling: `image` is already a value of the executor `type` enum
- * (`packages/schemas/src/executors.ts:32`) meaning "a build that PRODUCES an image artifact", where
- * this axis records what a component CONSUMES. That is the same collision class as bare
- * `subscription` (notification_bindings) and bare `manifest` (the promotion manifest), both settled
- * in GLOSSARY.md.
- */
+/** The two ecosystem vocabularies must be one list. See docs/dependency-manifests.md §13. */
 import { describe, expect, it } from "vitest";
 import { DependencyEcosystemSchema } from "@scp/schemas";
 
@@ -33,15 +6,7 @@ import { parseDockerfile } from "./dockerfile.js";
 import { parseKubernetesImages } from "./kubernetes-images.js";
 import type { DependencyEcosystem } from "./types.js";
 
-/**
- * The parser package's list, written out as VALUES rather than derived from the type.
- *
- * A `satisfies`-only check would be vacuous: TypeScript erases at runtime, so a type-level assertion
- * proves nothing about what `parseDockerfile` actually puts in the field. The `satisfies` clause below
- * still earns its place — it makes this array fail to COMPILE if someone adds a member to
- * `DependencyEcosystem` without adding it here — so the two mechanisms cover different halves:
- * compile-time catches a missing member, the runtime comparison catches a renamed one.
- */
+/** Written as values, because `satisfies` is vacuous. See docs/dependency-manifests.md §14. */
 const PARSER_ECOSYSTEMS = [
   "npm",
   "go",
@@ -66,12 +31,7 @@ describe("ecosystem vocabulary", () => {
     expect(PARSER_ECOSYSTEMS).not.toContain("image" as DependencyEcosystem);
   });
 
-  /**
-   * The end-to-end half. The two checks above compare two hand-written lists, which drift together
-   * if someone edits both and still gets the value wrong. This one takes the value out of the
-   * PARSER'S ACTUAL OUTPUT and pushes it through the SCHEMA'S ACTUAL VALIDATOR — the same two pieces
-   * that will meet in M21.3's ingestion path.
-   */
+  /** The end-to-end half. See docs/dependency-manifests.md §15. */
   it("accepts the ecosystem the Dockerfile parser really emits", () => {
     const deps = parseDockerfile("FROM alpine:1.0\n");
     expect(deps).toHaveLength(1);

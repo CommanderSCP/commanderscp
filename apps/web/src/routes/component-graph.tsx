@@ -20,26 +20,7 @@ interface ComponentGraphResult {
   data: GraphCanvasData;
 }
 
-/**
- * `/graph/service/$serviceId` — the COMPONENT layer of the two-layer graph explorer
- * (coordination-ui-views.md § two-layer graph, Phase 3). Reached by clicking a service in the
- * service-layer graph (`/graph`).
- *
- * Shows this service's components + their internal `consumes`/`depends_on` links, PLUS cross-service
- * links (dashed) to *other* services' components. Every node/edge is derived from REAL graph data —
- * nothing is synthesized:
- *   1. `traverse(service, out, contains)` → this service's components.
- *   2. per component `traverse(both, {consumes,depends_on})` → the component-level edges + the typed
- *      neighbor objects (so external components can be named).
- *   3. for each edge endpoint NOT owned by this service, resolve its OWNING service from the real
- *      `contains` parent (`relationships.list({toId, typeId:'contains'})`) — this confirms the edge
- *      genuinely crosses services (never guessed) and supplies the external node's owning-service
- *      label.
- *
- * NOTE (Layer B, deferred): the proposal's optional per-node HEALTH dot (up/degraded/down/no-metric)
- * needs an owner-supplied up/down observe signal that the API does not yet capture — so it is
- * intentionally omitted here rather than fabricated (coordination-ui-views.md Phase 4d).
- */
+/** The component layer of the two-layer graph explorer. See docs/web.md §228. */
 export function ComponentGraphPage(): React.JSX.Element {
   const serviceId = useServiceIdParam();
 
@@ -51,14 +32,7 @@ export function ComponentGraphPage(): React.JSX.Element {
 
       const service = await client.services.get(serviceId);
 
-      // 1. This service's components (real `contains` children).
-      //
-      // maxDepth 2, NOT 1: containment is `service -> [assembly] -> component`, and the assembly
-      // rung is optional. At depth 1 a service whose components all sit under an assembly returned
-      // only the assembly, which the `typeId === "component"` filter then dropped — so that service
-      // rendered a completely empty component graph while genuinely having components one hop
-      // further down. Depth 2 covers both shapes; the ladder is capped at three rungs server-side
-      // (`assembly -> assembly` is refused outright), so there is no deeper case to miss.
+      // This service's components, at depth two rather than one. See docs/web.md §229.
       const contained = await client.graph.traverse({
         objectId: serviceId,
         direction: "out",

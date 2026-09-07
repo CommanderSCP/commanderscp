@@ -11,17 +11,7 @@ import type { AppDeps } from "../types.js";
 import type { AuthContext } from "../auth/local-auth.js";
 import type { AuditWitnessRow } from "../federation/audit-witness-repo.js";
 
-/**
- * `GET /api/v1/federation/audit-witnesses` — the audit-witness READ surface the post-failover
- * runbook's peers-witness comparison (resilience.md §7.2 step 5) depends on.
- *
- * A ROUTE UNIT TEST, not integration: `requireAuth`/`withTenantTx`/`authorize`/
- * `listAuditWitnessesForOrigin` are mocked, and the real `registerFederationRoutes` is exercised
- * through an in-process Fastify instance with the SAME `fastify-type-provider-zod` compilers the
- * real app uses — so this pins the actual schema (the required `originDomainId` query param, the
- * response shape) and the actual wiring (which permission is checked, which repo fn is called,
- * that `witnessedAt` is serialized to an ISO string), not a paraphrase of them.
- */
+/** The audit-witness read surface the runbook needs. See docs/routes.md §182. */
 
 const mockRequireAuth = vi.fn();
 vi.mock("../auth/require-auth.js", () => ({

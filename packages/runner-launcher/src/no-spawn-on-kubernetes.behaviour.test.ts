@@ -8,48 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { observeNodeSpawns } from "@scp/source-census";
 import { K8S_SA_DIR } from "./index.js";
 
-/**
- * ==================================================================================================
- * M23.6 CLAUSE 1, CLOSED BEHAVIOURALLY — "NOTHING WAS SPAWNED" AS AN OBSERVATION
- * ==================================================================================================
- *
- * WHAT WAS WRONG WITH THE GATE THIS REPLACES, MEASURED RATHER THAN SUSPECTED. `runner-iac.yaml`'s
- * replacement for the retired HONEST SCOPE note asserts "NOTHING SPAWNS A CONTAINER CLI ON THIS
- * PATH". Two things stood behind that sentence and neither could carry it:
- *
- *   1. THE LEDGER. `spawnRunnerProcess` records every spawn it makes, and each managed plugin
- *      asserts the ledger is empty on the Kubernetes path. But the ledger only sees what goes
- *      THROUGH it. A real `child_process.execFile(dockerBinary, …)` planted in
- *      `resolveRunnerLauncher`'s Kubernetes branch left all three of those tests GREEN while the
- *      verification pass recorded FOURTEEN spawns actually happening.
- *   2. THE SOURCE CENSUS in `no-docker-on-kubernetes.test.ts`, which is what did redden. It is a
- *      statement about TEXT. A census can prove a string is present; it can never prove an execution
- *      is absent, because the next spawn is written in whatever spelling the census does not hold —
- *      a helper in a new file, a rename, a dynamic `import()`. This repository has a named failure
- *      for reading text and calling it behaviour, and `@scp/source-census`'s own module doc opens
- *      with ten instances of it.
- *
- * SO THE OBSERVATION MOVES OUTSIDE THE SUBJECT. Every case below runs the BUILT package in a child
- * `node` whose `node:child_process` was wrapped before the subject loaded, and asserts over the list
- * of processes that were actually created. See `@scp/source-census`'s `spawn-observer.ts` for the
- * mechanism, the `util.promisify.custom` trap that would have made it silently blind to the exact
- * call this package makes, what it does not cover, and why an injectable spawner on
- * `RunnerLauncherConfig` — the shape the clause's own wording suggested — was rejected as both a new
- * hole in the server-injected config surface AND strictly weaker than this.
- *
- * THE CONTROLS ARE THE POINT, NOT THE PADDING. An observer that recorded nothing at all would
- * satisfy the negative arm forever, and this file's whole reason for existing is that a green
- * negative arm was already worthless once. So: the Docker path must be observed spawning (which also
- * proves the promisified route is wrapped, since that is the only way this package spawns), a raw
- * `execFile` in the driver must be observed, and — the measurement that names the defect — that same
- * raw `execFile` must be observed while `runnerSpawnCount()` stays at zero, which is the ledger's
- * blind spot reproduced on purpose so it cannot be quietly re-introduced as the whole gate.
- *
- * COST, STATED. Four child `node` processes, ~1s each, plus one `tsc -b`. The subject has to be
- * reachable as built `dist` (vitest's loader is not in the picture, deliberately — the module-cycle
- * defect `module-load.integration.test.ts` exists for was invisible to it), and the driver is a
- * string rather than type-checked code.
- */
+/** M23.6 CLAUSE 1, CLOSED BEHAVIOURALLY. See docs/runner-launcher.md §325. */
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -69,11 +28,7 @@ afterAll(async () => {
   if (workspaceRoot) await rm(workspaceRoot, { recursive: true, force: true });
 });
 
-/**
- * A stateful in-child fake API server, deliberately NOT a canned response list: the adapter POSTs a
- * Job and then PATCHes and DELETEs it BY NAME, and a list cannot notice being asked about a name it
- * never issued. Written as source because it has to be constructed inside the observed child.
- */
+/** A stateful in-child fake, not a canned response list. See docs/runner-launcher.md §326. */
 const FAKE_IO = `
 const NS = "scp";
 const jobsRoot = "/apis/batch/v1/namespaces/" + NS + "/jobs";
@@ -234,13 +189,7 @@ console.log(JSON.stringify({ ledger: m.runnerSpawnCount() }));
   }, 180_000);
 
   it("A RAW `execFile` IS OBSERVED WHILE THE LEDGER STAYS AT ZERO — the blind spot, reproduced", async () => {
-    /**
-     * THE DEFECT, EXECUTED. This is the shape of the mutation that left the three per-plugin ledger
-     * assertions green: a spawn that does not go through `spawnRunnerProcess`. It is planted in the
-     * driver rather than in the package so it can stand permanently, and it asserts BOTH halves —
-     * the observer sees it, and `runnerSpawnCount()` does not. Delete the observer and the only thing
-     * left watching this is a count that reads zero.
-     */
+    /** THE DEFECT, EXECUTED. See docs/runner-launcher.md §327. */
     const driver = `
 const m = await import(${JSON.stringify(ENTRY)});
 const { execFile } = await import("node:child_process");
@@ -259,39 +208,7 @@ console.log(JSON.stringify({ before, after: m.runnerSpawnCount() }));
     ).toBe(before);
   }, 90_000);
 
-  /**
-   * ==============================================================================================
-   * THE HOLE THE CASE ABOVE LEFT, NAMED AND MEASURED (M23.6, third pass)
-   * ==============================================================================================
-   *
-   * EVERY case above — and every one of the three plugin selection tests, and the whole kind suite —
-   * INJECTS `k8s.io`. `resolveRunnerLauncher` reads it as `k8s.io ?? createDefaultKubernetesIo(…)`,
-   * and the right-hand side of a `??` is not evaluated when the left is present. So the resolver's
-   * own default transport was, until this case existed, code that NO test in this repository ever
-   * evaluated or executed.
-   *
-   * THAT IS NOT A THEORETICAL GAP; IT WAS EXERCISED. A `spawnSync(config.dockerBinary ?? "docker",
-   * ["version"])` planted on that right-hand side — in a NEW module, so no `node:child_process`
-   * string appears in `kubernetes-adapter.ts` and the source census in
-   * `no-docker-on-kubernetes.test.ts` sees nothing — ran a REAL `docker version` on this machine
-   * while `@scp/runner-launcher` reported 427/427 and the three managed plugins reported 38 + 50 +
-   * 255, all green. It was proven reached, not merely present: the probe appended to a marker file
-   * and the marker said `reached docker`. The gate above did not miss it by a hair; it could not see
-   * that expression at all.
-   *
-   * THE FIX IS REACHABILITY, NOT A CLEVERER ASSERTION. A gate that names the place a spawn could
-   * happen keeps missing the place it does happen — that is what the source census was, and "the
-   * direct call in the Kubernetes branch" is the same mistake one level in. So the two cases below
-   * take the two things no test took before: the resolver with NO `io` injected (which forces the
-   * `??` right-hand side to be evaluated — `kubernetesConstructionCount()` moving by TWO rather than
-   * ONE is the machine-checked proof of that, and it is the assertion that fails if a future edit
-   * quietly restores an injected default), and the default transport's own three closures, EXECUTED.
-   *
-   * NEITHER CASE PASSES `dockerBinary`, deliberately. The Kubernetes adapter is not given one in
-   * production and must not need one; with the field absent a probe reaching for a container CLI can
-   * only fall back to `DEFAULT_DOCKER_BINARY`, and `run.spawns` must still be empty — so `[]` here is
-   * the whole assertion and no binary name has to be guessed in advance.
-   */
+  /** THE HOLE THE CASE ABOVE LEFT, NAMED AND MEASURED. See docs/runner-launcher.md §328. */
   it("NO INJECTED `io`: the resolver BUILDS ITS OWN TRANSPORT and still spawns nothing", async () => {
     const driver = `
 const m = await import(${JSON.stringify(ENTRY)});
@@ -345,14 +262,7 @@ console.log(JSON.stringify({ constructed, failure, ledger: m.runnerSpawnCount() 
   }, 180_000);
 
   it("THE DEFAULT TRANSPORT'S THREE CLOSURES, EXECUTED — `readToken`, `copyDir`, `removeDir`", async () => {
-    /**
-     * The case above reaches `readToken` and stops there: the run cannot get past a token this
-     * process does not have. `copyDir` and `removeDir` are the two closures a run would reach NEXT,
-     * they move real bytes on the shared volume, and a `fork()` behind a dynamic `import()` inside
-     * either of them is reached by no construction-time check and named by no census. So they are
-     * driven directly, on real directories, with the bytes checked afterwards — a `copyDir` that
-     * silently did nothing would spawn nothing either.
-     */
+    /** The case above reaches `readToken` and stops there. See docs/runner-launcher.md §329. */
     const scratch = join(workspaceRoot, "closures");
     const driver = `
 const m = await import(${JSON.stringify(ENTRY)});

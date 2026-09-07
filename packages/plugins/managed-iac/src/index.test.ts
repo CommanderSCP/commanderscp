@@ -4,14 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 
-/**
- * Unit tests (no Docker — every `docker` invocation is mocked, so these run on every PR under
- * `pnpm test`). They assert the SECURITY-critical properties the review demanded be guarded:
- * the container always launches with `--network none`, NO bind mount, and NO docker.sock; the
- * workspace is copied in/out rather than mounted; a rollback with no valid prior state ref fails
- * CLOSED without touching docker; the dedup cache prevents a second real run; and resolved secret
- * values are redacted out of returned evidence.
- */
+/** Unit tests with every Docker invocation mocked. See docs/plugins.md §410. */
 
 // Records every `docker` argv and lets each test script the responses (create -> id, start ->
 // stdout/stderr or a failure, cp/rm -> ok). `promisify(execFile)` resolves the callback's second
@@ -21,17 +14,7 @@ interface DockerCall {
   args: string[];
 }
 const dockerCalls: DockerCall[] = [];
-/**
- * `code` and `takesMs` ADDED FOR MEDIUM (verification pass 5). Without them this seam could produce
- * exactly one kind of `start` failure, so the two shapes an operator most needs told apart — our own
- * budget killing the runner, and the runner exiting quietly — were not expressible here at all.
- *  - `code`: what Node puts on the rejection. A NUMBER is an exit status; `null` with `killed` is a
- *    signal. `classifyRunnerFailure` branches on it.
- *  - `takesMs`: how long `start` runs before answering, so the adapter's own `timeout` (derived from
- *    the whole-run deadline) can actually FIRE. The mock honours it the way Node does — see the
- *    `start` arm below — which is what makes `deadlineExceeded` a real derivation here rather than a
- *    value the fixture asserts about itself.
- */
+/** `code` and `takesMs` ADDED FOR MEDIUM. See docs/plugins.md §411. */
 let startBehavior: {
   ok: boolean;
   stdout: string;
@@ -44,12 +27,7 @@ let startBehavior: {
   stderr: ""
 };
 
-/** LOW-6: the one seam that lets a test make `saveState`'s final `rename` fail AFTER a run has
- *  already happened, while `loadState` (an earlier `readFile`) succeeds normally — a pure-fs
- *  fixture (an occupied directory, a garbled file) cannot produce that combination, because
- *  `saveState`'s `rename` and `loadState`'s `readFile` share the same path and therefore the same
- *  filesystem-shaped failure. Delegates to the real implementation for everything except `rename`,
- *  which is undefined (real) unless a test opts in. */
+/** The one seam that lets a test fail the final rename. See docs/plugins.md §412. */
 let renameShouldFail: Error | undefined;
 vi.mock("node:fs/promises", async () => {
   const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
@@ -75,11 +53,7 @@ vi.mock("node:child_process", () => {
       if (sub === "create") {
         cb(null, { stdout: "container-abc123\n", stderr: "" });
       } else if (sub === "start") {
-        // NODE'S OWN RULE FOR `timeout`, modelled only for `start` because that is the only step
-        // whose failure this file needs to shape. A positive `timeout` shorter than the run's
-        // duration means Node SIGTERMs the child and rejects with `killed: true, signal: "SIGTERM",
-        // code: null` — the shape `@scp/runner-launcher`'s NODE_FAILURE_SHAPES table pins against a
-        // real child process.
+        // Node's own timeout rule, modelled only for start. See docs/plugins.md §413.
         const takesMs = startBehavior.takesMs ?? 0;
         const timeout = opts?.timeout;
         if (typeof timeout === "number" && timeout > 0 && timeout < takesMs) {
@@ -314,26 +288,7 @@ describe("@scp/plugin-managed-iac: idempotency + secret redaction", () => {
     expect(status.detail).not.toContain("super-secret-value");
     expect(status.detail).toContain("***");
 
-    // ================================================================================================
-    // THIS ASSERTION IS THE INVERSE OF WHAT IT USED TO BE, AND THE REVERSAL IS THE FIX.
-    // ================================================================================================
-    // It read:
-    //
-    //     // The secret WAS injected into the container env (as -e PROVIDER_TOKEN=...), just
-    //     // redacted from evidence.
-    //     expect(createArgs).toContain("PROVIDER_TOKEN=super-secret-value");
-    //
-    // — an accurate record of M23.0's defect 3, and a test that PINNED it. The credential was on the
-    // `create` argv, readable in the host process table by any local process, and reproduced
-    // verbatim inside `err.message` on every failed `create` (`Command failed: docker create …
-    // -e PROVIDER_TOKEN=super-secret-value …`), which `subprocess-entry.ts` serialises across the
-    // plugin-host RPC boundary and into a server log. "Redacted from the evidence" was true and was
-    // never the channel that mattered.
-    //
-    // The credential now travels as `secretEnv` — a mode-0600 `--env-file` the adapter unlinks the
-    // instant `create` returns. THE POSITIVE HALF (that it still reaches the runner at all) is
-    // pinned in `launch-argv.golden.test.ts`, which snapshots the file's contents while `create` is
-    // in flight; here the claim is only the negative, over EVERY element of EVERY call.
+    // This assertion is inverted, and the reversal is the fix. See docs/plugins.md §414.
     for (const call of dockerCalls) {
       for (const arg of call.args) {
         expect(arg, `a docker argv carried the credential VALUE: ${arg}`).not.toContain(
@@ -433,26 +388,7 @@ describe("@scp/plugin-managed-iac: LOW-6 — loadState/saveState never reject tr
   });
 });
 
-/**
- * ================================================================================================
- * MEDIUM (verification pass 5) — THE DURABLE LEDGER MUST NOT RECORD TWO FAILURES AS ONE
- * ================================================================================================
- *
- * `@scp/runner-launcher`'s port-level arms prove the classification; THIS file is the only place
- * the whole chain can be driven, because managed-iac is the one managed plugin with a DURABLE
- * outcome store. The chain is: real Docker adapter (over the mocked `child_process` above) ->
- * `runRunnerContainer` -> `trigger()`'s outcome -> `saveState` to a real JSON file on disk ->
- * a fresh `loadState` inside `status()`. Everything a `Decision`'s `inputContext` will carry
- * (`reconcile.ts` copies `status.detail` into it verbatim) has gone through a file by the time it
- * is asserted, which is what "through the durable ledger, not just at the port" means.
- *
- * WHAT IT USED TO RECORD. `trigger()` built its detail as `result.succeeded ? result.stdout :
- * result.stderr`, and `promisify(execFile)` always attaches `stderr` as a string — so a `tofu apply`
- * that WE SIGTERMed mid-flight and a runner that exited quietly both wrote `detail: ""`. For
- * managed-iac specifically that is the difference between "your infrastructure may be half-applied,
- * re-running at this timeout will do it again" and "the runner failed, look at the runner", recorded
- * identically, forever, in a replicated and backed-up file.
- */
+/** MEDIUM (verification pass 5). See docs/plugins.md §415. */
 describe("MEDIUM (pass 5): a budget kill and a silent exit are distinguishable IN THE DURABLE LEDGER", () => {
   /** Drives one `apply` to completion and reads its outcome back out of the on-disk cache the way
    *  `reconcile.ts` does — through `status()`, which re-reads the file rather than a memo. */

@@ -15,12 +15,7 @@ import {
 import type { Db } from "../db/client.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 
-/**
- * M21.2 — THE FAN-OUT POINT AND THE ROLE GUARD for dependency-inventory ingestion.
- *
- * Pinned separately from the ingestion itself because this is the half that decides whether it ever
- * RUNS — the exact half that was missing for the four M21 components that shipped inert.
- */
+/** The fan-out point and the role guard for ingestion. See docs/dependencies.md §259. */
 
 function event(overrides: Partial<DomainEventJob> = {}): DomainEventJob {
   return {
@@ -76,22 +71,7 @@ describe("inventoryIngestionRouter", () => {
   });
 });
 
-/**
- * THE GUARD, AFTER THE 2026-08-17 REVERSAL (ADR-0032 §7d).
- *
- * This block used to assert the OPPOSITE — "RUNS ON EVERY FEDERATION ROLE" and "is not fail-closed
- * on an UNDECLARED deployment" — and it passed, because the guard really did allow both. Nothing
- * about ingestion's own mechanics changed; the owner's decision changed which question the guard
- * answers. A FIELD outpost never ORIGINATES a dependency bump — it RECEIVES the resulting change
- * down the global pipeline the commander manages — so a field outpost derives no inventory at all.
- * ("Field" is the qualifier that makes that true: an HQ outpost is the outpost in the COMMANDER'S
- * OWN trust domain, so its inventory IS the commander's. Every deployment this guard refuses has
- * DECLARED `SCP_FEDERATION_ROLE=outpost` and is therefore a field outpost — `commander-only.ts`
- * reads that out of the code.)
- *
- * Kept in the same shape `bump-dispatch.test.ts` uses for its role guard, because these two are now
- * the same guard: all three refusals and the accepted case, one `it` each.
- */
+/** THE GUARD, AFTER THE 2026-08-17 REVERSAL. See docs/dependencies.md §260. */
 describe("inventoryIngestionRoleGuard — commander-only since ADR-0032 §7d", () => {
   const base = {
     role: "worker" as const,
@@ -136,20 +116,7 @@ describe("inventoryIngestionRoleGuard — commander-only since ADR-0032 §7d", (
 // `inventory-ingestion.test.ts`'s "the wiring census" block, and is updated there for §7d rather
 // than duplicated here. A second copy of an identity assertion is a second place to forget.
 
-/**
- * THE WORKER HALF ACTUALLY CONSULTS THE GUARD — MEASURED, NOT ASSUMED.
- *
- * This block exists because deleting `startInventoryIngestionLoop`'s `if (!guard.allowed) return`
- * left the ENTIRE suite green, integration tests included: every one of them boots the loop as a
- * declared commander, where the refusal branch is never taken, and the router census only covers
- * the ROUTER half. So the guard was computed, logged, and structurally ignorable — a guard present
- * but not consulted, which CLAUDE.md names as this codebase's most common defect.
- *
- * A REFUSED ROLE MUST NEVER CREATE THE QUEUE, not merely skip the work inside the handler: a
- * process that created it would still hold a pg-boss worker for a queue it will never act on, and
- * an outpost would drain ingestion jobs it is forbidden to perform. Same shape and same reason as
- * `version-poll.test.ts`'s "a refused role returns an inert handle and NEVER CREATES THE QUEUE".
- */
+/** THE WORKER HALF ACTUALLY CONSULTS THE GUARD. See docs/dependencies.md §261. */
 describe("startInventoryIngestionLoop consults the guard before it touches pg-boss", () => {
   function recordingBoss() {
     return {

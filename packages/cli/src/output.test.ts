@@ -1,15 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cellText, tableLines } from "./output.js";
 
-/**
- * The table printer owns cell coercion. Before this, `printTable` typed rows as
- * `Record<string, string>` while 22 call sites handed it raw API objects through a cast; the first
- * numeric field (`scp federation import` → `appliedEntries`) crashed with `v.padEnd is not a
- * function` — AFTER the import had already applied server-side, so the operator saw an error for a
- * command that had succeeded. The property is "a cell that is not a string", not "the import
- * command", so the fixture below is the whole class: number, 0, boolean, false, null, undefined,
- * nested object, array.
- */
+/** The table printer owns cell coercion. See docs/cli.md §132. */
 describe("cellText: every JSON value becomes printable text", () => {
   it("numbers and booleans print canonically — 0 and false are VALUES, not absences", () => {
     expect(cellText(381)).toBe("381");

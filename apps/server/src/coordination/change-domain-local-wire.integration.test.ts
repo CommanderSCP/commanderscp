@@ -9,19 +9,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M20-A3 (ADR-0031 §5, docs/proposals/outpost-ui.md) — `Change.domainLocal` ON THE WIRE.
- *
- * `proposeChange` (`changes-repo.ts`) already computed `changeIsDomainLocal` and stamped it onto the
- * change's own graph object at create (M20.3) — but until now the wire `Change` schema never carried
- * it, so nothing SDK-reachable could tell "this change is domain-local" from "this change is
- * ordinary and just hasn't crossed a boundary yet". That ambiguity is exactly what left
- * `NoBoundarySegment` unable to give an honest reason for an absent boundary segment.
- *
- * This measures the real HTTP + SDK round trip (propose, then a fresh GET) for both a domain-local
- * target and a shared one — a control, so the test cannot pass by making every change read as
- * domain-local regardless of its target.
- */
+/** M20-A3 (ADR-0031 §5, docs/proposals/outpost-ui.md). See docs/coordination.md §260. */
 describe("Change.domainLocal (M20-A3): the SDK-reachable wire field", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

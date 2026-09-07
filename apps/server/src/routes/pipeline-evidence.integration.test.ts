@@ -24,60 +24,7 @@ import { alarmReportsInWindow, upsertHook } from "../coordination/pipeline-hooks
 import { evaluatePipelineHookGate } from "../coordination/pipeline-hook-gate.js";
 import { evaluateBakeGate } from "../coordination/pipeline-hook-verdicts.js";
 
-/**
- * `POST /pipelines/evidence` + `ChangeWaveTargetSchema.hold.continuousTests` — the two API-surface
- * halves of team-pipeline-iac increment 8, against REAL PostgreSQL.
- *
- * ============================================================================================
- * EVERY SUBMISSION IN THIS FILE GOES THROUGH HTTP, NEVER THROUGH `pipeline-hooks-repo.ts`
- * ============================================================================================
- * `recordTestRunEvidence`/`recordAlarmEvidence` already have their own storage-layer file
- * (`coordination/pipeline-hooks-repo.integration.test.ts`), and NOTHING this file claims can be
- * proved there: the authorization scope, the strict-body refusal and the server-side producer stamp
- * all live between the socket and those functions. A route proven only at the repo layer is a route
- * whose authz was never exercised — so every write below is `server.app.inject(...)` against the
- * fully-built app (auth plugin, Zod validation, the real handler), and every assertion about what
- * was stored is a SELECT against the row that request produced.
- *
- * `app.inject` rather than the generated SDK for the submissions specifically, because two of the
- * seven properties are about bodies the SDK's types cannot express: an extra top-level `producer`
- * key, and a `subject` carrying a forged producer claim. A test that could only send well-typed
- * bodies could not reach the refusals that matter.
- *
- * ============================================================================================
- * THE FOUR MUTATIONS THESE TESTS WERE WATCHED TO DIE UNDER (2026-08-27, baseline 8 passed)
- * ============================================================================================
- * Each was applied alone and reverted:
- *
- *  (a) `routes/pipelines.ts`'s `authorize({... scopeObjectId: target.id})` -> `scopeObjectId:
- *      input.orgId` (the org root — the bar `POST /change-sources/{kind}/report` uses) => TWO
- *      tests failed, both on the SAME shape: "a caller authorized only at ANOTHER target cannot
- *      submit for this one" and "stamps the PERSISTED producer from the authenticated subject",
- *      each `expected 403 to be 201`, with `subject '<component-scoped principal>' lacks
- *      'object:write' at scope '<org root>'`. The narrowing test failed at its POSITIVE CONTROL —
- *      the leg that exists so the case cannot pass by everything being refused — which is exactly
- *      where an org-root pin has to show up: it does not let MORE through here, it locks every
- *      component-scoped CI principal out. Its refusal leg stayed green, and so, correctly, did the
- *      other six tests, all of which submit as the org-root admin.
- *  (b) the producer stamp -> read from the caller's body
- *      (`producerSubjectId: rawSubject.producer ?? auth.subjectObjectId`, taken off
- *      `request.rawBody` so Zod's strip of the unknown `subject.producer` key does not hide it) =>
- *      "stamps the PERSISTED producer from the authenticated subject" FAILED ALONE, on the stored
- *      row: `expected '<impostor id>' to be '<reporter id>'`. The forged id was persisted.
- *  (c) `SubmitPipelineEvidenceRequestSchema` `z.strictObject` -> `z.object` (and `@scp/schemas`
- *      REBUILT — these tests import the package's `dist`, so a source-only mutation is a false
- *      green) => "REFUSES a body carrying an extra top-level `producer` key" FAILED ALONE:
- *      `expected 201 to be 400`.
- *  (d) `plan-service.ts`'s read-time continuous projection replaced by a persisted one (the verdict
- *      map captured on the FIRST read and reused on every later read — what a Decision-fed field
- *      does) => the hold-projection test FAILED ALONE on its second half:
- *      `expected [ { hookId: 'canary', …(4) } ] to be undefined`. Its first half (the key IS
- *      present while held) stayed green, which is what makes the failure attributable to
- *      read-time composition rather than to the projection existing at all.
- *
- * A test that survives its own mutation is vacuous; the results above are the record that these
- * did not.
- */
+/** The evidence route and the continuous-test hold. See docs/routes.md §301. */
 
 /** A valid `CapturedWorkflowRefSchema` value — the wire contract rejects anything less, so a
  *  fixture that cut corners here would be testing a payload production can never contain. */
@@ -364,11 +311,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
       { role: "Operator", scope: component.id }
     ]);
 
-    // The forged claim rides inside `subject` — the ONE place a producer-shaped key survives
-    // validation at all (`SubmitPipelineEvidenceRequestSchema` is strict at the TOP level; the
-    // subject object is a plain `z.object`, so Zod strips unknown keys there rather than refusing).
-    // That makes this the sharpest available test of the stamp: a body the server accepts, carrying
-    // a producer the server must not believe.
+    // The forged claim rides inside `subject`. See docs/routes.md §302.
     const body = testRunBody({
       componentUrn: component.urn,
       targetUrn: component.urn,

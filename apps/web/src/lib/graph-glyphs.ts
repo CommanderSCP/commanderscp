@@ -5,23 +5,7 @@ import {
 } from "../components/icons/catalog-marks";
 import { COMMANDER_STAR_PATHS, OUTPOST_FORT_PATHS } from "../components/icons/federation-roles";
 
-/**
- * Cytoscape node GLYPHS — the same hand-drawn marks the rest of the UI wears (catalog-marks.tsx,
- * federation-roles.tsx), rasterized into `data:` SVG URIs the canvas can paint inside a node.
- *
- * Cytoscape draws to <canvas>, so it cannot render a React component; `background-image` with an
- * encoded SVG string is the sanctioned path. The path data is IMPORTED from the icon modules —
- * never re-drawn here — so the sidebar icon, the role badge and the graph node are always the
- * same drawing (the wave-target lesson: a slot with its own copy of the truth drifts).
- *
- * Encoding note: a data URI is not a network fetch — the SVG travels inside the bundle, so the
- * air-gap posture is untouched.
- *
- * The glyph SUPPLEMENTS the existing encodings, never replaces them: shape still says type at a
- * distance and colour still says group (graph-visual.ts); the white glyph makes the type legible
- * up close without hovering. Types without a mark simply render as before — an absent glyph is
- * "no mark exists", not an error.
- */
+/** Cytoscape node GLYPHS. See docs/web.md §119. */
 
 import type { IconNode } from "lucide-react";
 

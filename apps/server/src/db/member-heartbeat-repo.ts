@@ -46,14 +46,7 @@ export async function listLiveMemberHeartbeats(
   return rows;
 }
 
-/**
- * §7.4 version-skew gate — pure, so the migrations Job's refusal is directly testable. REFUSES (by
- * throwing) iff any LIVE member cluster reports a version DIFFERENT from `deployingVersion` — i.e. an
- * old (or newer) member cluster is still up, so the contract half must wait. `own` heartbeats already
- * on the deploying version are fine (this cluster restarting), and an empty set is fine (first
- * deploy). N and N+1 only: it is the DIFFERENCE that blocks a contract migration, since a contract
- * migration is safe only once every member runs the release that shipped its expand half.
- */
+/** §7.4 version-skew gate. See docs/db.md §6. */
 export function assertNoVersionSkewOrThrow(
   liveHeartbeats: MemberHeartbeat[],
   deployingVersion: string

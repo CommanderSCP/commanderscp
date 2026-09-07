@@ -14,16 +14,7 @@ import {
   type WaveTargetHold
 } from "./plan-service.js";
 
-/**
- * Compiles and PERSISTS a campaign's plan — the campaign-scoped sibling of
- * `coordination/plan-service.ts`'s `compileAndPersistPlan`, reusing the EXACT SAME pure
- * `compilePlan` function (DESIGN §9.5: "own plan -> waves -> gates compiled over the same
- * plan/wave machinery as a single change... reuse the M3 plan compiler"). Only the persistence
- * target differs (`campaign_plans`/`campaign_waves`/`campaign_wave_targets` instead of
- * `change_plans`/`change_waves`/`change_wave_targets` — db/schema.ts's M5 doc comment explains why
- * these are separate tables rather than one shared table: a campaign wave target's unit of work is
- * an entire member Change, not a direct executor trigger).
- */
+/** Compiles and PERSISTS a campaign's plan. See docs/coordination.md §140. */
 
 async function loadDependsOnEdges(
   tx: TenantTx,
@@ -60,11 +51,7 @@ export async function compileAndPersistCampaignPlan(
 
   let topologyDocument: Record<string, unknown> | null = null;
   if (input.topologyObjectId) {
-    // LIVE-FILTERED, identically to `plan-service.ts`'s twin — this file is the campaign-side COPY of
-    // that lookup and carried the same missing predicate. Fixing one and not the other is exactly the
-    // half-census this project keeps paying for; a soft-deleted release-topology must not shape a
-    // campaign's waves either. The refusal is recorded as a `plan_diff` block Decision by
-    // `campaign-reconcile.ts`'s compile catch, so it is explainable rather than a bare throw.
+    // LIVE-FILTERED, identically to `plan-service.ts`'s twin. See docs/coordination.md §141.
     const topology = await tx.query.objects.findFirst({
       where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
         andOp(
@@ -82,13 +69,7 @@ export async function compileAndPersistCampaignPlan(
   // and not a second copy.
   const topologyWaves = parseTopologyWaves(topologyDocument);
 
-  // NO `declaredStageDependencies` HERE, and that is a ruling rather than an omission (ADR-0028).
-  // The field feeds ONE thing: `compileStages`'s co-placed cycle refusal, which lives on the STAGE
-  // path — the one entered only when `placements` is supplied. This function never supplies them, so
-  // a campaign plan cannot reach that code at all. There is also nothing to supply: a declaration is
-  // a property of a CHANGE (`stageDependenciesOf`), a `campaign` object carries none, and each member
-  // change gets its own plan through `plan-service.ts`'s `compileAndPersistPlan`, which does pass its
-  // own. Threading an always-empty array through here would suggest a coupling that does not exist.
+  // No declared stage dependencies here, and that is a ruling. See docs/coordination.md §142.
   const result = compilePlan({
     targets: input.targetObjectIds,
     dependsOn,
@@ -168,27 +149,7 @@ function toCampaignWaveTargetShape(
   };
 }
 
-/**
- * THE ACTIVE (RUNNING) CAMPAIGN WAVE'S FREEZE HOLDS — the campaign-scoped sibling of
- * `plan-service.ts`'s `resolveWaveTargetFreezeHolds`, evaluated through the SAME `evaluateFreezeHolds`
- * (`freeze-hold.ts`) rather than a second implementation, and gated by the SAME `activeWaveOf`
- * selector the change side uses — so "which wave admission governs" cannot drift between the two
- * schemas.
- *
- * CANDIDATE SET, restated from `campaign-repo.ts`'s M25.2 comment (this function now IS that
- * evaluation — `getCampaignStatus` calls `getLatestCampaignPlan({ withFreezeHolds: true })` and
- * derives its `frozenTargetCount` input from the SAME composed `hold` field this produces, rather
- * than re-evaluating): the active wave must be `running` (a wave that has not started yet is
- * withholding nothing, and a terminal wave is past admission entirely), and only its targets whose
- * `memberChangeObjectId` is still `null` are candidates — once a member Change is minted, admission
- * has already acted on that target and a freeze bites the member Change's own wave targets one
- * layer down, not this row.
- *
- * `waves` is accepted STRUCTURALLY (bare `status`/`targetObjectId`/`memberChangeObjectId`) so a
- * caller can pass either raw `campaign_waves`/`campaign_wave_targets` rows (this file, building the
- * response) or the already-composed wire `CampaignPlan.waves` (`campaign-repo.ts`, deriving status)
- * — both shapes satisfy it, and there is no second evaluation to keep in sync with this one.
- */
+/** THE ACTIVE (RUNNING) CAMPAIGN WAVE'S FREEZE HOLDS. See docs/coordination.md §143. */
 export async function resolveActiveCampaignWaveFreezeHolds(
   tx: TenantTx,
   orgId: string,
@@ -265,34 +226,13 @@ export async function getLatestCampaignPlan(
   tx: TenantTx,
   orgId: string,
   campaignObjectId: string,
-  /**
-   * `withFreezeHolds` defaults `false`, the OPPOSITE default from `plan-service.ts`'s
-   * `getLatestPlanForChange` — deliberately, not an oversight. `campaign-reconcile.ts`'s per-tick
-   * loop and every other existing caller here (adoption, deadline evaluation, a dozen integration
-   * tests) call this UNCONDITIONALLY, often once per campaign per tick, and none of them read
-   * `.hold`/`heldTargetCount` off the result — flipping the default would pay for a freeze
-   * evaluation on every one of those paths for a projection nobody there consumes, exactly the cost
-   * the change side's own `withFreezeHolds: false` escape hatch exists to avoid (see that param's
-   * doc). Only the wire consumers that actually serve the projection — the `:explain` route and
-   * `campaign-repo.ts`'s `getCampaignStatus` (which now derives `frozenTargetCount` from this SAME
-   * evaluation instead of running its own) — opt in.
-   */
+  /** Freeze holds default off here, the opposite default. See docs/coordination.md §144. */
   options?: { withFreezeHolds?: boolean }
 ): Promise<CampaignPlan | null> {
   const planRow = await tx.query.campaignPlans.findFirst({
     where: (t, { eq: eqOp, and: andOp }) =>
       andOp(eqOp(t.orgId, orgId), eqOp(t.campaignObjectId, campaignObjectId)),
-    // `(createdAt, id)` DESC, not `createdAt` alone. `created_at` defaults to `now()`, which in
-    // Postgres is TRANSACTION time — so two plans written in the same transaction carry a
-    // BYTE-IDENTICAL timestamp and "latest" was genuinely ambiguous, resolved by whatever order the
-    // planner happened to return. `id` is UUIDv7 (time-ordered), so it is both a deterministic
-    // tiebreak and the right one.
-    //
-    // This is not cosmetic: `campaign-repo.ts`'s `listActiveCampaignObjectIds` now filters on "the
-    // LATEST plan is not terminal", and that filter and this reader MUST agree on which plan is
-    // latest. If they disagreed under a tie, a campaign could be filtered out of the reconciler's
-    // batch as terminal while this function handed the reconciler an ACTIVE plan — a campaign that
-    // is never driven and shows no error. Both now order by the same tuple.
+    // `(createdAt, id)` DESC, not `createdAt` alone. See docs/coordination.md §145.
     orderBy: (t, { desc }) => [desc(t.createdAt), desc(t.id)]
   });
   if (!planRow) return null;

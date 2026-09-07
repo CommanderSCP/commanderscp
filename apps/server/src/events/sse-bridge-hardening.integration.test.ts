@@ -15,14 +15,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * M26.1 review hardening gates for the SSE bridge (findings SEC-1 work-gate, SEC-2 replay, SSE-2
- * teardown drain). Each pins a property whose absence let the finding ship, and each is written to
- * go RED under the exact mutation that reintroduces the defect. The NOTIFY payload is the relay's
- * pointer `{id, orgId}`; here we insert the authoritative outbox row directly and drive the pointer
- * ourselves, so the tests exercise the bridge in isolation from the relay (buildTestServer starts
- * no background relay/bridge).
- */
+/** M26.1 review hardening gates for the SSE bridge. See docs/events.md §47. */
 interface PoolControl {
   connectCount: number;
   /** When set, the outbox SELECT awaits this before running — used to hold a fetch in flight. */
@@ -111,13 +104,7 @@ describe("SSE bridge — M26.1 hardening", () => {
         JSON.stringify({ id: quietId, orgId: orgNoClient.orgId })
       ]);
 
-      // FRAME 2 IS THE POSITIVE SIGNAL (integration-sleep-census.test.ts's property — a fixed sleep
-      // would be flaky on a loaded box and vacuous on an idle one). It targets an org subscribed
-      // BEFORE frame 1 was sent, which is load-bearing: subscribing to the QUIET org here instead
-      // would race the bridge, since frame 1 is often still unprocessed at that moment and would
-      // then legitimately fetch (measured: connectCount 2). NOTIFY is ordered per channel and the
-      // bridge consumes one LISTEN connection in order, so frame 2's delivery proves frame 1 was
-      // already handled.
+      // FRAME 2 IS THE POSITIVE SIGNAL. See docs/events.md §48.
       await admin.query("SELECT pg_notify('scp_sse_events', $1)", [
         JSON.stringify({ id: barrierId, orgId: orgWithClient.orgId })
       ]);

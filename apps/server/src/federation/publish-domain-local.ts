@@ -29,72 +29,8 @@ export interface PublishDomainLocalResult {
   withheldRelationships: SweptRelationship[];
 }
 
-/**
- * M20.4 (ADR-0031 §6) — publish a domain-local object: it stops being domain-local, and its current
- * state (plus the edges that can now travel) is put on the journal from this point forward.
- *
- * ## A verb, not a property write
- *
- * `domain_local` is otherwise named by NO update statement anywhere — that structural absence is
- * what makes locality immutable rather than merely guarded (ADR-0031 §6, and the census in
- * `drizzle/0059_objects_domain_local.sql`). **This function is the single, deliberate exception**,
- * and it is a verb because it does not merely set a field: it re-journals the object and sweeps its
- * edges, and an operator must be able to see that as an action with an effect rather than as a field
- * edit that quietly emitted a stream of entries.
- *
- * ## Authorization lives at the door, and it is TWO permissions
- *
- * This function takes a `TenantTx` and an `actorObjectId` for AUTHORSHIP only — it authorizes
- * nothing, the same split `federation/domain-local.ts` documents ("authorization at the door,
- * invariant at the repo"). Its sole route, `POST /objects/{type}/{idOrUrn}/publish`, demands BOTH
- * `object:write` and `federation:write` at the object.
- *
- * BOTH, because this is both acts at once. `federation:write` matches the permission that DECLARED
- * locality (ADR-0031 §1) — undoing a boundary decision cannot be cheaper than making it.
- * `object:write` matches declaring's OTHER half, and it is here because of what the body below
- * actually does: it `UPDATE`s an estate row and BUMPS `version`. On `federation:write` alone the
- * FederationAdmin shape ("operates the link, does not edit the estate") could re-version estate
- * rows through the inverse of a verb it was never allowed to perform. A new caller that reaches
- * this function without both bars re-opens that.
- *
- * ## One-way, permanently
- *
- * There is no inverse and there will not be one. Federation has no un-send: once an object's
- * existence has reached a peer, a later claim that it is domain-local asserts a confidentiality
- * property the system cannot deliver, so an API that accepted "un-publish" would be lying. The
- * asymmetry is the design, not an unfinished half of it.
- *
- * ## Why re-journaling is enough
- *
- * Journal payloads are **full-state upserts, not deltas** — the importer applies them through
- * `upsertObjectByUrn`. So a single fresh `object_upsert` carrying the object's *current* state lands
- * it correctly on a peer that has never seen it, with no need to replay the history it missed. The
- * observable consequence, and it is a real one: the commander's first knowledge of a published object
- * is its state **at publication**, not its origin. A reader must not mistake that absence of earlier
- * revisions for a creation date. (Imported audit segments are discarded on the import path anyway, so
- * nothing else was going to reconstruct that history either.)
- *
- * ## The edge sweep, and why it is `OR` not `AND`
- *
- * Publishing the object alone would leave it on the peer with none of its relationships — an orphan
- * in the receiving graph. So every live edge touching it is reconsidered under ADR-0031 §4's
- * either-endpoint rule, which now yields a different answer for exactly those edges whose *other*
- * endpoint was already shared. Edges to a still-domain-local neighbour stay unjournaled and are
- * reported as `withheldRelationshipIds` — a partial sweep is the correct outcome, but a silent one
- * would be indistinguishable from a bug.
- */
-/**
- * M20.6 (ADR-0031 §6b) — the containment parents of `objectId` that are THEMSELVES still
- * domain-local, along both routes `graph/containment.ts` walks.
- *
- * ONE HOP, deliberately, and for the same reason §6a inherits one hop: by induction an object cannot
- * be under a domain-local ancestor without its immediate parent being domain-local too, because
- * locality is inherited at create all the way down. Walking the full chain would answer the same
- * question at the cost of a recursive CTE in a write path.
- *
- * Returns the offending parents DESCRIBED, not merely counted — the operator's next action is
- * "publish that container first", and a refusal that does not name it makes them go looking.
- */
+/** M20.4 (ADR-0031 §6) — publish a domain-local object. See docs/federation.md §454. */
+/** The containment parents that are themselves still local. See docs/federation.md §455. */
 async function domainLocalContainersOf(
   tx: TenantTx,
   orgId: string,
@@ -182,23 +118,7 @@ export async function publishDomainLocalObject(
     );
   }
 
-  // M20.6 (ADR-0031 §6b) — REFUSE PUBLISHING OUT OF A STILL-DOMAIN-LOCAL CONTAINER, before any write.
-  //
-  // Publishing a child whose container stays local lands it at the commander with NO containment edge
-  // at all: the child's `object_upsert` crosses, the container's does not, and §4 withholds the edge
-  // between them. Every consumer that derives authority from containment — policy resolution, RBAC
-  // scope expansion, freeze scoping, approval scope, all walking `graph/containment.ts` — then reads
-  // it as attached to nothing.
-  //
-  // That is not a hypothetical shape. ADR-0026 MEASURED it, reached by a different route: a placement
-  // whose chain was `[org root, placement]` silently stopped ELEVEN `required` component-scoped
-  // prod-gate policies on the live estate and made every service-scoped freeze FAIL OPEN. It was
-  // called a defect there and fixed without asking; a supported API deliberately producing it would
-  // be worse than the accident was.
-  //
-  // The required order is publish-the-container-then-the-child, and it stays one explicit decision at
-  // a time because publishing a container does NOT publish its children — the edge sweep below
-  // re-journals only edges whose other endpoint is already shared.
+  // Refuse publishing out of a still-domain-local container. See docs/federation.md §456.
   const blockingContainers = await domainLocalContainersOf(
     tx,
     input.orgId,

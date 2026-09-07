@@ -2,27 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BoundarySegment } from "@scp/sdk";
 
-/**
- * The RENDERING half of the M16.1 boundary segment's honesty rule, pinned by a check that runs on
- * EVERY PR.
- *
- * Same reasoning — and same mechanism — as `service-board-honesty.test.tsx`: written when the
- * Playwright specs were `main`-only and SKIPPED on pull requests, so a browser-only guard would let
- * the UI regress into `main` with both required checks green. E2E now runs on PRs and 5z requires it;
- * this file stays because it is milliseconds and browser-free, not because nothing else covers it.
- * The server half of this rule is pinned by
- * `apps/server/src/coordination/boundary-segment.integration.test.ts` (two federated domains, real
- * Postgres); this file owns the presentational half — given a segment response, does the UI keep
- * "cannot see" and "observed" visually distinct, and does it refuse to dress either as a pass?
- * It runs in the existing unit-test job (plain `vitest run` + `react-dom/server`), needs no browser
- * and no DOM library, and takes milliseconds.
- *
- * VOCABULARY (ADR-0021 D6): a boundary SEGMENT of two boundary PHASES. Never a "stage" (a
- * deployment place) and never a "wave" (the set of stages advanced at once).
- *
- * `Link` is stubbed because `@tanstack/react-router`'s `useRouter` throws outside a
- * `RouterProvider`; routing is not what is under test here.
- */
+/** The rendering half of the boundary segment's honesty rule. See docs/web.md §196. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -49,11 +29,7 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-/**
- * THE COMMANDER SIDE. It exported the promotion bundle; its own ledger row is (and by construction
- * stays) `created`; and it has no data path to the receiving outpost's verification outcome. Both
- * facts are declared by the server in `unknownFields`.
- */
+/** THE COMMANDER SIDE. See docs/web.md §197. */
 const commanderSegment: BoundarySegment = {
   transfer: {
     state: "exported",
@@ -114,13 +90,7 @@ const outpostPendingSegment: BoundarySegment = {
   }
 };
 
-/** THE RECEIVING OUTPOST, verification refused (fail-closed block Decision).
- *
- *  `authorizedArtifactCount` is `null` here because that is what the SERVER emits on a refusal —
- *  the count is read off the Decision's authorized set, i.e. the set the gate was ASKED to check,
- *  which on a block still contains the artifacts that FAILED. `boundary-segment.ts` suppresses it
- *  rather than let a number sit beside a refusal reading as "n verified anyway". Pinned server-side
- *  in `boundary-segment.integration.test.ts` scenario (3). */
+/** THE RECEIVING OUTPOST, verification refused. See docs/web.md §198. */
 const outpostRefusedSegment: BoundarySegment = {
   ...outpostVerifiedSegment,
   validate: {
@@ -227,14 +197,7 @@ describe("boundary segment: the absent case is stated, not silently green", () =
   });
 });
 
-/**
- * drizzle/0087 — THE HOP-COUNT SPLIT. `transfer.hops[].channel` distinguishes a retrans byte-relay
- * leg from an ordinary metadata `.scpbundle` hop (`BoundaryTransferHopSchema`'s doc). This strip
- * only ever COUNTS hops (it does not list them), so the honest rendering is a split count — "N
- * bundle hop(s) observed here, of which M byte relay" — and ONLY when at least one hop actually
- * carries `channel: 'bytes'`. A hop whose channel is null/absent must fold back into the plain
- * count rather than read as "confirmed not a byte relay", which is a claim nobody made.
- */
+/** drizzle/0087 — THE HOP-COUNT SPLIT. See docs/web.md §199. */
 describe("boundary segment: the transfer hop count splits out byte-relay hops, honestly", () => {
   function segmentWithHops(hops: BoundarySegment["transfer"]["hops"]): BoundarySegment {
     return {
@@ -376,31 +339,8 @@ describe("boundary segment: the wiring, by exact field name", () => {
   });
 });
 
-/**
- * Y3(a) — THE PIN THE `isAbsent` FIX NEVER GOT.
- *
- * Round 3 changed `authorizedArtifactCount === null` to `isAbsent(...)` at
- * `BoundarySegmentStrip.tsx:166` and reported it as mutation-proven. It was not: reverting it left
- * the whole `apps/web` suite GREEN, because every fixture above sets the key to `null` — the case
- * that already worked. The case that did not is the key being ABSENT, which is what a server
- * predating the field actually sends. (Since ADR-0023 the SDK rejects that body before a component
- * ever sees it — `authorizedArtifactCount` is required-nullable, so an omission is a contract
- * violation — but these tests drive the component DIRECTLY, which is the only level at which the
- * guard itself, rather than the boundary in front of it, can be pinned.)
- *
- * MEASURED mutant output, inside the `signatures verified` phase card:
- *   <p … title="undefined authorized artifacts">undefined authorized artifacts</p>
- * — the literal word `undefined`, twice, once visible and once as a tooltip, beside a success badge.
- */
-/**
- * Y4 — THE X7 CLASS, CLOSED FOR `unknownFields` ITSELF. `isBoundaryUnknown` dereferenced
- * `segment.unknownFields` bare; the field is required-not-optional and BEFORE ADR-0023 the SDK
- * validated nothing, so a server that omitted the honesty list threw inside the strip and took the
- * change page with it. (Since ADR-0023 such a body rejects at the SDK boundary; the guard remains
- * the component's own contract, which is what this file drives.)
- * `declaredUnknowns` reads it as "nothing declared unobservable" — additive honesty on top of a
- * working page, rather than no page.
- */
+/** Y3(a) — THE PIN THE `isAbsent` FIX NEVER GOT. See docs/web.md §200. */
+/** Y4 — THE X7 CLASS, CLOSED FOR `unknownFields` ITSELF. See docs/web.md §201. */
 describe("Y4: a segment with NO unknownFields key renders instead of throwing", () => {
   function withoutUnknownFields(segment: BoundarySegment): BoundarySegment {
     const copy: Partial<BoundarySegment> = { ...segment };

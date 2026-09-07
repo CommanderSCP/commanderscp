@@ -11,26 +11,7 @@ import {
 } from "@nats-io/jetstream";
 import type { RelayedEvent } from "./sse-hub.js";
 
-/**
- * NATS JetStream fan-out for the outbox relay (DESIGN.md §8 "Scaling insurance" — NATS JetStream
- * `EventBus` implementation built early in MVP, M3). Design decision (see events/event-bus.ts's
- * doc comment for the full rationale): `EventBus.publish()` is UNCHANGED and identical for both
- * backends — it always writes the transactional outbox row, because write-then-publish atomicity
- * is a Postgres-transaction property no broker can join. What "NATS backend" actually means is
- * that `outbox-relay.ts`'s relay loop, after claiming an outbox row, ALSO republishes it to a
- * JetStream stream (in addition to its existing pg-boss + SSE fan-out) — this module is that
- * additional sink.
- *
- * Subject convention: `scp.events.<orgId>.<type>` on stream `SCP_EVENTS` (subjects `scp.events.>`).
- * Consumers can bind to `scp.events.>` for everything, `scp.events.<orgId>.>` for one org, or a
- * literal type suffix to filter further.
- *
- * Idempotency: the outbox row's `id` (a uuidv7, globally unique and monotonic) is passed as
- * `JetStreamPublishOptions.msgID`, which JetStream uses for its own broker-side de-duplication
- * within the stream's `duplicate_window` — belt-and-braces with the same id also traveling in the
- * message body and an `Scp-Event-Id` header, so subscribers can dedupe themselves even outside
- * that window (DESIGN.md §8: "at-least-once delivery; handlers are idempotent, keyed by event id").
- */
+/** NATS JetStream fan-out for the outbox relay. See docs/events.md §28. */
 
 /** Exported for events/event-bus.integration.test.ts, which binds a real JetStream consumer to
  *  this stream to observe delivery/de-dup end to end rather than re-deriving the name. */
@@ -71,13 +52,7 @@ export interface NatsFanoutHandle {
   close(): Promise<void>;
 }
 
-/**
- * Connects to NATS and ensures the JetStream stream exists. Called once at boot (main.ts) when
- * `config.eventBus.backend === "nats"`, or per-test in the NATS-backend integration suite.
- * Deliberately fails loudly (throws) on an unreachable/misconfigured server rather than swallowing
- * the error — NATS is fully optional (unset backend never calls this), but once opted into, a
- * broken connection must not silently degrade to "events go nowhere" (task brief / DESIGN §8).
- */
+/** Connects to NATS and ensures the JetStream stream exists. See docs/events.md §29. */
 export async function connectNatsFanout(url: string): Promise<NatsFanoutHandle> {
   const nc: NatsConnection = await connect({
     servers: url,

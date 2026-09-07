@@ -241,11 +241,7 @@ describe("scan-result-control plugin", () => {
     expect(outcome.status).toBe("fail");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M17.5 (ADR-0016) — the gate-resolved, most-restrictive-wins scoped threshold on the request
-  // context, preferred over the flat per-binding `config.threshold` exactly as `artifactDigest`
-  // is preferred over `config.expectedDigest`.
-  // -----------------------------------------------------------------------------------------
+  // The gate-resolved, most-restrictive-wins scoped threshold. See docs/plugins.md §521.
 
   const scopedContext = (threshold: Record<string, number>) => ({
     scanThreshold: {
@@ -341,26 +337,7 @@ describe("scan-result-control plugin", () => {
     expect(outcome.detail).toMatch(/malformed/);
   });
 
-  // =========================================================================================
-  // M22.2 (ADR-0033 §2) — EXCLUSION BEFORE COUNTING, applied HERE because this is the process
-  // that holds the findings. The gate resolves WHICH clauses are in force (a plugin has no
-  // database and no lookup ability) and threads them on `context.scanExclusions`; this control
-  // applies them to its own parse, before the threshold comparison.
-  //
-  // MUTATIONS RUN (2026-08-17), each reverted by an exact inverse edit. MEASURED results; baseline
-  // 22 passed.
-  //   P-1  compare the threshold against `counts` instead of `effectiveCounts`
-  //          -> 1 failed ("a HIGH with no fix is EXCLUDED before counting").
-  //   P-2  write `severityCounts: effectiveCounts` — i.e. REDEFINE the field operators author their
-  //        CEL conditions against
-  //          -> 1 failed (same test, on its `severityCounts.high === 1` arm). That arm exists for
-  //             exactly this mutation: without it the redefinition is invisible, because every
-  //             OTHER assertion in the suite is happy with the post-exclusion number.
-  //   P-3  emit `effectiveSeverityCounts`/`exclusions` unconditionally
-  //          -> 3 failed, including "WITH NOTHING THREADED the evidence document gains no new keys".
-  //   P-4  attach findings without the excluded ordinals
-  //          -> 1 failed ("the EXCLUDED ordinals ride the transport").
-  // =========================================================================================
+  // Exclusion before counting, applied at this process. See docs/plugins.md §522.
 
   /** A Trivy result whose entries carry an explicit `FixedVersion` or deliberately none — the field
    *  the `no_fix_available` class reads. `trivyResult` above emits none at all, so this exists to

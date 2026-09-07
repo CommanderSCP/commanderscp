@@ -16,28 +16,7 @@ import { reconcileOrgTick } from "./reconcile.js";
 import { compileAndPersistCampaignPlan } from "./campaign-plan-service.js";
 import { WAVE_TARGET_TOMBSTONED_AUDIT_ACTION } from "./target-liveness.js";
 
-/**
- * THE CAMPAIGN TWIN — the same property, a different symptom.
- *
- * On the change side a tombstoned wave target got DEPLOYED. On the campaign side it did not: a
- * campaign wave target's "drive" is `proposeChange`, and `proposeChange` resolves its targets through
- * `getObjectByIdOrUrnAnyType`, which IS live-filtered and throws `notFound`. So the engine already
- * had the right answer — and threw it away.
- *
- * A campaign plan is compiled ONCE. Delete one of its targets afterwards and the throw landed in
- * `logCampaignError`, which prints "will retry next tick" and does exactly that, once a second,
- * forever. `allTerminal` stayed false, so the wave never terminalized;
- * `markCampaignWaveTargetProposed` was never reached, so the target stayed `pending`; and no
- * Decision, no `decision_id`, no audit event and no terminal status were ever written. An operator
- * asking "why has this campaign stopped" got a log line and nothing queryable — which is precisely
- * the silence charter principle 6 forbids, and the reason this fix is about EXPLAINABILITY here
- * rather than about preventing a deploy.
- *
- * `compileAndPersistCampaignPlan` is called directly so the tombstone can land in the window the fix
- * is about: BETWEEN compilation and fan-out. Driving it through the loop instead would delete the
- * target before the plan existed, which exercises the compile-time refusal (a `plan_diff` Decision
- * that already worked) rather than this one.
- */
+/** THE CAMPAIGN TWIN. See docs/coordination.md §226. */
 describe("a tombstoned campaign target is refused with a record, not an infinite retry", () => {
   let server: TestServer;
   let org: TestOrg;

@@ -5,21 +5,7 @@ import {
   type DependencySubscriptionCandidate
 } from "./subscription-resolution.js";
 
-/**
- * M21.2 — THE GATE THAT DECIDES WHETHER A COMPONENT'S MANIFESTS ARE FETCHED AT ALL (ADR-0032 §6).
- *
- * ADR-0032 §6 states the consequence in two deliberately different verbs: "a disabled component is
- * never FETCHED and an opted-out dependency is never POLLED". Ingestion is a fetch, so it is gated
- * by the chain's first two conjuncts — and the whole point of `mergeComponentIngestionGate` is that
- * it decides that by running the REAL merge over witness lines rather than by writing
- * `instanceUnlocked && candidates.some(...)` a second time.
- *
- * These tests are therefore about EXACTNESS, not about the boolean. An approximate gate is
- * defensible in the safe direction and would still be wrong: a component whose org-wide enable
- * survives one narrow opt-out must still be fetched, or its inventory freezes for a reason nobody
- * can see. Each case below is paired with what `mergeDependencySubscription` itself says about a
- * concrete line, so a drift between the two is a failure rather than a matter of opinion.
- */
+/** The gate that decides whether manifests are fetched. See docs/dependencies.md §147. */
 describe("M21.2 component ingestion gate (ADR-0032 §6)", () => {
   const unlocked = { unlocked: true, source: "instance:test" };
   const locked = { unlocked: false, source: "instance:test" };
@@ -183,21 +169,12 @@ describe("M21.2 component ingestion gate (ADR-0032 §6)", () => {
     const backward = mergeComponentIngestionGate({ instance: unlocked, candidates: [c, b, a] });
     expect(forward.enabled).toBe(backward.enabled);
     expect(forward.reason).toBe(backward.reason);
-    // AND THE WITNESS ITSELF, which the verdict above does not cover. It used to be "the first
-    // selector that opened the gate", taken from a candidate list that arrives in the order an
-    // UNORDERED SELECT returned — so two identical runs could disagree. Any consumer that records
-    // it (the ingestion Decision did) then re-opens the persist-on-change guard, which exists
-    // because a churning Decision measured 1.44 GB/day (ADR-0024).
+    // And the witness itself, which the verdict does not cover. See docs/dependencies.md §148.
     expect(forward.witness).toEqual(backward.witness);
   });
 
   describe("`ecosystem` is a CLOSED ENUM, so a witness outside it is not a line that can exist", () => {
-    /**
-     * The fresh-value trick is right for `coordinate` and `major` — open strings, where a value no
-     * selector names is a value some real line could have. It is WRONG for `ecosystem`, whose whole
-     * domain is the five members of the enum. A witness carrying an invented sixth is matched by no
-     * ecosystem-scoped opt-out at all.
-     */
+    /** The fresh-value trick is right for open strings only. See docs/dependencies.md §149. */
     const allEcosystems = ["npm", "go", "maven", "python", "oci"] as const;
 
     it("CLOSES when per-ecosystem opt-outs between them cover every line that could exist", () => {

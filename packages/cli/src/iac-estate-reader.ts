@@ -16,14 +16,7 @@ import {
   type ServiceSpec
 } from "@scp/iac";
 
-/**
- * Turns LIVE SDK reads into the `ServiceSpec` shape `@scp/iac`'s shared emitter
- * (`estate-program.ts`) consumes — the CLI-side half of `scp iac export` (team-pipeline-iac.md
- * §9/D5). `scp iac scaffold`'s own reading logic (a `discovery run` proposal, not a live graph walk)
- * lives beside it in `iac-scaffold-reader.ts`; both hand their output to the SAME shared emitter.
- * Everything here talks to `@scp/sdk`; `@scp/iac` stays free of that dependency (its own module doc
- * explains why), so the SDK-shaped reading logic belongs on this side of the boundary.
- */
+/** Turns live SDK reads into the shape the emitter consumes. See docs/cli.md §117. */
 
 async function collectAll<T>(
   fetchPage: (cursor?: string) => Promise<{ items: T[]; nextCursor?: string | null }>
@@ -54,22 +47,14 @@ function deploymentTargetId(placement: GraphObject): string {
 
 // `scp iac export --scope <service-urn>` (§9/D5)
 
-/** Mirrors `apps/server/src/dependencies/manifest-reader.ts`'s `GIT_PROVIDER_MODULES` — the three
- *  git-hosting `source_mappings.sourceKind` values this platform's own adapters carry. Duplicated
- *  as a literal, not imported: `@scp/cli` must not depend on `apps/server` (a CLI package pulling in
- *  the server would be a layering violation, and there is no shared package this vocabulary lives in
- *  today). Keep in sync with that file if the provider set ever grows. */
+/** Mirrors the server's list of git-hosting source kinds. See docs/cli.md §118. */
 const DEFAULT_SOURCE_KINDS = ["github", "gitea", "gitlab"];
 
 export interface ExportEstateOptions {
-  /** `source_mappings` are listed per source kind (`GET /change-sources/{sourceKind}/mappings`,
-   *  D9's registration-by-pattern only narrows how a config source APPLIES, not how this read
-   *  works) — export has no way to know which kinds an org uses, so it probes each of these and
-   *  keeps whatever matches one of the scope's components. Defaulting to only ONE kind would make a
-   *  GitHub- or GitLab-backed component silently read as "no source mapping" (a loud placeholder per
-   *  pipeline, but with an invisible CAUSE) — so every known git provider is probed by default, and
-   *  `--source-kind` only narrows it.
-   *  @default DEFAULT_SOURCE_KINDS — every git-hosting kind this platform's own adapters carry. */
+  /**
+   * `source_mappings` are listed per source kind. See docs/cli.md §119.
+   * @default DEFAULT_SOURCE_KINDS — every git-hosting kind this platform's own adapters carry.
+   */
   readonly sourceKinds?: string[];
 }
 

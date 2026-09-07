@@ -1,16 +1,6 @@
 import net from "node:net";
 
-/**
- * A minimal, plaintext (non-TLS) fake SMTP server for `@scp/plugin-smtp-notify`'s test suite —
- * just enough of RFC 5321/4954's command/response shape to exercise this package's real
- * `send()` implementation end to end over a real `node:net` socket (not a mock of `send()`
- * itself). HONEST GAP: this fixture does NOT implement STARTTLS's actual TLS handshake (would
- * need a self-signed cert generated at test time — no such helper exists in this repo, and
- * pulling one in for a single test fixture wasn't judged worth a new dependency this milestone) —
- * `index.ts`'s STARTTLS branch is therefore exercised only up to "the server didn't advertise
- * STARTTLS, so the plaintext path continues" and "the server advertised it and STARTTLS was
- * issued", not the TLS upgrade itself. Flagged here, not silently skipped.
- */
+/** A minimal, plaintext. See docs/plugins.md §540. */
 export interface FakeSmtpServerOptions {
   /** Extra EHLO capability lines (e.g. ["STARTTLS", "AUTH LOGIN"]) besides the final "250 ok". */
   capabilities?: string[];

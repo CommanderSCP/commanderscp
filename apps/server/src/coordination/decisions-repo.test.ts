@@ -2,20 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Decision } from "@scp/schemas";
 import { restatesDecision, type InsertDecisionInput } from "./decisions-repo.js";
 
-/**
- * `restatesDecision` is the entire safety property of `insertDecisionIfChanged` — the persist-on-
- * change guard that stopped `decisions` growing 1.44 GB/day (see that function's doc comment for
- * the production measurement). Both of its failure directions are silent, which is why they are
- * unit-tested directly rather than only through the reconcile loop:
- *
- *  - TOO EAGER (says "restates" when content differs) loses a real verdict change — a gate that
- *    newly passes, a different policy firing — and that is an EXPLAINABILITY bug (charter
- *    principle 6), the worse of the two.
- *  - NEVER EQUAL (a normalization slip — most plausibly key ORDER, since the stored side comes back
- *    out of `jsonb` in Postgres's own key order while the candidate side is a source-ordered object
- *    literal) silently restores the unbounded write with no visible symptom at all: the fix would
- *    look applied, `pnpm test` would stay green, and the table would keep growing.
- */
+/** `restatesDecision` is the whole safety property. See docs/coordination.md §415. */
 
 function storedDecision(over: Partial<Decision> = {}): Decision {
   return {

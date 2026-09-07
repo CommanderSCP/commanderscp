@@ -11,20 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Object health push + read (observe-enrichment signal 4; ADR-0008 decision 4).
- *
- * Proves the WHOLE round-trip against REAL Postgres:
- *  - an owner PUSH stores health GRAPH-NATIVELY — an object-referencing projection row keyed by
- *    objects(id) (DESIGN §4.1), NOT a bespoke top-level concept table (charter principle 2);
- *  - the store is UPSERT-IN-PLACE — a second push updates the SAME single row, no history table;
- *  - the pushed value is surfaced on the object read AND on the graph node-payload join (the exact
- *    node set the two-layer graph UI assembles: services.list + subgraph edges + the health batch);
- *  - the REAL pushed value round-trips (degraded → down), never a hardcoded/fabricated one;
- *  - RLS isolates health per org.
- *
- * SCP never probes/polls/computes health — the only write path exercised here is the owner PUSH.
- */
+/** Object health push + read. See docs/routes.md §249. */
 describe("object health: PUT/GET /objects/:type/:idOrUrn/health + POST /graph/health", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

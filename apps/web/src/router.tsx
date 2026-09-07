@@ -37,17 +37,7 @@ import { AdminAccessPage } from "./routes/admin-access";
 import { AdminDecisionsPage } from "./routes/admin-decisions";
 import { AdminAuditPage } from "./routes/admin-audit";
 
-/**
- * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
- * file-based or code-based, your call"). Code-based avoids depending on the `@tanstack/router-
- * plugin` Vite plugin's generated `routeTree.gen.ts` — one fewer moving part for an air-gapped
- * build (CLAUDE.md), at the cost of hand-listing routes here instead of inferring them from
- * `src/routes/*`.
- *
- * `authenticatedLayoutRoute` is a PATHLESS layout route (no `path`, just an `id`) wrapping every
- * page except `/login` in `<RequireAuth>` + `<AppShell>` — the standard TanStack Router pattern
- * for "all these routes share a guard/chrome" without repeating it per page.
- */
+/** Code-based TanStack Router route tree. See docs/web.md §148. */
 const rootRoute = createRootRoute({ component: RootLayout });
 
 const loginRoute = createRoute({
@@ -62,11 +52,7 @@ const authenticatedLayoutRoute = createRoute({
   component: AuthenticatedLayout
 });
 
-/**
- * HOME is site-shaped (outpost-ui.md §9.3): the commander gets the org-wide dashboard, the outpost
- * a small component-level one. Selected by `/auth/me`'s install-time `instanceRole` — the ONE
- * place role picks a page — and only here: inside either page every row keys on data.
- */
+/** HOME is site-shaped (outpost-ui.md §9.3). See docs/web.md §149. */
 function HomePage(): React.JSX.Element {
   const { user } = useAuth();
   return user?.instanceRole === "outpost" ? <OutpostDashboardPage /> : <DashboardPage />;
@@ -128,16 +114,7 @@ const changePipelineRoute = createRoute({
   component: ChangePipelinePage
 });
 
-// ONE COMPONENT — a LAYOUT route carrying the Pipeline/Settings tabs, with the pipeline as its index
-// child (coordination-ui-views.md §2, corrected 2026-08-03). The static `/components/$idOrUrn`
-// segment out-ranks the dynamic `/$basePath/$idOrUrn` registry-detail route below — the same
-// precedence trick `/services/$idOrUrn` uses — so going to a component lands on its pipeline rather
-// than a properties table, because the pipeline IS what a component is operationally.
-//
-// That precedence had a cost this layout repays: it made the generic registry detail UNREACHABLE for
-// components, orphaning its labels/owners/move/merge cards. `settings` mounts that same page (not a
-// copy) at `/components/$idOrUrn/settings`; `useBasePathParam` resolves `components` from the
-// pathname there, since this route has no `$basePath` param. See `routes/component-detail.tsx`.
+// One component: a layout route carrying its tabs. See docs/web.md §150.
 const componentDetailRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/components/$idOrUrn",
@@ -162,27 +139,14 @@ const componentSettingsRoute = createRoute({
   component: RegistryDetailPage
 });
 
-// The DEPENDENCIES tab (docs/proposals/dependency-subscription-ui.md §4.1): what this component
-// declares, the head of each major line, whether it is subscribed and why, what has been bumped,
-// and the offered enable / opt-out writes. A fourth child of the same layout so it is a real,
-// deep-linkable URL like the other three. Registered on BOTH sites — the outpost renders the bumps
-// section as a sentence, never an empty table that looks up to date.
+// The DEPENDENCIES tab (docs/proposals/dependency-subscription-ui.md §4.1). See docs/web.md §151.
 const componentDependenciesRoute = createRoute({
   getParentRoute: () => componentDetailRoute,
   path: "/dependencies",
   component: ComponentDependenciesPage
 });
 
-// ONE SERVICE — a LAYOUT route carrying the Board/Settings tabs, with the release board as its INDEX
-// child (coordination-ui-views.md Phase 2, corrected 2026-08-04). `/services/{id}` used to fall
-// through to the generic registry detail, so the board — what is releasing, what is blocked, which
-// pipelines are bound — sat at a URL only one button linked to. The board is what a service IS
-// operationally, so it is the default; the properties table becomes the Settings tab, mounting the
-// same `RegistryDetailPage` (not a copy), exactly as `/components/$idOrUrn` does.
-// ONE ASSEMBLY — the same layout/index-child shape as a service, two tabs instead of three (see
-// routes/assembly-detail.tsx). The static `/assemblies/$idOrUrn` segment out-ranks the dynamic
-// `/$basePath/$idOrUrn` registry route, so an assembly lands on its board; `settings` mounts the
-// generic RegistryDetailPage, which resolves `assemblies` from the pathname.
+// One service: a layout route carrying its tabs. See docs/web.md §152.
 const assemblyDetailRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/assemblies/$idOrUrn",
@@ -219,14 +183,7 @@ const serviceBoardRoute = createRoute({
   component: ServiceBoardPage
 });
 
-// `/services/{id}/board` — the URL the board lived at BEFORE it became the index child, kept
-// working rather than removed. Two reasons, and the second is why this is a bug fix and not
-// politeness: it may be bookmarked or linked from outside the app, and
-// `apps/web/e2e/service-board-honesty.spec.ts` navigates to it. That spec is Playwright, every E2E
-// job is `main`-only, so removing this path passed EVERY required PR check and would have broken
-// only after merge — the exact hole `.github/workflows/ci.yml`'s own §6 comment warns about.
-// Renders the same component as the index; a redirect would work too, but two paths onto one view
-// is fewer moving parts than a redirect that has to reconstruct params.
+// The URL the board lived at before it became the index. See docs/web.md §153.
 const serviceBoardLegacyRoute = createRoute({
   getParentRoute: () => serviceDetailRoute,
   path: "/board",
@@ -263,11 +220,7 @@ const federationStatusRoute = createRoute({
   component: FederationStatusPage
 });
 
-// M16.2 phase B — the Outposts UI, deliberately UNDER the existing `/federation` prefix rather than
-// beside it: `/federation` and its "Federation" heading already ship and may be bookmarked, so this
-// adds to that section instead of renaming it out from under anyone. Static segments out-rank the
-// dynamic `$basePath` route below at the same depth, and `outposts` out-ranks nothing ambiguous
-// under `/federation`, which has no dynamic child.
+// The outposts UI, deliberately under the federation path. See docs/web.md §154.
 const outpostsRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/federation/outposts",
@@ -286,26 +239,14 @@ const pluginsRoute = createRoute({
   component: PluginsPage
 });
 
-// M19.1 — the "Connect Argo CD" wizard. A static 2-segment path, so it out-ranks the dynamic
-// `/$basePath/$idOrUrn` registry-detail route below exactly as `/graph/service/...` and
-// `/federation/outposts` already do. `/connect/<kind>` rather than `/plugins/connect-argocd`
-// because the thing being connected is an execution SYSTEM, not a plugin instance — the `/plugins`
-// page configures bindings from manifests, which is a different act — and because the next kinds
-// (gitea, gitlab, harbor) already have server-side discovery modules and belong beside this one.
+// M19.1 — the "Connect Argo CD" wizard. See docs/web.md §155.
 const connectArgoCdRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/connect/argocd",
   component: ConnectArgoCdPage
 });
 
-// B1 (docs/proposals/outpost-ui.md §4 Lane B) — generalizes the wizard above over the server's own
-// discovery-module catalog instead of one Argo-CD-shaped page (routes/connect.tsx). Registered
-// BESIDE `connectArgoCdRoute` rather than replacing it: this router's own static-outranks-dynamic
-// precedence (the same rule `serviceBoardLegacyRoute` above relies on) means `/connect/argocd`
-// always resolves to THAT route first, so its pinned testids are never at risk from this one —
-// `/connect/$kind` only ever serves a kind other than "argocd" in normal navigation (gitea, gitlab
-// today). See routes/connect.tsx's file-level comment for why "argocd" is still handled
-// defensively inside it.
+// B1 (docs/proposals/outpost-ui.md §4 Lane B). See docs/web.md §156.
 const connectKindRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/connect/$kind",
@@ -321,29 +262,14 @@ const setupRoute = createRoute({
   component: SetupPage
 });
 
-// Admin › Dependencies (dependency-subscription-ui.md §12, ADR-0032 §7e) — the org's dependency
-// PRODUCER declarations: declare / retract with a dry-run blast radius first. A static 2-segment
-// path, so it out-ranks the dynamic `/$basePath/$idOrUrn` registry-detail route below exactly as
-// `/connect/argocd` and `/federation/outposts` do. Linked from the COMMANDER nav only (owner rule
-// 2026-08-17: dependency automation is commander-only); the page itself renders the
-// "managed at the commander" pointer and issues no reads on any other install-time role.
+// Admin › Dependencies (dependency-subscription-ui.md §12, ADR-0032 §7e). See docs/web.md §157.
 const adminDependenciesRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/admin/dependencies",
   component: AdminDependenciesPage
 });
 
-// Admin › Governance (governance-reach-on-containment-move.md §9.4) — the governance:move
-// enforcement lattice: instance rung (read-only), the org rung switch, and the enabled-rungs
-// table with Enable at… / Disable. A static 2-segment path, out-ranking the dynamic
-// `/$basePath/$idOrUrn` registry-detail route below exactly as `/admin/dependencies` does.
-// Linked from BOTH the commander and outpost nav tables (enforcement is per-instance).
-// Admin › Access (role-model.md §5 steps 5/6/10) — the role catalogue, who holds what, and the
-// caller's own effective permissions at one object. A static 2-segment path, out-ranking the
-// dynamic `/$basePath/$idOrUrn` registry-detail route exactly as its siblings do.
-//
-// BOTH SITES: an outpost's own principals hold roles in its own domain, and step 6's "what may I
-// do here" is if anything MORE useful there — a field operator with no commander to ask.
+// Admin › Governance (governance-reach-on-containment-move.md §9.4). See docs/web.md §158.
 const adminAccessRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/admin/access",
@@ -356,13 +282,7 @@ const adminGovernanceRoute = createRoute({
   component: AdminGovernancePage
 });
 
-// Admin › Decisions (owner-approved 2026-08-23, "Decisions & Audit explorer") — every Decision
-// record browsable, filterable by `subjectId`/`kind` exactly as `GET /decisions` allows (charter
-// principle 6). `subjectId` search param is what `registry-detail.tsx`'s "Decisions about this
-// object" link carries — `useSubjectIdSearchForDecisions` (lib/use-route-params.ts). A static
-// 2-segment path, out-ranking the dynamic `/$basePath/$idOrUrn` registry-detail route exactly as
-// `/admin/dependencies` and `/admin/governance` do. Linked from BOTH nav tables (decisions and
-// audit exist on every deployment).
+// Admin › Decisions. See docs/web.md §159.
 const adminDecisionsRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/admin/decisions",

@@ -12,55 +12,7 @@ import {
   type ContinuousHoldVerdict
 } from "./pipeline-hook-verdicts.js";
 
-/**
- * THE CONTINUOUS-TEST HOLD, PREDICATE HALF (team-pipeline-iac increment 8, D21).
- *
- * The guarantee, stated so it can be kept: *a wave target whose declared `continuous` probe has not
- * reported a fresh pass is not TRIGGERED, and its siblings are.*
- *
- * ============================================================================================
- * WHY THIS IS A PER-TARGET HOLD AND NOT A WAVE GATE
- * ============================================================================================
- * `packages/schemas/src/pipeline-behaviors.ts`'s mechanism table settles it, and the reason is not
- * an analogy to the freeze hold beside it: "a stale canary probe on target A says nothing about
- * target B, so blocking B would be a lie about what is known". The other three hooks are wave
- * gates precisely because a failing integration suite or a firing alarm IS a statement about the
- * whole widening; probe freshness is not. `WaveGateKindSchema` refuses to let a wave document ask
- * for `continuous` at a boundary, and `pipeline-hook-gate.ts` asserts the same thing in code.
- *
- * SIBLINGS MUST PROCEED. That is the entire reason this is a hold, and it has its own integration
- * test rather than being left as a property of the seam's placement.
- *
- * ============================================================================================
- * PREDICATE ONLY — the same split `freeze-hold.ts` and `stage-dependency-hold.ts` state
- * ============================================================================================
- * This module READS. `coordination/reconcile.ts`'s per-target loop is the seam that REFUSES. The
- * split is deliberate: the predicate is a pure-ish read a test can drive directly, and the seam is
- * three lines whose invariants are copied verbatim from the two holds already beside it.
- *
- * It reimplements NONE of `./pipeline-hook-verdicts.ts`'s rules. `evaluateContinuousHold` decides
- * what evidence means and `buildHookFreshnessContext` shapes the record; both were mutation-proven,
- * and a second copy of "stale-green is ABSENT, not pass and not fail" is a second place to regress
- * the one distinction the hook exists for.
- *
- * ============================================================================================
- * INERT WHEN NOTHING IS DECLARED
- * ============================================================================================
- * Structurally, not by convention: `orgDeclaresHookKind` is one indexed existence read, and this
- * function returns an empty map before resolving a single placement when it comes back false. An
- * org with no `continuous` hook — nearly every org, nearly all the time — pays one query per change
- * per tick, which is the same regime `freeze-hold.ts` keeps for freezes.
- *
- * ============================================================================================
- * NO CLOCK REACHES THE RECORD
- * ============================================================================================
- * `now` is INJECTED, passed to `evaluateContinuousHold`, and never returned. Every field below is
- * an id, a declared number, or an instant read off a stored evidence row; `staleAfter` is
- * `completedAt + maxAgeSeconds`, which is arithmetic on data. The COMPARISON against the clock is
- * redone every tick (ADR-0033); the RECORD stays byte-identical while the evidence is unchanged, so
- * `insertDecisionIfChanged` suppresses all but the first write. Recording `now` instead is what
- * produced the measured 1.44 GB/day incident (ADR-0024).
- */
+/** THE CONTINUOUS-TEST HOLD, PREDICATE HALF. See docs/coordination.md §328. */
 
 /** One holding `continuous` hook. Shaped to `ContinuousTestHoldSchema` plus the freshness context
  *  the Decision carries — see the note on the wire projection at the bottom of this file. */
@@ -94,21 +46,7 @@ export interface ContinuousHoldTargetVerdict {
   holds: ContinuousHookHold[];
 }
 
-/**
- * Every target of `targetObjectIds` that a declared `continuous` hook is holding, keyed by target
- * object id.
- *
- * A target with NO holding hook is ABSENT from the map rather than present with an empty list —
- * the caller's seam is `const held = holds.get(id); if (held) { ... continue; }`, and a
- * present-but-empty entry would make that `if` true for every target on the instance. Identical to
- * `evaluateFreezeHolds`, deliberately: the two seams sit three lines apart in `reconcile.ts` and a
- * reader must not have to check which convention each one uses.
- *
- * `now` IS INJECTED for the same reason `freeze-hold.ts` injects it: the freshness boundary is the
- * whole feature, and a test of it would otherwise need a real sleep. Production passes nothing.
- *
- * Reads only, on a `TenantTx` the caller owns, so a hold evaluation can never half-commit anything.
- */
+/** Every target a declared continuous hook is holding. See docs/coordination.md §329. */
 export async function evaluateContinuousHolds(
   tx: TenantTx,
   input: { orgId: string; targetObjectIds: string[]; now?: Date }
@@ -154,11 +92,7 @@ export async function evaluateContinuousHolds(
     const held: ContinuousHookHold[] = [];
     for (const hook of applicable) {
       const maxAgeSeconds = hook.maxAgeSeconds!;
-      // NO BINDING FILTER, and that is the contract rather than an omission:
-      // `latestTestRunEvidence`'s doc states the asymmetry — `evaluateContinuousHold` asks "what is
-      // the latest word on this target", while `evaluatePostDeployGate` asks about the digest a
-      // specific wave is promoting. A probe on a cron reports about the target as it stands, not
-      // about the bytes some change happens to be shipping.
+      // No binding filter: that is the contract, not an omission. See docs/coordination.md §330.
       const row = await latestTestRunEvidence(tx, orgId, {
         componentObjectId: subject.componentObjectId,
         targetObjectId: subject.targetObjectId,
@@ -213,12 +147,7 @@ export async function evaluateContinuousHolds(
   return holds;
 }
 
-/** The server-composed sentence. NAMES THE BOUNDARY, NEVER THE CLOCK: `staleAfter` is data the
- *  reader's own clock contextualizes, exactly as a freeze hold's `endsAt` is. A sentence containing
- *  "3 minutes ago" would be a new string every tick and a new Decision row with it.
- *
- *  EXPORTED so the three reasons' wording can be tested directly: `evaluateContinuousHolds`, the
- *  only production caller, needs a `TenantTx` to reach it. */
+/** The server-composed sentence. See docs/coordination.md §331. */
 export function summarize(hookId: string, verdict: ContinuousHoldVerdict): string {
   switch (verdict.reason) {
     case "failed":
@@ -237,20 +166,7 @@ export interface ContinuousHeldTargetRecord {
   holds: ContinuousHookHold[];
 }
 
-/**
- * THE `held` ARRAY OF THE `continuous_test` DECISION — one projection, so a second recorder cannot
- * write a differently-shaped version of the same fact.
- *
- * SORTED BY `targetObjectId`, AND THE SORT IS THE POINT, for exactly the reason
- * `describeHeldTargets` states beside it: the input order is `getLatestPlanForChange`'s target
- * query, which carries NO `ORDER BY` AT ALL,
- * on a table those rows are UPDATEd in every tick. An unstable `held` array is one new Decision row
- * per second for the length of the hold.
- *
- * A separate exported function because the integration fixture cannot perturb that input order on
- * demand (a wave's placements are created monotonically, so loop order and id order coincide), and
- * a sort tested only against input that is already sorted is not tested.
- */
+/** THE `held` ARRAY OF THE `continuous_test` DECISION. See docs/coordination.md §332. */
 export function describeContinuousHeldTargets(
   heldTargets: ContinuousHoldTargetVerdict[]
 ): ContinuousHeldTargetRecord[] {
@@ -264,28 +180,7 @@ export function describeContinuousHeldTargets(
     }));
 }
 
-/**
- * One line an operator can read, per held target — the reason-tree half of the Decision.
- *
- * ============================================================================================
- * WHERE THE USER-VISIBLE EXPLANATION LIVES — BOTH PLACES, AND WHY BOTH
- * ============================================================================================
- * This sentence is the REASON-TREE half of the `continuous_test` Decision, resolvable by
- * `scp change explain` / `scp decision get`: charter principle 6, every held outcome carrying a
- * resolvable `decision_id` naming its inputs.
- *
- * The WIRE half is now built too (the follow-up this comment used to carry as deferred):
- * `ChangeWaveTargetSchema.hold.continuousTests` on `GET /changes/{id}/explain`, projected by
- * `plan-service.ts`'s `resolveWaveTargetContinuousHolds` from `ContinuousHookHold` above — which is
- * structurally `ContinuousTestHoldSchema` already, so it is a mapping and not a redesign.
- *
- * THE TWO ARE NOT REDUNDANT AND MUST NOT BE COLLAPSED. The Decision is a HISTORICAL record of what
- * a tick decided, and it keeps saying `hold` until a later tick writes its `allow` counterpart. The
- * wire field is RE-DERIVED on the read, so it disappears the instant fresh green lands, with no
- * tick in between. Feeding the wire field from the Decision row is precisely the permanent-marker
- * trap `ChangeWaveTargetSchema.hold`'s own doc names; feeding the Decision from the read would lose
- * the audit trail. Same facts, two different questions.
- */
+/** One line an operator can read, per held target. See docs/coordination.md §333. */
 export function describeContinuousHold(verdict: ContinuousHoldTargetVerdict): string {
   return verdict.holds
     .map((h) => `${h.summary} — target ${verdict.targetObjectId} is not triggered while it stands`)

@@ -22,30 +22,7 @@ import {
 } from "../test-support/harness.js";
 import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
-/**
- * M22.4 — THE VENDOR RULE AT THE REAL GATE (ADR-0033, owner decision D1).
- *
- * The arithmetic is pinned pure in `scan-vendor-latest.test.ts` and the predicate pure in
- * `packages/schemas/src/scan-exclusion-classes.test.ts`. NEITHER can tell you whether the thing is
- * INSTALLED, and this repo's dominant defect is a component built, tested green against itself, and
- * called by nothing. So every test here drives the real lifecycle gate — real policy resolution,
- * real instance admissions, real dependency inventory, real subprocess plugin host, real
- * `scan-result-control` against a loopback Trivy-shaped result — and nothing below calls
- * `resolveVendorLatestFactsForTarget`, `foldVendorLatestFacts` or `applyScanExclusions` directly.
- *
- * WHAT MAKES THESE TESTS NON-VACUOUS: every one of them is a scan that WOULD FAIL. The default
- * ceiling is the historical fail-closed 0/0, so a single HIGH blocks; a `pass` is therefore only
- * reachable if the finding was genuinely removed before counting. Every finding the fixture emits
- * also carries a `FixedVersion`, so `no_fix_available` — the one class that was already built —
- * cannot be responsible for any pass here.
- *
- * MUTATIONS RUN (2026-08-17), each measured and reverted by an exact inverse edit. Recorded in the
- * increment report; nothing here is a prediction.
- *
- * `scan_exclusion_admissions` rows are INSTANCE-scoped (no `org_id`) and the integration suite runs
- * `singleFork` against one shared Postgres, so a leaked row would admit loosenings in every later
- * suite. They are cleared in an `afterEach` that runs regardless of outcome, and again at teardown.
- */
+/** M22.4 — THE VENDOR RULE AT THE REAL GATE. See docs/governance.md §395. */
 
 const OPERATOR_TOKEN = "m22-4-operator-token-fixture";
 const DIGEST = "sha256:cccc777777777777777777777777777777777777777777777777777777777777";
@@ -59,17 +36,7 @@ interface TrivySource {
   close(): Promise<void>;
 }
 
-/**
- * A Trivy-shaped result with PER-RESULT `Class` and per-entry `PkgIdentifier.PURL` — the two fields
- * the vendor rule joins on and the reason this fixture cannot reuse M22.2's, which emits a single
- * `os-pkgs` result and no purl at all.
- *
- * `cls`/`pkg`/`purl`/`sev` are parallel comma lists; every entry carries a `FixedVersion` so no pass
- * below can be attributed to `no_fix_available`. That isolation is about ADMISSION, not about the
- * predicate: this suite admits only `vendor_latest`, so a `no_fix_available` clause never survives
- * the AND anyway. `FixedVersion` itself does NOT disqualify a vendor pass — a fix in a newer major
- * is exactly the case D1 excuses (owner decision, 2026-08-18).
- */
+/** A scanner-shaped result with per-result class and identity. See docs/governance.md §396. */
 async function startTrivySource(): Promise<TrivySource> {
   const httpServer = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -86,14 +53,7 @@ async function startTrivySource(): Promise<TrivySource> {
         {
           VulnerabilityID: `CVE-2026-${9000 + i}`,
           PkgName: pkg[i] ?? `pkg${i}`,
-          // DERIVED FROM THE PURL rather than hardcoded, because M22.4's review round put the
-          // installed version INTO the join: the fact now says "this package is at head AT VERSION
-          // X", and the predicate requires the scanned artifact to actually carry X. A fixture
-          // pinning `1.0.0` while its purl said `@4.17.21` described an artifact that had DRIFTED
-          // from its manifest — which is precisely the case the join exists to refuse, so it would
-          // have made every lang-pkgs case here fail for the right reason and the wrong purpose.
-          // Falls back to `1.0.0` for the os-pkgs entries, which carry no purl and join on the base
-          // image digest instead.
+          // Derived from the identifier rather than hardcoded. See docs/governance.md §397.
           InstalledVersion: purl[i]?.includes("@") ? purl[i]!.split("@").pop()! : "1.0.0",
           FixedVersion: "9.9.9",
           Severity: sev[i] ?? "HIGH",
@@ -150,16 +110,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     operator = new ScpClient({ baseUrl: server.baseUrl, token: bootstrap.adminToken });
   }, 180_000);
 
-  /**
-   * THE PRODUCTION WRITE DOOR (M22.9). This used to `INSERT INTO scan_exclusion_admissions` over the
-   * admin pool, which made the suite green while the two instance rungs every clause requires — and
-   * that NO policy can ever contribute — had no writer outside these tests. The whole exclusion
-   * dimension was inert on a real deployment. It now goes through
-   * `PUT /api/v1/instance/scan-exclusion-admissions/{tier}` with the deployment operator token,
-   * exactly as an operator would; delete that route's registration in `app.ts` and every admitting
-   * test in this file dies. The PUT is a whole-set REPLACE, so this unions with what is already
-   * admitted rather than clobbering an earlier call in the same test.
-   */
+  /** THE PRODUCTION WRITE DOOR. See docs/governance.md §398. */
   async function admitVendorLatest() {
     for (const tier of ["platform", "trust_domain"] as const) {
       await operator.instanceScanExclusionAdmissions.put(
@@ -198,14 +149,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     observedAgoMs?: number;
   }
 
-  /**
-   * Seed ONE component's dependency inventory through the real repo verbs, then set the observed
-   * head trio directly so the test controls `latest_observed_at`.
-   *
-   * The trio is written by UPDATE rather than through `recordDependencyLineHead` for exactly one
-   * reason: that door stamps `new Date()`, and the staleness cases below need a timestamp in the
-   * past. Everything else — the line identity, the declaration — goes through the production verbs.
-   */
+  /** Seed one component's inventory through the real verbs. See docs/governance.md §399. */
   async function seedInventory(orgId: string, componentObjectId: string, lines: SeedLine[]) {
     await withTenantTx(server.deps.db, orgId, async (tx) => {
       for (const spec of lines) {
@@ -249,11 +193,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
   };
 
   async function vendorExclusionPolicy(admin: ScpClient, name: string, scopeObjectId: string) {
-    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
-    // `scanExclusion` rule that requires no scan control: such a document is silently inert,
-    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
-    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
-    // doc: a real bound control would add a control run and change what these tests measure.
+    // M22.8 — the authoring guard. See docs/governance.md §400.
     const scanControlId = SCAN_RULE_TEST_CONTROL_REF;
     return admin.policies.create({
       name,
@@ -401,15 +341,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     const org = await createTestOrg(server, "vendor-absent");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-    // DISTINCT COORDINATES, and this is not cosmetic: `dependency_lines`' identity is
-    // `(org_id, ecosystem, coordinate, major)`, so two components in ONE org declaring the same
-    // image share ONE line row — and the second seed would overwrite the first's observed trio,
-    // silently turning the "never observed" case into a copy of the "stale" one. A mutation run
-    // (NULL read as "up to date") caught exactly that and survived this test until it was fixed.
-    //
-    // (a) never observed — the shape an OUTPOST is always in, because
-    // `dependencyVersionPollRoleGuard` refuses to poll on anything that has not explicitly declared
-    // itself a commander, and `dependency_lines` does not federate.
+    // DISTINCT COORDINATES, and this is not cosmetic. See docs/governance.md §401.
     const never = await createOrphanComponent(server, org, "comp-vendor-never");
     await seedInventory(org.orgId, never.id, [
       {

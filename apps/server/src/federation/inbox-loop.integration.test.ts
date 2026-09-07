@@ -49,38 +49,7 @@ import {
 } from "./inbox-loop.js";
 import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 
-/**
- * M13.1a — the staging-node INBOX INGEST LOOP, end to end: THE 13.1a DoD suite (proposal §13.1,
- * docs/proposals/airgap-cds-validate-promote.md). Same topology-faithful harness as
- * retrans-relay.integration.test.ts — three REAL isolated federation domains, a real `registry:2`
- * pair, the real cosign + skopeo binaries:
- *
- *   commander A ──.scpbundle──▶ retrans B ──signed byte tarball──▶ outpost C
- *
- * Proven here, per the DoD:
- *  (1) HAPPY PATH, IDENTICAL OUTCOMES — a promotion `.scpbundle` + its relay tarball dropped into
- *      the OUTPOST's inbox are imported unattended in ONE tick (bundle before tarball), with the
- *      SAME verification outcomes as the CLI-invoked path run on an identical sibling fixture:
- *      same relay-import allow Decision (verdict + reason), same M17.4(b) pre-deploy gate PASS,
- *      bytes landed at the destination registry; the tarball hop's `bundle_transfers` row is
- *      CONFIRMED (validate-gated, D4). A sync `.scpbundle` through the inbox advances the cursor
- *      exactly like a CLI import.
- *  (2) IDEMPOTENT — a second tick over the same inbox is a no-op (ledger dedupe): no new changes,
- *      no new Decisions.
- *  (3) RETRANS VALIDATE-AND-FORWARD — the same tarball dropped at the RETRANS's inbox is
- *      validated (byte-equivalent extracted checks) and forwarded byte-identical to the onward
- *      drop WITHOUT any registry push (a configured dest repo stays EMPTY), with the confirmed
- *      inbound + submitted onward transfer rows (D4 both ways).
- *  (4) TAMPER REFUSED, LOOP CONTINUES — a tarball tampered in CDS transit is refused at the
- *      retrans with a block Decision + audit event, NO onward drop, NO confirmation; a junk file
- *      in the same tick is skipped-with-log, and the tick completes (one bad file never bricks
- *      it). The SAME tampered file refused via the loop at the outpost carries the IDENTICAL
- *      refusal reason as a direct CLI `importRelayTarball` call (zero-trust survives automation).
- *  (5) TRAVERSAL + JUNK — a traversal-shaped file name is refused outright (block Decision,
- *      file never read); a malformed `.scpbundle` is refused with the loop's own
- *      `federation-inbox-ingest` block Decision (the CLI path throws a plain 409 there — an
- *      unattended refusal must still be explainable, principle 6).
- */
+/** M13.1a — the staging-node INBOX INGEST LOOP, end to end. See docs/federation.md §276. */
 
 const sha256 = (buf: Buffer): string => "sha256:" + createHash("sha256").update(buf).digest("hex");
 
@@ -834,11 +803,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     expect(localChangeAtB).not.toBeNull();
     const validSha = await sha256File(tarball2Path);
 
-    // T = a CONTENT-corrupted repack (NOT re-signed): distinct bytes that FAIL verification. The
-    // vuln being closed: a naive verify-then-copy reads the inbox tarball TWICE, so a swap of V→T
-    // between the two reads forwards T (unverified) across the boundary under an ALLOW Decision.
-    // The fix reads the inbox exactly ONCE (the ingress copy) and verifies + forwards THAT private
-    // copy — so a mid-window swap changes only the abandoned inbox file, never the crossed bytes.
+    // T = a CONTENT-corrupted repack (NOT re-signed). See docs/federation.md §277.
     const tamperDir = await mkdtemp(path.join(scratch, "toctou-tamper-"));
     execFileSync("tar", ["xzf", tarball2Path, "-C", tamperDir]);
     const [rootName] = await readdir(tamperDir);
@@ -1053,19 +1018,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     expect(await decisionCount(outpost)).toBe(decisionsBefore);
   }, 120_000);
 
-  /**
-   * THE AIR-GAP DOOR onto the same room the HTTP body parser guards (`app.ts`; wiring test in
-   * `json-body-parser.test.ts`). A `.scpbundle` used to reach a bare `JSON.parse`, so a peer could
-   * put a `__proto__` key in a bundle and have it become an OWN property on a live object inside
-   * this process — across a CDS boundary, on removable media, which is strictly LESS trusted than
-   * an authenticated HTTP request, not more.
-   *
-   * The A/B is the point: the SAME exported bundle is written twice, differing only by the injected
-   * key. The poisoned copy must be refused BY THE POISONING GUARD (named in the reason), and the
-   * clean copy must not be refused for that reason — otherwise this test would pass just as well
-   * against a bundle that was malformed or schema-invalid for some unrelated reason, which is the
-   * vacuous-green shape this repo keeps getting bitten by.
-   */
+  /** The air-gap door onto the room the body parser guards. See docs/federation.md §278. */
   it("a .scpbundle carrying a __proto__ key is refused at the air-gap door, and the same bundle without it is not", async () => {
     const bundle = await exportPromotionFromA(changeA1, "outpost-c");
     const cleanJson = JSON.stringify(bundle, null, 2);
@@ -1109,27 +1062,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     expect(probe.isAdmin).toBeUndefined();
   }, 120_000);
 
-  /**
-   * PR #153 review Q3 — the tick's CONTAINMENT catch reports the throw's DETAIL, not its HTTP title.
-   *
-   * Every ANTICIPATED failure inside `processInboxFile` is already caught and turned into a
-   * refuse/defer outcome with its own text (the five `err.detail ?? err.message` sites above), so
-   * the outer catch in `inboxOrgTick` is reachable only by a throw from the db seam — which is
-   * precisely the case it exists for, and the case where the text matters most because nothing else
-   * describes what went wrong. An escaping `ProblemError`'s `message` is the bare HTTP title, so
-   * `err.message` reported every such containment as "Not Found" / "Conflict" in the `deferred`
-   * outcome an operator (or `scp federation inbox status`) reads.
-   *
-   * The fault is INJECTED at that seam, deliberately: it cannot be produced from a fixture, because
-   * every fixture-shaped failure is caught one layer down. The tick's FIRST transaction loads
-   * self+peers; everything after it belongs to per-file processing, so faulting from the second on
-   * makes exactly the per-file escape this pins — and proves the loop still contains it (it returns
-   * outcomes rather than throwing).
-   *
-   * MUTATION-PROVEN: reverting `inbox-loop.ts`'s `describeError(err)` to
-   * `err instanceof Error ? err.message : String(err)` makes the detail assertion fail
-   * ("Not Found").
-   */
+  /** The containment catch reports the detail, not the status. See docs/federation.md §279. */
   it("Q3: a throw that ESCAPES processInboxFile is contained, and the deferred outcome carries its detail — not its HTTP title", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "scp-inbox-containment-"));
     await writeFile(path.join(dir, `scp-relay-${randomUUID()}.tar.gz`), "bytes", "utf8");

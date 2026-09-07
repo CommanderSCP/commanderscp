@@ -13,13 +13,7 @@ import {
 } from "./cosign-bin.js";
 import { REPO_ROOT } from "./repo-paths.js";
 
-/**
- * Parse `tools/cosign/pin.env` (the single source of truth) as KEY=VALUE pairs.
- *
- * Already comment-proof, and deliberately left as-is: the key pattern is anchored to the start of
- * the trimmed line and admits only `[A-Z_]`, so a `#`-prefixed line cannot become a pin. It is the
- * shape `@scp/source-census`'s {@link atLineStart} generalises.
- */
+/** Parse the pin file as KEY=VALUE, anchored and comment-proof. See docs/airgap.md §32. */
 function readPinEnv(): Record<string, string> {
   const text = readFileSync(path.join(REPO_ROOT, "tools/cosign/pin.env"), "utf8");
   const out: Record<string, string> = {};
@@ -37,31 +31,7 @@ function readRepoFileRaw(relative: string): string {
   return readFileSync(path.join(REPO_ROOT, relative), "utf8");
 }
 
-/**
- * The cosign pin is a QUADRUPLE-string coupling — it appears in `tools/cosign/pin.env`, the
- * Dockerfile's build ARG, this package's TypeScript constants, and `scripts/doctor.mjs`. Nothing
- * at build or run time forces those to agree, so a stale copy would silently mean "the image
- * ships binary A while the code asserts version B". These tests are that forcing function.
- *
- * ================================================================================================
- * WHY THE READS BELOW GO THROUGH `@scp/source-census` AND NOT `readFileSync`
- * ================================================================================================
- * MEASURED 2026-08-17: commenting out `ARG COSIGN_IMAGE=…` at `Dockerfile:28` left this file green
- * at 10 passed / 1 skipped. A `.toContain(…)` over raw text cannot tell a live pin from a
- * commented-out one, so the gate whose entire purpose is "the runner image cannot ship an unvetted
- * binary" was satisfied by a DESCRIPTION of the pin. Three files in three packages had it.
- *
- * The fix is per-language, because the languages are: the Dockerfile comments with `#` (so a
- * presence assertion is anchored to the start of a line, where a `#` cannot precede it),
- * `doctor.mjs` comments with `//` (so it is read stripped), and the workflows are YAML whose token
- * sits mid-line (so whole-line `#` comments are removed and the token matched inside what is left).
- *
- * AND THE LIMIT, because an over-claiming census is what produced this: anchoring fixes the comment
- * case and NO MORE. These assertions still cannot see a Dockerfile stage nothing `COPY --from`s, a
- * workflow step disabled by an `if:` above it, or the pin appearing inside a quoted string. What
- * the pin gate CANNOT be talked out of is elsewhere: the fail-closed `cosign version` assertion at
- * the bottom of this file, which runs the resolved binary whenever a pinned one is present.
- */
+/** The cosign pin is a QUADRUPLE-string coupling. See docs/airgap.md §33. */
 describe("cosign pin: every copy of the pin agrees with tools/cosign/pin.env", () => {
   const pin = readPinEnv();
 
@@ -172,11 +142,7 @@ describe("cosign pin: the version assertion FAILS CLOSED", () => {
   });
 });
 
-/**
- * The real thing: when a pinned cosign is actually present (inside the runtime image, or in CI
- * where scripts/install-pinned-cosign.sh put one and pointed SCP_COSIGN_BIN at it), its reported
- * version MUST equal the pin. Skips — never falsely fails — where no pinned binary exists.
- */
+/** The real thing. See docs/airgap.md §34. */
 const pinnedPresent = (() => {
   const resolved = resolveCosign();
   return resolved.pinned && cosignReportedVersion(resolved.bin) !== null;

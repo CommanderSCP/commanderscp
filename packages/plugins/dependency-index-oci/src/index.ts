@@ -1,37 +1,4 @@
-/**
- * `@scp/plugin-dependency-index-oci` — the CONTAINER-IMAGE version index (ADR-0032 §7).
- *
- * THE ONE ECOSYSTEM WITH NO AIR-GAP GAP, and the reason it is built differently from its four
- * siblings: "in an air-gapped domain the org's OWN registry is the index" (ADR-0032 §7,
- * Consequences). There is no upstream feed to load, no public index to allowlist, and nothing to
- * degrade — the registry the org already runs answers `list-tags` for the images the org already
- * deploys. A disconnected commander therefore has FULL image detection while `go`/`npm`/`python`/
- * `maven` report `not_configured`, which is exactly the asymmetry `dependency-index-airgap.test.ts`
- * pins.
- *
- * REACH: THE EXISTING VENDORED-SKOPEO CHANNEL, NOT A SECOND MECHANISM. This repo already talks to
- * registries in exactly one way — the pinned, vendored `skopeo` resolved by `@scp/cosign`'s
- * `resolveSkopeo()` and guarded by the `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` allowlist (ADR-0019 §4).
- * That is what `governance/scan-db.ts`'s connected refresh uses (`skopeo copy`), what
- * `federation/promotion-scan-step.ts` pulls artifact bytes with, and what
- * `federation/retrans-relay.ts` relays through. Adding a registry-v2 HTTP client here would create a
- * SECOND registry reach with its own auth handling, its own TLS trust decisions and its own
- * allowlist — one more place for a boundary to be enforced differently. So this plugin shells the
- * same binary, and the binary path plus the host allowlist are SERVER-INJECTED, never tenant config
- * — the same split `@scp/plugin-managed-scan` uses for `dockerBinary`/`runnerImage`/`networkMode`
- * (its "adversarial-review CRITICAL #1" shape).
- *
- * A MUTABLE TAG IS NOT AN IDENTITY (ADR-0032 §7). `listVersions` reports tags — labels a publisher
- * can repoint at any time — so `resolveDigest` exists and is implemented here alone among the five
- * indexes: what a subscription records for an image line is the DIGEST the tag resolved to, with the
- * tag beside it as a label.
- *
- * IT STILL DOES NOT RANK. Image tags are conspicuously not semver — `latest`, `1.2`, `1.2.3-alpine`
- * and date stamps coexist in one repository — and that is precisely why the ordering rule lives in
- * one server-side place over `@scp/dependency-manifests`'s `parseImageTagVersion`, which refuses a
- * single-component tag by default so a date stamp can never be compared against a major line. This
- * plugin returns the registry's tag list verbatim, `latest` included; nothing here decides.
- */
+/** The container-image version index. See docs/plugins.md §36. */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {
@@ -70,16 +37,7 @@ function readConfig(ctx: PluginContext): OciIndexConfig {
   return (ctx.config ?? {}) as OciIndexConfig;
 }
 
-/**
- * The `host[:port]` an OCI repository coordinate names, or `null` when it names none.
- *
- * Identical rule to `governance/scan-db.ts`'s `ociHostOf`: the first path segment is a registry host
- * only if it is `localhost` or contains a `.` or a `:`. `alpine` and `library/alpine` name Docker
- * Hub IMPLICITLY, and this returns `null` for them — which fails closed, because an implicit host
- * cannot be checked against an allowlist. A coordinate must be registry-qualified
- * (`docker.io/library/alpine`), which is exactly how `DependencyCoordinateSchema` documents the
- * `oci` spelling.
- */
+/** The host an OCI repository coordinate names, or null. See docs/plugins.md §37. */
 export function ociRegistryHostOfCoordinate(coordinate: string): string | null {
   const slash = coordinate.indexOf("/");
   if (slash <= 0) return null;
@@ -165,16 +123,7 @@ export function createOciIndexPlugin(): DependencyIndexPlugin {
       return { ecosystem: "oci", reportsDigest: true };
     },
 
-    /**
-     * `skopeo list-tags docker://<repo>` — the real document is exactly:
-     *
-     *     { "Repository": "docker.io/library/alpine",
-     *       "Tags": ["3.18", "3.18.4", "3.19", "3.19-alpine", "latest", "20240115"] }
-     *
-     * Returned VERBATIM, `latest` and date stamps included. Filtering here would move the
-     * skip-never-guess rule (ADR-0032 §7) out of the single server-side ranking place and into a
-     * plugin, where the next ecosystem would need its own copy of it.
-     */
+    /** `skopeo list-tags docker://<repo>`. See docs/plugins.md §38. */
     async listVersions(
       ctx: PluginContext,
       query: DependencyIndexQuery
@@ -218,15 +167,7 @@ export function createOciIndexPlugin(): DependencyIndexPlugin {
       return { status: "available", versions };
     },
 
-    /**
-     * `skopeo inspect docker://<repo>:<tag>` — the real document carries `Digest` at top level:
-     *
-     *     { "Name": "docker.io/library/alpine", "Digest": "sha256:beef...", "Tag": "3.19", ... }
-     *
-     * A digest that is not a well-formed `sha256:<64 hex>` is REFUSED as `malformed_response` rather
-     * than stored: `latest_digest` is what makes "the line is on 3.19" a statement about bytes, and
-     * a malformed one would make it a statement about nothing while still looking answered.
-     */
+    /** `skopeo inspect docker://<repo>:<tag>`. See docs/plugins.md §39. */
     async resolveDigest(
       ctx: PluginContext,
       ref: { coordinate: string; version: string }

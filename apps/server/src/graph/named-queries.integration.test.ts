@@ -167,11 +167,7 @@ describe("named graph queries: fixture graph", () => {
   });
 
   it("blast-radius: domain grouping matches domains-impacted (nearest-domain ancestor, keyed by URN — not the immediate parent)", async () => {
-    // A closure MIXING an object whose immediate parent IS a domain (`serviceInDomain`, domainId =
-    // payments-domain) with objects whose immediate parent is the org root ORGANIZATION (a default
-    // service). The old single-hop blast-radius keyed the latter by `domain:${orgRootUuid}` —
-    // labeling the organization a "domain" and keying by a raw uuid — while domains-impacted rolled
-    // it to the org's URN. The two "count by domain" queries disagreed; they must now agree.
+    // A closure MIXING an object whose immediate parent IS a domain. See docs/graph.md §57.
     const seed = await client.object("service").create({ name: "br-seed" });
     const orgSvc = await client.object("service").create({ name: "br-org-svc" });
     // orgSvc and serviceInDomain are both impacted if seed changes (they depend_on it)
@@ -267,16 +263,7 @@ const REACHABILITY_QUERIES: NamedGraphQuery[] = [
   "domains-impacted"
 ];
 
-/**
- * Builds a `{db, raw}` pair against the shared Testcontainers Postgres, bypassing the HTTP/auth
- * layer entirely (same technique as `load-test/graph-scale.ts` and
- * `query-timeout.integration.test.ts`'s bulk-insert test) — this suite calls `runNamedQuery`
- * directly, so it needs neither a listening server nor an admin token, only a tenant `db` handle
- * (`withTenantTx`) and a raw `scp_app`-authenticated connection for bulk `INSERT ... unnest(...)`
- * (drizzle's own `sql` tag can't bind a real array parameter — see graph/sql-helpers.ts's doc
- * comment — so bulk loads always go through `RawScpAppClient` instead, exactly as production's own
- * load-test script does).
- */
+/** A raw database pair, bypassing the HTTP and auth layers. See docs/graph.md §58. */
 function directDbHandle() {
   const config = loadConfig({
     DATABASE_URL: testDatabaseUrl(),
@@ -289,14 +276,7 @@ function directDbHandle() {
   return { db, pool };
 }
 
-/**
- * Bulk-inserts `nodeIds.length` `service` objects and one `depends_on` relationship per
- * `edges` pair (deduped — `relationships_org_type_from_to_key` is a unique constraint) directly
- * against the tables, bypassing `graph/objects-repo.ts`/`graph/relationships-repo.ts` (audit/
- * journal/outbox writes are irrelevant here — same rationale as `load-test/graph-scale.ts`'s
- * module doc). `domain_id` is left `NULL` (no FK on that column) since these tests call
- * `runNamedQuery` directly and never go through `authorize()`/RBAC scope resolution.
- */
+/** Bulk-inserts the objects and one edge per pair. See docs/graph.md §59. */
 async function bulkLoadGraph(
   raw: RawScpAppClient,
   orgId: string,
@@ -340,17 +320,7 @@ async function bulkLoadGraph(
   );
 }
 
-/**
- * Plain-TypeScript reference oracle: "which node indices are within `maxDepth` hops of `startIdx`
- * walking `edges` BACKWARD" (i.e. node `p` counts if `p depends_on frontier-member` — the exact
- * relation `transitiveReverseClosure` walks). A textbook visited-set BFS — deliberately NOT
- * mirroring named-queries.ts's SQL mechanics (no `(id, depth)` re-expansion) — except for one
- * genuine semantic rule the SQL enforces on purpose and this oracle must match: `startIdx` itself
- * can only appear via a DIRECT edge into itself (self-loop, depth 1); it can never re-enter via a
- * longer cycle (depth ≥ 2) — see `transitiveReverseClosure`'s doc comment for why. Everything else
- * about *how* the SQL internally re-visits nodes is irrelevant to the final node SET this oracle
- * checks against (proved in that same doc comment).
- */
+/** Plain-TypeScript reference oracle. See docs/graph.md §60. */
 function naiveReachableSet(
   edges: { from: number; to: number }[],
   startIdx: number,
@@ -379,16 +349,7 @@ function naiveReachableSet(
   return visited;
 }
 
-/**
- * BUILD_AND_TEST.md §8 M9 item: property-based proof that the M9.1 node-dedup rewrite of
- * `transitiveReverseClosure` (named-queries.ts) preserves exact output semantics — the returned
- * node SET, for every one of the five reachability named queries, must equal a naive BFS computed
- * independently in plain TypeScript, across randomly generated directed graphs that deliberately
- * include cycles (a node pointing back into its own ancestry) and shared-component fan-in
- * (several nodes converging on one common node) — precisely the topology shape that used to blow
- * up (see this file's sibling `query-timeout.integration.test.ts` and named-queries.ts's own doc
- * comment).
- */
+/** BUILD_AND_TEST.md §8 M9 item. See docs/graph.md §61. */
 describe("named graph queries: property test — reachability-CTE dedup preserves semantics", () => {
   it("all five reachability queries agree with a naive BFS oracle on random graphs (cycles + fan-in included)", async () => {
     const { db, pool } = directDbHandle();
@@ -448,28 +409,14 @@ describe("named graph queries: property test — reachability-CTE dedup preserve
   }, 120_000);
 });
 
-/**
- * BUILD_AND_TEST.md §8 M9 item: performance-regression proof that the M9.1 fix actually removed
- * the blowup, not merely relocated it. Builds the exact pathological SHAPE that used to run 7+
- * minutes before exhausting disk (this suite's sibling `query-timeout.integration.test.ts` module
- * doc, and named-queries.ts's own doc comment): wide fan-in AND, on top of that, genuine
- * multi-depth convergence on the very same shared nodes (via extra "skip" edges spanning two
- * layers at once) — the specific case named-queries.ts's doc comment calls out as the one residual
- * (but bounded, not exponential) source of duplicate rows post-fix. Every one of the five
- * reachability queries must complete in a small fraction of the configured `statement_timeout`
- * (the M8 guardrail — deliberately left untouched, see query-timeout.ts) with the correct closure.
- */
+/** BUILD_AND_TEST.md §8 M9 item. See docs/graph.md §62. */
 describe("named graph queries: performance regression — high fan-in no longer blows up (M9.1)", () => {
   it("wide fan-in with multi-depth reconvergence on shared components completes fast for all five reachability queries", async () => {
     const { db, pool } = directDbHandle();
     const raw = await RawScpAppClient.connect();
     try {
       const orgId = uuidv7();
-      // 14 nodes/layer x 10 layers: complete bipartite between CONSECUTIVE layers (the shape that
-      // alone used to blow up), PLUS complete bipartite "skip" edges from layer i to layer i+2 —
-      // every node in layers 0..7 is now reachable from the last layer via (at least) two
-      // different-length routes, forcing genuine same-node-different-depth reconvergence, not
-      // just same-depth fan-in.
+      // 14 nodes/layer x 10 layers. See docs/graph.md §63.
       const WIDTH = 14;
       const LAYERS = 10;
       const layerIds: string[][] = [];

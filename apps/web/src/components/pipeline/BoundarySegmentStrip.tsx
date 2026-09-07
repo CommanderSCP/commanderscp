@@ -3,34 +3,7 @@ import type { BoundarySegment } from "@scp/sdk";
 import { Badge } from "../ui/badge";
 import { declaredUnknowns, isAbsent } from "../../lib/absent";
 
-/**
- * M16.1 — THE UNIVERSAL BOUNDARY SEGMENT, rendered (ADR-0011; vocabulary fixed by ADR-0021 D6).
- *
- * A boundary SEGMENT composed of two boundary PHASES — *transferred* and *validated*. It is NOT a
- * "stage" (a stage is a deployment PLACE, `<domain>[-<location>]-<env>`) and NOT a "wave" (a wave
- * is the set of stages advanced at once). Purely presentational: the server
- * (`coordination/boundary-segment.ts`) computes every state from real ledger rows and real
- * Decisions; this paints them and drives nothing.
- *
- * ## Why a sibling component rather than widening `PromotionState`
- *
- * `PromotionArrow.tsx`'s own doc comment defines `PromotionState` as the gate/approval state of a
- * promotion **between two consecutive waves**, and says it is "deliberately a small closed set the
- * *existing* model can already answer honestly" — it then refuses a hold/release state on exactly
- * that ground. Adding `unknown` to it would (a) hand every inter-wave arrow, where the model CAN
- * always answer, a way to shrug, and (b) reuse inter-wave promotion vocabulary for a domain-crossing
- * segment that ADR-0021 D6 gives its own words. So `PromotionState` is left untouched and the
- * segment gets its own two-phase vocabulary here.
- *
- * ## The honesty contract (same rule the service board follows)
- *
- * `segment.unknownFields` names, by dotted path, every field this instance CANNOT OBSERVE. Those
- * fields still carry a zero value on the wire for shape stability — but a zero is not an
- * observation, and it must never be painted like one. Concretely: an exporting instance can never
- * see the receiving outpost's validation outcome, so `validate.state` arrives as `not_reported` AND
- * is named unknown; painting that as anything other than an explicit unknown would be a fabricated
- * pass. Pinned by `apps/web/src/routes/change-pipeline-boundary-honesty.test.tsx`.
- */
+/** M16.1 — THE UNIVERSAL BOUNDARY SEGMENT, rendered. See docs/web.md §70. */
 
 /** True when the server explicitly told us this field is NOT observable here — as opposed to
  *  observed-and-negative. The two must never render the same way. Mirrors `service-board.tsx`'s
@@ -107,11 +80,7 @@ function TransferPhase({ segment }: { segment: BoundarySegment }): React.JSX.Ele
   // a delivery.
   const handoffUnknown = isBoundaryUnknown(segment, "transfer.handoff");
   const hopCount = transfer.hops.length;
-  // drizzle/0087 — `hop.channel` distinguishes an ordinary metadata `.scpbundle` hop from a retrans
-  // byte-relay leg (`BoundaryTransferHopSchema`'s doc). The split only fires when at least one hop
-  // actually carries `'bytes'`: a hop with `channel: null`/`undefined` (pre-0087 row, or a writer
-  // that could not determine it) is folded back into the plain count rather than counted as "not a
-  // byte relay" — that would assert a metadata reading this instance was never told.
+  // The channel distinguishes an ordinary hop from the other. See docs/web.md §71.
   const byteRelayCount = transfer.hops.filter((h) => h.channel === "bytes").length;
   const hopDetail =
     hopCount === 0
@@ -171,12 +140,7 @@ function ValidatePhase({
   // says so, this renders an explicit unknown — NOT a neutral-looking "not reported" chip that a
   // tired operator could read as "fine".
   const stateUnknown = isBoundaryUnknown(segment, "validate.state");
-  // `isAbsent`, not `!== null`: `authorizedArtifactCount` is required-NULLABLE, and BEFORE ADR-0023
-  // the generated SDK validated no response, so a server that omitted the key reached this branch
-  // with `undefined` and printed the literal `undefined authorized artifacts`. SINCE ADR-0023 the
-  // SDK rejects that body at the boundary — the key is required, so an omission is a contract
-  // violation — and this is defence in depth for every other source of a segment. Same class as the
-  // federation cells.
+  // `isAbsent`, not `!== null`. See docs/web.md §72.
   const artifactDetail = isAbsent(validate.authorizedArtifactCount)
     ? undefined
     : `${validate.authorizedArtifactCount} authorized artifact${validate.authorizedArtifactCount === 1 ? "" : "s"}`;
@@ -229,14 +193,7 @@ function ValidatePhase({
   );
 }
 
-/**
- * The always-shown two-phase boundary segment for one change.
- *
- * `data-verified` is the machine-readable summary, and it is "unknown" — never "false" — whenever
- * the server declared `validate.state` unobservable. A bare `data-verified="false"` over a field
- * listed in `unknownFields` would reintroduce in the DOM exactly the confusion the response shape
- * removes on the wire (the same reasoning as `service-board.tsx`'s `data-blocked`).
- */
+/** The always-shown two-phase boundary segment for one change. See docs/web.md §73. */
 export function BoundarySegmentStrip({
   segment,
   why
@@ -259,19 +216,7 @@ export function BoundarySegmentStrip({
   );
 }
 
-/**
- * What the pipeline shows when `explain` returned `boundarySegment: null` — a change that has not
- * crossed a domain boundary. Stated explicitly rather than rendered as an empty/green segment: the
- * segment is ALWAYS SHOWN, and its absence is itself the honest answer (ADR-0013's domain-local
- * exemption / "domain-local changes have a shorter pipeline").
- *
- * M20-A3 (ADR-0031 §5, docs/proposals/outpost-ui.md) — `boundarySegment: null` used to be
- * AMBIGUOUS between two genuinely different reasons: an ordinary change that just hasn't been
- * promoted yet, and a domain-local change that structurally never crosses a boundary at all. Now
- * that `Change.domainLocal` is on the wire, the caller passes it through and this renders the
- * honest one of the two — never the generic "not yet promoted" reading for a change that in fact
- * has nowhere to be promoted TO.
- */
+/** What the pipeline shows when `explain` returned. See docs/web.md §74. */
 export function NoBoundarySegment({
   domainLocal = false
 }: {

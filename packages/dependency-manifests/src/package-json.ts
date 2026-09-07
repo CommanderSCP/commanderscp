@@ -1,28 +1,4 @@
-/**
- * `package.json` — `dependencies`, `devDependencies` and `optionalDependencies`.
- *
- * Direct only, which for npm is not merely a policy choice but a structural one: the transitive
- * closure lives in `package-lock.json`/`pnpm-lock.yaml`, and this package never opens those. That
- * is the same boundary from two directions — ADR-0032 §4 forbids storing the closure, and ADR-0032
- * §8 forbids the actuator from regenerating a lockfile at all ("Manifest-only edits. No lockfile
- * resolution."), because running a package manager is tooling execution and breaks gate 5. A parser
- * that read the lock to "enrich" the inventory would be the first step down exactly that path.
- *
- * Included and excluded, deliberately:
- * - `dependencies`         -> scope `runtime`
- * - `devDependencies`      -> scope `dev`
- * - `optionalDependencies` -> scope `runtime` (they ship; they are merely allowed to fail to
- *   install). `declaredIn` preserves which block it actually was, so nothing is lost by the mapping.
- * - `peerDependencies` are **excluded**: a peer dependency is a compatibility *assertion about the
- *   consumer's* tree, not something this component installs. Bumping a peer range on a subscription
- *   tick would silently narrow what downstreams may use.
- * - `bundledDependencies` / `bundleDependencies` are excluded: a name list with no versions, and
- *   every entry is already declared in one of the blocks above.
- *
- * Scoped names survive verbatim (`@acme/lib` stays `@acme/lib`) — see
- * {@link DeclaredDependency.coordinate} for why normalising here would re-create the URN collision
- * that ADR-0032 Context 2 measured.
- */
+/** `package.json` dependencies, direct only. See docs/dependency-manifests.md §58. */
 import { ManifestParseError, type DeclaredDependency, type DependencyScope } from "./types.js";
 import { parseComparableVersion } from "./version.js";
 
@@ -52,14 +28,7 @@ const NON_REGISTRY_PREFIXES = [
   "https://"
 ];
 
-/**
- * A specifier naming exactly one version: `1.2.3`, `=1.2.3`, `v1.2.3`.
- *
- * Everything else with a comparator, a caret, a tilde, an `x`, a `||` or a space is a RANGE. The
- * distinction is recorded rather than flattened because `^1.2.3` and `1.2.3` are different
- * statements, and an actuator that rewrote one as the other would change the project's policy while
- * claiming to have bumped a version.
- */
+/** A specifier naming exactly one version. See docs/dependency-manifests.md §59. */
 const EXACT_RE = /^=?[vV]?\d+\.\d+\.\d+([-+].*)?$/;
 
 /** `*`, `x`, `X`, `latest`, `""` — "any version", i.e. no constraint expressed. */
@@ -68,20 +37,7 @@ const UNPINNED_RE = /^(\*|[xX]|latest|)$/;
 /** The leading comparator of an npm range, longest-first so `<=` is never read as `<`. */
 const NPM_OPERATOR_RE = /^(<=|>=|<|>|\^|~|=)?\s*/;
 
-/**
- * The version a specifier states the component is AT OR ABOVE, or `undefined` when it states none.
- *
- * Blindly stripping `^[\^~=><\s]+` makes an upper bound look like a declared version: `<2.0.0`
- * records 2.0.0 and `<=1.9.9` records 1.9.9 — versions the component is pinned BELOW, not at. That
- * is the same dishonesty `package-json.test.ts` already rules out for the compound range
- * `">=3.23.8 <4"` ("producing 3.23.8 for it would assert a floor as if it were the declared
- * version"); the rule simply was not applied to a single-clause upper bound. `>` is kept: it
- * excludes its endpoint but still says where the line starts, which `<`/`<=` do not.
- *
- * The compound-range case stays undefined for its own separate reason — after the comparator is
- * stripped, `3.23.8 <4` still carries whitespace, and `parseComparableVersion` refuses a version
- * token with a space in it (see the no-whitespace note in `version.ts`).
- */
+/** The version a specifier states as its floor. See docs/dependency-manifests.md §60. */
 function floorOf(spec: string): ReturnType<typeof parseComparableVersion> {
   const m = NPM_OPERATOR_RE.exec(spec);
   const op = m?.[1] ?? "";

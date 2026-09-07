@@ -10,23 +10,7 @@ import { ownJournalTail } from "./journal-repo.js";
 import { getFederationStatus } from "./status-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * M16.2 phase A (E3) — PENDING-VS-APPLIED, HONESTLY.
- *
- * The M16.2 Overview asks for "pending-vs-applied" for air-gapped outposts. Grounding established
- * that the APPLIED half cannot be derived at the commander at all: `sync_cursors` records only what
- * WE applied FROM a peer, `export-repo.ts` ships only this domain's own entries (so a return bundle
- * cannot carry our sequences back), and `bundle_transfers` has no production UPDATE path, so an
- * EXPORT row is inserted `created` and never advances. DESIGN §13's "confirmed when a returned bundle
- * carries the outpost's import cursor" is UNBUILT (named future increment M16.4).
- *
- * So the fields E3 adds measure PENDING-EXPORT, and this file proves they measure exactly that — most
- * pointedly by the test that makes the OUTPOST apply the bundle and shows the COMMANDER's numbers do
- * not move. If they did, they would be an apply signal, and their names would be lies.
- *
- * Uses the two-domain harness (two separate Postgres databases) because the import side genuinely
- * needs a second instance; `getFederationStatus` is called directly, exactly as the route does.
- */
+/** M16.2 phase A (E3) — PENDING-VS-APPLIED, HONESTLY. See docs/federation.md §537. */
 describe("M16.2 E3: federation status reports pending-EXPORT, never pending-apply (Testcontainers)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
@@ -189,12 +173,7 @@ describe("M16.2 E3: federation status reports pending-EXPORT, never pending-appl
     expect(after.peer.lastSyncedBundleChecksum).toBe(before.peer.lastSyncedBundleChecksum);
     expect(after.peer.unknownFields).toEqual(before.peer.unknownFields);
 
-    // And there is no field NAMED for application AT THE PEER — structurally, not just by
-    // convention. `appliedAtPeer` appears only as an UNKNOWN declaration.
-    //
-    // The pre-existing `lastAppliedSequence` is deliberately not caught by this: it is the INBOUND
-    // direction — how far THIS side has applied the PEER's journal, read from our own `sync_cursors`
-    // — which is genuinely observable here. Only the outbound direction is unobservable.
+    // And there is no field NAMED for application AT THE PEER. See docs/federation.md §538.
     const namedForPeerApply = Object.keys(after.peer).filter((key) =>
       /applied.*(peer|remote|there)|peerapplied|appliedat(?!tempt)/i.test(key)
     );

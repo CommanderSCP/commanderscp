@@ -13,13 +13,7 @@ class FakeClient extends EventEmitter {
   end = vi.fn(async () => undefined);
 }
 
-/**
- * SEC-5: the reconnect backoff must NOT reset to its floor on connect — only after the connection
- * has stayed up `stabilityWindowMs`. Otherwise a connection killed immediately after every connect
- * reconnects at the floor forever, and each reconnect fires `onReconnect` (on the SSE bridge, a
- * full unscoped cache-invalidation broadcast). This test flaps the connection inside the stability
- * window and asserts the inter-reconnect delay GROWS instead of pinning at the floor.
- */
+/** Backoff must not reset on connect, only after it stays up. See docs/events.md §24. */
 describe("listen-client — backoff stability window (SEC-5)", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());

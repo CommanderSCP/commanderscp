@@ -3,30 +3,7 @@ import type { EffectiveScanThreshold, ScanOverrideGrantCandidate } from "@scp/sc
 import { applyOverrideAuthorityBar } from "./scan-override-grants.js";
 import { requiredOverrideApprovalTier, scanRequirementTierOrder } from "./scan-requirements.js";
 
-/**
- * M22.6 (ADR-0033 §6a, owner decision D3) — THE APPROVER-STANDING ALGEBRA, as a pure function.
- *
- * This file pins the two halves of the derivation and nothing else. The WIRING — that the gate
- * actually calls them, with the real ceiling and the real containment chain — is proven at the real
- * gate in `scan-declared-override-exclusions.integration.test.ts` (cases O7-O10), because a pure test
- * cannot tell you whether a component is installed, which is this repo's dominant defect.
- *
- * THE DEFECT THESE EXIST AGAINST: `tierObjectId` was chosen freely by the REQUESTER and read
- * afterwards only for PRESENCE. Since `scopeExpandCte` expands UPWARD, naming a LOWER object strictly
- * WIDENED the approver set — a service lead could approve away a platform-set `maxCritical: 0` and
- * the audit trail would truthfully record "under authority of '<service>'".
- *
- * MUTATIONS RUN (2026-08-18), each applied ALONE against a passing suite and reverted by an exact
- * inverse edit. Baseline: 8 passed. MEASURED, not predicted.
- *
- *   U-1  `applyOverrideAuthorityBar` grants EVERY candidate (both refusal branches disabled)
- *          -> 3 failed here, plus O7 and O9 at the real gate. The whole objection, undone.
- *   U-2  `requiredOverrideApprovalTier` iterates an empty contributor list (always `component`)
- *          -> 2 failed here, plus O7, O8 and O9 at the real gate.
- *   U-3  an off-chain `tierObjectId` falls open to `"component"` instead of being refused
- *          -> 1 failed ("NOT ON THE CHAIN"). The fail-open an absent map lookup invites, and the one
- *             a reviewer is most likely to write while "tidying up a nullable".
- */
+/** The approver-standing algebra, as a pure function. See docs/governance.md §343. */
 
 /** `TIER_ORDER.indexOf`, taken from the module that owns the order rather than restated here — a
  *  second copy of the tier order in a test is a second opinion about what "above" means. */
@@ -47,19 +24,7 @@ const ceiling = (
 
 describe("requiredOverrideApprovalTier — the bar is read off the RULE, never off the request", () => {
   it("NO tier-set ceiling still means a bar, and it is `org` — there is no such thing as no ceiling", () => {
-    // THIS CASE INVERTED (owner decision, 2026-08-18). It used to assert `component`, i.e. no bar,
-    // on the reading that with no `scanThreshold` policy and no instance floor nothing constrains the
-    // requester. That reading was wrong, and an adversarial pass measured the escalation it allowed:
-    // the gate still enforces a ceiling from the control binding's `config.threshold` (authored at
-    // CONTROL scope, which is nowhere on the component's containment chain) or, failing that, from
-    // the plugin's shipped fail-closed `maxCritical`/`maxHigh` = 0. Exclusions are applied BEFORE the
-    // comparison, so with the bar at `component` a service-scoped `policy:write` holder could raise
-    // and self-approve a waiver against a ceiling they had no standing to author.
-    //
-    // `org` and not the fully-derived tier: deriving the true bar makes every grant inert wherever
-    // nothing was authored, which kills the feature. `org` is the most senior rung a TENANT can
-    // author at — the strongest floor that leaves the override usable. See
-    // `requiredOverrideApprovalTier`'s docblock for what this deliberately does NOT close.
+    // THIS CASE INVERTED. See docs/governance.md §344.
     expect(requiredOverrideApprovalTier(undefined)).toBe("org");
     expect(requiredOverrideApprovalTier(ceiling())).toBe("org");
   });
@@ -105,11 +70,7 @@ describe("requiredOverrideApprovalTier — the bar is read off the RULE, never o
   });
 
   it("a LOOSER senior contributor still sets the bar — the bar is not the BINDING contributor", () => {
-    // The mutation a reasonable implementer writes: "only the tier whose value is the per-severity
-    // MIN is actually being waived". Wrong, and this case is the argument. Excluding a finding drops
-    // it out of the COUNT, so a count of 6 falling to 5 satisfies platform's ceiling of 5 exactly as
-    // it satisfies the service ceiling of 0 that produced the block. Keying on the MIN would let the
-    // service tier defeat platform's ceiling indirectly.
+    // The mutation a reasonable implementer writes. See docs/governance.md §345.
     const mixed = ceiling(
       { tier: "platform", source: "instance:platform:local", threshold: { maxCritical: 5 } },
       { tier: "service", source: "policy:svc@1", threshold: { maxCritical: 0 } }
@@ -118,11 +79,7 @@ describe("requiredOverrideApprovalTier — the bar is read off the RULE, never o
   });
 
   it("an UNRECOGNISED tier label raises no bar, does not crash the gate, and does not sink below the floor", () => {
-    // A label the tier vocabulary does not know contributes nothing — `tierRank` returns -1 and the
-    // loop skips it — so the answer is whatever the floor is. This used to read `component`; it now
-    // reads `org` for the same reason every other no-contribution case does, and that is the safe
-    // direction: an unparseable contributor must never be the thing that LOWERS a bar. A federated
-    // row from a peer running a newer tier vocabulary is exactly how such a label arrives.
+    // A label the tier vocabulary does not know contributes nothing. See docs/governance.md §346.
     const rogue = ceiling({
       tier: "nonsense" as never,
       source: "policy:x@1",

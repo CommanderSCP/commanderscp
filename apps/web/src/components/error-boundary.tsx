@@ -3,29 +3,7 @@ import { isResponseValidationError, queryErrorMessage } from "./query-error";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 
-/**
- * THE CONTAINMENT HALF OF ADR-0023 — `apps/web` HAD NO ERROR BOUNDARY AT ALL.
- *
- * Response validation makes a contract failure LOUD and SINGLE. A boundary makes it CONTAINED. The
- * two are complements, and until this component the SPA shipped only the first: any throw during
- * render — a validation error surfaced by a `useSuspenseQuery`-style read, an unguarded dereference
- * in one leaf cell, a bug in a formatter — unmounted React's whole tree and left the operator a
- * literally blank page with the diagnosis only in the devtools console. That is measured behaviour,
- * not a worry: `federation-status-crash.test.tsx` recorded `container.innerHTML.length === 0` for
- * exactly one such throw.
- *
- * WHERE IT SITS. Wrapped around the router `Outlet` in `RootLayout`, so it contains EVERY route.
- * It is deliberately NOT per-card: a boundary is the last line, and the per-query `isError`
- * branches (`QueryErrorNotice`) are the first — a page that handles its own read failure never
- * reaches this component, and a page that does reach it has a bug worth showing as a bug.
- *
- * WHAT IT RENDERS. The same diagnosis the `isError` branches render — verbatim `error.message`,
- * plus the contract/version-skew framing when the throw is a response-validation failure — because
- * the failure mode this exists to catch is precisely the one a fixed "Something went wrong" would
- * make undiagnosable again. `Try again` clears the captured error and re-renders the route; a
- * transient fault recovers without a full page load, and a persistent one immediately re-renders
- * this panel.
- */
+/** THE CONTAINMENT HALF OF ADR-0023. See docs/web.md §49. */
 interface ErrorBoundaryState {
   error: unknown;
 }

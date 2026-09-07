@@ -11,25 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `source_mappings.scope` — the DECLARED reach of a mapping's repo (migration 0066,
- * pipeline-substrate-registry-scan.md §10.6, owner 2026-08-16: "Global sources should be labeled as
- * such in pipelines (and our CommanderSCP IaC, SDK, CLI)").
- *
- * `global` = a cross-domain shared repo tracked at the commander; `domain` = tracked only in one
- * domain; NULL = NOT DECLARED. Three properties are pinned here:
- *
- *   1. ROUND-TRIP through the public API incl. NULL: declared at create, read back on the wire
- *      (create / list / the component pipeline projection), and OMITTED means null — a pre-0066 row
- *      is not thereby anything. Nothing infers a value from the site's federation role.
- *   2. The by-id PATCH `.../mappings/{id}/scope` sets and CLEARS it — a sibling of the pause switch,
- *      not a field on it: `setSourceMappingEnabled`'s contract is untouched, and labelling a row never
- *      restates (or clobbers) its pause state. Addressed by id: a byte-identical sibling is untouched.
- *   3. INERTNESS: the correlation matcher does not read it. A global-scope and a domain-scope mapping
- *      identical in every ROUTING respect route identically, and the correlation result carries no
- *      trace of it — the same discipline `mirrorOfShared` and `classification` are held to, so no one
- *      makes it a routing input silently.
- */
+/** The declared reach of a mapping's repository. See docs/coordination.md §906. */
 describe("source mapping: declared scope (migration 0066, §10.6)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

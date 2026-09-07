@@ -9,13 +9,7 @@ import {
   type PrefixedTokenRow
 } from "./prefixed-token.js";
 
-/**
- * The shared `<prefix><tokenId>.<secret>` parse/mint/verify sequence behind both `pat.ts`'s
- * `verifyPat` and `operator-auth.ts`'s `verifyOperatorCredential`. No DB here — `verifyPrefixedToken`
- * takes plain `findByTokenId`/`touchLastUsed` callbacks, so its full decision sequence (parse ->
- * lookup -> revoked -> expired -> secret -> touch) is exercised in-memory, at the layer both callers
- * actually depend on.
- */
+/** The shared prefixed-token decision sequence, without a database. See docs/auth.md §36. */
 
 const PREFIX = "scp_test_";
 

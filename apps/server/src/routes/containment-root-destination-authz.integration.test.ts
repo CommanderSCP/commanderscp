@@ -7,53 +7,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE OTHER END OF THE OVER-BROAD ORG-ROOT REFUSAL.
- *
- * `containment-root-source-and-create-rooting.integration.test.ts` pins R1: moving a ROOT-PARENTED
- * object INTO a container the actor owns stopped demanding org-root authority, because the source
- * check's premise ("the source container's holders lose custody") is false for the org root.
- *
- * The MIRROR was never reasoned about. Moving an object BACK OUT to the top level — the destination
- * IS the org root — still demanded org-root authority, so an actor who fully owns a subtree could not
- * move their own object out of it. That is R3, and the argument that settles it runs in exactly the
- * same direction as R1's:
- *
- *   - The destination check exists because "re-parenting X under V hands every holder of a binding
- *     at-or-above V custody of X" (`graph/containment-parent-authz.ts` §1).
- *   - AFTER a move to the top level, X's chain is `X -> org root`, so the holders who would "gain"
- *     custody are the org root's.
- *   - BEFORE it, X's chain ALREADY terminated at the org root — that is the root-reachability
- *     invariant `assertRootedContainmentParent` enforces on every `domain_id` write, create half
- *     included. The org root's holders therefore already held custody of X.
- *
- * So the custodian set STRICTLY SHRINKS across this move — `{X's holders} u {root's holders}` is a
- * subset of `{X's holders} u {every holder on X -> S -> ... -> root}` — and a move that can only
- * remove custodians is not the escalation the check exists to stop. It is the org root and nothing
- * else: every other destination genuinely adds custodians.
- *
- * ## Why the FIRST case in this file is a success and not a refusal
- *
- * An over-broad refusal and a deliberate one look IDENTICAL from a failing test, and this suite is
- * built almost entirely out of refusals — which is structurally blind to refusing too much. The
- * legitimate direction is therefore asserted first and asserted loudest, and the controls below it
- * exist so a "fix" that simply deleted the destination check would not leave the file green.
- *
- * ## What is deliberately NOT exempt, and is pinned here
- *
- *  - A CREATE at the top level. A fresh row has no chain to already contain the org root, so the
- *    "nobody gains" argument does not run: creating a row at the top level really does hand the org
- *    root's holders a row they did not have. That check lives at the create doors (and at
- *    `iac/plans-repo.ts`'s create branch, which authorizes at `entry.target?.domainId ?? orgId`) and
- *    is untouched.
- *  - A move into any ORDINARY container the actor holds nothing at.
- *  - THE MOVE IS NOT FREE. The SOURCE check still runs, so promoting a row to the top level requires
- *    authority over the container it is LEAVING. "Owns the subtree" is the whole entitlement.
- *
- * Pinned on the HTTP doors AND on the IaC apply door, because `iac/plans-repo.ts` carries its own
- * copy of the destination decision and carried the identical defect — a fix in the helper alone was
- * proven insufficient by mutation on the source-side half one round earlier.
- */
+/** THE OTHER END OF THE OVER-BROAD ORG-ROOT REFUSAL. See docs/routes.md §92. */
 describe("moving an object BACK to the top level — the destination-side org-root exemption", () => {
   let server: TestServer;
 
@@ -111,11 +65,7 @@ describe("moving an object BACK to the top level — the destination-side org-ro
     sourceDomainId: string;
     movableId: string;
     movableUrn: string;
-    /**
-     * Bound Administrator at `sourceDomainId` and NOWHERE ELSE. Authority expands upward, so this
-     * one binding covers the container and everything inside it — "owns the subtree" — while
-     * holding nothing whatsoever at the org root.
-     */
+    /** Bound Administrator at `sourceDomainId` and NOWHERE ELSE. See docs/routes.md §93. */
     ownerToken: string;
   }
 
@@ -242,11 +192,7 @@ describe("moving an object BACK to the top level — the destination-side org-ro
   it("POST /plans/{id}/apply — the apply-path twin, which carried the identical refusal — allows it", async () => {
     const f = await makeSubtreeFixture("root-dest-iac");
 
-    // `domainId` is OMITTED, not set to null, and that is the shape that matters here: the manifest
-    // schema documents an absent `domainId` as "defaults to the org root", so `resolveDomainId` turns
-    // omission into the org root and the diff records a `domainId` change. This is the shape in which
-    // the refusal bit IaC hardest — a stack author who never mentioned containment at all was told
-    // they lacked authority at a scope their manifest never named.
+    // The field is omitted, not set to null, and that matters. See docs/routes.md §94.
     const plan = await post(f.org.adminToken, "/api/v1/plans", {
       manifest: {
         stackName: `iac-root-dest-${f.movableId.slice(0, 8)}`,
@@ -328,11 +274,7 @@ describe("moving an object BACK to the top level — the destination-side org-ro
   });
 
   it("a CREATE at the top level is NOT exempt — a fresh row really does hand the org root a new child", async () => {
-    // The boundary of the exemption, and the reason it cannot simply be "the org root is never a
-    // scope worth checking". A move's destination check is redundant at the org root because the row
-    // was already inside the org root's subtree; a CREATE has no such history, so the org root's
-    // holders genuinely acquire something. Both create doors are pinned: the HTTP one here, and the
-    // IaC one below, which authorizes at `entry.target?.domainId ?? orgId` in its own branch.
+    // The boundary of the exemption, and why it is not simpler. See docs/routes.md §95.
     const f = await makeSubtreeFixture("root-dest-create");
 
     const res = await post(f.ownerToken, "/api/v1/services", { name: "top-level-newcomer" });

@@ -15,56 +15,13 @@ import { QueryErrorNotice } from "../components/query-error";
 import { DomainLocalBadge } from "../components/domain-local";
 import { OutpostFort } from "../components/icons/federation-roles";
 
-/**
- * THE OUTPOST SITE'S HOME (outpost-ui.md §9.3/§9.3a, owner decisions 2026-08-14) — a small,
- * component-level dashboard, not the commander's org-wide one:
- *
- *   the deployment targets THIS OUTPOST CONTROLS
- *     → the components placed on each
- *       → each component's INPUTS HELD HERE to its one pipeline — the repos this domain holds for
- *         it and infra/config bindings (network config, CIDR bands, the cluster shared by this
- *         domain's instances) alongside the shared inputs whose source is opaquely "the commander".
- *         Whether a held repo is domain-specific, global or a mirror is READ off the mapping's own
- *         `scope`/`mirrorOfShared` (pipeline-substrate-registry-scan.md §10.6) — this page used to
- *         caption every held mapping "domain-specific by construction", which a `scope: global`
- *         or `mirrorOfShared` row makes false.
- *
- * The everyday case is a SHARED component (commander-origin replica) carrying inputs held here.
- * Domain-local COMPONENTS (ADR-0031/M20 — genuinely domain-only software) remain valid but RARE,
- * so they are a secondary section, not the headline. The stat that matters is "components on this
- * outpost's targets with inputs held here", per COMPONENT.
- *
- * "Controls" is READ, not inferred: a target is this outpost's when its `originDomainId` equals
- * this instance's `federation_self.domainId` — the same fact `coordination/component-pipeline.ts`'s
- * `maintainedBy.isSelf` states per stage. A commander-origin target that has been replicated here
- * is NOT this outpost's; it appears (honestly) as "maintained by <peer>" in the pipeline views and
- * is deliberately absent from this page.
- *
- * "Domain-specific IaC/CaC" = executor bindings of Type `infrastructure` / `configuration`
- * (ADR-0007's facet) whose target is one of the above, or whose bound object is domain-local
- * (ADR-0031). Global IaC/CaC — bindings on commander-origin objects — is the commander's and stays
- * off this page for the same reason its targets do.
- *
- * Nothing here reads the instance's ROLE to decide what to render — the SHELL picked this page by
- * role (§9.2), and inside it every row keys on data. If this outpost controls no targets yet, the
- * page says so and points at the setup lane; it does not go looking for the commander's targets to
- * fill the space.
- */
+/** THE OUTPOST SITE'S HOME. See docs/web.md §389. */
 
 const IAC_CAC_TYPES = new Set(["infrastructure", "configuration"]);
 /** Mirrors the pipeline's source-mapping form and /setup — the kinds this instance can route. */
 const SOURCE_KINDS = ["github", "gitea", "gitlab"] as const;
 
-/**
- * What this domain holds for ONE component, READ off each mapping's own labels
- * (pipeline-substrate-registry-scan.md §10.6: `scope`/`mirrorOfShared` are declared, never inferred
- * — nothing here infers a scope from the site's role). `held` is the plain fact (mappings this
- * instance holds for the component); the other three are the DECLARED labels among them, each
- * counted only when a mapping actually carries it. Before §10.6 this page captioned every held
- * mapping "domain-specific" by construction; a mapping declared `scope: global` (the API accepts it
- * on any site) or a `mirrorOfShared` row is not domain-specific, so the caption now says only what
- * the rows say. Exported for the test file.
- */
+/** What this domain holds for one component, read off labels. See docs/web.md §390. */
 export function heldInputsSummary(
   mappings: readonly Pick<SourceMapping, "scope" | "mirrorOfShared">[]
 ): { held: number; domain: number; global: number; mirrors: number } {
@@ -118,11 +75,7 @@ export function OutpostDashboardPage(): React.JSX.Element {
     queryKey: registryListKey("components"),
     queryFn: () => client.components.list({ limit: 100 })
   });
-  // Every source mapping this instance holds is an input HELD HERE — mappings never federate
-  // (ADR-0031 §Context; outpost-ui.md §9.3a), so the commander's own rows are structurally absent
-  // and nothing needs filtering out. Whether a held mapping is domain-specific, global or a mirror
-  // is READ off its `scope`/`mirrorOfShared` (§10.6), never assumed from being held on this site.
-  // Fanned out per kind the same way /setup does; the kinds mirror the pipeline's source-mapping form.
+  // Every source mapping this instance holds is an input HELD HERE. See docs/web.md §391.
   const mappingQueries = useQueries({
     queries: SOURCE_KINDS.map((kind) => ({
       queryKey: ["source-mappings", kind, "outpost-dashboard"],

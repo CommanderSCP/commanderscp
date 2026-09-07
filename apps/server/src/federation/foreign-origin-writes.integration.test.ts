@@ -14,48 +14,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject } from "../graph/objects-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 
-/**
- * M16.3 P2 (REMEASURED) — WHAT THE SERVER ACTUALLY REFUSES ON A FOREIGN-ORIGIN OBJECT.
- *
- * THE DEFECT THIS FILE EXISTS TO PREVENT: the first cut of `apps/web/src/lib/replica-origin.tsx`
- * disabled a set of UI write controls on the grounds — stated only in a source comment, never
- * measured — that "the server refuses this write on a read-only replica regardless." For half of
- * those controls that claim was simply FALSE: `routes/executors.ts`'s DELETE/PATCH/PUT
- * `/executors/:idOrUrn/binding` authorize `object:write` on the target and never look at the
- * target's `originDomainId` at all (`executor_bindings` has no `origin_domain_id` column —
- * `db/schema.ts` — because a binding is per-org, per-target LOCAL config, not federation-replicated
- * state). Disabling those controls broke the documented multi-region workflow (DESIGN.md §12.6,
- * BUILD_AND_TEST.md M15.6: "a region is a deployment-target ... its per-region Argo CD is an
- * ordinary per-region executor binding") — an outpost binding its OWN local Argo CD to a target
- * that is commander-origin from the outpost's point of view is exactly the intended case.
- *
- * So: this file MEASURES each write the SPA offers against a genuinely foreign-origin object and
- * pins the ACTUAL response. Every `disabled`/`title` gate that survives in
- * `apps/web/src/lib/replica-origin.tsx` and its callers cites a test HERE by name; a gate with no
- * test here is a gate that must not exist.
- *
- * PR #152 REVIEW FIX (E1), NOW SUPERSEDED BY S10 (PR #171): this block originally only measured
- * accept/rollback against a foreign-origin change sitting in `proposed` — a state neither verb is
- * even legal from (both answer the ordinary wrong-state 409 there, so the arms were
- * indistinguishable from a broken fixture). E1 therefore extended the suite with a real reconcile
- * loop (`withReconcileLoop`/`withEventRelay` below) to drive a foreign-origin change all the way
- * to `validating` and measure accept/rollback SUCCEEDING there.
- *
- * THOSE TWO TESTS NO LONGER EXIST, and the paths they measured are gone in both directions: the
- * transition verbs are now refused on authority BEFORE any state check (so `proposed` vs
- * `validating` no longer distinguishes them), and the reconcile engine SKIPS a foreign-origin
- * change, so it can never reach `validating` in the first place. The reconcile loop stays enabled
- * because the engine-skip and resume tests at the end of this file need a genuinely running
- * engine. Do not go looking for "accept SUCCEEDS ... from 'validating'" — an earlier version of
- * this comment pointed at it after it had been deleted.
- *
- * HOW "GENUINELY FOREIGN" IS BUILT: `createObject`/`createRelationship` with a `federationImport`
- * context — the exact, and only, code path `federation/import-repo.ts` uses to land a peer's row
- * after signature/chain verification (`graph/objects-repo.ts`'s `FederationImportContext` doc:
- * "the ONLY way createObject/updateObject/deleteObject will accept/preserve a foreign
- * originDomainId"). The resulting rows are byte-identical to what a real inbound bundle produces,
- * so the guards under test see exactly the production condition.
- */
+/** What the server actually refuses on a foreign-origin object. See docs/federation.md §217. */
 describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIGIN object", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -123,11 +82,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
       type
     });
 
-  // ---------------------------------------------------------------------------------------------
-  // POSITIVE CONTROLS — the fixture really is foreign, and the single-writer guard really does bite
-  // where it exists (`graph/objects-repo.ts`'s updateObject/deleteObject). Without these two, every
-  // "the server allowed it" result below would be indistinguishable from a broken fixture.
-  // ---------------------------------------------------------------------------------------------
+  // Positive controls: the fixture really is foreign. See docs/federation.md §218.
 
   it("CONTROL: updating a foreign-origin object 409s (single-writer authority is real and reachable)", async () => {
     const foreign = await foreignObject("component", "control-update");
@@ -143,13 +98,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     await expect(admin.components.delete(foreign.id)).rejects.toMatchObject({ status: 409 });
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // EXECUTOR BINDINGS — `registry-detail.tsx`'s TargetBindingsCard (Detach / Repurpose) and
-  // `plugins.tsx`'s bind form. MEASURED RESULT: the server ACCEPTS all three on a foreign-origin
-  // target. A binding is local operational config keyed by (org, target, type); it carries no
-  // origin domain and is never federation-replicated, so single-writer authority has nothing to say
-  // about it. THIS IS THE MULTI-REGION WORKFLOW (DESIGN.md §12.6) — the UI must not disable these.
-  // ---------------------------------------------------------------------------------------------
+  // EXECUTOR BINDINGS — `registry-detail.tsx`'s TargetBindingsCard. See docs/federation.md §219.
 
   it("PUT /executors/:id/binding SUCCEEDS on a foreign-origin target (multi-region: bind a LOCAL executor to commander-origin config)", async () => {
     const foreign = await foreignObject("deployment-target", "bind-put");
@@ -175,12 +124,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     expect(relabelled.type).toBe("infrastructure");
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // COMPONENT MERGE — `registry-detail.tsx`'s MergeComponentCard. MEASURED RESULT: the SURVIVOR's
-  // origin is irrelevant (the only writes against it are `repointExecutorBindingTarget`, an
-  // unguarded UPDATE of `executor_bindings.target_object_id`); the LOSER's origin is decisive
-  // (`mergeComponents` soft-deletes it via `deleteObject`, which IS single-writer guarded).
-  // ---------------------------------------------------------------------------------------------
+  // COMPONENT MERGE — `registry-detail.tsx`'s MergeComponentCard. See docs/federation.md §220.
 
   it("merge SUCCEEDS when the SURVIVOR is foreign-origin (its bindings are local config, not replicated state)", async () => {
     const survivor = await foreignObject("component", "merge-survivor-foreign");
@@ -201,13 +145,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     });
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // COMPONENT -> SERVICE — `registry-detail.tsx`'s ComponentServiceCard (Assign / Move). MEASURED
-  // RESULT: what decides the outcome is the ORIGIN OF THE `contains` EDGE BEING DELETED, never the
-  // origin of the component or of either service. ASSIGN (no existing edge) is a pure
-  // `createRelationship`, which stamps THIS domain as the edge's author and never consults the
-  // endpoints' origins — it succeeds on a foreign-origin component.
-  // ---------------------------------------------------------------------------------------------
+  // COMPONENT -> SERVICE. See docs/federation.md §221.
 
   it("ASSIGN (component has no service yet) SUCCEEDS even when the COMPONENT is foreign-origin", async () => {
     const component = await foreignObject("component", "assign-foreign-comp");
@@ -248,25 +186,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     });
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // CHANGE LIFECYCLE — `change-detail.tsx`'s Accept / Rollback / Cancel. A `Change` has no live
-  // federation path that produces a foreign `originDomainId` today (`import-repo.ts` never creates
-  // a local `changes` state-machine row for a synced change object, and `promotion-repo.ts` calls
-  // `proposeChange` FRESH so control genuinely transfers) — so the fixture below flips the change
-  // object's `origin_domain_id` directly, which is the exact row state a future replication path
-  // would produce.
-  //
-  // S10 (`tracked-security-followups`'s "CHANGE TRANSITIONS BYPASS THE SINGLE-WRITER GUARD"):
-  // MEASURED RESULT NOW FLIPPED. `coordination/transition.ts`'s `transitionChange` and
-  // `coordination/rollback.ts`'s `triggerRollback` — the ONLY writers of `changes.state` and the
-  // only initiators of a rollback — now check `enforceLocalChangeAuthority` FIRST, before any
-  // state-machine/gate logic, keyed on the change object's `originDomainId` (never
-  // `importedFromDomain` — see that function's doc comment). Every operator-initiated verb below
-  // is refused with a 409 + `decision_id` on a foreign-origin change, in EVERY state, including
-  // `proposed` where the un-guarded state machine would otherwise have refused for an unrelated
-  // reason (illegal edge) — the authority check masks that reason now, which is itself part of
-  // what the tests below pin.
-  // ---------------------------------------------------------------------------------------------
+  // The change lifecycle verbs on a foreign-origin change. See docs/federation.md §222.
 
   /** Proposes a change in the ordinary way; `foreign` additionally makes its graph object
    *  authoritatively owned by another domain. */
@@ -359,16 +279,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     expect(foreign.decisionId).toBeTruthy();
   });
 
-  // -------------------------------------------------------------------------------------------
-  // S10 ENGINE-SIDE SKIP — the reconcile engine (coordination/reconcile.ts) now filters a
-  // foreign-origin change out of every advance* candidate batch BEFORE ever attempting a
-  // transition, so it SKIPS such a change rather than driving it (and rather than parking/
-  // blocking it, which would wedge it in a Decision-flood nothing could ever resolve). Before S10
-  // this test drove a foreign-origin change all the way to `validating` via the real reconcile
-  // loop and measured accept/rollback SUCCEEDING there — that path no longer exists BY
-  // CONSTRUCTION: `advanceProposedChanges` never even attempts the `proposed -> evaluated` edge
-  // for it, so it can never leave `proposed` at all.
-  // -------------------------------------------------------------------------------------------
+  // S10 ENGINE-SIDE SKIP. See docs/federation.md §223.
 
   it("a foreign-origin change never leaves 'proposed' — the reconcile engine SKIPS it (no Decision, no park) rather than driving it", async () => {
     const foreignId = await proposeChange("engine-skip-foreign", { foreign: true });
@@ -385,11 +296,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
       }
     );
 
-    // The foreign-origin change was never touched by the engine: state unchanged, and the ONLY
-    // Decision on record is `proposeChange`'s own `trigger: "propose"` one — unlike a genuine
-    // proposed->evaluated attempt, which would add a SECOND Decision on its very first tick, a
-    // skip adds nothing at all (a block/park would also have added one, just a `block`-verdict
-    // one instead — this distinguishes "skipped" from either "advanced" or "blocked").
+    // The foreign-origin change was never touched by the engine. See docs/federation.md §224.
     const foreign = await admin.changes.get(foreignId);
     expect(foreign.state).toBe("proposed");
     expect(foreign.originDomainId).toBe(FOREIGN);
@@ -399,13 +306,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
   });
 
   it("SKIP, NOT PARK: a skipped change RESUMES the moment authority returns — it was never blocked, and nothing had to clear a park", async () => {
-    // THE WHOLE POINT OF "SKIP RATHER THAN PARK" (S10; `enforceLocalChangeAuthority`'s doc
-    // comment: "parking would wedge a change nothing can ever resume"). The test above proves the
-    // engine does not DRIVE a foreign-origin change. On its own that is equally consistent with
-    // the engine having PARKED it — a state that looks identical from outside until someone tries
-    // to resume. This test is the other half, and it is the one that fails if a future refactor
-    // "helpfully" blocks/parks instead of filtering: authority returns to this domain, and the
-    // change advances with NO operator intervention, NO park to clear, NO re-proposal.
+    // THE WHOLE POINT OF "SKIP RATHER THAN PARK". See docs/federation.md §225.
     const changeId = await proposeChange("resume-after-skip", { foreign: true });
 
     // Let the engine tick at least once while the change is foreign, so "it advanced" below cannot

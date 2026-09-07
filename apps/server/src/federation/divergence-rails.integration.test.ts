@@ -14,12 +14,7 @@ import { permitCursorReanchor, FEDERATION_DIVERGENCE_DECISION_KIND } from "./cur
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * DIVERGENCE RAILS 1/2/4/5 (multi-region-instance-resilience.md §7.2) — the fork/rollback detection
- * that turns a lost tail after an async-replication failover from silent divergence into a named,
- * fail-closed `journal_divergence`. Two GENUINELY separate databases (isolated-domain.ts), the same
- * topology M6's own suite uses. A = commander/exporter, B = full-scope outpost/importer.
- */
+/** DIVERGENCE RAILS 1/2/4/5. See docs/federation.md §99. */
 describe("divergence rails: export-side tail/anchor checks, tail attestation, reanchor refusal", () => {
   let domainA: IsolatedDomain;
   let domainB: IsolatedDomain;

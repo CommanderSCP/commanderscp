@@ -18,31 +18,7 @@ import {
 } from "../test-support/harness.js";
 import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
-/**
- * M17.5 — SCOPED SCAN-REQUIREMENT POLICIES (ADR-0016), the BUILD_AND_TEST.md §8 M17 "Integration
- * (scoped scan)" definition of done, proven at the REAL gate against real Postgres.
- *
- * Every assertion here is end-to-end through the public API and the real governance gate: a real
- * `policy` graph object, the real `matchPoliciesForTargets`/`containmentChain` walk, the real
- * instance-scoped floor table under real RLS, the real subprocess plugin host running the real
- * `scan-result-control` against a real (loopback) Trivy-shaped result. Nothing here asserts on a
- * hand-built merge input — the merged ceiling is read back out of the CONTROL RUN EVIDENCE the gate
- * actually persisted, which is the only place a tautology could not hide.
- *
- * The six tiers, top-down:
- *
- *   platform -> trust domain (partition) -> org -> containment domain -> service -> component
- *
- * ...plus the OPTIONAL `assembly` rung between service and component (migration 0055; named as a
- * tier by M22.0 / ADR-0033 §5, pinned by test (a2) below). It is optional in the sense the others
- * are not — most chains have no assembly at all — which is why the list above is still "the six
- * tiers" and why every test that does not care about it uses the four-rung `buildChain` default.
- *
- * TWO SENSES OF "DOMAIN": `trust_domain` is the ambient federation boundary ABOVE org (an
- * instance-scoped floor row, no `org_id`); `containment_domain` is the intra-org `domain` OBJECT
- * TYPE BELOW org (an ordinary graph node). The fixture below builds BOTH, in the same chain, so the
- * two can be told apart in the resolved contributor list rather than taken on faith.
- */
+/** M17.5 — SCOPED SCAN-REQUIREMENT POLICIES. See docs/governance.md §416. */
 
 const OPERATOR_TOKEN = "m17-5-operator-token-fixture";
 const MATCH_DIGEST = "sha256:cccc222222222222222222222222222222222222222222222222222222222222";
@@ -89,27 +65,7 @@ async function startTrivySource(): Promise<TrivySource> {
   };
 }
 
-/**
- * M22.0a — DISAMBIGUATED. This used to be `.find(r => r.controlObjectId === controlId)`, which was
- * unambiguous only while a control could produce at most ONE run per change. Since the control-run
- * cache is keyed on gate identity (`latestControlRunForGate`), a single change can now hold a
- * `lifecycle_edge` run AND a `wave_boundary` run for the same control — and `.find()` silently
- * returned whichever row the listing happened to put first.
- *
- * Every assertion in this file still passed under the old form, because both runs resolve the same
- * ceiling from the same policies and their evidence agrees. That is exactly why it was worth fixing
- * BEFORE it mattered: the first test whose two runs legitimately DIFFER would have gone green or red
- * on listing order. Now the caller gets the NEWEST matching run rather than an arbitrary one.
- *
- * IT CAN NOW NAME THE GATE IT MEANS — M22.8 closed the gap this comment used to record.
- * `controlRuns.listForChange` (and `/changes/{id}/explain`, the other projection of the same shape)
- * carry `gateKind` and `gateRef` as additive optional response fields, so an operator reading the
- * API can finally tell which crossing a given run authorized rather than inferring it from ordering.
- * This helper is deliberately left filtering on control + status: its callers want "the newest run
- * of this control in this state", and narrowing it to one crossing would change what every existing
- * assertion in this file means. `scan-requirements-read.integration.test.ts` is where the projection
- * itself is pinned.
- */
+/** Disambiguated: what the previous lookup could not tell. See docs/governance.md §417. */
 async function waitForControlRun(
   admin: ScpClient,
   changeId: string,
@@ -178,15 +134,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     operator = new ScpClient({ baseUrl: server.baseUrl, token: bootstrap.adminToken });
   });
 
-  /**
-   * `scan_requirement_floors` is INSTANCE-GLOBAL (no `org_id`) and the integration suite runs
-   * `singleFork` against ONE shared Postgres, so a live floor left behind here (e.g. platform
-   * maxHigh = 0) would silently tighten EVERY later suite's gates — notably M17.1's supply-chain
-   * scan tests. Each test sets exactly the floors it needs, but a test that FAILS mid-way never
-   * reaches the next one's `setInstanceFloors`, so clearing must happen in a hook that runs
-   * regardless of outcome. Both rows are reset to all-NULL (inert) after every test AND once more
-   * at teardown, so this file is self-contained no matter where it fails.
-   */
+  /** `scan_requirement_floors` is INSTANCE-GLOBAL. See docs/governance.md §418. */
   async function clearInstanceFloors(): Promise<void> {
     if (!operator) return;
     await setInstanceFloors({});
@@ -221,16 +169,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     await operator.instanceScanFloors.put("trust_domain", body(opts.trustDomain), OPERATOR_TOKEN);
   }
 
-  /** org root -> containment domain -> service -> component, with the component reachable from BOTH
-   *  the service (`contains`) and the org root (its own `domain_id`) — the real four-tier chain the
-   *  org-and-below resolver walks.
-   *
-   *  `withAssembly` inserts the OPTIONAL rung migration 0055 added, giving
-   *  `org -> containment domain -> service -> ASSEMBLY -> component`. The component then hangs off
-   *  the assembly rather than the service, so the service is reached only by continuing up through
-   *  the assembly — which is what makes the two tiers separable in the contributor list below. Only
-   *  ONE assembly rung is built because `assembly -> assembly` is refused at write time
-   *  (`relationships-repo.ts`; migration 0054's header), so this is the deepest legal ladder. */
+  /** The full containment chain, with the component reachable. See docs/governance.md §419. */
   async function buildChain(
     org: TestOrg,
     admin: ScpClient,
@@ -272,11 +211,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
      *  otherwise derive the same name-slug URN and collide). Defaults to the server's name-slug. */
     urn?: string
   ) {
-    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
-    // `scanThreshold` rule that requires no scan control: such a document is silently inert,
-    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
-    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
-    // doc: a real bound control would add a control run and change what these tests measure.
+    // M22.8 — the authoring guard. See docs/governance.md §420.
     const scanControlId = SCAN_RULE_TEST_CONTROL_REF;
     return admin.policies.create({
       name,
@@ -373,11 +308,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const run = await waitForControlRun(admin, change.id, control.id, "pass");
     const evidence = run.evidence as unknown as ScanEvidenceShape;
 
-    // THE ASSERTION: per-severity MIN across all six tiers.
-    //   maxCritical: platform 90, containment-domain 60, service 5            -> 5
-    //   maxHigh:     platform 90, trust-domain 80, service 50, component 4    -> 4
-    //   maxMedium:   platform 90, trust-domain 80, org 7                      -> 7
-    //   maxLow:      platform 90, trust-domain 80, org 70, containment-dom 6   -> 6
+    // THE ASSERTION: per-severity MIN across all six tiers. See docs/governance.md §421.
     expect(evidence.threshold).toEqual({ maxCritical: 5, maxHigh: 4, maxMedium: 7, maxLow: 6 });
     expect(evidence.thresholdSource).toBe("scoped");
 
@@ -390,31 +321,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     );
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (a2) THE ASSEMBLY RUNG (M22.0, ADR-0033 §5). Migration 0055 added the OPTIONAL
-  //      `service -> assembly -> component` level. `containmentChain` walks it for free (it matches
-  //      on the `contains` EDGE, never on the parent's TYPE), so an assembly-anchored ceiling has
-  //      always ENFORCED correctly — the merge is an order-independent per-severity MIN that never
-  //      reads a tier label. But `tierForObjectType` is a HARDCODED rung list, and until M22.0 it
-  //      fell `assembly` through to `component`: the ceiling bound, and the Decision named the wrong
-  //      tier, breaking ADR-0016 §5's promise that a block can say which tier bound it.
-  //
-  //      THE TWO ARMS ARE DELIBERATELY SPLIT, and the contrast is the point:
-  //        * ENFORCEMENT — the assembly's maxHigh: 0 really does tighten the org's 5 and fail the
-  //          run. Reverting `case "assembly"` leaves this GREEN, because the merge never reads a
-  //          tier. A test that asserted only this would be green for the wrong reason.
-  //        * THE LABEL — the persisted contributor names tier `assembly`. Reverting `case
-  //          "assembly"` turns it into `component` and ONLY this arm goes red.
-  //
-  //      A LOOSE `service` FLOOR IS AUTHORED ALONGSIDE so the assertion also rules out the other
-  //      plausible mislabel (reporting the assembly at its parent's tier): three contributors, three
-  //      distinct labels, one of which can only come from the new switch case.
-  //
-  //      MUTATION-PROVEN (measured 2026-08-17): reverting `case "assembly"` in `tierForObjectType`
-  //      fails ONLY the label arm — `expected 'component' to be 'assembly'` — while the enforcement
-  //      arm above it stays green and the run still fails at maxHigh 0. That contrast is the result,
-  //      not a side effect of it.
-  // -----------------------------------------------------------------------------------------
+  // (a2) THE ASSEMBLY RUNG. See docs/governance.md §422.
 
   it("(a2) an ASSEMBLY-anchored ceiling is reported at tier 'assembly' — and still BINDS, which is the half that was never broken", async () => {
     await setInstanceFloors({}); // org-and-below only: the contributor set below must be exhaustive
@@ -549,11 +456,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     expect(controlEffect?.detail.outcome).toBe("fail");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (b2) A CONDITIONAL scan-requirement policy contributes its ceiling ONLY when its condition
-  //      fired — the same condition semantics `requireControls`/`requireApprovals` already have.
-  //      Both arms are identical but for the condition string, and both run at the REAL gate.
-  // -----------------------------------------------------------------------------------------
+  // A conditional policy contributes only when it fires. See docs/governance.md §423.
 
   it("(b2) a conditional scan-requirement policy whose condition is FALSE does not tighten the effective threshold — the SAME policy with a TRUE condition does", async () => {
     // ARM 1 — the component floor (maxHigh: 0) carries an always-FALSE condition. It must NOT
@@ -624,13 +527,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     ).toBe(true);
     expect(runTrue.detail).toMatch(/exceeds/i);
 
-    // ARM 3 — the SAME fixture, ADVISORY enforcement, but the condition cannot be EVALUATED (it
-    // references a label the component does not carry, so cel-js errors). "Condition FALSE" and
-    // "condition UNEVALUABLE" are different: a false condition drops the ceiling (ARM 1), but an
-    // UNEVALUABLE one must FAIL CLOSED and still supply its ceiling — at EVERY enforcement level,
-    // advisory included. A scan ceiling is applied by scan-result-control regardless of the
-    // authoring policy's enforcement, so silently dropping it would flip this FAIL to a PASS
-    // (the fail-open regression this arm pins). `scanFloorPolicy` authors `advisory` by default.
+    // The same fixture, but the condition cannot be evaluated. See docs/governance.md §424.
     const orgErr = await createTestOrg(server, "cond-error");
     const adminErr = new ScpClient({ baseUrl: server.baseUrl, token: orgErr.adminToken });
     const chainErr = await buildChain(orgErr, adminErr, "cond-error");
@@ -670,12 +567,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     ).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (b3) PRECISION: an UNEVALUABLE condition re-admits ONLY the contributor that errored — a
-  //      SIBLING in the same name-group whose condition cleanly evaluated FALSE stays EXCLUDED.
-  //      This guards the fail-closed carve-out from over-correcting back into the over-restriction
-  //      the FIRED-set change removed (a cleanly-false ceiling must never tighten).
-  // -----------------------------------------------------------------------------------------
+  // Precision: only the contributor that errored is readmitted. See docs/governance.md §425.
 
   it("(b3) an unevaluable condition supplies ONLY the errored contributor's ceiling — a cleanly-FALSE sibling in the same name-group is still excluded", async () => {
     const org = await createTestOrg(server, "cond-precision");
@@ -683,11 +575,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const chain = await buildChain(org, admin, "precision");
     // Org floor: a loose maxHigh: 10 — two HIGHs pass under it alone.
     await scanFloorPolicy(admin, "floor-org", org.orgId, { maxHigh: 10 });
-    // ONE name-group ("floor-multi") with TWO contributors on the component:
-    //   - the ERRORED one carries a LOOSER ceiling (maxHigh: 5) and an unevaluable condition,
-    //   - the cleanly-FALSE sibling carries a TIGHTER ceiling (maxHigh: 0) and condition `1 == 2`.
-    // If the fix over-admitted the whole group, the sibling's 0 would win the MIN and BLOCK. It
-    // must not: only the errored contributor's 5 may apply, so two HIGHs PASS at an effective 5.
+    // One name group with two contributors on the component. See docs/governance.md §426.
     await scanFloorPolicy(
       admin,
       "floor-multi",
@@ -944,11 +832,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       resolved.push((run.evidence as unknown as ScanEvidenceShape).threshold);
     }
 
-    // MIN over the whole set, regardless of visit order:
-    //   maxCritical: platform 3, org 7, service 1        -> 1
-    //   maxHigh:     platform 9, trust 2, dom 6, comp 9  -> 2
-    //   maxMedium:   trust 8, org 4, comp 3              -> 3
-    //   maxLow:      dom 5, service 9                    -> 5
+    // MIN over the whole set, regardless of visit order. See docs/governance.md §427.
     expect(resolved[0]).toEqual({ maxCritical: 1, maxHigh: 2, maxMedium: 3, maxLow: 5 });
     expect(resolved[1]).toEqual(resolved[0]);
   });

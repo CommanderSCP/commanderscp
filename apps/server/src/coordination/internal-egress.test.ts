@@ -6,14 +6,7 @@ import {
   EXECUTION_SYSTEM_INSTANCE_PREFIX
 } from "./executor-bindings-repo.js";
 
-/**
- * The plugin-host instance keyspace is ONE flat namespace shared by executor, notification and
- * control bindings, and `SubprocessPluginHost.start()` silently skips an id that is already
- * registered. Execution-system instance ids are deterministic (`execution-system:<uuid>`), so a
- * caller-supplied id squatting that prefix would win the race and silently re-point a real system's
- * coordination traffic at tenant-controlled config. Enforced at the REPO layer (every binding type's
- * upsert) rather than per-route, so a future write path can't reintroduce the hole by forgetting it.
- */
+/** The plugin-host instance keyspace is one flat namespace. See docs/coordination.md §549. */
 describe("assertNotReservedInstanceId — reserved execution-system instance namespace", () => {
   it("rejects a caller-supplied id squatting the reserved prefix", () => {
     expect(() =>
@@ -45,18 +38,7 @@ describe("assertNotReservedInstanceId — reserved execution-system instance nam
   });
 });
 
-/**
- * Two-layer internal-egress resolution (ADR-0003). The whole point of this design is that NEITHER
- * layer grants anything alone:
- *  - layer 1 = SCP_INTERNAL_EGRESS_HOSTS, the operator's host-level allowlist (the hard boundary,
- *    outside the graph so it can't depend on RBAC/graph state being right);
- *  - layer 2 = the execution-system object's `allowInternalEgress` property (declared intent).
- *
- * The regression these tests guard is the one an adversarial review caught pre-merge: an earlier cut
- * trusted the PROPERTY alone, which any tenant with plain `object:write` could set on a
- * self-registered execution-system pointing anywhere — a straight SSRF. Here, a tenant declaring the
- * property on an un-allowlisted host must get NOTHING.
- */
+/** Two-layer internal-egress resolution. See docs/coordination.md §550. */
 describe("resolveInternalEgress — two-layer (operator allowlist AND declared intent)", () => {
   const ENV = "SCP_INTERNAL_EGRESS_HOSTS";
   const original = process.env[ENV];

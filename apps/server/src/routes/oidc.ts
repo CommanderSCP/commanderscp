@@ -15,16 +15,7 @@ const PKCE_COOKIE = "scp_oidc_pkce";
 const PKCE_COOKIE_TTL_SECONDS = 600; // ~10 min — short-lived CSRF/replay window, DESIGN.md §7
 const PKCE_COOKIE_PATH = "/api/v1/auth/oidc";
 
-/**
- * Generic OIDC login (M2 step 2 Part B, DESIGN.md §7) — `GET /login` redirects to the IdP,
- * `GET /callback` completes the exchange, JIT-provisions the user, and sets the same session
- * cookie `routes/auth.ts` sets for local-auth. Like `routes/events.ts` (SSE), these are plain
- * browser-redirect routes, not JSON request/response pairs the Zod/OpenAPI contract pipeline
- * models — the success response is a 302 with no body, not a schema-typed payload.
- *
- * SECURITY: never logs the authorization code, PKCE code_verifier, or any token — see
- * auth/oidc.ts's module doc.
- */
+/** Generic OIDC login (M2 step 2 Part B, DESIGN.md §7). See docs/routes.md §278. */
 export function registerOidcRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.get("/api/v1/auth/oidc/login", async (request, reply) => {
     const oidc = deps.config.oidc;
@@ -88,16 +79,7 @@ export function registerOidcRoutes(app: FastifyInstance, deps: AppDeps): void {
       claims
     });
 
-    // IdP GROUP SYNC + the login audit event, in ONE transaction (`auth/identity-sync.ts`).
-    //
-    // TOGETHER ON PURPOSE: a sync that commits without its audit event leaves authority changing
-    // with no record, and an audit event that commits without the sync claims a login reconciled
-    // membership it did not. Charter principle 6 asks for the audit write to share the action's
-    // transaction; this is that rule applied to a login.
-    //
-    // AFTER the session is created and BEFORE the cookie is set, so a sync failure — an overage
-    // token, most importantly — surfaces as a failed login rather than as a signed-in user whose
-    // authority silently did not update.
+    // IdP GROUP SYNC + the login audit event, in ONE transaction. See docs/routes.md §279.
     const syncOutcome = await withTenantTx(deps.db, provisioned.orgId, async (tx) => {
       const outcome = await syncExternalGroupMembership(tx, {
         orgId: provisioned.orgId,

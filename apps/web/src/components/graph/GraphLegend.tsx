@@ -3,20 +3,7 @@ import { shapeForType } from "../../lib/graph-visual";
 import { AssemblyStack, ComponentCrate, ServiceGuidon } from "../icons/catalog-marks";
 import { CommanderStar, OutpostFort } from "../icons/federation-roles";
 
-/**
- * Legend for the graph views. Keeps the node/edge encoding legible without cramming a key into the
- * canvas.
- *
- * TWO CHANNELS, TWO SECTIONS. Shape says what a node IS and is fixed; colour says which group it
- * belongs to and is recomputed per view, so a colour swatch per type would be a lie. `shapes`
- * therefore renders neutral-grey glyphs (the shape is the message, the fill is not), and `note`
- * carries the one sentence explaining what colour means in THIS view.
- *
- * Star/hexagon/pentagon were previously approximated with a `clip-path` polygon on a plain div —
- * close enough to read at a glance but visibly not the real shape. Those three now render the
- * actual lucide glyph (§4 Group D); circle and the other clip-path-drawable shapes stay divs since
- * a CSS shape IS the real shape for them (no approximation to fix).
- */
+/** Legend for the graph views. See docs/web.md §56. */
 const SHAPE_ICON: Partial<Record<string, LucideIcon>> = {
   hexagon: Hexagon,
   star: Star,

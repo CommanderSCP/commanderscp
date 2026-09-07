@@ -59,12 +59,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     }
   });
 
-  // -------------------------------------------------------------------------------------------
-  // Web UI v1 (M2 step 4, BUILD_AND_TEST.md §8 M2 item 2) — the SPA has no way to read the
-  // httpOnly `scp_session` cookie itself, so it discovers "am I logged in" via `/auth/me` and
-  // ends its session via `/auth/logout`. `/auth/config` is public so the login page can decide
-  // whether to render "Continue with SSO" before the visitor has any credentials.
-  // -------------------------------------------------------------------------------------------
+  // Web UI v1 (M2 step 4, BUILD_AND_TEST.md §8 M2 item 2). See docs/routes.md §2.
 
   typed.route({
     method: "GET",
@@ -90,11 +85,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId
         });
-        // DENY ROWS ARE EXCLUDED FROM THE UNION AND KEPT IN THE LIST. A deny suppresses the
-        // permissions its own role carries at its own scope; it confers nothing anywhere, so
-        // folding it into a union of what the caller CAN do would be strictly false. The binding
-        // stays visible in `roleBindings` because an operator asking why a control is missing
-        // needs to see it.
+        // DENY ROWS ARE EXCLUDED FROM THE UNION AND KEPT IN THE LIST. See docs/routes.md §3.
         const permissionsAnywhere = [
           ...new Set(bindings.filter((b) => b.effect === "allow").flatMap((b) => b.permissions))
         ].sort();
@@ -148,11 +139,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
       // silent 204 — logout only "succeeds" for a caller who was actually authenticated.
       await requireAuth(deps, request);
       const token = extractToken(request);
-      // A session token (local-auth or OIDC — both create rows via auth/local-auth.ts
-      // `createSession`) gets its row deleted, so it stops working immediately. A PAT is a
-      // separate, longer-lived credential the caller may be using from a non-browser context
-      // (e.g. the CLI) — "logging out" a PAT isn't a coherent operation (there is no session to
-      // end), so that case just no-ops successfully rather than deleting/revoking the PAT itself.
+      // A session token. See docs/routes.md §4.
       if (token && !isPatToken(token)) {
         await invalidateSessionByToken(deps.db, token);
       }

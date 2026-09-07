@@ -32,20 +32,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * The routing `type` carried SOURCE MAPPING -> CHANGE -> WAVE TARGET -> the executor reconcile
- * triggers (model P4A, migration 0024; renamed from `purpose` to the Type taxonomy in ADR-0007 /
- * migration 0026).
- *
- * P3 made a component able to hold several Types of binding, but left reconcile asking
- * `getExecutorBinding(...)` with no Type — i.e. always the default. A non-default binding was
- * registerable and readable, and could never actually be TRIGGERED (nor, as the observe test below
- * shows, ever polled). This suite is the proof that the wire is connected end to end.
- *
- * The decisive assertion throughout is `change_wave_targets.executor_plugin_id`: reconcile persists
- * the plugin instance it ACTUALLY resolved and triggered, so a wave target reading 'inf-pipeline'
- * is proof the `infrastructure` binding drove the release, not the `configuration` one beside it.
- */
+/** The routing Type carried from mapping to executor. See docs/coordination.md §1044. */
 describe("wave target type: a release triggers the matching-Type pipeline", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -298,13 +285,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
   });
 
   it("a Type passed inside `properties` is inherited, not clobbered — the federation-promotion path", async () => {
-    // `proposeChange` writes `type` AFTER spreading the caller's properties, so a caller that carries
-    // the Type INSIDE properties and doesn't also pass the typed field used to have it silently
-    // overwritten with the default. `federation/promotion-repo.ts` is exactly that caller: it replays
-    // a promotion bundle's change properties verbatim. An infrastructure release promoted from another
-    // domain would have arrived here as 'configuration' and triggered this domain's configuration
-    // binding. Asserted at proposeChange rather than through a full two-domain promotion (covered in
-    // federation's own suite) — this pins the precedence rule the promotion path relies on.
+    // The type is written after the caller's properties. See docs/coordination.md §1045.
     const componentId = await componentWithBothPipelines("promoted");
     const { change } = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       proposeChange(tx, {
@@ -324,11 +305,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
   });
 
   it("a Type this version doesn't recognise is REFUSED, not quietly defaulted", async () => {
-    // Reachable via version skew: Types are additive, and promotion replays a peer's properties
-    // verbatim, so an outpost a version behind can be handed a Type it has never heard of. Coercing it
-    // to a default would fire the wrong pipeline for a release that explicitly said otherwise. This is
-    // ALSO the hard-cutover safety net (ADR-0007 D3): the retired 'infra'/'software' now hit this
-    // throw. Absent still means 'configuration' — covered above.
+    // Reachable via version skew. See docs/coordination.md §1046.
     const componentId = await componentWithBothPipelines("future-type");
     await expect(
       withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -364,11 +341,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
   });
 
   it("OBSERVE polls the infrastructure instance too, not the configuration one twice", async () => {
-    // `observeOrgTick` dedupes bindings to one poll per pluginInstanceId, then re-resolves each from
-    // its target. Resolving WITHOUT the deduped binding's own Type defaulted to 'configuration', so for
-    // a target holding both pipelines the 'infrastructure' entry resolved the CONFIGURATION instance:
-    // that instance was polled twice in a tick and the infrastructure instance was never observed at
-    // all. Silent, because the resolve succeeds and hands back a perfectly valid instance — the wrong one.
+    // Bindings dedupe to one poll, then re-resolve each. See docs/coordination.md §1047.
     const componentId = await componentWithBothPipelines("observe-both");
 
     const polled: string[] = [];
@@ -391,17 +364,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
   });
 
   it("the plan is a SNAPSHOT: a RE-TRIGGER uses the wave target's Type, not the change's current one", async () => {
-    // The Type is persisted onto the wave target at plan time rather than re-read from the change at
-    // trigger time — the same discipline the topology document already follows. An in-flight release
-    // must not switch pipelines because someone edited the change underneath it.
-    //
-    // Forcing a genuine RE-TRIGGER is what makes this load-bearing. A first tick compiles the plan AND
-    // triggers in one pass; a second tick would only take the POLL branch, which can neither recompile
-    // (`compileAndPersistPlan` runs only for state 'evaluated') nor re-trigger (`markWaveTargetTriggered`
-    // is guarded on status 'triggering'). So merely editing the change and ticking again asserts
-    // nothing: it would pass even if the Type WERE re-read from the change. Resetting the target to
-    // 'pending' reproduces the real crash-retry path — the one place the snapshot decides which pipeline
-    // fires.
+    // The Type is persisted at plan time, not re-read later. See docs/coordination.md §1048.
     const componentId = await componentWithBothPipelines("snapshot");
     const change = await admin.changes.propose({
       name: "snapshot release",
@@ -433,12 +396,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
     expect(targets[0]!.executorPluginId).toBe("inf-pipeline");
   });
 
-  // -----------------------------------------------------------------------------------------------
-  // FAIL-CLOSED on a masking executor-binding gap (docs/adr/0006). A target with >=1 real binding but
-  // NONE for the Type being triggered must NOT fake-succeed — it hides a misconfiguration. It must
-  // block loudly (Decision + hash-chained audit + `no_executor` terminal) and PARK the change. A
-  // target with ZERO bindings keeps fake-succeeding (fake IS its configured rehearsal executor).
-  // -----------------------------------------------------------------------------------------------
+  // FAIL-CLOSED on a masking executor-binding gap. See docs/coordination.md §1049.
 
   /** Query helpers for the fail-closed assertions. */
   const decisionsForChange = (changeId: string) =>
@@ -457,11 +415,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
   };
 
   it("MASKING GAP (b): an IMAGE release against a target with only a CONFIGURATION binding blocks, does not fake-succeed", async () => {
-    // Pre-fix, `getExecutorBinding(image)` returned undefined and reconcile fell back to the shared
-    // fake executor, driving this target to `triggered`/`succeeded` under 'fake-executor' with NO
-    // Decision, NO audit event, and NO park — a green no-op masking a real misconfiguration. This is
-    // the sharpened ADR-0006 wording under Type: "has a `configuration` binding, receives an `image`
-    // release." Every assertion below is therefore also the proof this test FAILS on pre-fix code.
+    // Pre-fix, it fell back to the shared fake executor. See docs/coordination.md §1050.
     const componentId = await createTestComponent(admin, {
       name: `masking-gap-${uuidv7().slice(0, 8)}`
     }).then((c) => c.id);

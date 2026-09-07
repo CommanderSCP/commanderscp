@@ -2,15 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PlanDiff, PlanSourceMappingDiffEntry } from "@scp/schemas";
 import { diffEntryRow, planDiffEntries } from "./cli.js";
 
-/**
- * `scp iac plan`'s source-mapping row must show the REF (ADR-0030 §1).
- *
- * This is review integrity, not formatting. The ref is part of the mapping identity, so a prune
- * matches on it — and two mappings differing only by ref (`refs/heads/dev` → the dev pipeline,
- * `refs/heads/main` → production) render IDENTICALLY without it. An operator approving
- * "delete source-mapping github:acme/api:*" would have no way to tell which of the two routes the
- * plan is about to remove.
- */
+/** `scp iac plan`'s source-mapping row must show the REF. See docs/cli.md §135. */
 describe("diffEntryRow: source-mapping entries carry the ref that identifies them", () => {
   const base: PlanSourceMappingDiffEntry = {
     kind: "source-mapping",
@@ -45,27 +37,7 @@ describe("diffEntryRow: source-mapping entries carry the ref that identifies the
   });
 });
 
-/**
- * NOTHING `computePlanDiff` COMPUTES MAY BE INVISIBLE IN `scp plan`.
- *
- * The summary counters are computed over EVERY collection, but the table used to be built from four
- * of them. A plan whose only content was a `governanceMoveRungs` delete therefore printed an EMPTY
- * table under `creates=0 updates=0 deletes=1 noops=0` — the table and the summary contradicting each
- * other, with the missing row being the one that says "this DISABLES the governance:move bar on
- * service X". That is the worst omission of the three, because a disabled bar's symptom is an
- * ABSENCE of refusals: nothing downstream ever surfaces the mistake.
- *
- * The gate is deliberately a COUNT over the whole diff rather than a per-kind assertion, so it is a
- * statement about the property ("every collection is printable") and not about the three instances
- * that happened to be missing on the day it was written.
- *
- * MUTATION LOG — each applied, watched fail, reverted, watched pass:
- * | Mutation | Measured |
- * |---|---|
- * | drop `...(diff.governanceMoveRungs ?? [])` from `planDiffEntries` | "every entry the diff carries reaches the table": `expected 7 to be 8`, and the rung-row case reds too |
- * | drop `...(diff.placements ?? [])` / `...(diff.producers ?? [])` | same count case reds (`7 to be 8`) |
- * | `diffEntryRow`'s governance-move-rung branch removed (falls through) | TYPE ERROR at the `const unknown: never = entry` binding — the omission cannot even compile |
- */
+/** NOTHING `computePlanDiff` COMPUTES MAY BE INVISIBLE IN `scp plan`. See docs/cli.md §136. */
 describe("planDiffEntries: every collection computePlanDiff can emit reaches the printed table", () => {
   const full: PlanDiff = {
     objects: [

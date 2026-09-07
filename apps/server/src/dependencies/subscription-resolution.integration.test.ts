@@ -25,38 +25,7 @@ import {
   resolveDependencySubscription
 } from "./subscription-resolution.js";
 
-/**
- * M21.3 — THE ENABLEMENT CHAIN AGAINST REAL POSTGRES (ADR-0032 §3a/§6, migration 0062).
- *
- * The pure algebra is proven without a database in `subscription-resolution.test.ts`. THIS file
- * proves the five things that only a real database and the real policy machinery can:
- *
- *   1. THE SUBSTRATE LANDED. `dependency_subscription_unlock` exists, ships EMPTY (no row = locked),
- *      is tenant-READABLE and tenant-UNWRITABLE — both barriers from 0062's header, probed with a
- *      RAW `scp_app` connection rather than through application code.
- *   2. A `dependencySubscription` EFFECT VALIDATES on a real `policy` object, and the malformed
- *      shapes are refused at AUTHORING TIME (400) rather than resolving to nothing later. That is
- *      the half of "absent never means enabled" that lives in the JSON Schema.
- *   3. THE WORK-LIST IS DERIVED, NOT FILTERED. A disabled component and an opted-out line are absent
- *      from `listSubscribedComponentLines`, and the enabled ones are present — the negative control
- *      without which the absences prove nothing.
- *   4. TIER LABELS COME FROM `typeId`, NOT FROM POSITION, over a REAL four-rung containment chain
- *      (org -> containment domain -> service -> component). `containmentChain` can hand back a chain
- *      whose index 0 is not the org (BUILD_AND_TEST.md M21.3's "root labels can lie"), so this is
- *      asserted rather than assumed.
- *   5. THE CEL-CONDITION WIRING EXISTS, over a policy whose `condition` was AUTHORED THROUGH THE
- *      API. The pure merge honours `candidate.conditional`, but the line that SETS it from
- *      `match.condition` was pinned by NOTHING — deleting it left every unit and every integration
- *      test green while a conditional ENABLE silently became an unconditional one.
- *
- * Plus the property that makes ADR-0032 §3a consequence 4 true rather than merely intended: a policy
- * carrying a `dependencySubscription` effect adds NOTHING to what the gate enforces.
- *
- * INSTANCE-GLOBAL FIXTURE, HANDLED LIKE THE SCAN FLOORS. `dependency_subscription_unlock` has no
- * `org_id` and the integration suite runs `singleFork` against ONE shared Postgres, so the row is
- * deleted at teardown no matter how this file exits — a stray unlock is inert for every other suite
- * today, but "inert today" is not a reason to leak deployment state out of a test file.
- */
+/** M21.3 — THE ENABLEMENT CHAIN AGAINST REAL POSTGRES. See docs/dependencies.md §372. */
 describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -305,12 +274,7 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     });
 
     it("refuses a MISTYPED SELECTOR KEY — on an enable AND on an opt-out (0062 `additionalProperties: false`)", async () => {
-      // THE SAME PROPERTY AS THE ECOSYSTEM ENUM ABOVE, one level up: a selector that fails to bind
-      // must void ITSELF, not the constraint. Ajv is compiled with `strict: false`
-      // (`graph/property-validation.ts:14`), so without `additionalProperties: false` an unknown key
-      // raises nothing here AND is then STRIPPED by the resolver's parse — arriving at the merge as
-      // an effect with NO selectors, i.e. a WILDCARD. One transposed character would subscribe every
-      // dependency line in the scope, and the same typo on an opt-out would wildcard the DISABLE.
+      // The same property as the enum above, one level up. See docs/dependencies.md §373.
       const typoEnable = await expectApiError(() =>
         subscriptionPolicy("schema-typo-enable", subscribedComponent, {
           enabled: true,
@@ -622,20 +586,7 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (5) A REAL CEL `condition` ON A REAL POLICY — the wiring, not just the flag
-  //
-  // The pure merge honours `candidate.conditional` and `subscription-resolution.test.ts` pins both
-  // of its directions. What NOTHING pinned is the line that SETS it: `gatherSubscriptionCandidates`
-  // reading `match.condition` off the matched policy. Deleting that one spread left all 26 unit and
-  // all 13 integration tests green, because every test that exercised a condition hand-built the
-  // flag instead of authoring a policy that carries one. With the wiring gone a conditional ENABLE
-  // becomes an unconditional one, and `{"condition": "env == \"prod\""}` subscribes a component the
-  // condition excludes — the exact fail-open the module doc calls out as load-bearing.
-  //
-  // So this suite authors the condition through the API and reads the flag back out of the real
-  // matcher. Nothing here hand-sets `conditional`.
-  // -----------------------------------------------------------------------------------------
+  // (5) A REAL CEL `condition` ON A REAL POLICY. See docs/dependencies.md §374.
 
   describe("(5) a CEL condition authored on a real policy", () => {
     let conditionalComponent: string;

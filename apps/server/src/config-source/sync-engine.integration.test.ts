@@ -17,43 +17,7 @@ import {
 import { CONFIG_SOURCE_SYNC_DECISION_KIND, syncConfigSourceCommit } from "./sync-engine.js";
 import type { ManifestRead } from "./sync-engine.js";
 
-/**
- * THE SYNC ENGINE, END TO END (ADR-0046 §1/§2; team-pipeline-iac §4/§5, D3/D9/D26).
- *
- * ============================================================================================
- * WHAT THIS FILE HAS TO PROVE
- * ============================================================================================
- * Round A merged four pure decisions and wired none of them; round B made the registration real.
- * This is the caller, and the properties that matter are the ones a green "it applied" would not
- * establish:
- *
- *  1. **THE TEAM IS THE ACTOR, AND ITS AUTHORITY BINDS.** A manifest that reaches outside the
- *     team's scope is refused even though the sync loop holds no credential and could trivially
- *     have called `executePlanDiff` with a system actor — the shortcut ADR-0046 §1 names and
- *     forbids, whose defining property is that everything still works.
- *  2. **EVERY REFUSAL IS EVALUATED, NOT THE FIRST.** The status an operator reads is all of them.
- *  3. **FAILURE IS DISPLAYED, NEVER INFERRED.** Unreadable, unparseable, invalid, refused, frozen
- *     — each produces a status AND a Decision carrying the commit SHA and manifest content hash.
- *  4. **FREEZES HOLD, THEY DO NOT BLOCK** — nothing is written, nothing errors, and the same
- *     commit applies once the window lifts.
- *  5. **D26: OWNERSHIP FOLLOWS DELIVERY** — a stack nobody wrote into `stackTeams` is repo-owned
- *     after the sync applies it, and D7's refusal then covers it.
- *
- * ============================================================================================
- * MUTATION LOG — each applied, watched fail, reverted, watched pass (MEASURED)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | apply with `SYSTEM_ACTOR_ID` instead of the team, checks skipped — THE SHORTCUT ADR-0046 §1 FORBIDS | (1) FAILS: the out-of-scope manifest applies. Nothing else notices, which is the whole reason that shortcut is named in the ADR rather than left to judgement. |
- * | collect only the FIRST authz refusal (`break`) | (1) FAILS: one refusal reported where three are real. |
- * | `findStackConfigSourceBinding` drops the delivered half | (4) FAILS: a stack the sync just applied reads as unowned, so a CLI push would be admitted and reverted. |
- * | record the delivery AFTER `executePlanDiff` instead of before | (6) FAILS: the second config source's objects are written before the ownership refusal is discovered. |
- * | the delivery upsert loses its `setWhere` ownership guard | (6) FAILS: ownership silently transfers to whichever source pushed last — D9's "never last-writer-wins", in the one place a read-then-write cannot see it. |
- * | freeze targets read `id` only, without the `scopeObjectId` fallback | (7) FAILS: a create-only manifest waves straight through an active freeze, because a diff of creates has no ids yet and an empty target list is indistinguishable from "nothing frozen". |
- *
- * THE LAST ONE WAS A REAL DEFECT, found by writing the case rather than by review: the first cut of
- * `affectedObjectIds` returned ids only.
- */
+/** THE SYNC ENGINE, END TO END. See docs/config-source.md §27. */
 describe("config-source sync engine", () => {
   let server: ListeningTestServer;
 

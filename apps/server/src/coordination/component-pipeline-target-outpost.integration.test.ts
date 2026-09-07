@@ -14,58 +14,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * pipeline-substrate-registry-scan.md §10.2 — WHICH OUTPOST EACH TARGET IS PART OF, by the owner's
- * TRUST-DOMAIN RULE: the `outpost` object whose `properties.peerDomainId` equals the target's own
- * `origin_domain_id` — and §10.5, EVERY TARGET IS WITHIN AN OUTPOST: resolution is OBJECT-FIRST, so
- * an object naming self (the HQ outpost, or an outpost site's replica of its own config)
- * wins over `self`, which is now the stated ABSENCE of one. Through the real HTTP route against
- * real Postgres.
- *
- * WHAT EACH TEST PINS, AND WHY IT IS NOT VACUOUS
- *   - `self`: a locally-authored target reads this instance's federation NAME (initialised here to a
- *     value that is neither the org id nor any peer's name — so "always self" or "peer name" fail)
- *     — WHILE no outpost object names self (this test runs before any is planted or declared).
- *   - `outpost`: a target hand-filled under a paired outpost peer that HAS an `outpost` object reads
- *     that object's id/name/trustTier — on a PLACED stage AND on an UNPLACED stage (one literal feeds
- *     both arrays; a fix applied to one array fails the other).
- *   - `peer-without-outpost`: a target under a paired peer with NO outpost object names the PEER, id
- *     null, tier null — a second paired peer, so it cannot pass by "the only peer has an outpost".
- *   - `unknown-domain`: a target whose origin is a domain this instance never paired with carries the
- *     raw origin id and nothing else — and does NOT read as `self`.
- *   - the outpost's `trustTier` is READ off the object (`il5`), never defaulted; a peer whose object
- *     declares NO tier reads null.
- *   - `peer-not-outpost`: a target under a `retrans` peer AND one under a `commander` peer each name
- *     the peer WITH its role and are NOT `peer-without-outpost` — pinned beside the proof that the
- *     state is needed: `createOutpost` for that peer answers 400 (outpost-binding.ts takes only
- *     `outpost`-role peers), so a client offering "declare an outpost record" would be lying.
- *   - a soft-deleted outpost object stops matching (`isNull(deletedAt)` in
- *     `resolveOutpostObjectsByPeer`) — the target falls back to `peer-without-outpost`.
- *   - two live rows on one peer resolve by `byAuthority` — a verified replica outranks an OLDER
- *     `provenance:'manual'` shadow — and `GET /federation/outposts/{peer}` picks the same row.
- *   - precedence (§10.5, OBJECT-FIRST): an outpost object whose `peerDomainId` is self (an outpost
- *     site's replica of its own config) turns a locally-authored target into `outpost <its name>`
- *     — the inverse of the §10.2 self-first expectation this test used to pin; the replica is
- *     soft-deleted at the end so the next case starts from "no self object".
- *   - the HQ outpost (§10.5): `createOutpost({peerDomainId: self})` through the API is
- *     201, and every self-origin target — placed AND unplaced — reads `outpost <its name> · <tier>`
- *     with `peerRole` = self's own role and `peerDomainId` = self; a second is 409.
- *
- * MUTATION LOG (each applied ALONE, then reverted)
- * | Mutation | Result |
- * |---|---|
- * | `outpostOf` returns `self` for every origin | outpost, peer-without-outpost and unknown-domain tests FAIL |
- * | resolve `outpost` from the peers list alone (ignore outpost objects) | the outpost test FAILS (`state`, id null) |
- * | push `outpost` into `stages[]` only | the unplaced half of the outpost test FAILS (zod response validation refuses the missing required field) |
- * | default `trustTier` to `"commercial"` when absent | the tierless test FAILS |
- * | key `outpostByPeer` on the object's `name` instead of `properties.peerDomainId` | the outpost test FAILS — the object is named differently from the peer on purpose |
- * | state every paired peer without an object as `peer-without-outpost` (drop the role split) | both `peer-not-outpost` tests FAIL (`state`) |
- * | remove `isNull(objects.deletedAt)` from `resolveOutpostObjectsByPeer` | the soft-deleted test FAILS (`expected { state: 'outpost', … }`) |
- * | `const winner = list[0]` instead of `byAuthority(list, self.domainId)[0]` | the two-rows test FAILS — the shadow wins |
- * | check `isSelf` BEFORE `outpostByPeer` (the §10.2 order) | the precedence test AND the co-located test FAIL (`state: 'self'`) |
- * | `peerRole: peer?.role ?? null` for the self-bound object | the co-located test FAILS (`peerRole: null`, expected `commander`) |
- * | `peerRole: null` on every state | outpost / peer-without-outpost / peer-not-outpost tests FAIL |
- */
+/** Which outpost each target is part of, by trust domain. See docs/coordination.md §293. */
 describe("component pipeline: which outpost each target is part of (§10.2 trust-domain rule)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

@@ -45,19 +45,9 @@ import {
   withFailOnceAfterRealTrigger
 } from "./test-support/fake-plugin-host.js";
 
-/**
- * The M3 coordination-engine end-to-end suite (BUILD_AND_TEST.md §8 M3 DoD): full fake-executor
- * loop, rollback restoring prior state, crash-resumption (both "the worker" and "the plugin
- * subprocess"), and the watchdog. Real Postgres (Testcontainers, global-setup.ts), a REAL
- * subprocess plugin host (actual child `node` processes running `@scp/plugin-fake-executor`),
- * never mocked.
- */
+/** The M3 coordination-engine end-to-end suite. See docs/coordination.md §343. */
 
-/**
- * M12 P5a: these describe blocks create components via raw `inject` (no SDK client in scope), and the
- * strict `POST /components` now requires a service. This creates a throwaway service + the component
- * over inject and returns the component id — the component is just a coordination target here.
- */
+/** These blocks create components through raw inject. See docs/coordination.md §344. */
 async function createComponentViaInject(
   server: { app: { inject: (o: unknown) => Promise<{ json: () => { id: string } }> } },
   org: TestOrg,
@@ -155,11 +145,7 @@ describe("coordination engine: full fake-executor loop", () => {
   });
 
   it("persists the REAL synced revision reconcile observes from status().stateRef, surfaced as the wave target's observed revision (P4B increment 2, ADR-0008 decision 1)", async () => {
-    // A fresh target's first change drives the fake-executor to internal version v0, so its
-    // status() reports stateRef "v0" (fake-executor index.ts). Increment 2's whole point: reconcile
-    // already computed that stateRef and DISCARDED it — we now assert the engine PERSISTED it onto
-    // the wave target and surfaces it on the plan read model (`scp change explain`), and that the
-    // value is the REAL executor-reported revision, not a hardcoded placeholder.
+    // A fresh target's first change drives the fake to v0. See docs/coordination.md §345.
     const comp = await createTestComponent(admin, { name: `observed-rev-${uuidv7().slice(0, 8)}` });
 
     const change = await admin.changes.propose({
@@ -199,12 +185,7 @@ describe("coordination engine: full fake-executor loop", () => {
     );
     expect((rows[0]!.observedState as { revision?: string } | null)?.revision).toBe("v0");
 
-    // AND THE PAYLOAD DATES ITSELF (ADR-0028). `observedAt` is stamped by
-    // `updateWaveTargetObserved` in the same statement that writes the payload, which is what lets
-    // the stage-dependency hold age the READING rather than the poll: `last_observed_at` beside it
-    // is refreshed on every status() call, including the ones that store nothing, so a snapshot
-    // dated by it never goes stale while anything keeps polling. Asserted here, at the writer,
-    // because the reader's unit tests would otherwise pass against a field production never sets.
+    // AND THE PAYLOAD DATES ITSELF. See docs/coordination.md §346.
     const persistedAt = (rows[0]!.observedState as { observedAt?: string }).observedAt;
     expect(persistedAt).toBeDefined();
     expect(Date.parse(persistedAt!)).toBeGreaterThan(Date.now() - 60_000);
@@ -350,11 +331,7 @@ describe("coordination engine: full fake-executor loop", () => {
     expect(rollbackTriggerDecision!.verdict).toBe("rollback");
     expect(rollbackTriggerDecision!.inputContext["trigger"]).toBe("manual");
 
-    // Verify the ACTUAL executor state, not just the engine's bookkeeping: ask the fake executor
-    // directly what it thinks target's current state is, using the rollback's own persisted
-    // executorRef — it must report "v0" (change1's version), not "v1" (change2's, now
-    // superseded) or a fresh "v2" — proving the rollback genuinely restored the prior known-good
-    // state rather than just re-running a forward trigger.
+    // Verify the actual executor state, not the bookkeeping. See docs/coordination.md §347.
     const ref = rollbackTarget.executorRef as unknown as ExternalRunRef;
     const liveStatus: ExecutionStatus = await server
       .pluginHost!.executor(DEFAULT_EXECUTOR_INSTANCE_ID)
@@ -435,24 +412,7 @@ describe("coordination engine: watchdog", () => {
 });
 
 describe("coordination engine: crash resumption", () => {
-  /**
-   * MAJOR #7 fix (PR #7 review — "the 'kill the worker mid-wave' resume test doesn't crash
-   * anything"): the old version of this test called GRACEFUL `loop.stop()`/`host.stop()` only
-   * AFTER the target was already durably `triggered`/`observing` — by that point there was nothing
-   * left to resume; deleting all of `reconcile.ts`'s crash-resumption logic would still pass this
-   * test. This version injects a REAL fault (`withFailOnceAfterRealTrigger`, wrapping the REAL
-   * `SubprocessPluginHost` — the actual subprocess, actual JSON-RPC, actual fake-executor state
-   * file, nothing faked except the one injected throw) that lets the target's `trigger()` call
-   * genuinely fire against the real fake-executor subprocess and THEN throws, before worker #1's
-   * tick ever reaches its own result-commit — the target is left durably `triggering`, mid-flight,
-   * not post-commit. Worker #1 is torn down at EXACTLY that moment (no further ticks get a chance
-   * to self-heal it), and a brand new worker #2 — sharing nothing in memory — must resume it: same
-   * `externalId` (no duplicate trigger), wave completes, change accepts. This also directly
-   * guards CRITICAL #2 (duplicate/lost trigger calls): if `reconcile.ts` regressed to its old
-   * single-big-transaction design (or dropped the `triggering`-status resume path), worker #2
-   * would either never notice the stuck target (this test times out) or fire a genuinely SECOND
-   * real trigger with a different idempotencyKey (the externalId assertion below would fail).
-   */
+  /** MAJOR #7 fix. See docs/coordination.md §348. */
   it("kills the worker (reconcile loop + plugin host) mid-wave, via a real fault injected between trigger() firing and its result-commit — a freshly started worker resumes purely from Postgres state, with no duplicate trigger and no shared in-memory handoff", async () => {
     const server = await buildTestServer();
     const org = await createTestOrg(server, "kill-worker");
@@ -471,17 +431,7 @@ describe("coordination engine: crash resumption", () => {
       expect(propose.statusCode).toBe(201);
       const changeId = propose.json().id as string;
 
-      // This whole file shares ONE Postgres/pgboss schema across every describe block, and
-      // `RECONCILE_QUEUE` is a single global queue name every `startReconcileLoop` call
-      // (including earlier describes' already-finished loops) sends jobs to. A prior test's final
-      // self-rescheduled tick can still be sitting in `pgboss.job`, not yet due, when THAT test's
-      // `boss.stop()` ran — `stop()` only stops ITS OWN worker from fetching further, it doesn't
-      // cancel jobs already queued. Left alone, THIS test's worker #1 would be eligible to pick
-      // that stale job up too, running an extra tick this test doesn't control the timing of and
-      // defeating "torn down before it can retry." Purged here so this test starts from a clean
-      // queue — a test-hygiene concern specific to this shared-queue-name suite design, not
-      // anything `reconcile.ts` itself needs to guard against in production (one `scpd` process
-      // owns the queue there).
+      // This file shares one schema across every describe block. See docs/coordination.md §349.
       const pgBossRaw = await RawScpPgBossClient.connect();
       await pgBossRaw
         .query(`DELETE FROM pgboss.job WHERE name = $1`, [RECONCILE_QUEUE])
@@ -502,11 +452,7 @@ describe("coordination engine: crash resumption", () => {
           config: { statePath, autoSucceedAfterMs: 2_000 }
         }
       ]);
-      // `onFault` resolves the instant the injected throw fires — used below to tear worker #1
-      // down IMMEDIATELY, rather than polling DB state for the 'triggering' status. Polling can't
-      // reliably win the race against the loop's own 1s-later retry on a loaded CI box (worker #1
-      // would just self-heal before the poll ever observes the mid-flight state); reacting to the
-      // fault synchronously, from within the exact same tick that caused it, always beats it.
+      // `onFault` resolves the instant the injected throw fires. See docs/coordination.md §350.
       let resolveFaulted!: () => void;
       const faulted = new Promise<void>((resolve) => {
         resolveFaulted = resolve;
@@ -529,13 +475,7 @@ describe("coordination engine: crash resumption", () => {
       // reached its own result-commit — status stays 'triggering', not 'triggered'.
       await faulted;
 
-      // `calls` logs EVERY trigger() this host ever makes, across every org (see
-      // `withFailOnceAfterRealTrigger`'s doc comment) — this shared-database suite's `boss1` will
-      // legitimately also advance unrelated leftover work from other already-finished describe
-      // blocks (e.g. the plain "watchdog" suite above deliberately leaves a change parked in
-      // `proposed` with no loop of its own ever touching it — `runReconcileSweep` doesn't know or
-      // care that it "belongs" to a different test). Scope to THIS test's own target before
-      // asserting anything.
+      // `calls` logs every trigger this host makes, across orgs. See docs/coordination.md §351.
       const ourCalls = calls.filter((c) => c.targetRef === targetObjectId);
       expect(ourCalls).toHaveLength(1); // the real trigger() call genuinely fired, exactly once so far.
       const idempotencyKey = ourCalls[0]!.idempotencyKey;
@@ -558,12 +498,7 @@ describe("coordination engine: crash resumption", () => {
       expect(stillTriggering[0]!.status).toBe("triggering");
       expect(stillTriggering[0]!.executorRef).toBeNull(); // never recorded — that's the crash.
 
-      // "Worker" #2 — a BRAND NEW reconcile loop + plugin host, sharing nothing in memory with
-      // worker #1 (fresh instances, this process never held any per-change state to begin with —
-      // `coordination/reconcile.ts`'s whole design). No fault wrapper this time. The SAME
-      // `statePath` is what lets the fake executor (standing in for a real external system, which
-      // of course doesn't forget a deployment because SCP's worker restarted) answer correctly for
-      // the ref worker #1's real (but never-recorded) trigger() call left in flight.
+      // Worker two shares nothing in memory with worker one. See docs/coordination.md §352.
       const boss2 = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
       const host2 = new SubprocessPluginHost({ callTimeoutMs: 5_000 });
       await host2.start([
@@ -699,20 +634,11 @@ describe("coordination engine: crash resumption", () => {
       // because there's no OS-level access to the real PID from outside SubprocessPluginHost).
       host.killInstanceForTest(DEFAULT_EXECUTOR_INSTANCE_ID);
 
-      // Direct proof of "the plugin restarts with backoff": an RPC call against the SAME `host`
-      // instance issued right after the kill has nothing to talk to until host.ts's
-      // restart-with-backoff timer respawns the child and it re-announces `ready` — `call()`'s
-      // built-in wait-for-ready + transparent retry (host.ts's module doc: "callers never see a
-      // dead subprocess, only a slower/retried call") is what makes this resolve successfully
-      // rather than throw or hang. It can ONLY resolve if a genuinely new child process came up.
+      // Direct proof of "the plugin restarts with backoff". See docs/coordination.md §353.
       const capabilities = await host.executor(DEFAULT_EXECUTOR_INSTANCE_ID).describeCapabilities();
       expect(capabilities.supportsTrigger).toBe(true);
 
-      // "The worker survives": this is the SAME reconcile loop / pg-boss job that was running
-      // before the kill — never stopped, never replaced — driving the change the rest of the way.
-      // "The wave resumes": the target's in-flight run (its statePath-backed state survived the
-      // crash — fake-executor's own module doc) still completes and the change reaches
-      // 'validating' with no operator intervention beyond the eventual human accept below.
+      // "The worker survives". See docs/coordination.md §354.
       await waitUntil(
         async () => {
           const get = await server.app.inject({
@@ -745,19 +671,7 @@ describe("coordination engine: crash resumption", () => {
   });
 });
 
-/**
- * CRITICAL #2 (PR #7 review — "duplicate/lost external trigger() calls", the most serious
- * finding): the old code called `plugin.trigger()` and then wrote its result INTO the same
- * still-open, whole-org transaction as every other change in the tick — so ANY later failure in
- * that tick rolled back the DB record of an already-fired trigger, and the next tick re-fired it,
- * with no way for the executor to tell the two calls apart. It also meant one change's failure
- * could roll back a sibling change's already-committed progress in the same tick.
- *
- * This suite proves the fix using a fast, deterministic in-process fake host
- * (`createInMemoryFakeHost`) wrapped with a fault injector (`withFailOnceAfterRealTrigger`) that
- * lets the REAL trigger() fire (a genuine side effect against the fake executor) and THEN throws —
- * simulating a crash/tick-abort in the exact window `triggerWaveTarget`'s doc comment describes.
- */
+/** Duplicate or lost trigger calls, the worst finding. See docs/coordination.md §355. */
 describe("coordination engine: trigger idempotency across a same-tick crash (CRITICAL #2)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -820,25 +734,11 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
     expect(targetARow1!.status).toBe("triggering");
     expect(targetARow1!.executorRef).toBeNull();
 
-    // B's trigger, in the SAME reconcileOrgTick call, committed cleanly — proof A's fault never
-    // rolled back or blocked B's progress in the same tick. Under the OLD single-big-transaction
-    // design this assertion would fail: A's uncaught throw would have unwound the whole org's one
-    // transaction, taking B's write down with it (and leaving B's already-fired trigger() call
-    // duplicated on the next tick too).
+    // B committed cleanly, so A's fault rolled nothing back. See docs/coordination.md §356.
     expect(targetBRow1!.status).toBe("triggered");
     expect(targetBRow1!.executorRef).not.toBeNull();
 
-    // The injected fault is thrown FROM `trigger()`, which at that call boundary is
-    // indistinguishable from an executor refusal (Argo CD answering HTTP 400 because a sync is
-    // already running) — so `triggerWaveTarget` now records it as a real attempt and A's retry is
-    // BACKED OFF rather than re-fired on the very next tick (see
-    // `trigger-retry-backoff.integration.test.ts` for why the storm made that necessary). Step past
-    // the backoff window so this suite keeps testing what it is about — IDEMPOTENCY of the retry,
-    // not the tick it happens to land on. Every assertion below is unchanged.
-    //
-    // NOTE the genuine crash case — process death between claim and record — is unaffected and
-    // still retries on the next tick with no delay: nothing runs, so `attempt` stays 0. That
-    // contract is pinned by the backoff suite's third arm.
+    // The injected fault is indistinguishable from a real one. See docs/coordination.md §357.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .update(changeWaveTargets)
@@ -884,13 +784,7 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
   });
 });
 
-/**
- * MAJOR #6 (PR #7 review — "batch starvation"): `listChangeRowsInStates` orders `executing`
- * changes oldest-`updated_at`-first, capped at `BATCH_LIMIT` (25). A change parked in `executing`
- * with a `failed` wave never otherwise touches `changes` again on its own, so `updated_at` stays
- * frozen — 25+ such parked changes would sort ahead of every newer, genuinely-progressing
- * `executing` change and starve it out of every batch forever.
- */
+/** MAJOR #6 (PR #7 review — "batch starvation"). See docs/coordination.md §358. */
 describe("coordination engine: reconcile batch fairness (MAJOR #6)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -1009,13 +903,7 @@ describe("coordination engine: reconcile batch fairness (MAJOR #6)", () => {
   }, 30_000);
 });
 
-/**
- * CRITICAL #1 (PR #7 review — "watchdog never runs in production"): `runWatchdogSweep` had no
- * non-test caller; `main.ts` scheduled the reconcile loop but never the watchdog. This proves the
- * sweep actually executes on a RUNNING WORKER (via `listenTestServer`'s `withReconcileLoop`, which
- * now also starts `startWatchdogLoop` — see harness.ts's doc comment) rather than only when called
- * directly, the way the pre-existing "coordination engine: watchdog" suite above does.
- */
+/** The watchdog had no non-test caller at all. See docs/coordination.md §359. */
 describe("coordination engine: watchdog scheduled on the running worker (CRITICAL #1)", () => {
   it("the scheduled watchdog loop, started as part of the worker (not called directly by the test), flags a stalled change and writes a Decision", async () => {
     const server = await listenTestServer({
@@ -1029,13 +917,7 @@ describe("coordination engine: watchdog scheduled on the running worker (CRITICA
     const org = await createTestOrg(server, "watchdog-scheduled");
 
     try {
-      // A normal change, let the ACTIVE reconcile loop (also running on this "worker") drive it
-      // all the way to `validating` — a stable resting state the loop never advances past on its
-      // own (a human `scp change accept` is required). That's what makes this different from
-      // just backdating a freshly-proposed change: with the reconcile loop genuinely running
-      // alongside the watchdog, a change left in `proposed` would just get advanced normally
-      // before the watchdog ever got a look at it. `validating` is where a real, actively-managed
-      // worker can genuinely leave a change stalled.
+      // A normal change, let the ACTIVE reconcile loop. See docs/coordination.md §360.
       const targetId = await createComponentViaInject(server, org, "watchdog-scheduled-target");
 
       const propose = await server.app.inject({
@@ -1090,16 +972,7 @@ describe("coordination engine: watchdog scheduled on the running worker (CRITICA
   }, 40_000);
 });
 
-/**
- * M8 hardening (BUILD_AND_TEST.md §8 M8 item 6, "Multi-replica coordination trigger concurrency"):
- * the Helm chart shipped this milestone scales `worker` to N replicas, each running its own
- * `startReconcileLoop` against the SAME Postgres database with NO shared, synchronously-consistent
- * view of any other replica's in-flight work (a real `ExecutorPlugin` subprocess's own dedup state
- * is per-pod, not cluster-shared). Two replicas' overlapping ticks reaching the SAME wave target at
- * (genuinely, not just apparently) the same moment must not both fire the executor's `trigger()` —
- * the DB claim in `claimWaveTargetForTriggering` must be the actual single-flight boundary, not a
- * courtesy that downstream idempotency happens to paper over.
- */
+/** Multi-replica coordination trigger concurrency. See docs/coordination.md §361. */
 describe("coordination engine: multi-replica trigger claim is single-flight (M8 hardening)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -1194,11 +1067,7 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
     const targetObjectId = await createExecutingChangeWithPendingTarget("race-target");
     const waveTargetId = await waveTargetIdFor(targetObjectId);
 
-    // Real, independent connections + `pg_try_advisory_lock` calls fired concurrently via
-    // Promise.all — genuine Postgres-level mutual exclusion, not just JS-level interleaving,
-    // exactly the shape of two (or more) worker replicas' overlapping ticks reaching the same
-    // target at once. None of these ever block: a non-winner's `pg_try_advisory_lock` call
-    // returns `false` immediately.
+    // Real independent connections, locks fired concurrently. See docs/coordination.md §362.
     const CONCURRENT_CLAIMANTS = 8;
     const locks = await Promise.all(
       Array.from({ length: CONCURRENT_CLAIMANTS }, () =>
@@ -1238,25 +1107,11 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
   });
 
   it("end-to-end: two independent PluginHosts (simulating two worker replicas with NO shared executor state) run reconcileOrgTick concurrently against the SAME already-executing change — the executor's trigger() fires exactly once", async () => {
-    // Deterministic setup via the SAME manual walk as the tests above — proposed -> evaluated ->
-    // coordinated -> executing, entirely OUTSIDE reconcileOrgTick, so the change sits `executing`
-    // with a compiled plan and one `pending` wave target BEFORE either "replica" ever ticks. This
-    // scopes the race to exactly the property this test exists to prove — single-flight around
-    // the wave-target TRIGGER CLAIM under genuine multi-replica concurrency — without also
-    // exercising the earlier proposed/evaluated/coordinated pipeline phases concurrently (a
-    // change's very first `evaluated -> coordinated` plan-compilation racing across two ticks is
-    // a real, but SEPARATE, pre-existing concern this test deliberately does not conflate with the
-    // trigger-claim guarantee it's here to verify).
+    // Deterministic setup by the same manual state walk. See docs/coordination.md §363.
     const targetObjectId = await createExecutingChangeWithPendingTarget("e2e-race-target");
     await waveTargetIdFor(targetObjectId);
 
-    // Two SEPARATE `createInMemoryFakeHost()` instances = two SEPARATE `FakeExecutorPlugin`
-    // instances with their own independent in-memory state — deliberately NOT sharing a
-    // `statePath`, modeling the realistic default (no shared PV across Helm `worker` replicas).
-    // If the DB-level claim were the only thing standing between "pending" and a real trigger()
-    // call, and it were racy, BOTH hosts would independently observe zero prior state for this
-    // target and BOTH would mint a fresh run — a genuine double-fire neither host's own dedup
-    // could ever catch, because neither can see the other's state.
+    // Two separate fake hosts, so two separate plugin instances. See docs/coordination.md §364.
     const { host: hostA, calls: callsA } = withFailOnceAfterRealTrigger(
       createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 }),
       () => false // never inject a fault — this wrapper is used purely as a call-count logger here.
@@ -1266,11 +1121,7 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
       () => false
     );
 
-    // Two concurrent, continuously self-re-ticking loops — the same shape as `startReconcileLoop`
-    // wires onto pg-boss in production, minus pg-boss itself — both independently polling the SAME
-    // already-`executing` change and racing to claim/trigger its one `pending` wave target. What
-    // must NEVER be true, at any point across BOTH loops running the whole time, is the executor's
-    // `trigger()` firing more than once for this target.
+    // Two concurrent, continuously self-re-ticking loops. See docs/coordination.md §365.
     let settled = false;
     async function tickLoop(host: PluginHost): Promise<void> {
       while (!settled) {
@@ -1313,17 +1164,7 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
   }, 30_000);
 });
 
-/**
- * M8 hardening — one pipeline phase EARLIER than the trigger-claim race above, found while
- * proving that fix under genuine multi-replica concurrency (coordinator follow-up on top of
- * BUILD_AND_TEST.md §8 M8 item 6): `reconcile.ts`'s `advanceEvaluatedChanges` compiles a change's
- * plan and transitions `evaluated -> coordinated`. Confirmed via direct DB inspection (before the
- * `change-coordination-lock.ts` fix landed): two concurrent `reconcileOrgTick` calls racing the
- * SAME freshly-proposed change could both call `compileAndPersistPlan`, and the loser's
- * catch-and-cancel fallback would COMMIT its own already-inserted duplicate plan rows AND
- * wrongfully flip the change to `cancelled` even though the winner had already legitimately
- * coordinated (or, by the time the race resolves, already be executing) it.
- */
+/** One pipeline phase earlier than the trigger-claim race. See docs/coordination.md §366. */
 describe("coordination engine: evaluated->coordinated plan compilation is single-flight (M8 hardening)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -1415,14 +1256,7 @@ describe("coordination engine: evaluated->coordinated plan compilation is single
   }, 30_000);
 });
 
-/**
- * M8 hardening — same concurrency audit, one layer further upstream: `webhook-processor.ts`'s
- * `processChangeSourceEvents` turns unprocessed `change_source_events` rows into Changes. Without
- * `FOR UPDATE SKIP LOCKED` on its batch read, two concurrent ticks (two worker replicas) could
- * both `SELECT` the SAME unprocessed row before either committed, and both call `proposeChange`
- * for it — two separate Change objects for one real-world webhook delivery, each independently
- * eligible to gate/approve/accept/execute as if they were unrelated.
- */
+/** The same audit, one layer further upstream. See docs/coordination.md §367. */
 describe("coordination engine: webhook-event processing is single-flight across concurrent ticks (M8 hardening)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -1491,20 +1325,7 @@ describe("coordination engine: webhook-event processing is single-flight across 
   });
 });
 
-/**
- * M8 hardening follow-up (adversarial review MINOR #5, disclosed as "undisclosed" in the M8 PR's
- * own "all three coordination races" claim — this is the 4th): one pipeline phase further than
- * the plan-compilation race above — `reconcile.ts`'s `reconcileExecutingChange` PENDING-wave
- * branch (`evaluateWaveGate` + `insertDecision` + `markWaveRunning`) had no per-change advisory
- * lock, so two concurrent replica ticks that both read the SAME wave as "pending" (the batch read
- * in `advanceExecutingChanges`, taken outside any lock) could both evaluate the gate and insert a
- * SECOND `kind: "gate"` Decision row for the same wave boundary — a duplicate AUDIT record, not a
- * double-execution (`markWaveRunning`'s own `WHERE status = 'pending'` guard already made that
- * safe, and triggering itself is already single-flight via the trigger-claim lock). The fix adds
- * the SAME per-change advisory lock (`change-coordination-lock.ts`) around this branch, with a
- * fresh re-check of the wave's status still under the lock — the same "lost the race, someone else
- * already handled it" no-op shape `advanceEvaluatedChanges` already uses.
- */
+/** M8 hardening follow-up. See docs/coordination.md §368. */
 describe("coordination engine: wave-gate evaluation is single-flight (M8 hardening MINOR #5)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -1518,11 +1339,7 @@ describe("coordination engine: wave-gate evaluation is single-flight (M8 hardeni
     await server.close();
   });
 
-  /** Manually walks a change to `executing` with a compiled plan, entirely OUTSIDE
-   *  `reconcileOrgTick` — same technique as the trigger-claim describe block's own
-   *  `createExecutingChangeWithPendingTarget` above, scoped here to the WAVE-GATE race (one stage
-   *  earlier: the gate has never been evaluated for this wave at all) rather than the
-   *  trigger-claim race (a different, already-proven-single-flight lock one phase later). */
+  /** Walks a change to executing entirely outside the tick. See docs/coordination.md §369. */
   async function createExecutingChangeWithPendingWave(
     name: string
   ): Promise<{ changeObjectId: string; targetObjectId: string }> {
@@ -1647,21 +1464,7 @@ describe("coordination engine: wave-gate evaluation is single-flight (M8 hardeni
   }, 30_000);
 });
 
-/**
- * Regression (live bug): `processChangeSourceEvents` set every Change's NAME to
- * `${sourceKind}: ${repo}` — identical for every event from one repo — and `createObject` derives
- * the URN from the name. `objects` has a UNIQUE `(org_id, urn)` constraint, so the SECOND same-repo
- * event in a batch collided → `proposeChange` threw `Conflict` → the whole reconcile-tick
- * transaction rolled back → NO events processed → the queue wedged forever (observed live: 124
- * unprocessed github events, 0 changes, continuous Conflict churn). A monorepo backlog (many
- * commits, no per-path precision) guarantees several same-repo events per tick.
- *
- * The model: each `change_source_events` row is a DISTINCT real-world event (redeliveries are
- * collapsed at ingest by the `(org_id, source_kind, dedupe_key)` unique index), so each becomes its
- * OWN Change with a per-event-unique URN. `correlationKey` GROUPS related changes via a
- * coordinated-change object; it does not dedupe them (for a GitHub push it is the branch ref,
- * shared by every commit on the branch).
- */
+/** Regression (live bug). See docs/coordination.md §370. */
 describe("coordination engine: same-repo change_source_events do not collide on URN (queue-wedge regression)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -1755,15 +1558,7 @@ describe("coordination engine: same-repo change_source_events do not collide on 
   });
 });
 
-// -----------------------------------------------------------------------------------------
-// P4C increment 3 (ADR-0008 signal 1, image half): end-to-end proof that reconcile threads
-// status().observed.images into observed_state AND the plan read model, ALONGSIDE the revision
-// (#76). Uses harness.ts's `fakeExecutorConfig` seam — the same boot-time hook governance.ts uses
-// for `forcePhase` — to make the shared fake-executor report REAL deployed images for a test-known
-// target id (created with an explicit `id:`, so it is known before the plugin instance boots). Its
-// OWN reconcile loop (not the "full fake-executor loop" describe's) is the only one polling this
-// org's target, so the asserted images are unambiguously that executor's output.
-// -----------------------------------------------------------------------------------------
+// P4C increment 3 (ADR-0008 signal 1, image half). See docs/coordination.md §371.
 describe("coordination engine: observed deployed-image threading (P4C)", () => {
   let server: ListeningTestServer;
   const imageTargetId = uuidv7();
@@ -1831,14 +1626,7 @@ describe("coordination engine: observed deployed-image threading (P4C)", () => {
   });
 });
 
-// -----------------------------------------------------------------------------------------
-// ADR-0008 P4D (rollout, OBSERVE-ONLY): reconcile threads status().observed.rollout through into
-// observed_state AND the plan read model, ALONGSIDE the revision (#76) and images (#77) — nothing is
-// dropped by the merge. Uses the same boot-time `fakeExecutorConfig` seam (`rolloutByTarget`, a
-// mirror of `imagesByTarget`) so the fake-executor reports a REAL, test-known rollout snapshot for a
-// pre-created target id — no live Argo Rollouts needed. The threading is OBSERVE-ONLY: SCP never
-// drives the rollout; this asserts persistence of an observed read, not any accept/pause verb.
-// -----------------------------------------------------------------------------------------
+// ADR-0008 P4D (rollout, OBSERVE-ONLY). See docs/coordination.md §372.
 describe("coordination engine: observed rollout threading (P4D)", () => {
   let server: ListeningTestServer;
   const rolloutTargetId = uuidv7();

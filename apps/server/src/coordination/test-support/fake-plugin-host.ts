@@ -11,15 +11,7 @@ import type {
   PluginHost
 } from "../../plugin-host/contract.js";
 
-/**
- * An in-process `PluginHost` for coordination-engine tests that need a fast, deterministic
- * `ExecutorPlugin` to drive `coordination/reconcile.ts`'s DB orchestration logic against, WITHOUT
- * paying for real subprocess isolation — that's already exercised end to end by
- * `plugin-host/host.test.ts` and `coordination.integration.test.ts`'s "crash resumption" suite.
- * Wraps the exact same `@scp/plugin-fake-executor` the real `SubprocessPluginHost` uses, so
- * trigger/status/rollback/idempotency-dedup semantics are identical; only the process-boundary
- * transport is skipped.
- */
+/** An in-process host for fast, deterministic executor tests. See docs/coordination.md §998. */
 /** What the probe driver declared to this fixture, in order. Reset per fixture instance. */
 export const declaredSchedules: ScheduleSpec[] = [];
 export const removedSchedules: string[] = [];
@@ -109,35 +101,9 @@ export interface FiredTriggerCall {
   faulted: boolean;
 }
 
-/**
- * Wraps a real `PluginHost` and makes its `trigger()` throw once per `targetRef` matching
- * `shouldFail`, AFTER the wrapped call has already completed for real — simulating a worker that
- * crashes (or a tick whose transaction aborts) in the window between an external `trigger()` call
- * succeeding and the engine recording that fact (coordination/reconcile.ts's `triggerWaveTarget`
- * doc comment, PR #7 review CRITICAL #2 / MAJOR #7). Used to prove: (a) the SAME idempotencyKey on
- * the inevitable retry gets deduped by the executor rather than firing a second real run, and (b)
- * one target's injected failure never rolls back or blocks a sibling change's progress in the same
- * tick — `shouldFail` lets a test fault ONE change's target while leaving a sibling change's
- * target to complete normally in the very same `reconcileOrgTick` call.
- */
-/** `calls` logs EVERY `trigger()` invocation that passes through the returned host — including
- *  ones for orgs/changes completely unrelated to whatever this test cares about. A real
- *  reconcile loop started against a shared test database (`runReconcileSweep` sweeps every org
- *  unconditionally) will happily also advance leftover pending work from OTHER already-finished
- *  describe blocks in the same file. Callers MUST filter `calls` by `targetRef` (the specific
- *  target object id under test) before asserting anything about call count/order — never assume
- *  `calls` only ever contains entries for the target this particular test created. */
-/**
- * Wraps a real `PluginHost` and makes `trigger()` throw BEFORE the wrapped call runs, every time,
- * for any `targetRef` matching `shouldRefuse` — the executor REFUSING the request outright.
- *
- * Deliberately a different fault from {@link withFailOnceAfterRealTrigger}, which faults ONCE and
- * only AFTER the real side effect already fired (a crash in the record window). This one models the
- * measured production case: Argo CD answering `HTTP 400` because an operation is already running on
- * that Application, so nothing happened externally and the same answer comes back until the
- * contention clears. The distinction matters to `triggerWaveTarget` — a crash must be retried
- * immediately (the row's `attempt` never advanced), a refusal must be backed off.
- */
+/** Makes trigger throw once per target reference. See docs/coordination.md §999. */
+/** `calls` logs every trigger passing through the host. See docs/coordination.md §1000. */
+/** Makes trigger throw before the wrapped call runs. See docs/coordination.md §1001. */
 export function withRefusingTrigger(
   inner: PluginHost,
   shouldRefuse: (targetRef: string) => boolean = () => true
@@ -238,24 +204,7 @@ export function withFailOnceAfterRealTrigger(
   return { host, calls };
 }
 
-/**
- * M25.4 — records the WHOLE `TriggerIntent`, and optionally narrows what the executor says it can
- * do.
- *
- * TWO THINGS THE EXISTING WRAPPERS CANNOT DO, both needed to test a recipe honestly:
- *
- *   * `FiredTriggerCall` keeps `targetRef` and `idempotencyKey` only, so a recipe's `parameters`
- *     and its `kind` — the two fields M25.4 exists to put on the wire — are invisible to every
- *     assertion built on it. A test that asserted only "trigger was called" would pass with the
- *     channel still unwired, which is exactly the vacuous green this repo has paid for repeatedly.
- *   * `@scp/plugin-fake-executor` declares ALL FOUR trigger kinds, so no capability refusal is
- *     reachable through it. `triggerKinds` narrows that to a REAL adapter's set (`argocd` is
- *     `["sync","rollback"]`, `github` is `["workflow_dispatch","custom"]` — measured at HEAD) so the
- *     refusal is exercised against a shape production actually produces.
- *
- * `intents` logs EVERY call through this host — see `FiredTriggerCall`'s warning; filter by
- * `targetRef` before asserting counts.
- */
+/** Records the whole trigger intent, narrowing if asked. See docs/coordination.md §1002. */
 export function withRecordedIntents(
   inner: PluginHost,
   /** Called on EVERY `describeCapabilities()`, never read once at wrap time — one host is shared by

@@ -48,21 +48,7 @@ import {
   DialogTitle
 } from "../components/ui/dialog";
 
-/**
- * `/plugins` — the M7 plugin-configuration surface (BUILD_AND_TEST.md §8 M7 item 5: "plugin
- * config schemas surfaced as validated config forms in UI + CLI"; DESIGN.md §11: "config schemas
- * auto-surface as validated config forms in API, CLI, and UI... plugin authors get interface
- * parity for free"). Consumes ONLY `client.plugins`/`client.executors`/`client.notifications`/
- * `client.discovery` (the generated SDK) — same API-first parity as every other page.
- *
- * The form itself (`SchemaForm` below) is deliberately a MINIMAL JSON-Schema-driven renderer, not
- * a general one: it handles exactly the flat `{type: object, properties: {string|integer|number|
- * boolean}}` shape every M7 plugin manifest actually declares (packages/plugins/*\/src/index.ts's
- * `manifest.configSchema`) — nested `oneOf`/`anyOf`/`$ref` schemas are out of scope for this
- * milestone (no bundled plugin needs them). `secretRefs`/`allowedHosts` are NOT part of any
- * plugin's `configSchema` (they're binding-level, not plugin-level, fields — db/schema.ts's M7
- * section) so they get their own fixed fields below rather than being schema-driven.
- */
+/** `/plugins` — the M7 plugin-configuration surface. See docs/web.md §444. */
 
 interface JsonSchemaProperty {
   type?: string;
@@ -80,11 +66,7 @@ function schemaRequired(configSchema: unknown): string[] {
   return schema?.required ?? [];
 }
 
-/** Renders one input per top-level schema property, tracking values as an untyped record the
- *  caller coerces on submit (`coerceConfigValues`) — booleans/numbers round-trip through a plain
- *  HTML input's string value until then, same pattern the CLI's own `--config <json>` flag
- *  sidesteps entirely by just taking raw JSON; the UI form's whole point is not requiring an
- *  operator to hand-write JSON for the common case. */
+/** One input per top-level schema property, untyped values. See docs/web.md §445. */
 function SchemaForm({
   configSchema,
   values,
@@ -168,12 +150,7 @@ function errorMessageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * A discovery proposal, summarized (spec §4E) — a scannable action/type/name-or-urn table with a
- * counts headline, raw JSON behind a "View raw" toggle instead of always dumping the whole proposal.
- * Discovery only ever proposes CREATEs (`DiscoveryProposalSchema` has no update/delete shape), so
- * every row's action reads "create".
- */
+/** A discovery proposal, summarized (spec §4E). See docs/web.md §446. */
 function DiscoveryProposalReview({ proposal }: { proposal: DiscoveryProposal }): React.JSX.Element {
   const [showRaw, setShowRaw] = useState(false);
   const objectCount = proposal.objects.length;
@@ -243,14 +220,7 @@ function DiscoveryProposalReview({ proposal }: { proposal: DiscoveryProposal }):
   );
 }
 
-/**
- * Shapes `PUT /executors/{idOrUrn}/binding`'s body (A2, docs/proposals/outpost-ui.md §3) — pure so
- * the Type wiring is testable without a live Dialog/mutation. `type` is now ALWAYS included,
- * deliberately: the bug this closes was never that `configuration` was a bad default, it was that
- * `putBinding` sent no `type` at all — so an operator reading their own binding back could not
- * tell whether "configuration" was a choice or a silence. Sending it explicitly, every time, is
- * the fix; the Select just makes the value the operator's own instead of the server's guess.
- */
+/** Shapes `PUT /executors/{idOrUrn}/binding`'s body. See docs/web.md §447. */
 export function buildExecutorBindingPayload(args: {
   pluginModule: string;
   pluginInstanceId: string;
@@ -267,16 +237,7 @@ export function buildExecutorBindingPayload(args: {
   };
 }
 
-/**
- * THE BINDING'S ROUTING TYPE — A2. Extracted out of `ConfigureDialog` so it (and its option set)
- * can be exercised directly: Radix's `SelectContent` portals its items, so the option list itself
- * cannot be asserted from a static render (`domain-local.test.tsx`'s precedent) — this component
- * at least makes the field's PRESENCE, label, and help copy testable without a live Dialog, and
- * `buildExecutorBindingPayload` above covers the value actually reaching the request.
- *
- * `ExecutorTypeSchema.options` — never a hand-copied literal list — so a future Type (D4, ADR-0007)
- * appears here automatically instead of needing a second edit.
- */
+/** THE BINDING'S ROUTING TYPE. See docs/web.md §448. */
 export function ExecutorBindingTypeField({
   value,
   onChange

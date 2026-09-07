@@ -7,28 +7,7 @@ import {
   type ListeningTestServer
 } from "../test-support/harness.js";
 
-/**
- * M3 tracked security follow-up (BUILD_AND_TEST.md §8 M3 item 9, closing a gap flagged in an
- * earlier security review): pg-boss no longer runs its own internal schema migrations on the
- * admin/superuser connection — it connects as the schema-scoped `scp_pgboss` login role
- * (drizzle/0008_pgboss_role.sql, src/db/provision.ts's `provisionPgBossRole`,
- * src/events/pgboss.ts). Two things need PROVING here, not just asserting:
- *
- *   1. pg-boss actually boots under this least-privileged role — its own internal
- *      `CREATE SCHEMA`/`CREATE TYPE`/`CREATE TABLE`/`CREATE FUNCTION` migrations at `.start()`
- *      succeed without superuser, because `scp_pgboss` OWNS the `pgboss` schema (ownership, not
- *      elevated privilege, is what makes this work — see the migration's own comments for why no
- *      `ALTER DEFAULT PRIVILEGES` is needed on top of that).
- *   2. `scp_pgboss` has ZERO privilege on `public`'s tenant tables — proven as an actual Postgres
- *      permission-denied failure (SQLSTATE 42501), not merely an empty result set, since RLS
- *      could otherwise make an ungranted role's SELECT look identical to a granted-but-filtered
- *      one.
- *
- * `listenTestServer({ withEventRelay: true })` is what actually starts pg-boss in-process
- * (main.ts's `role === "all" || "worker"` branch) — at the time this test was written, no other
- * integration test in the suite exercised that path, so this is also the first real proof pg-boss
- * boots end to end under the new role, not just under the old admin connection.
- */
+/** M3 tracked security follow-up. See docs/db.md §9. */
 describe("scp_pgboss: schema-scoped role probe", () => {
   let server: ListeningTestServer;
 
@@ -99,22 +78,7 @@ describe("scp_pgboss: schema-scoped role probe", () => {
     await raw.close();
   });
 
-  /**
-   * MINOR #10 fix (PR #7 review): the probe previously covered only 4 tables
-   * (objects/relationships/role_bindings/changes) and only SELECT/INSERT. `scp_pgboss` has NO
-   * grant at all on `public` (0008's §2 — "the absence of a GRANT here IS the enforcement"), so
-   * the isolation guarantee is identical across every tenant table and every DML verb; this
-   * extends the probe to the REST of the M3 tenant surface (decisions, change_waves,
-   * change_wave_targets, gate_bindings, source_mappings, change_source_events, change_plans,
-   * outbox, audit_events) and to UPDATE/DELETE, not just SELECT/INSERT.
-   *
-   * Data-driven rather than one repetitive `it` per table x verb: `insert` is a syntactically
-   * valid statement satisfying each table's NOT NULL columns (values are throwaway — the point is
-   * proving the ACL check rejects the statement before any constraint/data question is even
-   * reached); UPDATE/DELETE use `org_id`, present and NOT NULL on every one of these tables, so a
-   * single WHERE shape works uniformly without needing each table's actual primary key column
-   * (`changes`' PK is `object_id`, not `id` — deliberately not assumed here).
-   */
+  /** MINOR #10 fix (PR #7 review). See docs/db.md §10. */
   const TENANT_TABLES: { table: string; insert: string }[] = [
     {
       table: "objects",

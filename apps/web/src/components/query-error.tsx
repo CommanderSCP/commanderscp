@@ -1,25 +1,7 @@
 import type { ResponseValidationIssue } from "@scp/sdk";
 import { Alert } from "./ui/alert";
 
-/**
- * THE HUMAN END OF THE SDK RESPONSE-VALIDATION BOUNDARY (ADR-0023).
- *
- * Validation makes a contract failure LOUD and SINGLE — it converts a body that does not match the
- * OpenAPI contract into one `ScpResponseValidationError` naming the operation and the offending
- * field, instead of a `TypeError` thrown from whichever component happened to dereference the
- * missing key first. That is only half of a fix. In this SPA every read goes through TanStack Query,
- * and a rejected `queryFn` becomes `query.isError` — a STATE. A page that renders only `isLoading`
- * and `data` renders NOTHING for that state, so the diagnosis the boundary just produced dies in
- * the query cache and the operator sees an empty card. This module is the other half: it puts the
- * diagnosis on the screen.
- *
- * WHAT IT MUST SAY, and why a fixed string is not enough. "Could not load federation status." is
- * indistinguishable across a 401, an unreachable instance, and a version skew — three faults with
- * three different remedies. The one thing the boundary exists to produce is the operation plus the
- * offending field(s), so that is what gets rendered: verbatim `error.message`, plus an explicit
- * "contract" heading and the field list when the failure is a validation failure. An operator can
- * read `peers.0.recentTransfers` off the screen and take it to an upgrade.
- */
+/** THE HUMAN END OF THE SDK RESPONSE-VALIDATION BOUNDARY. See docs/web.md §102. */
 
 /** The subset of `ScpResponseValidationError` this module reads. Matched STRUCTURALLY rather than
  *  with `instanceof`: an error crosses a package boundary (and, in tests, a module mock) to get

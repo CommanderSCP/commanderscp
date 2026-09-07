@@ -22,34 +22,14 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Governance engine integration suite (BUILD_AND_TEST.md §8 M4 DoD, Testcontainers postgres:16):
- * everything the unit suite (policy-model.test.ts, evaluate.test.ts, cel-sandbox.test.ts) can't
- * reach because it needs a real graph (containment, `member_of`), a real subprocess plugin host
- * (webhook-control, fake-executor), and the real gate seam (coordination/gates.ts) wired through
- * the real HTTP API. Every scenario drives the public API via `@scp/sdk`'s `ScpClient`, exactly
- * like a real caller — this is deliberately NOT a white-box test of governance/*.ts's internals
- * (those are the unit suite's job).
- *
- * Most scenarios share ONE server (module-level `beforeAll`/`afterAll`) — real Postgres, real
- * outbox relay, real reconcile loop, real subprocess plugin host — to amortize boot cost, same
- * pattern as coordination.integration.test.ts. The automatic-rollback scenario gets its own server
- * because it needs `FakeExecutorConfig.forcePhase` pre-configured at plugin-instance boot time for
- * specific, test-known target object ids (harness.ts's `fakeExecutorConfig` passthrough, added for
- * exactly this).
- */
+/** Governance engine integration suite. See docs/governance.md §200. */
 
 interface TestWebhookServer {
   url: string;
   close(): Promise<void>;
 }
 
-/** A real HTTP server on loopback (never the internet — BUILD_AND_TEST.md's "tests never touch
- *  the internet" is about egress off the test host, not inter-process loopback calls the way
- *  Testcontainers Postgres itself already is) that `@scp/plugin-webhook-control` — running for
- *  real inside a spawned subprocess — POSTs to. Responds with whatever `ControlOutcomeStatus` the
- *  caller asked for via the `x-test-outcome` request header (set per `control_bindings.config`),
- *  so ONE server fixture can back many differently-configured control bindings across many tests. */
+/** A real HTTP server on loopback. See docs/governance.md §201. */
 async function startTestWebhookServer(): Promise<TestWebhookServer> {
   const server = createServer((req, res) => {
     const outcome = (req.headers["x-test-outcome"] as string | undefined) ?? "pass";
@@ -169,14 +149,7 @@ async function waitForValidating(admin: ScpClient, changeId: string, timeoutMs =
   );
 }
 
-/** A required policy scoped directly to a change's own (single) target ALSO gates that target's
- *  wave boundary, not just the `validating->accepted` lifecycle edge (coordination/gates.ts's
- *  module doc: every wave boundary is real-governance-evaluated in M4, unlike most other
- *  lifecycle edges) — so `requireControls`/`requireApprovals` effects on such a policy resolve
- *  (control runs for real; approval requests materialize) from wave 0's FIRST gate check, well
- *  before — and independently of — the change ever reaching `validating`. This is the right place
- *  to wait for an approval request in tests below, instead of `waitForValidating` (which the wave
- *  gate blocking would make this policy's own approval/control effects prevent from ever firing). */
+/** A required policy scoped directly to a change's own. See docs/governance.md §202. */
 async function waitForApprovalRequest(admin: ScpClient, changeId: string, timeoutMs = 25_000) {
   return waitUntil(
     async () => {
@@ -231,12 +204,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     await webhook.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Stricter-wins resolution matrix (org/domain/service/component conflicts) — real containment
-  // walk (policy-resolve.ts) + real merge (policy-model.ts), through `scp policy evaluate`'s
-  // dry-run endpoint. The pure-merge algorithm itself is exhaustively table/property-tested in
-  // policy-model.test.ts; this proves the DB-driven "gather" half actually feeds it correctly.
-  // -----------------------------------------------------------------------------------------
+  // Stricter-wins resolution matrix. See docs/governance.md §203.
 
   it("resolves a 4-level org->domain->service->component chain: required wins over an attempted domain-level weaken, controls union, non-sibling policies never leak in", async () => {
     const org = await createTestOrg(server, "stricter-wins");
@@ -314,22 +282,14 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // Required + none of the 4 controls has ever run -> blocks (fails closed, never a silent pass).
     expect(result.verdict).toBe("block");
 
-    // This change's `requireControls` reference synthetic (non-object) ids on purpose — this test
-    // only cares about resolution, never about a real control actually running — so its
-    // wave-boundary gate can never satisfy them. Cancel it rather than leaving it to occupy the
-    // shared reconcile loop's every-tick attention (and the resulting per-tick 'blocked' Decision
-    // inserts) for the remaining lifetime of this describe block's server.
+    // This change's `requireControls` reference synthetic. See docs/governance.md §204.
     await admin.changes.cancel(
       change.id,
       "test cleanup: resolution-only fixture, never meant to execute"
     );
   });
 
-  // -----------------------------------------------------------------------------------------
-  // CRITICAL #1a (adversarial review): a lower-scope same-named policy with a FALSE/broken
-  // condition must NOT neutralize a higher-scope required policy's effects. The pre-fix evaluator
-  // ANDed every contributor's condition, so one false condition zeroed the whole merged policy.
-  // -----------------------------------------------------------------------------------------
+  // CRITICAL #1a (adversarial review). See docs/governance.md §205.
 
   it("a second same-named policy with a FALSE condition does NOT weaken a higher-scope required policy — the required control still gates (block persists)", async () => {
     const org = await createTestOrg(server, "condition-bypass");
@@ -393,17 +353,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const accepted = await admin.changes.accept(change.id);
     expect(accepted.state).toBe("accepted");
 
-    // M22.8 — THE RUN NAMES THE CROSSING IT AUTHORIZED. `gate_kind`/`gate_ref` have been stored on
-    // `control_runs` since M4 and were never projected onto the wire. That was invisible while a
-    // control produced at most ONE run per change; M22.0a keyed the cache on gate identity, so a
-    // change now legitimately carries a lifecycle-edge run AND a wave-boundary run for the same
-    // control.
-    //
-    // THIS TEST MEASURED THAT AMBIGUITY RATHER THAN ASSUMING IT. The first version of these
-    // assertions read the run `waitForControlRun`'s `.find()` happened to return and asserted it was
-    // the lifecycle edge; it came back `wave_boundary`. That is precisely the confusion the field
-    // removes — an operator reading this listing had NO way to tell which crossing let a change
-    // through, and neither did this test. So the assertion is now on the SET.
+    // M22.8 — THE RUN NAMES THE CROSSING IT AUTHORIZED. See docs/governance.md §206.
     const runs = (await admin.controlRuns.listForChange(change.id)).items.filter(
       (r) => r.controlObjectId === realControl.id
     );
@@ -430,11 +380,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(explainedRun?.gateRef).toMatchObject({ fromState: "validating", toState: "accepted" });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // CRITICAL #1b (adversarial review): a policy's DECLARED scope is bound to the author's own
-  // `policy:write` authority — a component-scoped author cannot publish an org-wide (or
-  // higher-scope) policy, which was the planting vector that made #1a exploitable.
-  // -----------------------------------------------------------------------------------------
+  // CRITICAL #1b (adversarial review). See docs/governance.md §207.
 
   it("a component-scoped policy author cannot declare an org-wide (or org-root-scoped) policy — only one bounded to their own component", async () => {
     const org = await createTestOrg(server, "scope-authority");
@@ -499,17 +445,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(adminOrgWide.id).toBeTruthy();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Security fast-follow after PR #9's adversarial review: CRITICAL #1b's scope-authority binding
-  // was only wired into the TYPED `/policies` route. The generic `/objects/{type}` endpoint and
-  // the IaC plan/apply path both create/mutate the exact same `policy`/`control` graph objects but
-  // checked only generic `object:write` (never `policy:write`, never
-  // `assertPolicyScopeWithinAuthority`) — a live governance bypass reachable by (a) a
-  // component-scoped Administrator (the same actor the test above blocks on the typed route), and
-  // (b) an Operator holding ZERO `policy:write` anywhere, planting an org-wide `required` policy
-  // demanding an unreachable approval quorum (an org-wide governance DoS any non-Viewer role could
-  // trigger).
-  // -----------------------------------------------------------------------------------------
+  // Security fast-follow after PR #9's adversarial review. See docs/governance.md §208.
 
   it("the generic /api/v1/objects/policy (and /control) endpoint refuses every write verb — both exploits are blocked", async () => {
     const org = await createTestOrg(server, "generic-policy-bypass");
@@ -612,16 +548,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
             properties: {
               ...(scope ? { scope } : {}),
               enforcement: "required",
-              // `Approver`, NOT the "NonexistentRole" this fixture used to carry. role-model.md §5
-              // step 6's `fromRole` validation refuses a policy naming a non-built-in at the
-              // `objects-repo` choke point — which IaC apply passes through — so the old value now
-              // 422s. The negative cases below were unaffected (the authority check refuses first,
-              // still 403), but the NON-REGRESSION case at the end of this test legitimately
-              // succeeds, and it was failing on the role name rather than on the thing under test.
-              //
-              // Using a real role keeps the only variable SCOPE AUTHORITY. `count: 99` is retained
-              // because the unsatisfiable-quorum shape is the point of the exploit; that part is
-              // still expressible, and is a different defect from naming a role nobody can hold.
+              // A real role name, not the nonexistent one before. See docs/governance.md §209.
               effects: [{ requireApprovals: { count: 99, fromRole: "Approver" } }]
             }
           }
@@ -639,14 +566,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     await expect(operatorClient.plans.apply(opPlan.id)).rejects.toMatchObject({ status: 403 });
     await expect(admin.object("policy").get(policyUrn)).rejects.toMatchObject({ status: 404 });
 
-    // Exploit (a, via IaC): a component-scoped Administrator (holds 'policy:write' ONLY at
-    // `component`) tries an org-wide (unscoped) policy through a manifest apply. Also bound as a
-    // Viewer at the ORG ROOT — `POST /plans` checks `object:read` at org root regardless of
-    // manifest content (routes/plans.ts's own documented scope decision, unrelated to this fix),
-    // so without this second binding the actor couldn't reach `/plans` at all and the test
-    // wouldn't isolate the `policy:write`/scope-authority variable this fix is actually about.
-    // Viewer grants no write permission of any kind, so the actor's WRITE authority stays exactly
-    // 'policy:write' at `component` and nothing broader.
+    // Exploit (a, via IaC). See docs/governance.md §210.
     const author = await createTestUser(server, org, [
       { role: "Viewer", scope: org.orgId },
       { role: "Administrator", scope: component.id }
@@ -688,12 +608,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     await expect(admin.object("control").get(controlUrn)).rejects.toMatchObject({ status: 404 });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Required control blocks accept; hybrid gate (scan AND approval — either missing blocks);
-  // control outcomes + evidence persisted and referenced by the Decision (joined by
-  // controlObjectId — see routes/changes.ts's explain handler / control_runs.decision_id's own
-  // doc comment for why there's no raw FK).
-  // -----------------------------------------------------------------------------------------
+  // Required control blocks accept; hybrid gate. See docs/governance.md §211.
 
   describe("required control + hybrid gate (scan AND approval)", () => {
     it("hybrid: the control failing blocks the wave even though the approval is already satisfied — the change never leaves 'executing'", async () => {
@@ -809,11 +724,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
           (d.inputContext.toState as string) === "accepted"
       );
       expect(allowDecision).toBeDefined();
-      // transition.ts: `decision.reasonTree = { summary, gate: gate.reasonTree }` — the per-policy
-      // detail (name/enforcement/effects/contributingPolicyVersions) lives on the GATE'S reasonTree
-      // (evaluate.ts's `GovernanceEvaluationResult.reasonTree.policies`), nested under `gate` here;
-      // `inputContext.gate` (gate-orchestrator.ts's `GateOutcome.inputContext`) is a different,
-      // coarser object (matchedPolicyCount/effectivePolicyCount) with no `policies` array at all.
+      // The reason tree's shape, as the transition composes it. See docs/governance.md §212.
       const gateReasonTree = (
         allowDecision!.reasonTree as { gate?: { policies?: Array<Record<string, unknown>> } }
       ).gate;
@@ -907,12 +818,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     }
   });
 
-  // -----------------------------------------------------------------------------------------
-  // MAJOR #7 (adversarial review): `approves` edges are DESIGN §10.2 approval EVIDENCE and are
-  // system-managed — the generic /relationships endpoint must refuse to fabricate one (a
-  // graph-visible fake "X approved this"), so approval evidence only ever derives from the
-  // DB-vote-backed approval-vote path.
-  // -----------------------------------------------------------------------------------------
+  // MAJOR #7 (adversarial review). See docs/governance.md §213.
 
   it("the generic /relationships endpoint refuses to create OR delete a system-managed 'approves' edge (403) — even for an org-root Owner", async () => {
     const org = await createTestOrg(server, "approves-guard");
@@ -956,11 +862,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(JSON.stringify(deleteErr.problem)).toMatch(/system-managed/i);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // MAJOR #5 (adversarial review): a requireApprovals.scope written as a scope-KIND keyword
-  // (DESIGN §10.1's own example `"scope":"service"`) must resolve to the change target's
-  // containing service — NOT crash the reconcile tick with a raw `::uuid` cast (22P02).
-  // -----------------------------------------------------------------------------------------
+  // MAJOR #5 (adversarial review). See docs/governance.md §214.
 
   it("requireApprovals scope written as the DESIGN keyword 'service' resolves to the target's containing service (no 22P02 crash) and gates a service-level Approver's vote", async () => {
     const org = await createTestOrg(server, "scope-keyword");
@@ -1006,15 +908,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(accepted.state).toBe("accepted");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // The SAME keyword, on the shape migration 0021 actually created. The test above wires the
-  // component to the service with `domainId: service.id` — a component whose *containing domain* IS
-  // a service object. That is not the service/component model: 0021 links them with a `contains`
-  // edge and leaves `domain_id` pointing at the org root. On that real shape, gate-orchestrator's
-  // domain_id-only walk found no ancestor of kind 'service', `resolveApprovalScope` returned null,
-  // and the caller treats null as an UNSATISFIABLE required approval — fail CLOSED, with prewarm
-  // skipping materialization so no human could vote it through either. Wedged forever.
-  // -----------------------------------------------------------------------------------------
+  // The SAME keyword, on the shape migration 0021 actually created. See docs/governance.md §215.
 
   it("requireApprovals scope keyword 'service' resolves through the `contains` edge (not just domain_id) and is satisfiable by a service-level Approver", async () => {
     const org = await createTestOrg(server, "scope-keyword-contains");
@@ -1064,12 +958,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(accepted.state).toBe("accepted");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Freezes: block, mandatory reason, and — MAJOR #6 — a REJECTED override (unauthorized / no
-  // reason) is now routed through the Decision+audit path (409 carrying decision_id, an audited
-  // rejected-transition Decision), NOT a rolled-back raw 403. Authorized override succeeds and
-  // audits with the reason. SECURITY-SENSITIVE surface.
-  // -----------------------------------------------------------------------------------------
+  // Freezes: block, mandatory reason, and a rejected override. See docs/governance.md §216.
 
   it("freeze blocks accept; a rejected override (unauthorized / no-reason) carries decision_id + is audited (MAJOR #6); authorized override with a reason succeeds and writes an audited, Decision-linked freeze.override event", async () => {
     const org = await createTestOrg(server, "freeze");
@@ -1143,13 +1032,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(blockedEvents.length).toBeGreaterThanOrEqual(1);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // A freeze scoped at a SERVICE must block that service's components. DESIGN §10.3 lists
-  // `service` as a freeze scope level, but gate-orchestrator's freeze walk followed `domain_id`
-  // only — services and components are siblings under a domain, so the service id never entered
-  // the scope set. `activeFreezesForScopes` matches by EXACT SET MEMBERSHIP, so the freeze was
-  // simply not found: it failed OPEN, silently, with the freeze still listed as active.
-  // -----------------------------------------------------------------------------------------
+  // A freeze at a service must block that service's components. See docs/governance.md §217.
 
   it("a freeze scoped at a SERVICE blocks a change targeting a component that service CONTAINS (and does not block a component it doesn't)", async () => {
     const org = await createTestOrg(server, "service-freeze");
@@ -1201,11 +1084,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(accepted.state).toBe("accepted");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // CRITICAL #2 (adversarial review): a narrow-scope override must NOT slip a change past a
-  // BROADER simultaneous freeze the actor has no authority over. `activeFreezesForScopes` can
-  // return several; only checking the first one was the bypass.
-  // -----------------------------------------------------------------------------------------
+  // CRITICAL #2 (adversarial review). See docs/governance.md §218.
 
   it("a narrow-scope freeze:override does NOT bypass a broader simultaneous freeze the actor lacks authority over — every active freeze must be individually overridden", async () => {
     const org = await createTestOrg(server, "multi-freeze");
@@ -1280,13 +1159,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const target = await createTestComponent(admin, { name: "group-scope-target" });
     const group = await admin.groups.create({ name: "release-managers" });
 
-    // `OrgAdmin`, not `Operator`: this case is about which POLICY fires, so both actors need to be
-    // able to propose AND accept. drizzle/0099 took `change:accept` out of `object:write` and
-    // deliberately withheld it from Operator (role-model.md §5 step 3 — the one intentional
-    // breakage), so an Operator now 403s at the accept door before any policy is consulted and this
-    // case would go green-adjacent for the wrong reason. OrgAdmin holds `change:accept` and is NOT
-    // named `Approver`, so the `requireApprovals.fromRole: "Approver"` quorum below is still
-    // unsatisfiable by either of them — which is exactly what the member's 409 depends on.
+    // `OrgAdmin`, not `Operator`. See docs/governance.md §219.
     const member = await createTestUser(server, org, [{ role: "OrgAdmin", scope: org.orgId }]);
     const nonMember = await createTestUser(server, org, [{ role: "OrgAdmin", scope: org.orgId }]);
     await admin.relationships.create({
@@ -1325,13 +1198,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(accepted.state).toBe("accepted");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Emergency changes (DESIGN §10.3) — SECURITY-SENSITIVE surface: only a permitted actor
-  // (change:emergency) may flag a change emergency; a flagged change follows a CONFIGURED
-  // emergencyPolicy set instead of the normal required policies, never a blanket bypass, and the
-  // bypass itself is visible in the Decision trail (never a silent allow indistinguishable from
-  // "no policy applied").
-  // -----------------------------------------------------------------------------------------
+  // Emergency changes (DESIGN §10.3). See docs/governance.md §220.
 
   describe("emergency changes", () => {
     it("an emergency change follows the configured emergencyPolicy (bypassing an otherwise-unsatisfiable normal required policy) while a non-emergency change against the SAME target stays blocked — both fully audited", async () => {
@@ -1429,15 +1296,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M17.1 (ADR-0013): the `scan-result-control` ControlPlugin — a coordinated Trivy scan VERDICT
-  // turned into gate evidence, proven through the REAL gate seam (not a plugin-unit tautology):
-  // a required policy naming the scan control genuinely blocks promotion when the verdict fails
-  // (over-threshold OR digest-mismatch) and lets it through when the verdict passes. This
-  // plugin/gate consumes the verdict; it never runs Trivy itself (charter coordinate-not-execute) —
-  // the charter-enumerated `scp-managed-scan` runner is what scans, as the commander's promotion
-  // scan step (ADR-0020).
-  // -----------------------------------------------------------------------------------------
+  // M17.1 (ADR-0013): the `scan-result-control` ControlPlugin. See docs/governance.md §221.
 
   describe("scan-result-control (Trivy verdict as a boundary-authorization gate)", () => {
     const MATCH_DIGEST = "sha256:aaaa000000000000000000000000000000000000000000000000000000000000";
@@ -1483,11 +1342,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       };
     }
 
-    /** A real `control` graph object bound to the real `scan-result-control` plugin, pointed at the
-     *  Trivy fixture with a fixed scanned `digest` + `severities`. `expectedDigest` is OPTIONAL: pass
-     *  it to exercise the operator-pinned fallback path (a change with no tracked artifact digest);
-     *  OMIT it to prove the gate threads the CHANGE's own tracked `sourceRef.artifact_digest` into
-     *  `context.artifactDigest`, which the plugin binds against (context wins over config, ADR-0013). */
+    /** A real control object bound to the real plugin. See docs/governance.md §222. */
     async function createScanControl(
       admin: ScpClient,
       org: TestOrg,
@@ -1657,13 +1512,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       await assertStaysExecuting(server, org.orgId, change.id);
     });
 
-    // -------------------------------------------------------------------------------------------
-    // The binding is to the CHANGE's REAL tracked artifact — NOT to an operator-typed config value.
-    // These two tests set NO `config.expectedDigest`; the ONLY digest the verdict can bind against is
-    // the change's own `sourceRef.artifact_digest`, which the gate now threads into
-    // `context.artifactDigest`. This is what makes ADR-0013's "nothing slipped in" non-tautological:
-    // the same `policy:write` author can no longer type the expected digest next to the scan source.
-    // -------------------------------------------------------------------------------------------
+    // The binding is to the CHANGE's REAL tracked artifact. See docs/governance.md §223.
 
     it("binds to the change's REAL tracked artifact digest: a CLEAN scan of a DIFFERENT digest than the change's sourceRef.artifact_digest BLOCKS — with NO config.expectedDigest to pin (context wins, not a config tautology)", async () => {
       const org = await createTestOrg(server, "scan-real-mismatch");
@@ -1752,17 +1601,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       });
     });
 
-    // -------------------------------------------------------------------------------------------
-    // M17.2 REGRESSION GUARD for the artifactDigest canonicalization fix.
-    //
-    // A change created through the TYPED first-party report ingress (`POST
-    // /change-sources/{kind}/report` — the route M17.2 teaches to carry an SBOM reference) reports
-    // its artifact digest as a FLAT camelCase `artifactDigest`. Before M17.2 that value was never
-    // lifted to the documented canonical `sourceRef.artifact_digest`; it survived only because
-    // `resolveChangeArtifactDigest` also accepts the camelCase spelling as a fallback. M17.2 lifts
-    // it properly — and this test proves the fix HELPS rather than breaks M17.1's shipped binding:
-    // the scan gate must still bind the Trivy verdict to a report-route change's real digest.
-    // -------------------------------------------------------------------------------------------
+    // A regression guard for the digest canonicalization fix. See docs/governance.md §224.
     it("M17.2 regression: a change created via the TYPED REPORT route (flat artifactDigest, now canonicalized) still binds the M17.1 scan gate to its real artifact — clean+matching scan accepts, and the SBOM reference rode along on the same report", async () => {
       const org = await createTestOrg(server, "scan-report-route");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -1857,23 +1696,14 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // M10.4 (BUILD_AND_TEST.md §8): the `github-check` ControlPlugin — a GitHub Check Run verdict
-  // for the change's OWN tracked commit turned into wave-gate evidence, proven through the REAL
-  // gate seam (real subprocess plugin host, real GitHub Checks-API-shaped fixture).
-  // -----------------------------------------------------------------------------------------
+  // M10.4 (BUILD_AND_TEST.md §8): the `github-check` ControlPlugin. See docs/governance.md §225.
 
   describe("github-check (CI evidence as a wave-gate control)", () => {
     interface CheckRunFixtureState {
       conclusion: "success" | "failure" | "pending";
     }
 
-    /** A real loopback HTTP server shaped like GitHub's Check Runs API
-     *  (`GET /repos/{owner}/{repo}/commits/{ref}/check-runs`). State is keyed by `ref` (the commit
-     *  sha in the URL), so ONE fixture backs many differently-configured bindings/changes across
-     *  tests — same pattern as `startTrivySource`. `callCountFor` lets a test PROVE the plugin was
-     *  invoked again (not served from `control_runs`' cache) after the M10.4 expired-cooldown
-     *  bypass fires. */
+    /** A loopback server shaped like the provider's checks API. See docs/governance.md §226. */
     async function startGithubCheckSource(): Promise<
       TestWebhookServer & {
         setState(ref: string, state: CheckRunFixtureState): void;
@@ -2031,11 +1861,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(callsWhileInFlight).toBeGreaterThan(0);
       await assertStaysExecuting(server, org.orgId, change.id);
 
-      // Directly backdate the cached 'expired' row past `control-runner.ts`'s
-      // EXPIRED_RECHECK_INTERVAL_MS (30s) — the deterministic, non-flaky way to prove the cooldown
-      // bypass actually re-invokes the plugin rather than caching 'expired' forever the way every
-      // OTHER status is cached (which would permanently deadlock this wave, since a wave-boundary
-      // gate is asked well before CI on a fresh commit has even started).
+      // Backdates the cached expired row past the recheck window. See docs/governance.md §227.
       await withTenantTx(server.deps.db, org.orgId, (tx) =>
         tx
           .update(controlRuns)
@@ -2056,11 +1882,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 });
 
-// -----------------------------------------------------------------------------------------
-// Automatic rollback fires on wave (control/gate) failure — its own server because it needs
-// `FakeExecutorConfig.forcePhase` fixed at plugin-instance boot time for specific,
-// test-known target object ids (created with an explicit `id:`).
-// -----------------------------------------------------------------------------------------
+// Automatic rollback fires on wave (control/gate) failure. See docs/governance.md §228.
 
 describe("governance integration: automatic rollback on wave failure", () => {
   let server: ListeningTestServer;
@@ -2104,12 +1926,7 @@ describe("governance integration: automatic rollback on wave failure", () => {
 
     const change = await admin.changes.propose({ name: "will-fail", targets: [target.id] });
 
-    // `forcePhase` has no trigger-kind distinction (this file's module doc) — `autoRollbackTargetId`
-    // fails EVERY trigger, sync or rollback alike, so the auto-triggered rollback change's own wave
-    // fails too and never reaches 'accepted'. That's deliberately exercised by the SECOND
-    // assertion below (no infinite rollback-of-a-rollback regress), not a test gap — this test's
-    // real subject is the TRIGGER itself, not the rollback's own eventual success (already proven
-    // by coordination.integration.test.ts's "rollback restores prior known-good state" case).
+    // `forcePhase` has no trigger-kind distinction. See docs/governance.md §229.
     const trigger = await waitUntil(
       async () => {
         const explained = await admin.changes.explain(change.id);
@@ -2117,11 +1934,7 @@ describe("governance integration: automatic rollback on wave failure", () => {
       },
       {
         describe: `change ${change.id}'s wave failure auto-triggers a rollback`,
-        // SIX TICKS, not 30 arbitrary seconds: propose -> executing, dispatch the wave target,
-        // observe the forced failure, mark the wave failed, and one more tick for the `failed`
-        // branch to trigger the rollback. See `reconcileTicks` for why a deadline in seconds
-        // against the advertised 1s tick is the same arithmetic error as the sleeps this commit
-        // removed — the real tick measured 2025ms median with ONE org.
+        // SIX TICKS, not 30 arbitrary seconds. See docs/governance.md §230.
         timeoutMs: reconcileTicks(6)
       }
     );
@@ -2144,19 +1957,11 @@ describe("governance integration: automatic rollback on wave failure", () => {
       },
       {
         describe: `rollback change ${rollbackChangeObjectId}'s own wave is observed failing`,
-        // THE DEADLINE THIS COMMIT WAS MEASURED FAILING ON: a legacy copy of this file, run in a
-        // parallel fork beside the fixed one under deliberate CPU load, timed out here after
-        // 15_000ms. The rollback change is a SECOND full lifecycle (propose -> executing, dispatch,
-        // observe the forced failure, mark the wave failed), so it needs five ticks of its own and
-        // 15s bought fewer than two.
+        // The deadline this commit was measured failing on. See docs/governance.md §231.
         timeoutMs: reconcileTicks(5)
       }
     );
-    // The negative below is asserted from a POSITIVE signal, not from a fixed sleep: the failed-wave
-    // branch that WOULD have re-triggered is the same one that sets `reconcile_blocked_at`, and a
-    // parked change is filtered out of `listChangeRowsInStates` forever. Once parking is observed,
-    // the engine has taken its one and only look at this failure — so "no rollback-of-a-rollback"
-    // is settled rather than merely not-yet-observed, and a slow box cannot make it vacuous.
+    // The negative is asserted from a positive signal. See docs/governance.md §232.
     await waitForChangeParked(server, org.orgId, rollbackChangeObjectId);
     const rollbackExplained = await admin.changes.explain(rollbackChangeObjectId);
     expect(rollbackExplained.decisions.filter((d) => d.kind === "rollback_trigger")).toHaveLength(

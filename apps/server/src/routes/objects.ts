@@ -17,11 +17,7 @@ function idempotencyKey(request: FastifyRequest): string | undefined {
   return typeof header === "string" ? header : undefined;
 }
 
-/**
- * `POST/GET /api/v1/objects/service` plus the `orgs/{org}` path-override form (DESIGN.md §6),
- * registered from day 1. Backed by the M0 minimal `objects` table — superseded by the generic
- * `/objects/{type}` endpoint over the full graph model in M1.
- */
+/** The service routes, plus the org path-override form. See docs/routes.md §277. */
 export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 

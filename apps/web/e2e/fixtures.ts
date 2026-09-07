@@ -40,12 +40,7 @@ export async function loginAsAdmin(page: Page): Promise<void> {
   await page.waitForURL(`${baseUrl()}/`);
 }
 
-/**
- * Enables the graph explorer's dev-only Cytoscape testability hook
- * (apps/web/src/routes/graph-explorer.tsx `window.__cy`) for every subsequent navigation on this
- * page — the ONLY way to reach it against the production build this suite runs against
- * (`import.meta.env.DEV` is false there). Call before navigating.
- */
+/** Enables the graph explorer's dev-only Cytoscape testability hook. See docs/web.md §9. */
 export async function enableGraphTestHook(page: Page): Promise<void> {
   await page.addInitScript(() => {
     (window as unknown as { __SCP_E2E__?: boolean }).__SCP_E2E__ = true;

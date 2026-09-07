@@ -19,36 +19,7 @@ import type {
   RunnerSpec
 } from "./index.js";
 
-/**
- * ================================================================================================
- * M23.6 CLAUSE 5 — WHAT THE ADAPTER ASKS THE API SERVER FOR, DERIVED FROM RUNNING IT
- * ================================================================================================
- *
- * `kubernetesRunnerRbac()` is a DECLARATION, and a declaration on its own is prose with a type.
- * This file holds it to the code: it drives the adapter across every route it has, over a recording
- * io, maps each `(method, path)` that ACTUALLY REACHED THE WIRE onto the Kubernetes verb the
- * authorizer would require, and asserts the derived set EQUALS the declaration. `tools/helm-verify`
- * then asserts the RENDERED ROLE equals the same declaration. Three things agree, or the build is
- * red — and the diff fails in BOTH directions, which is the half M23.6's clause 5 was missing.
- *
- * WHY BOTH DIRECTIONS ARE THE POINT. Before this, helm-verify checked `batch/jobs` with
- * `JSON.stringify(rules).includes('"patch"')`, `events` and `secrets` with a set-equality, and
- * `pods`/`pods/log` not at all. Measured against that gate: adding four UNUSED verbs to the chart
- * (`jobs: +deletecollection,+update`; `pods,pods/log: +delete,+create`) left helm-verify green,
- * `pnpm -w test` green (72/72) and the kind suite green (21/21). A gate that only catches a MISSING
- * verb lets a privilege drift wider forever.
- *
- * AND IT HAD ALREADY DRIFTED. The shipped Role granted `watch` on `batch/jobs` and on
- * `pods,pods/log` — inherited from M8's reference shape — while `KUBERNETES_POLL_INTERVAL_MS`'s own
- * doc says "A POLL AND NOT A WATCH, deliberately" and there is no `watch=` query anywhere in the
- * adapter. It also collapsed `pods` and `pods/log` into ONE rule, which grants each the other's
- * verbs: `get` on `pods` and `list` on `pods/log`, neither ever issued.
- *
- * THE CENSUS SLOT AT THE BOTTOM is what stops this file being a test of the routes it happens to
- * know about. Every request this adapter can issue is built from a `method: "<VERB>"` literal; the
- * count and multiset of those literals is pinned, so a NEW call site — the one this matrix would
- * not drive — fails here by count before it can reach a cluster with no grant behind it.
- */
+/** What the adapter asks the API server for, derived. See docs/runner-launcher.md §316. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NAMESPACE = "scp";
@@ -60,11 +31,7 @@ interface Wire {
   path: string;
 }
 
-/**
- * A recording io over a minimal stateful cluster. Deliberately NOT a canned response list: the
- * adapter POSTs a Job and then PATCHes and DELETEs it BY NAME, and a list cannot notice being asked
- * about a name it never issued.
- */
+/** A recording io over a minimal stateful cluster. See docs/runner-launcher.md §317. */
 function recorder(opts: { podAppears: boolean; foreignPastDeadline?: boolean }) {
   const wire: Wire[] = [];
   const jobs = new Map<string, Record<string, unknown>>();
@@ -245,11 +212,7 @@ function sortedDeclaration(perRunSecrets: boolean): KubernetesRbacRule[] {
 async function driveEveryRoute(perRunSecrets: boolean): Promise<Wire[]> {
   const wire: Wire[] = [];
 
-  // ROUTE 1 — a whole successful run: the Secret POST, the Job POST, the unsuspend PATCH, the pod
-  // list, the log read, and the teardown's two DELETEs.
-  // `secretEnv` is populated ONLY when the deployment has the grant: with `perRunSecrets: false` the
-  // adapter REFUSES the run rather than falling back to `env[].value`, which is the correct
-  // behaviour and would drive no routes at all.
+  // ROUTE 1 — a whole successful run. See docs/runner-launcher.md §318.
   const secretEnv = perRunSecrets ? ["TOKEN=shhh"] : [];
   const happy = recorder({ podAppears: true });
   const okResult = await launcher(happy.io, perRunSecrets).run(spec({ secretEnv }));
@@ -373,22 +336,7 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
   });
 
   it("THE OPERATOR-FACING README STATES THE SAME SET — the prose, held to the declaration", () => {
-    /**
-     * ============================================================================================
-     * M23.6, SECOND PASS — THE ONE PRESENT-TENSE FALSEHOOD OF ITS KIND IN THE TREE
-     * ============================================================================================
-     * `deploy/helm/README.md` told operators the Role granted "`batch/jobs`
-     * create/get/list/watch/patch/delete, `pods`/`pods/log` read, and `secrets` create/delete". Every
-     * clause of that was wrong after M23.6 narrowed the Role: there is no `watch` (this adapter
-     * POLLS), `pods` and `pods/log` are two resources with one verb each rather than a shared "read",
-     * and `events: list` — added in M23.5 and the only record of why a Job that never produced a pod
-     * failed — was missing from the sentence entirely. The commit that wrote the section never
-     * touched it again and the narrowing never came back to it.
-     *
-     * A SENTENCE AN OPERATOR USES TO PLAN THEIR RBAC IS AS LOAD-BEARING AS THE ROLE, so it is read
-     * here and compared to the same declaration `tools/helm-verify` compares the RENDERED Role to.
-     * Three things now agree — the wire, the chart, and the prose — or the build is red.
-     */
+    /** M23.6, SECOND PASS. See docs/runner-launcher.md §319. */
     const readme = readFileSync(resolve(__dirname, "../../../deploy/helm/README.md"), "utf8");
     const sentence =
       /The RBAC — ([^]*?) — renders whenever the Kubernetes launcher is selected/.exec(readme);
@@ -427,16 +375,7 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
   });
 
   it("THE CENSUS SLOT: every request the adapter can build is one this matrix drove", () => {
-    /**
-     * The matrix above proves what the routes it drives require. It cannot, on its own, prove there
-     * is no ELEVENTH route — the one nothing drives and no Role grants, which is exactly how a
-     * managed run turns into a 403 nobody predicted. Every request in this adapter is built from a
-     * `method: "<VERB>"` literal, so the multiset of those literals is the count of what can be
-     * issued at all. Add a call site and this fails BY COUNT before it can reach a cluster.
-     *
-     * `method: req.method` (the transport, in `createFetchKubernetesIo`) and the `method` field on
-     * `KubernetesApiRequest` itself are not literals and are correctly invisible here.
-     */
+    /** The matrix cannot, on its own, prove the rest. See docs/runner-launcher.md §320. */
     const source = readFileSync(resolve(__dirname, "kubernetes-adapter.ts"), "utf8");
     // The negative lookbehind excludes `KubernetesApiRequest`'s own field declaration, whose union
     // (`readonly method: "GET" | "POST" | ...`) is a TYPE and issues nothing.

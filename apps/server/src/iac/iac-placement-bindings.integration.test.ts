@@ -12,57 +12,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { objects, executorBindings } from "../db/schema.js";
 
-/**
- * DECLARING AN EXECUTOR BINDING ON A PLACEMENT.
- *
- * ============================================================================================
- * WHY THIS EXISTS
- * ============================================================================================
- * C1 (#215) let a manifest declare `placements`, but not the bindings that hang off them — the
- * pool of "bindings this stack manages" was keyed on owned OBJECTS, and a placement is not in
- * `manifest.objects` (#207 refuses pair-bound types at that door). So `POST /plans` refused every
- * such declaration as "on object(s) this stack does not manage", and its suggested remedy
- * ("declare that object in this stack's manifest") was unavailable by construction.
- *
- * That mattered beyond IaC completeness: on the live estate 61 of 66 executor bindings hang off
- * placements, so the collection was silently unable to express the majority of real bindings.
- *
- * ============================================================================================
- * ADDRESSING IS THE PAIR, NEVER THE URN
- * ============================================================================================
- * A placement's URN is DERIVED (ADR-0026 D3) from the org id plus both endpoints' *display names*
- * — `urn:scp:<orgId>:placement:<component>/<deployment-target>`. An author cannot write that, and
- * it changes under a rename.
- *
- * So a placement is addressed as `targetUrn` (the COMPONENT) narrowed by `deploymentTargetUrn`.
- * The first shape tried was a separate `targetPlacement` pair replacing `targetUrn`, and it failed
- * the oasdiff /v1 additive-only gate: making `targetUrn` optional is a breaking change for every
- * response that echoes a plan's manifest and diff. Expressing the placement as a QUALIFIER keeps
- * `targetUrn` required, and collapses ownership back to one unconditional rule — the stack must own
- * `targetUrn`, which for a placement IS its component (decision Q4).
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | revert the pool to `ownedIdList` (objects only) | FOUR fail: adopt, prune, the cross-stack update, and "removes BOTH" in the placements suite |
- * | drop the "pair must be declared" check | the undeclared-pair test FAILS (asserted on the offender TEXT, so the other branch cannot satisfy it) |
- * | drop `resolveEndpoint` from the BINDING loop | only the noop-placement test fails |
- * | drop `resolveEndpoint` from the PLACEMENTS loop | only the no-binding test fails |
- * | drop the Q2 surviving-binding check | only the TOCTOU test in the placements suite fails |
- *
- * The two `resolveEndpoint` rows are why this file has nine tests rather than seven. With the
- * original seven, each call was individually redundant — every single-drop mutation stayed green
- * because the other covered it, and only removing BOTH failed anything. Two lines each "covered"
- * only by the other are not covered at all, so the cases that separate them were added: a placement
- * whose pair is `noop` (the placements loop skips those) and a placement with no binding at all.
- *
- * An earlier version of the foreign-component test asserted only a 400, which the PLACEMENT guard
- * could satisfy on its own — green under a mutation that broke the binding guard entirely. It now
- * asserts the offender text and uses a stack declaring no placements, so only the binding guard can
- * answer.
- */
+/** DECLARING AN EXECUTOR BINDING ON A PLACEMENT. See docs/iac.md §39. */
 describe("IaC executor bindings on placements", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -246,11 +196,7 @@ describe("IaC executor bindings on placements", () => {
     const owner = `pb-owner-${uuidv7().slice(0, 8)}`;
     await apply(baseManifest(owner));
 
-    // This stack declares NO placements of its own and does not declare the foreign pair either —
-    // so the placements guard has nothing to object to and only the BINDING guard can refuse. That
-    // isolation is the point: an earlier version of this test also declared the foreign placement,
-    // and stayed green under a mutation that broke the binding guard entirely, because the
-    // placement guard was answering for it.
+    // This stack declares no placements and not the foreign one. See docs/iac.md §40.
     const other = `pb-other-${uuidv7().slice(0, 8)}`;
     const foreign: DesiredStateManifest = {
       stackName: other,
@@ -311,11 +257,7 @@ describe("IaC executor bindings on placements", () => {
   });
 
   it("places a component at ANOTHER stack's deployment-target with no binding at all", async () => {
-    // A pre-existing C1 (#215) gap, not something this change introduced. `ManifestPlacementSchema`
-    // says the deployment-target "may belong to another stack", but `prepareApplyChecks` resolved
-    // only the COMPONENT — so `endpointId(deploymentTargetUrn)` threw "internal: could not resolve
-    // object id" at apply for exactly the case the schema advertises. It never bit the live estate
-    // because every stack there happens to declare its own targets.
+    // A pre-existing C1. See docs/iac.md §41.
     const platform = `pb-plat3-${uuidv7().slice(0, 8)}`;
     const platformTarget = `urn:scp:${platform}:deployment-target:shared`;
     await apply({
@@ -362,11 +304,7 @@ describe("IaC executor bindings on placements", () => {
   });
 
   it("UPDATES a cross-stack binding when the placement itself is unchanged", async () => {
-    // The case the two `resolveEndpoint(deploymentTargetUrn)` calls exist for, and the only one
-    // that distinguishes them. The placements loop SKIPS `noop` entries, so on a re-apply where the
-    // pair is unchanged but the binding changed, the placement no longer resolves the foreign
-    // deployment-target — only the binding loop does. Drop that one line and this fails with
-    // "internal: could not resolve object id" while every other test here stays green.
+    // The case those two endpoint resolutions exist for. See docs/iac.md §42.
     const platform = `pb-plat2-${uuidv7().slice(0, 8)}`;
     const platformTarget = `urn:scp:${platform}:deployment-target:shared`;
     await apply({

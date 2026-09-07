@@ -16,64 +16,9 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * drizzle/0097 — the RBAC DDL preconditions (docs/proposals/role-model.md §1.3g/§1.3h, build
- * order §5 step 1). This increment adds NO role and NO permission; it makes `roles` and
- * `role_bindings` able to HOLD the purpose-shaped roles safely. So there is no route to test
- * through — the whole subject matter is what the DATABASE refuses, and the only honest way to
- * assert that is to attempt the write against real Postgres and read the SQLSTATE back.
- *
- * Two of these guards protect against a failure that CANNOT be caught at the application layer:
- *
- *   - the duplicate-grant key (`role_bindings_grant_key`) is what makes a revoke verb
- *     trustworthy. Two identical grants are individually revocable and collectively still
- *     granting — revoke one, the other still grants, and the API reports success. No amount of
- *     care in one write door prevents that; the database is the only layer every writer passes
- *     through.
- *   - the effect CHECK closes a SILENT INERTNESS: `hasPermission` classifies with exact string
- *     equality (`effects.includes("deny")`, then `includes("allow")` — authz/resolve.ts:285-286),
- *     so a row with effect 'ALLOW' grants nothing and denies nothing while rendering, to any
- *     reader of the table, as authority.
- *
- * And the "cleanup path" describe block is the one that carries the real risk. (a), (b) and (c) can
- * HARD-FAIL on a populated database — a unique index over pre-existing duplicates aborts, and so
- * does a CHECK over pre-existing violations — so 0097 cleans before it constrains. A cleanup that
- * has never run on dirty data is a cleanup nobody has tested: every integration database here is
- * migrated from EMPTY, so the clean path is the only one CI would otherwise ever see. That block
- * therefore builds the dirty state by hand and re-executes the migration's own committed SQL text
- * against it — not a re-implementation of the cleanup in TypeScript, which would only prove the
- * test agrees with itself.
- *
- * Its last three cases are about §1a, the REFUSAL, and they are the ones with authority riding on
- * them. Collapsing duplicate built-in roles keeps the lowest id, which is deterministic but carries
- * no claim to be right: a re-executed 0002 seed writes the M1-era 11-permission `Owner` beside
- * today's 22-permission one, `gen_random_uuid()` decides which holds the lower id, and half the
- * time lowest-id-wins would strip twelve permissions — `freeze:override`, `change:emergency` and
- * `change:accept` among them — from every Owner in the estate, during an upgrade that reported
- * success. The other half widens instead, and since drizzle/0099 it also RESURRECTS `org:admin`,
- * a permission that was deleted precisely because it gates nothing. So 0097 refuses to pick and
- * aborts with the ids and the delta; the tests below pin the refusal, pin that the abort leaves
- * the database untouched, and pin that it does NOT fire on duplicates that merely differ in array
- * order. The exact counts are MEASURED from the live row inside each case rather than restated
- * here, so a later grant migration moves them without touching this paragraph's argument.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied ALONE to `drizzle/0097`'s §1a, measured 2026-08-26, then reverted
- * ------------------------------------------------------------------------------------------------
- *
- * | Mutation | Measured result |
- * |---|---|
- * | `IF report IS NOT NULL THEN` → `IF false THEN` (i.e. §1a computes the delta and never raises) | **1 fail, and the right one.** `ABORTS instead of collapsing built-ins whose permissions have DIVERGED`: `Error: 0097 SUCCEEDED against two Owner rows with different permissions — it silently picked one`. The other 23 stay green, including both collapse cases — which is the whole point: the harmful behaviour is invisible to every test that only checks that duplicates went away. |
- * | The set comparison → a literal array comparison (`WHERE o.permissions IS DISTINCT FROM k.permissions`) | **1 fail, the opposite one.** `does NOT abort when the duplicates agree — order and repeats are not divergence` dies on the migration's own message: `0097: refusing to collapse duplicate built-in roles whose permissions have DIVERGED …`. A false alarm an operator cannot act on, since `hasPermission` reads the array with `= ANY(...)` and does not care about order. |
- */
+/** drizzle/0097 — the RBAC DDL preconditions. See docs/db.md §25. */
 
-/**
- * Located by SUFFIX, not by number. Migration numbering across open PRs is strictly serial in
- * merge order and is expected to be re-verified (and RENUMBERED) at merge time — a test that
- * hard-coded `0097_` would silently stop covering the migration the moment that happened.
- * Matching on the stable half of the filename removes the question, and `toHaveLength(1)` makes a
- * rename that breaks the match a loud failure rather than a skipped assertion.
- */
+/** Located by SUFFIX, not by number. See docs/db.md §26. */
 function readMigrationUnderTest(): string {
   const drizzleDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "drizzle");
   const matches = readdirSync(drizzleDir).filter((f) => f.endsWith("_rbac_role_preconditions.sql"));
@@ -168,21 +113,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
   });
 
   it("is PARTIAL — an org row may take a BUILT-IN's name at the DDL level", async () => {
-    // The `WHERE org_id IS NULL` half. If someone "simplifies" the index to a plain UNIQUE(name),
-    // this test is what tells them they just made every org's custom-role namespace global.
-    //
-    // NARROWED BY drizzle/0103, DELIBERATELY. This case used to insert TWO org rows named 'Viewer'
-    // and assert a count of 2 — which the new `roles_org_name_key` (`UNIQUE (org_id, name) WHERE
-    // org_id IS NOT NULL`) now refuses, because two roles sharing a name inside one org make the
-    // catalogue unreadable: both bind, both render identically in GET /roles, and a revoke names
-    // one of them. The CLAIM this case exists to make is unchanged and is still measured here —
-    // 0097's index does not constrain org rows, so an org row may take a built-in's name — it is
-    // now demonstrated with ONE row, which is all the claim ever needed.
-    //
-    // Such a row is refused by the AUTHORING door (`assertRoleNameNotBuiltIn`) and unbindable at
-    // the grant door (`builtInNameCollisionReason`). Those are doors, not DDL, which is exactly
-    // why this DDL-level assertion is still worth making: it pins that the database permits what
-    // the doors refuse, so nobody later "fixes" the index and silently changes two doors' meaning.
+    // The `WHERE org_id IS NULL` half. See docs/db.md §27.
     await admin.query(
       `INSERT INTO roles (id, org_id, name, permissions)
        VALUES (gen_random_uuid(), $1, 'Viewer', ARRAY['object:read']::text[])`,
@@ -348,16 +279,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
       udt_name: "_text"
     });
 
-    // NULL = "any scope", ON THE FIVE LADDER ROWS. Backfilling any non-NULL value for them would
-    // retroactively make live bindings illegal the day the write door starts enforcing it:
-    // Viewer/Operator/Approver/Administrator/Owner are bound at org roots, services and components
-    // across deployments, and 0097 has no way to know which.
-    //
-    // SCOPED TO THE LADDER BY NAME, not to "every built-in", because drizzle/0099 seeds five
-    // PURPOSE roles that DO carry a `bindable_at` (role-model.md §3) — they have no bindings in the
-    // field to invalidate, since there is no write door yet. Their exact arrays are asserted in
-    // `routes/rbac-permission-splits.integration.test.ts`; what belongs here is the 0097 property
-    // that the pre-existing rows were left alone.
+    // NULL = "any scope", ON THE FIVE LADDER ROWS. See docs/db.md §28.
     const filled = await admin.query<{ name: string }>(
       `SELECT name FROM roles
        WHERE org_id IS NULL AND bindable_at IS NOT NULL
@@ -367,31 +289,11 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     expect(filled.rows.map((r) => r.name)).toEqual([]);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // schema.ts <-> DDL agreement.
-  //
-  // Drizzle does not enforce constraints at runtime and these tables' DDL is hand-authored (not
-  // `drizzle-kit generate`d), so a `unique(...)`/`check(...)` declaration in schema.ts is, on its
-  // own, a comment that TypeScript happens to compile. That is precisely the "built and tested but
-  // wired nowhere" shape: the schema.ts edit in this increment would pass every other check in the
-  // repo even if the migration had never been written. These assertions read BOTH sides.
-  //
-  // `db/schema-ddl-drift.integration.test.ts` now carries the general form of this — every index in
-  // the migrated database must have a named declaration in schema.ts, and vice versa. It was
-  // written because this block's own observation ("nothing else in this repo checks it") turned
-  // out to be load-bearing: seven indexes, four of them race-closing partial uniques on
-  // `objects`/`relationships`, had been missing from schema.ts for up to four milestones. What
-  // stays here is the SHAPE of 0097's own constraints, which a name-level gate cannot see.
-  // -----------------------------------------------------------------------------------------
+  // schema.ts <-> DDL agreement. See docs/db.md §29.
 
   describe("schema.ts agrees with the DDL", () => {
     it("declares the same partial unique index on `roles` that the database actually has", async () => {
-      // Located BY NAME, not by asserting the whole index array. `roles` has since acquired
-      // `roles_org_name_key` (drizzle/0103) and `roles_managed_stack` (drizzle/0108), and an
-      // exact-array assertion here would make every later index on this table look like a
-      // regression in 0097's test. That completeness question — no index in the database missing
-      // from schema.ts, and none declared that the database lacks — is `schema-ddl-drift`'s job
-      // now, generically, for every table. What belongs HERE is 0097's own index's SHAPE.
+      // Located BY NAME, not by asserting the whole index array. See docs/db.md §30.
       const declared = getTableConfig(roles)
         .indexes.filter((i) => i.config.name === "roles_builtin_name_key")
         .map((i) => ({
@@ -604,17 +506,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
 
     // §1a — the refusal. The case the "lowest id wins is provably harmless" argument missed.
 
-    /** `roles.permissions` for `Owner` EXACTLY as 0002:220-222 writes it — the literal a re-run of
-     *  that seed puts on disk today, copied here so this fixture is the real producer and not a
-     *  stylised one.
-     *
-     *  IT STILL INCLUDES `org:admin`, WHICH THE LIVE ROW NO LONGER CARRIES. drizzle/0099 deleted
-     *  that permission with `array_remove` and deliberately LEFT 0002's literal alone: a shipped
-     *  migration is a record of what the database was asked to do at that version, and editing one
-     *  makes the file on disk disagree with the hash `__drizzle_migrations` recorded on every
-     *  deployment that already ran it. So a re-executed 0002 seed really does still write this,
-     *  and the divergence it manufactures is now BIDIRECTIONAL — the stale row is no longer a
-     *  strict subset of the live one, which the assertions below measure rather than assume. */
+    /** Owner's permissions exactly as the seed migration writes them. See docs/db.md §31. */
     const OWNER_PERMISSIONS_AS_SEEDED_BY_0002 = [
       "object:read",
       "relationship:read",
@@ -632,11 +524,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     it("ABORTS instead of collapsing built-ins whose permissions have DIVERGED, naming the ids and the delta", async () => {
       const migrationSql = readMigrationUnderTest();
 
-      // The duplicate takes an all-zero-prefix id so it is the LOWEST — i.e. the half of the coin
-      // flip where lowest-id-wins would keep the STALE row. 0002 seeds with `gen_random_uuid()`
-      // (a random v4, not a time-ordered v7), so on a real estate this is a coin flip, not an
-      // edge case: whichever way it lands, one of the two Owners is deleted and every Owner
-      // binding in the org is repointed at the other.
+      // The duplicate takes an all-zero-prefix id so it is the LOWEST. See docs/db.md §32.
       const staleOwnerId = `${UUID_ZERO_PREFIX}e1`;
       // Captured INSIDE the transaction and asserted after the rollback, so the "nothing was left
       // behind" check compares against the row that was actually there rather than against an
@@ -654,12 +542,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
         const liveOwner = live.rows[0]!;
         expect(staleOwnerId < liveOwner.id).toBe(true);
 
-        // Re-run 0002's seed row for Owner. Its permission literal is FROZEN at M1; the six
-        // migrations that later edited Owner by name (0010/0012/0083/0088/0094 append,
-        // 0099 appends three and removes one) are already in `__drizzle_migrations` and do not
-        // re-run over the new row. So the duplicate is born behind — which is exactly why "every
-        // grant migration updates all duplicates identically" does not imply "duplicates are
-        // identical".
+        // Re-run 0002's seed row for Owner. See docs/db.md §33.
         await admin.query(
           `INSERT INTO roles (id, org_id, name, permissions) VALUES ($1, NULL, 'Owner', $2::text[])`,
           [staleOwnerId, OWNER_PERMISSIONS_AS_SEEDED_BY_0002]
@@ -685,12 +568,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
           "scan:override",
           "secret:write"
         ]);
-        // AND THE OTHER DIRECTION IS NO LONGER EMPTY. Until drizzle/0099 the stale row was a strict
-        // SUBSET of the live one, and the case still refused because repointing bindings the other
-        // way would WIDEN. 0099 REMOVED `org:admin` from the live Owner (it gated nothing at any
-        // call site) while deliberately leaving 0002's frozen literal alone — so a re-executed seed
-        // now manufactures a duplicate that is behind in twelve permissions AND ahead in one dead
-        // one. Both directions in one fixture, which is what §1a's predicate is written for.
+        // AND THE OTHER DIRECTION IS NO LONGER EMPTY. See docs/db.md §34.
         const gained = OWNER_PERMISSIONS_AS_SEEDED_BY_0002.filter(
           (p) => !liveOwner.permissions.includes(p)
         ).sort();
@@ -739,13 +617,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     });
 
     it("does NOT abort when the duplicates agree — order and repeats are not divergence", async () => {
-      // The other side of the predicate, and the reason it compares SETS. `hasPermission` reads
-      // `<permission> = ANY(rl.permissions)` (authz/resolve.ts), which is blind to element order
-      // and to repeats — so two rows differing only that way carry identical authority, and
-      // stopping an upgrade over them would be a false alarm an operator cannot act on. A
-      // straight `permissions = permissions` comparison would fire here; this is what says it
-      // must not. (The byte-identical case is covered by the dirty-fixture test above, which
-      // copies `permissions` from the survivor.)
+      // The other side of the predicate, and the reason it compares SETS. See docs/db.md §35.
       const twinOwnerId = `${UUID_ZERO_PREFIX}e2`;
       const migrationSql = readMigrationUnderTest();
 
@@ -777,11 +649,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     });
 
     it("is a NO-OP on a clean database — re-running the migration changes no row and still succeeds", async () => {
-      // The other half of "safe to run on a populated database": every cleanup is bounded by a
-      // `HAVING COUNT(*) > 1` or an explicit not-a-legal-value predicate, so on a clean estate it
-      // must touch nothing. If a future edit drops one of those bounds, this is what catches it —
-      // a cleanup that deletes on a CLEAN database is a data-loss bug that the dirty-fixture test
-      // above would happily pass.
+      // The other half of "safe to run on a populated database". See docs/db.md §36.
       const migrationSql = readMigrationUnderTest();
 
       const snapshot = async () => ({

@@ -15,35 +15,7 @@ import {
 import { proposeChange } from "./changes-repo.js";
 import { buildServiceBoard } from "./service-board.js";
 
-/**
- * THE THIRD FORM OF THE SAME DEFECT: a fabricated `stable` built not on a replica this domain
- * cannot assess, but on a change this domain WAS NEVER SENT.
- *
- * `service-board-federation.integration.test.ts` pins that a change replicated here read-only is
- * never reported as `stable`; `service-board-precedence.integration.test.ts` pins the converse (an
- * unknown must not displace a real observation). Both assume the change object ARRIVES. It does not
- * when a peer's sync scope withholds it: `status_only` (federation/scope-filter.ts) forwards
- * `change_status` entries — positive evidence that changes exist and are moving on that peer —
- * while forwarding neither the `object_upsert` that carries the change nor its `targets`.
- *
- * So the board's lookup finds nothing, the row falls through to the no-change branch, and the
- * component reads as a confident `stable` — with all-false attention and an empty `unknownFields`,
- * i.e. an all-clear asserted over evidence the domain literally received and could not attach to
- * anything. An operator who chose a confidentiality scope is exactly the person who must not be
- * lied to about what it costs them.
- *
- * WHAT THIS PINS: on a change-blind deployment the board declares its blindness instead of
- * reporting green — per-row (`unknownFields` naming `latestChangeId` and every field that would
- * otherwise read as clean) and board-level (`summary.stable`, `rows[].latestChangeId`). The counts
- * are unchanged (the four buckets must keep summing to `rows.length`); what changes is that they
- * are no longer presented as facts.
- *
- * WHY THE OUTPOST'S OWN SCOPE IS THE ONE NARROWED. `import-repo.ts` re-applies `entryMatchesScope`
- * against the RECEIVER's peer row as defense in depth, so the receiving domain's scope is decisive
- * regardless of what the sender shipped. That is precisely what makes the board's scope-derived
- * treatment sound, and it leaves the commander (still paired at `full`) as an untouched control:
- * the same change, the same moment, reported honestly on the domain that drives it.
- */
+/** THE THIRD FORM OF THE SAME DEFECT. See docs/coordination.md §868. */
 describe("service board scope blindness: a change never sent is not a `stable` component (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;

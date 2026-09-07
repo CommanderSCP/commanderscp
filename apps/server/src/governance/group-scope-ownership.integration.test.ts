@@ -16,35 +16,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * GROUP SCOPE'S **OWNING**-SUBJECT HALF — ADR-0016 §2a (2026-08-15).
- *
- * DESIGN §10.1 has always said a group-scoped policy "applies when the change's **acting or owning
- * subject** is a `member_of` that group". Only the ACTING half was ever built. For a policy that
- * CONSTRAINS — and every enforcing consumer of `matchPoliciesForTargets` is a constraint — a scope
- * that fails to match is a constraint that does not apply, so the missing half was a FAIL-OPEN:
- * a non-member could evade a group's own gate by being the one to push the button, and the whole
- * mechanism was structurally inert wherever the actor is `SYSTEM_ACTOR_ID` (every wave boundary).
- *
- * The shipped, live exposure is the M17.5 scan-requirement gate: `resolveEffectiveScanThreshold`
- * merges a per-severity MIN over what matched, so a group-scoped scan CEILING that failed to match
- * left the effective threshold LOOSER than the operator authored — no error, no log, the gate just
- * permits more. Test (f) below is that exposure, closed.
- *
- * WHAT THIS FILE PINS, in both directions:
- *  - (a)(b)(c) the fail-open is CLOSED: a group-scoped constraint now applies to a NON-MEMBER, and
- *    to `SYSTEM_ACTOR_ID`, when the work belongs to the group;
- *  - (d) the negative control — it still applies to a MEMBER (the acting half is untouched);
- *  - (e) THE MIGRATION PIN — the acting half is preserved EXACTLY where no ownership exists: a
- *    non-member acting on an unowned target still gets no match, before and after. This is the
- *    test that says the change is additive rather than "group scope now matches everything";
- *  - (f) the live scan-threshold exposure, end to end through the real resolver;
- *  - (g) the tier LABEL: an ownership match anchors at the OWNED object, so ADR-0016 §5's promise
- *    that a block can show WHICH tier set the floor survives;
- *  - (h) ownership is graph data, so revoking it revokes the governance.
- *
- * Everything asserts against real Postgres through the real matcher — never a hand-built match set.
- */
+/** GROUP SCOPE'S **OWNING**-SUBJECT HALF. See docs/governance.md §233. */
 describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -249,11 +221,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
   });
 
   it("(e) MIGRATION PIN: where NOTHING is owned, behaviour is byte-for-byte what it was — member matches, non-member does not", async () => {
-    // This is the whole migration-safety claim in one test. The change is ADDITIVE: it adds the
-    // ownership half and touches nothing else, so on an estate with no `owns` edge into the target's
-    // chain, a group-scoped policy behaves exactly as it did before 2026-08-15. If this ever fails,
-    // group scope has been widened into "matches everything", which is a different (and wrong)
-    // design than the one ADR-0016 §2a records.
+    // This is the whole migration-safety claim in one test. See docs/governance.md §234.
     await groupScopedPolicy("acting-half-unowned", [{ requireControls: ["security-scan"] }]);
 
     const asMember = await matchFor(unownedComponentId, memberObjectId);

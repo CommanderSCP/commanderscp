@@ -40,40 +40,7 @@ import { evaluateFreezeHolds } from "./freeze-hold.js";
 import { reconcileOrgTick } from "./reconcile.js";
 import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake-plugin-host.js";
 
-/**
- * M25.2 — PER-TARGET FREEZE ADMISSION, end to end against real Postgres.
- *
- * The guarantee under test: *a wave target an active freeze covers is not TRIGGERED while the
- * window is open, and its uncovered siblings ship.* "Not triggered" is asserted against the
- * EXECUTOR — the `trigger()` calls the plugin host actually received — never merely against a
- * status column, because a hold that recorded the right row while still firing the release would
- * pass a column assertion and fail the only thing that matters.
- *
- * WHAT WAS TRUE BEFORE THIS FILE. `checkFreeze` unioned every target's containment chain into one
- * scope set and got ONE verdict, so a freeze over one region parked all four; and the wave gate
- * fires exactly once on `pending -> running`, so a freeze declared mid-wave was never seen at all.
- * Both are gone. What is DELIBERATELY kept is the all-frozen whole-wave block (case E) — a totally
- * frozen wave that transitioned to `running` with nothing running, and lost the `gate`/`block`
- * Decision an operator resolves with `scp change explain`, would be a worse trade than one `if`.
- *
- * DRIVES `reconcileOrgTick` DIRECTLY, no pg-boss loop — the same choice
- * `stage-dependency-hold.integration.test.ts` makes and for the same two reasons: "N ticks" then
- * means exactly N, which is what makes the dedup row count a real assertion instead of a race; and
- * a live loop is a COMPETING CONSUMER of the very rows these tests read back (`SKIP LOCKED` makes
- * an inline call a silent no-op).
- *
- * A FRESH ORG PER CASE. `reconcileOrgTick` sweeps the WHOLE org and `advanceExecutingChanges`
- * serves `ORDER BY reconcile_cursor_at ASC LIMIT 25`, so a change an earlier case left in flight
- * competes for those slots with the change the current case is about. Every case here deliberately
- * leaves a HELD target behind — the whole point — so on a shared org "tick(3)" would degrade from
- * "three evaluations of my change" to "three sweeps in which my change may have had a turn". See
- * the stage-dependency file's measured dose-response for what that costs.
- *
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted) — recorded in the PR
- * body rather than here; the standing gate is that deleting the `continue` in `reconcile.ts`'s
- * per-target loop must turn case A red, and deleting the second terminalization line must turn
- * case C red.
- */
+/** Per-target freeze admission, end to end. See docs/coordination.md §481. */
 
 /** Mutable — the in-memory fake executor re-reads `ctx.config` on every call, so a case can make a
  *  specific target succeed between ticks without touching a database column by hand. */
@@ -90,12 +57,7 @@ const executorConfig: {
   forcePhase: {}
 };
 
-/**
- * Resolves once some backend in this database is waiting on a lock — the positive signal that
- * replaces a fixed sleep in the overlapping-edit case below. Polls fast (25ms) because the state it
- * is waiting for is local and near-instant; the generous deadline exists only so a pathologically
- * loaded CI box fails with THIS message rather than an inscrutable assertion 20 lines later.
- */
+/** Resolves once a backend is waiting on a lock. See docs/coordination.md §482. */
 async function waitForBlockedBackend(db: Db, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -481,12 +443,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
 
   // SET EQUALITY — the property `checkFreeze`'s swap rests on, against real containment walks.
   it("set equality: unionFreezes(freezesByTarget(T)) is the same set as activeFreezesForScopes(containmentScopeIds(T))", async () => {
-    // `gate-orchestrator.ts` replaced the second expression with the first, and its comment claims
-    // they are equal BY CONSTRUCTION — `containmentScopeIds` IS the union of the per-target
-    // `containmentChain` walks, and exact-set membership distributes over that union. "By
-    // construction" is a claim about two functions that can be edited independently, so it is
-    // pinned here, over a fixture whose freezes sit at THREE different rungs of the chain
-    // (deployment-target, component, service) reached by three different containment routes.
+    // The replacement claims equivalence; this checks it. See docs/coordination.md §483.
     const svc = await admin.services.create({ name: `equal-svc-${randomUUID().slice(0, 8)}` });
     const app = await componentAt("equal", [amer, apac, emea, govcloud], svc.id);
     const other = await componentAt("equal-other", [amer]);
@@ -648,11 +605,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(ordinaryWave!.startedAt).toBeNull();
   });
 
-  // ============================================================================================
-  // D7, READ SIDE — the read-time projection (`GET /changes/{id}/explain`) has to agree with the
-  // actuator above, or an operator sees a rollback dispatched WHILE `explain` still reports its
-  // target held by the very freeze it was exempted from (M25.UI review finding 3).
-  // ============================================================================================
+  // D7, READ SIDE. See docs/coordination.md §484.
   it("D7 read-side: explain does not report the rollback target held by the freeze it was exempted from", async () => {
     const app = await componentAt("rollback-explain", [amer]);
     const soloTopology = await admin.object("release-topology").create({
@@ -665,11 +618,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
       topology: soloTopology.id
     });
 
-    // Drive the original to `accepted` — before the freeze exists, exactly as the actuator test
-    // above does. `executorConfig.autoSucceedAfterMs` is 10 minutes (this file's `beforeAll`), so
-    // the target that gets triggered below stays `triggering` for the whole assertion window
-    // instead of racing past it to `succeeded` — the pending/triggering state `explain`'s
-    // projection is scoped to.
+    // Drive the original to `accepted`. See docs/coordination.md §485.
     executorConfig.forcePhase[app.at(amer)] = "succeeded";
     const originalState = async () => {
       const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -688,14 +637,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // NOW the freeze — an ORG-tier freeze, exactly the tier D7 stands aside for.
     await freezeAt(amer.id, "amer-freeze-vs-rollback-explain");
 
-    // THE EXECUTOR REFUSES the rollback's own trigger attempt (the measured `argocd trigger: sync
-    // returned HTTP 400` contention shape `triggerBackoffMs`'s own doc names) — the actuator's
-    // `continue` still does not fire (D7 exempts it), so `triggerWaveTarget` genuinely CALLS the
-    // executor every tick, and every call is refused. That is exactly the shape finding 3 names:
-    // the target sits in `triggering` BACKOFF — never advancing to `triggered`, never falling back
-    // to `pending` — for the whole of the assertion window, which is what makes the read-path's
-    // `pending`/`triggering` gate actually include it rather than racing past it to a terminal
-    // status before `explain` is ever called.
+    // THE EXECUTOR REFUSES the rollback's own trigger attempt. See docs/coordination.md §486.
     refuseTargets.add(app.at(amer));
     const rollback = await admin.changes.rollback(original.id, "integration: the release is bad");
     await tick(8);
@@ -770,11 +712,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     try {
       await tick(8);
 
-      // THE ASSERTION IS AGAINST THE EXECUTOR, not a status column: the defect this pins DID write
-      // right-looking rows and then handed the target to its executor anyway. Before the fix
-      // `firedFor` went UP by one here — `POST /v1/changes/{id}/rollback` needs only `object:write`
-      // at the org, so this was a cheaper route past the platform freeze than the `freeze:override`
-      // the block sentence contrasts it with, and needed no reason and no operator token.
+      // Asserted against the executor, not a status column. See docs/coordination.md §487.
       expect(
         firedFor(app.at(amer)),
         "a platform freeze is never stood aside for a rollback — the operator's remedy is PUT/DELETE /v1/instance/freezes/{key}"
@@ -783,11 +721,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
       const [rollbackWave] = await waves(rollback.id);
       expect(rollbackWave!.status, "the wave never started").toBe("pending");
 
-      // AND THE REFUSAL IS EXPLAINED, not silent (charter principle 6). This wave's only target is
-      // covered, so it is the ALL-frozen shape and the WAVE GATE owns the refusal — a `gate` block
-      // Decision naming the tier, which is what `scp change explain` resolves. (A wave with an
-      // admissible sibling would instead be held per-target and recorded as `freeze_admission`;
-      // both projections carry `tier`, which is the point of resolving both tiers in one place.)
+      // AND THE REFUSAL IS EXPLAINED, not silent. See docs/coordination.md §488.
       const gated = await decisionsOfKind(rollback.id, "gate");
       expect(gated.length).toBeGreaterThan(0);
       expect(JSON.stringify(gated.map((d) => d.inputContext))).toContain('"tier":"platform"');
@@ -807,15 +741,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect((await waveTarget(rollback.id, app.at(amer))).executorRef).not.toBeNull();
   });
 
-  // ============================================================================================
-  // D7 AT THE TIER BOUNDARY, PER-TARGET (M25.3) — the seam the case above cannot reach.
-  // ============================================================================================
-  // The all-frozen case above is refused by the WAVE GATE, which returns before the per-target loop
-  // runs at all. So it pins `gate-orchestrator.ts`'s conjunct and NOT `reconcile.ts`'s, and a fix
-  // applied to only one of the two seams would leave it green. This case makes the gate stand aside
-  // (D5 partial admission) so the per-target `continue` is the only thing left holding anything —
-  // revert `rollbackExemptible(frozen.freezes)` in `reconcile.ts` alone and this is the case that
-  // goes red.
+  // D7 AT THE TIER BOUNDARY, PER-TARGET. See docs/coordination.md §489.
   it("D7 per-target: a partially-covering PLATFORM freeze withholds its target from a rollback while the sibling ships", async () => {
     const env = `d7pt-env-${randomUUID().slice(0, 8)}`;
     const stage = (properties: Record<string, unknown>) =>
@@ -823,14 +749,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
         name: `d7pt-${randomUUID().slice(0, 8)}`,
         properties
       });
-    // Two stages that DECLARE where they run (M15.6 / ADR-0017 §3) — the addressing a platform
-    // freeze uses. Only the first is in `env`, which is what makes the coverage partial.
-    //
-    // `region` IS DELIBERATELY OMITTED. Declaring BOTH halves makes a deployment-target a REGION
-    // target, and M15.6's no-silent-deploy gate then fail-closed refuses every trigger at it until
-    // it has its own Argo CD binding — so nothing would ever fire here and the case would "pass"
-    // its withheld-target assertion for entirely the wrong reason. An `environment`-only stage is
-    // both a real shape and the one an `environment`-addressed freeze is chiefly about.
+    // Two stages that DECLARE where they run. See docs/coordination.md §490.
     const covered = await stage({ environment: env });
     const uncovered = await stage({ environment: `d7pt-other-${randomUUID().slice(0, 8)}` });
 
@@ -853,11 +772,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     executorConfig.forcePhase[app.at(covered)] = "succeeded";
     executorConfig.forcePhase[app.at(uncovered)] = "succeeded";
     await tick(12);
-    // NO EXPLICIT `accept` HERE, unlike the case above: with two targets this org's change reaches
-    // `executing` on its own, and `executing` is one of the three states `triggerRollback` accepts.
-    // What the rollback actually needs is asserted directly instead of inferred from a state name —
-    // both targets were DISPATCHED, so D7's own qualifier (`rollbackHasSomethingToUndoAt`) is
-    // satisfied at both and cannot be what withholds one of them below.
+    // NO EXPLICIT `accept` HERE, unlike the case above. See docs/coordination.md §491.
     expect(firedFor(app.at(covered))).toBeGreaterThan(0);
     expect(firedFor(app.at(uncovered))).toBeGreaterThan(0);
 
@@ -915,11 +830,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // containment routes 3 then 2, and reaches target 1 not at all. This one alone pins per-target
     // RESOLUTION (replace `unionFreezes(byTarget)` with `byTarget[0].freezes` and arm (a) goes red).
     const frozen = await freezeAt(secondService, "second-service-freeze");
-    // TWO freezes, deliberately, and this is the half the case is named after. With one freeze the
-    // universal and the existential quantifier coincide, so flipping `checkFreeze`'s `every` to
-    // `some` left this case green and only the accept-edge test in `governance.integration.test.ts`
-    // noticed. Checking only `active[0]` was a shipped bug; the quantifier is what stops it, and a
-    // quantifier tested against a one-element set is not tested.
+    // Two freezes, deliberately: one cannot show this. See docs/coordination.md §492.
     const alsoFrozen = await freezeAt(firstService, "first-service-freeze");
 
     const change = await admin.changes.propose({
@@ -961,11 +872,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(rejected.verdict).toBe("block");
     expect(rejected.inputContext.overrideRejected).toEqual(expect.stringContaining(secondService));
 
-    // (c) THE QUANTIFIER. Authority at the SECOND service overrides the freeze declared there and
-    // says nothing about the one at the first — so the change is STILL blocked. Flip `every` to
-    // `some` in `checkFreeze`'s loop and this arm goes green: one overridden freeze would be enough
-    // and the actor would ship past a freeze they hold no authority over. THIS is the arm the case
-    // is named after, and it needs two freezes to exist at all.
+    // (c) THE QUANTIFIER. See docs/coordination.md §493.
     const secondOnly = await createTestUser(server, org, [{ role: "Owner", scope: secondService }]);
     const stillBlocked = await gate(secondOnly.objectId, { reason: "incident bridge approved" });
     expect(
@@ -1030,11 +937,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     );
     expect(Number(minted.rows[0]!.count)).toBe(1);
 
-    // Explained on the CAMPAIGN, one row for the campaign rather than one per target.
-    // §1.8's third honesty defect, and the only one M25.2 itself CAUSES: a partially frozen
-    // campaign wave used to go `blocked` (the gate's whole-wave block verdict). It is now `running`
-    // so its unfrozen siblings can proceed, and without a freeze-aware status a 40-component
-    // campaign with one held target would read as ordinarily `active` for the length of the window.
+    // Explained on the campaign, one row not one per target. See docs/coordination.md §494.
     expect(
       (await admin.campaigns.get(campaign.id)).status,
       "the lever works; the signal must not go missing with it"
@@ -1055,11 +958,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   // loosening it mitigates.
   // ============================================================================================
   it("D5 door: `atomic` is settable through POST /api/v1/freezes and readable back", async () => {
-    // Owner decision D5 makes per-target admission the DEFAULT and applies it RETROACTIVELY to
-    // every freeze already authored. `atomic: true` is the mitigation the decision was taken on the
-    // strength of; if the only writer is the repo, an operator who needs all-or-nothing has no API,
-    // CLI or IaC expression for it and the loosening ships with its mitigation missing. That is the
-    // "component built, never installed" shape, so the door gets a test that exercises the door.
+    // Per-target admission is the default, and retroactive. See docs/coordination.md §495.
     const app = await fourRegionComponent("door");
     const change = await release("door", [app.id]);
     const created = await admin.freezes.create({
@@ -1091,35 +990,9 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(created.atomic).toBe(false);
   });
 
-  // ============================================================================================
-  // M25.7 / D6 AUTHORING DOOR — `federate` IS A SECOND, HIGHER GATE, AND IT DEFAULTS OFF
-  // ============================================================================================
-  // Two properties that fail in opposite directions, so both need a case: the default must change
-  // NOTHING (a new reach never defaults on), and the federating form must demand `federation:write`
-  // ON TOP of `freeze:write` — declaring a freeze that binds another security domain is not the act
-  // of describing your own estate (ADR-0022's line, applied by ADR-0043 §3).
-  //
-  // THE REFUSAL CASE'S ACTOR IS AN ORG-DEFINED ROLE, NOT A BUILT-IN ONE, and that is load-bearing.
-  // `freeze:write` and `federation:write` both land on Administrator and Owner and nowhere else, so
-  // nothing reachable through today's role table holds one without the other: against a built-in
-  // actor the gate would be satisfied by coincidence between two grant lists in two unrelated
-  // migrations, and deleting the check would leave every case green. `roles.org_id` exists for
-  // exactly this, and `governance/governance-managed-write-doors.integration.test.ts` builds the
-  // mirror-image actor for the mirror-image reason.
-  // ============================================================================================
+  // M25.7 / D6 AUTHORING DOOR. See docs/coordination.md §496.
 
-  /** Every freeze permission there is — `freeze:write` AND `freeze:override` at the org root — and
-   *  `federation:write` NOWHERE. The actor no built-in role can express, and the only actor for
-   *  which the D6 gate is observable at all.
-   *
-   *  M25.9 ADDED `freeze:override` TO THIS ROLE, and it is what keeps the two D6 cases below
-   *  measuring `federation:write` and nothing else. Owner ruling D1 made lifting or shortening a
-   *  freeze SOMEONE ELSE DECLARED cost `freeze:override`, and the federating fixtures in those cases
-   *  must be authored by `admin` (nobody else here holds `federation:write` to create one). Without
-   *  the grant, both refusals would have a SECOND sufficient cause — and the mutation measurement
-   *  recorded below, "delete both `assertMayEditFederatingFreeze` calls and exactly these two cases
-   *  go red", would quietly stop being true while the cases stayed green. The grant is invisible to
-   *  the create-gate case above, which authorizes no override on any path. */
+  /** Every freeze permission there is, at the org root. See docs/coordination.md §497. */
   async function createFreezeOnlyUser(): Promise<string> {
     // Viewer purely so the harness mints the auth row and a live token; `object:read` grants no
     // write anywhere and is no part of what is under test.
@@ -1128,17 +1001,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     return user.token;
   }
 
-  /** Bind `subjectObjectId` to a FRESH ORG-DEFINED role holding exactly `permissions`, allow, at the
-   *  org root — `roles.org_id` exists for precisely this. It is the only instrument in the suite
-   *  that can express an actor the built-in role table cannot: drizzle/0010 lands `freeze:write` and
-   *  `federation:write` together on Administrator and Owner, and `freeze:override` on Owner alone,
-   *  so every permission-separating case here has to mint its own role or measure a coincidence
-   *  between two grant lists.
-   *
-   *  Bound at the ORG ROOT deliberately: `scopeExpandCte` expands the CHECKED scope upward, so an
-   *  org-root binding satisfies a check made at any object in the org — including the deployment
-   *  targets and services these fixtures scope their freezes to. A case that needs the two spellings
-   *  to DISAGREE must bind below the root instead (the M25.9 scope case at the end of this file). */
+  /** Bind the subject to a fresh role holding exactly these. See docs/coordination.md §498. */
   async function grantOrgDefinedRole(
     subjectObjectId: string,
     permissions: string[]
@@ -1209,36 +1072,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(ordinary.objectId).toBeNull();
   });
 
-  // ============================================================================================
-  // D6 GATE, THE OTHER TWO VERBS — `federation:write` IS DEMANDED WHEREVER THE OBJECT IS PUBLISHED
-  // ============================================================================================
-  // The create gate above is only one of three doors that reach another security domain. Both write
-  // verbs call `syncFreezeObject`, which re-snapshots the `freeze` object so the edit rides the next
-  // bundle — so gating the create alone left the SAME reach available with strictly less authority:
-  //
-  //   a `freeze:write`-only actor could take a federating freeze whose window ends in an hour and
-  //   PATCH its `endsAt` a year out, extending a release-stopping block across a boundary they hold
-  //   no federation authority over; or lift it, retracting a commander's protection at every
-  //   downstream instance.
-  //
-  // Keyed on `objectId !== null` — on whether the publish will actually happen — so a
-  // non-federating freeze is untouched, which is what the control half of each case measures. The
-  // actor is the same org-defined role the create gate uses, and for the same reason: no built-in
-  // role separates these permissions.
-  //
-  // MUTATION RUN 2026-08-24, MEASURED. Deleting BOTH `assertMayEditFederatingFreeze(tx, auth, …)`
-  // calls from `routes/governance.ts` fails exactly these two cases and nothing else:
-  //
-  //   × D6 gate: … cannot LIFT a federating freeze …
-  //     → lifting a federating freeze retracts it downstream — that needs federation:write:
-  //       expected 200 to be 403
-  //   × D6 gate: … cannot EXTEND a federating freeze's window …
-  //     → expected 200 to be 403
-  //
-  // The CREATE gate case stayed green through it, which is the point: the create check could not
-  // and did not cover these verbs. RE-MEASURED 2026-08-25 after M25.9 added the actor ladder, which
-  // is why `createFreezeOnlyUser` now also grants `freeze:override`: see its docblock.
-  // ============================================================================================
+  // D6 GATE, THE OTHER TWO VERBS. See docs/coordination.md §499.
 
   it("D6 gate: an actor with every freeze permission and no `federation:write` cannot LIFT a federating freeze — and CAN lift a non-federating one", async () => {
     const token = await createFreezeOnlyUser();
@@ -1398,11 +1232,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
 
   // D7'S QUALIFIER — a rollback is exempt where there is something to roll back, and only there.
   it("D7 qualifier: a rollback is NOT exempt at a target the original never dispatched", async () => {
-    // The composition per-target admission makes reachable for the first time: the freeze holds
-    // `amer` and the siblings SHIP, so one of them can fail, so a rollback can be minted over ALL
-    // FOUR of the original's targets — including the one the freeze successfully held. A bare
-    // `isRollback` exemption dispatches an unattended executor call into the frozen region to undo
-    // a release that never happened there.
+    // The composition per-target admission first makes reachable. See docs/coordination.md §500.
     const app = await fourRegionComponent("rbqual");
     const original = await release("rbqual", [app.id]);
     await freezeAt(amer.id, "amer-freeze-vs-nothing-to-undo");
@@ -1473,31 +1303,9 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   // fixture made both sorts operate on 1-element arrays, so deleting them changed nothing.
   // ============================================================================================
   it("dedup (multi): two held targets under two freezes, with BOTH source orders reversed", async () => {
-    // THE FIXTURE IS THE TEST. The previous shape (one held target, one covering freeze) made both
-    // Decision sorts operate on ONE-ELEMENT arrays, so deleting them changed nothing and the
-    // mutation survived while three docblocks and this case's own banner claimed it was covered.
-    // Both sorts are now given input whose NATURAL order is the reverse of their sorted order:
-    //
-    //   * TARGETS. Placements are created govcloud -> emea -> apac -> amer, so their uuidv7 ids
-    //     ascend in that order — while the topology's wave lists them amer, apac, emea, govcloud.
-    //     `getLatestPlanForChange`'s target query carries no `ORDER BY` at all, so the order
-    //     reconcile sees is the insertion order of the wave's targets — the wave's. Sorted
-    //     ascending is therefore the exact REVERSE of it.
-    //   * FREEZES. The atomic freeze is created FIRST (lowest id) and the plain one SECOND, and the
-    //     covering set for `apac` is built as [its own] ++ [the atomic ones] — i.e. highest id
-    //     first. Sorted ascending flips it.
-    //
-    // Delete either sort and the corresponding assertion below goes red. That matters because
-    // `restatesDecision` canonicalizes object KEYS only: array element order is significant, so an
-    // unsorted array plus a reordered query result is one new Decision row per second, for weeks —
-    // ADR-0024's measured 1.44 GB/day rebuilt from parts.
+    // THE FIXTURE IS THE TEST. See docs/coordination.md §501.
     const app = await componentAt("dedup2", [govcloud, emea, apac, amer]);
-    // Both freezes are declared MID-WAVE, which is also the only way an `atomic` freeze can reach
-    // the per-target hold at all: declared before the gate, `partiallyFrozen` is false for an atomic
-    // freeze and the wave is blocked WHOLE, so no hold Decision is ever written. `amer` and `apac`
-    // are refused by their executor so they are still `triggering` when the freezes arrive; `emea`
-    // and `govcloud` shipped on the first tick and are past this seam, as they must be — a freeze
-    // cannot un-ring a trigger already made.
+    // Both freezes are declared mid-wave, the only way in. See docs/coordination.md §502.
     refuseTargets.add(app.at(amer));
     refuseTargets.add(app.at(apac));
     const change = await release("dedup2", [app.id]);
@@ -1559,14 +1367,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect((await waveTarget(change.id, app.at(amer))).status, "held first").toBe("pending");
     expect(await decisionsOfKind(change.id, "freeze_admission")).toHaveLength(1);
 
-    // A perfectly authorized delete, taken while the change is in flight and the region frozen.
-    //
-    // The PLACEMENT is deleted, not its component, and that is deliberate on two counts. The wave
-    // target IS the placement (`app.at(amer)`), so deleting it is the precise statement of what this
-    // test is about — one dead target among three live siblings. And a component that still has
-    // placements is a non-empty container: the container-delete guard refuses that with a 409, so a
-    // `DELETE /components/{id}` here would stop testing tombstone handling and start testing the
-    // guard. Child-first ordering is the rule; this fixture only ever needed the child.
+    // An authorized delete, taken while the change is in flight. See docs/coordination.md §503.
     const res = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/placements/${app.at(amer)}`,
@@ -1576,12 +1377,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
 
     await tick(4);
 
-    // `containmentChain` does not live-filter its BASE row, so the tombstoned placement still
-    // resolves a full chain and the freeze still "covers" it. Holding it would park a DEAD row for
-    // the length of the window — weeks are expressible — behind a Decision that says a freeze is
-    // holding it while the truth is that the object was deleted, and would defer the tombstone's
-    // own audit event and block Decision for exactly as long. Terminalizing it is PROGRESS, which
-    // is the ordering `campaign-reconcile.ts`'s seam already states for itself.
+    // The chain does not live-filter its base row. See docs/coordination.md §504.
     expect((await waveTarget(change.id, app.at(amer))).status, "a dead target is not held").toBe(
       "target_deleted"
     );
@@ -1659,20 +1455,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(board.rows.find((r) => r.component.id === app.id)?.activeFreeze).toBeNull();
   });
 
-  // ============================================================================================
-  // M25.1 — LIFT AND SHORTEN: the exits `/freezes` shipped without.
-  //
-  // `/api/v1/freezes` was CREATE / LIST / GET. A freeze could be declared and never retracted,
-  // which was survivable only while a freeze parked a WHOLE wave — the operator waited for
-  // `endsAt` and the release resumed on its own. Every case above is a demonstration of why that
-  // stopped being true: per-target admission means a far-future `endsAt` holds a SUBSET of a
-  // wave's targets while the siblings have already shipped, so a mistyped year leaves a fleet
-  // split across two versions with no API exit at all.
-  //
-  // THE STANDING MUTATION GATE FOR THIS BLOCK: delete `isNull(freezes.liftedAt)` from
-  // `activeFreezesInWindow` — the ONE liveness filter — and "a lift un-holds a held target" must
-  // go red. Recorded in the PR body; run and confirmed KILLED when this block landed.
-  // ============================================================================================
+  // M25.1 — LIFT AND SHORTEN. See docs/coordination.md §505.
 
   const auditEventsFor = (subjectId: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -1775,11 +1558,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
       holds.map((d) => d.verdict),
       "NO `allow` row at any point: nothing was released, so nothing should claim to have been"
     ).not.toContain("allow");
-    // There IS a second `hold` row, and it is correct rather than write amplification: the hold
-    // Decision's `inputContext` records the freeze's `endsAt` (never `now` — ADR-0024), so moving
-    // `endsAt` genuinely changes the situation and `insertDecisionIfChanged` restates it ONCE. The
-    // restatement is the assertion: the standing explanation now names the NEW deadline, which is
-    // what an operator reading `scp change explain` after an extension needs to see.
+    // A second hold row, correct rather than amplification. See docs/coordination.md §506.
     const latest = holds[holds.length - 1]!;
     expect(latest.verdict).toBe("hold");
     expect(
@@ -1805,18 +1584,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     ]);
     const scoped = new ScpClient({ baseUrl: server.baseUrl, token: serviceAdmin.token });
 
-    // BOTH FIXTURES ARE DECLARED BY `serviceAdmin` THEMSELVES, and after M25.9 that is what keeps
-    // this case about SCOPE and only scope. Owner ruling D1 added a second, independent bar —
-    // `freeze:override` to retract a freeze someone else declared — and if these rows were authored
-    // by `admin` (as they were pre-M25.9) the org-root refusal below would have TWO sufficient
-    // causes. Deleting the scope property (checking at `auth.orgId`) would then leave this case
-    // green on the actor bar alone: a scope test that no longer tests scope. Attributing both
-    // freezes to the acting subject clears the actor bar for both arms, so the only thing left that
-    // can produce the 403 is the scope the permission is demanded at.
-    //
-    // The service freeze goes through the route, since `serviceAdmin` really does hold
-    // `freeze:write` there. The ORG-ROOT one cannot — that is the whole point of the case — so it
-    // is inserted at the repo seam with `createdByActorId` set to the same subject.
+    // Both fixtures are declared by the same subject on purpose. See docs/coordination.md §507.
     const orgWide = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       createFreeze(tx, {
         orgId: org.orgId,
@@ -1865,28 +1633,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   });
 
   it("M25.1 authz: Viewer and Operator hold no `freeze:write` — and `freeze:override` is ADDED to it, never a substitute for it", async () => {
-    // THE M25.9 BAR IS CLEARED FOR THESE SUBJECTS ON PURPOSE, and that grant is the whole reason
-    // this case still measures its own title. `frozen` is declared by `admin` (`freezeAt`), so
-    // after owner ruling D1 a Viewer and an Operator are refused BOTH verbs for two independent
-    // reasons: no `freeze:write`, and not-the-declarer-plus-no-`freeze:override`. Review MEASURED
-    // the consequence on 2026-08-25 — with both `freeze:write` `authorize` blocks deleted from the
-    // `DELETE` and `PATCH` handlers in `routes/governance.ts`, this case stayed GREEN, carried
-    // entirely by a bar it never claimed to be about. Granting the override at the org root retires
-    // the second cause, leaving the missing `freeze:write` as the only thing that can produce a 403.
-    //
-    // RE-MEASURED after the grant, same mutation, both handlers: RED at the FIRST arm, with
-    //   → Viewer does not hold freeze:write …: expected 200 to be 403
-    // (the case aborts there, so the later arms and the closing `liftedAt` check never run). Each
-    // block was then deleted ALONE, and each reds only ITS OWN verb's arm — the `DELETE` block reds
-    // the lift with the message above, the `PATCH` block reds the window edit with the bare
-    // `expected 200 to be 403` of the second arm. That is why both verbs are asserted here: one
-    // arm would leave the other door's check unmeasured.
-    //
-    // It also turns the case into the positive statement its title now makes: an actor holding
-    // `freeze:override` and NOT `freeze:write` is refused, so the M25.9 bar is genuinely stacked on
-    // the older one rather than standing in for it (`routes/governance.ts`, "ADDED, NEVER
-    // SUBSTITUTED"). Nothing else in this file drives that direction — every other override-holder
-    // here holds `freeze:write` too.
+    // The bar is cleared for these subjects on purpose. See docs/coordination.md §508.
     const frozen = await freezeAt(amer.id, "amer-role-freeze");
     for (const role of ["Viewer", "Operator"]) {
       const user = await createTestUser(server, org, [{ role, scope: org.orgId }]);
@@ -2024,13 +1771,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   });
 
   it("M25.1: a PATCH that moves `endsAt` NOWHERE is recorded as `unchanged`, not as an extension", async () => {
-    // EQUALITY IS ITS OWN CASE. The comparison shipped as `endsAt < before.endsAt ? "shortened" :
-    // "extended"`, which folds "the same instant" into the extension arm — so re-saving a
-    // freeze-editing form without touching the field (the ordinary shape of a UI PATCH, and the UI
-    // this increment unblocks is the next session's) wrote a HASH-CHAINED audit event claiming an
-    // extension that did not happen, alongside a Decision asserting `from === to`. Principle 6 is
-    // about a record that reconstructs what occurred; a record of a governance edit that did not
-    // occur fails it in the direction that is hardest to notice, because nothing looks broken.
+    // EQUALITY IS ITS OWN CASE. See docs/coordination.md §509.
     const frozen = await freezeAt(amer.id, "amer-noop-freeze");
 
     const same = await admin.freezes.updateWindow(frozen.id, {
@@ -2055,18 +1796,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   });
 
   it("M25.1: two OVERLAPPING window edits — the second is recorded against what the FIRST left, not a stale snapshot", async () => {
-    // THE LOST-SNAPSHOT RACE, in its deterministic form, at the repo seam so the interleaving is
-    // exact rather than hoped for (the `stampBoundaryBundleChecksum` precedent in
-    // `boundary-segment.integration.test.ts`). `updateFreezeWindow` is a read-modify-write whose
-    // READ decides two things that end up in a permanent record: `direction` (the audit action, and
-    // the `loosening` flag on the Decision) and the Decision's `endsAt.from`.
-    //
-    // Under READ COMMITTED an UNLOCKED read returns the pre-tx1 committed value no matter when
-    // within this window tx2 lands, so the corruption is CERTAIN here, not probabilistic: tx2 would
-    // read the original hour, compute SECOND < original => "shortened", and stamp
-    // `freeze.window.shortened` on an edit that pushed the live deadline from one minute out to ten
-    // — an audit record asserting the OPPOSITE direction of the governance change it describes.
-    // `FOR UPDATE` parks tx2 at the READ until tx1 commits, after which it re-reads FIRST.
+    // The lost-snapshot race, in deterministic form. See docs/coordination.md §510.
     const frozen = await freezeAt(amer.id, "amer-race-freeze");
     const FIRST = new Date(Date.now() + 60_000);
     const SECOND = new Date(Date.now() + 10 * 60_000);
@@ -2089,14 +1819,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
           actorObjectId: org.orgId
         })
       );
-      // POSITIVE SIGNAL, not a sleep (`test-support/integration-sleep-census.test.ts`): wait until
-      // tx2 is DEMONSTRABLY blocked on tx1's row lock, by asking Postgres. A fixed sleep here is
-      // wrong in both directions — too short on a loaded box and tx2 has not reached its read, so
-      // the test passes vacuously having raced nothing; too long and it is dead time in every run.
-      // `pg_stat_activity.wait_event_type = 'Lock'` is exactly the state this test needs to exist:
-      // tx2 has issued its `SELECT ... FOR UPDATE` and is parked behind tx1. Polling it makes the
-      // wait as long as the lock actually takes and no longer, and — the part that matters — makes
-      // it IMPOSSIBLE for this case to be green without the contention it claims to create.
+      // POSITIVE SIGNAL, not a sleep. See docs/coordination.md §511.
       await waitForBlockedBackend(server.deps.db);
     });
     const result = await second;
@@ -2147,60 +1870,9 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(row.liftReason).toBe("integration: retracted for good");
   });
 
-  // ============================================================================================
-  // M25.9 — THE ACTOR LADDER. OWNER RULING D1 (2026-08-25), `campaigns-rework.md` §1.7 exit (b).
-  //
-  // `freeze:override` is required to LIFT or SHORTEN a freeze YOU DID NOT DECLARE (compared on
-  // `freezes.created_by_actor_id`); your own stays `freeze:write`. M25.1 shipped the lift on
-  // `freeze:write` alone, which made the WIDER-reaching verb take the NARROWER permission: an
-  // Administrator at service S could retract an Owner's S-scoped freeze FOR EVERYONE with a
-  // permission they already held, where the Owner-only `freeze:override` admits exactly ONE change.
-  //
-  // WHY THE SCOPE CASES ABOVE DID NOT ALREADY COVER THIS: `freeze:write` at S covers every freeze at
-  // S no matter who declared it, so an Administrator and an Owner bound at the same service are
-  // indistinguishable to a scope check. Authorship is the dimension scope cannot express, so every
-  // ACTOR case below puts TWO ACTORS AT THE SAME SCOPE — a one-actor version is green against a
-  // route with no actor comparison in it at all. The one deliberate exception is the final SCOPE
-  // case, whose two actors are bound at different scopes on purpose; see its own header.
-  //
-  // THE STANDING MUTATION GATES FOR THIS BLOCK. `assertMayRetractAnothersFreeze` in
-  // `routes/governance.ts` has TWO parameters that decide the verdict — WHO declared the freeze and
-  // WHICH SCOPE the override is demanded at — and each needs its own gate, because a suite that
-  // measures one of them is not measuring the other. All three were run ALONE against a passing
-  // suite on 2026-08-25 and the named cases are the ones that actually died:
-  //
-  //   1. DELETE the `freeze.createdByActorId === auth.subjectObjectId` early return — every
-  //      retraction then demands the override. This kills the ALLOW-YOUR-OWN arms, NOT the
-  //      refusals: "an Administrator lifts THEIR OWN freeze" and the second case's closing arm
-  //      (bob lifts a freeze he declared) both 403 where they require 200, and the pre-existing
-  //      `M25.1 authz` SCOPE case ("`freeze:write` at a service cannot lift the ORG-ROOT freeze")
-  //      dies with them, on its own closing control arm, for the same reason. RE-RUN 2026-08-25:
-  //      those THREE and nothing else. Named precisely because there are two `M25.1 authz` cases
-  //      and the OTHER one — the Viewer/Operator case — correctly survives: it asserts refusals
-  //      only, and a mutation that makes the route stricter cannot red a refusal. Note what that
-  //      means generally: deleting the guard makes the route STRICTER, so a block asserting only
-  //      refusals would survive it untouched. The own-freeze arms are the half of the ruling this
-  //      mutation measures.
-  //   2. INVERT it to `!==` — the override is then demanded of the DECLARING actor and of nobody
-  //      else, which is the mutation the refusals answer. Five of the six cases here go red:
-  //      "expected 200 to be 403" on the lift refusal, on the PATCH shortening arm, on the
-  //      locked-direction case, and on the scope case's service-Administrator control; the
-  //      own-freeze case 403s. Only "an OWNER holds `freeze:override`" survives, because the Owner
-  //      clears the bar under either spelling.
-  //   3. CHANGE `scopeObjectId: freeze.scopeObjectId` TO `auth.orgId` — the FINAL case ("the
-  //      override is demanded at THE FREEZE'S OWN SCOPE") goes red with a bare `Forbidden`, and it
-  //      is the ONLY case in the file that moves. Nothing else here can see that parameter: every
-  //      other actor in this block is bound at the ORG ROOT, where the two spellings name the same
-  //      scope, so all five of the others pass under EITHER. That gate was added after review found
-  //      the second parameter argued at length in a route comment and pinned by nothing.
-  // ============================================================================================
+  // M25.9 — THE ACTOR LADDER. See docs/coordination.md §512.
 
-  /** An Administrator at the ORG ROOT: `freeze:write` everywhere in the org, and `freeze:override`
-   *  nowhere (drizzle/0010 grants the override to Owner alone). Two of these, at the same scope, is
-   *  the whole fixture for the ACTOR cases — those are about WHO DECLARED IT, not about where
-   *  anyone is bound, and holding the scope constant is what leaves authorship as the only
-   *  difference. The final case in this block is the SCOPE one and mints its own service-bound
-   *  actors, because org-root bindings are exactly what makes the scope parameter invisible. */
+  /** An Administrator at the ORG ROOT. See docs/coordination.md §513. */
   async function orgAdministrator(): Promise<{ client: ScpClient; objectId: string }> {
     const user = await createTestUser(server, org, [{ role: "Administrator", scope: org.orgId }]);
     return {
@@ -2338,16 +2010,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   });
 
   it("M25.9 ladder: the direction is judged against the window ACTUALLY IN FORCE, not the route's earlier unlocked read", async () => {
-    // WHY THE CHECK SITS AFTER `updateFreezeWindow` AND NOT BEFORE IT, made observable. `direction`
-    // is the authorization INPUT for the shortening bar, and it is only true against the row under
-    // `lockFreezeRow`'s `FOR UPDATE`. The handler's earlier `getFreeze` is UNLOCKED, so under READ
-    // COMMITTED it returns the pre-tx1 committed value no matter when tx2 lands — the same staleness
-    // `freezes-repo.ts`'s header describes corrupting the audit record, one consequence worse:
-    // there it makes a governance record lie, here it decides a permission.
-    //
-    // The interleaving is deterministic, not hoped for (the sibling overlapping-edit case above):
-    // tx1 holds the row lock while the HTTP PATCH is in flight, and the request is DEMONSTRABLY
-    // parked on that lock before tx1 commits.
+    // Why the check sits after the update, made observable. See docs/coordination.md §514.
     const alice = await orgAdministrator();
     const bob = await orgAdministrator();
     const ORIGINAL = new Date(Date.now() + 3_600_000);
@@ -2387,19 +2050,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   }, 60_000);
 
   it("M25.9 ladder: the override is demanded at THE FREEZE'S OWN SCOPE — a SERVICE-bound Owner retracts a colleague's service freeze", async () => {
-    // THE SECOND PARAMETER OF THE NEW BAR, and the ONLY case in this file that can see it.
-    // `assertMayRetractAnothersFreeze` demands `freeze:override` at `freeze.scopeObjectId`; every
-    // other actor in this block is bound at the ORG ROOT, where `freeze.scopeObjectId` and
-    // `auth.orgId` are interchangeable — an org-root Owner clears the check under either spelling
-    // and an org-root Administrator clears it under neither, so those cases are green against BOTH.
-    // `scopeExpandCte` expands the CHECKED scope UPWARD, so a binding at service S is reached by a
-    // check at S and NOT by a check at the org root: binding an actor BELOW the root is what makes
-    // the two spellings disagree, and it takes an ALLOW arm to notice, because the org-root
-    // spelling is strictly narrower and therefore fails closed rather than open.
-    //
-    // This is also the behaviour the helper's docblock states in prose — "an Owner bound at service
-    // S can retract an S-scoped freeze a colleague declared" — which was argued and unmeasured
-    // until this case existed. See mutation gate 2 in this block's header.
+    // The second parameter of the new bar, seen only here. See docs/coordination.md §515.
     const service = await admin.services.create({
       name: `m259-scope-svc-${randomUUID().slice(0, 8)}`
     });
@@ -2425,11 +2076,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     ).toBe(403);
     expect((await freezeRow(hers.id)).liftedAt).toBeNull();
 
-    // THE CASE. An OWNER at the SERVICE: `freeze:override` at S and at nothing above S. Demanding
-    // the override at `auth.orgId` would refuse this actor — not a hole (it is strictly narrower),
-    // but it would leave a service Owner unable to retract a colleague's freeze inside their own
-    // service, and would make this bar's reach disagree with the reach of the `freeze:write` check
-    // it is stacked on.
+    // THE CASE. An OWNER at the SERVICE. See docs/coordination.md §516.
     const svcOwner = await createTestUser(server, org, [{ role: "Owner", scope: service.id }]);
     const svcOwnerClient = new ScpClient({ baseUrl: server.baseUrl, token: svcOwner.token });
     const lifted = await svcOwnerClient.freezes.lift(hers.id, {

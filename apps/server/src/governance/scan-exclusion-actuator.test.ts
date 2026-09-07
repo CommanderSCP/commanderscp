@@ -2,27 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EffectiveScanExclusions } from "@scp/schemas";
 import { scanExclusionSetHash, scanExclusionSetHashOfContext } from "./scan-exclusion-actuator.js";
 
-/**
- * M22.7 — the PURE half of the actuator: what the recorded digest is a function of.
- *
- * The wiring is proven in `scan-exclusion-actuator.integration.test.ts` against the real gate; none
- * of these cases can tell you whether anything is installed. What they pin is the contract that makes
- * the wiring safe — an empty set hashing to nothing, a stable set hashing stably, and every field of
- * the resolved set actually reaching the digest. A digest that ignored a field would leave a change
- * to that field invisible to the actuator, which is the same defect as having no actuator at all,
- * only harder to see.
- *
- * MUTATIONS RUN (2026-08-17), each applied alone against a passing suite and reverted by an exact
- * inverse edit. Baseline: 9 passed. Measured, not predicted.
- *   U-M1  hash `canonicalJson(resolved.clauses)` instead of the whole resolved object
- *           -> 3 failed (the vendor, declared-fact and grant cases). A grant approved, revoked or
- *              expired under an UNCHANGED clause list — which is the ordinary case, since the clause
- *              is authored once by SecOps and the grants move underneath it — would never be noticed.
- *              The integration suite does catch this one too, but only through the gate; this is the
- *              cheap version that says exactly which field went missing.
- *   U-M2  return a fixed string instead of `undefined` for an empty clause list
- *           -> 1 failed here, and 1 in the integration suite (A4, the byte-identical promise).
- */
+/** M22.7 — the PURE half of the actuator. See docs/governance.md §315. */
 
 function clause(cls: string, extra: Record<string, unknown> = {}) {
   return {

@@ -21,17 +21,7 @@ import { exportSyncBundle } from "./export-repo.js";
 import { importSyncBundle, FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import { resetCursor, getCursor, FEDERATION_DIVERGENCE_DECISION_KIND } from "./cursors-repo.js";
 
-/**
- * §7.2.6 RESYNC — the mutually-authorized, one-shot recovery from a lost-tail journal divergence. It
- * is the SANCTIONED alternative to re-anchoring (which rail 5 refuses while a divergence stands): the
- * importer's operator runs `scp federation resync --peer <exporter>`; the importer signs a request
- * the exporter verifies (the importer authorizing a forced overwrite of ITS OWN replica); the
- * exporter records a consent Decision and returns a signed FULL re-export from genesis; the importer
- * resets its cursor, force-overwrite-imports (bypassing the revision-staleness guard, NEVER the
- * single-writer authority check), bumps its generation, records its Decision, and clears the standing
- * divergence — which lifts rail 5. Both sides record; the generation stamp attributes entries to
- * before/after the event (§7.2.6). SECURITY-SENSITIVE end to end.
- */
+/** Resync: the mutually authorized, one-shot recovery. See docs/federation.md §465. */
 export const FEDERATION_RESYNC_DECISION_KIND = "federation-resync";
 
 /** The canonical payload the importer signs and the exporter verifies. Binds BOTH domain ids so a
@@ -55,12 +45,7 @@ export async function signResyncRequest(
   };
 }
 
-/**
- * EXPORTER side — verify the importer's signed resync request against its paired public key, record
- * the exporter's CONSENT Decision (+ audit), bump the exporter's generation, and return a full signed
- * re-export from genesis for that peer. A bad signature is a 403 (fail-closed): only the paired
- * importer, holding its own private key, can authorize a resync of its replica.
- */
+/** Exporter side: verify the importer's signed request. See docs/federation.md §466. */
 export async function authorizeResyncAndReExport(
   tx: TenantTx,
   orgId: string,
@@ -105,13 +90,7 @@ export async function authorizeResyncAndReExport(
   return { bundle, exporterGeneration };
 }
 
-/**
- * IMPORTER side — apply an exporter's signed resync re-export: reset the cursor to genesis,
- * FORCE-OVERWRITE import (re-converging even stale-revision rows), bump this side's generation,
- * record the importer's Decision, and CLEAR the standing divergence by writing a newer non-block
- * `federation-divergence` Decision (so `permitCursorReanchor`'s rail-5 refusal lifts). The bundle's
- * own signature is verified inside `importSyncBundle` against the exporter's paired key.
- */
+/** IMPORTER side — apply an exporter's signed resync re-export. See docs/federation.md §467. */
 export async function applyResyncBundle(
   tx: TenantTx,
   orgId: string,

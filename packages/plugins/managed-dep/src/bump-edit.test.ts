@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyManifestBump, verifyManifestBump, type ManifestBumpSpec } from "./bump-edit.js";
 
-/**
- * These tests are the charter's `scp-managed-dep` prohibitions, one assertion each. They are written
- * against BYTES rather than against the editor's intentions on purpose: the verifier exists because
- * the thing that produces the edit lives in a separate image that this repository does not build, so
- * every test here supplies a hostile "runner output" directly and asserts the verdict.
- */
+/** The charter prohibitions, one assertion each. See docs/plugins.md §251. */
 
 const npmSpec: ManifestBumpSpec = {
   ecosystem: "npm",
@@ -153,11 +148,7 @@ describe("verifyManifestBump — the refusal that stands between a runner and a 
     expect(verdict).toMatchObject({ ok: false, reason: "non_version_edit" });
   });
 
-  // THE TWO TESTS BELOW ARE THE REASON THE STRUCTURAL HALF EXISTS, and they are not hypothetical:
-  // `toVersion` is derived from a THIRD-PARTY VERSION INDEX (ADR-0032 §7), so it is the one field in
-  // the descriptor that an outside party influences. A version string that carries JSON syntax
-  // passes the textual reconstruction BY CONSTRUCTION — the reconstruction's whole rule is "the
-  // to-version token replaced the from-version token", and it did.
+  // The two tests that are the reason the structural half exists. See docs/plugins.md §252.
 
   it("refuses an injected version token that ADDS a dependency through valid JSON", () => {
     const injected = { ...npmSpec, toVersion: '^1.4.0", "evil": "1.0.0' };
@@ -211,38 +202,9 @@ describe("verifyManifestBump — the refusal that stands between a runner and a 
   });
 });
 
-/**
- * ================================================================================================
- * M21.7 — THE ANCHORED BRANCH: split-shape Helm images, and the veto that keeps it honest
- * ================================================================================================
- * Every fixture here is a values file whose coordinate and version are on DIFFERENT lines, which is
- * the shape both implementations refused outright before this round. The rule under test is:
- *
- *   the target is the anchor line, refused unless (a) the file's line at that index equals the
- *   anchor text byte-for-byte, (b) it carries `fromVersion`, and (c) the set of lines naming BOTH
- *   the coordinate and `fromVersion` is EMPTY or exactly {the anchor line}.
- *
- * The anchors below are written as literals rather than derived, on purpose: this module is the
- * REFUSAL, and it must be provable against a hostile descriptor as well as against a correct one.
- * `write-guard.test.ts` is where the derivation that produces them is tested, and
- * `runner-shim.test.ts` is where the real `run.sh` is required to agree with these same verdicts.
- */
+/** M21.7 — THE ANCHORED BRANCH. See docs/plugins.md §253. */
 
-/**
- * THE ADVERSARIAL VALUES FILE (`split-shape-image-bumps.md` §7). `1.2.3` appears FIVE times and only
- * ONE of them is the version of `acme/api`:
- *
- *   line  3  `imageTag`     — not an `image` key, so the parser never reads it
- *   line  7  `api.image.tag`      <- THE TARGET
- *   line 11  `worker.image.tag`   — a different image, pinned at the same version
- *   line 12  `appVersion`   — the chart's own version
- *   line 14  a pod LABEL
- *
- * Under the coordinate rule this file has ZERO candidates (no line names both `acme/api` and
- * `1.2.3`), which is why it was safe-but-useless before. Under the anchored rule the other five
- * occurrences are not disambiguated — they are never examined, because there are no candidates,
- * only an address.
- */
+/** THE ADVERSARIAL VALUES FILE. See docs/plugins.md §254. */
 const VALUES = [
   "# charts/api/values.yaml",
   "global:",

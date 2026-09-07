@@ -11,32 +11,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { deleteObject } from "./objects-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 
-/**
- * RULING 2 — DELETING A CONTAINER THAT STILL HAS CONTAINMENT CHILDREN IS REFUSED.
- * (docs/proposals/governance-reach-on-containment-move.md §9.3; owner ruling 2026-08-18, Q3-A.)
- *
- * `deleteObject` already COUNTED three dependent routes (`governance/governance-reach.ts`'s
- * `countContainmentDependents`) and used the count only to decide whether to record a reach
- * Decision — it never refused. The guard that DID refuse covered route 1 (`objects.domain_id`
- * children) alone; route 2's children were left live and detached, and placements — which name
- * their endpoints by JSON property rather than by an edge the cascade can see — were left live and
- * DANGLING. The owner retired that asymmetry: all three routes now block, and the dangling-placement
- * gap closes by refusal rather than by cascade.
- *
- * Route 1's own cases stay in `graph/domain-delete-orphan-guard.integration.test.ts` (whose CONTROL
- * for route 2 is inverted there, with the reason written where the old reason was). THIS file covers
- * the widening and — the part that actually needs protecting — THE CARVE-OUTS.
- *
- * ============================================================================================
- * MUTATION LOG — each mutation applied ALONE, run, reverted, restoration verified with `cmp`
- * ============================================================================================
- *  m7  drop the widening (guard only `domainChildren`, as before)
- *      → RED: "a service with components", "an assembly with components", "a component with a live
- *        placement", "a deployment-target with a live placement"
- *  m8  drop the `!removedForeignShadow` / `!input.federationImport` carve-out
- *      → RED: "a federation IMPORT delete with children still lands", "removing a foreign SHADOW
- *        row with children still lands"
- */
+/** Deleting a container that still has children is refused. See docs/graph.md §19. */
 describe("container delete guard (proposal §9.3, all three dependent routes)", () => {
   let server: TestServer;
   let org: TestOrg;

@@ -31,12 +31,7 @@ import { EmptyState } from "../components/ui/empty-state";
 import { SkeletonRows } from "../components/ui/skeleton";
 import { QueryErrorNotice } from "../components/query-error";
 
-/**
- * The create-request payload's field-inclusion rules, pulled out as a pure function so the wiring
- * claim ("domainId rides through only when a parent domain was actually chosen") is testable without
- * a router or a live mutation. Mirrors the `domainLocal` field's existing omit-when-unset rule
- * immediately below it — an unset optional field is left OUT of the payload, never sent as `""`/`null`.
- */
+/** The payload's field-inclusion rules, as a pure function. See docs/web.md §466. */
 export function buildCreatePayload(input: {
   name: string;
   serviceMember: boolean;
@@ -57,16 +52,7 @@ export function buildCreatePayload(input: {
   };
 }
 
-/**
- * OWNERSHIP-SHAPED ORDERING (outpost-ui.md §9, owner 2026-08-14). On an outpost the catalog lists
- * are dominated by commander replicas (measured: 8 of 9 services on the live outpost were
- * replicas), and the one fact an outpost operator needs — "which containers are MINE, so I can
- * hang shared domain IaC/CaC on them?" — was invisible on the list rows. This sorts DOMAIN-OWNED
- * rows first (origin === self), then everything else, each half keeping the API's order; and it
- * is a pure function so the rule is pinned without a router. It runs on BOTH sites — on the
- * commander almost everything is self-owned, so it is a no-op there in practice; the point is
- * that neither site infers ownership from labels or names, only from `originDomainId`.
- */
+/** OWNERSHIP-SHAPED ORDERING (outpost-ui.md §9, owner 2026-08-14). See docs/web.md §467. */
 export function orderDomainOwnedFirst<T extends { originDomainId: string }>(
   items: T[],
   ownDomainId: string | undefined
@@ -77,14 +63,7 @@ export function orderDomainOwnedFirst<T extends { originDomainId: string }>(
   return [...own, ...other];
 }
 
-/**
- * The parent-domain picker itself, pulled out as its own component so the "renders for the domains
- * registry only" claim is testable with a plain `renderToStaticMarkup` — `RegistryListPage` needs a
- * router (`useBasePathParam`) to mount at all, but this piece of markup does not.
- *
- * `show` is the caller's `isDomainsRegistry` flag rather than a registry object, so the test can
- * assert both branches without constructing a `RegistryConfig`.
- */
+/** The parent-domain picker, pulled out as its own component. See docs/web.md §468. */
 export function ParentDomainField(props: {
   show: boolean;
   value: string;
@@ -164,11 +143,7 @@ export function RegistryListPage(): React.JSX.Element {
       domainLocal?: boolean;
       domainId?: string;
     }) =>
-      // `service` is only set for a service-member registry; it rides through to
-      // `CreateComponentRequest.service`. Cast because the shared client type is the base request.
-      // `domainId` is only ever set here for the domains registry — CreateObjectRequest already
-      // carries it (packages/schemas/src/objects.ts:39), so no schema change and no generic-client
-      // fallback are needed.
+      // Set only for a service-member registry, and rides through. See docs/web.md §469.
       getRegistryClient(client, registry!).create(input as CreateObjectRequest),
     onSuccess: async () => {
       setName("");

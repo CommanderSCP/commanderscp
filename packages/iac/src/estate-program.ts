@@ -26,30 +26,7 @@ import {
 import { camelIdentifier } from "./products.js";
 import type { WaveItem, WaveTarget } from "./waves.js";
 
-/**
- * The shared emitter behind `scp iac export` (team-pipeline-iac.md §9/D5) and `scp iac scaffold`
- * (§7/D1/ADR-0047). Both commands walk a live estate (export: existing graph state; scaffold: a
- * discovery proposal) into the SAME normalized `ServiceSpec` below, then hand it to ONE of two pure
- * functions here:
- *
- *   - `buildEstateManifest(spec)` — INTERPRETS `spec` by calling the REAL `@scp/iac` constructs
- *     (`Component`, the typed `XxxPipeline` classes, `placeAt`, …) and returns `stack.synth()`.
- *   - `renderEstateProgram(spec)` — RENDERS the SAME calls as TypeScript SOURCE TEXT.
- *
- * Both read `spec` and nothing else — no SDK, no I/O, no clock (matching every other pure module in
- * this package). The CLI (`packages/cli`) owns turning live SDK reads into a `ServiceSpec`; this
- * module owns turning a `ServiceSpec` into a manifest or into code. That split is what makes the
- * round-trip property (§9: "exported ts, when synthesized, must produce a manifest equivalent to the
- * json export of the same scope") a fact about ONE input rather than two independently-maintained
- * readers of the live estate that could silently drift from each other.
- *
- * NOT auto-derived from each other (deliberately): `buildEstateManifest` calls real constructs, so
- * TypeScript itself enforces that `spec` matches what `@scp/iac` accepts; `renderEstateProgram`
- * mirrors the same calls as text. Nothing here CHECKS the two stay in lockstep beyond the round-trip
- * test in `estate-program.test.ts` — which is exactly the point: that test is the thing that would
- * go red the moment they diverge, matching the task's "assert this directly" instruction rather than
- * relying on a shared internal representation neither path can prove against the real types.
- */
+/** The shared emitter behind `scp iac export`. See docs/iac.md §257. */
 
 export interface PipelineSourceSpec {
   /** @default "gitea" (the pipeline construct's own default, D18) */
@@ -115,11 +92,7 @@ export interface ServiceSpec {
   readonly components: ComponentSpec[];
 }
 
-// -------------------------------------------------------------------------------------------
-// D18's loud placeholder. ONE marker string, shared by both emitters' documentation (not their
-// literal output — see `renderEstateProgram`'s doc for why the TS side goes further and fails
-// typecheck), so a human grepping either form for "why is this here" finds the same trail.
-// -------------------------------------------------------------------------------------------
+// D18's loud placeholder. See docs/iac.md §258.
 
 export const PLACEHOLDER_REPO_MARKER = "TODO-SCP-EXPORT-NO-SOURCE-MAPPING";
 
@@ -141,14 +114,7 @@ function isBuildKind(kind: ExecutorType): boolean {
 // constructor choice and the renderer's printed class name can never name two different things.
 // -------------------------------------------------------------------------------------------
 
-/** Erased constructor shape every generated pipeline-kind class satisfies — `pipeline.ts`'s own
- *  `PipelineConstructStatics<K>` is generic per-kind (its props type varies with `K`, specifically
- *  `MaybePublishProps<K>`), which is exactly right for a program written by hand against ONE known
- *  kind and exactly unusable for a table indexed by `ExecutorType` at large: `Record<ExecutorType,
- *  PipelineConstructStatics<K>>` has no single `K` to be generic over. This interpreter passes a
- *  loosely-typed `props` object built from `spec` (below) instead — the real per-kind type-checking
- *  this erasure steps around is proven elsewhere (`pipeline.placeAt.typecheck.test.ts`); what THIS
- *  table needs is "call the right class", not "re-derive its compile-time prop shape". */
+/** The erased constructor shape every generated class satisfies. See docs/iac.md §259. */
 type ErasedPipelineCtor = new (
   scope: PipelineParentScope,
   id: string,
@@ -249,22 +215,7 @@ function placementRef(p: PlacementSpec): IDeploymentTarget {
   return DeploymentTarget.fromUrn(p.targetUrn);
 }
 
-// -------------------------------------------------------------------------------------------
-// The renderer — `--format ts`'s path. Mirrors `buildEstateManifest`'s calls as TypeScript source,
-// with ONE deliberate divergence: the D18 placeholder.
-//
-// ============================================================================================
-// WHY THE TS PLACEHOLDER IS `undefined`, NOT THE SAME STRING THE JSON PATH USES
-// ============================================================================================
-// `buildEstateManifest` needs *a* non-empty string (the real `PipelineBase` constructor throws on an
-// empty one) so the interpreter can still produce a manifest to inspect/diff. The renderer has a
-// stronger tool available and the task calls for using it: a `repo` prop typed `string` (required,
-// D18) rejects `undefined` at compile time under this repo's `strict` tsconfig, so emitting an
-// `undefined`-typed local as the value makes the whole file FAIL TO TYPECHECK until a human replaces
-// it — not just visually obvious, but mechanically unmissable (CI/`tsc --noEmit` refuses it, matching
-// this repo's "fail loudly, not just visibly" standard). `estate-program.test.ts`'s placeholder case
-// proves this by actually invoking the TypeScript compiler against the rendered output.
-// -------------------------------------------------------------------------------------------
+// The renderer — `--format ts`'s path. See docs/iac.md §260.
 
 export interface RenderedEstateProgram {
   readonly source: string;
@@ -275,13 +226,7 @@ const DEFAULT_HEADER =
   "// GENERATED by `@scp/iac` (team-pipeline-iac.md §9/§7) — review before committing.\n" +
   "// Placeholders marked below (if any) make this file FAIL TO TYPECHECK on purpose; fill them in.";
 
-/**
- * §8's commented starter wave topology — text only, never live code (a scaffolded component's real
- * environments/stages are not something discovery can know). `scp iac scaffold` passes this via
- * `renderEstateProgram`'s `waveGuidance` option so every emitted pipeline that starts with an EMPTY
- * `waves: []` carries the shape a team is expected to grow it into, in `staging`/`production`
- * vocabulary (D6/D21(e)) — never `gamma`, never bare `prod`.
- */
+/** §8's commented starter wave topology. See docs/iac.md §261. */
 export const WAVE_TOPOLOGY_GUIDANCE =
   "// Starter wave topology (team-pipeline-iac.md §8) — `waves: []` below is EMPTY on purpose: no\n" +
   "// real stages were discovered, so nothing is guessed. Grow it with one of:\n" +
@@ -431,11 +376,7 @@ export function renderEstateProgram(
     bodyLines.push("");
   }
 
-  // Trailing synth + export — lets a caller (or CI, or this package's own round-trip test) `import()`
-  // the file and read `.manifest` straight off it, the same drift-check shape `scp iac render --write`
-  // already establishes for the pipeline picture. Real teams' own CI still owns committing this next
-  // to a `scp/manifest.json` (D2/D9); this export is what makes THAT step (and this tool's own
-  // round-trip proof) a plain `import`, not a second bespoke synth entry point.
+  // Trailing synth + export. See docs/iac.md §262.
   bodyLines.push("export const manifest = stack.synth();");
 
   const importNames = new Set<string>(["Stack", "Service", "Component"]);

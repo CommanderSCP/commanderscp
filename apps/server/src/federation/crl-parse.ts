@@ -1,32 +1,4 @@
-/**
- * Minimal, dependency-free X.509 CRL (`CertificateList`, RFC 5280 §5.1) reader — extracts only the
- * `nextUpdate` field. Deliberately NOT a general ASN.1/CRL library: air-gap/self-hosting (CLAUDE.md
- * principle 5) rules out adding a runtime dependency (e.g. `node-forge`) just to read one field out
- * of a file an operator already controls, and Node's own `tls`/`crypto` modules expose no CRL
- * parser at all (`crypto.X509Certificate` only covers certificates, not CRLs).
- *
- * Used by `config.ts`'s `loadFederationServerMtlsConfig` to implement the ADR-0001 "stale-CRL"
- * policy (`crlHardFailOnExpiry`): boot must know whether the configured CRL is already past its
- * `nextUpdate` *before* deciding whether to include it in the TLS context at all — see that
- * function's doc comment for why an EXPIRED CRL cannot simply be handed to Node's `https` server
- * unconditionally (empirically, doing so makes EVERY cert-presenting peer fail TLS verification
- * with `CRL_HAS_EXPIRED`, not just revoked ones — see config.ts).
- *
- * ASN.1 shape walked here (fields not read are still traversed, to skip past them):
- *   CertificateList ::= SEQUENCE {
- *     tbsCertList TBSCertList,
- *     signatureAlgorithm AlgorithmIdentifier,
- *     signatureValue BIT STRING }
- *   TBSCertList ::= SEQUENCE {
- *     version INTEGER OPTIONAL,        -- present only for a v2 CRL
- *     signature AlgorithmIdentifier,
- *     issuer Name,
- *     thisUpdate Time,
- *     nextUpdate Time OPTIONAL,        -- <-- the field this module reads
- *     revokedCertificates SEQUENCE OF ... OPTIONAL,
- *     crlExtensions [0] EXPLICIT Extensions OPTIONAL }
- *   Time ::= CHOICE { utcTime UTCTime, generalTime GeneralizedTime }
- */
+/** Minimal, dependency-free X.509 CRL. See docs/federation.md §61. */
 
 const TAG_INTEGER = 0x02;
 const TAG_UTC_TIME = 0x17;
@@ -122,15 +94,7 @@ function parseAsn1Time(buf: Buffer, tlv: Tlv): Date {
   );
 }
 
-/**
- * Returns the CRL's `nextUpdate` timestamp, or `null` if the CRL omits it (RFC 5280 marks it
- * OPTIONAL, though every CA in practice sets it — an absent `nextUpdate` is treated as "never
- * stale" by the caller, matching how most TLS stacks/CA tooling behave).
- *
- * Throws on anything that doesn't parse as a well-formed `CertificateList` — a corrupt/truncated
- * CRL file is a boot-time misconfiguration (config.ts's caller), not a value to silently treat as
- * "no expiry" (that would be a fail-OPEN bug: a garbled CRL must not look "fresh").
- */
+/** The CRL's next-update timestamp, or null when omitted. See docs/federation.md §62. */
 export function parseCrlNextUpdate(pemOrDer: Buffer): Date | null {
   const der = pemToDer(pemOrDer);
   const outer = readTlv(der, 0);

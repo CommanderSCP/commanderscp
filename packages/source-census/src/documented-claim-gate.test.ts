@@ -4,50 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readStripped } from "./ts.js";
 
-/**
- * ================================================================================================
- * THE DOCUMENTED-CLAIM GATE — FOUR FALSE STATEMENTS IN ACCEPTED DOCS, FOUND BY ONE PASS
- * ================================================================================================
- *
- * WHAT HAPPENED. M23's final verification pass read the Accepted and operator-facing documents
- * against the code on disk and found FOUR statements that were measurably false, none of them a
- * typo and all of them load-bearing:
- *
- *   - `deploy/helm/README.md` described the collapsed `pods`/`pods/log` verb list and the `watch`
- *     that M23.6 had removed — the only present-tense falsehood of its kind in the tree, written by
- *     the commit that introduced the section and never touched by the narrowing.
- *   - `deploy/airgap/assets/install.sh` told air-gapped operators "helm — there is NO lever", "the
- *     plugins have no Kubernetes-native launch mode yet" and "`SCP_MANAGED_SCAN_RUNNER_IMAGE` has no
- *     chart value at all". All three had been false since M23.2/M23.4, and the same commit that made
- *     them false rewrote the OUTPUT block ninety lines below and left the comment. This is the
- *     expensive one: it is read where re-checking a claim costs a courier run. A SECOND stale
- *     comment in the same file said the same thing and directly contradicted the block beneath it —
- *     found only because the first was.
- *   - `docs/adr/0035-*.md`'s Status still said two shipped milestones were "(pending)".
- *   - `docs/BUILD_AND_TEST.md` asserted in the present tense that all three managed executors shell
- *     out to a Docker CLI and that "there is no second launch path behind an interface", with three
- *     line-number citations pointing at unrelated code. Its SIBLING bullet carried a SUPERSEDED
- *     marker; this one did not, which is the whole reason it survived four passes.
- *
- * FOUR IN ONE PASS IS NOT FOUR MISTAKES — IT IS AN UNGATED SURFACE. Nothing in this repository ever
- * read a sentence of prose and compared it to a measurement, with one exception (`golden-count-gate`,
- * added after the SAME number was restated wrongly three times). So this file generalises that one
- * exception into the two shapes that are actually gateable:
- *
- *   (1) A NUMBER RESTATED IN PROSE. Every count a document quotes about a machine-checked sweep is
- *       read out of the CODE THAT PINS IT and compared. Six such numbers live across three files;
- *       every one of them was stale within one round of the sweep changing size, including the two
- *       this very milestone made stale by adding six matrix points.
- *   (2) A CLAIM OF THE FORM "X DOES NOT EXIST" ABOUT SOMETHING THE REPOSITORY CAN LOOK UP. Whether
- *       a chart value exists, whether a call site exists. These go false silently and in one
- *       direction only: the code gains the thing, the sentence keeps denying it.
- *
- * WHAT THIS CANNOT DO, STATED RATHER THAN IMPLIED. It cannot gate arbitrary prose — no test can
- * decide whether a paragraph of reasoning is true. What it CAN do is make the specific load-bearing
- * claims machine-checked and make the ledger itself impossible to drift: every entry pins an exact
- * surrounding wording, so EDITING the sentence fails this file too and forces the entry to be
- * updated deliberately rather than orphaned. A claim that leaves the ledger leaves it visibly.
- */
+/** THE DOCUMENTED-CLAIM GATE. See docs/source-census.md §3. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../..");
@@ -79,11 +36,7 @@ describe("the documented-claim gate: a number in prose is read out of the code t
   const renderChartCalls = () =>
     [...readStripped(resolve(REPO_ROOT, VERIFY_TS)).matchAll(/\brenderChart\(/g)].length - 1;
 
-  /**
-   * THE LEDGER. Each entry is (file, a regex that pins the SURROUNDING WORDING and captures the
-   * number, the measurement). The wording is part of the key on purpose: a rewrite that drops the
-   * claim fails here rather than silently leaving an entry pointed at nothing.
-   */
+  /** The ledger: the wording is part of the key. See docs/source-census.md §4. */
   const NUMERIC_CLAIMS: {
     file: string;
     what: string;
@@ -167,8 +120,11 @@ describe("the documented-claim gate: a number in prose is read out of the code t
       expected: points
     },
     {
-      file: VERIFY_TS,
-      what: "the hand-picked `renderChart` call count, in `socketMatrix`'s own doc",
+      // The prose moved to the subsystem doc when the long-form comments were consolidated; the
+      // NUMBER is still measured out of `verify.ts` by `renderChartCalls`, so the gate still pins
+      // a claim against the code it is about. Only the claim's home changed.
+      file: "docs/helm-verify.md",
+      what: "the hand-picked `renderChart` call count, in the socket-matrix section",
       pattern: /The (\d+) `renderChart` calls elsewhere in/,
       expected: renderChartCalls
     }
@@ -190,19 +146,7 @@ describe("the documented-claim gate: a number in prose is read out of the code t
 });
 
 describe("the documented-claim gate: a claim that something DOES NOT EXIST, looked up", () => {
-  /**
-   * THE THREE PLUGIN ENTRY POINTS, AND THE BULLET THAT DESCRIBES THEM. The claim was "all three
-   * managed executors launch a runner by shelling out to a Docker CLI … there is no second launch
-   * path behind an interface". It is checked in BOTH directions: while the count is zero the bullet
-   * must be marked SUPERSEDED, and if a plugin ever spawns for itself again the marker must come off
-   * — so this cannot be satisfied by deleting the code OR by deleting the sentence.
-   *
-   * COMMENTS STRIPPED, and that is the load-bearing part. A raw read finds THREE `execFile`
-   * occurrences across these files and every one is prose explaining why `dockerBinary` is
-   * server-injected or what `promisify(execFile)` attaches to a rejection. A comment naming a hazard
-   * is a signal to sweep, never evidence it was handled (CLAUDE.md); counting one as a call site
-   * would make this gate report the opposite of the truth.
-   */
+  /** The three plugin entry points and their bullet. See docs/source-census.md §5. */
   const PLUGIN_ENTRIES = [
     "packages/plugins/managed-iac/src/index.ts",
     "packages/plugins/managed-scan/src/index.ts",
@@ -236,14 +180,7 @@ describe("the documented-claim gate: a claim that something DOES NOT EXIST, look
     }
   });
 
-  /**
-   * THE AIR-GAP INSTALLER'S CLAIMS ABOUT WHAT THE CHART CANNOT DO. Two things are checked. The
-   * retired sentences must not come back — each one was false for a full milestone and each is
-   * quoted here verbatim so a copy-paste revival is a red build. And every chart value the script
-   * NAMES as the lever must actually exist in `values.yaml`, which is the general form of the
-   * "`SCP_MANAGED_SCAN_RUNNER_IMAGE` has no chart value at all" mistake — a claim about existence,
-   * made about something this repository can simply look up.
-   */
+  /** The installer's claims about what the chart cannot do. See docs/source-census.md §6. */
   it("install.sh does not deny a lever the chart has, and names only values that exist", () => {
     const script = read("deploy/airgap/assets/install.sh");
     const RETIRED_FALSEHOODS = [

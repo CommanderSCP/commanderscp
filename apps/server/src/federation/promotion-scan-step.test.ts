@@ -13,16 +13,7 @@ import {
   RUNNER_SUPPORTED_METHODS
 } from "./promotion-scan-step.js";
 
-/**
- * M13.3b — parseOscapResult unit tests (ADR-0020 §2, proposal §13.3). The server-side distillation of
- * an OpenSCAP XCCDF/ARF result into the four ScanSeverityCounts. Pure, no Docker — runs in the fast
- * `pnpm test` layer. The end-to-end "real oscap → E6" proof lives in the integration suite.
- *
- * The MAPPING under test (decided, ADR-0020 §2): XCCDF high→high, medium→medium, low→low; XCCDF has
- * NO `critical` severity so `critical` stays 0 (the no-critical property); `unknown`/`info`/unset fold
- * away. Only `fail` rule-results count. A malformed/empty document FAILS CLOSED (throws) rather than
- * silently reporting zero findings.
- */
+/** M13.3b — parseOscapResult unit tests. See docs/federation.md §423. */
 
 /** A compact XCCDF TestResult carrying the given rule-results (severity, result). */
 function xccdf(rows: Array<{ sev?: string; result: string; prefix?: string }>): string {
@@ -160,12 +151,7 @@ describe("parseOscapResult — fail-closed on malformed input", () => {
 
 // 13.3a — THE MACHINE-IMAGE ARM (`trivy-vm`): the two seams a new scan method can silently escape.
 
-/**
- * SEAM 1 — DISPATCH CONTAINMENT. The server decides WHICH method to hand the orchestrator; the
- * orchestrator decides which methods it will RUN. They are separate lists in separate packages (the
- * plugin does not depend on `@scp/schemas`), so a method added to only one of them either never runs
- * or is dispatched into a container that exits 2. This pins the direction that matters.
- */
+/** SEAM 1 — DISPATCH CONTAINMENT. See docs/federation.md §424. */
 describe("runner-supported methods ⊆ orchestrator-dispatchable methods", () => {
   it("every method the server dispatches is one the managed-scan plugin will run", () => {
     for (const method of RUNNER_SUPPORTED_METHODS) {
@@ -187,17 +173,7 @@ describe("runner-supported methods ⊆ orchestrator-dispatchable methods", () =>
   });
 });
 
-/**
- * SEAM 2 — THE SCANNER-DB STALENESS GATE. `trivy vm` reads the SAME vulnerability DB as
- * `trivy image`, so the M13.3b-ii staleness gate MUST fire for it. The bug this test exists to catch
- * is precise and was live in the code before this increment: the gate was written as
- * `method === "trivy"`, so a machine-image scan would sail past a missing/corrupt/hard-stale DB
- * cache, scan against whatever the image happened to bake, and still deposit PASSING evidence.
- *
- * Behavioural, not textual: a CONFIGURED-but-EMPTY cache dir must make the runner refuse BEFORE it
- * pulls anything, for every Trivy-family method — and must NOT do so for OpenSCAP, which evaluates
- * baked SSG content and has no Trivy DB to be stale.
- */
+/** SEAM 2 — THE SCANNER-DB STALENESS GATE. See docs/federation.md §425. */
 describe("the Trivy-DB staleness gate covers the machine-image arm", () => {
   const digest = `sha256:${"b".repeat(64)}`;
   let emptyCache: string;
@@ -259,18 +235,7 @@ describe("the Trivy-DB staleness gate covers the machine-image arm", () => {
   });
 });
 
-/**
- * ================================================================================================
- * MEDIUM (verification pass 5) — THE IN-PROCESS `trigger()` HAS NO HOST AND THEREFORE NO SIGKILL
- * ================================================================================================
- *
- * Every other managed run in the product crosses the subprocess plugin host, whose budget expiry
- * SIGKILLs the child (`plugin-host/call-policy.ts`). `createServerManagedScanRunner` calls
- * `plugin.trigger()` DIRECTLY, in the server process, so nothing outside the launcher bounds it.
- * That is safe today, and it is safe by accident on both axes — see `pluginCtx`'s own doc. This
- * makes the first axis a standing assertion rather than a comment; the second (`secretEnv: []`) is
- * pinned by `@scp/plugin-managed-scan`'s `launcher-seam.test.ts` whole-spec `toStrictEqual`.
- */
+/** MEDIUM (verification pass 5). See docs/federation.md §426. */
 describe("MEDIUM (pass 5): the commander's in-process scan path carries no runaway budget", () => {
   it("THE IN-PROCESS SCAN PATH CARRIES NO TENANT-SETTABLE BUDGET", () => {
     const config = pluginCtx("scp-runner-scan:vetted", "none").config as Record<string, unknown>;
@@ -281,21 +246,7 @@ describe("MEDIUM (pass 5): the commander's in-process scan path carries no runaw
       Object.hasOwn(config, "timeoutMs"),
       "a tenant-settable budget reached the one trigger() path with no host to SIGKILL it"
     ).toBe(false);
-    // The whole config, so a NEW key cannot arrive unnoticed: every one of these is a server-side
-    // operator setting with no binding row behind it.
-    //
-    // M23.2 ADDED ONE, AND THIS ASSERTION IS WHY THAT WAS DELIBERATE. `runnerLauncher` is the
-    // adapter selection; it arrives here because `pluginCtx` spreads the WHOLE launcher slice
-    // (`managedRunnerSettings()`) rather than picking `dockerBinary` out of it — the alternative
-    // being a commander whose own promotion scan stays on Docker forever while every bound executor
-    // moves to Jobs, which is the exact shape of the defect `managedRunnerSettings` already exists
-    // to prevent. It is server-injected and never tenant-settable: absent from managed-scan's
-    // manifest (`additionalProperties: false`) and refused by name at the four write doors
-    // (`plugin-manifests-runner-launcher.test.ts`).
-    //
-    // `kubernetes` is NOT here and its absence is load-bearing: `managedRunnerSettings()` omits the
-    // key entirely on a docker deployment, so nothing about Kubernetes reaches this path unless an
-    // operator selected it. `managed-runner-selection.test.ts` covers the selected shape.
+    // The whole config, so a NEW key cannot arrive unnoticed. See docs/federation.md §427.
     expect(Object.keys(config).sort()).toStrictEqual([
       "dockerBinary",
       "networkMode",
@@ -305,12 +256,7 @@ describe("MEDIUM (pass 5): the commander's in-process scan path carries no runaw
   });
 
   it("SO THE RUN IS BOUNDED BY MANAGED-SCAN'S OWN DEFAULT, which is inside the product ceiling", () => {
-    // With no `timeoutMs` in the config, `managed-scan` falls back to its own DEFAULT_TIMEOUT_MS —
-    // the same number its manifest publishes as the property's `default` — and hands that to
-    // `RunnerSpec.timeoutMs`. `clampRunTimeoutMs` would cap it in any case; this says the fallback
-    // never even reaches the cap, so this path's bound is an honest ten minutes rather than the
-    // ceiling of last resort, which on a path with no SIGKILL is the difference between a wedged
-    // promotion scan holding the commander for 10 minutes and holding it for an hour.
+    // With no configured timeout, it falls back to its own. See docs/federation.md §428.
     const declaredDefault = (
       managedScanManifest.configSchema as {
         properties: { timeoutMs: { default: number } };

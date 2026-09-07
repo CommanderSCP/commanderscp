@@ -13,34 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * EXECUTOR-BINDING LIFECYCLE AUDIT EVENTS (2026-08-25 gap) — PUT/DELETE (and, found by the same
- * census, PATCH-repurpose) wrote NO audit event at all before this. The only executor-ish audit
- * action ever written was `change.wave_target.no_executor`, a READ-time observation that a stage
- * has no binding, never a record of a binding itself CHANGING. `executor-bindings-repo.ts` is the
- * one function every binding write funnels through (the typed routes below, `iac/plans-repo.ts`'s
- * apply-time create/update/prune, and `POST /discovery/accept`'s binding import) — the audit call
- * lives THERE, not duplicated at each call site, so this file exercises it through the routes and
- * trusts the single shared implementation for the non-route doors (a coverage note in
- * `executor-bindings-repo.ts`'s module comments).
- *
- * `component-merge-repo.ts`'s `repointExecutorBindingTarget` — the FOURTH binding-identity write
- * door — used to be left deliberately unaudited on the premise that the merge that reaches it wrote
- * no audit event of its own either, so auditing the repoint alone would look like partial coverage.
- * That premise was false (`mergeComponents` already writes `component.delete` for the loser via
- * `deleteObject`, plus a `transition` Decision for the merge itself) and is now corrected; the
- * repoint is audited too (`executor.binding.repoint`) — see the merge describe block below.
- *
- * `reason` is asserted to carry the Type and plugin module, and NEVER the config/secretRefs payload
- * a binding may carry (charter: audit rows are read by humans and must not become a secrets leak).
- *
- * ALSO EXERCISED HERE: `subjectDomainLocal` (ADR-0031 S2 / M20.2) on every one of these events — a
- * domain-local target's binding lifecycle must write the LOCAL audit row same as any other, but
- * withhold the `audit_segment` journal entry that would otherwise carry its id to a peer. Checked
- * directly against `sync_journal` (single-domain — the withholding happens at `appendAuditEvent`,
- * before export ever runs, so a real cross-domain round trip would only be re-proving M20.2's own
- * test, not this gap).
- */
+/** EXECUTOR-BINDING LIFECYCLE AUDIT EVENTS. See docs/routes.md §159. */
 describe("executor-binding lifecycle audit events", () => {
   let server: ListeningTestServer;
 
@@ -179,17 +152,9 @@ describe("executor-binding lifecycle audit events", () => {
     expect(events).toHaveLength(0);
   });
 
-  // THE FOURTH-DOOR CASE IS GONE WITH ITS DOOR (ADR-0047). It proved that `discovery/accept`'s
-  // binding import wrote `executor.binding.put` like every other binding-identity write — the point
-  // being that the audit call lives in `executor-bindings-repo.ts`, not at each call site. That
-  // shared implementation is unchanged and still exercised by the route cases here; one fewer
-  // caller does not weaken it.
+  // THE FOURTH-DOOR CASE IS GONE WITH ITS DOOR. See docs/routes.md §160.
 
-  /** Every `audit_segment` journal row whose payload names `subjectId` AND an `executor.binding.*`
-   *  action — the withholding check has to read the PAYLOAD, not just count rows, since an
-   *  unrelated audit_segment naming the SAME subject (the component's own `component.create`,
-   *  which journals ahead of any binding write) would otherwise inflate a "shared" control's count
-   *  and make it indistinguishable from a real leak. */
+  /** Every journal row whose payload names both of those. See docs/routes.md §161. */
   async function auditSegmentJournalRowsNaming(org: TestOrg, subjectId: string) {
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx

@@ -28,32 +28,7 @@ import { listDecisionsForSubject } from "./decisions-repo.js";
 import { castApprovalVote, listApprovalRequestsForChange } from "../governance/approvals-repo.js";
 import type { GateDeps } from "./gates.js";
 
-/**
- * THE MEASURED PRODUCTION BUG (live homelab k3s, read-only psql, 2026-07-29/30): `decisions` had
- * reached 12,327,844 rows / 15 GB and was growing ~1,079,900 rows (~1.44 GB) per day. 99.99% of the
- * table was ONE writer — `kind='gate', verdict='block'` across just 29 distinct `subject_id`s, all
- * `change` objects parked on a real `requireApprovals` policy (`fromRole: Owner`, scope
- * `organization`, `required_count: 1`) awaiting a human. Measured inter-arrival: 2.000 s per
- * subject. In one sampled hour, 39,175 of those rows collapsed to 25 distinct
- * `(subject_id, input_context, reason_tree)` tuples — 99.94% byte-identical restatements of an
- * unchanged verdict, ~1,567x duplication.
- *
- * This suite reproduces THAT shape — not a synthetic always-block seam — and pins all three halves
- * of the fix, because getting any one of them wrong is worse than the disk growth:
- *
- *  T1  N ticks over a parked change write exactly ONE `gate`/`block` Decision, AND the gate is
- *      still EVALUATED on every one of those N ticks (asserted via a real evaluation count, not
- *      just the row count — "evaluate less often" would make the row assertion pass while breaking
- *      the engine).
- *  T2  RESUMPTION: the approval lands, the very next tick writes a NEW Decision and the wave
- *      actually starts running. This is the test that proves the cadence was not slowed.
- *  T3  `decision_id` CONTINUITY (charter principle 6): while suppressed, the standing block
- *      Decision is still the one the operator-facing surface reports, still resolvable, still
- *      exactly one row in `scp change explain`'s chain.
- *
- * Drives `reconcileOrgTick` DIRECTLY (like `coordination.integration.test.ts`'s race suites) rather
- * than starting the pg-boss loop, so "N ticks" is exactly N and the counts are deterministic.
- */
+/** THE MEASURED PRODUCTION BUG. See docs/coordination.md §408. */
 
 /** The prod-shaped policy's condition. Real (a required policy that only fires for non-emergency
  *  changes), and — because a contributor `condition` is what makes `resolveFiredPolicies` call the
@@ -61,17 +36,7 @@ import type { GateDeps } from "./gates.js";
  *  evaluation, counted in the process, with no module mocking anywhere near the code under test. */
 const POLICY_CONDITION = "change.emergency == false";
 
-/**
- * A CEL condition that CANNOT BE EVALUATED — a typo'd identifier, the shape of a renamed label or a
- * field that no longer exists. Deliberately a RESOLUTION failure, not a parse failure: cel-js's
- * parse errors carry no context, while its identifier-resolution error serializes the ENTIRE
- * evaluation context into the message (`Identifier "…" not found in context: {…}`) — and that
- * context carries `time`, a fresh snapshot per evaluation. This is the exact fault T4 pins.
- *
- * It is also a PERMANENT operator error: nothing about a later tick makes `change.typoed` resolve,
- * so unlike a CEL timeout (bounded, intermittent, and correctly written each time it flips) this
- * one restates identically forever — which is precisely why it must collapse to one row.
- */
+/** A CEL condition that CANNOT BE EVALUATED. See docs/coordination.md §409. */
 const BROKEN_POLICY_CONDITION = "change.typoed == true";
 
 interface ParkedChange {
@@ -118,19 +83,7 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     return res.json() as Record<string, unknown>;
   }
 
-  /**
-   * Builds EXACTLY the production shape: a component under a service, a `required` policy scoped to
-   * that component whose single effect is `requireApprovals { count: 1, fromRole: Owner, scope:
-   * organization }`, and a change walked to `executing` with wave 0 still `pending`. The walk is
-   * manual (proposed -> evaluated -> coordinated -> executing, the edges `gates.ts` documents as
-   * always-allow) so the very first `reconcileOrgTick` below is the first thing that has ever
-   * evaluated this wave's gate.
-   *
-   * `condition` defaults to the prod-shaped one; T4 passes {@link BROKEN_POLICY_CONDITION} to park
-   * the change on a required contributor that cannot be EVALUATED instead of one that is unmet.
-   * Both park identically — a fail-closed condition error fires the group and blocks exactly like
-   * an unsatisfied `requireApprovals` effect does.
-   */
+  /** Builds EXACTLY the production shape. See docs/coordination.md §410. */
   async function parkChangeOnApproval(
     label: string,
     condition: string = POLICY_CONDITION
@@ -231,14 +184,7 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     );
   }
 
-  /**
-   * The ORDINARY wave-gate verdicts, with the fail-closed condition-error statements split off and
-   * their count returned alongside — see `partitionConditionErrors` for the measured reason this
-   * suite cannot simply assert a raw row count (a CEL wall-clock miss on a loaded box makes the
-   * production code CORRECTLY write a condition-error row AND, on the next tick, an ordinary one;
-   * both writes are right, and asserting "exactly one row" against them is asserting the machine is
-   * never busy — observed twice here with no injection).
-   */
+  /** Ordinary verdicts, with condition errors split off. See docs/coordination.md §411. */
   async function gateDecisions(changeObjectId: string) {
     return partitionConditionErrors(await allGateDecisions(changeObjectId));
   }
@@ -384,32 +330,7 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     expect(distinctDecisionStatements(settled.ordinary)).toBe(2);
   });
 
-  /**
-   * T4 — THE FAULT THAT RESTORED THE WHOLE BUG WITH THE FIX IN PLACE (PR #153 review Q2).
-   *
-   * A policy whose CEL condition cannot be EVALUATED — a typo'd identifier, a renamed label, a
-   * field that no longer exists — is a PERMANENT operator error that never self-heals. cel-js's
-   * identifier-resolution error serialized the ENTIRE evaluation context into its message, and
-   * `governance/evaluate.ts` puts a fresh `time` snapshot in that context, so the string
-   * `evaluate.ts` persists into the reason tree (twice: as `conditionError`, and inside the
-   * fail-closed `conditionError` effect's `detail.error`) DIFFERED ON EVERY TICK. Persist-on-change
-   * then did exactly what it promises — wrote a genuinely new verdict — and the gate went straight
-   * back to ~43,200 rows/day/change. Measured before the fix: 15 consecutive writes, two
-   * consecutive 1,346-byte reason trees differing by TWO CHARACTERS, both inside the timestamp.
-   *
-   * `cel-sandbox.ts`'s `normalizeCelWorkerError` keeps the diagnosis and drops the dump. The dump
-   * was a per-tick-unstable restatement of inputs the Decision already summarizes; what survives is
-   * the actionable part — which identifier failed to resolve. (The CEL evaluation context itself is
-   * persisted nowhere: this gate Decision's `input_context` is wave metadata plus three counts.)
-   *
-   * DISTINCT FROM the bounded intermittent CEL-TIMEOUT residual, which is correct behaviour and is
-   * why this suite everywhere asserts a bound rather than a raw count (see
-   * `partitionConditionErrors`): a timeout flips between two genuinely different verdicts and each
-   * flip is worth a row. An unevaluable identifier never flips.
-   *
-   * MUTATION-PROVEN: reverting the normalization (forwarding cel-js's `msg.error` verbatim) takes
-   * this from 1 permanent-fault row to 15 and fails both assertions below.
-   */
+  /** The fault that restored the bug with the fix in place. See docs/coordination.md §412. */
   it("T4: a policy whose CEL condition CANNOT BE EVALUATED writes ONE gate Decision over 15 ticks, not one per tick", async () => {
     const parked = await parkChangeOnApproval("t4", BROKEN_POLICY_CONDITION);
     const TICKS = 15;
@@ -456,24 +377,7 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     expect(row!.reconcileBlockedAt).toBeNull();
   });
 
-  /**
-   * T5 — THE AUTO-CANCELLED CHANGE'S EPITAPH (PR #153 review Q3, `reconcile.ts`'s
-   * `advanceEvaluatedChanges`).
-   *
-   * When `compileAndPersistPlan` fails there is no retry and no next state: the reconciler
-   * auto-cancels the change and the `reason` it attaches is the ONLY explanation an operator will
-   * ever get for it, persisted twice — in the cancelling transition's Decision `input_context` and
-   * in the hash-chained audit event written in the same transaction. `plan-service.ts` throws
-   * `ProblemError`s (`notFound` for an unresolvable release-topology, `badRequest` for a cycle or a
-   * compiler refusal) whose `message` is the bare HTTP TITLE, so `err.message` made every such
-   * epitaph read "auto-cancelled: plan compilation failed — Not Found": it names neither the
-   * missing topology nor the cycle, and — since the audit event is immutable — it cannot be
-   * improved after the fact.
-   *
-   * MUTATION-PROVEN: reverting `reconcile.ts`'s `describeError(err)` to
-   * `err instanceof Error ? err.message : String(err)` fails both assertions below (the recorded
-   * reason becomes "auto-cancelled: plan compilation failed — Not Found").
-   */
+  /** T5 — THE AUTO-CANCELLED CHANGE'S EPITAPH. See docs/coordination.md §413. */
   it("T5: a change auto-cancelled by a failed plan compile records WHICH object was missing — in both its Decision and its audit event", async () => {
     const service = await inject("/api/v1/services", { name: "svc-t5" });
     const component = await inject("/api/v1/components", {

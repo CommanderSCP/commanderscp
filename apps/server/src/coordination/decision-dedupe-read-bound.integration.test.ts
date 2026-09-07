@@ -20,62 +20,12 @@ import {
   sortNodesInPlan
 } from "./test-support/decision-read-counters.js";
 
-/**
- * THE BOUND ON THE PERSIST-ON-CHANGE DEDUPE READ — i.e. THE TEST FOR drizzle/0044.
- *
- * `insertDecisionIfChanged` is only cheap because `latestDecisionForSubjectKind` is one index
- * probe, and it is one index probe only because drizzle/0044 adds
- * `(org_id, subject_id, kind, created_at DESC)`. WITHOUT that index `kind` is a HEAP FILTER on a
- * backward walk of `decisions_org_subject`, so the read costs O(the subject's rows of OTHER kinds)
- * — measured on a 12M-row reproduction of the live homelab distribution at 22,202 ms / 424,745
- * buffers per probe, once per ~2 s tick per parked change.
- *
- * WHY THIS FILE EXISTS AT ALL. Every other test of this PR asserts on a RETURN VALUE, and the
- * index does not change any return value — so before this suite, commenting the `CREATE INDEX` out
- * of drizzle/0044 left all four new suites (4 files / 9 tests) GREEN. The migration that the whole
- * P1 round exists to add had no test, and losing it (a `schema.ts` edit, a drizzle-kit
- * regeneration, a hand-rolled migration squash) would silently restore the original pathology with
- * a green board. drizzle/0046 was already covered this way by
- * `service-board-decision-read-bound.integration.test.ts`; this is the same instrument pointed at
- * the read 0044 covers.
- *
- * WHAT IT MEASURES AND WHY THAT AND NOT LATENCY. Rows touched, from Postgres's own
- * transaction-local counters (see `test-support/decision-read-counters.ts`). A latency assertion
- * would be a flake, and an assertion on the answer would be VACUOUS — the unindexed read returns
- * the identical row.
- *
- * MUTATION-PROVEN: removing the `CREATE INDEX` from drizzle/0044 takes the ABSENT-kind probe from
- * 1 row touched to 401 and fails this suite (`expected 401 to be less than or equal to 10`).
- *
- * TWO THINGS THIS SUITE MEASURED WRONG UNTIL drizzle/0069, both of which made it green for reasons
- * unrelated to the index it names:
- *
- *   1. NO STATISTICS. It seeded and measured within a couple of seconds, so `pg_statistic` for
- *      `decisions` was empty and every equality was costed at `DEFAULT_EQ_SEL`. In that regime the
- *      planner prices the sortless rival index at its full length and picks 0044's — for a reason
- *      that evaporates the moment autoanalyze runs, which on a live instance it always has.
- *      `refreshDecisionStats` now puts the table in the production regime before each measurement.
- *   2. A ONE-SUBJECT FIXTURE. With a single change in the org, `decisions_org_kind_created` (0056,
- *      `(org_id, kind, created_at, id)`) answers "the newest `transition` in this org" in ONE entry
- *      and it happens to belong to the only subject there is — so the probe was cheap whether or
- *      not 0044's index existed or was usable. The bound could not tell the two apart. A SECOND
- *      change now carries the same kinds, so answering by walking the org's stream of a kind costs
- *      the other change's rows and the bound bites.
- *
- * MUTATION-PROVEN, 2026-08-17: reverting only drizzle/0069's `id DESC` tiebreak on
- * `decisions_org_subject_kind_created` takes the absent-kind arm from 0 rows touched to 400 and
- * flips the plan to `decisions_org_kind_created`, failing both the count and the plan arm. Under
- * the OLD one-subject fixture the same revert left this suite entirely GREEN.
- */
+/** THE BOUND ON THE PERSIST-ON-CHANGE DEDUPE READ. See docs/coordination.md §403. */
 describe("persist-on-change: the dedupe read is one index probe, not a walk of the subject's history", () => {
   let server: TestServer;
   let org: TestOrg;
   let changeObjectId: string;
-  /**
-   * A SECOND subject carrying the SAME kinds, so `decisions_org_kind_created` cannot answer any
-   * probe below by luck — the org's stream of `gate` and of `transition` no longer belongs to one
-   * change. See (2) in this suite's header.
-   */
+  /** A second subject carrying the same kinds. See docs/coordination.md §404. */
   let otherChangeObjectId: string;
 
   /** Enough that an unbounded read is unmistakable, small enough to seed quickly. */
@@ -113,15 +63,7 @@ describe("persist-on-change: the dedupe read is one index probe, not a walk of t
       return change.id;
     });
 
-    // THE PRODUCTION SHAPE: one subject carrying a long `gate` history, which is what every OTHER
-    // kind's dedupe probe has to get past. `created_at` values are 2 s apart and DISTINCT, as the
-    // real flood was (one row per reconcile tick, each in its OWN transaction) — `created_at`
-    // defaults to `now()`, which is TRANSACTION start time, so rows written in one loop inside one
-    // transaction would all share a timestamp and `ORDER BY created_at DESC, id DESC` would have to
-    // read the whole tied group to break the tie on `id`, making even the indexed read touch every
-    // row. Written raw (not via `insertDecision`, which cannot set `created_at`) and deliberately
-    // WITHOUT the dedupe guard: this is about the READ side, and must hold for a table that
-    // accumulated a flood before persist-on-change landed.
+    // THE PRODUCTION SHAPE. See docs/coordination.md §405.
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       await tx.execute(sql`
         INSERT INTO decisions (id, org_id, kind, subject_id, verdict, input_context, reason_tree, created_at)
@@ -195,13 +137,7 @@ describe("persist-on-change: the dedupe read is one index probe, not a walk of t
     // (a) CORRECTNESS FIRST — the bound must not change the answer.
     expect(found).toBeUndefined();
 
-    // (b) THE BOUND. Measured 0 with drizzle/0069: the descent finds no entry for
-    // (org, subject, 'wave_target') and returns without charging one. `<= 10` leaves headroom for
-    // the constant a different plan shape would charge; WITHOUT drizzle/0044 this is 401 — every
-    // row the subject holds, discarded by a heap filter, to return `undefined`. Reverting only
-    // 0044's `id DESC` tiebreak takes it to 400: the plan falls back to `decisions_org_kind_created`
-    // and walks every `wave_target` row in the ORG instead, which is the SAME defect the service
-    // board's 804 is, one index over.
+    // (b) THE BOUND. Measured 0 with drizzle/0069. See docs/coordination.md §406.
     expect(touched).toBeLessThanOrEqual(10);
     expect(touched).toBeLessThan(SEEDED_DECISIONS);
   });
@@ -231,12 +167,7 @@ describe("persist-on-change: the dedupe read is one index probe, not a walk of t
   });
 
   it("the dedupe probe is SERVED BY drizzle/0044's index — named, so a plan flip says which index it flipped to", async () => {
-    // THE SAME INSTRUMENT `service-board-decision-read-bound.integration.test.ts` carries for
-    // drizzle/0046, pointed at the read 0044 covers — added because the two indexes turned out to
-    // share a defect, and only one of them had an arm that could have named it. A row count says
-    // "804"; this says WHICH index served the read instead, which is the whole diagnosis.
-    //
-    // It explains the BUILDER `latestDecisionForSubjectKind` itself runs, not a re-typed copy.
+    // The same instrument the sibling read-bound test carries. See docs/coordination.md §407.
     await refreshDecisionStats();
     const { plan, sorts } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       await preferIndexPlans(tx);

@@ -2,31 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BundleTransfer, FederationPeerStatus } from "@scp/schemas";
 
-/**
- * M16.2 phase B (B1) — THE RENDERING HALF of the Outposts overview's honesty contract, pinned by a
- * check that runs on EVERY PR.
- *
- * WHY A PLAIN VITEST FILE AND NOT A PLAYWRIGHT SPEC (the same reason `service-board-honesty.test.tsx`
- * exists): originally because every E2E job was `main`-only and SKIPPED on pull requests. E2E now
- * runs on PRs and 5z requires it, so the reason is no longer coverage but COST and ALTITUDE — this
- * is milliseconds, needs no browser, and fails with a diff. The server half of this
- * contract is gated on PRs by `apps/server/src/federation/status-honesty.integration.test.ts` and
- * `outpost-handfill-wedge.integration.test.ts`; the rendering half — where a browser can paint an
- * unobservable field exactly like an observed one and undo all of it — needs a gate of its own.
- * `renderToStaticMarkup` renders to a string in the Node environment Vitest already uses: no browser,
- * no DOM library, no new dependency.
- *
- * WHAT IT OWNS, one clause per phase-A trap:
- *   1. a peer with NO trust tier renders an explicit unknown, and NEVER `commercial`;
- *   2. an UNVERIFIED (hand-filled shadow) tier is visibly distinguished from a DECLARED one;
- *   3. a peer with NO derivable transport renders an explicit unknown, and NEVER `air-gap`;
- *   4. nothing on the page reads as "the outpost has this" — every outbound string is about what
- *      THIS side exported, and the two promised-but-sourceless fields (applied-at-peer, health)
- *      render as unknowns rather than as blanks.
- *
- * `Link` is stubbed because `@tanstack/react-router`'s `useRouter` throws outside a `RouterProvider`;
- * routing is covered by the E2E spec against the real router.
- */
+/** The rendering half of the overview's honesty contract. See docs/web.md §407. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -47,29 +23,12 @@ const {
 
 const PEER_ID = "0e0a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
 
-/**
- * The text an operator actually READS — every tag (and therefore every attribute, including the
- * explanatory `title` tooltips) stripped out.
- *
- * This exists because the naive assertion is wrong in a way that matters: a tooltip saying "this is
- * NOT an air-gap posture" contains the string `air-gap`, so a blanket `not.toContain("air-gap")`
- * over the raw markup fails on honest copy while a cell that silently DROPPED the tooltip would
- * pass. The forbidden thing is the CLAIM — the rendered word, and the machine-readable
- * `data-transport-mode`/`data-trust-tier` attributes — which is what these tests assert separately.
- */
+/** The text an operator actually READS. See docs/web.md §408. */
 function visibleText(html: string): string {
   return html.replace(/<[^>]*>/g, " ");
 }
 
-/**
- * The markup of exactly ONE `data-testid`-tagged element, tags balanced.
- *
- * This exists because a whole-row `toContain` cannot tell WHICH cell satisfied it. The two sourceless
- * cells are the always-taken branch of `SourcelessCell` (the server declares `appliedAtPeer` and
- * `healthRollup` for every peer on every response), so an assertion that a cell's CONTENT is the
- * unknown marker has to be scoped to that cell — otherwise a sibling cell's marker keeps it green
- * while this one renders a fabricated reading.
- */
+/** The markup of exactly one tagged element, tags balanced. See docs/web.md §409. */
 function elementByTestId(html: string, testId: string): string {
   const attr = html.indexOf(`data-testid="${testId}"`);
   expect(attr, `no element carries data-testid="${testId}"`).toBeGreaterThanOrEqual(0);
@@ -97,11 +56,7 @@ function renderRow(status: FederationPeerStatus): string {
   );
 }
 
-/**
- * A peer in the state phase A cares most about: PAIRED, with transport configured, but with NO
- * operator-asserted trust tier and NOTHING ever exported to it. Every null below is a null the
- * server explicitly declared, and none of them is an observation.
- */
+/** A peer in the state phase A cares most about. See docs/web.md §410. */
 function basePeer(overrides: Partial<FederationPeerStatus> = {}): FederationPeerStatus {
   return {
     peer: {
@@ -193,11 +148,7 @@ describe("outposts overview: an unasserted trust tier is never a tier", () => {
     expect(declared).not.toContain("unverified");
   });
   it("an UNVERIFIED tier with NO provenance field still never renders as a commander assertion", () => {
-    // `status-repo.ts` emits TWO signals for this one case — `trustTierProvenance: "unverified"` AND
-    // `"trustTier"` in `unknownFields` — and `trustTierProvenance` is `.nullable().optional()`, so a
-    // response carrying the tier and the declaration but not the provenance is well-formed. Keyed on
-    // provenance alone, such a row fell through to the DECLARED badge and was byte-identical to a
-    // tier this commander actually asserted.
+    // `status-repo.ts` emits TWO signals for this one case. See docs/web.md §411.
     const noProvenance = basePeer({
       trustTier: "commercial",
       unknownFields: ["trustTier", "healthRollup", "appliedAtPeer"]
@@ -226,17 +177,7 @@ describe("outposts overview: an unasserted trust tier is never a tier", () => {
     expect(visibleText(declared)).not.toContain("unverified");
   });
 
-  /**
-   * THE ROW ATTRIBUTE, WHICH THE PREVIOUS ROUND'S CENSUS WALKED PAST (round 3).
-   *
-   * Every test above renders `<TrustTierCell>` DIRECTLY, so `<OutpostRow>`'s own
-   * `data-trust-tier` was asserted for no tier case at all — and it was bare
-   * (`status.trustTier ?? "unknown"`), with no provenance qualifier beside it. This suite's own
-   * stated rule (top of this file) is that the forbidden thing is the CLAIM: the rendered word AND
-   * the machine-readable `data-*` attribute. So an unverified peer and a declared one emitted a
-   * BYTE-IDENTICAL `<tr … data-trust-tier="commercial">`, which is exactly what an E2E selector or
-   * any other DOM consumer keys on.
-   */
+  /** THE ROW ATTRIBUTE, WHICH THE PREVIOUS ROUND'S CENSUS WALKED PAST. See docs/web.md §412. */
   it("the ROW's machine-readable tier claim carries its qualifier, not just the cell's", () => {
     const unverifiedRow = renderRow(
       basePeer({
@@ -271,13 +212,7 @@ describe("outposts overview: an unasserted trust tier is never a tier", () => {
     expect(rowTag(renderRow(basePeer()))).toContain('data-tier-provenance="none"');
   });
 
-  /**
-   * A `retrans` peer is a STRONGER claim than "unobservable": this instance can SOURCE the
-   * inapplicability itself — `POST /federation/outposts` refuses (400) to bind an `outpost` config
-   * object to any peer whose role is not `outpost` (`outpost-binding.ts`, ADR-0004; measured
-   * `outpost-object.integration.test.ts`). So a retrans row must NOT wear the same amber
-   * unknown-pill a genuinely undecided outpost tier wears — that would understate what is known.
-   */
+  /** A `retrans` peer is a STRONGER claim than "unobservable". See docs/web.md §413. */
   it("a retrans peer renders the §1.5 structural-absence dash, never the unknown pill", () => {
     const retrans = basePeer({ peer: { ...basePeer().peer, role: "retrans" } });
     const html = renderToStaticMarkup(<TrustTierCell status={retrans} />);
@@ -349,13 +284,7 @@ describe("outposts overview: an unasserted trust tier is never a tier", () => {
 });
 
 describe("outposts overview: the attention dot triages, it does not cry wolf", () => {
-  /**
-   * Red requires a signal that something SET UP to work is not working. The one such signal in
-   * this payload is poke-mode enabled with no poke ever received. Transport-unknown is amber, not
-   * red — a freshly enrolled peer has no transport yet and a genuinely air-gapped peer may never
-   * have one (bundles move by hand, a supported shape, not a failure). The first QA pass shipped
-   * transport-unknown as red and every fresh row lit up like a fire drill; this pins the repair.
-   */
+  /** Red needs a signal that something set up is not working. See docs/web.md §414. */
   it("a never-synced, transportless peer is WARNING, never danger", () => {
     const status = basePeer({ transportMode: null });
     expect(attentionLevel(status)).toBe("warning");
@@ -459,11 +388,7 @@ describe("outposts overview: no string claims the outpost has anything", () => {
     expect(html).toContain('data-declared="unknown"');
     expect(html).not.toContain('data-declared="undeclared"');
 
-    // …and THIS is the half that actually bites. `status-repo.ts` pushes both field names into
-    // `unknownFields` for EVERY peer on EVERY response, so the declared branch is the ALWAYS-TAKEN
-    // one — yet asserting only the attributes above leaves the branch's rendered CONTENT entirely
-    // unpinned: swap `<UnknownHere/>` for the literal `healthy`, or for a `0`, and every attribute
-    // assertion still holds. Scope to each cell and pin what an operator READS.
+    // …and THIS is the half that actually bites. See docs/web.md §415.
     for (const field of ["appliedAtPeer", "healthRollup"]) {
       const cell = elementByTestId(html, `outpost-${field}`);
       expect(cell, `${field} took the wrong branch`).toContain('data-declared="unknown"');
@@ -499,13 +424,7 @@ describe("outposts overview: no string claims the outpost has anything", () => {
   });
 
   it("an ABSENT (not null) backlog count is an unknown, never a blank number", () => {
-    // `pendingExportEntryCount` is `.nullable().OPTIONAL()`, so `undefined` is as legal on the wire as
-    // `null` — and ADR-0023 does NOT close this one: an omitted OPTIONAL key is contract-legal and
-    // passes the SDK's response validation untouched, so this guard is still the only thing between
-    // the renderer and `undefined`. Keying the guard on `=== null` alone let
-    // that value through and rendered
-    //   `<span data-testid="outpost-export-backlog"> of this domain's own journal entries…</span>`
-    // — an EMPTY number inside confident copy, reading as "nothing pending".
+    // That count is nullable and optional, so undefined counts. See docs/web.md §416.
     const exported = basePeer({
       lastExportedThroughSequence: 42,
       lastExportedAt: "2026-07-29T10:00:00.000Z",
@@ -526,13 +445,7 @@ describe("outposts overview: no string claims the outpost has anything", () => {
   });
 
   it("an ABSENT (not null) exported sequence is 'no export recorded', never 'through # on never'", () => {
-    // THE GUARD THAT ORIGINATED THIS WHOLE CLASS, LEFT HALF-PINNED. `lastExportedThroughSequence` is
-    // `.nullable().OPTIONAL()`, but no test ever gave it `undefined` — only `null` and `42` — so
-    // reverting `isAbsent(...)` to `=== null` kept the suite green while the mutant rendered
-    //   `<div data-export-state="exported-handoff-unknown">exported through # on never</div>`
-    // — the exact fabrication the guard exists to prevent, and worse than the null case because it
-    // asserts an export event with no sequence and no date. Its sibling `pendingExportEntryCount`
-    // was pinned for BOTH absent forms; this is the other half.
+    // THE GUARD THAT ORIGINATED THIS WHOLE CLASS, LEFT HALF-PINNED. See docs/web.md §417.
     const absentSequence = basePeer({ unknownFields: [] });
     delete (absentSequence as { lastExportedThroughSequence?: number | null })
       .lastExportedThroughSequence;
@@ -564,11 +477,7 @@ describe("outposts overview: no string claims the outpost has anything", () => {
       />
     );
     expect(html).toContain("backlog unknown");
-    // THE REASON ITSELF, scoped to the marker's own tooltip and matched LOOSELY. The previous form
-    // (`not.toMatch(/Nothing has been exported to this peer yet/)`) pinned one exact sentence, so
-    // restoring the untrue explanation in any other wording — "Nothing has been exported yet, so
-    // there is no pending-export backlog." — left the suite green. This PR's own thesis is that the
-    // COPY IS THE GUARANTEE, so the copy is what is asserted.
+    // The reason itself, scoped to its tooltip and matched loosely. See docs/web.md §418.
     const marker = elementByTestId(html, "outpost-unknown");
     const title = /title="([^"]*)"/.exec(marker)?.[1] ?? "";
     expect(title, "the marker explains itself").not.toBe("");
@@ -581,18 +490,7 @@ describe("outposts overview: no string claims the outpost has anything", () => {
   });
 
   it("a row survives a response that omits recentTransfers — an unknown, never a white screen", () => {
-    // FAIL LOUD BEATS FAIL DISHONEST, BUT A WHITE SCREEN IS NEITHER. `recentTransfers` is
-    // required-not-optional and BEFORE ADR-0023 the SDK validated no response, so a server that
-    // omitted it made `transfers.length` throw a TypeError that took down the ENTIRE table — every
-    // honest unknown on every other row with it, which is strictly worse than the fabrication these
-    // tests forbid.
-    //
-    // WHAT THIS CASE PINS NOW. It renders the ROW directly, so it pins the row's OWN guard and
-    // nothing else — which is still the right level for it: the SDK boundary is one source of a
-    // `FederationPeerStatus`, not the only one, and reverting the `?? []` must stay red. What it
-    // deliberately does NOT claim is anything about the page: since ADR-0023 this body never reaches
-    // the row through `client.federation.status()` (it rejects), and what `/outposts` does with that
-    // rejection is pinned end-to-end, against the real SDK, in `outposts-crash.test.tsx`.
+    // FAIL LOUD BEATS FAIL DISHONEST, BUT A WHITE SCREEN IS NEITHER. See docs/web.md §419.
     const noTransfers = basePeer();
     delete (noTransfers as { recentTransfers?: unknown }).recentTransfers;
 
@@ -653,15 +551,7 @@ describe("outposts overview: the declaration predicate and the peer filter", () 
   });
 });
 
-/**
- * THIS DOMAIN as an outpost — ADR-0026 §9.2 / owner decision D3.
- *
- * The trap this section owns is the mirror of the peer traps above. This domain has NO
- * `federation_peers` row and NO `outpost` object (ADR-0022 splits those two authorities and self
- * holds neither), so every sync-shaped field is unsourceable for it. Rendering it as a table row
- * would mean blanking seven columns — and a blank is exactly what this file exists to forbid. The
- * panel therefore must not print those fields at all, and must not read as a paired peer.
- */
+/** THIS DOMAIN as an outpost. See docs/web.md §420. */
 const SELF = {
   domainId: "11111111-2222-4333-8444-555555555555",
   name: "commercial",
@@ -719,18 +609,7 @@ describe("the self-domain panel", () => {
   });
 });
 
-/**
- * drizzle/0087 — THE BYTE-RELAY TAG, and the honesty pin that keeps it a READ, never an INFERENCE.
- *
- * `channel` is the one place a retrans byte-relay hop is distinguished from an ordinary metadata
- * `.scpbundle` handoff (`BundleTransferSchema`'s doc). The forbidden shortcut is deriving it from
- * anything else already on the row — `checksum === null` or the peer's role both correlate with
- * `channel: 'bytes'` in today's fixtures without being it, and a UI that keyed on either would keep
- * "working" right up until a metadata row with a null checksum (a pre-M16.1 row) got mislabelled a
- * byte relay. So three states, three renderings, and the ABSENT case is the one that actually pins
- * the rule: it must render nothing, and it is the case a `checksum`- or role-based shortcut can't
- * tell apart from `'bytes'` without also being told the channel.
- */
+/** The byte-relay tag, and the pin that keeps it a read. See docs/web.md §421. */
 function transferFixture(overrides: Partial<BundleTransfer> = {}): BundleTransfer {
   return {
     id: "6b6c1a9e-2f3d-4a5b-8c9d-0e1f2a3b4c5d",

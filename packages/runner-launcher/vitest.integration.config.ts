@@ -1,14 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-/**
- * Docker-requiring integration layer (M23.1 phase 4). Mirrors
- * `apps/server/vitest.integration.config.ts`'s and `@scp/plugin-managed-iac`'s
- * `vitest.integration.config.ts` shape but has no Postgres/globalSetup dependency — this suite's
- * only external dependency is a reachable Docker daemon (`DOCKER_HOST`, colima locally / native
- * Docker in CI — see `reaper.integration.test.ts`'s own module doc). `singleFork` because the
- * suite creates and removes real containers by a small, deliberately colliding set of names/labels
- * — parallel workers racing each other's fixtures would be indistinguishable from a real reap bug.
- */
+/** Docker-requiring integration layer. See docs/runner-launcher.md §433. */
 export default defineConfig({
   test: {
     include: ["src/**/*.integration.test.ts"],

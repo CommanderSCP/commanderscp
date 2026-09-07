@@ -2,27 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { readTargetLiveness } from "./target-liveness.js";
 
-/**
- * THE FAIL DIRECTION, pinned on its own because it is the half that fails SILENTLY.
- *
- * "A deleted target must not be driven" is easy to get right and loud when it is wrong — the
- * integration suite catches it. Its twin is neither: **a transient read failure must not look like a
- * deletion.** Get that backwards and a thirty-second database blip terminalizes every wave target in
- * flight across the fleet, parks every change behind an unresolvable block Decision, and — because a
- * tombstone is never undone — leaves an operator with no remedy but to cancel and re-propose all of
- * them. That is a far worse outage than the one this feature prevents, and nothing about it would
- * look like a bug: every Decision would say, confidently and falsely, "its target was deleted".
- *
- * The property that prevents it is small and easy to erase: {@link readTargetLiveness} has NO
- * try/catch and no "unknown" verdict, so a query fault PROPAGATES. The obvious "simplification" —
- * folding it into a `Promise<boolean>` that catches its own errors, or adding a defensive
- * `.catch(() => ({ live: false }))` at a call site — is exactly the mutation this file exists to
- * fail on.
- *
- * A unit test rather than an integration one, deliberately: the fault being modelled is the
- * DATABASE ITSELF failing, and there is no way to ask a healthy Testcontainers Postgres to do that
- * for one query and not the next.
- */
+/** The fail direction, pinned alone because it is silent. See docs/coordination.md §981. */
 
 /** The minimum of drizzle's builder chain `readTargetLiveness` actually walks:
  *  `select().from().where().limit()`. `resolve` supplies whatever that chain settles to. */

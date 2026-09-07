@@ -1,19 +1,4 @@
-/**
- * M14.4 (S7) — process-local counters for the INBOUND poke path, so the split-topology hole is
- * DETECTABLE rather than a silent one-line log.
- *
- * THE HOLE: a poke is honored by whatever process serves the HTTPS request. If that process is a
- * pure `role=api` replica (or one where the sync/inbox loops are disabled), there is no job queue to
- * enqueue the wake on — the poke returns `202 {accepted:true, woken:false}` and NOTHING pulls. That
- * is by design ("accepted-but-no-op"; the sparse safety-net is the reliability floor), but a
- * deployment where it happens on EVERY poke has effectively lost poke-mode while every dashboard
- * still says the endpoint is healthy. A counter plus a WARN makes "my pokes are accepted and do
- * nothing" visible without inventing a metrics backend (charter principle 4 — no new dependency).
- *
- * Deliberately in-process and unexported to any scrape endpoint: the values ride the structured warn
- * log (`notWoken` is included on every warn) and are readable by tests. If/when an instance-level
- * metrics surface lands, this is the single place to hang it off.
- */
+/** Process-local counters for the inbound poke path. See docs/federation.md §372. */
 export interface PokeWakeStats {
   /** Pokes that passed every gate (mTLS identity, consent, rate limit) and were acted on. */
   accepted: number;
@@ -52,9 +37,4 @@ export function pokeWakeStats(): PokeWakeStats {
   return { ...stats };
 }
 
-// A `resetPokeWakeStats()` "test seam" stood here with ZERO callers, including tests. Removed as
-// part of the census that fixed the id-keyed property-schema validator cache: an exported
-// reset/invalidate function with no caller is the exact tell that let that bug survive a green
-// suite for its whole life, because it reads as a guard that exists. These counters need no reset
-// — they are monotonic and nothing derives a verdict from them — so the honest state is no seam.
-// Should a test ever need one, add it back WITH the caller in the same commit.
+// A test seam stood here with zero callers, and was removed. See docs/federation.md §373.

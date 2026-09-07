@@ -6,14 +6,7 @@ import type {
   PluginManifest
 } from "@scp/plugin-api";
 
-/**
- * `@scp/plugin-webhook-notify` — the generic `NotificationPlugin` escape hatch (M7,
- * BUILD_AND_TEST.md §8 M7 item 4), the notification-side sibling of `@scp/plugin-webhook-control`
- * (M4's generic `ControlPlugin` escape hatch — same shape, same reasoning): POST the message to a
- * configured URL, treat any non-2xx or a timeout as a failed delivery, never throw for a
- * downstream failure (a bad webhook target must never crash the caller — the watchdog sweep and
- * governance gate-block seams that call `send()` treat notification delivery as best-effort).
- */
+/** The generic notification escape hatch. See docs/plugins.md §556. */
 
 export interface WebhookNotifyConfig {
   url: string;

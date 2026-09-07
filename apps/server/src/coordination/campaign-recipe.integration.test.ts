@@ -22,34 +22,7 @@ import {
   WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS
 } from "./campaign-recipe.js";
 
-/**
- * M25.4 — THE CAMPAIGN RECIPE AT THE ACTUATOR, end to end against real Postgres (ADR-0041).
- *
- * The guarantee under test: *what the author wrote reaches the tenant's own executor verbatim, or
- * nothing reaches it at all and an operator is told why.* There is no third outcome, and the
- * absence of a third outcome is the entire increment.
- *
- * WHY EVERY ASSERTION IS AGAINST THE RECORDED `TriggerIntent` AND NOT AGAINST A STATUS COLUMN.
- * `github` and `gitea` resolve `intent.parameters?.workflowId ?? config.defaultWorkflowId`. So a
- * recipe that is silently dropped does not error — it dispatches the target's ORDINARY workflow,
- * that run succeeds, the wave target goes `succeeded`, and the campaign reports a migration that
- * never happened. A test asserting "the target succeeded" would pass against exactly that bug. The
- * only assertion that distinguishes the two is what the executor was actually handed, so
- * `withRecordedIntents` keeps the WHOLE intent (the existing `FiredTriggerCall` wrapper keeps only
- * `targetRef`/`idempotencyKey`, which cannot see `kind` or `parameters` at all).
- *
- * DRIVES `reconcileOrgTick` DIRECTLY, no pg-boss loop — `withPluginHost`, never
- * `withReconcileLoop`. A live loop is a COMPETING CONSUMER of the very rows these cases read back
- * (`SKIP LOCKED` makes an inline call a silent no-op), and "N ticks" must mean exactly N for the
- * zero-trigger assertions to be real rather than racy.
- *
- * A FRESH ORG PER CASE, for the reason `freeze-admission.integration.test.ts` measured:
- * `advanceExecutingChanges` serves `ORDER BY reconcile_cursor_at ASC LIMIT 25`, and every refusal
- * case here deliberately leaves a TERMINAL target behind, so on a shared org "tick(2)" would decay
- * from "two evaluations of my change" into "two sweeps in which my change may have had a turn".
- *
- * NO FIXED SLEEPS. Every wait is a tick count, which is a positive signal the engine writes.
- */
+/** The campaign recipe at the actuator, end to end. See docs/coordination.md §146. */
 
 /** The motivating campaign: python2 -> python3 across an estate. `github`-shaped keys, and they
  *  cross to the executor UNTRANSLATED — see the no-translation case. */
@@ -171,16 +144,7 @@ describe("campaign recipes: verbatim to the executor, or refused with a decision
     expect(await waveTargetStatus(change.id, app.id)).not.toMatch(/^recipe_/);
   });
 
-  /**
-   * NO CROSS-PROVIDER TRANSLATION (ADR-0041 §6), asserted as the absence of a rewrite.
-   *
-   * A bag carrying BOTH `github` vocabulary (`inputs`) and `gitlab` vocabulary (`variables`) plus a
-   * key no adapter models at all must arrive with all three intact and nothing renamed, added or
-   * dropped. `inputs` and `variables` are not the same thing — GitHub validates inputs against the
-   * workflow's declared `workflow_dispatch.inputs`, GitLab variables are free-form CI variables —
-   * so any mapping between them is a guess about semantics, and a wrong guess does not fail: it
-   * triggers the wrong automation in the tenant's own repository.
-   */
+  /** NO CROSS-PROVIDER TRANSLATION. See docs/coordination.md §147. */
   it("performs NO cross-provider translation — foreign and unknown keys arrive untouched", async () => {
     const mixed = {
       version: 1,
@@ -213,15 +177,7 @@ describe("campaign recipes: verbatim to the executor, or refused with a decision
     ]);
   });
 
-  /**
-   * B — A RECIPE-LESS CHANGE IS BYTE-IDENTICAL TO PRE-M25.4.
-   *
-   * `parameters` must be ABSENT, not `{}`. `pipeline-generic` passes the bag straight through to a
-   * tenant's own HTTP endpoint, so an empty object newly appearing on every trigger on the instance
-   * is a wire change, not a no-op. `toEqual(undefined)` would NOT catch this — an own property
-   * whose value is `undefined` passes that and still serializes differently — so the assertion is
-   * on key presence.
-   */
+  /** B — A RECIPE-LESS CHANGE IS BYTE-IDENTICAL TO PRE-M25.4. See docs/coordination.md §148. */
   it("leaves `parameters` ABSENT (not empty) and the kind `sync` when the change carries no recipe", async () => {
     const app = await component("plain");
     await release("plain", app.id);
@@ -311,22 +267,7 @@ describe("campaign recipes: verbatim to the executor, or refused with a decision
   });
 
   // E — OQ-5: A RECIPE MAY NOT DRIVE ONE OF COMMANDERSCP'S OWN ACTUATORS.
-  /**
-   * The hazard M25.4 CREATED and this refusal closes. `managed-dep` truthfully declares
-   * `triggerKinds: ["custom"]`, so the capability check above passes it — and reconcile would then
-   * hand author-controlled `parameters` to the actuator that writes commits into a tenant
-   * repository under a narrow charter grant. Before the `parameters` channel was wired, that path
-   * was inert: `managed-dep.trigger()` threw on its own missing-`action` check because nothing ever
-   * populated `parameters`. Wiring the channel is what made it live.
-   *
-   * OQ-5 is UNRULED, so the fail-closed default is a refusal.
-   *
-   * THE ENV VAR IS THE POINT, not a workaround: `resolveExecutorPluginInstance` throws unless
-   * `SCP_MANAGED_DEP_RUNNER_IMAGE` is set, and with it set this is exactly the supported
-   * "managed-dep binding an operator creates by hand" that `executor-bindings-repo.ts` documents.
-   * Without it the case would prove only that an unconfigured instance errors, which is a different
-   * fact.
-   */
+  /** The hazard M25.4 CREATED and this refusal closes. See docs/coordination.md §149. */
   it("REFUSES a recipe aimed at a managed actuator, even though that actuator declares the kind (OQ-5)", async () => {
     const previous = process.env.SCP_MANAGED_DEP_RUNNER_IMAGE;
     process.env.SCP_MANAGED_DEP_RUNNER_IMAGE = "scp-runner-dep:test";

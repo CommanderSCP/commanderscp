@@ -1,18 +1,4 @@
-/**
- * `@scp/plugin-argo-workflows` behavioral test suite — nock-fixtures every HTTP call so these tests
- * are deterministic and never touch the real network (CLAUDE.md: "Tests never touch the
- * internet").
- *
- * Every `PluginContext` here is built with a REAL `ScopedHttpClient`
- * (`./test-node-http-client.ts` — node:http/https, not `fetch`; see that file's doc comment for
- * why `fetch` doesn't work against `nock@13.5.x`, the version pinned in this package's
- * package.json). That means these tests exercise `index.ts`'s actual `apiRequest()` wire path —
- * method, URL, JSON body, `Authorization` header, JSON response parsing — not just its in-process
- * return values.
- *
- * `nock.disableNetConnect()` is on for the whole file so a request this suite forgot to fixture
- * fails loudly instead of hanging on a real DNS lookup.
- */
+/** `@scp/plugin-argo-workflows` behavioral test suite. See docs/plugins.md §2. */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";

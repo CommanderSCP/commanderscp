@@ -10,12 +10,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * D6 / B3 boot canary (§7.3). The canary proves the configured master key decrypts the vault, per
- * org, inside `withTenantTx` (the RLS-vacuity fix — an unscoped read would pass on a vault it never
- * saw). These prove: the RIGHT key passes and actually decrypted something; the WRONG key fails
- * closed; and an org with no vault is not a false failure.
- */
+/** D6 / B3 boot canary. See docs/secrets.md §2. */
 describe("secrets decrypt canary (§7.3 / D6)", () => {
   let server: TestServer;
   let org: TestOrg;

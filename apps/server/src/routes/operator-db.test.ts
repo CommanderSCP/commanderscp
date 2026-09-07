@@ -3,26 +3,7 @@ import { loadConfig, type ServerConfig } from "../config.js";
 import { ProblemError } from "../errors.js";
 import { withOperatorDb } from "./operator-db.js";
 
-/**
- * ================================================================================================
- * THE OPERATOR WRITE DOORS' CREDENTIAL, AT THE UNIT LAYER
- * ================================================================================================
- * M22.9 R3. The defect this file guards was invisible to the integration suite BY CONSTRUCTION, so
- * a unit test is not belt-and-braces here — it is the only layer that can see it at all.
- *
- * `buildTestServer` passes `DATABASE_URL: testDatabaseUrl()`, the Testcontainers SUPERUSER. A
- * superuser bypasses table grants and RLS unconditionally, and it is reachable, so the integration
- * suite exercised the four operator PUTs over a connection no production pod has and a privilege
- * level no production role has. Both halves of the real failure — no `DATABASE_URL` in an api pod,
- * and no write grant/policy for anyone but a superuser — were outside what those tests could
- * observe. They still are; that is why the derivation is asserted here instead.
- *
- * WHAT IS *NOT* COVERED HERE, deliberately. The success path (connect, write, read back) needs a
- * real Postgres and belongs to the integration layer, which already runs it. What cannot be
- * asserted at either layer today is that `scp_operator` ITSELF can write — the integration suite
- * connects as the superuser, so drizzle/0076's grants and write RLS policies are exercised by no
- * automated test in this tree. Named rather than implied; see this change's report.
- */
+/** THE OPERATOR WRITE DOORS' CREDENTIAL, AT THE UNIT LAYER M22.9 R3. See docs/routes.md §282. */
 
 /** `loadConfig` reads only the env object handed to it, so each case is a complete deployment
  *  shape rather than a mutation of `process.env`. */
@@ -99,11 +80,7 @@ describe("withOperatorDb fails closed", () => {
   });
 
   it("turns an unopenable connection into a 503 carrying the remedy, not a 500", async () => {
-    // Loopback port 1: nothing listens, ECONNREFUSED arrives immediately, no network leaves the
-    // machine (CLAUDE.md: tests never touch the internet). This is the shape an operator hits when
-    // the URL is wrong OR when `scp_operator` is still NOLOGIN — drizzle/0076 fixes the role's
-    // privilege shape and deliberately leaves LOGIN + password to out-of-band provisioning, so
-    // "role exists but cannot authenticate" is a state real deployments pass through.
+    // Loopback port 1. See docs/routes.md §283.
     const config = configFor({
       SCP_SKIP_MIGRATIONS: "true",
       SCP_OPERATOR_DATABASE_URL: "postgres://scp_operator:opw@127.0.0.1:1/scp"

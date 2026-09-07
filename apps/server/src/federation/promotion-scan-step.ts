@@ -69,83 +69,14 @@ import {
   parseRegistryHostList
 } from "./artifact-verify.js";
 
-/**
- * THE COMMANDER-SIDE PROMOTION SCAN STEP (ADR-0020 §1, proposal §13.3, charter's Managed Execution
- * Exception 2026-07-23 amendment) — the crux of first-class commander scanning.
- *
- * This is a step of the COMMANDER's promotion/export journey, NOT a tenant executor binding. For a
- * change being exported it deposits, for EACH substantive artifact (the E6 `substantiveArtifacts`
- * set — everything except `type: "blob"`), a digest-bound `control_runs` scan outcome, so that the
- * UNCHANGED E6 gate (`evaluatePromotionScanGate`, promotion-repo.ts) then reads those rows and
- * PASSES for a clean artifact / REFUSES for a dirty-or-unscanned one. This module writes evidence;
- * it does not touch the gate.
- *
- * PER ARTIFACT (proposal §13.3):
- *   (a) SHORT-CIRCUIT — if a covering org-pipeline (or prior managed) `control_runs` scan outcome
- *       already covers this digest, SKIP the managed run: org evidence wins, the D1 alternate
- *       ingress, and the runner is never invoked. "Covering" is not enumerated here on purpose —
- *       this list used to spell it as "status `pass` + `ScanEvidenceSchema` valid + `digestMatch` +
- *       `artifactDigest` match, the exact E6 predicate", which stopped being the whole rule the
- *       moment E6 grew producer admission, supersession, the instance floor and (M22.9) exclusion-set
- *       currency. It is ONE function, `evaluateScanCoverage` in `scan-evidence.ts`, and that module
- *       doc is where the rule is stated.
- *   (b) SCANNER SELECTION — `resolveScannersForType(the artifact's ExecutorType)` → methods. If
- *       EMPTY, NO managed evidence is produced (fail-closed: E6 will refuse — we never fabricate a
- *       pass for an unassigned type).
- *   (c) THE SERVER pulls the artifact's bytes BY DIGEST over the allowlisted skopeo channel
- *       (`SCP_ARTIFACT_OCI_REGISTRY_HOSTS`, ADR-0019 §4) into a scratch OCI layout — the runner
- *       itself gets NO network.
- *   (d) run the `scp-managed-scan` plugin per method (`--network none` ephemeral container).
- *   (e) evaluate the returned `severityCounts` against the resolved M17.5 threshold
- *       (`resolveEffectiveScanThreshold` — reused, not reimplemented) → status pass/fail.
- *   (f) DEPOSIT a `control_runs` row (`insertControlRun`) whose evidence is a valid `ScanEvidence`
- *       with `scanner = method`, `artifactDigest =` the pulled+normalized digest (which MUST equal
- *       the promoted digest for `digestMatch: true`), and the threshold provenance.
- *
- * FAIL-CLOSED throughout: an unassigned type, an unavailable dispatch/runner, an unresolvable pull
- * ref, or a scanner error all yield NO passing managed evidence — so E6 refuses (never a fabricated
- * pass). The one scan runs once at the commander before signing (ADR-0020 §4); downstream never
- * re-scans.
- */
+/** THE COMMANDER-SIDE PROMOTION SCAN STEP. See docs/federation.md §429. */
 
 const execFileAsync = promisify(execFile);
 
-/**
- * The synthetic, well-known object id tagging every `control_runs` row this step deposits — the
- * commander's SYSTEM managed-scan control identity.
- *
- * WHY a fixed synthetic id rather than a tenant-created `control` graph object: `control_runs`
- * `control_object_id` has NO foreign key to `objects` (db/schema.ts). So the managed promotion scan
- * step, which is a first-class step of the commander's own promotion process rather than a
- * tenant-bound control, tags its rows with this one stable, deployment-wide synthetic id. It is
- * org-agnostic (control_runs rows are org-scoped by `org_id`, so the same synthetic control id under
- * different orgs never collides) and resolves to a null URN in the export's control-outcome
- * projection (tolerated, promotion-repo.ts).
- *
- * IT IS NOW LOAD-BEARING, WHICH IT WAS NOT WHEN IT WAS WRITTEN. This comment used to say the id's
- * "purpose is to mark provenance, not to be a graph object", and that E6 "identifies a scan outcome
- * PURELY by `ScanEvidenceSchema.safeParse(evidence)` — never by which control produced it". The
- * second half was an accurate description of a defect: shape-identification let any control that
- * could emit a ScanEvidence-shaped bag authorize a cross-boundary crossing. E6 now identifies an
- * outcome by its PRODUCER, and THIS ID is half of that test (`scan-evidence.ts`
- * `isScanEvidenceProducer`) — so the id is part of an authorization rule, and changing it changes
- * what the boundary accepts. Defined in `scan-evidence.ts` and re-exported here so every existing
- * import keeps resolving; the admission rule must not import the module whose behaviour it governs.
- */
+/** The well-known object id tagging every row this step writes. See docs/federation.md §430. */
 export { MANAGED_SCAN_CONTROL_OBJECT_ID };
 
-/**
- * The `ScanMethod`s the `scp-runner-scan` image can actually run — the server-side twin of the
- * runner shim's `case "$METHOD"` arms and the plugin's `SUPPORTED_SCAN_METHODS`. A registry row
- * naming a method outside this set produces NO evidence (fail-closed at E6) rather than launching a
- * container that would exit 2. Typed over `ScanMethod`, so a value that is not a real method is a
- * compile error rather than a silent, permanent runtime refusal.
- *
- * Exported so `promotion-scan-step.test.ts` can pin the containment that actually matters: every
- * method the server DISPATCHES must be one the plugin will RUN (`SUPPORTED_SCAN_METHODS`). The
- * plugin holds its own copy because it does not depend on `@scp/schemas`; this is the seam where
- * the two are proven to agree.
- */
+/** The scan methods the runner image can actually run. See docs/federation.md §431. */
 export const RUNNER_SUPPORTED_METHODS: ReadonlySet<ScanMethod> = new Set<ScanMethod>([
   "trivy",
   "trivy-vm",
@@ -174,17 +105,7 @@ export interface ManagedScanReport {
   scannedDigest: string;
   scannerVersion: string;
   severityCounts: ScanSeverityCounts;
-  /**
-   * M22.1b (ADR-0033 §7) — the per-finding detail the counts were derived from, retained so it can
-   * be PERSISTED (`scan_findings`). Every rule in ADR-0033 is a rule about a finding, and until this
-   * field existed a verdict reaching the server was four integers.
-   *
-   * ABSENT when the runner produced no per-finding material — which is the ordinary case for
-   * OpenSCAP, whose XCCDF rule-results have no package, no purl, no `FixedVersion` and no `Class`.
-   * Absence is NOT what refuses an OpenSCAP finding set, though: `persistScanFindings` refuses on
-   * the METHOD, before it looks at this field, so a runner that one day handed findings alongside
-   * `openscap` still records `unsupported` rather than quietly gaining an exclusion surface.
-   */
+  /** The per-finding detail the counts were derived from. See docs/federation.md §432. */
   findings?: readonly ScanFinding[];
   /** M13.3b-ii — the scanner DB this verdict was produced against (trivy only; OpenSCAP uses baked
    *  SSG). Surfaced into the ScanEvidence so a Decision can explain the DB's provenance + freshness.
@@ -207,16 +128,7 @@ export interface ManagedScanRunner {
 
 // --- The E6 short-circuit predicate (THE SAME CODE as promotion-repo.ts's gate check) ------------
 
-/**
- * True iff `digest` is already covered by an outcome E6 WILL ACCEPT — so a short-circuit here can
- * never suppress the scan that the gate then demands.
- *
- * This used to be a hand-maintained copy of the gate's predicate, documented as "the EXACT predicate
- * E6 applies". It now CALLS the gate's predicate. Two copies of an authorization rule that must
- * agree, kept in step by a comment, is the shape this repo's census rule exists to catch; and here
- * the two copies had to agree for a safety reason, not a tidiness one — a short-circuit looser than
- * the gate skips the managed scan and then refuses the export for having no scan.
- */
+/** True when the digest already carries an acceptable outcome. See docs/federation.md §433. */
 function isCoveringScanOutcome(
   runs: readonly ControlRunRow[],
   digest: string,
@@ -241,21 +153,7 @@ interface ScanSubject {
   oscapDatastream: string;
 }
 
-// --- OpenSCAP profile/datastream resolution (M13.3b) ---------------------------------------------
-//
-// OpenSCAP needs TWO selectors trivy does not: which SSG datastream (which OS baseline content) and
-// which XCCDF profile within it. Both are baked into the runner image at `/usr/share/xml/scap/ssg/
-// content/`. Resolution precedence, most-authoritative first:
-//   1. OPERATOR env override (SCP_MANAGED_SCAN_OPENSCAP_PROFILE / _DATASTREAM) — deployment-wide lock.
-//   2. The artifact's own hint on the change `sourceRef` (`scanProfile` / `scanDatastream`) — the
-//      per-artifact OS baseline; inherently artifact-specific (a debian image needs ssg-debian, an
-//      OL image needs ssg-ol8). This only selects WHICH compliance baseline is asserted; it CANNOT
-//      weaken the gate — the high/critical THRESHOLD that authorizes/refuses is operator-governed
-//      (resolveEffectiveScanThreshold) and applied to the counts regardless of profile, and a
-//      nonexistent datastream fails the run CLOSED (run.sh exits non-zero → no passing evidence).
-//   3. Built-in default (the SSG `standard` profile against the fedora datastream).
-// (Registry-carried per-method profiles are a documented additive follow-on — the `scanner_assignments`
-// row could grow a `profiles` map; the default+override path here is the bounded 13.3b-part-1 shape.)
+// --- OpenSCAP profile/datastream resolution. See docs/federation.md §434.
 
 const DEFAULT_OSCAP_PROFILE = "xccdf_org.ssgproject.content_profile_standard";
 const DEFAULT_OSCAP_DATASTREAM = "/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml";
@@ -307,15 +205,7 @@ function resolvePullRef(sourceRef: Record<string, unknown>, digest: string): str
   return `${repoBase}@${digest}`;
 }
 
-/** The artifact's ExecutorType for scanner selection — the change's routing Type when valid, else
- *  `image` for an OCI subject (the M13 image-only scope, proposal §13.3 D2).
- *
- *  Within that scope MACHINE IMAGES ride `infrastructure` (owner decision D2), which is why the
- *  seeded registry assigns `infrastructure -> ["trivy-vm"]` (drizzle/0048). `infrastructure` is a
- *  COARSE routing key that also covers IaC-config artifacts, and those are simply out of M13's
- *  image-only scan scope: a Terraform-plan artifact routed here yields a runner failure, therefore
- *  no evidence, therefore an E6 refusal — fail-closed, and identical to the behaviour before this
- *  arm existed (a `trivy image` run on the same subject failed the same way). */
+/** The artifact's ExecutorType for scanner selection. See docs/federation.md §435. */
 function executorTypeOf(change: { properties: Record<string, unknown> }): string {
   const parsed = ExecutorTypeSchema.safeParse(change.properties.type);
   return parsed.success ? parsed.data : "image";
@@ -372,56 +262,7 @@ interface DepositRow {
   excludedOrdinals: number[];
 }
 
-/**
- * THE EXCLUSION SET IN FORCE FOR A CHANGE — one resolution, because the export path now has TWO
- * consumers of the answer and a difference between them is indistinguishable from a withdrawn
- * waiver.
- *
- * The step below resolves the set to APPLY it (exclude-before-counting, phase B) and stamps
- * `scanExclusionSetHash` onto every verdict it deposits. `promotion-repo.ts`'s E6 gate resolves it to
- * CHECK that a cached verdict was judged under it (M22.9). If the two assembled their inputs
- * separately — a target list read differently, a firing set resolved from a different CEL pass, a
- * different actor — the two hashes would differ for a reason nobody authored, and EVERY export of a
- * change carrying an exclusion would refuse `stale_exclusion_set` forever. That is the failure this
- * function exists to make unreachable; the alternative considered was a second copy of these
- * ~20 lines in `promotion-repo.ts`, kept in step by a comment.
- *
- * `matches`/`fired` come back with the answer because the CEILING dimension resolves off the SAME
- * firing set (below) — re-running the CEL evaluation to obtain it a second time would be both a
- * wasted worker round-trip and a second chance for the two dimensions to disagree.
- *
- * ===================================================================================
- * M22.2 — THE FIRING SET, FOR REAL. This used to be `firedPolicies: []`.
- *
- * An empty firing set admits the instance-level floors (platform/trust_domain, always read) plus the
- * fail-closed default, and NOTHING authored at org, containment domain, service, assembly or
- * component. That was a documented follow-on and it was defensible while the only dimension was a
- * TIGHTENING — the 0/0 default already refuses any Critical or High, so a missing scoped ceiling
- * could only ever make this step stricter than the gate.
- *
- * It stops being defensible the moment a LOOSENING exists. An exclusion resolved by the lifecycle
- * gate would be invisible here, so the commander's own managed scan would count findings the gate had
- * agreed not to count — the two paths disagreeing about the same artifact at exactly the boundary
- * where evidence is FROZEN into a signed bundle and the E6 export gate reads it. So both dimensions
- * resolve off the SAME firing set the gate would compute.
- *
- * THIS IS A BEHAVIOUR CHANGE FOR THE CEILING TOO, and in both directions — stated rather than buried.
- * A scoped policy that sets `maxHigh: 5` now applies here, where before this step used the 0/0
- * default; a scoped policy that sets `maxHigh: 0` now applies where before nothing did. Convergence
- * with the lifecycle gate is the point: two verdicts about one artifact must not be produced under
- * two different rules.
- *
- * The sandbox is a THUNK. `new CelSandbox()` spawns its worker pool in the constructor, and
- * `resolveFiredPolicies` calls `evaluate` only for a contributor that actually carries a `condition`
- * — so an org whose policies have no conditions spins up no worker threads.
- * ===================================================================================
- *
- * RESOLVED AS THE ACTOR WHO IS CROSSING THE BOUNDARY, which is a real and accepted limitation: an
- * exclusion policy scoped to an ACTING GROUP resolves differently for the exporter than it did for
- * the engineer whose gate run stamped the evidence, and the difference reads here as a moved set.
- * The consequence is a refusal (or a re-scan), never a crossing — the direction a boundary check is
- * allowed to be wrong in.
- */
+/** THE EXCLUSION SET IN FORCE FOR A CHANGE. See docs/federation.md §436. */
 export async function resolveScanExclusionsForChange(
   tx: TenantTx,
   input: {
@@ -475,30 +316,14 @@ export async function resolveScanExclusionsForChange(
   };
 }
 
-/**
- * A `runner.scan()` call that itself never produced a report — dispatch unavailable, an
- * unresolvable pull ref, a launcher failure, anything `ManagedScanResult`'s `{ ok: false }` arm
- * carries. Distinct from a `DepositRow` with `status: "fail"`: THAT is a real scan verdict (a
- * digest mismatch or a threshold breach) and IS deposited as `control_runs` evidence. This is the
- * opposite — no scan happened at all — and depositing it as scan EVIDENCE would misrepresent "we
- * scanned and it failed" as "we could not scan", which `ScanEvidenceSchema`'s required
- * `severityCounts` cannot even express honestly. Recorded as an AUDIT EVENT instead (charter
- * principle 6), so the operator refused by E6's "no passing digest-bound evidence" can see WHY:
- * a runner/dispatch error, not a scan that ran and found problems.
- */
+/** A `runner.scan()` call that itself never produced a report. See docs/federation.md §437. */
 interface RunnerFailure {
   method: ScanMethod;
   digest: string;
   reason: string;
 }
 
-/**
- * Run the commander's promotion scan step for `changeIdOrUrn`, depositing managed-scan `control_runs`
- * rows so the UNCHANGED E6 gate (read next by `exportPromotionBundle`) has evidence to consume. A
- * no-op for a metadata-only promotion (no substantive artifacts) or an artifact already covered by
- * org-pipeline evidence. Never fabricates a pass: an unassigned type, an unavailable runner, or an
- * unresolvable pull ref simply deposit no passing evidence and E6 then refuses.
- */
+/** Runs the commander's promotion scan step for one change. See docs/federation.md §438. */
 export async function runPromotionScanStep(
   db: Db,
   input: RunPromotionScanStepInput,
@@ -542,12 +367,7 @@ export async function runPromotionScanStep(
 
     const planned: PlannedScan[] = [];
     for (const digest of digests) {
-      // (a) SHORT-CIRCUIT — CURRENT org-pipeline (or prior managed) passing digest-bound evidence
-      // wins. "Current" is the word that changed: a superseded pass no longer suppresses the scan,
-      // and (M22.9) neither does one judged under an exclusion set that has since moved — which is
-      // why the hash is resolved ABOVE this loop rather than at the deposit below. Computed after
-      // the short-circuit it could only ever stamp what this pass believed, never re-open a pass an
-      // expired grant had paid for.
+      // (a) SHORT-CIRCUIT — CURRENT org-pipeline. See docs/federation.md §439.
       if (isCoveringScanOutcome(existingRuns, digest, instanceFloor, exclusionSetHash)) continue;
       // (b) scanner selection — an unassigned type yields no methods ⇒ no managed evidence.
       if (methods.length === 0) continue;
@@ -589,12 +409,7 @@ export async function runPromotionScanStep(
           : {})
       });
       if (!result.ok) {
-        // Runner/dispatch unavailable, or an unresolvable pull ref — produce NO passing evidence
-        // (fail-closed). We deposit no CONTROL_RUN: E6 then refuses this artifact for lack of a
-        // passing, digest-bound outcome. Fabricating a pass here is exactly what the model
-        // forbids. `result.reason` is NOT discarded, though — recorded below as an audit event, so
-        // the refusal is diagnosable (a runner error, not a scan verdict) rather than a bare "no
-        // evidence" an operator cannot act on.
+        // Runner/dispatch unavailable, or an unresolvable pull ref. See docs/federation.md §440.
         runnerFailures.push({ method, digest: subject.digest, reason: result.reason });
         continue;
       }
@@ -605,22 +420,11 @@ export async function runPromotionScanStep(
       // conditions against `evidence.severityCounts.*`).
       const severityCounts = ScanSeverityCountsSchema.parse(report.severityCounts);
 
-      // M22.1b — cap the set that will be persisted, and let ONE pure function decide the marker
-      // that goes on the evidence here and the rows that go into `scan_findings` in phase C. The
-      // marker cannot be produced by the writer, because it must be on the `control_runs` row at
-      // INSERT time while the rows need that row's id; deriving both from `scanFindingsRecordFor`
-      // is what keeps "evidence says full, the table says otherwise" unreachable.
+      // Caps the set to persist, one function deciding the marker. See docs/federation.md §441.
       const capped = report.findings ? capScanFindings(report.findings) : undefined;
       const findingsRecord = scanFindingsRecordFor(method, capped);
 
-      // M22.2 — EXCLUDE BEFORE COUNTING (ADR-0033 §2), through the SAME pure function the
-      // `scan-result-control` plugin uses, so the two verdict producers cannot diverge about what a
-      // clause means.
-      //
-      // `findingsRecord` gates it, and this is where the OpenSCAP guarantee actually lands: an
-      // `openscap` verdict carries `unsupported`, so every exclusion is refused BECAUSE OF WHAT
-      // SCANNED — recorded positively in evidence — never because the finding array happened to be
-      // empty. ADR-0033's consequences list requires exactly that distinction be explicit.
+      // M22.2 — EXCLUDE BEFORE COUNTING. See docs/federation.md §442.
       const applied = applyScanExclusions(capped?.findings ?? [], plan.exclusions, findingsRecord);
       const effectiveCounts = effectiveSeverityCountsAfterExclusions(
         severityCounts,
@@ -644,15 +448,7 @@ export async function runPromotionScanStep(
         ...(applied.evidence
           ? { effectiveSeverityCounts: effectiveCounts, exclusions: applied.evidence }
           : {}),
-        // M22.7 — the SAME stamp `control-runner.ts` puts on a plugin-produced verdict, from the same
-        // pure function, so the two verdict producers describe an exclusion set identically.
-        //
-        // THIS COMMENT USED TO SAY "NO ACTUATOR READS IT HERE YET" — true when written, false since
-        // M22.9. Both readers now exist and both are on the export path: this step's short-circuit
-        // (`isCoveringScanOutcome`) and the E6 export gate (`promotion-repo.ts`), which is what makes
-        // ADR-0033's "an override's expiry is not trustworthy at that boundary until it lands" land.
-        // Recording the hash from M22.7 is why that fix was a comparison rather than a re-scan of
-        // history — every stamped run was already describable.
+        // The same stamp a plugin-produced verdict gets. See docs/federation.md §443.
         ...(exclusionSetHash ? { exclusionSetHash } : {}),
         threshold,
         thresholdSource: source,
@@ -724,11 +520,7 @@ export async function runPromotionScanStep(
         // honest answer and is what keeps a caller asking "what kind of evidence is this?" able to
         // tell a commander scan deposit apart from a bound plugin's verdict.
       });
-      // M22.1b (ADR-0033 §7) — project the findings the counts were derived from, in the SAME
-      // transaction as the verdict they explain. `persistScanFindings` refuses on the METHOD for a
-      // scanner family that cannot carry findings, so this call is made unconditionally: an
-      // `openscap` deposit reaching it records `unsupported` rather than being skipped here, which
-      // is the difference between a stated refusal and a silent absence.
+      // Projects the findings, in the same transaction. See docs/federation.md §444.
       await persistScanFindings(tx, {
         orgId: input.orgId,
         controlRunId: run.id,
@@ -780,18 +572,7 @@ function insecureHosts(): Set<string> {
   );
 }
 
-/**
- * The default production `ManagedScanRunner`: the SERVER pulls the artifact BY DIGEST over the
- * allowlisted skopeo channel into a scratch OCI layout (the runner gets no network), asserts the
- * landed layout's digest equals the promoted digest, then runs the `scp-managed-scan` plugin
- * (`--network none`) and parses the Trivy result into distilled counts. Returns `{ok:false}` — never
- * throws into the export flow — when managed scanning is not enabled or the pull/scan cannot complete
- * (fail-closed).
- *
- * Credentialed source registries are a documented follow-on: this increment pulls anonymously
- * (sufficient for the image-only M13 scope and the local-registry integration test); the relay's
- * per-registry vault-credential machinery (retrans-relay.ts) is the model to wire in later.
- */
+/** The default production `ManagedScanRunner`. See docs/federation.md §445. */
 export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
   const plugin = createManagedScanExecutorPlugin();
   const settings = managedScanServerSettings();
@@ -815,17 +596,7 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
         };
       }
 
-      // M13.3b-ii — OFFLINE DB PRE-LOAD + STALENESS GATE (every TRIVY-FAMILY method — `trivy` and
-      // the 13.3a machine-image arm `trivy-vm` — via `usesTrivyDb`, never OpenSCAP, which evaluates
-      // the baked SSG content that has no OCI upstream to refresh: the documented asymmetry). The
-      // predicate is deliberately NOT a `method === "trivy"` comparison: a second Trivy-family
-      // method that skipped this branch would scan against an unclassified (possibly hard-stale) DB
-      // and still emit passing evidence. When a DB cache is
-      // configured, classify it against the operator's instance staleness policy BEFORE dispatch:
-      // missing/corrupt/hard-stale FAIL CLOSED (no scan → no evidence → E6 refuses); fresh/warn scan
-      // (a warn is surfaced in the evidence). The classified cache dir is `docker cp`'d into the
-      // runner (SCP_SCAN_DB_DIR). Unset cache ⇒ the runner uses the image-baked DB (fail-closed
-      // fallback), reported as source `baked` with no staleness gate.
+      // M13.3b-ii — OFFLINE DB PRE-LOAD + STALENESS GATE. See docs/federation.md §446.
       let scanDbDir: string | undefined;
       let scanDbInfo: ManagedScanReport["scanDb"];
       if (usesTrivyDb(req.method)) {
@@ -907,25 +678,12 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
         if (st.phase !== "succeeded") {
           return { ok: false, reason: `runner did not succeed: ${st.detail ?? "(no detail)"}` };
         }
-        // Method-select the parser: every TRIVY-FAMILY method (`trivy`, `trivy-vm`) emits Trivy's
-        // native result.json — a `trivy vm` run's document has the SAME Results[].Vulnerabilities[]
-        // shape, only a different subject model — while openscap emits arf.xml. BOTH distil to the
-        // four ScanSeverityCounts the unchanged M17.5/E6 machinery consumes. A malformed result
-        // throws (caught below) → {ok:false} → no passing evidence → E6 refuses (fail-closed).
+        // Method-select the parser. See docs/federation.md §447.
         const parsed =
           req.method === "openscap"
             ? await parseOscapResultFile(join(outDir, "arf.xml"))
             : await parseTrivyResultFile(join(outDir, "result.json"));
-        // THE DIGEST BINDING IS THE PULL, NOT THE SCANNER'S SELF-REPORT. We already content-addressed
-        // the subject above (`landed === req.digest`) and fed exactly that layout to the networkless
-        // runner, so the scanned artifact's MANIFEST digest is provably the promoted digest. Trivy's
-        // own identifier for an `--input` OCI-layout scan is `Metadata.ImageID` (the image CONFIG
-        // digest — a DIFFERENT sha256 than the manifest digest); a `trivy vm` result's `ArtifactName`
-        // is the in-runner DISK PATH and its `Metadata` carries no digest at all; and an oscap ARF
-        // carries no image digest either (it scanned an extracted rootfs). Trusting
-        // `parsed.scannedDigest` would therefore false-mismatch on every method. Bind to
-        // `req.digest` (the verified pull) for ALL methods;
-        // `parsed.scannedDigest` is retained only for the trivy malformed-result diagnostic path.
+        // The digest binding is the pull, not a self-report. See docs/federation.md §448.
         return {
           ok: true,
           report: {
@@ -947,36 +705,7 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
   };
 }
 
-/**
- * THE ONE IN-PROCESS CALLER OF A MANAGED EXECUTOR'S `trigger()`, and what makes that safe — MEDIUM
- * (verification pass 5). Every other managed run crosses the subprocess plugin host, whose
- * `resolveCallPolicy` budget expiry SIGKILLs the child; this one calls `plugin.trigger()` directly,
- * INSIDE THE SERVER PROCESS, so there is no host, no budget and no SIGKILL of any kind. The only
- * things bounding a commander-side promotion scan are the ones the launcher itself carries.
- *
- * TWO FACTS MAKE THAT ACCEPTABLE, AND BOTH WERE ACCIDENTS UNTIL THEY WERE WRITTEN DOWN HERE. Each
- * now has a NAMED test, because "it happens to be true today" is how the next edit breaks it:
- *
- *  1. NO TENANT `timeoutMs` REACHES THIS PATH. `config` below is built entirely from
- *     server-side operator settings — `runnerImage`, `networkMode` and `managedRunnerSettings()`'s
- *     `dockerBinary` — with no binding row anywhere in it, so `managed-scan` falls back to its own
- *     `DEFAULT_TIMEOUT_MS` (10 min) and the run is bounded by that. Even if a `timeoutMs` were added
- *     here it could not run away: `@scp/runner-launcher`'s `clampRunTimeoutMs` caps every run at
- *     `MANAGED_RUN_TIMEOUT_MAX_MS` inside `run()` itself. Pinned by "THE IN-PROCESS SCAN PATH
- *     CARRIES NO TENANT-SETTABLE BUDGET" in `promotion-scan-step.test.ts`.
- *  2. MANAGED-SCAN CARRIES NO CREDENTIAL. Its `RunnerSpec.secretEnv` is the literal `[]`, so no
- *     transient `--env-file` is ever written on this path and there is nothing for a killed process
- *     to leak — which matters here precisely because there is no SIGKILL story to reason about.
- *     Pinned by `@scp/plugin-managed-scan`'s `launcher-seam.test.ts`, whose whole-spec
- *     `toStrictEqual` includes `secretEnv: []`.
- *
- * A THIRD MANAGED PLUGIN CALLED FROM HERE WOULD INHERIT NEITHER. Route it through the plugin host
- * rather than adding a second in-process caller.
- *
- * EXPORTED FOR THE TEST ABOVE and for nothing else: fact 1 is a property of the object this builds,
- * and a test that re-derived the object instead of reading the one the product passes would be
- * asserting its own fixture.
- */
+/** The one in-process caller of a managed executor's trigger. See docs/federation.md §449. */
 export function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
   return {
     orgId: "commander",
@@ -1013,23 +742,14 @@ interface ParsedTrivy {
   scannerVersion: string;
 }
 
-/** Distil Trivy's native result JSON into the four ScanSeverityCounts + the digest it scanned +
- *  version. Total and defensive — a malformed/partial document degrades to zero counts (a broken
- *  scan then can't exceed a threshold on counts, but the RUNNER already failed the run for a broken
- *  scan, so this path only ever sees a real result). Mirrors scan-result-control's parsing across
- *  the plugin/server boundary (a plugin cannot import server code, and vice versa). */
+/** Distils the scanner's result JSON into counts and a digest. See docs/federation.md §450. */
 export function parseTrivyResult(raw: unknown, versionText?: string): ParsedTrivy {
   const doc = (raw ?? {}) as {
     Results?: unknown;
     Metadata?: { ImageID?: unknown; RepoDigests?: unknown };
     ArtifactName?: unknown;
   };
-  // M22.1 — the counting loop that used to live here read `.Severity` and threw the vulnerability
-  // object away, byte-for-byte mirroring `scan-result-control`'s `countSeverities` across the
-  // plugin/server boundary. Both now derive from ONE parse in `@scp/schemas`, because ADR-0033
-  // needs both to retain per-finding detail and two hand-synced loops is how one gets fixed and the
-  // other does not. Counts are numerically unchanged — `parseTrivyFindings` retains exactly the
-  // entries this loop counted.
+  // The counting loop that used to live here, and what it read. See docs/federation.md §451.
   const findings = parseTrivyFindings(doc);
   const counts = severityCountsFromFindings(findings);
   const candidates: string[] = [];
@@ -1068,39 +788,11 @@ async function parseTrivyResultFile(path: string): Promise<ParsedTrivy> {
   return parseTrivyResult(raw, versionText);
 }
 
-// --- OpenSCAP result parsing (server-side, M13.3b) -----------------------------------------------
-//
-// Distil an OpenSCAP XCCDF/ARF result into the four ScanSeverityCounts by counting FAILED rule
-// results by their XCCDF severity. The mapping (DECIDED — ADR-0020 §2 / proposal §13.3, recorded
-// here normatively):
-//
-//   XCCDF `high`   -> high
-//   XCCDF `medium` -> medium
-//   XCCDF `low`    -> low
-//   (XCCDF has NO `critical` severity) -> `critical` stays 0, VACUOUSLY. Operators therefore gate
-//     OpenSCAP findings on `high` (the fail-closed default maxHigh=0 refuses any high-severity fail);
-//     a `critical` value is mapped for completeness should a datastream ever emit one, but SSG does not.
-//   `unknown` / `info` / unset / anything else -> FOLDED AWAY (not counted), exactly as trivy's
-//     `UNKNOWN` severity is folded (supply-chain.ts ScanSeverityCounts doc).
-//
-// Only `fail` rule-results count. `pass`/`notapplicable`/`notchecked`/`notselected`/`error`/`fixed`
-// are NOT findings against the artifact (in particular an offline rootfs scan yields many
-// `notchecked`/`notapplicable` for live-system probes — those are not fails and must not inflate counts).
-//
-// FAIL-CLOSED on a malformed/empty document (proposal §13.3): a result that is not recognizably an
-// XCCDF/ARF scan (no TestResult and no rule-result at all) THROWS rather than degrading to all-zero
-// counts — an all-zero count on a broken scan would masquerade as a clean pass. (The runner already
-// fails the run for a broken oscap invocation, so this path normally sees a real ARF; the throw is
-// the belt-and-suspenders second barrier.) The caller maps the throw to {ok:false} → no evidence → E6
-// refuses.
+// --- OpenSCAP result parsing. See docs/federation.md §452.
 
 interface ParsedOscap {
   severityCounts: ScanSeverityCounts;
-  /** M22.1b — `never`, not "empty". An XCCDF rule-result has no package, no purl, no `FixedVersion`
-   *  and no `Class`, so there is no per-finding material for an exclusion to match on and no way to
-   *  invent one. Typed as `never` so an attempt to populate it is a COMPILE error rather than a
-   *  runtime surprise — but note the enforcement that matters is `persistScanFindings` refusing on
-   *  the METHOD, which holds even for a caller that never sees this type. */
+  /** M22.1b — `never`, not "empty". See docs/federation.md §453. */
   findings?: never;
   /** An ARF carries no image digest (the runner scanned an extracted rootfs), so always undefined —
    *  the digest binding is the server-verified PULL, not the scanner's self-report (see the runner). */

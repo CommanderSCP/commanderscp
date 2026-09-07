@@ -3,29 +3,7 @@ import { resolutionProvenance } from "./binding-resolution.js";
 import type { BindingResolution } from "./binding-resolution.js";
 import type { ExecutorBindingRow } from "./executor-bindings-repo.js";
 
-/**
- * THE PROVENANCE LABEL IS READ, NOT INFERRED.
- *
- * `reconcile.ts` built this label as `outcome === "via_placement" ? "placement" : "service"`. The
- * `via_service` branch covers THREE levels — service, assembly (migration 0055) and the org root —
- * so that expression wrote `resolvedVia: "service"` plus `serviceObjectId: <an assembly's id>` into
- * an audit record. It was already wrong for the org rung on the day that rung shipped, before
- * `assembly` existed: the bug is not "we forgot assembly", it is NAMING A LEVEL AFTER THE CODE PATH
- * THAT FOUND IT. Principle 6 — a Decision that misnames its own provenance reads as an answer, which
- * is worse than no Decision.
- *
- * These are pure-unit because the mapping is the defect. Whether the resolver reports the right
- * `viaObjectTypeId` in the first place is a DATABASE question, pinned separately in
- * `binding-resolution.integration.test.ts` against real objects of each type.
- *
- * MUTATION LOG (each applied alone to `resolutionProvenance`, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | `via: resolution.viaObjectTypeId` -> `via: "service"` (the original expression) | the assembly and org cases FAIL — this is the defect itself |
- * | return a provenance for `outcome: "direct"` | "a direct resolution has NO provenance" fails, and reconcile would write a Decision per trigger |
- * | drop `hops` from the via_service branch | "carries how remote the inheritance was" fails |
- */
+/** THE PROVENANCE LABEL IS READ, NOT INFERRED. See docs/coordination.md §842. */
 /** A stand-in row: `resolutionProvenance` never looks inside the binding, only at the outcome. */
 const binding = { id: "b1", externalRef: "ref" } as unknown as ExecutorBindingRow;
 

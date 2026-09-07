@@ -23,36 +23,13 @@ import { loadScanDbBlob } from "../governance/scan-db.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 import { asTrustDomainId } from "@scp/schemas";
 
-/**
- * M13.3b-ii — OFFLINE DB PRE-LOAD + STALENESS + OPERATOR-LOAD end-to-end (ADR-0020, proposal §13.3b).
- *
- * The runner image is resolved ONCE (pulled via SCP_RUNNER_SCAN_IMAGE_REF or legacy-built), and the
- * REAL baked Trivy DB is extracted from it into a host cache dir — a genuine, schema-correct DB with
- * real metadata (fabricating one offline is impossible). That cache is the "server-provided pre-loaded
- * DB dir" the scenarios exercise:
- *   (a) pre-loaded DB scan → the runner uses the copied-in DB (`--network none`, `--skip-db-update`)
- *       and produces a valid digest-bound ScanEvidence whose `scanDbSource` is the CACHE, not baked.
- *   (b) a MISSING/empty configured cache → fail-closed (no evidence → E6 refuses with a decision_id).
- *   (c) a DB past the HARD max → fail-closed; a DB past the SOFT max → scans + WARN (surfaced in evidence).
- *   (d) the operator-load path VERIFIES a cosign-signed DB blob and REFUSES a tampered / wrong-key one
- *       with NO cache write.
- *
- * Staleness bounds are driven by the instance policy row (written over the domain admin connection,
- * the production operator-write path) so the REAL baked DB — of unknown real age — lands in the
- * intended class deterministically (huge bounds ⇒ fresh; tiny soft ⇒ warn; tiny hard ⇒ hard-fail).
- */
+/** Offline database preload, staleness and operator load. See docs/federation.md §499. */
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_SCAN_CONTEXT = resolve(__dirname, "../../../../apps/runner-scan");
 const RUNNER_IMAGE_TAG = "scp-runner-scan:m13-3b-ii-integration-test";
-/**
- * Same seam, and for the same reason, as `promotion-scan-step.integration.test.ts` (read the long
- * note there): this subject reaches the registry through `skopeo copy`, which never consults the
- * local Docker image store, so the local re-tag that keeps Testcontainers off Docker Hub cannot
- * cover it. CI exports `SCP_TEST_SUBJECT_REGISTRY` pointing at the GHCR mirror of the digest
- * `tools/ci-mirror/images.list` pins; unset (a developer's machine) it is upstream Docker Hub.
- */
+/** The same seam, and for the same reason, as its sibling. See docs/federation.md §500. */
 const SUBJECT_REGISTRY = process.env.SCP_TEST_SUBJECT_REGISTRY ?? "docker.io/library";
 const CLEAN_SRC = `docker://${SUBJECT_REGISTRY}/alpine:3.20`;
 

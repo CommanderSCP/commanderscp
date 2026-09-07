@@ -1,26 +1,6 @@
 import type { ReactNode } from "react";
 
-/**
- * The gate/approval state of a promotion between two consecutive waves (coordination-ui-views.md §2,
- * Layer A). Deliberately a small closed set the *existing* model can already answer honestly:
- *
- *   open     — the promotion proceeded / the gate evaluates to allow (green)
- *   blocked  — a gate denied it or the upstream wave failed; carries a `decision_id` when the
- *              server produced one (red, charter principle 6 "every block carries a decision_id")
- *   approval — a required manual approval is still pending (amber)
- *   held     — a stage-scoped component coupling is withholding the trigger (ADR-0028): the release
- *              is waiting on ANOTHER COMPONENT reaching this same stage (indigo)
- *   pending  — not yet at this gate / awaiting reconcile, no verdict to show (slate)
- *
- * There is NO "manual operator hold/release" state here on purpose — that record does not exist in
- * the model yet (coordination-ui-views.md Layer B, phase 5), so surfacing it would be fabrication.
- * `held` is NOT that: it is a real server-side verdict re-evaluated on every request, and it exists
- * as its own state because both of the states it could otherwise have borrowed would LIE.
- * `blocked` is red and permanent-reading, and conflating a transient self-clearing wait with a
- * denial is the exact bug ADR-0028 wrote `verdict: "hold"` rather than `"block"` to avoid;
- * `approval` claims a human gate that nobody is standing at. The wait is real, it clears itself,
- * and nothing is wrong — so it gets a colour of its own rather than the alarm or the queue.
- */
+/** The gate and approval state between two waves. See docs/web.md §96. */
 export type PromotionState = "open" | "blocked" | "approval" | "held" | "pending";
 
 const STATE_STYLES: Record<PromotionState, { bar: string; triangle: string; text: string }> = {
@@ -31,17 +11,7 @@ const STATE_STYLES: Record<PromotionState, { bar: string; triangle: string; text
   pending: { bar: "bg-slate-300", triangle: "border-t-slate-300", text: "text-slate-500" }
 };
 
-/**
- * A wide, top-to-bottom promotion arrow drawn between two vertically-stacked wave cards — THE ONLY
- * renderer of wave-to-wave connectors app-wide (design spec §2.13; the `→` literals died with it).
- * `pending` is the plain no-verdict style: connectors with no gate verdict pass it rather than
- * inventing one. Purely
- * presentational: the parent computes `state`/`label`/`detail`/`why` from real change data (wave
- * status, gate reasonTree, control-run evidence, freeze window, approval quorum) — this component
- * only paints it. `detail` is an optional one-line "why" the parent assembles from that real data
- * (never fabricated — omitted when the model has no reason to show); `why` is an optional node
- * (typically a link to the blocking Decision) the parent supplies so this stays routing-agnostic.
- */
+/** A wide arrow drawn between two stacked wave cards. See docs/web.md §97. */
 export function PromotionArrow({
   state,
   label,
@@ -56,23 +26,9 @@ export function PromotionArrow({
   label?: string;
   detail?: string;
   why?: ReactNode;
-  /** Presentation-only, and never a new `PromotionState` (owner ask 2026-08-14): the fan-in arrow
-   *  drawn beneath a DISABLED source-mapping tile. The mapping is still declared — `state` stays
-   *  whatever the caller passes (normally `"pending"`, since there is no gate verdict here either)
-   *  — `inert` only lightens the fill and swaps the aria-label, so it reads as "this connector
-   *  carries nothing right now" rather than an ordinary not-yet-evaluated wait. Omitted (the
-   *  default), this component is pixel-for-pixel what it always was. */
+  /** Presentation-only, and never a new `PromotionState`. See docs/web.md §98. */
   inert?: boolean;
-  /** THE ARROW IS THE SWITCH (owner, 2026-08-14: "enable/disable should be done via clicking on the
-   *  arrow; the colour of the arrow indicates whether it's open or closed", then "red should
-   *  signify closed"). When supplied, the arrow renders as a BUTTON: click opens the source's
-   *  open/close dialog. OPEN = green; CLOSED = RED. Red is also `blocked` (a gate denying a
-   *  promotion) — but a switch arrow and a verdict arrow are never the same arrow (a source's
-   *  fan-in vs a wave-to-wave connector), and the switch says its state in words, so there is no
-   *  ambiguity in practice. GREY is reserved for arrows that are NOT switches: chain connectors
-   *  with no verdict, and the commander's opaque input (this domain cannot open/close it) — so
-   *  grey reads as "not yours to click", never as "closed". Presentation-only otherwise: the
-   *  parent owns the mutation and passes `busy` while it runs. */
+  /** THE ARROW IS THE SWITCH. See docs/web.md §99. */
   onToggle?: () => void;
   busy?: boolean;
   /** Tooltip for the switch — the parent states what a click does and what the colour means. */

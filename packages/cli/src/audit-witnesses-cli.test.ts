@@ -5,14 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { Command } from "commander";
 import type { AuditWitness } from "@scp/schemas";
 
-/**
- * Federation audit witness (multi-region-instance-resilience.md §7.2.7) — THE CLI HALF of the
- * post-failover runbook's peers-witness comparison read surface (resilience runbook §7.2 step 5),
- * `scp audit witnesses --origin <domainId>`.
- *
- * Same wiring-not-wording shape as `relay-builds-cli.test.ts`: `@scp/sdk` is mocked wholesale and
- * every assertion is against the ACTUAL call the mock recorded, plus the rendered table text.
- */
+/** Federation audit witness. See docs/cli.md §1. */
 
 interface ListCall {
   originDomainId: string;

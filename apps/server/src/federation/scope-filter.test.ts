@@ -7,16 +7,7 @@ import {
   scopeCarriesChangeObjects
 } from "./scope-filter.js";
 
-/**
- * M20.2 (ADR-0031 §3) — a domain-local entry matches NO sync scope, in either direction.
- *
- * A unit test rather than an integration one because {@link entryMatchesScope} is a pure predicate
- * and this is the layer where EXHAUSTIVENESS over the scope modes is cheap: the two-database
- * end-to-end proof (bundles, signatures, cursors) belongs in the integration suite, but it can only
- * afford to exercise one or two scopes. Both layers are needed and neither substitutes for the
- * other — this file is what makes "no scope" a real claim rather than "not the scope we happened to
- * test with".
- */
+/** A domain-local entry matches no sync scope, either way. See docs/federation.md §519. */
 
 const ALL_MODES: SyncScope[] = [
   { mode: "full" },
@@ -109,11 +100,7 @@ describe("ADR-0031 §3: domain-local entries match no sync scope", () => {
   });
 
   it("matches on the BOOLEAN `true` only — no coercion in a boundary predicate", () => {
-    // Documented behaviour, not an accident, and the direction is deliberate: the only producer of
-    // this field is `graph/objects-repo.ts`, which writes a real boolean off a NOT NULL column, so
-    // a non-boolean here means a direct database write or a code bug — not an operator declaration
-    // to be honoured. Coercing would instead make `0`, `""` and `"false"` each mean something, which
-    // is exactly the ambiguity a filter deciding what crosses a security boundary must not have.
+    // Documented behaviour, not an accident, and directional. See docs/federation.md §520.
     for (const notTrue of ["true", 1, {}, [], "yes"]) {
       expect(
         isDomainLocalEntry(entry({ domainLocal: notTrue })),
@@ -134,11 +121,7 @@ describe("ADR-0031 §3: domain-local entries match no sync scope", () => {
   });
 
   it("does NOT change what `scopeCarriesChangeObjects` reports about a peer", () => {
-    // That helper probes the scope with a synthetic change-shaped entry carrying no locality, and it
-    // answers a question about the PEER's configuration ("would a change object ride at this
-    // scope?"), not about any particular object. Locality is per-object, so it must not fold into
-    // that answer — a domain that declares one component local has not become change-blind, and
-    // `service-board.ts` would start reporting components as `stable` if it had.
+    // That helper probes with a locality-free synthetic entry. See docs/federation.md §521.
     expect(scopeCarriesChangeObjects({ mode: "full" })).toBe(true);
     expect(scopeCarriesChangeObjects({ mode: "changes_only" })).toBe(true);
     expect(scopeCarriesChangeObjects({ mode: "status_only" })).toBe(false);

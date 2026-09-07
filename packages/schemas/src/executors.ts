@@ -6,36 +6,14 @@ import {
 } from "./common.js";
 import { SbomRefSchema, ScanMethodSchema, TestBundleRefSchema } from "./supply-chain.js";
 
-/**
- * M7 Real Executor Integrations wire contract (DESIGN.md §11/§12, BUILD_AND_TEST.md §8 M7).
- * `executor_bindings`/`notification_bindings` are projection tables (like M4's `control_bindings`)
- * — no graph-object equivalent exists for "which plugin instance backs this target/channel".
- */
+/** M7 Real Executor Integrations wire contract. See docs/schemas.md §181. */
 
 // -------------------------------------------------------------------------------------------
 // Executor bindings (DESIGN §12 — a Component/DeploymentTarget bound to a configured
 // ExecutorPlugin instance).
 // -------------------------------------------------------------------------------------------
 
-/**
- * The executor **Type** — the fine, artifact/action-specific routing key that resolves exactly one
- * executor binding (ADR-0007, docs/proposals/executor-type-taxonomy.md). Closed enum, extensible
- * only by deliberate owner decision (D4). Replaces the flat `purpose ∈ {infra, software}`: the two
- * old buckets fanned out — `software → {configuration, a build Type}`, `infra → {infrastructure,
- * configuration}` — so this is a split-and-rename, not a straight alias.
- *
- *   build family → image | rpm | deb | npm | maven | python | go | chart | vm-image
- *                             (turn source into an artifact)
- *   infrastructure           (stand up / change the IaC substrate)
- *   configuration            (apply declarative desired state to a running system — GitOps sync)
- *
- * `maven`/`python`/`go`/`chart`/`vm-image` were added by the team-pipeline-IaC rework (D13/D24,
- * owner ruling 2026-08-26): D13 reads "Type stays the closed three-value enum", which names this
- * package's **Category** (below), not Type — Type was always meant to cover the full artifact-class
- * vocabulary D13 also lists, and before this it did not. One vocabulary, not two: `ArtifactClass`
- * (`pipeline-behaviors.ts`) is now a DERIVED SUBSET of this enum rather than a hand-written second
- * list, so Type is where a new build kind is actually added.
- */
+/** The executor **Type**. See docs/schemas.md §182. */
 export const ExecutorTypeSchema = z.enum([
   "image",
   "rpm",
@@ -51,53 +29,15 @@ export const ExecutorTypeSchema = z.enum([
 ]);
 export type ExecutorType = z.infer<typeof ExecutorTypeSchema>;
 
-/**
- * D13/D24's artifact-class taxonomy, DERIVED as the "build family" subset of `ExecutorTypeSchema`
- * (`@scp/schemas/executors`) — never a second hand-written list. D13's ruling this session: "Type
- * stays the closed three-value enum" describes this package's **Category**, not `ExecutorType`; the
- * resolution was to extend `ExecutorTypeSchema` itself with the missing artifact classes so one
- * vocabulary covers everything, and make this a genuine subset of it.
- *
- * MECHANISM: `.exclude(["infrastructure", "configuration"])` rather than `.extract([...the nine
- * build members...])`, on purpose. `ExecutorCategorySchema` is closed at exactly three values
- * forever (build/infrastructure/configuration — never stored, never accepted as input, see
- * `executors.ts`), so "the build family" is structurally "every Type that is not infrastructure and
- * not configuration" — a fact that holds by construction, not by enumeration. Excluding the two
- * non-build members means a FUTURE build-family addition to `ExecutorTypeSchema` (another artifact
- * class) is automatically part of `ArtifactClassSchema` with no second edit required and no chance
- * to forget one; `.extract()` would have needed that second edit every time. Both `.exclude()` and
- * `.extract()` are compile-checked against `ExecutorTypeSchema`'s own literal union (a member that
- * does not exist on the base enum fails to type-check), so either direction satisfies "cannot
- * drift" for members that DO exist — this choice is about which one also protects against a
- * forgotten ADD.
- */
+/** The artifact-class taxonomy, derived as a build subset. See docs/schemas.md §183. */
 export const ArtifactClassSchema = ExecutorTypeSchema.exclude(["infrastructure", "configuration"]);
 export type ArtifactClass = z.infer<typeof ArtifactClassSchema>;
 
-/**
- * The executor **Category** — the coarse, closed, gate-groupable class of change (ADR-0007). It is
- * DERIVED from Type via the static `CATEGORY_OF_TYPE` map below, never stored as a column and never
- * accepted as input: routing and the `UNIQUE(org, target, type)` identity stay on Type; a gate that
- * wants coarse grouping ("gate any build") resolves Category through the map. Exposed as a
- * read-only, derived field on binding / source-mapping / wave-target RESPONSE schemas only.
- */
+/** The executor **Category**. See docs/schemas.md §184. */
 export const ExecutorCategorySchema = z.enum(["build", "infrastructure", "configuration"]);
 export type ExecutorCategory = z.infer<typeof ExecutorCategorySchema>;
 
-/**
- * The operator's DECLARED classification of a pipeline (ADR-0030 §2). Set on the `source_mappings`
- * row that routes a source into a pipeline; absent (`null`) for an ordinary one.
- *
- * **This is UI/reporting vocabulary, not an enforcement primitive** (ADR-0030 §3, ADR-0018 §4). It is
- * not threaded into the cross-boundary export gate, and forging or removing it changes NO gate
- * outcome: a dev-built digest promoted across a boundary is still refused unless a passing,
- * digest-bound scan exists for that exact digest. Enforcement keys on the PATH — a change targeting
- * no federation peer never reaches `exportPromotionBundle`, so the gate structurally never applies.
- *
- * DECLARED, never INFERRED. Nothing parses a branch name looking for "dev": a label named after
- * WHICH BRANCH MATCHED goes false the moment that branch drives a second kind of pipeline, and
- * reading the operator's declaration survives that.
- */
+/** The operator's DECLARED classification of a pipeline. See docs/schemas.md §185. */
 export const PipelineClassificationSchema = z.enum(["dev", "beta"]);
 export type PipelineClassification = z.infer<typeof PipelineClassificationSchema>;
 
@@ -110,15 +50,7 @@ export function parsePipelineClassification(value: string | null): PipelineClass
   return parsed.success ? parsed.data : null;
 }
 
-/**
- * The DECLARED reach of a source mapping's repo (pipeline-substrate-registry-scan.md §10.6, owner
- * 2026-08-16; migration 0066): `global` = a cross-domain shared repo authored and tracked at the
- * commander (outposts see it only as "source: the commander"); `domain` = tracked only in one
- * domain. Stored NULL = NOT DECLARED → no label rendered, NOTHING inferred (not from the site's
- * federation role, not from the repo host). Orthogonal to `mirrorOfShared` — a `domain`-scope mapping
- * may mirror a global one. Same class of label as `PipelineClassificationSchema` above: UI/reporting/
- * IaC vocabulary, never a routing or enforcement input — the correlation matcher does not read it.
- */
+/** The DECLARED reach of a source mapping's repo. See docs/schemas.md §186. */
 export const SourceMappingScopeSchema = z.enum(["global", "domain"]);
 export type SourceMappingScope = z.infer<typeof SourceMappingScopeSchema>;
 
@@ -216,22 +148,7 @@ export const RepurposeExecutorBindingRequestSchema = z.object({
 });
 export type RepurposeExecutorBindingRequest = z.infer<typeof RepurposeExecutorBindingRequestSchema>;
 
-// -------------------------------------------------------------------------------------------
-// Scanner-assignment registry (ADR-0020 §2, proposal §13.3, M13.3a). The commander's promotion
-// scan step reads each artifact's executor Type and selects the managed scan METHOD(S) assigned to
-// that Type. This is REGISTRY DATA keyed on the EXISTING `ExecutorType` taxonomy (owner decision
-// 2026-07-23) — NOT a new content-type axis — so a scanner is assigned to `image`/`rpm`/`deb`/`npm`/
-// `infrastructure`/`configuration`, the same closed set that already routes executor bindings.
-//
-// INSTANCE-SCOPED (owner decision 2026-07-23), mirroring `scan_requirement_floors`: no `org_id`, the
-// assignments bind every org on the deployment, operator-authored, tenant-readable. See
-// drizzle/0035_scanner_assignments.sql (RLS mirrors 0029) and routes/scanner-assignments.ts.
-//
-// FAIL-CLOSED BY DESIGN: a Type with NO assignment (or an empty `methods`) produces NO managed
-// evidence — so E6 refuses that Type's cross-boundary promotion unless valid org-pipeline evidence
-// already covers the digest. An unassigned/empty Type is a deliberate "no managed scanner", never a
-// silent pass. The seed assigns `configuration -> []` for exactly this reason (documented in 0035).
-// -------------------------------------------------------------------------------------------
+// Scanner-assignment registry (ADR-0020 §2, proposal §13.3, M13.3a). See docs/schemas.md §187.
 
 /** One Type's scanner assignment — the API projection of a `scanner_assignments` row. `methods` is
  *  the set of managed scan methods the promotion scan step runs for this Type (possibly empty). */
@@ -257,19 +174,7 @@ export const PutScannerAssignmentRequestSchema = z.object({
 });
 export type PutScannerAssignmentRequest = z.infer<typeof PutScannerAssignmentRequestSchema>;
 
-// -------------------------------------------------------------------------------------------
-// Multi-region Argo CD — the first-class config SURFACE for one outpost owning an Argo CD per
-// region for a single prod environment (M15.6, ADR-0017 §3). This adds NO new object type: a
-// region is an ordinary `deployment-target` carrying `properties.environment` (the env name it
-// belongs to, e.g. "prod") + `properties.region` (e.g. "amer"), and its per-region Argo CD is an
-// ordinary per-region executor binding (1:1, resolved per target via `getExecutorBinding`). The
-// surface is a READ + VALIDATE view of `prod env -> {region -> argocd binding}`; the operator still
-// declares each region by binding it (the existing `PUT /executors/{idOrUrn}/binding`), so nothing
-// on the per-target binding path changes — the view itself is purely additive. It is BACKED by a
-// deploy-time gate (`evaluateRegionalDeployGate`, enforced in the reconcile trigger path): a change
-// to a declared region target with no resolvable executor binding of its type is REFUSED
-// (fail-closed) rather than silently dispatched against the shared default executor.
-// -------------------------------------------------------------------------------------------
+// Multi-region Argo CD. See docs/schemas.md §188.
 
 /** The executor module a region's binding is EXPECTED to resolve to for this milestone — Argo CD
  *  (GitOps `configuration` sync). Kept as a named constant so the surface, the validator, and the
@@ -311,14 +216,7 @@ export const RegionalExecutorViewSchema = z.object({
   /** The module each region is expected to be bound to — `argocd`. */
   expectedModule: z.literal(REGIONAL_EXECUTOR_EXPECTED_MODULE),
   regions: z.array(RegionalExecutorEntrySchema),
-  /** True iff there is ≥1 region and EVERY region has its own Argo CD binding of `type`. This
-   *  verdict combines an ENFORCED signal and an ADVISORY one. ENFORCED: every region must resolve
-   *  SOME executor binding of `type` — an UNBOUND region target is REFUSED at deploy time (a
-   *  fail-closed block Decision from the reconcile gate, `evaluateRegionalDeployGate`), never
-   *  silently dispatched against the shared default executor. ADVISORY: each binding should resolve
-   *  to Argo CD (`isExpectedModule`); a region bound to a non-Argo-CD module makes `valid:false` and
-   *  is named in `problems`, but still deploys against its bound executor — fix it before relying on
-   *  it. `problems` names each gap either way. */
+  /** True when every region has its own binding of that Type. See docs/schemas.md §189. */
   valid: z.boolean(),
   problems: z.array(z.string())
 });
@@ -374,12 +272,7 @@ export type SecretConfiguredResponse = z.infer<typeof SecretConfiguredResponseSc
 export const SecretKeyListResponseSchema = z.object({ keys: z.array(z.string()) });
 export type SecretKeyListResponse = z.infer<typeof SecretKeyListResponseSchema>;
 
-// -------------------------------------------------------------------------------------------
-// Plugin manifests (DESIGN §11: "config schemas auto-surface as validated config forms in API,
-// CLI, and UI") — a static, in-repo catalog of every bundled M7 plugin's `{id, kind, version,
-// configSchema}`, surfaced so a config FORM can be generated client-side without hand-authoring
-// one per plugin.
-// -------------------------------------------------------------------------------------------
+// Plugin manifests, so config schemas surface as forms. See docs/schemas.md §190.
 
 export const PluginKindSchema = z.enum([
   "executor",
@@ -403,36 +296,13 @@ export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 export const PluginManifestListResponseSchema = z.object({ items: z.array(PluginManifestSchema) });
 export type PluginManifestListResponse = z.infer<typeof PluginManifestListResponseSchema>;
 
-// -------------------------------------------------------------------------------------------
-// Discovery (DESIGN §11 DiscoveryPlugin — "proposed objects + relationships, reviewed/accepted
-// into the graph, never auto-committed"). `discover()`'s raw proposal is returned to the caller
-// for review; nothing is written to the graph until an explicit `POST .../accept`.
-// -------------------------------------------------------------------------------------------
+// Discovery: proposed objects and relationships, reviewed. See docs/schemas.md §191.
 
 export const DiscoveryProposalObjectSchema = z.object({
   typeId: z.string(),
   name: z.string(),
   properties: z.record(z.string(), z.unknown()).optional(),
-  /**
-   * The PROPOSAL-LOCAL name this object is referenced by in `relationships[].fromUrn`/`toUrn` — an
-   * alias, not the URN the object will be stored under.
-   *
-   * Without it the two halves of a proposal cannot refer to each other, and that was not a
-   * theoretical gap: a proposed object carries only `typeId`/`name`, while accept mints
-   * `urn:scp:{orgId}:{typeId}:{slug(name)}` (`graph/urn.ts`) — a string a plugin cannot compute,
-   * because it contains an org id the plugin has no business knowing and a slug rule that lives
-   * server-side. So every plugin-proposed edge named endpoints that resolved to nothing. MEASURED
-   * before this field existed, on the gitea plugin's real `discover()` output pushed through the
-   * real accept door: `404 object 'urn:scp:component:gitea:acme/widgets/service-a' not found`.
-   *
-   * DELIBERATELY AN ALIAS RATHER THAN THE STORED URN. Accept is a HUMAN REVIEW step — the UI/CLI
-   * flow renames proposed objects before accepting them (both end-to-end discovery tests do exactly
-   * that). An endpoint reference derived from the name would break under precisely the edit the
-   * review exists to make; an alias the reviewer never touches survives it.
-   *
-   * Batch-local, and enforced so: accept refuses a proposal whose declared alias already names a
-   * live object, and refuses two proposed objects declaring the same one.
-   */
+  /** The proposal-local name this object is referenced by. See docs/schemas.md §192. */
   urn: z.string().min(1).optional()
 });
 export const DiscoveryProposalRelationshipSchema = z.object({
@@ -450,14 +320,7 @@ export const DiscoveryProposalBindingSchema = z.object({
   externalRef: z.string().min(1).optional()
 });
 
-/**
- * A `source_mapping` to create alongside an imported object (M12 P5, owner ruling Q3, github-webhook
- * path) — so an imported component actually SELF-REPORTS releases via `observe()`/webhooks, not just
- * being triggerable. References the object BY NAME (created in the same accept batch), exactly like a
- * proposal binding. For an argocd import the discover step fills `sourceKind:'github'` +
- * `repoPattern:<spec.source.repoURL>` (correlation matches on source_kind + repo/path globs; argocd's
- * own events carry no repo, so releases are correlated from the underlying git repo's webhooks).
- */
+/** A `source_mapping` to create alongside an imported object. See docs/schemas.md §193. */
 export const DiscoveryProposalSourceMappingSchema = z.object({
   objectName: z.string().min(1),
   sourceKind: z.string().min(1),
@@ -484,18 +347,7 @@ export const RunDiscoveryRequestSchema = z.object({
 });
 export type RunDiscoveryRequest = z.infer<typeof RunDiscoveryRequestSchema>;
 
-/**
- * `POST /discovery/scaffold` (ADR-0047) — turn a discovery proposal into IaC SOURCE.
- *
- * The replacement for `accept`, and deliberately a different SHAPE rather than the same verb with a
- * flag: it writes nothing, reads nothing, and returns text. Its whole job is to run the emitter that
- * `scp iac scaffold` runs, so the wizard and the CLI produce the same code from the same proposal.
- *
- * WHY IT IS A SERVER ENDPOINT AND NOT A BROWSER IMPORT. `apps/web` may import only `@scp/sdk` and
- * `@scp/schemas` — never `@scp/iac`, `@scp/cli` or the server (eslint `no-restricted-imports`, the
- * API -> SDK -> CLI -> IaC -> UI chain). The UI gets everything through the public API, and the
- * emitter is no exception.
- */
+/** `POST /discovery/scaffold` (ADR-0047). See docs/schemas.md §194. */
 export const ScaffoldDiscoveryRequestSchema = z.object({
   proposal: DiscoveryProposalSchema,
   /** component name -> service name. A component absent from this map is UNGROUPED and is reported
@@ -519,82 +371,22 @@ export const ScaffoldDiscoveryResponseSchema = z.object({
 });
 export type ScaffoldDiscoveryResponse = z.infer<typeof ScaffoldDiscoveryResponseSchema>;
 
-/*
- * `POST /discovery/accept` AND ITS TWO SCHEMAS ARE GONE (ADR-0047; team-pipeline-iac D1, section 14
- * resolution 3). Discovery is a SCAFFOLDER: `discovery/run` still proposes, and its output becomes
- * IaC construct code a human reviews and commits, never a direct graph write.
- *
- * The route was the only observation-driven write path, and it bypassed strict create — the
- * homelab's ~50 imported components landed as RBAC orphans through it. Its replacement is
- * `scp iac scaffold` and the /connect wizards, which emit code instead of rows.
- *
- * Removed rather than deprecated: dev-stage, no external usage, so no transition window (res 3).
- * The break is logged in `tools/openapi/OASDIFF-EXCEPTIONS.md`.
- */
+// `POST /discovery/accept` AND ITS TWO SCHEMAS ARE GONE. See docs/schemas.md §195.
 
-/*
- * `POST /discovery/backfill-source-mappings` AND ITS TWO SCHEMAS ARE GONE, following `accept` the
- * same way ADR-0047 said they would (team-pipeline-iac section 13: it "survives until the estate
- * migration completes, then is removed the same way").
- *
- * It repaired components imported BEFORE discovery emitted mappings. That population is CLOSED:
- * `discovery/accept` was the door that created mapping-less components and it no longer exists, so
- * nothing can add to the set. The repair path for a component that predates the change is to adopt
- * it into a stack (`scp iac export` carries any mappings it already has) and declare the source in
- * the manifest — the ordinary `sourceMappings` collection, reconciled on apply, which is where
- * mappings are authored now.
- *
- * Removed rather than deprecated, on the same dev-stage ground as accept. Logged in
- * `tools/openapi/OASDIFF-EXCEPTIONS.md`.
- */
+// That backfill route and its two schemas are gone. See docs/schemas.md §196.
 
-// -------------------------------------------------------------------------------------------
-// `scp change-source report` (DESIGN §12 Mode 1: "a one-line CLI step... reports plan/apply
-// results"). Bound to its OWN typed route, `POST /change-sources/{sourceKind}/report`
-// (routes/change-sources.ts, operationId `reportChangeSource`) — the typed, PAT-authenticated
-// counterpart to the raw `/webhook` ingress. Same persist-then-process engine path (one
-// `change_source_events` row, processed by `coordination/webhook-processor.ts`), not a new one.
-// -------------------------------------------------------------------------------------------
+// `scp change-source report`. See docs/schemas.md §197.
 
-/**
- * M10.6 (`.strict()`, `additionalProperties:false` — BUILD_AND_TEST.md §8 M10.6): "a REQUIRED
- * structured-evidence report schema... the discipline that separates it from a 'call any URL'
- * bus and makes every coordinate-generic verdict real." Before this, an unknown field (a typo, or
- * an attempt to smuggle something the contract doesn't define — e.g. an SBOM DOCUMENT inside an
- * SBOM REFERENCE, `SbomRefSchema`'s own `.strict()` a few fields below) was SILENTLY STRIPPED by
- * Zod's default object parse: the report still 202'd and the extra field just vanished with no
- * signal, same class of hazard `federation.ts`'s `CreateOutpostConfigRequestSchema` doc comment
- * describes (review round 5, N6) — a client believing it declared something got a success and
- * watched the field disappear. Refusing (400, naming the key) costs nothing in the field this
- * route actually needs open-ended: `planJson` stays `z.unknown()`, so a full plan JSON blob is
- * still accepted verbatim inside its own declared field.
- */
+/** Strict, so unknown properties are refused on the wire. See docs/schemas.md §198. */
 export const ChangeReportRequestSchema = z.strictObject({
   repo: z.string().optional(),
   path: z.string().optional(),
-  /** Correlation hint: the fully-qualified git ref (`refs/heads/dev`) this release was built from,
-   *  matched against a mapping's `ref_pattern` (ADR-0030 §1).
-   *
-   *  It has to be declared HERE, not merely read by the processor's generic hint extractor: this is
-   *  a `strictObject`, so an undeclared `ref` on a report body is REFUSED outright — a CI step
-   *  reporting a ref-scoped dev build would have got a validation error rather than a route. */
+  /** Correlation hint: the fully-qualified git ref. See docs/schemas.md §199. */
   ref: z.string().optional(),
   correlationKey: z.string().optional(),
   workspace: z.string().optional(),
   artifactDigest: z.string().optional(),
-  /** The BUILT COMMIT this release was produced from — the git sha, not a ref.
-   *
-   *  Declared for the SAME reason `ref` above is, and found the same way: this is a `strictObject`,
-   *  so until it was declared a CI step sending `commitSha` got a 400 rather than a route. The
-   *  processor's generic hint extractor has always READ this key (`commitShaFromPayload`) and every
-   *  provider webhook adapter has always supplied one — so a commit reached `sourceRef` from a raw
-   *  push payload and could not reach it from the TYPED report door at all.
-   *
-   *  That gap is load-bearing for D23: `deriveCapturedWorkflow` needs the built commit as one of the
-   *  three facts a hook run's `captured_workflow` is assembled from, and it will not substitute
-   *  "whatever the branch holds now". Without this field a change created through the typed report
-   *  route could never carry a pin, and every gate depending on one would hold forever with a
-   *  correctly-named reason and no way for the reporter to fix it. */
+  /** The built commit this release came from, not a ref. See docs/schemas.md §200. */
   commitSha: z.string().optional(),
   status: z.enum(["planned", "applied", "errored", "discarded"]),
   planJson: z.unknown().optional(),
@@ -603,66 +395,18 @@ export const ChangeReportRequestSchema = z.strictObject({
    *  for a CI pipeline (a raw provider push webhook cannot carry a key — coupled-pipelines.md §6#1);
    *  threaded by `webhook-processor.ts` into `proposeChange` identically to `POST /changes`. */
   provides: z.array(z.string().min(1)).optional(),
-  /** M12 P4B — the SAME shape as `CreateChangeRequestSchema.requires`: cross-change prerequisites
-   *  `{key, at}`. `at` (id or URN) is resolved at PROPOSE time exactly as `POST /changes` resolves
-   *  it — but this route is persist-then-process, so a bad `at` cannot 404 the reporter: it is
-   *  recorded by the processor as a refused event (Decision + audit, event marked processed with no
-   *  resulting change), never a silent drop and never a silent forever-wait. */
+  /** The same shape as a change's own prerequisite list. See docs/schemas.md §201. */
   requires: z.array(ChangeRequirementSchema).optional(),
-  /** ADR-0028 stage-scoped component coupling — the SAME shape as
-   *  `CreateChangeRequestSchema.stageDependencies`: components this release's component must not
-   *  deploy AHEAD OF at a shared place. This route is THE declaration channel (owner ruling D2): a
-   *  microservice's own CI knows what it calls, and nothing SCP observes carries inter-component
-   *  dependency data — it cannot be inferred, only declared. Threaded by `webhook-processor.ts` into
-   *  `proposeChange` identically to `POST /changes`, with the same propose-time resolution of
-   *  `dependsOn`/`atTargets`; as with `requires`, an unresolvable ref cannot 404 this
-   *  persist-then-process route, so the processor records it as a refused event. */
+  /** ADR-0028 stage-scoped component coupling. See docs/schemas.md §202. */
   stageDependencies: z.array(StageDependencySchema).optional(),
   /** M17.2 — a REFERENCE to the build-time SBOM the executor's coordinated Trivy pass emitted and
    *  cosign-signed at origin (ADR-0015 §5). OPTIONAL and purely ADDITIVE: every existing reporter
    *  keeps working unchanged. SCP stores the reference on the change's `sourceRef.sbom` and NEVER
    *  the document bytes — it neither generates nor signs an SBOM (charter: coordinate, not execute). */
   sbom: SbomRefSchema.optional(),
-  /** D23 (team-pipeline-iac increment 8) — a REFERENCE to the TEST BUNDLE the build captured at this
-   *  commit: the workflows this component's hooks name, bundled as an OCI artifact beside the image
-   *  so a domain that provably cannot reach the source repo still runs the same tests.
-   *
-   *  MODELLED ON `sbom` DIRECTLY ABOVE, field for field, and the parallel is the point. OPTIONAL and
-   *  purely ADDITIVE: every existing reporter keeps working unchanged. SCP stores the reference on
-   *  the change's `sourceRef.testBundle` (`coordination/webhook-processor.ts`) and NEVER the bundle
-   *  BYTES — it neither builds nor signs a test bundle (charter: coordinate, not execute).
-   *
-   *  WHAT THIS DELIBERATELY IS NOT: reporting a bundle does NOT mint an `artifact` object. ADR-0045
-   *  D2 keeps minting at promotion export and import only — "an artifact object means SCP attested
-   *  it", and a build report is the executor's claim, not the commander's attestation. The reference
-   *  reported here is what the export path later reads to put the bundle in the promotion manifest,
-   *  which is where the one mint happens.
-   *
-   *  WHY IT MUST BE DECLARED HERE rather than merely read by the processor's generic hint extractor:
-   *  this is a `strictObject`, so an undeclared `testBundle` on a report body is REFUSED outright
-   *  (400 naming the key). A CI step reporting its captured bundle would have got a validation error
-   *  rather than a route — the same trap `ref` above records. */
+  /** D23 (team-pipeline-iac increment 8). See docs/schemas.md §203. */
   testBundle: TestBundleRefSchema.optional(),
-  /** D13 (team-pipeline-iac increment 8) — WHAT THE BUILD ACTUALLY PRODUCED, so the class the
-   *  pipeline DECLARED can be verified against it instead of assumed.
-   *
-   *  MODELLED ON `sbom` / `testBundle` above: OPTIONAL and purely ADDITIVE, so every existing
-   *  reporter keeps working unchanged and a report that omits it is byte-for-byte unaffected. Absent
-   *  yields the `unverified` verdict, which is deliberately spelled apart from `match` — "no
-   *  evidence yet" must be a visible state, never an assumed pass.
-   *
-   *  WHY VERIFY AT ALL, GIVEN THE ENUM IS CLOSED AND TYPE-CHECKED: the closed enum stops a typo, not
-   *  a lie. The declared class selects the journey template — an image builds/pushes/bumps/syncs, an
-   *  RPM builds/publishes/batch-installs — so a component that declares `image` and actually produces
-   *  an RPM gets an entire journey shaped for bytes it does not have, and every step "succeeds"
-   *  against nothing. That failure is silent precisely because each individual step is fine.
-   *
-   *  WHAT THIS IS NOT: a trust boundary. Both sides of the comparison are the team's own — the
-   *  `source_mappings.type` declaration and this report — so a reporter that lies in BOTH places is
-   *  consistent and passes. That is the honest scope: this catches the two declarations DISAGREEING,
-   *  which is the misconfiguration D13 names, and it is not a defence against a hostile reporter.
-   *  The E6 self-exemption fix on the D23 path is the standing reminder of the difference: a value
-   *  the subject supplies is only as narrow as the subject chooses to make it. */
+  /** D13 (team-pipeline-iac increment 8). See docs/schemas.md §204. */
   artifactClass: ArtifactClassSchema.optional()
 });
 export type ChangeReportRequest = z.infer<typeof ChangeReportRequestSchema>;

@@ -22,11 +22,7 @@ import {
 } from "../graph/type-registry-repo.js";
 import { idempotencyKeyOf, withIdempotency } from "../idempotency.js";
 
-/**
- * Runtime type registry (DESIGN.md §4.1): org-scoped custom object/relationship types as data
- * inserts. Anything registered here is immediately usable through the generic `/objects/{type}`
- * and `/relationships` endpoints — no deploy, no migration (BUILD_AND_TEST.md §8 M1 DoD (b)).
- */
+/** Runtime type registry (DESIGN.md §4.1). See docs/routes.md §414. */
 export function registerTypeRegistryRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 

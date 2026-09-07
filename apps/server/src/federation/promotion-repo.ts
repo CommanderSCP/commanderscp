@@ -67,33 +67,9 @@ import {
   type ManagedScanRunner
 } from "./promotion-scan-step.js";
 
-/**
- * Promotion Bundles (DESIGN.md §13 "federated change promotion" — grafted semantics). A change
- * promoted toward another domain exports as change + provenance + control outcomes + artifact
- * digests + per-approval Ed25519 attestations; the importing domain instantiates its OWN LOCAL
- * Change (`imported_from_domain` set) which must still pass LOCAL policies/controls/approvals —
- * imported approvals are attached as read-only EVIDENCE, never local authority (never inserted
- * into `approval_votes`/`approval_requests`, which is what quorum-checking gates actually read).
- *
- * SECURITY-SENSITIVE (M6 PR body flag — attestation validation must bind approver identity +
- * exactly what was approved, and reject on ANY mismatch): `importPromotionBundle` validates EVERY
- * approval attestation against the EXPORTING domain's OWN registered public key (not merely the
- * key embedded in the attestation itself — `signAttestation`'s output is self-consistent by
- * construction, so checking only that would let an attacker forge an "approval" by signing with
- * their own throwaway key and simply mislabeling its origin). A mismatch — wrong signer, wrong
- * key, or `approvedObjectUrn` not matching the change actually being imported — marks that
- * specific approval `verified: false` (rejected as evidence) WITHOUT aborting the whole import:
- * the local Change still lands in `proposed` and must earn its own LOCAL approvals regardless.
- */
+/** Promotion bundles, and their grafted semantics. See docs/federation.md §386. */
 
-/**
- * The EXACT field set the promotion bundle's Ed25519 checksum is computed over — the SINGLE source
- * of that list, shared by export and import so the two can never drift (checksum covers the HEADER
- * too — M6 review fix). M17.3 (E3): `artifacts` is DELIBERATELY NOT in this list, so adding the
- * typed artifact set to a bundle does not change its checksum or signature; a bundle with
- * `artifacts` present hashes byte-identically to a v1 bundle without it. `computeBundleChecksum`
- * canonicalizes by sorting keys deeply, so the field order here does not affect the result.
- */
+/** The exact field set the bundle checksum is computed over. See docs/federation.md §387. */
 export function promotionChecksumPayload(bundle: {
   header: PromotionBundle["header"];
   change: PromotionBundle["change"];
@@ -124,38 +100,12 @@ export interface ExportPromotionInput {
   scanRunner?: ManagedScanRunner | null;
 }
 
-/**
- * M17.3 (E6) — the outcome of an export. On success the caller sends `bundle`; on a scan-gate
- * REFUSAL the caller turns `{ refused: true }` into a 409 carrying `decisionId` (like every other
- * blocked response — DESIGN.md §6/§10.4). The refusal is FAIL-CLOSED: the Decision has ALREADY been
- * persisted (committed) by the time this returns, so `decisionId` resolves.
- */
+/** M17.3 (E6) — the outcome of an export. See docs/federation.md §388. */
 export type ExportPromotionResult =
   | { refused: false; bundle: PromotionBundle }
   | { refused: true; decisionId: string; reason: string };
 
-/**
- * M17.3 (E6) EXPORT SCAN GATE — the boundary re-check (defense in depth). For EACH SUBSTANTIVE
- * artifact (everything in `artifacts[]` EXCEPT `type: "blob"` — the SBOM is the scan's OUTPUT, not a
- * scanned input, so it is EXEMPT) there MUST exist a CURRENT, digest-bound, floor-satisfying scan
- * outcome from an ADMITTED PRODUCER, judged under the scan-exclusion set that is in force NOW. This is UNIVERSAL and fail-closed: a MISSING scan refuses
- * exactly like a FAILED one, whether or not a scan-requirement policy was ever bound. This NEVER runs
- * a scan (coordinate-not-execute) — it only re-verifies an outcome an execution system already
- * produced.
- *
- * THE RULE ITSELF LIVES IN `scan-evidence.ts`, shared with the promotion scan step's short-circuit.
- * Its module doc records the four properties that changed here and why each was an authorization
- * defect: a scan outcome was identified by the SHAPE of its evidence (which `webhook-control` echoes
- * verbatim from an operator-configured URL, so a tenant could manufacture one), any HISTORICAL
- * passing row satisfied the gate forever, the gate applied no threshold of its own, and (M22.9) a
- * passing row kept authorizing crossings under an exclusion set that had since been withdrawn.
- *
- * Takes the RAW `control_runs` rows, not the bundle's `controlOutcomes` projection. The projection
- * drops `plugin_module`, `control_object_id` and `created_at` — which are exactly producer identity
- * and recency — and it is IN the Ed25519 checksum payload (`promotionChecksumPayload`), so widening
- * it to carry them would change every bundle's checksum and break verification at every peer. The
- * gate reads the rows; the bundle keeps its shape byte-for-byte.
- */
+/** M17.3 (E6) EXPORT SCAN GATE. See docs/federation.md §389. */
 function evaluatePromotionScanGate(
   substantiveArtifacts: ArtifactRef[],
   runs: readonly ScanRunLike[],
@@ -221,17 +171,7 @@ function buildPromotionManifest(args: {
   };
 }
 
-/**
- * Export a Promotion Bundle, HARD-GATING on scans at the boundary and CO-SIGNING a self-binding
- * manifest (M17.3 E6). Takes a `Db` (not a single `TenantTx`) because it spans two transaction
- * phases around an out-of-transaction cosign subprocess — the same "never hold a pooled connection
- * open across a cosign subprocess" invariant `cosign-keys.ts`/E5 already honor:
- *   1. Resolve the org's cosign keypair (may KEYGEN-subprocess on first use) OUTSIDE any tx.
- *   2. tx: gather change/evidence/artifacts + run the scan gate. On refusal, persist a `block`
- *      Decision + audit event and RETURN the refusal (the tx COMMITS, so `decisionId` survives).
- *   3. Cosign-sign the manifest OUTSIDE any tx (materialize key → sign-blob → scrub, in @scp/cosign).
- *   4. tx: Ed25519-checksum + sign the (manifest-EXCLUDED) envelope, record the transfer, return.
- */
+/** Export a bundle, hard-gating on scans and co-signing it. See docs/federation.md §390. */
 export async function exportPromotionBundle(
   db: Db,
   input: ExportPromotionInput
@@ -242,22 +182,7 @@ export async function exportPromotionBundle(
   // that must never execute while a pooled DB connection is held open).
   const cosignPair = await ensureInstanceCosignKey(db, input.orgId);
 
-  // Phase 1.2 — A DOMAIN-LOCAL CHANGE IS NEVER PROMOTED (M20.4, ADR-0031 §5).
-  //
-  // THIS IS A SECOND EGRESS, and the reason it needs its own guard. ADR-0031's withholding works by
-  // never allocating journal sequences (§2), which covers the SYNC path completely — but a promotion
-  // bundle is not built from the journal. `exportPromotionBundle` reads the change directly, names a
-  // peer explicitly, and would happily carry a domain-local change's urn, name, properties and
-  // target list across a boundary. The sync guarantee simply does not reach here.
-  //
-  // Refused rather than filtered, because a promotion is an operator naming a destination: silently
-  // exporting nothing would look like success. The refusal is also NOT a scan verdict and must never
-  // be read as one — it fires BEFORE the scan step, so a domain-local change is not "exempted from
-  // scanning", it is refused a crossing outright. That ordering is the point (ADR-0031 §7): locality
-  // never becomes an input to E6, in either direction.
-  //
-  // ADR-0018's standing invariant made concrete: "if a future feature adds another cross-boundary
-  // egress, it must carry the same gate." This one did, and this is that check.
+  // Phase 1.2 — A DOMAIN-LOCAL CHANGE IS NEVER PROMOTED. See docs/federation.md §391.
   const localityRefusal = await withTenantTx(db, input.orgId, async (tx) => {
     const change = await getChange(tx, input.orgId, input.changeIdOrUrn);
     const rows = await tx
@@ -296,14 +221,7 @@ export async function exportPromotionBundle(
   });
   if (localityRefusal) return localityRefusal;
 
-  // Phase 1.5 — THE COMMANDER'S PROMOTION SCAN STEP (ADR-0020, proposal §13.3), BEFORE the E6 gate
-  // so its managed evidence exists when the gate reads. It deposits digest-bound managed-scan
-  // `control_runs` rows for every substantive artifact NOT already covered by org-pipeline evidence;
-  // the UNCHANGED gate below then consumes them. `scanRunner === null` disables the step (the legacy,
-  // org-pipeline-only path the pre-13.3a tests exercise); undefined ⇒ the default server-side
-  // skopeo-pull + `scp-managed-scan` runner (itself inert, producing no evidence, when managed
-  // scanning is not enabled — so a boundary export then still refuses fail-closed). Runs OUTSIDE any
-  // tx (it pulls bytes + launches containers — the subprocess invariant this function already honors).
+  // Phase 1.5 — THE COMMANDER'S PROMOTION SCAN STEP. See docs/federation.md §392.
   if (input.scanRunner !== null) {
     const runner: ManagedScanRunner = input.scanRunner ?? createServerManagedScanRunner(db);
     await runPromotionScanStep(
@@ -345,41 +263,16 @@ export async function exportPromotionBundle(
       for (const vote of votes) approvals.push(vote.attestation);
     }
 
-    // M17.3 (E3): build the TYPED artifact set from the change's tracked refs, then project the flat
-    // `artifactDigests` FROM it. `artifacts` is the rich source; `artifactDigests` is the backward-
-    // compatible flattening an older outpost reads. The OCI digest(s) are carried VERBATIM (identical
-    // to the pre-E3 projection); the SBOM travels as a `blob` entry.
-    // The reader is SHARED with the component pipeline's artifact projection
-    // (`coordination/artifact-facts.ts`, §9.3) so the digests the bundle carries and the digests the
-    // tile shows are read the same way from the same keys.
+    // Builds the typed artifact set from the change's refs. See docs/federation.md §393.
     const artifactSet: ArtifactRef[] = artifactSetOfSourceRef(change.sourceRef ?? {});
 
-    // M17.3 (E6) EXPORT SCAN GATE — HARD-REFUSE, fail-closed. The SBOM (`type: "blob"`) is EXEMPT
-    // (it is the scan's output). EDGE CASE: a promotion carrying NO substantive artifact has nothing
-    // to scan, so the gate passes VACUOUSLY — a metadata-only promotion (config/policy-only, no
-    // oci/rpm/deb/npm/config/infra content) still exports (and still carries a signed manifest over
-    // an empty artifact set). "Every substantive artifact is scanned" is trivially true of zero.
-    // THE SUBSTANTIVE SET IS NOT FILTERED HERE — `substantiveArtifactsOf` is the ONE definition,
-    // shared with the component pipeline tile's read-only re-run of this same gate. It excludes the
-    // SBOM blob (the scan's output) and the change's DECLARED test bundle (D23: signature-verified
-    // per hop, never scanned — scan stays image-only per M13). See that function's doc for why the
-    // bundle exclusion is keyed on the digest the change declared rather than on a type or a name.
+    // M17.3 (E6) EXPORT SCAN GATE. See docs/federation.md §394.
     const substantiveArtifacts = substantiveArtifactsOf(artifactSet, change.sourceRef ?? {});
     // The operator's above-org floors (ADR-0016 §3) — read once per export, applied to whichever
     // outcome ends up satisfying each artifact. Empty (the default: no floor authored) constrains
     // nothing, which is what makes this addition a no-op on an untouched deployment.
     const instanceFloor = mergeInstanceFloor(await readInstanceScanFloors(tx));
-    // M22.9 (ADR-0033 §10) — THE EXCLUSION SET IN FORCE RIGHT NOW, resolved BY THIS GATE.
-    //
-    // Not taken from the scan step that just ran, and that is the whole point. A boundary check whose
-    // input is handed to it by the step it exists to double-check goes inert exactly when the step
-    // does — and this call site already has a switch that does that (`scanRunner: null` skips the
-    // step entirely, and a default runner is inert whenever managed scanning is off). The gate reads
-    // the graph itself, so the crossing is held to the set an operator can see, whatever ran before.
-    //
-    // Only when there is something to gate: a metadata-only promotion passes the gate vacuously, so
-    // paying for a policy resolution there would buy nothing and would put a CEL evaluation on the
-    // one export path that never had one.
+    // The exclusion set in force right now, resolved by this gate. See docs/federation.md §395.
     const expectedExclusionSetHash =
       substantiveArtifacts.length > 0
         ? (
@@ -411,11 +304,7 @@ export async function exportPromotionBundle(
             digest: a.digest
           })),
           failingArtifact: { type: gate.artifactType, digest: gate.artifactDigest },
-          // WHICH of the five narrowings refused, machine-readably. A reader of this Decision has to
-          // be able to tell "nothing scanned this" from "something scanned it and failed" from "the
-          // outcome came from a control that is not a scanner" from "it passed under a waiver that
-          // has since expired" without parsing prose — the prose is for the human, this is for the
-          // query (charter principle 6).
+          // WHICH of the five narrowings refused, machine-readably. See docs/federation.md §396.
           refusalCode: gate.code,
           ...gate.detail,
           instanceFloor
@@ -453,12 +342,7 @@ export async function exportPromotionBundle(
       name: change.name,
       properties: change.properties,
       sourceKind: change.sourceKind,
-      // M16.1 (I1): the LOCAL boundary-checksum stamp is stripped from the wire payload, so a
-      // re-export of an already-exported change produces a byte-identical canonical bundle string
-      // (and hence the same Ed25519 checksum) as it would have before this key existed. The
-      // exporter's ledger checksums are meaningless on the far side — the receiver stamps its own.
-      // §9.4: the SAME holds for `promotionExports[]` (what this exporter signed for OTHER peers) —
-      // local bookkeeping, stripped for the same byte-identity reason.
+      // The local boundary stamp is stripped from the wire payload. See docs/federation.md §397.
       sourceRef: withoutPromotionExports(withoutBoundaryBundleChecksums(change.sourceRef))
     };
 
@@ -525,17 +409,7 @@ export async function exportPromotionBundle(
       channel: "metadata"
     });
 
-    // M16.1 (I1) — the per-change join. Written in the SAME tx as the ledger row it points at, so
-    // the two can never disagree. NOTE the honesty consequence recorded in `boundary-segment.ts`:
-    // this row is and stays `created` on THIS instance (the ledger is INSERT-only and every
-    // `submitted`/`confirmed` row is written by a LATER hop's own instance), so the boundary
-    // segment may say "exported" here and must call the handoff unknown.
-    //
-    // §9.4 (pipeline-substrate-registry-scan.md) — AND WHAT WAS SIGNED. Under the SAME row lock and
-    // in the SAME UPDATE, the record of this export: peer, when, the checksum (the join to the
-    // ledger row above), the manifest, its cosign signature (phase 3, outside any tx — persisted
-    // here in the tx that already exists), and the fingerprint of the key that signed it. Before
-    // this the exporter kept nothing of what it signed; only the importer did.
+    // M16.1 (I1) — the per-change join. See docs/federation.md §398.
     await stampBoundaryBundleChecksum(
       tx,
       input.orgId,
@@ -551,11 +425,7 @@ export async function exportPromotionBundle(
       }
     );
 
-    // ADR-0045 D2 — MINT ARTIFACT OBJECTS HERE, and only here on the export side: the manifest is
-    // SIGNED (phase 3, above) and the boundary stamp naming it is written in this same statement's
-    // transaction, so this call fires exactly when the commander's attestation is real. Reads the
-    // signed manifest's own artifact set (not `artifactSet` from phase 2) so the minted identities
-    // are provably the ones the signature covers — the SAME set, not a second read of it.
+    // Mint artifact objects here, and only here on the export side. See docs/federation.md §399.
     await mintArtifactObjects(
       tx,
       input.orgId,
@@ -588,45 +458,7 @@ export async function exportPromotionBundle(
   return { refused: false, bundle };
 }
 
-/**
- * M17.4(a) / M15.2 — the RECEIVER-side verification of the commander's cosign-signed SELF-BINDING
- * promotion manifest (the send-side counterpart is `buildPromotionManifest` + the E6 export gate).
- * This is the outpost's universal pre-deploy validation (ADR-0011): ONE implementation runs at
- * EVERY receiving hop — a commander importing from a peer, or (M15.2) an outpost verifying a
- * commander-promoted artifact BEFORE deploy. The outpost NEVER re-scans — receiver-side
- * never-re-scan is UNCHANGED (ADR-0013/ADR-0015 §6a); the one scan now executes at the commander,
- * before signing, per promotion journey (ADR-0020) — this gate re-verifies the signed metadata, it
- * does not re-run any scan.
- *
- * Metadata-only + coordinate-not-execute: it checks digests/signatures/identity, never artifact
- * BYTES (those are absent from a federation bundle — ADR-0009). Per-artifact `cosign verify` of each
- * artifact's ORIGIN `signatureRef` is part-(b), DEFERRED to M15.5 (the unresolved artifact-bytes
- * channel — ADR-0015 §6b, the "honest open gap"): it needs the bytes at the outpost's Gitea/registry
- * and is NOT half-built here.
- *
- * FAIL-CLOSED over five properties, in order:
- *  1. SIGNATURE — `cosign verify-blob canonicalStringify(manifest)` against the EXPORTER peer's
- *     registered cosign pubkey (E5) must return true (the EXACT bytes phase-3 of export signed).
- *  2. SET-EQUALITY — `bundle.artifacts` (typed, `undefined`→`[]`) EXACTLY equals `manifest.artifacts`
- *     as a MULTISET over `{type,digest,signatureRef}` (equal cardinality + membership; no
- *     add/substitute). Manifest entries carry no `location`/`format`, so only those three fields are
- *     compared. This is the ONLY thing protecting `bundle.artifacts` — it is EXCLUDED from the
- *     Ed25519 checksum (E3), so nothing else binds it.
- *  3. THE TIE — `bundle.artifactDigests` (which IS in the Ed25519 checksum) EQUALS
- *     `manifest.artifacts.map(a => a.digest)` as a multiset. This binds the cosign-anchored set to the
- *     Ed25519-anchored set so neither can be tampered independently of the other.
- *  4. SELF-BINDING — the manifest's `sourceChangeObjectId`/`exporterDomainId`/`peerDomainId`/
- *     `changeUrn` each equal the bundle's, blocking a manifest lifted from a different bundle.
- *  5. BACK-COMPAT + DOWNGRADE DEFENSE — absent manifest AND the peer has NO cosign key => ACCEPT
- *     (a genuine pre-E5/E6 Ed25519-only bundle). Absent manifest BUT the peer HAS a cosign key =>
- *     DOWNGRADE ATTACK => FAIL-CLOSED (an attacker stripped the manifest to dodge this gate). A
- *     PRESENT manifest is ALWAYS verified — including when no cosign key is registered, which then
- *     fails closed (present but unverifiable).
- *
- * Pure of the DB and of any transaction: the ONLY side effect is the `verifyBlob` cosign SUBPROCESS
- * (step 1), which is exactly why `importPromotionBundle` calls this OUTSIDE its apply tx (the
- * codebase forbids holding a pooled connection across a cosign subprocess — see `exportPromotionBundle`).
- */
+/** Receiver-side verification of the self-binding manifest. See docs/federation.md §400. */
 export interface ManifestVerifyContext {
   reason: string;
   detail: Record<string, unknown>;
@@ -795,18 +627,7 @@ export async function verifyPromotionManifest(args: {
   return { ok: true };
 }
 
-/**
- * Import a Promotion Bundle. Takes a `Db` (not a single `TenantTx`) because M17.4(a)'s manifest
- * verification runs a cosign `verify-blob` SUBPROCESS, and the codebase forbids holding a pooled
- * connection open across a cosign subprocess (`exportPromotionBundle` splits phases for exactly this
- * reason). Three phases around the out-of-tx subprocess:
- *   1. tx: address-to-self + resolve exporter peer + Ed25519 checksum/signature gate + resolve the
- *      peer's cosign pubkey. (No cosign subprocess yet — pure DB.)
- *   2. NO tx: M17.4(a) `verifyPromotionManifest` — the cosign subprocess + set/tie/self-binding/
- *      downgrade checks. On failure, persist a `block` Decision + hash-chained audit event in a
- *      fresh tx and throw a 409 carrying `decision_id` (mirrors the export gate — DESIGN §6/§10.4).
- *   3. tx: apply — propose the local Change, attach approval evidence, record the transfer.
- */
+/** Import a Promotion Bundle. See docs/federation.md §401. */
 export async function importPromotionBundle(
   db: Db,
   orgId: string,
@@ -822,14 +643,7 @@ export async function importPromotionBundle(
     }
     const peer = await getPeerByIdOrName(tx, orgId, bundle.header.exporterDomainId);
 
-    // 1. Bundle-level checksum + signature — fail closed, exactly like a sync bundle. Checksum covers
-    //    the header (M6 review fix — CRITICAL). A promotion bundle carries no journal sequence to
-    //    anchor key selection to, so it is verified against the peer's CURRENT (non-superseded) key —
-    //    NEVER a timestamp-selected key (that was the `bundle.header.exportedAt` /
-    //    `evidence.record.timestamp` backdating vector). A rotated-away key is hard-revoked for
-    //    promotion: a bundle it signed no longer verifies once the peer has rotated.
-    //    `artifacts` (M17.3 E3) is EXCLUDED from this recompute exactly as it is at export — the
-    //    typed set never participates in checksum/signature verification in the EXPAND phase.
+    // 1. Bundle-level checksum + signature. See docs/federation.md §402.
     if (computeBundleChecksum(promotionChecksumPayload(bundle)) !== bundle.checksum) {
       throw conflict("promotion bundle checksum mismatch (rejected, fail-closed)");
     }
@@ -847,14 +661,7 @@ export async function importPromotionBundle(
     return { peerId: peer.id, exporterCosignPubkey };
   });
 
-  // Phase 2 — M17.4(a) / M15.2 manifest verification, OUTSIDE any tx (cosign `verify-blob` subprocess).
-  // This is metadata-only (digests/signatures/identity) and complete without artifact BYTES: it
-  // proves "these are the authorized digests" and records the verified `artifacts[]` set on the
-  // imported change's `sourceRef`. M17.4(b) is the complementary BYTE verify — per-artifact
-  // `cosign verify` of each authorized artifact at the outpost's local registry where the bytes land
-  // — and it deliberately runs LATER, as a PRE-DEPLOY GATE (coordination/pre-deploy-gate.ts), NOT
-  // here: a federation bundle carries no bytes (ADR-0009) and the operator side-loads them AFTER this
-  // metadata import. Byte TRANSPORT itself remains M15.5.
+  // Phase two: manifest verification, outside any transaction. See docs/federation.md §403.
   const verified = await verifyPromotionManifest({
     bundle,
     exporterCosignPubkey: phase1.exporterCosignPubkey
@@ -915,26 +722,7 @@ async function applyPromotionImport(
     );
   }
 
-  // M12 P4B (owner ruling, coupled-pipelines.md §8 Q2): STRIP `requires` on promotion. The COMMANDER
-  // is the single coordination point — it held the software release in `waiting` until its infra
-  // prerequisite reached `validating` there, and its promotion of this bundle IS the go-ahead. Re-
-  // evaluating the coupling locally in the receiving outpost would either be redundant (the commander
-  // already enforced it) or DEADLOCK (an outpost whose infra is commander-driven has no local infra
-  // change to satisfy the key). `provides` is preserved — a promoted infra change should still be
-  // able to satisfy a LOCALLY-authored outpost waiter.
-  //
-  // ADR-0028: STRIP `stageDependencies` too, on the SAME precedent and for a sharper reason — what
-  // it replaces is not redundancy but a SILENT FAIL-OPEN. A promoted change is re-proposed LOCALLY
-  // with this domain's own origin, so reconcile's foreign-origin skip does not exclude it and the
-  // outpost really does evaluate the coupling. But `change_wave_targets` and `observed_state` are
-  // journaled by nothing, and `relationship_upsert` ships only under sync scope `full`; under
-  // `policies_only`/`changes_only`/`status_only` the depended-on component is not present here at
-  // all, so every verdict resolves to `not_placed` -> SATISFIED and the release fires with no hold
-  // and no record. ADR-0028's own Consequences call that the worst available answer.
-  //
-  // Stripping defers D5 (federation ruling, still open) cleanly instead of shipping that fail-open:
-  // the commander held the trigger until the coupling was satisfied THERE, and its promotion of this
-  // bundle is the go-ahead. When D5 lands, this is the seam that changes.
+  // M12 P4B (owner ruling, coupled-pipelines.md §8 Q2). See docs/federation.md §404.
   const {
     requires: _requiresStrippedOnPromotion,
     stageDependencies: _stageDependenciesStrippedOnPromotion,
@@ -974,15 +762,7 @@ async function applyPromotionImport(
     importedFromDomain: peerId
   });
 
-  // ADR-0045 D2 — MINT ARTIFACT OBJECTS HERE: `applyPromotionImport` runs ONLY after
-  // `importPromotionBundle`'s phase 2 `verifyPromotionManifest` returned `ok: true` — signature AND,
-  // when a manifest is present, SET-EQUALITY (`bundle.artifacts` proven to equal the cosign-signed
-  // `manifest.artifacts` multiset) AND the tie back to the Ed25519-checksummed `artifactDigests`.
-  // `bundle.artifacts` is therefore this receiver's own attested anchor for "this digest arrived
-  // here" — absent (`undefined`) only for a pre-E3 bundle, in which case there is nothing typed to
-  // mint from and none is minted (never fabricated from the untyped flat `artifactDigests` alone,
-  // which carries no `type`). `firstPromotedChangeId` names THIS domain's own newly-proposed change
-  // (`change.id`, just above) — the receiver's local anchor, not the exporter's.
+  // ADR-0045 D2 — MINT ARTIFACT OBJECTS HERE. See docs/federation.md §405.
   await mintArtifactObjects(
     tx,
     orgId,
@@ -995,13 +775,7 @@ async function applyPromotionImport(
     }
   );
 
-  // M12 P4B §8 Q2, the AUDIT half of the strip above: when the bundle's change actually CARRIED a
-  // `requires` that was stripped, the strip itself is an engine verdict (charter principle 6 —
-  // every engine verdict persists a Decision with its inputs) and must not be invisible. Written in
-  // the SAME transaction as the import, with the stripped requirements pinned VERBATIM in the
-  // Decision inputs, so an outpost operator asking "why didn't this coupled release wait here?" gets
-  // a durable, queryable answer rather than an absence. No Decision when nothing was stripped — the
-  // common uncoupled promotion stays byte-identical.
+  // M12 P4B §8 Q2, the AUDIT half of the strip above. See docs/federation.md §406.
   if (_requiresStrippedOnPromotion !== undefined) {
     await insertDecision(tx, {
       orgId,
@@ -1020,29 +794,7 @@ async function applyPromotionImport(
     });
   }
 
-  // ADR-0028, the AUDIT half of the `stageDependencies` strip. Same rule, same reason: a coupling
-  // that vanishes with no record is the exact failure this feature exists to prevent, so the strip
-  // is a persisted verdict rather than a deletion. Recorded under the hold's OWN kind, so the row
-  // says which mechanism removed the declaration rather than leaving an unexplained absence.
-  //
-  // HOW AN OPERATOR ACTUALLY FINDS IT. By the promoted change — `scp change explain <id>` or
-  // `scp decision list --subject-id <change-id>` — and, since ADR-0028 increment 4, WITHOUT the
-  // change id: `scp decision list --kind stage_dependency`. Two earlier versions of this comment
-  // were each wrong in the opposite direction: the first promised that filter before it existed
-  // (worse than a missing feature, because it read as a working answer to "what happened to my
-  // coupling here?" for exactly the person who does not have the change id), and the second recorded
-  // its absence. The filter now exists — `DecisionListQuerySchema.kind`, `listDecisions`'s `kind`
-  // condition, `--kind` on the CLI, and drizzle/0056's index so it is a probe rather than a table
-  // scan.
-  //
-  // WHAT THE FILTER STILL WILL NOT DO IS TELL YOU WHICH THING HAPPENED. This row and the hold share
-  // the kind and differ only in verdict: `allow` here (stripped, enforced upstream), `hold` in
-  // `reconcile.ts` (a trigger withheld). On an outpost the newest `stage_dependency` row of an
-  // imported change is therefore THIS one, whatever the change is doing locally — read the verdict,
-  // and for "is it held right now" read `explain`'s `stageDependencyStatus`, which re-evaluates the
-  // predicate live rather than believing any persisted row.
-  //
-  // Nothing stripped, nothing written.
+  // ADR-0028, the AUDIT half of the `stageDependencies` strip. See docs/federation.md §407.
   if (_stageDependenciesStrippedOnPromotion !== undefined) {
     await insertDecision(tx, {
       orgId,
@@ -1070,12 +822,7 @@ async function applyPromotionImport(
   // cannot change between approvals — hoisted out to avoid an identical SELECT per approval.
   const registeredKey = await currentPeerPublicKey(tx, orgId, peerId);
   for (const evidence of bundle.approvals) {
-    // Validate against the peer's CURRENT registered key — never the attestation's own embedded
-    // `publicKey` (self-consistent by construction, so trusting it would let an attacker sign an
-    // "approval" with a throwaway key and mislabel its origin) and never a key selected by the
-    // signer-chosen `evidence.record.timestamp` (the backdating vector — M6 review fix, CRITICAL).
-    // An approval signed by a since-rotated key is marked verified:false (non-fatal — the local
-    // change must earn its OWN approvals regardless), preserving compromise recovery.
+    // Validate against the peer's CURRENT registered key. See docs/federation.md §408.
     const selfConsistent = verifyAttestation(evidence);
     const signedByRegisteredKey = registeredKey !== null && registeredKey === evidence.publicKey;
     const bindsThisChange = evidence.record.approvedObjectUrn === bundle.change.urn;
@@ -1105,22 +852,7 @@ async function applyPromotionImport(
     channel: "metadata"
   });
 
-  // M13.1b — THE CAUSAL SEED for the unattended onward BYTE hop (proposal §13.1: "when a promotion
-  // import succeeds on a `retrans`-role instance, the loop schedules `buildRelayTarball` for it").
-  // Written HERE, in the import's own transaction, rather than derived later by a predicate scan
-  // over `changes`: "an imported change carrying a verified manifest with artifacts" is equally
-  // true of every promotion the HIGH-side retrans successfully forwarded, so a scan would enumerate
-  // builds that node can never perform — its source registry is on the far side of the air gap,
-  // which is the entire reason the tarball exists — and bury a real crossing under fabricated
-  // refusals. Seeding on the causal event means a node that RECEIVES bytes has nothing seeded, and
-  // it also means flipping the feature on never drains a historical backlog across the CDS.
-  //
-  // Gated to `role: retrans` because only that role may relay at all (ADR-0004; `buildRelayTarball`
-  // hard-refuses 409 elsewhere) and to a NON-EMPTY typed artifact set because a metadata-only
-  // promotion has no bytes to move. The seed is idempotent (ON CONFLICT DO NOTHING), so a replayed
-  // bundle can never resurrect a terminal row or reset a backoff. It creates an obligation, never a
-  // permission: whether it is ever acted on is `SCP_RETRANS_AUTO_RELAY`'s call, and every trust
-  // decision is still re-derived from the signed manifest inside `buildRelayTarball`.
+  // M13.1b — THE CAUSAL SEED for the unattended onward BYTE hop. See docs/federation.md §409.
   const relaySelf = await ensureFederationSelf(tx, orgId);
   const typedArtifacts = Array.isArray(bundle.artifacts) ? bundle.artifacts : [];
   if (relaySelf.role === "retrans" && typedArtifacts.length > 0) {
@@ -1129,11 +861,7 @@ async function applyPromotionImport(
       changeObjectId: change.id,
       sourceChangeObjectId: bundle.header.sourceChangeObjectId
     });
-    // THE STALL SIGNAL, at the one place it is reachable by construction and emitted exactly ONCE
-    // PER PROMOTION rather than once per tick. When automation is off, this hop is owed and nothing
-    // will move it — at a CDS nobody is watching a terminal, so say so here, naming the command
-    // that does move it. (The sweep cannot carry this message: with the flag unset its loop is
-    // never started, so any warning inside it is unreachable in production.)
+    // The stall signal, reachable by construction and sent once. See docs/federation.md §410.
     if (seeded && !autoRelayEnabled()) {
       console.warn(
         `[federation] org ${orgId}: promotion ${change.id} imported at this retrans owes an onward ` +

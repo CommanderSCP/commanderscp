@@ -26,36 +26,7 @@ import { reconcileOrgTick } from "./reconcile.js";
 import { WAVE_TARGET_TOMBSTONED_AUDIT_ACTION } from "./target-liveness.js";
 import type { GateDeps } from "./gates.js";
 
-/**
- * THE DEFECT: reconcile drove a wave target's object without ever asking whether that object was
- * still LIVE.
- *
- * A plan is compiled on the `evaluated -> coordinated` edge and its `change_wave_targets` rows are a
- * SNAPSHOT from that instant. Everything downstream — the trigger claim, the binding resolution, the
- * executor dispatch — reads those rows and nothing re-reads `objects`. So an authorized actor calling
- * `DELETE /components/{id}` at any point after compilation left the row untouched and the next tick
- * dispatched a real deploy at an object that, for every SCOPE question the platform asks, no longer
- * exists.
- *
- * WHY THAT PAIRING IS THE WHOLE POINT. Tombstoning is already a governance lever: every containment
- * route joins `parent.deleted_at IS NULL` (PR #249), so deleting a container silently detaches
- * everything beneath it from the policies that governed it. This was the execution-side twin — the
- * same one tombstone made the object ungoverned AND left it deploying. Absence of the object was
- * read, everywhere it mattered, as permission.
- *
- * THE FAILURE MODE CHOSEN, and why it is not a throw: refusing with an exception mid-campaign strands
- * the change with a `console.error` and nothing an operator can query. This parks instead, exactly as
- * the ADR-0006 masking-gap gate and the M17.4(b) pre-deploy gate already do: a `block` Decision with a
- * resolvable `decision_id`, a hash-chained audit event, the target terminalized on its own
- * `target_deleted` status, the wave failed and the change parked. `scp change explain` then answers
- * "why did this stop" with "its target was deleted", never with silence.
- *
- * THE FAIL DIRECTION, in both senses: a MISSING row refuses too (absence is not permission), while a
- * transient read failure must never look like a deletion — the liveness read throws out of
- * `triggerWaveTarget` and is retried next tick, terminalizing nothing. The last case in this file
- * pins that, because it is the direction that fails silently if anyone "simplifies" the check into a
- * boolean that swallows its own errors.
- */
+/** Reconcile drove a target without asking if it existed. See docs/coordination.md §1041. */
 describe("a tombstoned wave target is never driven", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -282,18 +253,7 @@ describe("a tombstoned wave target is never driven", () => {
     expect((await auditFor(changeObjectId)).length).toBe(auditAfterFirst);
   }, 180_000);
 
-  // ===============================================================================================
-  // THE OTHER ADR-0026 SHAPE — the one that would have been missed by checking the wave target's own
-  // row alone, and the reason this fix is not a one-liner.
-  //
-  // Under stage-shaped compilation the wave target IS a `placement`. `deleteObject` cascades to
-  // `relationships` and to NOTHING ELSE, and a placement carries its pair in
-  // `properties.componentId` / `properties.deploymentTargetId` — soft references the cascade cannot
-  // see. So deleting the COMPONENT leaves the placement `deleted_at IS NULL` forever: a perfectly
-  // healthy-looking row naming a dead component. This arm pins BOTH halves — that the placement
-  // really does survive (otherwise the second hop is dead code and this test is vacuous), and that
-  // reconcile refuses anyway.
-  // ===============================================================================================
+  // THE OTHER ADR-0026 SHAPE. See docs/coordination.md §1042.
   it("STAGE SHAPE: deleting the COMPONENT stops a placement wave target, even though the placement itself is still live", async () => {
     const label = `stage-${randomUUID().slice(0, 8)}`;
     const service = await inject("/api/v1/services", { name: `svc-${label}` });
@@ -353,11 +313,7 @@ describe("a tombstoned wave target is never driven", () => {
     const waveTarget = plan!.waves[0]!.targets[0]!;
     expect(waveTarget.targetObjectId).toBe(placement.id);
 
-    // DELIBERATE FLIP (2026-08-18, ADR-0038 clause 5): the API delete of a component that still
-    // has a placement is now REFUSED with the blocker named — pinned here as the negative control —
-    // so the tombstoned-component-with-live-placement shape (a replica row, or any row predating
-    // the guard) is PLANTED below the doors instead. The liveness pin this case exists for is
-    // unchanged: reconcile must not drive a wave target whose component is dead.
+    // DELIBERATE FLIP (2026-08-18, ADR-0038 clause 5). See docs/coordination.md §1043.
     const refusal = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/components/${component.id as string}`,

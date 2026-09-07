@@ -10,40 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `many_to_one` cardinality and the `releases_via` pipeline-attachment edge (migration 0049,
- * ADR-0026, post-import-configuration.md D11).
- *
- * Two properties are pinned here, and both are the kind that stays green while being broken:
- *
- *  1. **A cardinality with no enforcing branch is silently unenforced.** `assertCardinality` used to
- *     be a chain of `if`s over three known values with an implicit fall-through for everything else,
- *     and `relationship_types.cardinality` is plain `text` with NO CHECK constraint — so a fourth
- *     value (or a typo) read as a declared constraint and enforced nothing. Migration 0021's header
- *     had to design around exactly that trap. The last test here inserts an unknown cardinality by
- *     privileged surgery and requires the write to FAIL rather than fall through.
- *  2. **A from-side constraint is invisible to a to-side test.** `one_to_many`'s check is on `to_id`
- *     only; a `many_to_one` implemented by accidentally reusing it would pass any test that asserts
- *     "the second create was rejected" while rejecting the WRONG second create. Every rejection test
- *     below therefore also asserts which edge SURVIVED, and the positive test asserts that the
- *     many side (two components sharing one pipeline) still works.
- *
- * **Mutation log** (each mutation applied alone, then reverted — recorded because the two guards
- * cover for each other and a single mutation therefore proves less than it looks):
- *
- * | Mutation | Result |
- * |---|---|
- * | `many_to_one` → neither side singular (app check off) | all 6 PASS — the 0049 index alone holds |
- * | 0049 index removed (app check on) | the RACE test fails; the sequential ones pass |
- * | both of the above together | "REFUSES a second pipeline" AND the race test fail |
- * | `many_to_one` → `{from:false,to:true}` (the `one_to_many` copy-paste) | "ALLOWS many components" fails |
- * | 0049 index without `deleted_at IS NULL` | "frees the component to be re-attached" fails |
- * | fail-closed `throw` → `return` | "FAILS CLOSED" fails |
- *
- * The second row is the one worth keeping: the app-level check is a SELECT-then-INSERT under READ
- * COMMITTED, and two concurrent HTTP creates really do both get past it — so the index is not
- * belt-and-braces, it is the only thing holding under concurrency.
- */
+/** `many_to_one` cardinality and the attachment edge. See docs/graph.md §12. */
 describe("cardinality: many_to_one and `releases_via`", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -67,15 +34,7 @@ describe("cardinality: many_to_one and `releases_via`", () => {
     const types = await admin.typeRegistry.relationshipTypes.list({ limit: 100 });
     const rv = types.items.find((t) => t.id === "releases_via");
     expect(rv, "migration 0049 must register the `releases_via` relationship type").toBeDefined();
-    // 0049 registered `component` ALONE on purpose — the higher rungs exist to be READ by the
-    // resolution walk, and registering an endpoint nothing could resolve would have let an operator
-    // attach a pipeline that silently did nothing. Migration 0052 widened it when that walk landed,
-    // and this assertion moved with it rather than being loosened: `domain` is still absent, which
-    // is the part that would re-create the attach-but-never-resolve trap (D15 dropped that axis).
-    // Migration 0054 inserted `assembly` between component and service: the middle rung is now a
-    // LADDER (intermediate-grouping D1), so an assembly must be able to CARRY the attachment the
-    // ladder now consults it for — otherwise the level is decoration. `domain` is still absent,
-    // which is the part that would re-create the attach-but-never-resolve trap (D15 dropped that axis).
+    // 0049 registered `component` ALONE on purpose. See docs/graph.md §13.
     expect(rv!.fromTypes).toEqual(["component", "assembly", "service", "organization"]);
     expect(rv!.toTypes).toEqual(["release-topology"]);
     // many_to_one — the FROM side is singular. one_to_many here would constrain the pipeline
@@ -142,11 +101,7 @@ describe("cardinality: many_to_one and `releases_via`", () => {
   });
 
   it("the DB itself enforces one pipeline per component — not just assertCardinality (race backstop)", async () => {
-    // `assertCardinality` is a SELECT-then-INSERT under READ COMMITTED with no row lock, so two
-    // concurrent creates can both pass the check and both insert. `UNIQUE (org_id, type_id, from_id,
-    // to_id)` does not help here — the to_ids differ. Migration 0049's partial unique index on
-    // (org_id, from_id) is the backstop, mirroring 0022. Driven CONCURRENTLY, which the sequential
-    // tests above cannot catch.
+    // A select-then-insert under READ COMMITTED can double-write. See docs/graph.md §14.
     const comp = await createOrphanComponent(server, org, "mto-race-target");
     const p1 = await topology("mto-race-a");
     const p2 = await topology("mto-race-b");

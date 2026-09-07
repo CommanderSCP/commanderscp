@@ -9,41 +9,13 @@ import type { PluginContext } from "@scp/plugin-api";
 import { resolveRunnerImage } from "@scp/plugin-testkit";
 import { createManagedIacExecutorPlugin } from "./index.js";
 
-/**
- * REAL-DOCKER integration test (BUILD_AND_TEST.md §8 M7 DoD): "launches a REAL scp-runner-iac
- * container against a local-state tofu fixture end-to-end: plan evidence → gate block → approve
- * → apply → rollback via the prior state ref." Needs a reachable Docker daemon — excluded from
- * `pnpm test` (vitest.config.ts), run via `pnpm test:integration` in the CI integration-shard job
- * (GitHub-hosted `ubuntu-latest`, native Docker daemon; formerly the homelab
- * `homelab-commanderscp-linux-docker-build` ARC runner and its DinD sidecar), or locally per
- * CLAUDE.md's ENVIRONMENT.
- *
- * COPY-NOT-BIND-MOUNT (adversarial-review CRITICAL #1 fix, also fixes the dind CI failure): the
- * plugin `docker cp`s the workspace INTO the container and back OUT — it never bind-mounts a host
- * path. `docker cp` streams over the daemon API, so it works regardless of whether the host path
- * is shared with the (colima/dind) VM — this is why the previous "TMPDIR must be $HOME-rooted
- * under colima" / "the dind runner's /tmp isn't shared" constraints are GONE. `os.tmpdir()` is
- * used freely for both the workspace root and the dedup statePath.
- *
- * SERVER-GOVERNED CONFIG: `runnerImage`/`networkMode`/`workspaceRoot`/`statePath` are the fields
- * the SERVER injects in production (`executor-bindings-repo.ts`) and a tenant can never set. This
- * test provides them directly (it calls the plugin, not the server), standing in for that
- * injection — with `networkMode: "none"` asserting isolation, not just assuming it.
- *
- * FIXTURE, DELIBERATELY NETWORK-FREE: `terraform_data` (built into OpenTofu's CORE provider — zero
- * provider download at `tofu init`), so a real plan/apply/state lifecycle runs with no network.
- */
+/** REAL-DOCKER integration test (BUILD_AND_TEST.md §8 M7 DoD). See docs/plugins.md §451. */
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_IAC_CONTEXT = resolve(__dirname, "../../../../apps/runner-iac");
 const RUNNER_IMAGE_TAG = "scp-runner-iac:m7-integration-test";
-/**
- * LEVER 1: the image the tests actually run. `resolveRunnerImage` (beforeAll) sets this to the
- * pre-pulled GHCR ref in CI (`SCP_RUNNER_IAC_IMAGE_REF`), or to `RUNNER_IMAGE_TAG` after a local
- * legacy-builder build when that env is unset (local dev). `buildCtx` injects it as the
- * server-governed `runnerImage`.
- */
+/** LEVER 1: the image the tests actually run. See docs/plugins.md §452. */
 let runnerImageRef = RUNNER_IMAGE_TAG;
 const ORG_ID = "test-org";
 const TARGET_REF = "test-workspace";
@@ -130,11 +102,7 @@ describe.runIf(await dockerAvailable())(
     const plugin = createManagedIacExecutorPlugin();
 
     beforeAll(async () => {
-      // LEVER 1: PULL the pre-built image in CI (SCP_RUNNER_IAC_IMAGE_REF, set by the integration
-      // job after `docker pull`ing the content-hash-tagged GHCR image), else legacy-builder BUILD it
-      // locally (dev fallback). The DOCKER_BUILDKIT=0 legacy-builder reasoning (the single-daemon
-      // net=none session wedge, PR #126 — now scoped to the local fallback only) lives in
-      // resolveRunnerImage — same build, just no longer per-run in CI.
+      // LEVER 1: PULL the pre-built image in CI. See docs/plugins.md §453.
       runnerImageRef = await resolveRunnerImage({
         refEnvVar: "SCP_RUNNER_IAC_IMAGE_REF",
         localTag: RUNNER_IMAGE_TAG,

@@ -37,103 +37,9 @@ import { sqlIn } from "../graph/sql-helpers.js";
 import { placementComponentParentSql } from "../graph/containment.js";
 import { REFUSED_WAVE_TARGET_STATUSES } from "./wave-targets-repo.js";
 
-/**
- * Layer-A server projection backing `GET /services/:idOrUrn/board`
- * (docs/proposals/coordination-ui-views.md § "Service release board", Phase 2).
- *
- * The single net-new capability is {@link latestChangeByComponent}: "the latest change that targeted
- * this component, and which domain drives it." No target-filtered changes list exists
- * (ChangeListQuerySchema is state + cursor only), so without this a browser board would page every
- * change and `explain()` each — an O(all-changes) fan-out. Here it's two bounded, index-backed reads,
- * and the remaining per-component reads (plan waves, block Decision, pending approval) run inside the
- * same tenant transaction — bounded by the service's component count, not the org's change count.
- *
- * FEDERATION HONESTY (the reason this file names its unknowns explicitly). Every table this projection
- * reads for a row's DETAIL — `change_plans`/`change_waves`/`change_wave_targets`, `changes`,
- * `decisions`, `approval_requests` — is a LOCAL projection that never rides the sync journal. Only
- * the change's graph OBJECT replicates. A domain that holds a change as a read-only replica
- * therefore has no plan, no Decision and no approval for it, and must say so:
- * such a row is reported as `driver.drivenHere === false` with the unobservable fields named in
- * `unknownFields`, and counted in its OWN `summary.notDrivenHere` bucket. It is NEVER counted as
- * `stable` — an outpost rendering green while the commander drives a release through its components
- * is a fabricated all-clear, not an empty view.
- *
- * M25.7 SPLIT `freezes` OUT OF THAT LIST, and the sentence it left is deliberately weaker rather
- * than deleted. Owner decision D6: a freeze authored `federate: true` now DOES cross, as a `freeze`
- * graph object rebuilt into the receiver's own `freezes` table (`governance/freeze-object.ts`), so a
- * non-null `activeFreeze` on this board may be a freeze another domain declared. What has NOT
- * changed is the honesty rule, because the DEFAULT is still `federate: false`: a null `activeFreeze`
- * remains "no freeze VISIBLE HERE", never "no freeze applies", and this projection cannot tell which
- * kind a peer declared. So the board-level caveat below stays, on a narrower and now-accurate
- * reason. See `freezeVisibilityUnknowns`.
- *
- * CHANGE-OBJECT BLINDNESS (the second honesty rule, board-level). Everything above assumes that a
- * change replicated here AT ALL — that a component with no change object really has no change. That
- * assumption holds only while every peer forwards change objects. A peer paired at `status_only`
- * scope (`federation/scope-filter.ts`) forwards `change_status` entries but NOT the `object_upsert`
- * that carries the change, `policies_only` forwards neither, and a `custom` label selector may
- * forward some and not others. Under any of those, nothing lands for arm 2 to find and the row
- * would fall through to a confident `stable` — the same fabricated all-clear, one level deeper:
- * this domain HAS positive evidence changes exist on that peer (`import-repo.ts`'s `change_status`
- * branch receives entries naming `payload.objectId` and `payload.toState`) and simply cannot
- * attribute any of it to a component, because a `change_status` payload carries no `targets`.
- *
- * So this projection does not claim what it cannot see: when any peer's scope cannot carry change
- * objects ({@link scopeCarriesChangeObjects}), every row whose lookup came up EMPTY has its
- * would-be-clean fields named in `unknownFields` instead of passed off as observations, and the
- * response declares `summary.stable` and `rows[].latestChangeId` board-level unknowns. Rows whose
- * lookup DID find a change keep their reading untouched — an unknown must never displace a real
- * observation (see `service-board-precedence.integration.test.ts`) — and the counts still add up to
- * `rows.length` for shape stability; what changes is that they are no longer presented as facts.
- *
- * WHY SCOPE ALONE IS NOT ENOUGH — THE SECOND ARM (drizzle/0040). The rule above is derived from the
- * RECEIVER's own `federation_peers.sync_scope`. That column is purely LOCAL config: it is written by
- * `pairPeer`, read by export filtering, import defense-in-depth and this file, and it NEVER rides
- * the wire — the two peers' values are set independently by two operators and are never reconciled.
- * So it is blind to the case where the SENDER is the narrow side: a commander whose peer row for the
- * outpost says `status_only` ships change STATUS and no change OBJECTS, while the outpost's own row
- * says `changes_only` and its scope predicate cheerfully answers "I can see change objects". Every
- * row then falls through to a confident `stable` with an EMPTY `unknownFields` — the same fabricated
- * all-clear, on the most likely field misconfiguration there is.
- *
- * So the condition is a UNION of two independent arms, and both are kept:
- *
- *  1. SCOPE-derived (above) — the only signal available when THIS receiver's own scope guarantees
- *     blindness, because such a receiver drops the entries and produces no evidence at all.
- *  2. EVIDENCE-derived — `federation_unattached_change_status`, written by `import-repo.ts` at the
- *     two points where a `change_status` entry is dropped (no local replica of `payload.objectId`;
- *     or this receiver's scope filter discarded it). It fires downstream of BOTH peers' scopes, so
- *     it catches the sender-narrow mismatch that arm 1 structurally cannot. It is also strictly more
- *     precise than arm 1: the row carries the change's last reported state, so the caveat is
- *     conditioned on that state being IN-FLIGHT and one long-settled change cannot make a board
- *     claim ignorance forever. And it is self-clearing — the `object_upsert` path deletes the row
- *     the moment the change object lands — so it cannot fabricate persistent ignorance either.
- *
- * THE GAP THAT REMAINS, stated accurately. (i) The caveat is board-wide, not per-component: no
- * `change_status` payload carries `targets` and the change urn encodes nothing about them, so at
- * import time the receiver holds an object id and a state and nothing that resolves a component.
- * Per-component attribution would require widening the propose-time payload with `targets` — wire-
- * safe, but it discloses target component ids to a peer scoped precisely to withhold graph content,
- * which is an owner decision and deliberately not taken here. (ii) A sender at `policies_only` (or a
- * `custom` selector excluding `change_status`) sends no evidence of ANY kind; if this receiver's own
- * scope is wide, neither arm fires. Closing that would need the sender's scope carried in the bundle
- * header, which is measurably NOT an additive wire change (an un-upgraded importer strips the unknown
- * key and then fails every checksum, fail-closed) — a `formatVersion` flag day, not this fix.
- *
- * STALENESS (the third board-level rule, DESIGN §13). Everything above answers "can I see it"; none
- * of it answers "when did what I can see arrive". §13 requires the "as of &lt;bundle/date&gt;" label
- * and bans presenting stale data as live status. `asOf` carries that label for the LIMITING upstream
- * peer, and when that peer is overdue by its OWN effective cadence the same two board-level fields
- * are named unobservable — a newer change may exist upstream that has not been sent yet. See
- * `federation/upstream-freshness.ts`.
- */
+/** The server projection behind the service board. See docs/coordination.md §877. */
 
-/** Terminal statuses that count as a target/wave failure for the "blocked" derivation. EVERY
- *  fail-closed REFUSAL belongs here beside the genuine failures — `no_executor` (ADR-0006),
- *  `target_deleted` (`target-liveness.ts`), and M25.4's `recipe_unsupported`/`recipe_unreadable`
- *  (`campaign-recipe.ts`). Omitting one would under-report `failedTargets` on a wave that reconcile
- *  deliberately stopped, which is the one case an operator most needs the board to show — so the set
- *  is IMPORTED, not restated. */
+/** Terminal statuses that count as a failure for blocked. See docs/coordination.md §878. */
 const FAILED_STATUSES = new Set<string>([
   "failed",
   "aborted",
@@ -144,12 +50,7 @@ const FAILED_STATUSES = new Set<string>([
   ...REFUSED_WAVE_TARGET_STATUSES
 ]);
 
-/** A component's latest change, plus WHO DRIVES IT. `drivenHere` is false when the change's graph
- *  object is a read-only replica of another domain's change (`originDomainId !== self.domainId`) —
- *  DESIGN §13 single-writer authority. `federationState` is the lifecycle state that origin domain
- *  last reported through the sync journal (`import-repo.ts` mirrors a `change_status` entry onto the
- *  replicated object as `properties.federationState`); it is the ONLY lifecycle fact a non-driving
- *  domain holds. */
+/** A component's latest change, plus WHO DRIVES IT. See docs/coordination.md §879. */
 interface LatestChangeRef {
   changeId: string;
   changeName: string;
@@ -178,49 +79,7 @@ function toRef(row: ChangeCandidateRow, selfDomainId: string): LatestChangeRef {
   };
 }
 
-/**
- * For each component id, the change this domain will report for it — from two arms in a STRICT
- * FALLBACK, never a merge:
- *
- *  1. PLANNED (authoritative). The wave-target join: changes whose plan has been compiled here,
- *     including targets a campaign or coupling expanded onto a wave that the change's own
- *     `properties.targets` never named. Everything it returns is a REAL LOCAL OBSERVATION — this
- *     domain compiled that plan, rolls those waves, and holds the Decisions behind them.
- *  2. DECLARED (fallback, consulted ONLY for components arm 1 returned nothing for). The change
- *     GRAPH OBJECT's `properties.targets`, stamped at propose time by `proposeChange`. It covers
- *     the two cases arm 1 structurally cannot: a change with no compiled plan YET, and — the
- *     reason this arm exists — a change replicated from another domain. `change_plans` /
- *     `change_waves` / `change_wave_targets` / `changes` are local projection tables that never
- *     ride the sync journal, so on a domain holding a commander-origin change as a replica the
- *     join finds NOTHING. Treating that as "no change" reports a component mid-release as
- *     `stable`: a fabricated all-clear, not an empty view.
- *
- * WHY A FALLBACK AND NOT "WHICHEVER IS NEWER" (the regression this shape exists to prevent). The
- * two arms have NO COMMON CLOCK, so no sound ordering across them exists:
- *
- *  - arm 1 orders by `changes.created_at` (the local projection row), arm 2 by `objects.created_at`
- *    (the graph row) — two different timestamps for one concept, written at different moments;
- *  - worse, for a REPLICA `objects.created_at` is `defaultNow()` at IMPORT time (the `object_upsert`
- *    payload carries no createdAt), i.e. a FABRICATED ordering key. Every freshly imported change
- *    outranks every pre-existing local one.
- *
- * Comparing them let an honest UNKNOWN displace a REAL OBSERVATION: on a single-domain org a newer
- * unplanned change hid an older planned+FAILED one (the board's `blocked` count silently dropped to
- * 0), and on an outpost any newer commander-origin replica hid the outpost's own genuinely-observed
- * failure — the one fact it actually holds. An observation always beats an unknown, in BOTH
- * directions, so arm 1 wins outright for every component it covers and the cross-clock comparison
- * is gone. (Deliberate consequence: a component whose latest LOCAL change has no plan yet keeps
- * showing its previous, planned change — exactly the pre-federation-fix behaviour, and the reading
- * with real waves behind it.)
- *
- * Both arms are index-backed and bounded by the service's component count: arm 1 by the wave-target
- * keys with `DISTINCT ON` (≤1 row per component), arm 2 by a per-component LATERAL `LIMIT 1` over
- * the `obj_props` GIN (`jsonb_path_ops`) index via `@>` containment (≤1 row per component, and only
- * for the components arm 1 left open). Neither can return more rows than the service has components.
- *
- * Both arms filter soft-deleted change objects identically (`objects.deleted_at IS NULL`): a
- * deleted change must not drive a row through one arm while being invisible to the other.
- */
+/** The change this domain reports per component, in two arms. See docs/coordination.md §880. */
 async function latestChangeByComponent(
   tx: TenantTx,
   orgId: string,
@@ -231,24 +90,7 @@ async function latestChangeByComponent(
 
   const latest = new Map<string, LatestChangeRef>();
 
-  // ARM 1 — the local observation. Authoritative for every component it answers for.
-  //
-  // THE PLACEMENT HOP (ADR-0026). A wave target is a component under legacy compilation and a
-  // PLACEMENT under stage-shaped compilation, so `t.target_object_id AS component_id` is only half
-  // true and the `IN (componentIds)` filter matched NOTHING for a stage-shaped plan. Arm 1 would
-  // have returned zero rows for every component and this function would have silently degraded to
-  // arm 2 for the whole board — which is not a smaller answer, it is a DIFFERENT KIND of answer.
-  // Arm 2 is the fallback precisely because it is an unknown rather than an observation, and this
-  // file's own header records what happens when the two are confused: on an outpost, a newer
-  // commander-origin replica hides the outpost's genuinely-observed failure — the one fact it
-  // actually holds. The board would have kept rendering, with the strict-fallback shape it was
-  // built around quietly inverted.
-  //
-  // `placementComponentParentSql` is the SAME fragment `graph/containment.ts` and `authz/resolve.ts`
-  // walk, LATERAL-joined here: one definition of "the component a placement places", including its
-  // guard against a malformed `componentId` casting-error. A legacy component target matches no
-  // placement row, so the LATERAL yields nothing and COALESCE falls through to the target itself —
-  // both shapes read through one query, and the legacy answer is unchanged.
+  // ARM 1 — the local observation. See docs/coordination.md §881.
   const planned = await tx.execute<ChangeCandidateRow & { component_id: string }>(sql`
     SELECT DISTINCT ON (comp.component_id)
       comp.component_id   AS component_id,
@@ -313,23 +155,7 @@ async function latestChangeByComponent(
   return latest;
 }
 
-/**
- * The board projection of a freeze from EITHER tier (M25.3).
- *
- * `ServiceBoardFreezeSchema` is `{ id: uuid, reason, endsAt }` and every one of the three is
- * common to both arms of `EffectiveFreeze`, so a platform freeze projects with no schema change
- * and no oasdiff exposure at all — which is precisely why `instance_freezes.id` is a real uuid
- * rather than a synthetic `platform:<key>` (drizzle/0086). The board therefore SHOWS a platform
- * freeze rather than rendering `activeFreeze: null` beside a component that cannot ship, which is
- * the "the lever works and the signal is missing" defect M25.2 had to come back and fix once.
- *
- * The board does NOT distinguish the tiers on the wire, and that is a known limit rather than an
- * oversight: adding a `tier` field to a published response object is an additive API change this
- * increment does not own (the operator-door surfaces deliberately have no UI representation), and
- * `reason` — which both tiers carry and both require to be non-empty — is what a board reader
- * acts on. The tier IS distinguished everywhere a decision is made from it: the gate's block
- * Decision, the hold Decision and `describeFreezeHold` all carry it.
- */
+/** The board projection of a freeze from EITHER tier. See docs/coordination.md §882. */
 function toFreeze(f: EffectiveFreeze): ServiceBoardFreeze {
   return { id: f.id, reason: f.reason, endsAt: f.endsAt.toISOString() };
 }
@@ -348,18 +174,7 @@ const IN_FLIGHT = new Set([
  *  be stated rather than omitted. */
 const BOARD_CATEGORIES: readonly ExecutorCategory[] = ["build", "infrastructure", "configuration"];
 
-/**
- * THE PER-PIPELINE SUMMARY for every component of a service, plus the service's own.
- *
- * Batched deliberately: three queries for the whole board rather than three per row. A service with
- * dozens of microservices is the case this view exists for, and a per-row resolve would make the
- * board's cost linear in components × pipelines.
- *
- * `bound` follows the SAME rungs `resolveBindingForTarget` walks (ADR-0026 + ADR-0027): the
- * component itself, its placements, then the owning service. A board that computed boundness
- * differently from the resolver would tell an operator a pipeline exists that reconcile then
- * refuses — or the reverse — which is worse than not showing it.
- */
+/** The per-pipeline summary for every component, batched. See docs/coordination.md §883. */
 async function pipelinesForComponents(
   tx: TenantTx,
   orgId: string,
@@ -525,11 +340,7 @@ export async function buildServiceBoard(
   orgId: string,
   service: GraphObject
 ): Promise<ServiceBoardResponse> {
-  // 1. The service's components: `contains` edges (service → component), one bounded hop.
-  // `null` read-scope: this is an INTERNAL one-hop traversal (not the /graph/traverse HTTP door),
-  // invoked after the board route has already authorized the caller for `service`; the components it
-  // returns are exactly the children the caller sees by seeing the service. It is not the
-  // enumeration surface graph read-scoping (routes/graph.ts) guards.
+  // 1. The service's components. See docs/coordination.md §884.
   const { objects } = await traverse(
     tx,
     orgId,
@@ -600,30 +411,13 @@ export async function buildServiceBoard(
     // settled long ago cannot keep a board claiming ignorance. One bounded, indexed read.
     listUnattachedChangeStatusInStates(tx, orgId, [...IN_FLIGHT])
   ]);
-  // CHANGE-OBJECT BLINDNESS (see the file header) — a UNION of two independent arms, because
-  // neither alone covers both directions of a scope mismatch.
-  //
-  // ARM 1, SCOPE-derived. A peer whose scope cannot carry change `object_upsert` entries leaves
-  // this domain unable to tell "no change targets this component" from "I was never sent the
-  // change that does" — while `status_only` specifically keeps sending `change_status` entries, so
-  // the domain holds positive evidence that changes exist there. Derived from this RECEIVER's own
-  // recorded scope, which is the predicate `import-repo.ts` re-applies on the way in. It is sound
-  // (it never fabricates ignorance) but it under-claims whenever the SENDER is the narrower side,
-  // since `sync_scope` never crosses the wire and the two sides are never reconciled.
+  // CHANGE-OBJECT BLINDNESS (see the file header). See docs/coordination.md §885.
   const changeBlindPeers = peers.filter((peer) => !scopeCarriesChangeObjects(peer.syncScope));
   // ARM 2, EVIDENCE-derived. Recorded at import, downstream of BOTH peers' scopes, so it fires on
   // exactly the mismatch arm 1 misses.
   const changeVisibilityUnknown = changeBlindPeers.length > 0 || unattachedInFlight.length > 0;
 
-  // STALENESS (DESIGN §13), over the peers whose scope CAN carry change objects — the peers that
-  // can be blind are already covered above, and a peer that structurally cannot send change objects
-  // does not bound the freshness of change objects.
-  //
-  // TWO ANSWERS, deliberately: `label` is the OLDEST reading (the "as of" bound), `anyStale` is an
-  // ANY-peer predicate. Reading the caveat off the label's own `stale` — as this did — silently
-  // dropped it for any overdue peer that was not also the oldest, which is the common shape: an
-  // air-gapped peer weeks old (`stale: null`, no cadence applies) wins the label and hides a
-  // commander an hour past its 60s cadence. See `upstream-freshness.ts`.
+  // Staleness, over the peers whose scope can carry changes. See docs/coordination.md §886.
   const { label: asOf, anyStale: anyUpstreamStale } = await limitingUpstreamFreshness(
     tx,
     orgId,
@@ -645,30 +439,7 @@ export async function buildServiceBoard(
       ]
     : [];
 
-  // ============================================================================================
-  // WHICH FREEZE IS ACTUALLY ON THIS ROW — resolved through CONTAINMENT, not exact scope membership
-  // ============================================================================================
-  // What this used to be: `listFreezes` (every freeze ever authored in the org), a hand-rolled
-  // half-open window comparison in JS, and a `Map` keyed on `scopeObjectId` looked up with
-  // `component.id`. Two defects in three lines, and M25.2 makes both worse:
-  //
-  //   * EXACT-SET MEMBERSHIP. A freeze declared at a domain, at the org root, or at a
-  //     deployment-target appeared on NO board row at all — `activeFreeze: null` for every affected
-  //     component. Before per-target admission, such a freeze at least produced a whole-wave
-  //     `gate`/`block` Decision that `latestBlockDecisionForSubject` turned into `attention.blocked`,
-  //     so an operator saw *something*. A PARTIALLY frozen wave now returns `allow`, its hold
-  //     Decision is deliberately `verdict: "hold"` so it does not reach that reader, and the held
-  //     target sits at `status: "pending"` — indistinguishable from queued. The lever works and the
-  //     signal was missing (proposal §1.8).
-  //   * A SECOND COPY OF THE WINDOW PREDICATE. `freezes-repo.ts`'s `activeFreezesInWindow` claims in
-  //     its own docblock to be THE ONLY PLACE that knows `starts_at <= at < ends_at`; this file made
-  //     that false. Two copies of one predicate drifting is precisely how the containment routes
-  //     drifted until a service-scoped freeze failed OPEN.
-  //
-  // `freezesByTarget` fixes both at once: it owns the window predicate and walks `containmentChain`
-  // per id, so every route reaches — component (3), deployment-target (4), service, domain, org.
-  // INERT when the org has no active freeze (one indexed read, zero graph walks), which is the state
-  // nearly every board render is in.
+  // WHICH FREEZE IS ACTUALLY ON THIS ROW. See docs/coordination.md §887.
   const placementsByComponent = new Map<string, string[]>();
   for (const p of placements) {
     const list = placementsByComponent.get(p.componentObjectId) ?? [];
@@ -680,11 +451,7 @@ export async function buildServiceBoard(
   for (const entry of await freezesByTarget(tx, orgId, freezeLookupIds, new Date())) {
     freezesByObjectId.set(entry.targetObjectId, entry.freezes);
   }
-  /** The one freeze to show for an object and everything placed under it. DETERMINISTIC where the
-   *  old map was not: it kept whichever row `listFreezes` happened to return first, and that query
-   *  has no `ORDER BY`, so two freezes at one scope made the board's answer depend on the planner.
-   *  The rule is "the one that keeps this row frozen LONGEST" (max `endsAt`, ties broken by id) —
-   *  the honest single answer to "when can this ship again". */
+  /** The one freeze to show, chosen deterministically. See docs/coordination.md §888. */
   const activeFreezeFor = (objectId: string): EffectiveFreeze | undefined => {
     const candidates = [
       ...(freezesByObjectId.get(objectId) ?? []),
@@ -726,13 +493,7 @@ export async function buildServiceBoard(
     const componentFreeze = activeFreezeFor(component.id);
 
     if (!latest || !changeId) {
-      // Nothing found for this component. On a domain every peer of which forwards change objects
-      // that is a complete observation — genuinely nothing is rolling here. On a change-blind
-      // deployment it is not an observation at all, and `emptyRowUnknowns` says so rather than
-      // letting the nulls/false/[] below read as an all-clear. It still counts toward `stable` for
-      // shape stability (the four buckets must keep summing to `rows.length`, as
-      // `service-board-federation.integration.test.ts` pins) — which is precisely why the response
-      // then declares `summary.stable` itself unknown.
+      // Nothing found for this component. See docs/coordination.md §889.
       stable += 1;
       rows.push({
         component: { id: component.id, urn: component.urn, name: component.name },
@@ -751,17 +512,7 @@ export async function buildServiceBoard(
     }
 
     if (!latest.drivenHere) {
-      // FEDERATION HONESTY. The change object replicated here; its plan/waves, block Decisions and
-      // approval requests did not — none of those tables ever rides the sync journal. (A FREEZE now
-      // may: M25.7/D6. That is why freeze visibility is stated board-level rather than in this
-      // per-row list — see `freezeVisibilityUnknowns`.) So this domain can state two real
-      // observations (the change exists; the origin domain last
-      // reported `federationState`) and genuinely cannot state anything else. It therefore counts
-      // as its OWN bucket, never `stable`: claiming an all-clear from data this domain never had is
-      // exactly the fabrication the graph-health surfaces already refuse (absent ⇒ `unknown`).
-      //
-      // The zero values below are shape stability, NOT observations — `unknownFields` names every
-      // one of them so no client can mistake the two.
+      // Federation honesty about what actually replicated. See docs/coordination.md §890.
       notDrivenHere += 1;
       rows.push({
         component: { id: component.id, urn: component.urn, name: component.name },
@@ -775,12 +526,7 @@ export async function buildServiceBoard(
         activeFreeze: componentFreeze ? toFreeze(componentFreeze) : null,
         driver: { drivenHere: false, originDomainId: latest.originDomainId },
         unknownFields: [
-          // `federationState` is absent until a `change_status` entry arrives — and the COMMON
-          // ordering is that `object_upsert` lands first, so this is the normal state of a
-          // freshly-replicated change, not an edge case. Emitting the resulting `changeState: null`
-          // without saying so would be byte-identical on the wire to a genuine no-change row: the
-          // exact confusion between "nothing to report" and "cannot see" this projection exists to
-          // prevent. The lifecycle state is unknown here until the origin reports one.
+          // Absent until a status entry arrives, which is common. See docs/coordination.md §891.
           ...(latest.federationState === null ? ["changeState"] : []),
           "currentWave",
           "waves",
@@ -788,37 +534,14 @@ export async function buildServiceBoard(
           "attention.decisionId",
           "attention.awaitingApproval",
           "attention.emergency",
-          // A freeze declared in the DRIVING domain reaches us only if that domain declared it
-          // `federate: true`, so only a freeze we actually found locally is an observation; its
-          // absence tells us nothing about theirs. (The same is true of a freeze declared in ANOTHER
-          // domain for a row this domain DOES drive. That is a property of the whole board rather
-          // than of one row, so it is stated once, board-level, in the response's own
-          // `unknownFields`; see `freezeVisibilityUnknowns` below.)
-          //
-          // M25.7 (owner decision D6) NARROWED THIS SENTENCE. It used to read "freezes never ride
-          // the journal in either direction" — true when written, and pinned by
-          // `service-board-precedence.integration.test.ts`, because a freeze was a projection row
-          // with no graph object and `JournalEntryKindSchema` has no freeze-shaped kind. A freeze
-          // that opts into federation now has an object and does cross. The CONCLUSION is unchanged
-          // — a null `activeFreeze` still cannot be read as "no freeze applies" — because the
-          // default is still `federate: false` and nothing in a bundle tells this domain which kind
-          // the peer declared.
+          // A peer's freeze reaches us only if it federates. See docs/coordination.md §892.
           ...(componentFreeze ? [] : ["activeFreeze"])
         ]
       });
       continue;
     }
 
-    // BOUNDED (was `listDecisionsForSubject`: every Decision ever recorded about this change, no
-    // `kind` filter, no `LIMIT`, once PER BOARD ROW). The board consumes exactly one Decision — the
-    // latest `block`, whose id it hands the operator below — and on the live instance each of the 29
-    // changes carried ~425,000 rows, so one board render pulled hundreds of thousands of rows per row
-    // of the board. Measured at 12M rows: 26,547 ms / 399,596 buffers for the old read against
-    // 1.14 ms / 6 buffers for this one, same answer. See `latestBlockDecisionForSubject` for why it
-    // is keyed on the verdict the board actually means rather than on a list of `kind`s that a future
-    // eleventh block-writer would silently falsify — and why that only becomes an O(1) read with
-    // drizzle/0046's partial index behind it (without it, a change that never blocked pays a walk
-    // over its whole history to return nothing).
+    // Bounded: it was every Decision ever recorded before. See docs/coordination.md §893.
     const [change, plan, blockDecision, approvals] = await Promise.all([
       getChange(tx, orgId, changeId),
       getLatestPlanForChange(tx, orgId, changeId),
@@ -880,68 +603,15 @@ export async function buildServiceBoard(
     else stable += 1;
   }
 
-  // BOARD-LEVEL HONESTY: freeze visibility is PARTIAL, for EVERY row alike — a null `activeFreeze`
-  // on a DRIVEN-HERE row asserts "no freeze VISIBLE HERE", never "no freeze applies".
-  //
-  // M25.7 (owner decision D6) CHANGED THE REASON AND NOT THE RULE, and the retired reason is kept
-  // because it is what a reader will otherwise re-derive and get wrong. IT USED TO BE ABSOLUTE:
-  // `freezes` was a local projection never passed to `appendJournalEntry`, no freeze-shaped
-  // `JournalEntryKind` existed, and a freeze was not a graph object at all — so a freeze declared in
-  // another domain was structurally invisible here, always. A freeze authored `federate: true` now
-  // rides `object_upsert` as a `freeze` object and `federation/import-repo.ts` rebuilds it into THIS
-  // instance's `freezes` table, so some of them are visible and enforced here.
-  //
-  // The caveat survives intact because federation is OPT-IN AND DEFAULTS OFF: a peer's freeze may or
-  // may not have been declared federating, and nothing in a bundle reports the freezes that were
-  // withheld. So "no freeze here" is still not "no freeze applies", and this domain cannot even say
-  // how much it is missing. Weakening the caveat to fire only when the org has no federated freeze
-  // would be exactly backwards — the un-federated ones are the invisible ones.
-  //
-  // Stated once at the response level rather than repeated into every row's
-  // `unknownFields`, because it is a property of what this DEPLOYMENT can see, not of any row's
-  // driver: putting it per-row would make `row.unknownFields` mean two different things (what this
-  // row's driver withheld, and what this deployment structurally cannot see) and would fire on
-  // every row of every board.
-  //
-  // Conditioned on this org actually having a federation peer: with no peer there IS no other domain
-  // whose freeze could be missing, and a null freeze is then a complete observation. Claiming
-  // ignorance we don't have would be its own small dishonesty.
+  // Board-level honesty: freeze visibility is partial for all. See docs/coordination.md §894.
   const freezeVisibilityUnknowns = peers.length > 0 ? ["serviceFreeze", "rows[].activeFreeze"] : [];
 
-  // BOARD-LEVEL HONESTY, second rule: change-object blindness (see the file header). Two statements
-  // stop being observations the moment a peer's scope withholds change objects:
-  //
-  //  - `summary.stable` — it now mixes genuinely-settled rows with rows that merely came up empty,
-  //    and nothing in the response distinguishes them, so the COUNT cannot be read as "this many
-  //    components are fine". A client must not paint it as an all-clear.
-  //  - `rows[].latestChangeId` — for an empty row it may be an unsent change (the row's own
-  //    `unknownFields` says so); for a row that DID find one, that change may not be the newest,
-  //    because a newer one from the blind peer would never have arrived. Stated once here rather
-  //    than stamped onto rows whose reading is a real local observation.
-  //
-  // Board-level for the same reason freeze visibility is: this is a property of what this
-  // DEPLOYMENT can structurally see, not of any one row's driver.
+  // BOARD-LEVEL HONESTY, second rule. See docs/coordination.md §895.
   const changeVisibilityUnknowns = changeVisibilityUnknown
     ? ["summary.stable", "rows[].latestChangeId"]
     : [];
 
-  // BOARD-LEVEL HONESTY, third rule: STALENESS (DESIGN §13 — "never presents stale data as live
-  // status"). The two statements above stop being current observations the moment the limiting
-  // upstream is overdue by its OWN effective cadence: a newer change may already exist there that
-  // simply has not been sent yet, so `summary.stable` may be counting rows that are no longer
-  // settled and no row's `latestChangeId` is certainly the latest. Same two dotted paths as the
-  // blindness rule because it is the same two claims that fail — deduped below, since a board can
-  // be both blind AND stale and must not say so twice.
-  //
-  // Fires on ANY overdue upstream (`anyUpstreamStale`), NOT on the label peer's own `stale`. The
-  // label is the oldest reading, which is routinely an air-gapped peer whose `stale` is `null` (no
-  // cadence applies to it) — conditioning the caveat on that reading silently suppressed it for
-  // every overdue peer that was not also the oldest, i.e. exactly the incident it exists to catch.
-  //
-  // Still deliberately keyed on `stale === true` per peer, never `null`. `null` means no cadence
-  // exists for the data to be late against, and §13's contract there is the LABEL, which `asOf`
-  // carries — asserting an unknown from the mere absence of a schedule would over-claim ignorance
-  // on every air-gapped deployment forever.
+  // BOARD-LEVEL HONESTY, third rule: STALENESS. See docs/coordination.md §896.
   const stalenessUnknowns = anyUpstreamStale ? ["summary.stable", "rows[].latestChangeId"] : [];
 
   const serviceFreeze = activeFreezeFor(service.id);

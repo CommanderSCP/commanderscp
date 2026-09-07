@@ -8,30 +8,12 @@ import { assertPinnedCosignVersion, resolveCosign } from "./cosign-bin.js";
 import { signBlobDetached, type SigningKey } from "./cosign.js";
 import { CommandError, run, which } from "@scp/cosign";
 
-/**
- * install.sh checks for `skopeo`/`cosign`/(`helm`|`docker`) on PATH unconditionally, even under
- * `--dry-run` — before it ever verifies a signature. Gating on all three (like
- * `scripts/airgap-drill.sh`/`deploy-drills.yml` already do for the same reason) means this suite
- * exercises the REAL script wherever these documented prerequisites (BUILD_AND_TEST.md §1) are
- * installed, and skips cleanly — never a false failure — where they aren't.
- *
- * `which("cosign")` is checked DIRECTLY and deliberately, not via the pinned resolution in
- * cosign-bin.ts: install.sh's whole trust model is that the operator supplies cosign
- * EXTERNALLY, on PATH. A cosign that exists only at the vendored in-image path would not
- * satisfy install.sh, so it must not un-skip this suite either. (CI does put the pinned binary
- * on PATH — scripts/install-pinned-cosign.sh — so these assertions really run there.)
- */
+/** The installer checks its tools before it verifies anything. See docs/airgap.md §38. */
 function installShToolingAvailable(): boolean {
   return which("cosign") && which("skopeo") && which("helm");
 }
 
-/**
- * A fresh, ephemeral cosign keypair — deliberately NOT `resolveSigningKey` from `./cosign.js`,
- * which honors an ambient `COSIGN_KEY` env var: if that happened to be set in the environment
- * this suite runs in, two calls would resolve to the SAME real key, silently defeating the
- * "legit key vs. attacker key are DIFFERENT keys" premise this suite depends on. This always
- * generates a brand-new keypair, independent of any ambient cosign env var.
- */
+/** A fresh, ephemeral cosign keypair. See docs/airgap.md §39. */
 function generateKeypair(scratchDir: string, label: string): SigningKey {
   const prefix = path.join(scratchDir, label);
   const cosign = resolveCosign();
@@ -43,21 +25,7 @@ function generateKeypair(scratchDir: string, label: string): SigningKey {
   return { keyPath: `${prefix}.key`, pubKeyPath: `${prefix}.pub`, password: "", isEphemeral: true };
 }
 
-/**
- * install.sh's trust-root regression suite (adversarial review of PR #15, CRITICAL #1): a
- * previous version of `install.sh` cosign-verified everything against the `cosign.pub` file
- * SHIPPED INSIDE the bundle it was verifying — self-referential, so an attacker who substitutes
- * the whole bundle can simply re-sign everything with their own key and ship their own matching
- * `cosign.pub` alongside it; `install.sh` would verify cleanly. `deploy/airgap/src/verify-bundle.ts`
- * already required an external `--pubkey` with no in-bundle fallback (see its own module doc);
- * this suite proves `install.sh` (the bash script, exercised as a real subprocess — not just the
- * TypeScript verifier) now has the same property.
- *
- * This is genuinely exercising the install.sh SCRIPT (spawned as `bash install.sh ...`), not a
- * reimplementation of its logic — the exact class of gap a purely-TypeScript test suite could
- * miss (README.md's own "Testing" section, before this fix, said the install.sh mechanics were
- * "exercised manually end-to-end", never as a permanent automated regression test).
- */
+/** install.sh's trust-root regression suite. See docs/airgap.md §40. */
 
 const INSTALL_SH = fileURLToPath(new URL("../assets/install.sh", import.meta.url));
 
@@ -65,14 +33,7 @@ async function makeTempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "scp-airgap-install-tamper-"));
 }
 
-/**
- * Runs install.sh and returns {ok, stdout, stderr, exitCode} instead of throwing, whichever way
- * it exits. install.sh `cd`s to ITS OWN location before doing anything (`SCRIPT_DIR="$(cd
- * "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` — see its header comment: real usage always runs it
- * FROM INSIDE an extracted bundle directory, e.g. `./scp-bundle-<version>/install.sh`), so this
- * copies the real script INTO the fixture bundle dir first — running it from its source location
- * in this repo would have it look for CHECKSUMS.txt etc. next to the SOURCE file, not the fixture.
- */
+/** Runs the installer and returns its outcome instead of throwing. See docs/airgap.md §41. */
 async function runInstallSh(
   args: string[],
   opts: { cwd: string; env?: NodeJS.ProcessEnv }
@@ -175,11 +136,7 @@ describe.skipIf(!installShToolingAvailable())(
         await writeFile(path.join(dir, "payload.txt"), "the real bundle content", "utf8");
         const legitKey = generateKeypair(scratch, "legit");
 
-        // THE ATTACK (adversarial review's exact scenario): substitute the whole bundle —
-        // tamper with the payload, generate a BRAND NEW keypair the attacker controls, and
-        // re-sign the (now-tampered) CHECKSUMS.txt with it. Pre-fix, install.sh would have
-        // trusted whatever `cosign.pub` the attacker also shipped inside the bundle — this test
-        // never even writes an in-bundle cosign.pub, because the fix means it must never be read.
+        // THE ATTACK (adversarial review's exact scenario). See docs/airgap.md §42.
         await writeFile(path.join(dir, "payload.txt"), "ATTACKER-SUBSTITUTED content", "utf8");
         const tamperedEntries = await computeChecksums(dir);
         await writeFile(path.join(dir, "CHECKSUMS.txt"), formatChecksums(tamperedEntries), "utf8");

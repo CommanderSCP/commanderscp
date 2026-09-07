@@ -1,35 +1,4 @@
-/**
- * The sandboxed CEL evaluator (DESIGN.md §10.1: "CEL via `cel-js` — sandboxed, no I/O, no
- * arbitrary code"; BUILD_AND_TEST.md §8 M4 "known-tricky": "the CEL sandbox MUST NOT allow I/O,
- * network, filesystem, process, or unbounded compute... evaluate untrusted policy expressions
- * safely — timeout + no host bindings"). SECURITY-SENSITIVE (flagged in the M4 PR body).
- *
- * Two independent layers of defense, because a synchronous single-threaded interpreter (cel-js)
- * can't be preempted by a JS timer alone:
- *
- *  1. **Static pre-validation** (`checkStaticComplexity`, cheap, no thread involved): rejects
- *     obviously pathological input — over-long expressions, or nesting deep enough to risk a
- *     parser stack overflow — before it ever reaches an evaluator. This is the fast path that
- *     handles the common adversarial case (a huge or deeply-nested expression) without spending a
- *     worker round trip on it.
- *  2. **`node:worker_threads` isolation with a hard wall-clock timeout**
- *     (`cel-worker-entry.ts`): the actual `cel-js` `evaluate()` call runs on a separate thread;
- *     this class races it against a timer and calls `worker.terminate()` if the timer wins,
- *     converting "hung forever" into a bounded failure. Because it's a SEPARATE THREAD (not just
- *     a separate call stack), terminating it doesn't just abandon a promise — it actually stops
- *     the runaway computation, which a same-thread `Promise.race` against a `setTimeout` cannot do
- *     (Node's event loop can't preempt synchronous code). Isolation also means a `cel-js` bug that
- *     crashes the worker (e.g. a genuine parser stack overflow past the static check's bound)
- *     takes down that one worker, not the request-serving process — the pool respawns it,
- *     mirroring `plugin-host/host.ts`'s crash-recovery design (same idea, far smaller surface: no
- *     JSON-RPC framing, no plugin config, just `{expression, context} -> {value | error}`).
- *
- * No host bindings are ever registered (`cel-js.evaluate`'s third "custom functions" argument is
- * never passed — see the worker entry's doc comment) — the ONLY data an expression can observe is
- * the plain-JSON `context` object `governance/evaluate.ts` passes in, and the ONLY thing an
- * expression can produce is a plain CEL value. There is no code path from a policy expression to
- * `fetch`, `fs`, `child_process`, or any other capability.
- */
+/** The sandboxed CEL evaluator. See docs/governance.md §30. */
 import { Worker } from "node:worker_threads";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,13 +19,7 @@ const DEFAULT_WORKER_ENTRY_PATH = path.resolve(
 export const CEL_MAX_EXPRESSION_LENGTH = 4096;
 export const CEL_MAX_NESTING_DEPTH = 48;
 export const CEL_DEFAULT_TIMEOUT_MS = 250;
-/** MAJOR #4: the EVALUATION CONTEXT is partly attacker-controlled — a change target's `labels`
- *  and the graph owner/dependent id arrays flow in from graph objects any writer can set. cel-js's
- *  `==`/`!=` do a deep structural compare, so a short expression like `subject.labels == {...}`
- *  over a huge/deep labels object can burn the whole timeout budget (feeding the timeout path).
- *  Bounding the serialized size AND the nesting depth of the context before it ever reaches a
- *  worker caps per-eval cost independent of the expression. Generous vs. any real policy context
- *  (DESIGN §10.1's shape is a handful of ids + a small labels map). */
+/** The evaluation context is partly attacker-controlled. See docs/governance.md §31. */
 export const CEL_MAX_CONTEXT_BYTES = 64 * 1024;
 export const CEL_MAX_CONTEXT_DEPTH = 32;
 /** MAJOR #3: default worker-thread pool size. >1 so gate-evaluation contention (many changes
@@ -141,67 +104,10 @@ export type CelEvalResult = { ok: true; value: unknown } | { ok: false; error: s
  *  exception text, whose length is not this module's to control. Generous vs. any real diagnosis. */
 export const CEL_MAX_ERROR_LENGTH = 512;
 
-/**
- * cel-js embeds the ENTIRE evaluation context, `JSON.stringify`d, in its identifier-resolution
- * errors (`cel-js@0.3.1/dist/visitor.js:329-341`: `Identifier "x" not found in context: {…}` and
- * `Cannot obtain "x" from non-object context: …`). Both spellings put the dump after `" context: "`,
- * which is what this cuts at.
- */
+/** The library embeds the whole context in its errors. See docs/governance.md §32. */
 const CEL_CONTEXT_DUMP_MARKER = " context: ";
 
-/**
- * KEEP THE DIAGNOSIS, DROP THE CONTEXT DUMP — the error text this sandbox returns must depend only
- * on the FAULT, never on the evaluation context.
- *
- * WHY THIS IS NOT COSMETIC (measured; PR #153 review Q2). A policy whose CEL condition cannot be
- * evaluated — a typo'd identifier, a renamed label, a field that no longer exists — is a PERMANENT
- * operator error that never self-heals. `governance/evaluate.ts` persists this string into the
- * reason tree twice (as `conditionError` and, for a required contributor, inside the fail-closed
- * `conditionError` effect's `detail.error`), and the context cel-js dumps into it carries
- * `context.time`, a fresh ISO snapshot per evaluation. So the reason tree differed on every ~2 s
- * reconcile tick, `insertDecisionIfChanged` correctly saw a genuinely new verdict every time, and
- * the gate went straight back to ~43,200 Decision rows/day/change — the ORIGINAL 1.44 GB/day
- * incident, with the persist-on-change fix fully in place. Measured over 15 consecutive ticks: two
- * consecutive 1,346-byte reason trees differing by TWO CHARACTERS, both inside the timestamp.
- *
- * WHAT THE TRADE ACTUALLY IS — stated precisely, because an earlier draft of this comment claimed
- * "nothing is lost: every Decision already stores the context verbatim in `input_context`", and that
- * is MEASURABLY FALSE for the gate Decision this protects. `gate-orchestrator.ts` persists COUNTS
- * and wave metadata (`matchedPolicyCount`, `effectivePolicyCount`, `firedPolicyCount`, plus the
- * caller's `waveId`/`waveIndex`/`topologyObjectId`/`explicitGatesBound`); the CEL evaluation context
- * built at `governance/evaluate.ts` (`change`/`subject`/`graph`/`actor`/`approvals`/
- * `controlOutcomes`/`time`) is persisted NOWHERE. So the dump is dropped, not relocated.
- *
- * The trade is still right, for two reasons that do not depend on that false claim. First, the dump
- * was the FLOOD: it is a per-tick-unstable restatement of inputs the Decision already summarizes,
- * and `context.time` alone made every tick's reason tree a new statement. Second, the ACTIONABLE
- * part survives verbatim — WHICH identifier failed to resolve, which is what an operator fixes the
- * policy from; the values of the other fields never told them anything about a typo'd name.
- * Dropping it also stops the whole CEL context being duplicated into `reason_tree`, which
- * `scp change explain` and the UI render far more widely than `input_context`.
- *
- * NOT A SECURITY CHANGE. The timeout, the worker isolation, the static complexity checks and the
- * context-complexity checks are all untouched — this only rewrites the text of an already-failed
- * evaluation's error, on the way out.
- *
- * WHERE IT IS APPLIED, and why only there. The other `{ok:false}` constructions in this file are
- * `checkContextComplexity`'s bounded messages, the two "CEL sandbox is stopped" constants,
- * `waitForReady`'s "did not become ready within Nms", the timeout path's "timed out after Nms", and
- * `failAllPending`'s worker-exit/stopping messages — all text THIS MODULE writes, from constants and
- * numbers, so normalizing them would be a no-op that looked like a fix.
- *
- * TWO sites forward text from elsewhere, and only one of them needs this:
- *  * `spawnWorker`'s message handler forwards the worker's `msg.error` — cel-js's own exception,
- *    caught and posted back by `cel-worker-entry.ts`. That IS the boundary the context dump crosses,
- *    and it is what this wraps.
- *  * `worker.on("error")` forwards a foreign Node worker-`error`'s `.message` into
- *    `failAllPending`, and it reaches the reason tree exactly the same way. Named here so a future
- *    reader does not skip auditing it — but it is FORWARDED-BUT-BOUNDED, not a second flood:
- *    `cel-worker-entry.ts` catches every evaluation error and posts it as `msg.error`, so cel-js
- *    text never reaches the `error` EVENT, and a worker-level failure (spawn/module/thread) carries
- *    no CEL context and is stable across ticks. Nothing to normalize; something to check if either
- *    of those two facts ever changes.
- */
+/** KEEP THE DIAGNOSIS, DROP THE CONTEXT DUMP. See docs/governance.md §33. */
 export function normalizeCelWorkerError(error: string): string {
   const at = error.indexOf(CEL_CONTEXT_DUMP_MARKER);
   // Keep the trailing "context" — "…not found in context" reads as the diagnosis it is.
@@ -245,11 +151,7 @@ export interface CelSandboxOptions {
   readyTimeoutMs?: number;
 }
 
-/**
- * Owns a small pool of persistent CEL-evaluation worker threads. `evaluate()` round-robins across
- * the pool, races the call against `timeoutMs`, and on timeout terminates+respawns that specific
- * worker (the in-flight call resolves with `{ok:false}` rather than hanging the caller forever).
- */
+/** Owns a small pool of persistent evaluation workers. See docs/governance.md §34. */
 export class CelSandbox {
   private readonly opts: Required<Omit<CelSandboxOptions, "workerEntryPath">> & {
     workerEntryPath: string;
@@ -333,20 +235,7 @@ export class CelSandbox {
       if (idx !== -1) this.workers[idx] = this.spawnWorker();
     });
 
-    // CRITICAL, and CRITICALLY ORDERED LAST: unlike timers, `Worker` handles keep the Node event
-    // loop alive by default — an idle CEL sandbox (nothing ever calls `evaluate()` again) would
-    // otherwise hang ANY process that constructed one forever, including short-lived ones that
-    // never call `stop()` explicitly (`openapi-emit.ts`, `scp` CLI subcommands that boot
-    // `buildApp` for schema purposes, a test that forgets teardown). `unref()` means this worker
-    // never by itself keeps the process alive; the process stays alive for as long as something
-    // ELSE needs it to (the Fastify listener, an in-flight `evaluate()` call's pending promise,
-    // ...), which is exactly what every other caller of this class actually wants. MUST be called
-    // AFTER `worker.on("message", ...)` is attached above, not before: Node's `Worker` re-refs
-    // its underlying message port the moment a `"message"` listener is registered on it,
-    // independent of any earlier `unref()` call — calling `unref()` before the listener existed
-    // (this function's original, buggy ordering) silently leaves the worker ref'd anyway and
-    // hangs process exit forever. Verified against real `node:worker_threads` behavior, not just
-    // reasoned about — see this commit's PR description for the reproducer.
+    // CRITICAL, and CRITICALLY ORDERED LAST. See docs/governance.md §35.
     worker.unref();
 
     return entry;
@@ -375,15 +264,7 @@ export class CelSandbox {
     });
   }
 
-  /**
-   * Evaluates one CEL expression against `context`. Never throws for a bad/malicious/slow
-   * expression — those come back as `{ok:false, error}` (module doc comment: layer 1's static
-   * check throws `CelSandboxError` synchronously for pathological SHAPE before any thread is
-   * involved; that IS allowed to throw since it's a caller-input-validation failure the same as
-   * a Zod parse error, not a sandboxing concern). A worker's one-time module-load cost (tsx
-   * transform + `cel-js`/`chevrotain` import) is awaited via `waitForReady` and does NOT count
-   * against `timeoutMs` — only the actual `evaluate()` call, once dispatched, is timed.
-   */
+  /** Evaluates one CEL expression against `context`. See docs/governance.md §36. */
   async evaluate(expression: string, context: Record<string, unknown>): Promise<CelEvalResult> {
     checkStaticComplexity(expression);
     // MAJOR #4: reject a pathologically large/deep (partly attacker-controlled) context BEFORE it
@@ -443,9 +324,4 @@ export function getSharedCelSandbox(): CelSandbox {
   return sharedSandbox;
 }
 
-// A `setSharedCelSandboxForTest()` "test-only" swap stood here with ZERO callers, including tests —
-// every suite that wants a tuned sandbox constructs its own `CelSandbox` directly instead. Removed
-// as part of the census that fixed the id-keyed property-schema validator cache: an exported
-// reset/replace function with no caller is the exact tell that let that bug survive a green suite,
-// because it reads as an installed seam. Tests that need to swap the shared instance should add it
-// back TOGETHER WITH the caller.
+// A test-only swap stood here with zero callers. See docs/governance.md §37.

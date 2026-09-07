@@ -25,28 +25,7 @@ import {
 } from "../test-support/harness.js";
 import { SSE_AUTHZ_POOL_MAX } from "./events.js";
 
-/**
- * RBAC ON `GET /events/stream` — the boundary below tenancy (routes/events.ts).
- *
- * `sseHub` keys its channels by `orgId`, which is the TENANCY boundary and nothing more. Before
- * this suite existed the route stopped there: any authenticated principal in the org — including
- * one with zero role bindings — was pushed every object's events, each carrying that object's id
- * and a payload, while every REST read of the same objects demanded `object:read` at a resolved
- * scope. These tests drive the SHIPPED path end to end (real HTTP, the generated SDK's
- * `streamEvents`, the real relay → NOTIFY → bridge → `sseHub` → route fan-out) rather than calling
- * the gate directly, because the defect was never in a helper — it was in what the route did not
- * call.
- *
- * ## Every negative assertion here is fenced by a POSITIVE one on the SAME connection
- *
- * "X never arrived" is the assertion shape that passes for free when nothing could have arrived at
- * all (a stream that never connected, an event that was never relayed, a bridge whose LISTEN was
- * still being established — NOTIFY has no replay). So each test publishes the frame it expects to
- * be REFUSED first, waits until the relay has actually processed that outbox row, and only then
- * publishes a frame that principal IS allowed to see; the refusal is asserted at the moment its
- * successor has already been delivered over the same connection. The route serializes its per-frame
- * permission checks into one promise chain per connection precisely so that order is meaningful.
- */
+/** RBAC ON `GET /events/stream`. See docs/routes.md §145. */
 describe("GET /events/stream: per-frame object:read at the event's subject", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -85,30 +64,13 @@ describe("GET /events/stream: per-frame object:read at the event's subject", () 
     return subscription;
   }
 
-  /**
-   * Publishes one outbox event and resolves with its outbox row id once the relay has PROCESSED
-   * it — which is also the SSE frame's `id`, so every assertion below names an exact frame rather
-   * than matching on a type or subject that another suite (or the bridge's own reconnect resync)
-   * could also have produced.
-   *
-   * Waiting for `processed_at` is what makes "published before" mean "reached the hub before": the
-   * relay NOTIFYs inside the row's own transaction, but events/sse-bridge.ts fetches each pointer
-   * concurrently, so two rows relayed in the same batch can reach `sseHub` in either order. A row
-   * whose relay has already committed, followed by a fresh publish that needs its own NOTIFY and
-   * its own fetch, cannot.
-   */
+  /** Publishes one event and resolves once the relay has it. See docs/routes.md §146. */
   async function publishRelayed(
     type: string,
     subject: string | null,
     data: unknown = {}
   ): Promise<string> {
-    // A NONCE IN `source`, because (type, subject) IS NOT UNIQUE and looking a row up by it is how
-    // this whole file goes vacuous. Measured while mutation-proving: with the lookup keyed on
-    // (type, subject) + `processed_at IS NOT NULL`, the SECOND publish of an already-published pair
-    // resolved instantly to the FIRST publish's row — a frame this connection had received several
-    // assertions ago. Every `waitForFrame` on it then returned immediately, on the old frame, and
-    // the payload-normalization assertion passed with the normalization deleted. `source` is a
-    // column this test owns outright, so one nonce makes each publish addressable.
+    // A NONCE IN `source`, because. See docs/routes.md §147.
     const source = `/routes/events-authz.integration.test#${++publishSeq}`;
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       await eventBus.publish(tx, { orgId: org.orgId, type, source, subject, data });
@@ -151,17 +113,7 @@ describe("GET /events/stream: per-frame object:read at the event's subject", () 
   let serviceViewer: Subscription;
   let orgRootViewer: Subscription;
 
-  /**
-   * The stand-in for `main.ts`'s `sseAuthzPool` — an INSTRUMENTED pool, so "the route ran its
-   * permission checks somewhere other than `deps.db`" is an observation rather than a reading of
-   * the source. `pg.Pool` emits `acquire` on every checkout, so this counter is exactly "how many
-   * tenant transactions the SSE fan-out opened on the isolated pool".
-   *
-   * `test-support/harness.ts` builds deps as `{ db, config }` — it does NOT set `sseAuthzDb`, which
-   * is precisely why routes/events.ts's fallback exists — so this assignment IS the wiring under
-   * test on the runtime side. It is made before any connection is opened, because the route
-   * resolves the pool once per connection.
-   */
+  /** The stand-in for `main.ts`'s `sseAuthzPool`. See docs/routes.md §148. */
   let authzPool: pg.Pool;
   let authzAcquires = 0;
 
@@ -306,23 +258,7 @@ describe("GET /events/stream: per-frame object:read at the event's subject", () 
     expect(frameIds(orgRootViewer)).not.toContain(notAnObject);
   }, 120_000);
 
-  /**
-   * THE ISOLATION, OBSERVED — not "a second pool exists" but "the fan-out's checks ran on it".
-   *
-   * The previous round put an attacker-influenceable, unbounded-volume database load (one recursive
-   * permission walk per connection per distinct subject) onto `deps.db`, the request-serving pool —
-   * the exact hazard `main.ts` had already isolated one layer up for the SSE bridge (its `max: 2`
-   * pool, review finding SEC-1). `deps.db` has no `max` (pg's default 10) and `createPool` sets
-   * `connectionTimeoutMillis: 5000`, so contention there surfaces as timeouts on unrelated API
-   * requests.
-   *
-   * The subject is a FRESH `randomUUID()` on purpose: the per-connection memo would otherwise
-   * answer from cache and no checkout would happen at all, which is how this assertion could pass
-   * while proving nothing. A random UUID is a guaranteed memo miss on all three connections, and it
-   * is UUID-shaped so it clears the route's pre-pool `UUID_RE` gate and genuinely reaches the
-   * database (where it matches no object, so the frame is correctly dropped — asserted below, which
-   * is what proves the check RAN rather than being skipped).
-   */
+  /** THE ISOLATION, OBSERVED. See docs/routes.md §149. */
   it("runs the per-frame permission check on the ISOLATED pool, not the request-serving one", async () => {
     expect(server.deps.sseAuthzDb).toBeDefined();
     expect(server.deps.sseAuthzDb).not.toBe(server.deps.db);
@@ -347,21 +283,7 @@ describe("GET /events/stream: per-frame object:read at the event's subject", () 
   }, 120_000);
 });
 
-/**
- * THE COMPOSITION ROOT — a SOURCE census, because `main.ts` cannot be imported (`main()` runs at
- * module scope), exactly as background-work.test.ts documents for `startBackgroundLoops`.
- *
- * The suite above proves the ROUTE prefers `deps.sseAuthzDb` when it is set. Nothing above can
- * prove that anything sets it in a deployed process — the harness deliberately does not, and this
- * repo's dominant failure mode is a component that is built, tested, and wired nowhere. These two
- * assertions are the cheapest detector for the single most likely edit: the `main.ts` line going
- * away in a merge or a revert, leaving every deployed process silently on the fallback.
- *
- * WHAT THIS DOES NOT PROVE (the same list background-work.test.ts carries): that the assignment is
- * reachable, that the pool it names is the isolated one at runtime, or that it happens before the
- * first request. Only booting the real process could. `readStripped`, not `readFileSync`, so a
- * mention inside the surrounding comment block cannot satisfy it.
- */
+/** THE COMPOSITION ROOT. See docs/routes.md §150. */
 describe("main.ts hands the route an isolated pool (SOURCE CENSUS — main.ts cannot be imported)", () => {
   const mainTs = readStripped(join(dirname(fileURLToPath(import.meta.url)), "..", "main.ts"));
 

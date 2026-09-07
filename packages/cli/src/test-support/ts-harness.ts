@@ -3,21 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * TEST-ONLY. Compiles ONE generated TypeScript source file (`scp iac export --format ts`'s output,
- * or `scp iac scaffold`'s) against this repo's real strict tsconfig and the REAL `@scp/iac` package —
- * proving the emitter's stated guarantee ("emitted code must actually compile against the real
- * constructs", team-pipeline-iac.md §9) rather than assuming it.
- *
- * The temp project lives INSIDE `packages/cli`'s own directory tree (not `os.tmpdir()`) on purpose:
- * `packages/cli/node_modules/@scp/iac` is a real pnpm workspace symlink (`@scp/iac` is a dependency
- * of this package), so ordinary Node/TS module resolution finds it by walking UP from the compiled
- * file — no `paths` mapping, no dependency on where `os.tmpdir()` happens to point in CI.
- *
- * `emit: true` additionally writes JS to `outDir` so the round-trip test can `import()` and execute
- * it (`estate-program.test.ts`'s sibling in `@scp/iac` covers the same ground at the emitter-unit
- * level; this one proves it through the same compiler a real team's CI would run).
- */
+/** Compiles one generated file against this repo's real types. See docs/cli.md §149. */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../../..");

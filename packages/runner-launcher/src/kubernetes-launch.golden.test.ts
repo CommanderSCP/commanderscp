@@ -2,31 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LAUNCHER_OWNER_ID, jobManifest, runnerRunBoundMs } from "./index.js";
 import type { RunnerSpec } from "./index.js";
 
-/**
- * ================================================================================================
- * THE KUBERNETES LAUNCH GOLDEN — the whole manifest, pinned, in one `toStrictEqual`
- * ================================================================================================
- *
- * THIS FILE EXISTED AS A CLAIM BEFORE IT EXISTED AS A FILE, and that is why it is here. M23.2's
- * `jobManifest` doc says, verbatim: "`kubernetes-launch.golden.test.ts` asserts the whole object
- * with `toStrictEqual`, so a field ADDED here without a golden update is a red test rather than a
- * silent change to what every managed run does." A filterless grep for that filename across the repo
- * returned exactly ONE hit — the sentence itself. The function was exported for a gate that was
- * never written, which is the precise shape CLAUDE.md names: "treat a well-written comment naming a
- * hazard as a signal to sweep, not as evidence it was handled". M23.4 changes what a launch sends,
- * so the gate is written before the change rather than after it.
- *
- * WHY A GOLDEN AND NOT FIELD-BY-FIELD ASSERTIONS. The Docker adapter's complete statement of intent
- * is one array of strings and `launch-argv.golden.test.ts` pins it whole; the Kubernetes equivalent
- * is this object, and pinning "the fields we remembered to check" degrades into a test that cannot
- * see an ADDED one. `toStrictEqual` on the whole manifest is the only shape where a new field —
- * a `hostNetwork`, a `serviceAccountName`, a mount, an `env` entry carrying a credential — reddens
- * a test instead of shipping.
- *
- * THE SECOND OBJECT A LAUNCH PRODUCES — the per-run Secret — is NOT built by a pure function and so
- * is not pinned here. It is pinned in `kubernetes-adapter.test.ts` ("THE SECRET IS OWNED BY THE JOB"
- * and "the value travels as a Secret + envFrom"), which reaches it through the recording fake.
- */
+/** THE KUBERNETES LAUNCH GOLDEN. See docs/runner-launcher.md §310. */
 
 const SPEC: RunnerSpec = {
   runId: "iac-abc123",
@@ -65,11 +41,7 @@ describe("THE KUBERNETES LAUNCH GOLDEN", () => {
     expect(jobManifest(SPEC, OPTS)).toStrictEqual({
       apiVersion: "batch/v1",
       kind: "Job",
-      // `LAUNCHER_OWNER_ID` IS THE ONE FIELD THAT CANNOT BE A LITERAL — it is a per-PROCESS uuid, and
-      // that is deliberate rather than incidental: `reap()` distinguishes "my Job" from "a dead
-      // peer's Job" by it, so a stable literal would make every launcher in a replica set believe it
-      // owned every other's runs. Pinned by identity to the exported constant, which still catches a
-      // change to WHICH label carries it.
+      // The owner id cannot be a literal: it is per process. See docs/runner-launcher.md §311.
       metadata: {
         name: "scp-runner-iac-abc123",
         namespace: "scp",
@@ -139,11 +111,7 @@ describe("THE KUBERNETES LAUNCH GOLDEN", () => {
   });
 
   it("NO CREDENTIAL VALUE IS ANYWHERE IN THE MANIFEST — the property the golden above cannot state", () => {
-    // THE GOLDEN IS AN EQUALITY, so it already forbids the value — but only for THIS spec's literal.
-    // This is the same claim as a PROPERTY, which is what survives someone regenerating the golden
-    // from actual output: whatever the manifest becomes, the secret half of `secretEnv` is not in it.
-    // (The KEY is expected to be absent too: it arrives through `envFrom`, which names only the
-    // Secret, so a key appearing here would mean a fallback to `env[].value` had been reintroduced.)
+    // The golden is an equality, so it already forbids it. See docs/runner-launcher.md §312.
     const serialised = JSON.stringify(jobManifest(SPEC, OPTS));
     expect(serialised).not.toContain("never-in-a-manifest");
     expect(serialised).not.toContain("AWS_SECRET_ACCESS_KEY");
@@ -185,23 +153,7 @@ describe("THE KUBERNETES LAUNCH GOLDEN", () => {
     ]);
   });
 
-  // ==============================================================================================
-  // THE DEPLOYMENT'S POD CONVENTIONS (M23.5)
-  // ==============================================================================================
-  //
-  // THE GOLDEN ABOVE IS THE FIRST HALF OF THIS PROOF AND IT IS UNCHANGED, which is the point: a
-  // deployment that states no conventions produces the SAME manifest it produced before the channel
-  // existed. What follows pins the other half — what arrives when a deployment states them, and that
-  // each one is emitted only when stated.
-  //
-  // WHAT WAS WRONG. `deploy/helm` creates six pods; five are templates that carry
-  // `.Values.imagePullSecrets`, `.Values.image.pullPolicy` and a `resources` block, and the sixth is
-  // this object, built at run time from settings that described a namespace, a workspace and two
-  // booleans. It inherited none of them. Measured on a real cluster, image already on the node and
-  // tagged `:latest`: `spawn-failed, code=ErrImagePull — failed to pull and unpack image
-  // docker.io/library/scp-probe-runner:latest`, while the identical image ran fine under
-  // `docker create`. An unset `imagePullPolicy` is `Always` for `:latest` — charter principle 5
-  // broken in production by an omission.
+  // THE DEPLOYMENT'S POD CONVENTIONS. See docs/runner-launcher.md §313.
   const CONVENTIONS = {
     imagePullSecrets: ["ghcr-creds", "harbor-creds"],
     imagePullPolicy: "IfNotPresent",
@@ -273,17 +225,7 @@ describe("THE KUBERNETES LAUNCH GOLDEN", () => {
     expect(labels["scp.launcher.network"]).toBe("unexpressible");
   });
 
-  // ==============================================================================================
-  // MEDIUM-6 — `args` AND `env[].value` ARE ESCAPED FOR KUBERNETES `$(VAR)`/`$$` EXPANSION
-  // ==============================================================================================
-  //
-  // Kubernetes expands `$(VAR)` and collapses `$$` -> `$` in `args` and `env[].value`, ON THE API
-  // SERVER, independent of the runner image's own shell. Measured: `"A[$$]B[$(NOT_DEFINED)]C[$PLAIN]"`
-  // came back as `"A[$]B[$(NOT_DEFINED)]C[$PLAIN]"`, and an operand `"$(MY_CREDENTIAL)"` with a
-  // matching `secretEnv` key interpolated that credential's VALUE from the `envFrom` secretRef
-  // straight into the runner's argv — visible only as `***` because the adapter's own redactor
-  // happened to catch it. `escapeKubernetesVarExpansion` is applied to both fields so the caller's
-  // text survives byte-for-byte instead of being run through a second, undocumented interpreter.
+  // Arguments and values are escaped for variable expansion. See docs/runner-launcher.md §314.
 
   it("A LITERAL `$` IN AN OPERAND SURVIVES THE ROUND TRIP — not a `$(VAR)` reference", () => {
     const manifest = jobManifest(
@@ -319,15 +261,7 @@ describe("THE KUBERNETES LAUNCH GOLDEN", () => {
     ]);
   });
 
-  // ==============================================================================================
-  // MEDIUM-9 — `activeDeadlineSeconds`: A CONTROLLER-ENFORCED BACKSTOP, NOT JUST A PROCESS'S PROMISE
-  // ==============================================================================================
-  //
-  // Every OTHER Job this chart creates (migrations, both bundled auto-wire hooks) states one. This
-  // is the only Job that ever holds a mounted cloud credential, and until this fix it had none: the
-  // launcher's own `run()` budget lives in a process, and a SIGKILL of that process between `start`
-  // and its own teardown (the exact shape M23.1d's whole fix was about) leaves the pod running,
-  // credential mounted, with nothing enforcing a stop until some LATER `reap()` pass notices.
+  // MEDIUM-9 — `activeDeadlineSeconds`. See docs/runner-launcher.md §315.
 
   it("IS DERIVED FROM `spec.timeoutMs` VIA `runnerRunBoundMs`, NOT A FLAT CONSTANT", () => {
     const short = jobManifest({ ...SPEC, timeoutMs: 30_000 }, OPTS) as {

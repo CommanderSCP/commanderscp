@@ -19,251 +19,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * THE ADMINISTRATOR FLOOR IS A PROPERTY OF THE ORG — every door that can falsify it
- * ================================================================================================
- *
- * `docs/authz/role-binding-door.md` §7's floor shipped as `assertNotLastAdministrativeBinding`: a rule
- * owned by `routes/role-bindings.ts`'s DELETE handler, phrased as "what would be left if I removed
- * THIS binding". It refused the revoke correctly, its advisory lock serialized it correctly, and it
- * guarded **one of three public-API doors that can empty an org's administrators**. The other two
- * needed no concurrency, no special privilege, and four plain sequential requests each:
- *
- *   A. `DELETE /role-bindings/{id}`  — GUARDED from the start.
- *   B. `DELETE /relationships/{id}`  — remove the `member_of` edge under a group's administrative
- *                                      binding. THE BINDING ROW SURVIVES, so a revoke-time rule
- *                                      never runs and the surviving row is counted as an
- *                                      administrator no live principal resolves through.
- *   C. `DELETE /objects/team/{id}`   — tombstone the group that HOLDS the binding; the edge cascade
- *                                      is B again, in bulk, from a door that never mentions RBAC.
- *   C'. `DELETE /objects/user/{id}`  — tombstone the principal that holds it DIRECTLY. Removes no
- *                                      edge at all, so even a cascade-aware guard misses it.
- *
- * Recovery from any of them is hand-written SQL — verbatim the failure mode
- * `packages/schemas/src/rbac.ts` says this door exists to eliminate.
- *
- * ------------------------------------------------------------------------------------------------
- * WHAT THIS FILE PINS, AND WHAT IT DOES NOT
- * ------------------------------------------------------------------------------------------------
- * The fix is ONE predicate — {@link assertOrgRetainsAdministrativeFloor}, "does at least one LIVE
- * principal THAT CAN AUTHENTICATE resolve an org-root binding of a role carrying
- * `role_binding:write`" — evaluated AFTER each write, inside the write's transaction, from the choke
- * points
- * (`graph/objects-repo.ts`'s `deleteObject`, `graph/relationships-repo.ts`'s `deleteRelationship`,
- * and the revoke handler). Every case below enters at the ROUTE, so it measures the door and not the
- * predicate agreeing with itself.
- *
- * IT DOES NOT PROVE THE CHOKE-POINT PLACEMENT. A guard moved from `deleteRelationship` into
- * `routes/relationships.ts` would leave this whole file green while `POST /plans/{id}/apply` went on
- * pruning the edge — the exact shape this programme has paid for twice. That measurement is
- * `iac/iac-administrative-floor.integration.test.ts`'s job and is mutation 4 below.
- *
- * EVERY REFUSAL IS PAIRED WITH AN ADMISSION on the same door with the same verb, differing only in
- * whether a second administrator survives. Without the pair the guard could be a blanket refusal of
- * every membership removal and every team delete, and every refusal here would still be green.
- *
- * ------------------------------------------------------------------------------------------------
- * AND D7 + ITS PREVIEW, WHICH ARE NOT THE FLOOR — why they live here anyway
- * ------------------------------------------------------------------------------------------------
- * The acknowledgement (docs/authz/role-binding-door.md §2c) and `GET /role-bindings/grant-preview`
- * (§2d) are grant-side, not floor-side. They are measured here rather than in the door suite for one
- * reason: that suite's `grant()` helper AUTO-ACKNOWLEDGES, so every case in it would pass against a
- * door that had no acknowledgement at all. Cases about the acknowledgement have to be written where
- * the value is composed by hand, and this file is where the group/team fixtures already are.
- *
- * The preview's cases carry a rule the floor's do not: **a response derived from rows the request
- * does not name is filtered to what the caller could fetch individually.** It has been narrowed
- * twice — the GATE (a caller-chosen `scopeObjectId`) and then the PROJECTION (members are not the
- * subject, so authorizing at the subject disclosed them anyway). Both narrowings are pinned in both
- * directions, and the second one's admission half is the load-bearing half: filtering is only
- * defensible if the granter who needs the acknowledgement can still produce one.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied ALONE, CONFIRMED ON DISK before the run, measured, then reverted
- * ------------------------------------------------------------------------------------------------
- * See this file's sibling `rbac-role-binding-door.integration.test.ts` for the method: the injected
- * marker is counted off disk with `grep -nac` against a known-positive control before the run and
- * confirmed back to zero after, because a mutation that never applied reads as a pass.
- *
- *  1. `graph/relationships-repo.ts` — deleted the whole
- *     `if (existing.typeId === "member_of" && !input.federationImport)` block
- *       -> **2 failed, 44 passed.** "DOOR B…": `expected 200 to be 409`, the body being the
- *          `member_of` edge with `"deletedAt"` set — the membership really was removed. And
- *          `iac/iac-administrative-floor.integration.test.ts`: `the pruning apply must be REFUSED,
- *          not resolved: expected null to be an instance of ScpApiError`. Both doors, one deletion.
- *          ⚠️ **DOOR C STAYED GREEN**, which contradicted the prediction written here first: the
- *          team tombstone is caught by `deleteObject`'s OWN call (mutation 2), not by the cascade.
- *          The cascade covers it only when this call is present. Recorded as measured.
- *  2. `graph/objects-repo.ts` — deleted the `if (touchesRoleAuthority)` call at the end of
- *     `deleteObject` (the probe left in place, so the file still compiles and `tsc` stays clean)
- *       -> **1 failed, 8 passed.** "DOOR C': tombstoning the USER…": `expected 200 to be 409`, the
- *          body being the admin's own user object with `deletedAt` set. Door C stayed GREEN here —
- *          its cascade is covered by mutation 1's guard. So the two calls cover DIFFERENT cases and
- *          each is separately measurable, which is why both exist.
- *  3. `authz/role-binding-door.ts` — `assertOrgRetainsAdministrativeFloor` early-returns
- *     unconditionally
- *       -> **8 failed across three files, 38 passed.** Here: doors B, C and C'. In
- *          `iac-administrative-floor`: the pruning apply. In `rbac-role-binding-door`: "the LAST
- *          org-root administrative binding cannot be revoked", "the floor is not satisfied by a
- *          binding on an EMPTY group", "the floor does not count a group whose only member is
- *          SOFT-DELETED", and the concurrent-revoke case (`expected [200, 200] to deeply equal
- *          [200, 409]`). **ONE predicate, four doors** — the claim the whole rework rests on,
- *          measured rather than asserted.
- *  4. `graph/relationships-repo.ts` — the floor call MOVED into `routes/relationships.ts`'s DELETE
- *     handler (the "obvious" placement), byte-identical call, import added, `tsc` clean
- *       -> **0 failed in THIS file — all 8 green — and 1 failed in
- *          `iac/iac-administrative-floor.integration.test.ts`.** Door B's refusal, door C's refusal
- *          and every admission pair passed against a placement that leaves `POST /plans/{id}/apply`
- *          pruning the membership. THIS FILE CANNOT SEE THE CHOKE POINT; that is what the IaC file
- *          is for.
- *  5. `authz/role-binding-door.ts` — `objectTouchesRoleAuthority` returns `false` unconditionally
- *     (the sound-relevance short-circuit turned into a blanket skip)
- *       -> **1 failed, 8 passed.** "DOOR C': …USER…": `expected 200 to be 409`. Door C stayed green
- *          (its cascade), so the probe is load-bearing for exactly one of the two object cases —
- *          which is what makes it a cost decision rather than a second guard.
- *  6. `authz/role-binding-door.ts` — `revokeAffectsAdministrativeFloor` returns `true`
- *     unconditionally (the revoke relevance test removed, so EVERY revoke runs the floor check)
- *       -> **0 failed, 45 passed.** Recorded because it is the honest result: the short-circuit is a
- *          COST decision and removing it changes no verdict in any suite. What it DOES change is
- *          that an org already below the floor could no longer revoke a `deny` row or a
- *          service-scoped binding. Not pinned; named in `docs/authz/role-binding-door.md` §7.
- *  7. `authz/role-binding-door.ts` — deleted §2a's member-shape half (the
- *     `unbindablePrincipalReasons(reachedByJoiner)` refusal in `assertMayJoinRoleBearingSubject`)
- *       -> **1 failed, 44 passed.** "§2b's refusals apply on the JOIN path…": `expected 201 to be
- *          422`, the body being the minted `member_of` edge from the group holding a tombstoned
- *          member into the empowered team. The whole door suite stayed green, because it only ever
- *          joins USERS.
- *  8. `authz/role-binding-door.ts` — `assertGrantAcknowledgesEmpoweredPrincipals` early-returns
- *       -> **3 failed, 42 passed.** All three D7 cases: the missing acknowledgement (`expected 201
- *          to be 422`, the response body being the Owner binding on the team), the stale one
- *          (`expected 201 to be 409`), and the omitted-field-on-an-empty-group one.
- *  9. `authz/role-binding-door.ts` — the `notReached` half of the set comparison replaced with `[]`
- *     (mismatch detected in ONE direction only)
- *       -> **1 failed.** The stale case's second half — an acknowledgement naming a principal the
- *          team does NOT reach was admitted (`expected 201 to be 409`). Set EQUALITY, not
- *          containment, and a one-directional check would have read as coverage.
- * 10. `routes/role-bindings.ts` — the preview's `if (!verdict.ok)` turned into `if (false && …)`
- *       -> **1 failed.** "the preview is gated on `audit:read`": `expected 200 to be 403`, and the
- *          200's body was a membership listing handed to a principal holding nothing.
- * 11. `routes/role-bindings.ts` — the preview returns an EMPTY principal list
- *       -> **2 failed.** Both D7 cases that read the value back (`expected [] to deeply equal
- *          [ …(2) ]`). The preview is therefore load-bearing rather than decorative: a client that
- *          trusted it would send an acknowledgement the door then 409s.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — ROUND 6 (2026-08-27): the CREDENTIAL anchor, the preview's subject anchor, the 409
- * ------------------------------------------------------------------------------------------------
- * 12. `authz/role-binding-door.ts` — the floor's survivor test reverted to revision 2's TYPE test
- *     (`!p.deleted && (p.typeId === "user" || p.typeId === "service-account")`)
- *       -> **2 failed, 47 passed.** "the floor REFUSES the phantom brick": `expected 200 to be 409`,
- *          the body being the revoked Owner binding — the org bricked. And the phantom-service-
- *          account half of "a REAL service-account administrator counts", identically. **The WHOLE
- *          door suite stayed green (37/37)**, which is the honest measurement: nothing that existed
- *          before this round could see the defect.
- * 13. `authz/role-binding-door.ts` — the anchor made TOO STRICT
- *     (`!p.deleted && p.credentialed && p.typeId === "user"`) — the mirror-image hazard
- *       -> **1 failed, 11 passed.** The service-account ADMISSION: `expected 409 to be 200`, an org
- *          that is administrable by a real, logged-in service account reporting "no live principal
- *          that can AUTHENTICATE". Both directions of the anchor are therefore pinned by two
- *          different cases, and neither passes against the other's bug.
- * 14. `authz/role-binding-door.ts` — `principalsReachedBy` returns `credentialed: true` for every row
- *       -> **3 failed, 9 passed.** Both phantom cases, plus **DOOR B** (`expected 200 to be 409`,
- *          the body the tombstoned `member_of` edge): with the `users` join short-circuited the
- *          EMPTY TEAM counts as its own administrator. The SQL join is what decides, not the caller.
- * 15. `authz/role-binding-door.ts` — the LIVENESS half dropped (`reached.some((p) => p.credentialed)`)
- *       -> **2 failed, 47 passed.** "DOOR C': tombstoning the USER…" here, and "the floor does not
- *          count a group whose only member is SOFT-DELETED" in the door suite. Liveness and
- *          credential are independently load-bearing; neither subsumes the other.
- * 16. `routes/role-bindings.ts` — the preview's `scopeObjectIds: [subject.id]` replaced with `[]`
- *       -> **1 failed, 11 passed.** The admission half of "grant-preview is anchored to the
- *          SUBJECT": `expected 200 to be 403`. So the subject arm is a real arm and the fix is an
- *          ANCHOR, not "org-root only" with extra words.
- * 17. `routes/role-bindings.ts` — the preview's `if (!verdict.ok)` turned into `if (false && …)`
- *       -> **2 failed, 10 passed.** The pre-existing gating case, and the new anchor case — whose
- *          200 body IS the disclosure: `{"subjectId":"…","principals":[{"id":"…","typeId":"user",
- *          "name":"user-6e7…","depth":1,…}]}`, the membership of a team handed to a principal whose
- *          `audit:read` is scoped to an unrelated service.
- * 18. `routes/relationships.ts` — the `409: ProblemSchema` deleted from the DELETE route's schema
- *       -> **1 failed.** "every delete route that can hit the floor declares 409": `expected
- *          [ '200', '401', '403', '404' ] to include '409'`. ⚠️ The FIRST attempt at this mutation
- *          did not apply (the anchor string had been reflowed) and the suite reported **1 passed** —
- *          a mutation that never landed reads exactly like a guard that works, which is why the
- *          marker is counted off disk with `grep -nac` before every run in this log.
- * 19. `routes/typed-registries.ts` — the same deletion on the shared DELETE template
- *       -> **1 failed.** `DELETE /users/{idOrUrn} (deleteUser) … expected [ '200','401','403','404' ]
- *          to include '409'`. One template, ten operations.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — ROUND 7 (2026-08-27): the preview's PROJECTION, and the floor's TENANT BOUNDARY
- * ------------------------------------------------------------------------------------------------
- * Same method: the marker counted off disk with `grep -nac` before the run and confirmed back to
- * zero after, then a `diff` against the pre-mutation copy of the whole file.
- *
- * 20. `routes/role-bindings.ts` — the preview's projection filter removed
- *     (`const visible = empowered.filter((p) => readable.has(p.id))` -> `const visible = empowered`)
- *       -> **3 failed, 12 passed.** "the preview discloses only principals the caller could read
- *          individually" (`the preview leaked a member id: expected '{"subjectId":"01a04398…' not
- *          to contain '01a04398-64ed-7253-…'` — the raw 200 body carrying the member's uuid);
- *          "D7 survives a FILTERED preview" identically; and "grant-preview is anchored to the
- *          SUBJECT" (`expected [ { …(6) } ] to deeply equal []` — the team-scoped Viewer's
- *          `principals` array, six fields per member). THAT IS THE DEFECT, in the response body.
- * 21. `authz/role-binding-door.ts` — `readableSubsetOf` returns an EMPTY set unconditionally (the
- *     over-filter, i.e. the mirror-image hazard)
- *       -> **3 failed, 12 passed.** Every ADMISSION half: "D7: a grant to a group is refused without
- *          an acknowledgement and admitted with the right one" (`expected [] to deeply equal
- *          [ …(2) ]`), "D7: a STALE acknowledgement…", and the org-root-reader half of the new
- *          projection case. Both directions are pinned by different cases, and neither passes
- *          against the other's bug — the same shape rounds 6's credential-anchor pair used.
- * 22. `authz/role-binding-door.ts` — `if (filter === null) return new Set(candidateIds)` ->
- *     `return new Set()` (`readable-scope.ts`'s "`null` and an empty set are OPPOSITES" trap, which
- *     is the refactor most likely to be made here)
- *       -> **3 failed, 12 passed.** The same three admission halves. Recorded separately from 21
- *          because it is a different line and a far more plausible edit.
- * 23. `routes/role-bindings.ts` — `acknowledgementComplete: withheldPrincipalCount === 0` -> `true`
- *       -> **2 failed, 13 passed.** Both new cases (`expected true to be false`). Without it the
- *          field could be a constant and the projection cases would still be green, leaving a client
- *          unable to tell an EMPTY team from one it may not see into — which is the confusion D7
- *          exists to prevent.
- * 24. `authz/role-binding-door.ts` — `AND u.org_id = ${orgId}` deleted from `principalsReachedBy`'s
- *     `users` LEFT JOIN (the floor's ENTIRE tenant boundary for its fifth input; `users` carries no
- *     RLS, so nothing else fences it)
- *       -> **1 failed, 14 passed.** "a `users` row in ANOTHER org naming this org's phantom is not
- *          this org's administrator": `expected 200 to be 409`, and the body is the org's only
- *          `"roleName":"Owner"` binding returned as successfully revoked. **That is the brick,
- *          across a tenant boundary**, and before this round nothing in any suite could see it.
- *
- * NOT MUTATION-PROVEN, and named rather than implied:
- *
- *   - **the credential anchor's own limit**: a `users` row with no password, no `oidc_subject` and
- *     no live PAT counts as credentialed and cannot actually sign in — and the same is true of an
- *     IdP-provisioned row whose subject the IdP has since disabled, which is the FIELD-REACHABLE
- *     shape rather than a hand-SQL one. Deliberate — see `docs/authz/role-binding-door.md` §8 for why
- *     every tighter anchor is time-varying and why the honest position is that this floor bounds
- *     what the API can produce and not what an identity provider can.
- *   - **the preview's ONE divergence from `hasPermission`**: `readableObjectFilterSql` returns
- *     `null` ("everything") for a subject holding an org-root allow even when a `deny` sits lower
- *     down, so the preview can show such a caller a principal that `hasPermission` in isolation
- *     would refuse. No case here builds an org-root allow plus a lower deny. It is not a widening of
- *     what that caller can read — the LIST doors hand them the same rows from the same `null` — and
- *     the reasoning is at `readableSubsetOf`.
- *   - **the withheld COUNT itself is a disclosure**, and a deliberate one: it tells a caller that a
- *     group has members they may not see. Weighed against omitting it (which makes the response
- *     indistinguishable from an empty group) beside `GrantPreviewResponseSchema`. No case measures
- *     the trade, because it is a decision rather than a behaviour.
- *   - the `!removedForeignShadow` arm of `deleteObject`'s probe. (The `!input.federationImport` arm
- *     of BOTH new call sites IS now pinned, in both directions, by
- *     `federation/federation-member-of-exemption.integration.test.ts` — mutations 8 and 9 there.)
- *   - CONCURRENCY on doors B, C and C'. `assertOrgRetainsAdministrativeFloor` takes §0's org lock
- *     itself and §0 works the act-then-check ordering through, but every case here is sequential.
- *     The concurrent pair is measured on door A only, in the door suite.
- *   - the LIVENESS half of the predicate (`!p.deleted`). It is pinned in the door suite ("the floor
- *     does not count a group whose only member is SOFT-DELETED"); this file pins the REACHABILITY
- *     half. Dropping `!p.deleted` would leave every case here green.
- *   - D7 under genuine CONCURRENCY. The stale case widens the window with a sequential round trip,
- *     which is what a real client does; a `Promise.all` of a join and a grant is measured for §2a/§2b
- *     in the door suite and not re-measured for the acknowledgement.
- */
+/** THE ADMINISTRATOR FLOOR IS A PROPERTY OF THE ORG. See docs/routes.md §317. */
 describe("the administrator floor is an invariant of the org, not a rule on one door", () => {
   let server: TestServer;
 
@@ -360,20 +116,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     return row.id;
   }
 
-  /**
-   * THE FIXTURE EVERY FLOOR CASE NEEDS: an org whose ONLY administrator is a live user reached
-   * THROUGH a team's org-root Owner binding.
-   *
-   * Built entirely through the API — team, membership, grant, then the revoke of the bootstrap
-   * admin's own binding — because every step of it is an action a real operator takes when they
-   * move an estate from "one bootstrap admin" to "an administrators team", and because a fixture
-   * written straight into the tables could produce a state the doors would never have permitted and
-   * then measure a refusal against it.
-   *
-   * The revoke at the end is ADMITTED, and that is load-bearing: it is the admission pair for door A
-   * (the team reaches a live member, so the floor is satisfied) and it is what makes the team's
-   * binding the last one standing for doors B, C and C'.
-   */
+  /** THE FIXTURE EVERY FLOOR CASE NEEDS. See docs/routes.md §318. */
   async function orgAdministeredThroughATeam(label: string): Promise<{
     org: TestOrg;
     team: string;
@@ -417,11 +160,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   it("DOOR B: removing the `member_of` edge under the last administrative binding is refused", async () => {
     const { org, team, member, teamBindingId } = await orgAdministeredThroughATeam("floor-door-b");
 
-    // THE ADMISSION PAIR FIRST, and it is a REDUNDANT MEMBERSHIP: seat a second member, remove them
-    // again. Identical verb, identical edge type, identical actor — the only difference is that the
-    // team still reaches a live principal afterwards. Without this the guard could refuse EVERY
-    // `member_of` removal (which would make a compromised membership unremovable, the exact failure
-    // §2a's "removal is untouched" paragraph is about) and the refusal below would still be green.
+    // THE ADMISSION PAIR FIRST, and it is a REDUNDANT MEMBERSHIP. See docs/routes.md §319.
     const spare = await createTestUser(server, org, []);
     const spareJoined = await call("POST", member.token, "/api/v1/relationships", {
       typeId: "member_of",
@@ -799,15 +538,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   });
 
   it("D7: an EMPTY group is acknowledged with `[]`, and an OMITTED field is still refused", async () => {
-    // THE INTERESTING BOUNDARY. `[]` is the legitimate seat-the-team-later flow AND the exploit's
-    // step 2, and no membership-shape-blind rule separates them — which is why the owner ruled for
-    // an informed grant rather than a refusal. `[]` is admitted because acknowledging zero is a TRUE
-    // statement at the moment of the grant, and because seating the team afterwards runs §2a's
-    // subset rule at the choke point: an empty group can only be filled by a principal who already
-    // holds everything it carries.
-    //
-    // `undefined` and `[]` are therefore NOT the same value here — "I did not look" versus "I looked
-    // and it is empty" — and this case measures both against the same empty team.
+    // THE INTERESTING BOUNDARY. See docs/routes.md §320.
     const org = await createTestOrg(server, "d7-empty");
     const roleId = await ownerRoleId(org.adminToken);
     const emptyTeam = await mkObject(org.orgId, "team", "d7-empty");
@@ -907,22 +638,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     return (res.json() as { id: string }).id;
   }
 
-  /**
-   * WIRES A CREDENTIAL ONTO AN EXISTING GRAPH OBJECT — a `users` row naming it, with a local
-   * password — and returns a token proving the wiring works.
-   *
-   * WRITTEN STRAIGHT INTO `users` ON PURPOSE, and it is not a shortcut around a door: there is no
-   * API that creates a `users` row at all. A filterless census of `apps/server/src` finds three
-   * writers and all three are internal (`auth/local-auth.ts`'s bootstrap, `auth/oidc.ts`'s JIT
-   * provision, and the harness). So for a SERVICE ACCOUNT this IS the deployment procedure — the
-   * measured answer to "a service account will have its own shape" is that it has none: there is no
-   * service-account token table, `personal_access_tokens` is keyed on `users.id`, and
-   * `POST /api/v1/service-accounts` creates a graph object and nothing more.
-   *
-   * IT LOGS IN BEFORE RETURNING. Asserting the row exists would prove the fixture wrote a row;
-   * logging in proves the principal can authenticate, which is the property the floor claims to
-   * count.
-   */
+  /** WIRES A CREDENTIAL ONTO AN EXISTING GRAPH OBJECT. See docs/routes.md §321. */
   async function giveCredential(org: TestOrg, objectId: string): Promise<string> {
     const username = `cred-${randomUUID()}`;
     const password = randomUUID();
@@ -947,11 +663,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   }
 
   it("the floor REFUSES the phantom brick: a `user` graph object with no login is not an administrator", async () => {
-    // MEASURED BEFORE THIS REVISION — three plain sequential requests, all 2xx, no concurrency and
-    // no privilege beyond the bootstrap admin's, ending with `GET /roles` -> 403 and hand-written
-    // SQL the only recovery. This is the THIRD shape this predicate has been bypassable with: it
-    // counted binding ROWS (an empty group satisfied it), then live OBJECTS OF A PRINCIPAL TYPE
-    // (this case), and now counts principals that can AUTHENTICATE.
+    // MEASURED BEFORE THIS REVISION. See docs/routes.md §322.
     const org = await createTestOrg(server, "floor-phantom");
     const roleId = await ownerRoleId(org.adminToken);
     const bootstrapSubject = await meSubject(org.adminToken);
@@ -989,11 +701,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect((await bindings(org.adminToken)).map((b) => b.id)).toContain(bootstrapBinding);
     expect((await call("GET", org.adminToken, "/api/v1/roles")).statusCode).toBe(200);
 
-    // ------------------------------------------------------------------------------------------
-    // THE ADMISSION PAIR — the identical verb on the identical binding, differing ONLY in whether
-    // a principal that can actually sign in survives. Without it the refusal above passes just as
-    // well against a floor that refuses every revoke of an org-root Owner binding.
-    // ------------------------------------------------------------------------------------------
+    // THE ADMISSION PAIR. See docs/routes.md §323.
     const real = await createTestUser(server, org, []);
     const realBound = await call("POST", org.adminToken, "/api/v1/role-bindings", {
       subjectId: real.objectId,
@@ -1068,11 +776,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     });
     expect(writtenBySa.statusCode, writtenBySa.body).toBe(201);
 
-    // ------------------------------------------------------------------------------------------
-    // THE OTHER DIRECTION, IN THE SAME ORG: a PHANTOM service account does not count. Same object
-    // type, same role, same scope, same actor — only the `users` row differs. This is what says the
-    // anchor is the credential rather than the type, in both directions at once.
-    // ------------------------------------------------------------------------------------------
+    // THE OTHER DIRECTION, IN THE SAME ORG. See docs/routes.md §324.
     const phantomSa = await phantomPrincipal(saToken, "service-account");
     const phantomBound = await call("POST", saToken, "/api/v1/role-bindings", {
       subjectId: phantomSa,
@@ -1093,11 +797,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   // THE PREVIEW MUST NOT TELL A CALLER ANYTHING THEY COULD NOT ALREADY READ
 
   it("grant-preview is anchored to the SUBJECT, not to a scope the caller chooses", async () => {
-    // THE DEFECT: the preview took a `scopeObjectId` and admitted a holder of `audit:read`
-    // at-or-above THAT object — an object the CALLER names. So any scoped `audit:read` holder could
-    // name their own service and read the full transitive membership of ANY group in the org. That
-    // is §2b's disclosure defect re-introduced one layer up, in the affordance built to make D7
-    // usable.
+    // The defect: the preview admitted a scoped holder. See docs/routes.md §325.
     const org = await createTestOrg(server, "preview-subject-anchor");
     const secret = await mkObject(org.orgId, "team", "secret");
     const other = await mkObject(org.orgId, "team", "other");
@@ -1126,11 +826,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(refused.body).toContain("audit:read");
     expect(refused.body).toContain(secret);
 
-    // THE OLD EXPLOIT, VERBATIM — the parameter is gone from the contract, so naming a scope the
-    // caller does hold `audit:read` at changes nothing. Asserted rather than assumed, because a
-    // plain `z.object` STRIPS unknown query keys at runtime instead of rejecting them: a handler
-    // that still read the value would answer 200 here and this file would be the only thing that
-    // could tell.
+    // THE OLD EXPLOIT, VERBATIM. See docs/routes.md §326.
     const oldExploit = await call(
       "GET",
       scoped.token,
@@ -1148,11 +844,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     );
     expect(listing.statusCode, listing.body).toBe(403);
 
-    // ------------------------------------------------------------------------------------------
-    // THE ADMISSION PAIR, and it is what says the fix is an ANCHOR rather than "org-root only":
-    // the same scoped-only shape of principal, holding `audit:read` at the SUBJECT, is admitted —
-    // and is still refused for a team it has no standing over. Same caller, same door, same verb.
-    // ------------------------------------------------------------------------------------------
+    // The admission pair, which says the fix is an anchor. See docs/routes.md §327.
     const anchored = await createTestUser(server, org, [{ role: "Viewer", scope: secret }]);
     const admitted = await call(
       "GET",
@@ -1162,12 +854,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(admitted.statusCode, admitted.body).toBe(200);
     expect((admitted.json() as { subjectId: string }).subjectId).toBe(secret);
 
-    // ⚠️ THIS CASE ASSERTED `acknowledgedPrincipalIds === [insider.objectId]` HERE, AND THAT WAS THE
-    // NEXT DEFECT. Anchoring the GATE at the subject settles who may ask; it cannot settle what may
-    // come back, because the principals disclosed are NOT the subject. This caller is admitted (the
-    // anchor is a real arm) and is shown NOBODY, because `object:read` at a team reaches the team
-    // and nothing through it. The projection is measured in "the preview discloses only principals
-    // the caller could read individually" below; what is pinned here is the ARM.
+    // This case asserted the wrong thing here, and why. See docs/routes.md §328.
     expect((admitted.json() as { principals: unknown[] }).principals).toEqual([]);
 
     const stillRefused = await call(
@@ -1185,12 +872,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   });
 
   it("the preview discloses only principals the caller could read individually, and counts the rest", async () => {
-    // THE DEFECT, MEASURED BEFORE THIS ROUND: anchoring the GATE at the subject settles who may ASK
-    // about a group and settles nothing about what comes BACK, because **the principals disclosed
-    // are not the subject**. A member is a separate graph object on its own containment chain and
-    // `scopeExpandCte` expands UPWARD, so `audit:read` at a TEAM says nothing whatever about that
-    // team's members — and a team-scoped Viewer received a 200 carrying a member's id, typeId and
-    // name.
+    // THE DEFECT, MEASURED BEFORE THIS ROUND. See docs/routes.md §329.
     const org = await createTestOrg(server, "preview-projection");
     const team = await mkObject(org.orgId, "team", "projection");
     const insider = await createTestUser(server, org, []);
@@ -1208,12 +890,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     // nothing at all above it.
     const teamScoped = await createTestUser(server, org, [{ role: "Viewer", scope: team }]);
 
-    // ------------------------------------------------------------------------------------------
-    // WHAT THIS CALLER CANNOT ALREADY READ — ESTABLISHED, NOT ASSUMED. The acceptance bar is "the
-    // preview must not tell a caller anything they could not already read", and half of that
-    // sentence is a claim about OTHER doors. If any of these four ever starts answering, the
-    // projection below is stricter than it needs to be and this case says so by going red.
-    // ------------------------------------------------------------------------------------------
+    // WHAT THIS CALLER CANNOT ALREADY READ. See docs/routes.md §330.
     expect(
       (await call("GET", teamScoped.token, `/api/v1/objects/user/${insider.objectId}`)).statusCode,
       "GET /objects/user/{id} must refuse this caller, or the disclosure is not a disclosure"
@@ -1259,12 +936,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(hidden.acknowledgementComplete).toBe(false);
     expect(hidden.acknowledgementRequired).toBe(true);
 
-    // ------------------------------------------------------------------------------------------
-    // THE ADMISSION PAIR — the caller who NEEDS the preview is not the caller who is refused by it.
-    // Same door, same subject, same verb; the only difference is where their `audit:read` is bound.
-    // A plain org-root VIEWER, deliberately, rather than the bootstrap Owner: the claim being
-    // measured is about the org-root ARM, not about being an administrator.
-    // ------------------------------------------------------------------------------------------
+    // THE ADMISSION PAIR. See docs/routes.md §331.
     const orgReader = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
     expect(
       (await call("GET", orgReader.token, `/api/v1/objects/user/${insider.objectId}`)).statusCode,
@@ -1287,14 +959,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(shown.withheldPrincipalCount).toBe(0);
     expect(shown.acknowledgementComplete).toBe(true);
 
-    // ------------------------------------------------------------------------------------------
-    // WHY THAT ADMISSION GENERALISES, verified rather than assumed. The claim the design rests on
-    // is "a caller admitted by the ORG-ROOT arm can already read every rooted object in the org",
-    // and it is true only because of a property of the SEEDED CATALOGUE: every built-in role
-    // carrying `audit:read` also carries `object:read`. Read from the live catalogue, so a future
-    // migration seeding an `audit:read`-without-`object:read` role fails HERE — where the reasoning
-    // is — rather than as a mysterious `withheldPrincipalCount` in the field.
-    // ------------------------------------------------------------------------------------------
+    // WHY THAT ADMISSION GENERALISES, verified rather than assumed. See docs/routes.md §332.
     const catalogue = (
       (await call("GET", org.adminToken, "/api/v1/roles")).json() as {
         items: { name: string; permissions: string[] }[];
@@ -1312,14 +977,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   });
 
   it("D7 survives a FILTERED preview: the grant door's own 409 names what the preview withheld", async () => {
-    // THE RESIDUAL POPULATION, MEASURED END TO END RATHER THAN RULED OUT. Filtering the projection
-    // is only defensible if the granter who needs the acknowledgement can still produce one. For an
-    // org-root granter that is trivial (the case above). This is the OTHER caller: `audit:read`
-    // at-or-above the group from a binding BELOW the org root, whose `object:read` does not reach a
-    // member that lives elsewhere in the estate. They get an incomplete preview — and they are NOT
-    // handed a field that 409s forever, because the grant door's own 409 names every id it was not
-    // given, behind `role_binding:write` plus the whole subset rule, which is a strictly stronger
-    // bar than this preview's `audit:read`.
+    // The residual population, measured rather than ruled out. See docs/routes.md §333.
     const org = await createTestOrg(server, "d7-filtered-preview");
     const service = await mkObject(org.orgId, "service", "scoped-svc");
     // The team sits UNDER the service, so a service-scoped principal reads it. The member does not:
@@ -1342,11 +1000,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     // hand-written-SQL population `docs/authz/role-binding-door.md` §4 says the door must keep working
     // for, and it is the only shape that holds `role_binding:write` below the org root.
     const granter = await createTestUser(server, org, [{ role: "OrgAdmin", scope: service }]);
-    // The role id is read with the ADMIN's token, and that is not a shortcut: `GET /roles` is pinned
-    // at the org root by design (`routes/role-bindings.ts` says so at the route — the catalogue is
-    // scopeless platform metadata), so this scoped granter cannot read it and gets a 403. Costing a
-    // scoped principal a role PICKER is the affordance that comment accepts; it is fixture plumbing
-    // here, not the thing under test.
+    // The role id is read with the admin's token, deliberately. See docs/routes.md §334.
     const serviceAdminRoleId = (
       (await call("GET", org.adminToken, "/api/v1/roles")).json() as {
         items: { id: string; name: string }[];
@@ -1407,17 +1061,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   // THE TENANT BOUNDARY ON THE FLOOR'S FIFTH INPUT — `users` CARRIES NO RLS
 
   it("a `users` row in ANOTHER org naming this org's phantom is not this org's administrator", async () => {
-    // `principalsReachedBy` LEFT JOINs `users` to decide `credentialed`, and `users` is auth
-    // substrate with NO ROW-LEVEL SECURITY (drizzle/0002 §1 grants `scp_app` SELECT and never
-    // enables RLS). So `u.org_id = <this org>` is the ENTIRE tenant boundary for the floor's fifth
-    // input — every other read in that module is fenced by RLS on `objects`/`relationships`, and
-    // this one is fenced by a predicate a refactor can delete without any test noticing.
-    //
-    // IT WAS NOT PINNED, and the reason is worth stating: `users.object_id` values do not collide
-    // across orgs by accident, so "what fails if I drop it" returned nothing — a census by SYMPTOM.
-    // The census by PROPERTY is "a row in another tenant's `users` naming an object in this one",
-    // and `users.object_id` has no FOREIGN KEY and no unique constraint (`db/schema.ts`), so that
-    // row is a plain INSERT rather than a database-refused impossibility.
+    // The walk joins the user table to decide credentialed. See docs/routes.md §335.
     const org = await createTestOrg(server, "floor-cross-tenant");
     const neighbour = await createTestOrg(server, "floor-cross-tenant-neighbour");
     const roleId = await ownerRoleId(org.adminToken);
@@ -1470,12 +1114,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect((await bindings(org.adminToken)).map((b) => b.id)).toContain(bootstrapBinding);
     expect((await call("GET", org.adminToken, "/api/v1/roles")).statusCode).toBe(200);
 
-    // ------------------------------------------------------------------------------------------
-    // THE ADMISSION PAIR — the identical revoke, the identical phantom, the identical role and
-    // scope. The ONLY difference is which org the `users` row naming it belongs to. Without this,
-    // the refusal above passes just as well against a floor that stopped counting credentials at
-    // all, or against one that refuses every org-root Owner revoke.
-    // ------------------------------------------------------------------------------------------
+    // THE ADMISSION PAIR. See docs/routes.md §336.
     await giveCredential(org, phantom);
     const admitted = await call(
       "DELETE",
@@ -1487,11 +1126,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   });
 
   it("every delete route that can hit the floor declares 409 in the emitted contract", async () => {
-    // DOOR B and DOOR C above prove these two routes RETURN 409. Nothing above proves the contract
-    // SAYS SO — and the contract is what the SDK, the CLI and the UI are generated from, so an
-    // undeclared status is one a generated client types as impossible. This reads the same
-    // `routeRegistry` -> `buildOpenApiDocument` path `pnpm gen` writes
-    // `tools/openapi/openapi.v1.json` from, so it measures the artifact rather than the source.
+    // DOOR B and DOOR C above prove these two routes RETURN 409. See docs/routes.md §337.
     const doc = buildOpenApiDocument(server.app.routeRegistry) as {
       paths: Record<
         string,

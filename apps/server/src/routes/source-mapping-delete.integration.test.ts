@@ -9,39 +9,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * DELETING A SOURCE MAPPING — the first operator-facing delete this table has had.
- *
- * ============================================================================================
- * WHY THE ROUTE EXISTS
- * ============================================================================================
- * Before this, the ONLY way to remove a `source_mappings` row was an IaC apply's prune. A mapping
- * created by `discovery accept` or by hand could never be taken back through the API.
- *
- * The cost is not inconvenience. A `docs/proposals/post-import-configuration.md` §6 pair merge
- * soft-deletes the absorbed component and
- * STRANDS its mappings: they stop matching (a dead component is excluded at read time) but they stay
- * in the table and keep appearing in `GET /mappings`, with no way to clean them. On the live homelab
- * that is 5 rows left by three merges.
- *
- * ============================================================================================
- * WHY THE IDENTITY TUPLE AND NOT AN ID
- * ============================================================================================
- * `source_mappings` has no unique constraint and `POST /discovery/accept` inserts unconditionally,
- * so an estate can hold several byte-identical rows — the homelab does. A by-id delete would remove
- * one and leave the survivor still correlating, so the operator would see "deleted" and a push would
- * still route there. Matching the tuple removes everything that says the same thing, which is the
- * reasoning `deleteSourceMappingsMatching` was already written with for IaC prune.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | resolve the component WITHOUT `includeDeleted` | the stranded-mapping test FAILS with 404 — the rows most needing deletion are exactly the undeletable ones |
- * | return 204 instead of the row count | the duplicate test FAILS — it can no longer tell 2 rows removed from 0 |
- * | delete only the first matching row | the duplicate test FAILS — the survivor still correlates |
- */
+/** DELETING A SOURCE MAPPING. See docs/routes.md §412. */
 describe("deleting a source mapping", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

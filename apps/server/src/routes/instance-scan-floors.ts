@@ -15,40 +15,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { withOperatorDb } from "./operator-db.js";
 import { requireInstanceOperator } from "../auth/operator-auth.js";
 
-/**
- * M17.5 — the INSTANCE-SCOPED scan-requirement floors' API surface (ADR-0016 §3), API-first per
- * charter principle 3 (API -> SDK -> CLI).
- *
- * TWO DIFFERENT AUDIENCES, TWO DIFFERENT CREDENTIALS — this is the whole point of the resource:
- *
- *  - **READ is tenant-facing.** Any authenticated tenant principal may see the floors that bind
- *    them, because a gate they cannot inspect is not explainable (charter principle 6). The read
- *    runs inside the ordinary tenant transaction under the table's tenant-read RLS policy — the
- *    same path gate evaluation uses, so no request path needs the privileged connection to evaluate
- *    a gate (ADR-0016 §3). It leaks nothing across tenants because the table holds NO per-tenant
- *    rows at all: it is instance-wide configuration, identical for every org on the deployment.
- *
- *  - **WRITE is operator-only, and deliberately NOT an RBAC permission.** These floors bind EVERY
- *    org on the deployment; a tenant admin — however privileged inside their own org — must never
- *    author or loosen them. So no role can grant it: the write requires the deployment-level
- *    `SCP_OPERATOR_TOKEN` (config.operatorToken), presented as `x-scp-operator-token`, and executes
- *    over the `scp_operator` connection (`withOperatorDb`) because the request-serving `scp_app`
- *    role holds no write grant on the table and no write RLS policy existed for it at all
- *    (drizzle/0029 — two independent barriers; 0076 adds the operator role as the one principal
- *    both barriers admit). Unset token ⇒ the surface is CLOSED (403), never a fallback to a tenant
- *    credential.
- *
- * The write path opening a short-lived PRIVILEGED connection is the deliberate asymmetry ADR-0016
- * §3 settles on: rejected option (b) was routing tenant-request READS through it (every read path
- * would then hand-guarantee what RLS guarantees structurally). Operator WRITES are a different
- * thing entirely — they are not tenant requests, they happen rarely (configuration, not traffic),
- * and they are exactly what "operator-write" means.
- *
- * THIS DOC USED TO SAY "the ADMIN connection", AND SO DID THE CODE, AND BOTH WERE WRONG WHERE IT
- * COUNTED: api/worker pods hold no admin credential (the chart gives `DATABASE_URL` to the
- * migrations Job alone), so the write dialed `config.databaseUrl`'s `localhost:5432` fallback
- * inside its own pod and 500'd on ECONNREFUSED. `routes/operator-db.ts` carries the full account.
- */
+/** M17.5 — the INSTANCE-SCOPED scan-requirement floors' API surface. See docs/routes.md §256. */
 
 interface FloorRow extends Record<string, unknown> {
   tier: string;

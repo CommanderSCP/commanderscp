@@ -14,17 +14,7 @@ import { unauthorized } from "../errors.js";
 
 type OidcConfig = NonNullable<ServerConfig["oidc"]>;
 
-/**
- * Generic OIDC (Authorization Code + PKCE via `openid-client`) — DESIGN.md §7, M2 step 2 Part B.
- * One config (issuer discovery) covers Okta/Entra/Keycloak/Ping with no per-provider special
- * casing. Written as a self-contained module with a clear `authorize()`/`handleCallback()` seam
- * (the "IdentityPlugin seam" the M2 task describes) so it's easy to lift into a real
- * subprocess-isolated plugin once the plugin host exists (M3) — that host is explicitly out of
- * scope here.
- *
- * SECURITY: this module must never log the authorization code, the PKCE code_verifier, or any
- * token. Callers (routes/oidc.ts) must not either.
- */
+/** Generic OIDC (Authorization Code + PKCE via `openid-client`). See docs/auth.md §20. */
 
 // Discovery is a network round trip — cache the resulting Configuration per issuer rather than
 // re-discovering on every /oidc/login request. A failed discovery is never cached (so a
@@ -62,13 +52,7 @@ export interface AuthorizeResult {
   pkce: OidcPkceState;
 }
 
-/**
- * Builds the authorization redirect URL plus the PKCE code_verifier / state / nonce triple the
- * caller MUST persist tied to this specific browser session (routes/oidc.ts stores it in a
- * short-lived signed httpOnly cookie, per DESIGN.md §7) and pass back into `handleCallback` —
- * these three values are the CSRF/replay protection and are actually validated there, not
- * decorative.
- */
+/** The authorize URL plus the PKCE triple the caller must persist. See docs/auth.md §21. */
 export async function authorize(oidc: OidcConfig): Promise<AuthorizeResult> {
   const configuration = await getOidcConfiguration(oidc);
 
@@ -101,12 +85,7 @@ export interface OidcClaims {
   name?: string;
 }
 
-/**
- * Exchanges the authorization callback for tokens and validates the response: `state` is checked
- * against the value generated in `authorize()` (mismatch throws — CSRF protection), the ID
- * token's issuer/audience/`nonce` claim are validated by `openid-client` against the expected
- * values passed here (not decorative — a forged or replayed ID token fails these checks).
- */
+/** Exchanges the callback for tokens and validates state and nonce. See docs/auth.md §22. */
 export async function handleCallback(
   oidc: OidcConfig,
   currentUrl: URL,
@@ -145,19 +124,7 @@ async function uniqueUsername(tx: TenantTx, orgId: string, desired: string): Pro
   return `${desired}-${uuidv7().slice(0, 8)}`;
 }
 
-/**
- * Creates the local `users` row + graph `user` object + Viewer role binding for a first-time OIDC
- * login, mirroring `ensureBootstrapAdmin`'s pattern (graph object + role binding inside one
- * tenant transaction, the `users` row inserted afterward via a plain `db` call — orgs/users/
- * sessions/PATs are pre-tenant-resolution auth substrate with no RLS, DESIGN.md §4.2).
- *
- * Least privilege (security-sensitive, flagged in the M2 step 2 report): JIT-provisioned
- * accounts get the built-in Viewer role at the org root, never Owner/Administrator — an admin can
- * grant more afterward. Race note: if two concurrent first-logins for the same (org, sub) land at
- * once, the loser's graph object/role binding is orphaned (harmless, unreferenced) and this
- * function re-fetches the winner rather than erroring — accepted complexity/simplicity trade-off
- * for M2 (DESIGN.md's decision priorities put Simplicity first).
- */
+/** JIT-provisions the user row, graph object and Viewer binding. See docs/auth.md §23. */
 async function provisionNewOidcUser(
   db: Db,
   orgId: string,
@@ -227,12 +194,7 @@ export interface JitProvisionResult {
   session: CreatedSession;
 }
 
-/**
- * On first successful OIDC login for a given `(org, sub)` pair, JIT-provisions a local account
- * (see `provisionNewOidcUser`). On subsequent logins, looks the existing user up and issues a new
- * session WITHOUT touching role bindings — an admin may have since changed them, and this must
- * never clobber that.
- */
+/** Later logins issue a session and never touch role bindings. See docs/auth.md §24. */
 export async function provisionOrLoginOidcUser(
   db: Db,
   params: { bootstrapOrgName: string; claims: OidcClaims }

@@ -1,30 +1,6 @@
 import { z } from "zod";
 
-/**
- * `governance:move` ENFORCEMENT — the contract for the top-down monotone lattice that decides
- * whether a containment MOVE additionally requires the `governance:move` permission at both ends.
- * (docs/proposals/governance-reach-on-containment-move.md §9.2; owner ruling 2026-08-18; the server
- * substrate is drizzle/0083 and `apps/server/src/governance/move-enforcement.ts`.)
- *
- * THE SEMANTICS A CONSUMER MUST KNOW, because none of them are guessable from the field names:
- *
- *  1. ENFORCEMENT IS AN OR, NOT A LOOKUP. A move is governed iff the INSTANCE rung is enabled, or
- *     any object on the moved object's containment chain, or any object on the destination's chain,
- *     carries a rung. So `GET /objects/{id}/governance-move-enforcement` answers about ONE object's
- *     chain, and a move involving it may be governed by the OTHER end even when this read says
- *     `enforced: false`.
- *  2. THE INSTANCE RUNG ACTIVATES; IT DOES NOT PERMIT (owner decision Q1-A). Enabled at the instance
- *     means enforced for every org on the deployment, and no org may disable it. This is the one
- *     place it differs in meaning from the `dependency_subscription_unlock` whose storage shape it
- *     copies — that one unlocks and activates nothing.
- *  3. AN ENABLEMENT ABOVE CANNOT BE UNDONE BELOW. `DELETE …/rungs/{idOrUrn}` answers 409 while any
- *     upper rung (the instance included) is enabled, naming it — because a disable that left every
- *     move under the subtree still enforced would be a successful-looking no-op.
- *  4. `tier` IS THE LITERAL RECORDED AT WRITE TIME and is explainability only. It is never
- *     recomputed on read, so a rung keeps explaining itself as what it was enabled as.
- *  5. NOTHING IS ENFORCED UNTIL A RUNG IS SET. Every deployment ships with no rungs and no instance
- *     row, and `enforced: false` is the answer everywhere in that state.
- */
+/** The contract for the top-down monotone move lattice. See docs/schemas.md §258. */
 
 /** Which kind of container a rung sits on. `org` is the org ROOT object (ADR-0021 D4 makes it an
  *  ordinary object whose id equals the org id); `containment_domain` is the intra-org domain, NEVER

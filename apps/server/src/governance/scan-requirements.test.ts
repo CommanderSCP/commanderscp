@@ -5,34 +5,7 @@ import {
   type ScanExclusionTargetInput
 } from "./scan-requirements.js";
 
-/**
- * M22.2 (ADR-0033 §1, §3) — THE MONOTONE AND, as a pure function.
- *
- * The resolver's DB half is proven end-to-end at the real gate in
- * `scan-exclusions.integration.test.ts`; this file pins the ALGEBRA, which is where the security
- * property lives and where a plausible-looking edit does the damage. Every case below is a
- * behaviour a reasonable implementer might have written the other way round.
- *
- * MUTATIONS RUN (2026-08-17), each reverted by an exact inverse edit. Baseline: 9 passed. These are
- * MEASURED results — one of them survived, and that is recorded rather than quietly dropped.
- *
- *   R-1  flip the AND to an OR (admit when ANY represented tier above admits)
- *          -> 1 failed: "ADMITTED AT COMPONENT BUT NOT AT ORG".
- *   R-2  UNION the per-target clause sets instead of intersecting them
- *          -> 1 failed: "EXCLUSIONS NEVER UNION ACROSS TARGETS".
- *   R-3  ask EVERY tier above, whether or not it is represented on this target's chain
- *          -> 2 failed: "ADMITTED AT COMPONENT BUT NOT AT ORG" and "a tier that is NOT
- *             REPRESENTED". The first is the one worth noting: over-asking is not merely
- *             restrictive, it changes which admissions are recorded in `admittedBy`.
- *   R-4  drop the `targets.length === 0` guard
- *          -> SURVIVED (9 passed). Recorded because a surviving mutation is information: the guard
- *             is a SECOND barrier, not the only one — with no targets the loop never runs, so
- *             `surviving` stays `undefined` and the `!surviving` check below returns `undefined`
- *             anyway. Both are kept: the guard states the intent at the top of the function, where
- *             a reader looking for "what does an empty family mean here" will look.
- *   R-5  stop sorting the resolved clause array
- *          -> 1 failed: "the resolved clause array is ORDER-INDEPENDENT and content-sorted".
- */
+/** The monotone conjunction, as a pure function. See docs/governance.md §364. */
 
 const CLAUSE: ScanExclusionClause = { class: "no_fix_available", pkgName: "openssl" };
 

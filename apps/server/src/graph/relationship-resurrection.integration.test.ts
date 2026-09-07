@@ -11,29 +11,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * RE-CREATING A REMOVED RELATIONSHIP — a pre-existing defect, found by needing leave-and-rejoin
- * ================================================================================================
- *
- * `relationships_org_type_from_to_key` is a FULL unique constraint on
- * `(org_id, type_id, from_id, to_id)`, while every removal in this codebase is a SOFT delete. Those
- * two facts together meant an edge could be created exactly ONCE, ever: after a delete the triple
- * stayed occupied by a tombstone that confers nothing, and re-creating it returned
- * `409 relationship already exists` — naming a row the caller cannot see and which grants nothing.
- *
- * MEASURED on the ordinary route before the fix: join a group, `DELETE /relationships/{id}`, POST
- * the same edge -> 409. So a person removed from a team could never be re-added, by anyone, for the
- * life of the deployment.
- *
- * It is INDEPENDENT OF SSO and predates it. It surfaced only because a directory sync has to handle
- * leave-and-rejoin, which is an entirely ordinary directory event — the feature did not cause the
- * bug, it just made it unavoidable.
- *
- * The fix is RESURRECTION rather than a partial index: reviving the row keeps ONE row per triple,
- * which is the identity the constraint already asserts, where a partial index would allow N
- * tombstones beside one live row and make every reader that joins on the triple pick between them.
- */
+/** RE-CREATING A REMOVED RELATIONSHIP. See docs/graph.md §164. */
 describe("a soft-deleted relationship can be re-created (resurrection)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -132,18 +110,7 @@ describe("a soft-deleted relationship can be re-created (resurrection)", () => {
   });
 });
 
-/**
- * ================================================================================================
- * A RESURRECTION IS A CREATE — and it must leave every trace a create leaves
- * ================================================================================================
- *
- * The resurrection branch returned as soon as it had un-tombstoned the row, so reviving an edge was
- * the ONE write in `relationships-repo.ts` that happened invisibly: no audit event, no sync-journal
- * entry, no event publish. The tests above cover the row, the revision and the authority it
- * confers — all of which were already green while the rejoin was unauditable, unreplicable and
- * unobservable. That is exactly the shape of a test that passes for a reason other than its claim,
- * so the traces get their own assertions here, on a fresh org so the counts mean what they say.
- */
+/** A RESURRECTION IS A CREATE. See docs/graph.md §165. */
 describe("a resurrection writes the same records a first-time create writes", () => {
   let server: TestServer;
   let org: TestOrg;

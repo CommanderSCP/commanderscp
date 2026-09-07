@@ -4,114 +4,12 @@ import {
   type ScanThresholdContribution
 } from "@scp/schemas";
 
-/**
- * WHAT COUNTS AS A SCAN OUTCOME AT THE FEDERATION EXPORT BOUNDARY — the single rule the M17.3 (E6)
- * export gate (`promotion-repo.ts`) and the ADR-0020 promotion scan step's short-circuit
- * (`promotion-scan-step.ts`) both apply.
- *
- * ONE MODULE, TWO CALL SITES, ON PURPOSE. Those two predicates were written as separate copies of
- * "status pass + `ScanEvidenceSchema` parses + digest matches", each documented as being the exact
- * twin of the other. They were — and a rule maintained in two places with a comment promising they
- * agree is a rule that will eventually disagree. Worse, they must agree for a *safety* reason and not
- * merely a tidiness one: the short-circuit decides whether a managed scan RUNS, and the gate decides
- * whether the export CROSSES. A short-circuit that is looser than the gate suppresses the scan that
- * would have satisfied the gate; a short-circuit that is tighter re-scans an artifact that is already
- * covered. Both call `evaluateScanCoverage`.
- *
- * ============================================================================================
- * FOUR PROPERTIES THIS FIXES, ALL OF THEM AT A CROSS-BOUNDARY AUTHORIZATION GATE
- * ============================================================================================
- *
- * **1. A SCAN OUTCOME IS IDENTIFIED BY ITS PRODUCER, NEVER BY THE SHAPE OF ITS EVIDENCE.** The gate
- * used to accept ANY `control_runs` row whose jsonb evidence happened to parse as
- * `ScanEvidenceSchema`. `control_runs.evidence` is stored VERBATIM from whatever a bound
- * ControlPlugin returns (`governance/control-runner.ts`: `evidence = outcome.evidence ?? {}`), and
- * `@scp/plugin-webhook-control` returns `body.evidence` verbatim from an operator-configured URL
- * along with `body.status`. So a `webhook-control` binding pointed at a URL that answers
- * `{"status":"pass","evidence":{…ScanEvidence-shaped…,"digestMatch":true,"artifactDigest":"<the
- * promoted digest>"}}` manufactured a row that satisfied E6 exactly. That is a complete bypass of
- * the boundary scan gate, authored at `policy:write` **scoped at a control object** — strictly
- * weaker than the operator authority that sets the instance floors (ADR-0016 §3 makes
- * `scan_requirement_floors` operator-write / tenant-read precisely so a tenant cannot loosen them).
- *
- * The fix is not a stricter shape test — no shape test can work, because the shape is the payload.
- * `control_runs.plugin_module` (migration 0064) records WHICH KIND OF CONTROL produced a run, stamped
- * at insert from the binding that actually ran, and `MANAGED_SCAN_CONTROL_OBJECT_ID` identifies the
- * commander's own step. Those are the two ADR-0020 §1 ingresses — the managed promotion scan step and
- * the org-pipeline `scan-result-control` alternate — and they are the only two producers admitted
- * here. This is the same move `dependencies/bump-actuator.ts` already made for the auto-merge grant,
- * for the same reason, one migration earlier.
- *
- * **2. THE LATEST ANSWER WINS.** The gate used to accept any HISTORICAL passing row, forever: a later
- * failing scan of the same artifact by the same control did not supersede it. Runs are grouped by the
- * QUESTION they answer ({@link questionKey}) and only the newest run of each question is consulted —
- * every one of which must pass. An older pass therefore cannot outvote a newer fail, and (the
- * direction that matters for ADR-0033) a newer pass DOES clear an older fail, so a re-evaluation can
- * still unblock an export.
- *
- * **3. THE OPERATOR'S FLOOR BINDS AT THE BOUNDARY.** The gate applied no threshold of its own — it
- * accepted the producer's `status` and never looked at what that verdict was judged against. Evidence
- * can be judged against a per-binding `config.threshold` (`scan-result-control`'s `resolveThreshold`
- * falls back to it when the gate threads no scoped ceiling), which is tenant-authored. So the
- * `severityCounts` of the satisfying evidence are re-checked HERE against the INSTANCE-SCOPED FLOORS
- * (`scan_requirement_floors`, ADR-0016 §3) — and only those.
- *
- * WHY ONLY THE INSTANCE FLOORS, AND NOT THE SIX-TIER RESOLUTION. The four org-and-below tiers are
- * tenant-authored policy data: re-resolving them here would add no authority a tenant does not
- * already hold, while paying exactly the cost ADR-0016 §4 rejected design (B) for — a second
- * evaluation of the same criterion, producing a second, possibly-divergent verdict. The two above-org
- * tiers are different in kind: they are the operator's statement about the deployment, unwritable by
- * any tenant, and E6 is the operator's boundary. Checking those and stopping is the whole of the
- * defence-in-depth this gate's own doc comment already claimed to be.
- *
- * **With no floor authored — the default on every deployment — this check constrains nothing and the
- * gate's behaviour is byte-identical to before it existed.**
- *
- * **4. A VERDICT IS ONLY CURRENT WHILE THE EXCLUSION SET IT WAS JUDGED UNDER IS** (M22.9,
- * ADR-0033 §10 — added after properties 1-3, at the boundary they left open). Property 2 makes the
- * newest answer win, which catches a re-scan that FAILED. It does not catch the case where nothing
- * re-ran at all: an override grant expires or is revoked, NO ROW CHANGES — expiry is a read-time
- * window in the resolver, since ADR-0033 rejected a status-flipping sweeper — and the covering
- * `pass` keeps authorizing crossings under a waiver that no longer exists. Both producers already
- * stamped `evidence.exclusionSetHash` for exactly this comparison and until this check NOTHING read
- * it on the export path: a new promotion of the same digest found the covering pass, re-scanned
- * nothing, and `promotion-repo.ts` accepted that row into the SIGNED BUNDLE. The caller resolves the
- * set in force NOW and passes its hash; a run judged under any other set refuses. The asymmetry
- * around an absent hash on either side is enumerated at the check inside {@link
- * evaluateScanCoverage}.
- *
- * ============================================================================================
- * WHAT THIS IS STILL NOT
- * ============================================================================================
- * It NEVER runs a scan (charter principle 1) and it never re-counts findings: it re-verifies the
- * existence, provenance, currency and digest-binding of an outcome an execution system already
- * produced. And it is not a *replacement* for the lifecycle gate — it is the boundary re-check.
- */
+/** What counts as a scan outcome at the export boundary. See docs/federation.md §502. */
 
-/**
- * The synthetic, well-known object id every `control_runs` row the commander's promotion scan step
- * deposits is tagged with. Lives HERE rather than in `promotion-scan-step.ts` (which re-exports it,
- * so every existing import still resolves) because it is now part of the ADMISSION RULE, and the
- * admission rule must not import the module whose short-circuit it defines.
- */
+/** The well-known object id every such row carries. See docs/federation.md §503. */
 export const MANAGED_SCAN_CONTROL_OBJECT_ID = "00000000-5ca4-4000-8000-000000000001";
 
-/**
- * The ControlPlugin modules whose verdict IS a scan verdict — ADR-0020 §1's "org-pipeline scan
- * evidence remains a supported alternate ingress".
- *
- * `scan-result-control` and nothing else. The other two modules a control binding can name
- * (`control-runner.ts`'s `KNOWN_CONTROL_MODULES`) are deliberately absent and neither absence is an
- * oversight:
- *   * `webhook-control` — "POST to an operator-configured arbitrary URL and return whatever it
- *     says". Its evidence is an unvalidated remote payload; admitting it here is the bypass this
- *     module exists to close.
- *   * `github-check` — reports a commit's Check Runs. A green CI run is not a scan verdict, carries
- *     no digest binding, and says nothing about an artifact's vulnerabilities.
- *
- * Adding a module here GRANTS IT THE POWER TO AUTHORIZE A CROSS-BOUNDARY CROSSING. The bar is that
- * the module's evidence is produced by a scanner it controls, not echoed from a caller.
- */
+/** The ControlPlugin modules whose verdict IS a scan verdict. See docs/federation.md §504. */
 export const SCAN_EVIDENCE_PLUGIN_MODULES: readonly string[] = ["scan-result-control"];
 
 /** The subset of a `control_runs` row the boundary rules read. Structurally satisfied by
@@ -143,12 +41,7 @@ const COUNT_KEYS = {
   maxLow: "low"
 } as const;
 
-/**
- * Per-severity MIN across the instance-scoped floor contributions (`readInstanceScanFloors`) — the
- * `platform` and `trust_domain` rungs of ADR-0016's chain, and ONLY those. Commutative and
- * associative like the resolver's own merge, so this is order-independent for the same reason
- * (ADR-0016 §4).
- */
+/** The per-severity minimum across the instance floors. See docs/federation.md §505. */
 export function mergeInstanceFloor(
   contributions: readonly ScanThresholdContribution[]
 ): SeverityCeiling {
@@ -179,24 +72,7 @@ export function isScanEvidenceProducer(run: ScanRunLike): boolean {
   return run.pluginModule !== null && SCAN_EVIDENCE_PLUGIN_MODULES.includes(run.pluginModule);
 }
 
-/**
- * WHICH QUESTION THIS RUN IS AN ANSWER TO — the key supersession is computed over.
- *
- * For a BOUND control the question is the control: one binding fetches one verdict, so its newest
- * run is its current answer. That is the same identity `latestControlRun` uses everywhere else in
- * the system, which is why a re-run genuinely supersedes rather than accumulating.
- *
- * For the COMMANDER'S STEP the control id is synthetic and MULTIPLEXES methods — one export deposits
- * a `trivy` row and an `openscap` row under the same id — so the question is (step, method). Keying
- * on the control alone there would make the gate ORDER-DEPENDENT in the worst possible direction: a
- * `trivy` pass and an `openscap` fail for the same digest are written milliseconds apart, and
- * whichever the loop happened to write second would decide the crossing. With the method in the key,
- * both are consulted and both must pass.
- *
- * A managed row always carries `evidence.scanner` (the step `ScanEvidenceSchema.parse`s before
- * depositing, and deposits nothing when a runner fails), so the `""` fallback is unreachable for an
- * authentic deposit and merely keeps this total.
- */
+/** Which question this run answers, the supersession key. See docs/federation.md §506. */
 function questionKey(run: ScanRunLike): string {
   if (run.controlObjectId === MANAGED_SCAN_CONTROL_OBJECT_ID) {
     const scanner = typeof run.evidence.scanner === "string" ? run.evidence.scanner : "";
@@ -205,17 +81,7 @@ function questionKey(run: ScanRunLike): string {
   return run.controlObjectId;
 }
 
-/**
- * WHICH PROMOTED DIGEST THIS RUN IS ABOUT — read from `evidence.expectedDigest`, the field whose
- * documented meaning is exactly "the digest the change is promoting, the value `artifactDigest` was
- * bound against".
- *
- * Read off the RAW evidence bag rather than a parsed `ScanEvidence`, deliberately: a FAILING run is
- * frequently unparseable (`scan-result-control`'s `fail()` emits `{url, expectedDigest}` and similar
- * partial bags), and a failure that cannot be attributed to the artifact it is about cannot supersede
- * the stale pass it should be superseding. Attribution has to survive the failure, or property 2 only
- * works for the runs that succeeded.
- */
+/** WHICH PROMOTED DIGEST THIS RUN IS ABOUT. See docs/federation.md §507. */
 function subjectDigestOf(run: ScanRunLike): string | null {
   const value = run.evidence.expectedDigest;
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -246,14 +112,7 @@ function breachesInstanceFloor(
   return breached;
 }
 
-/**
- * ADDITIVE ONLY. This union is a server-internal type: it reaches an operator through a refusal
- * Decision's `inputContext.refusalCode`, which is `additionalProperties: {}` free-form jsonb in
- * `tools/openapi/openapi.v1.json` (verified — no member of this union appears in that file, in
- * `@scp/schemas`, or in `apps/web`). So a new member needs no `pnpm gen` and cannot trip the oasdiff
- * gate; what it DOES reach is a CLI/UI rendering `code` verbatim, which is why members are added and
- * never renamed or repurposed.
- */
+/** ADDITIVE ONLY. This union is a server-internal type. See docs/federation.md §508. */
 export type ScanCoverageRefusalCode =
   | "no_scan_outcome"
   | "not_passing"
@@ -271,26 +130,12 @@ export type ScanCoverage =
       detail: Record<string, unknown>;
     };
 
-/**
- * Does `digest` carry a current, digest-bound, floor-satisfying scan outcome from an admitted
- * producer? THE rule — see the module doc for why each of the five narrowings exists.
- *
- * FAIL-CLOSED IN EVERY DIRECTION: no admitted producer, a producer whose newest answer is anything
- * but `pass`, evidence that no longer parses, a verdict bound to a different artifact, a verdict
- * judged under an exclusion set that is no longer in force, or counts above the operator's floor all
- * refuse. "Absent never means passed."
- */
+/** Does this digest carry a current, floor-satisfying outcome. See docs/federation.md §509. */
 export function evaluateScanCoverage(args: {
   digest: string;
   runs: readonly ScanRunLike[];
   instanceFloor: SeverityCeiling;
-  /**
-   * M22.9 — the hash of the exclusion set the CALLER resolved as in force right now
-   * (`scanExclusionSetHash`, `governance/scan-exclusion-actuator.ts`), or `undefined` when it
-   * resolved none. Optional so this stays byte-identical for a caller that has not opted in AND for
-   * the deployments M22.2 promised nothing to: `undefined !== undefined` is false, so nothing
-   * resolved + nothing recorded refuses nothing. Every other combination refuses — see the check.
-   */
+  /** The hash of the exclusion set the caller resolved. See docs/federation.md §510. */
   expectedExclusionSetHash?: string;
 }): ScanCoverage {
   const { digest, runs, instanceFloor, expectedExclusionSetHash } = args;
@@ -369,27 +214,7 @@ export function evaluateScanCoverage(args: {
         }
       };
     }
-    // M22.9 (ADR-0033 §10) — IS THIS VERDICT STILL JUDGED UNDER THE SET THAT IS IN FORCE NOW?
-    //
-    // BEFORE THE FLOOR CHECK ON PURPOSE. The counts the floor reads are a product of the exclusion
-    // set (and the ADR-0033 §2 note below makes that literal once `effectiveSeverityCounts` is what
-    // gets compared), so "which set was this judged under" has to be settled before any number
-    // derived from it is believed. AFTER the digest binding, because a verdict about a different
-    // artifact is not a stale answer to this question — it is not an answer to it at all.
-    //
-    // THE ASYMMETRY IS `scan-exclusion-actuator.ts`'s, deliberately the same expression rather than
-    // a paraphrase of it — the stamp, the re-run trigger and this gate must mean one thing by "the
-    // set changed". Five combinations, and only the first two cross:
-    //   * neither side has a hash → NO REFUSAL. Nothing authored, nothing recorded: byte-identical
-    //     to before this check existed, which is M22.2's promise to every untouched deployment.
-    //   * both, equal            → the set has not moved; the verdict stands.
-    //   * both, different        → a grant was approved, revoked, edited, or expired out of the
-    //     read-time window. The verdict was judged under a set nobody is standing behind now.
-    //   * caller has one, the run has none → REFUSE. A pre-M22.7 run predates stamping, and clauses
-    //     ARE in force now. The honest reading is "unknown", and fail-closed is the entire point of
-    //     a boundary re-check — it costs a re-scan, never an unearned crossing.
-    //   * the run has one, the caller none → REFUSE. Every clause has since been withdrawn, so the
-    //     verdict was judged under a strictly looser set than the one in force.
+    // Is this verdict still judged under the set in force now. See docs/federation.md §511.
     if (evidence.exclusionSetHash !== expectedExclusionSetHash) {
       return {
         covered: false,
@@ -409,12 +234,7 @@ export function evaluateScanCoverage(args: {
         }
       };
     }
-    // ADR-0033 §2 COMPATIBILITY — when per-finding exclusions land, the number compared here must
-    // become the POST-exclusion `effectiveSeverityCounts`, not `severityCounts` (which ADR-0033
-    // deliberately keeps meaning "what the scanner found"). Reading the raw count then would make
-    // every admitted exclusion invisible at this boundary and refuse crossings the grant authorized —
-    // the mirror image of the invisibility ADR-0033 §2 rejected a verdict-level waiver for. This is
-    // the one line that changes.
+    // Compatibility: what the compared number must become. See docs/federation.md §512.
     const breached = breachesInstanceFloor(evidence.severityCounts, instanceFloor);
     if (breached.length > 0) {
       return {

@@ -11,32 +11,7 @@ import {
   type ApiCall
 } from "./openapi-conformance.js";
 
-/**
- * M16.2 phase B (B4) — NAV → LIST → DETAIL, and NOTHING BYPASSES THE PUBLIC API.
- *
- * CHARTER PRINCIPLE 3 (API-first parity): "The UI and CLI consume only the generated SDK; nothing
- * may bypass the public API." That is normally checked by reading the source — which catches a
- * hand-written `fetch("/api/v1/…")` only if the reviewer happens to notice it. This spec checks it
- * from the OUTSIDE: it captures EVERY request the browser makes to the API while walking the
- * Outposts UI and asserts each captured method+path matches an operation in the EMITTED OpenAPI
- * document (`tools/openapi/openapi.v1.json` — the same artefact the SDK is generated from and the
- * oasdiff gate runs against). An ad-hoc URL, a hand-built path, a route the contract does not
- * declare: all fail, whichever layer they came from.
- *
- * WHY THE MATCHER LIVES IN `openapi-conformance.ts` AND HAS ITS OWN UNIT TEST. Every E2E job in
- * `.github/workflows/ci.yml` is guarded by `github.event_name == 'push' && github.ref ==
- * 'refs/heads/main'`, so this file does NOT run on pull requests — a matcher that quietly degraded
- * into "accepts everything" would keep this sweep green forever and nobody would learn anything from
- * it. `openapi-conformance.test.ts` exercises its REJECTION cases under Vitest on every PR.
- *
- * The other every-PR guarantees this milestone owes live in plain vitest for the same reason:
- * `src/components/layout/app-shell-nav.test.tsx` (the nav entry + the route tree),
- * `src/routes/outposts-honesty.test.tsx` (the overview's honest columns),
- * `src/routes/outpost-settings.test.tsx` (the keyless write door) and
- * `src/routes/outpost-configuration.test.tsx` (tier / poke-mode / managed-elsewhere / reconcile).
- * What THIS spec owns, and they cannot, is the real router, real authz, the real generated SDK over
- * the wire, and the sweep below.
- */
+/** Nav, list and detail, and nothing bypasses the public API. See docs/web.md §20. */
 
 test("Outposts: nav → list → detail, and every API call the browser makes is a declared operation", async ({
   page

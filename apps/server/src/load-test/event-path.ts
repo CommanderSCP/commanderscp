@@ -18,50 +18,7 @@ import { DOMAIN_EVENTS_QUEUE } from "../events/pgboss.js";
 import { eventSubject, STREAM_NAME } from "../events/nats-fanout.js";
 import { formatSummary, summarize } from "./stats.js";
 
-/**
- * M8 informational load test, Pass 2 (BUILD_AND_TEST.md §8 M8: "informational load tests of the
- * outbox/pg-boss and NATS event paths at target webhook rates (no benchmark gate — review
- * decision)"; DESIGN.md §8's "Coordination workloads are low-throughput/high-value (thousands of
- * events per minute, not millions per second) — comfortably Postgres-queue territory" is the claim
- * this script puts real numbers against). NOT a CI gate — informational only, printed to stdout.
- *
- * SCOPING DECISION (read this before extending the script): "webhook rates" gets measured as TWO
- * DELIBERATELY DECOUPLED halves rather than one combined webhook->Change->outbox pipeline:
- *
- *  1. INGESTION: `POST /change-sources/:sourceKind/webhook` at sustained concurrency — this is
- *     "persist-then-process"'s PERSIST half (routes/change-sources.ts): signature-verify + one
- *     INSERT into `change_source_events`, nothing else. Fast by design.
- *  2. EVENT PATH: the outbox -> pg-boss / SSE / NATS fan-out (events/outbox-relay.ts), driven by
- *     real `object.create` calls through the public API — which write exactly one transactional
- *     outbox row per create (graph/objects-repo.ts's `eventBus.publish`), the SAME code path ANY
- *     domain mutation uses, webhook-triggered or not.
- *
- * Why not measure the FULL chain (webhook POST -> coordination/webhook-processor.ts's next
- * reconcile tick -> proposeChange -> outbox -> relay)? Three reasons, stated plainly: (a) that
- * chain requires a `source_mappings` correlation row + a real target component, which is fixture
- * setup unrelated to event-bus throughput; (b) it is gated behind `coordination/reconcile.ts`'s
- * own ~1s self-scheduling tick (20-row batch limit per tick, coordination/webhook-processor.ts) —
- * measuring it would mostly measure THAT tick cadence, not the outbox/pg-boss/NATS path
- * BUILD_AND_TEST.md's M8 item actually names; (c) this task's scope explicitly excludes editing
- * `apps/server/src/coordination/` (parallel work), and while *driving* it through its existing
- * public API would be in-scope, its own polling cadence would just dominate and mask the number
- * this script exists to produce. `eventBus.publish` (events/event-bus.ts) is the ONE place every
- * domain mutation — including whatever `proposeChange` would eventually call — funnels through, so
- * measuring it via `object.create` is a faithful, honest proxy for "the outbox/pg-boss/NATS event
- * paths at target webhook rates," which is the literal thing BUILD_AND_TEST.md's M8 item names.
- *
- * PLACEMENT: same rationale as graph-scale.ts's module doc — colocated in `apps/server/src/
- * load-test/` rather than a standalone workspace package, for the same direct-dependency reasons.
- *
- * MODEL: this script's server bring-up (`listenTestServer`), org bootstrap (`createTestOrg`), and
- * dual-backend delivery observation (sseHub + pg-boss job table + a real JetStream consumer) all
- * mirror `events/event-bus.integration.test.ts` and `events/outbox-relay.integration.test.ts`
- * directly — those are the "model" BUILD_AND_TEST.md pointed at for how both backends get
- * exercised in this codebase.
- *
- * Run: `DOCKER_HOST="unix://$HOME/.colima/default/docker.sock" TESTCONTAINERS_RYUK_DISABLED=true
- *   pnpm --filter @scp/server load-test:events`
- */
+/** M8 informational load test, Pass 2. See docs/load-test.md §1. */
 
 const INGESTION_CONCURRENCY = 20;
 const INGESTION_COUNT = 3000;
@@ -78,11 +35,7 @@ interface LoadResult<T> {
   achievedRatePerSec: number;
 }
 
-/** Fixed-concurrency worker pool: `concurrency` workers each loop calling `task(seq)` until
- *  `count` total calls have been dispatched. Reports ACHIEVED throughput/latency rather than
- *  attempting fixed-interval pacing to a nominal target rate — on a single shared-event-loop dev
- *  process, "how much did we actually sustain at this concurrency" is the honest number; a
- *  best-effort open-loop scheduler would just silently queue and mislabel the same reality. */
+/** Fixed-concurrency worker pool. See docs/load-test.md §2. */
 async function runConcurrentLoad<T>(opts: {
   concurrency: number;
   count: number;
@@ -114,12 +67,7 @@ function signBody(body: string, secret: string): string {
   return `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
 }
 
-/** Fires one signed webhook POST directly via `fetch` (deliberately NOT the generated SDK — the
- *  SDK's `changeSources.webhook()` wrapper doesn't expose the custom HMAC-signature/delivery-id
- *  headers a real webhook sender needs; this is load-testing tooling driving the public HTTP API
- *  directly, not product code, so bypassing the SDK here doesn't violate DESIGN.md §6's
- *  API-first-parity rule — the SDK's OWN implementation of this exact route is exercised by
- *  named-queries.integration.test.ts and friends elsewhere). */
+/** Fires one signed webhook POST directly via `fetch`. See docs/load-test.md §3. */
 async function postWebhook(baseUrl: string, token: string, seq: number): Promise<Response> {
   const payload = {
     repo: "loadtest/repo",
@@ -200,14 +148,7 @@ async function runEventPathPhase(
 
   let natsConsumeLoop: Promise<void> | undefined;
   const natsArrivalByObjectId = new Map<string, number>();
-  // Hoisted OUTSIDE the consume loop deliberately: a `for await` over `consumer.consume()` blocks
-  // on `next()` whenever no message is currently available — once every event has already been
-  // delivered, the loop is sitting inside that blocking `next()` call, NOT re-entering its body,
-  // so a flag only checked INSIDE the loop body (the first, buggier version of this script) can
-  // never be observed and the loop hangs forever. Calling `.stop()` on the iterator itself (a
-  // `QueuedIterator` method, `@nats-io/nats-core`'s `core.d.ts`) is what actually unblocks it —
-  // found the hard way: this script's first NATS-backend run hung indefinitely and had to be
-  // killed.
+  // Hoisted OUTSIDE the consume loop deliberately. See docs/load-test.md §4.
   let natsIter: ConsumerMessages | undefined;
   if (backend === "nats" && natsUrl) {
     const nc = await connect({ servers: natsUrl, name: "load-test-events-consumer" });

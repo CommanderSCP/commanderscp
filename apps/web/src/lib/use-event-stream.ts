@@ -20,20 +20,10 @@ const OBJECT_EVENT_TYPES = new Set([
 // no outbox event) — change-detail.tsx additionally polls via `refetchInterval` to catch that.
 const CHANGE_EVENT_TYPES = new Set(["scp.change.transitioned"]);
 
-// M26.1 (proposal multi-region-instance-resilience.md §7.1 item 1): a synthetic frame the
-// server-side bridge (apps/server/src/events/sse-bridge.ts) pushes to every already-connected
-// client on its own LISTEN (re)connection — the stream is best-effort with no replay (ADR-0025
-// D4), so this is the signal that some window of events may have been missed. Carries no useful
-// payload; the response is a wholesale cache invalidation, same as a local stream reconnect below.
+// M26.1 (proposal multi-region-instance-resilience.md §7.1 item 1). See docs/web.md §139.
 const RESYNC_EVENT_TYPE = "scp.sse.resync";
 
-// ---------------------------------------------------------------------------------------------
-// Tiny external store (React 18 `useSyncExternalStore`) for the dashboard's "last few SSE
-// events" activity feed (components/ActivityFeed.tsx, BUILD_AND_TEST.md §8 M2 item 2's "small
-// live activity feed"). Colocated here rather than a second subscription, which would violate
-// "exactly one event stream per session" — this file already owns the one connection, so it also
-// owns the tiny fan-out to whatever wants to render recent events.
-// ---------------------------------------------------------------------------------------------
+// Tiny external store. See docs/web.md §140.
 
 const MAX_ACTIVITY_EVENTS = 20;
 let activityEvents: RelayedEvent[] = [];
@@ -53,25 +43,7 @@ export function getActivityEventsSnapshot(): RelayedEvent[] {
   return activityEvents;
 }
 
-/**
- * Opens exactly one live event stream per authenticated session (`GET /events/stream` —
- * routes/events.ts, org-scoped) and invalidates the affected TanStack Query cache keys when a
- * `scp.object.*` event arrives — the live-update mechanism DESIGN.md §14 and
- * BUILD_AND_TEST.md §8 M2 DoD (a) test: "`scp service register` → service visible in UI within
- * one SSE tick", with NO page reload.
- *
- * THROUGH THE SDK, like every other call this app makes. Until the SSE API-parity work this was
- * the app's one hand-built URL and one raw `EventSource` — the single exemption in the no-bypass
- * sweep (`apps/web/e2e/openapi-conformance.ts`) and the single hole named in ADR-0023, where
- * `JSON.parse(event.data) as RelayedEvent` cast raw network bytes to a locally-declared interface.
- * `client.events.stream()` is a generated operation: every frame is validated against the contract
- * schema before it reaches this file, and the reconnect/backoff/`Last-Event-ID` behaviour
- * `EventSource` supplied for free is now explicit and tested (packages/sdk/src/event-stream.ts,
- * event-stream.test.ts). Both exemptions are gone, not relocated.
- *
- * Dispatch is on `event.type` off the parsed envelope rather than per-type listeners, because the
- * stream is one typed async iterator rather than a DOM event target.
- */
+/** Opens exactly one live event stream per authenticated session. See docs/web.md §141. */
 export function useEventStream(): void {
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -102,11 +74,7 @@ export function useEventStream(): void {
       }
     };
 
-    // M26.1 §7.1 item 1: wholesale invalidation on EVERY (re)connection, local or server-signalled
-    // — see `RESYNC_EVENT_TYPE`'s doc comment for why both triggers exist independently. A blanket
-    // `invalidateQueries()` rather than resolving which keys might be stale mirrors `onObjectEvent`
-    // above: list/detail queries are cheap and cached, and simplicity is CLAUDE.md's #1 decision
-    // priority.
+    // M26.1 §7.1 item 1: wholesale invalidation on EVERY. See docs/web.md §142.
     const resync = (): void => void queryClient.invalidateQueries();
 
     void (async () => {

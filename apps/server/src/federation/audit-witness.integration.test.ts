@@ -10,12 +10,7 @@ import { importSyncBundle } from "./import-repo.js";
 import { listAuditWitnessesForOrigin } from "./audit-witness-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * FEDERATION AUDIT WITNESS (§7.2.7). A full-scope receiver, importing a peer's sync bundle, must
- * persist a passive witness of that peer's audit-chain head from the `audit_segment` entries it used
- * to discard — WITHOUT the witness ever blocking the import. This is what lets the post-failover
- * runbook detect a truncation `scp audit verify` alone cannot see.
- */
+/** FEDERATION AUDIT WITNESS. See docs/federation.md §21. */
 describe("federation audit witness: import persists a peer's audit-chain head, never blocking", () => {
   let domainA: IsolatedDomain;
   let domainB: IsolatedDomain;

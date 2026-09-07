@@ -1,31 +1,4 @@
-/**
- * THE CONFIG-SOURCE TRIGGER'S DRAIN — the step that finally gives `syncConfigSourceCommit` a
- * production caller (ADR-0046 section 2; proposal section 4).
- *
- * ================================================================================================
- * THE THREE-PHASE SHAPE, AND WHY IT IS NOT ONE TRANSACTION
- * ================================================================================================
- * Reading a manifest is an out-of-process RPC into the git-provider plugin subprocess. Applying one
- * writes the graph. Those cannot share a transaction: holding a DB connection open across an
- * external call is the hazard already tracked against `triggerWaveTarget`, and a failed write in a
- * shared tx aborts everything else in it — a try/catch does not help, because a caught Postgres
- * error leaves the tx aborted and the next statement dies somewhere unrelated.
- *
- *   1. READ-ONLY tx — what is pending, and which registrations cover it.
- *   2. NO tx — fetch every selected manifest over the plugin RPC.
- *   3. WRITE tx — CLAIM the entries (`FOR UPDATE SKIP LOCKED`), run the sync against the already-
- *      fetched bytes, mark them drained.
- *
- * The claim lives in phase 3, which is where correctness lives: two concurrent ticks may both
- * prefetch the same manifest (wasted bytes, no harm), and exactly one will claim the row and apply.
- *
- * ================================================================================================
- * THE ENGINE'S `readManifest` SEAM IS WHY THIS COMPOSES AT ALL
- * ================================================================================================
- * `syncConfigSourceCommit` takes the read as a parameter rather than doing it. So phase 3 hands it a
- * closure over the phase-2 results and the engine runs entirely inside the write transaction with no
- * I/O of its own — which is exactly what that seam was for.
- */
+/** THE CONFIG-SOURCE TRIGGER'S DRAIN. See docs/config-source.md §17. */
 
 import type { Db } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -145,11 +118,7 @@ export async function drainConfigSourceSyncQueue(
       });
       drained += 1;
     } catch (error) {
-      // The sync engine does not throw for an ordinary stopping point — it returns a status. So a
-      // throw here is a genuine fault, and the entry is marked drained WITH it rather than retried:
-      // the repo stays ahead of the graph as a displayed state, and the next push enqueues fresh
-      // work. Its own transaction, so the failed one is already rolled back and this write is on a
-      // clean connection.
+      // A throw is a real fault: mark drained rather than retry. See docs/config-source.md §18.
       await withTenantTx(db, orgId, (tx) =>
         markSyncProcessed(
           tx,

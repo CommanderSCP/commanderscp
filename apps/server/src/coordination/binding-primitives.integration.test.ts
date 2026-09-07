@@ -13,12 +13,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { listExecutorBindings } from "./executor-bindings-repo.js";
 
-/**
- * M12 P5c — executor-binding primitives (list-for-target / delete / repurpose) and the target-liveness
- * bug fix. Before P5c a binding could be created and read but never DELETED or RELABELLED, and a
- * soft-deleted target's binding was polled by observe() forever (no `executor_bindings.deleted_at`).
- * The routing key is the Type (ADR-0007).
- */
+/** M12 P5c — executor-binding primitives. See docs/coordination.md §23. */
 describe("executor-binding primitives (M12 P5c)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

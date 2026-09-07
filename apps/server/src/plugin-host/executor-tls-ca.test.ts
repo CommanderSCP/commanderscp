@@ -6,40 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SubprocessPluginHost } from "./host.js";
 
-/**
- * `SCP_EXECUTOR_TLS_CA_FILE` — SECURITY-SENSITIVE: proves an executor plugin can verify a
- * PRIVATELY-SIGNED endpoint when (and only when) the operator supplies the CA, over a REAL TLS
- * handshake.
- *
- * ============================================================================================
- * WHAT THIS CLOSES
- * ============================================================================================
- * The bundled Argo Workflows server listens on 2746 and serves HTTPS with a SELF-SIGNED certificate
- * (its vendored Deployment's readiness probe uses `scheme: HTTPS`). Plugin traffic had no CA-trust
- * path at all — the subprocess only ever built a custom dispatcher for `federation-https`'s client
- * certificate — so every request to it failed verification and the coordinated-test path was
- * unreachable on the bundled tier even with the NetworkPolicy open (#321 opened the network; this
- * opens the trust).
- *
- * ============================================================================================
- * WHY IT IS TESTED THIS WAY
- * ============================================================================================
- * Not a unit test of Agent construction. Asserting "we passed a `ca` option" would pass just as
- * happily if undici ignored it, if the PEM never loaded, or if verification had been switched off
- * entirely — and the last of those is the failure this feature must never have. So this spawns a
- * REAL executor subprocess through `SubprocessPluginHost` and drives it against a REAL `node:https`
- * server presenting a privately-signed certificate. The verdict is the handshake itself.
- *
- * The negative case (case 1) is the load-bearing one and runs FIRST: without the CA the request must
- * FAIL. If it passed, every other assertion here would be meaningless — a build that trusts
- * everything also "succeeds" at trusting this server.
- *
- * `argo-workflows` is the module under test rather than a synthetic one because it is the executor
- * that forced the feature, and because it is a TENANT-plane module: it is NOT in
- * `OPERATOR_PLANE_MODULES`, so it reaches a loopback address only via the operator's
- * `allowedHosts` allowlist — exercising the egress guard and the TLS trust together, in the
- * arrangement a real deployment uses.
- */
+/** `SCP_EXECUTOR_TLS_CA_FILE` — SECURITY-SENSITIVE. See docs/plugin-host.md §31. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.resolve(__dirname, "test-support/mtls-fixtures");
@@ -114,12 +81,7 @@ async function startArgoPlugin(serverUrl: string, allowedHost: string): Promise<
       // The operator's per-instance allowlist — a tenant-plane module reaches a private address
       // only through this, never by asking.
       allowedHosts: [allowedHost],
-      // BOTH ADR-0003 layers, which is what a real in-cluster executor needs: the operator's
-      // per-instance allowlist AND the execution system's own `allowInternalEgress` declaration.
-      // 127.0.0.1 is a private address, so the allowlist alone is not enough — the internal-IP
-      // deny-list refuses it independently. Setting only one was how the first run of this file
-      // failed, with an egress error the TLS assertions would have happily read as "the handshake
-      // refused it" had they not matched on the certificate text.
+      // Both layers, as a real in-cluster executor needs. See docs/plugin-host.md §32.
       allowInternalEgress: true,
       config: { serverUrl, namespace: "argo" }
     }
@@ -148,21 +110,7 @@ describe("SCP_EXECUTOR_TLS_CA_FILE — executor TLS trust", () => {
     const result = await statusCall();
 
     expect(result.ok).toBe(false);
-    // WHY THE ASSERTION IS SHAPED LIKE THIS, since it is the weakest-looking part of the file.
-    // Node's `fetch` reports a TLS verification failure as the bare string "fetch failed" and hangs
-    // the real reason off `err.cause`, which the plugin-host RPC boundary does not serialize — so
-    // there is no certificate text to match on here.
-    //
-    // The proof is therefore DIFFERENTIAL, not textual: case 2 runs the SAME server, SAME plugin,
-    // SAME allowlist and SAME ref, differing ONLY in `SCP_EXECUTOR_TLS_CA_FILE`, and SUCCEEDS. One
-    // variable, opposite outcomes.
-    //
-    // Matching the message still does real work — it excludes the two ways this file has ALREADY
-    // been green for the wrong reason. First draft: a malformed ref threw before any socket opened.
-    // Second: the egress guard refused 127.0.0.1 ("not in the configured allowedHosts allowlist")
-    // because the allowlist carried a port and `allowInternalEgress` was unset. Both produced a
-    // failing call with `requestCount === 0` — exactly what a naive `expect(ok).toBe(false)` wants —
-    // and neither had anything to do with TLS.
+    // Why the assertion is shaped this way, despite looking weak. See docs/plugin-host.md §33.
     expect(result.error).toMatch(/fetch failed/);
     expect(testServer.requestCount).toBe(0);
   });
@@ -182,11 +130,7 @@ describe("SCP_EXECUTOR_TLS_CA_FILE — executor TLS trust", () => {
   });
 
   it("3. A DIFFERENT private CA does NOT make the endpoint trusted — this ADDS an anchor, never disables the check", async () => {
-    // The distinction the whole design rests on. If the implementation had reached for
-    // `rejectUnauthorized: false` — or if supplying any bundle degraded to "trust anything" — this
-    // case would pass and the feature would be a verification bypass wearing a CA's clothes.
-    // `client-bad.crt` is a real certificate from a DIFFERENT issuer, so trusting it must leave the
-    // server's own chain unverifiable.
+    // The distinction the whole design rests on. See docs/plugin-host.md §34.
     testServer = await startArgoLikeServer();
     vi.stubEnv("SCP_EXECUTOR_TLS_CA_FILE", path.join(FIXTURES, "client-bad.crt"));
     await startArgoPlugin(testServer.baseUrl, testServer.host);
@@ -227,13 +171,7 @@ describe("SCP_EXECUTOR_TLS_CA_FILE — executor TLS trust", () => {
 
 describe("the census: no verification bypass exists on the plugin TLS path", () => {
   it("neither the subprocess entry nor the host can disable certificate verification", () => {
-    // A GUARD, not a description. The reason this feature is a CA bundle rather than a skip flag is
-    // that a skip flag would inevitably be reachable from tenant-writable binding config. This fails
-    // the moment someone adds the easier option, which is exactly when it is most tempting.
-    //
-    // Read with `readFileSync` over the source text rather than grep: two of this repo's files carry
-    // literal NUL bytes and are silently dropped from recursive greps, and a security census that
-    // can return a false zero is worse than none.
+    // A GUARD, not a description. See docs/plugin-host.md §35.
     for (const file of ["subprocess-entry.ts", "host.ts"]) {
       const source = readFileSync(path.join(__dirname, file), "utf8");
       const withoutComments = source
@@ -250,18 +188,7 @@ describe("the census: no verification bypass exists on the plugin TLS path", () 
   });
 
   it("the system trust store is EXTENDED, not replaced — `rootCertificates` stays in the trust set", () => {
-    // A SOURCE GUARD, and it is one on purpose — stated plainly because a reader deserves to know
-    // which kind of claim this is.
-    //
-    // undici's `ca` option REPLACES the default trust store rather than adding to it, so passing the
-    // operator's bundle alone would make every publicly-signed BYO executor stop verifying. The
-    // bundled-backend cases above would all still pass, because they use a private CA either way:
-    // this is precisely a regression no test in this file can see.
-    //
-    // MEASURED: removing `...rootCertificates` from the `ca` array left all 7 behavioural cases
-    // GREEN. Proving the positive behaviourally needs a publicly-signed endpoint, i.e. the internet,
-    // which this suite never touches. So the choice is this guard or nothing, and nothing means the
-    // regression ships silently and surfaces as "our executor stopped working after an upgrade".
+    // A SOURCE GUARD, and it is one on purpose. See docs/plugin-host.md §36.
     const source = readFileSync(path.join(__dirname, "subprocess-entry.ts"), "utf8");
     expect(source).toContain("rootCertificates");
     expect(source).toMatch(/ca:\s*\[\s*\.\.\.rootCertificates/);

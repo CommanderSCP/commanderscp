@@ -23,44 +23,7 @@ import { exportSyncBundle } from "./export-repo.js";
 import { importSyncBundle } from "./import-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * M20.2 (ADR-0031) — THE COMMANDER SEES NOTHING AT ALL.
- *
- * TWO GENUINELY SEPARATE POSTGRES DATABASES, because the entire claim is about what the commander's
- * database *cannot* contain. A single-database test with two orgs would prove something weaker and
- * would be satisfiable by RLS alone; this is the same faithful topology
- * `boundary-segment.integration.test.ts` established, for the same reason.
- *
- * ## The scope this runs at is the point
- *
- * `syncScope: { mode: 'full' }` on BOTH sides — the WIDEST scope there is. A narrow scope would make
- * this test pass for the wrong reason (the entries would be filtered as out-of-mode, and the
- * locality clause could be deleted without the test noticing). `full` is also the scope an operator
- * widens to when data is missing, which is exactly the moment the guarantee is relied on.
- *
- * ## What "nothing at all" is checked to mean
- *
- * Two independent assertions, because either alone is weak:
- *
- *   1. **Nothing lands.** No row in the commander's `objects` table for the domain-local component,
- *      after a real signed export→import.
- *   2. **Nothing is even shipped.** The component's id, urn and name do not appear ANYWHERE in the
- *      serialized bundle body. This is the assertion that distinguishes ADR-0031's guarantee from
- *      the weaker "the importer declines to store it" — a bundle is a file that gets written to
- *      disk, relayed across a CDS boundary and kept in transfer records, so an entry the receiver
- *      merely refuses to apply has still crossed.
- *
- * And a **negative control in the same bundle**: an ordinary component created alongside it arrives
- * normally. A test that proves nothing crossed is vacuous unless it also proves something did.
- *
- * ## Why the update and the tombstone are exercised too
- *
- * The create-path stamp alone protects nothing. Without the stamp on `updateObject`'s entry, a
- * domain-local object leaks on its SECOND write — the whole object, one revision late. Without it on
- * the tombstone, its deletion leaks both its existence and its NAME (a urn is
- * `urn:scp:<org>:<type>:<name>`). Each is asserted separately so a regression names which stamp
- * went missing.
- */
+/** M20.2 (ADR-0031) — THE COMMANDER SEES NOTHING AT ALL. See docs/federation.md §101. */
 describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (two databases)", () => {
   let outpost: IsolatedDomain;
   let commander: IsolatedDomain;
@@ -313,11 +276,7 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
       })
     );
 
-    // AND DRIVE A REAL STATE TRANSITION. `proposeChange` and `transitionChange` emit `change_status`
-    // from two DIFFERENT call sites, and only the propose one is exercised by creating a change —
-    // so without this the transition skip is untested. Mutation-proven: disabling
-    // `transition.ts`'s `if (!row.domainLocal)` left this file entirely green until this step
-    // existed, which is precisely the "green for the wrong reason" failure it now closes.
+    // AND DRIVE A REAL STATE TRANSITION. See docs/federation.md §102.
     await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       transitionChange(
         tx,
@@ -369,11 +328,7 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
       })
     );
 
-    // Asserted on `.detail`, NOT via `.rejects.toThrow(/…/)`. A `ProblemError`'s `message` is the
-    // bare RFC 9457 title — here "Bad Request" — so a regex matched against the message passes for
-    // ANY 400 the function might throw, including the empty-targets one. This repo has already
-    // shipped exactly that vacuous assertion once (a `/checksum mismatch/` that was really matching
-    // `message === "Conflict"`), and it passed here too until the refusal's own text was checked.
+    // Asserted on `.detail`, NOT via `.rejects.toThrow(/…/)`. See docs/federation.md §103.
     const refusal = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       proposeChange(tx, {
         orgId: outpost.orgId,
@@ -601,11 +556,7 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
         domainLocal: true
       })
     );
-    // The state M20.5's inheritance produces, constructed directly: `createComponentInService`
-    // authorizes `relationship:write`, and this file's isolated-domain harness has no RBAC subject —
-    // which is why every other test here builds the object and its edge through the repos. The
-    // inheritance that would normally produce this state is covered by
-    // `domain-local-inheritance.integration.test.ts`; the subject HERE is the publish refusal.
+    // The state M20.5's inheritance produces, constructed directly. See docs/federation.md §104.
     const child = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       createObject(tx, {
         orgId: outpost.orgId,
@@ -727,15 +678,7 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
   });
 
   it("PUBLISH (M20.7): publishing CLEARS the inheritance provenance — on an object that genuinely had one", async () => {
-    // The child must have INHERITED provenance for this to mean anything. Bolting the assertion onto
-    // the ordering test above would have been VACUOUS: that child is created with `domainLocal: true`
-    // explicitly, so its provenance is null from the start and "cleared" would pass trivially.
-    // `domainId` is OMITTED, not `null`. At the REPO layer (unlike on the wire, where the doors
-    // coerce it) a literal `null` means "I AM the org root" and writes a DETACHED row — so this
-    // container would have had no route to the org root, and the child created inside it below would
-    // have been unreachable by every principal. `createObject`'s root-reachability invariant refuses
-    // that child now, which is how this fixture was found. Omitting the field asks for the org root
-    // as the parent, which is what "a top-level partition" was always meant to say.
+    // The child must have inherited provenance to mean anything. See docs/federation.md §105.
     const container = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       createObject(tx, {
         orgId: outpost.orgId,

@@ -4,41 +4,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { atLineStart, stripHashComments } from "@scp/source-census";
 
-/**
- * M21.5 — THE FOUR CHARTER CLAUSES THAT ARE PROPERTIES OF THE `scp-runner-dep` IMAGE.
- *
- * ================================================================================================
- * WHAT THIS IS FOR
- * ================================================================================================
- * Four clauses of the `scp-managed-dep` amendment were, until the image existed, asserted in code
- * comments and delegated to an artifact that was not built:
- *
- *   "never runs a package manager" / "never resolves or regenerates a lockfile" /
- *   "never builds, compiles, or tests" / "the runner contains no package manager" (2026-08-15)
- *
- * None of them is enforceable by the orchestrator's restraint — they are true only if the image
- * genuinely has no toolchain in it. So the assertions below read the Dockerfile and the run shim and
- * fail on the presence of one, which is the closest a unit test can get to the property without a
- * docker daemon. `apps/runner-scan`'s `pin.test.ts` is the precedent for this shape.
- *
- * ================================================================================================
- * WHAT THIS FILE STRUCTURALLY CANNOT SEE, AND WHERE THAT IS COVERED
- * ================================================================================================
- * A source-text test can say what this Dockerfile ADDS. It cannot say what the BASE brought in — and
- * the clauses are about what the image CONTAINS. That gap was not theoretical: the base used to be a
- * build ARG carrying a mutable TAG, so `docker build --build-arg RUNNER_DEP_BASE_IMAGE=node:22
- * apps/runner-dep` yielded an image tagged as the vetted runner with a full Node toolchain in it,
- * and the assertion below that "pins the base" passed on the unchanged text.
- *
- * Both halves of that are now closed, and neither closes the other: the base is a LITERAL
- * digest-pinned `FROM` (no ARG to override, no tag to move), and `runner-image.integration.test.ts`
- * BUILDS the image and asks the artifact whether a package manager, compiler or language runtime is
- * present. This file keeps the drift gate against `tools/busybox/pin.env` — the cheap check that
- * runs on every machine — and stops claiming to be the proof.
- *
- * The remaining complement — that the shim produces the SAME bytes the orchestrator's verifiers were
- * written against — is `runner-shim.test.ts`, which runs it.
- */
+/** The charter clauses that are properties of the image. See docs/plugins.md §356. */
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..", "..");
@@ -89,11 +55,7 @@ describe("scp-runner-dep contains no toolchain — the charter clauses, as prope
   });
 
   it("the run shim invokes no toolchain either — awk is the whole of it", () => {
-    // What is scanned is COMMANDS, so three things are stripped first and each for a stated reason:
-    // comments (prose about what is NOT here would trip every assertion), double-quoted strings (the
-    // refusal message names the five ecosystems, one of which is literally `npm`), and `case` arm
-    // LABELS (`go|oci|npm|python|maven)` is the ecosystem validation, not an invocation). What
-    // remains is what the shell would actually execute.
+    // Commands are scanned, so three things are stripped first. See docs/plugins.md §357.
     const commands = stripHashComments(runSh)
       .split("\n")
       .map((line) => line.replace(/"[^"]*"/g, '""'))
@@ -160,14 +122,7 @@ describe("scp-runner-dep contains no toolchain — the charter clauses, as prope
   });
 
   it("the shim never opens the manifestPath it is told — the subject is always /work/in/manifest", () => {
-    // `manifestPath` names a path in somebody's REPOSITORY. This container has no repository, so a
-    // path there could only address the container's own filesystem; refusing to treat it as a path
-    // is what keeps that true.
-    // ANCHORED, and the reason this file is in the M21.7 sweep at all: these two were the last
-    // raw-text PRESENCE assertions here, so commenting out `IN=in/manifest` in run.sh left this
-    // file green at 22/22 — measured — while its own comment above correctly named the property
-    // and its Dockerfile reads handled it. A well-written note naming a hazard is a signal to
-    // sweep, not evidence it was handled (CLAUDE.md).
+    // `manifestPath` names a path in somebody's REPOSITORY. See docs/plugins.md §358.
     expect(runSh).toMatch(atLineStart("IN=in/manifest"));
     expect(runSh).toMatch(atLineStart("OUT=out/manifest"));
     // …resolved against the image's own WORKDIR, which is what makes those /work/in and /work/out.

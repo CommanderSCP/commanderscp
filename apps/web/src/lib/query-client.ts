@@ -1,11 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 
-/**
- * One shared TanStack Query cache for the whole SPA. `useEventStream` (lib/use-event-stream.ts)
- * invalidates specific query keys when an SSE event arrives — that's the live-update mechanism
- * (DESIGN.md §14, BUILD_AND_TEST.md §8 M2 DoD (a)) — so query keys below are deliberately
- * structured (`["registry", basePath, ...]`) to make targeted invalidation straightforward.
- */
+/** One shared TanStack Query cache for the whole SPA. See docs/web.md §125. */
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -33,11 +28,7 @@ export function federationStatusKey(): unknown[] {
   return ["federation", "status"];
 }
 
-/** Query key for `GET /federation/outposts` — every `outpost` CONFIG OBJECT (ADR-0022's
- *  commander-declared half), as opposed to the peer ROWS in `federationStatusKey`. The detail page
- *  reads the LIST rather than only its own peer's row because a peer bound to TWO live config
- *  objects is exactly the authority conflict the reconcile verb exists for, and the single-object
- *  `GET` answers with the winner alone — it cannot show a conflict it has already resolved. */
+/** Query key for `GET /federation/outposts`. See docs/web.md §126. */
 export function outpostConfigListKey(): unknown[] {
   return ["federation", "outposts", "list"];
 }

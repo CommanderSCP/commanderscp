@@ -8,22 +8,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * CUSTOM ROLES — role-model.md §5 step 10
- * ================================================================================================
- *
- * THE PRECONDITION THIS SHIPS ON. The proposal gated custom roles behind closing the
- * `hasRoleAtScope` quorum bypass, and the first test below is the reason: without that fix, an org
- * authoring a zero-permission role named 'Approver' would have made its holders eligible quorum
- * voters everywhere a policy names Approver. `authz/quorum-name-collision.integration.test.ts`
- * pins the resolver; this file pins that the authoring door refuses the name outright, so the two
- * cover the same hazard at the door and at the resolver.
- *
- * WHAT AUTHORING IS. It confers nothing — `POST /role-bindings` re-runs the full subset rule
- * against whoever tries to bind the result. The bars here keep the CATALOGUE honest: a role that
- * advertises authority its author cannot confer misleads every operator who reads `GET /roles`.
- */
+/** Custom roles, and the precondition this ships on. See docs/routes.md §99. */
 describe("custom roles: POST/PATCH/DELETE /api/v1/roles (role-model.md §5 step 10)", () => {
   let server: TestServer;
   let org: TestOrg;

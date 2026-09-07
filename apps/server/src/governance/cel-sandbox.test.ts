@@ -12,12 +12,7 @@ import {
   normalizeCelWorkerError
 } from "./cel-sandbox.js";
 
-/**
- * Unit coverage for the sandboxed CEL evaluator (BUILD_AND_TEST.md §8 M4 unit DoD: "the CEL
- * sandbox genuinely blocks I/O/arbitrary code (assert a malicious expression can't escape)").
- * Spins up real `node:worker_threads` — no mocking of the sandbox internals, since the whole
- * point under test is that isolation is real.
- */
+/** Unit coverage for the sandboxed CEL evaluator. See docs/governance.md §25. */
 describe("checkStaticComplexity (layer 1: static pre-validation)", () => {
   it("accepts a normal short expression", () => {
     expect(() => checkStaticComplexity("change.impacts.size() > 0")).not.toThrow();
@@ -110,22 +105,7 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     expect(result.ok).toBe(false);
   });
 
-  // ---------------------------------------------------------------------------------------
-  // THE ERROR TEXT DEPENDS ON THE FAULT, NEVER ON THE CONTEXT (PR #153 review Q2).
-  //
-  // cel-js serializes the WHOLE evaluation context into its identifier-resolution errors, and
-  // `governance/evaluate.ts` puts a per-evaluation `time` snapshot in that context and then
-  // persists the resulting string into every gate Decision's reason tree. Left alone, a single
-  // typo'd policy condition — a PERMANENT operator error that never self-heals — made the reason
-  // tree differ on every ~2 s reconcile tick, so `insertDecisionIfChanged` correctly wrote a new
-  // row every tick and the gate returned to ~43,200 rows/day/change: the original 1.44 GB/day
-  // incident, with the persist-on-change fix fully in place.
-  //
-  // These two tests are the ones a cel-js version bump must break rather than silently regress:
-  // the first pins the message END TO END through a real worker (so a reworded upstream error is
-  // caught), the second pins the invariant that matters (context values, above all `time`, never
-  // appear).
-  // ---------------------------------------------------------------------------------------
+  // THE ERROR TEXT DEPENDS ON THE FAULT, NEVER ON THE CONTEXT. See docs/governance.md §26.
   it("an unevaluable identifier yields the DIAGNOSIS only — cel-js's serialized context dump is stripped", async () => {
     const sandbox = makeSandbox();
     const result = await sandbox.evaluate("change.typoed == true", {
@@ -173,14 +153,7 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     expect(normalizeCelWorkerError(parseError)).toBe(parseError);
   });
 
-  // ---------------------------------------------------------------------------------------
-  // Malicious-input / sandbox-escape attempts (BUILD_AND_TEST.md §8 M4: "assert a malicious
-  // expression can't escape"). None of these may (a) throw an uncaught exception that could
-  // crash the host process, (b) return a live Node object / function / any value that isn't
-  // plain JSON-serializable data, or (c) have any observable side effect (no way to assert
-  // "no side effect" directly, so these tests assert the SAFE failure mode: a rejected/failed
-  // evaluation that resolves to inert data, never to something callable).
-  // ---------------------------------------------------------------------------------------
+  // Malicious-input / sandbox-escape attempts. See docs/governance.md §27.
   const escapeAttempts = [
     "this.constructor.constructor('return process')()",
     "(() => process.exit(1))()",
@@ -265,11 +238,7 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
   });
 
   it("a genuinely hung/slow evaluation is killed by the hard timeout — and the SAME sandbox recovers for the next call", async () => {
-    // cel-js has no native sleep/loop construct to actually hang itself with (by design — CEL is
-    // not Turing-complete), so a conditional-hang worker entry forces the timeout path
-    // deterministically: it hangs ONLY on the sentinel "__HANG__" and evaluates everything else
-    // normally. That lets this prove what the old test couldn't (MINOR (b)) — after the timeout
-    // terminates+respawns the wedged worker, the SAME sandbox instance serves a subsequent call.
+    // The language has no construct to hang itself with. See docs/governance.md §28.
     const sandbox = makeSandbox({
       timeoutMs: 50,
       workerEntryPath: CONDITIONAL_HANG_WORKER_ENTRY_PATH
@@ -277,22 +246,7 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     const start = Date.now();
     const hung = await sandbox.evaluate("__HANG__", {});
     expect(hung.ok).toBe(false);
-    // BOUNDED, NOT HUNG FOREVER — that is the whole claim, and the number is headroom, not a
-    // latency target. The sandbox's own `timeoutMs` here is 50ms; everything above that is worker
-    // spawn.
-    //
-    // RAISED 2000 -> 5000 (2026-08-01). Job 4 now runs `pnpm test -- --coverage`, and v8
-    // instrumentation makes spawning + loading a worker thread materially slower: this assertion
-    // failed on `main` at 2158ms having passed uninstrumented for months. 5000 keeps the assertion
-    // meaningful — a genuinely hung evaluation blows the 10s test timeout below, so 5s still
-    // separates "bounded" from "wedged" — while not re-litigating worker startup cost on every
-    // loaded CI box.
-    //
-    // This is the ONLY wall-clock assertion in the unit layer (censused 2026-08-01:
-    // `packages/plugins/fake-executor` deliberately uses a fake clock for exactly this reason, and
-    // says so). `plugin-host/host.test.ts`'s `rssGrowthMb < 300` is the same PROPERTY — a resource
-    // bound now measured under instrumentation — and was checked: it has passed every run since
-    // coverage was enabled, so it is left alone rather than pre-emptively loosened.
+    // BOUNDED, NOT HUNG FOREVER. See docs/governance.md §29.
     expect(Date.now() - start).toBeLessThan(5000);
 
     // SAME sandbox: the respawned worker (same conditional-hang entry) evaluates a normal

@@ -7,63 +7,7 @@ import type {
   ComponentPipelineUnplacedStage
 } from "@scp/sdk";
 
-/**
- * THE RENDERING HALF of "a component's pipeline is continuous, and it is the WHOLE journey".
- *
- * The server half (`apps/server/src/coordination/component-pipeline.integration.test.ts`) proves the
- * projection is well-defined for a component that has never released, and that it carries the stages
- * the component is NOT placed at. This file owns the part a browser can still undo: given that
- * response, does the UI actually PAINT a pipeline — does it keep "not observed" distinct from
- * "nothing deployed", and "not placed" distinct from "placed, nothing released yet"?
- *
- * Same reasoning and same mechanism as `service-board-honesty.test.tsx`: it runs in the plain unit
- * job (transitively required on PRs), needs no browser, and takes milliseconds. The E2E spec proves
- * the real route and real SDK; this proves the presentational contract.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | render the version cell as `{stage.version}` (empty when null) instead of the unknown treatment | the honesty test FAILS — a blank reads as "nothing deployed" |
- * | drop the `No executor` badge for a null binding | the unbound test FAILS |
- * | gate the stage list on `stage.current` being set | the never-released test FAILS with no stages painted — the old bug, in the UI |
- * | drop `unplacedStages` from `buildJourney`'s input | the interleaving test FAILS — the unplaced stage vanishes, which is the bug this view was rebuilt for |
- * | concatenate the two arrays with NO sort | the interleaving test FAILS — the journey paints gamma→prod→staging |
- * | group waves by NAME instead of wave index | the parallel-wave test FAILS — two same-named sequential waves merge into one row |
- * | drop the "Not placed" badge and the consequence line from `UnplacedStageCard` | the not-placed test FAILS — greyed alone is indistinguishable from quiet |
- * | drop the `registry` node from the software chain | the node-order test FAILS — the glossary puts registry between build and config, so omitting it misdraws the pipeline |
- * | stop deduping build bindings across placements | the dedupe test FAILS — a build repeated at every place would draw as several builds |
- * | render a `<a href="#">` when the server sent `url: null` | both link tests FAIL — a node must be clickable exactly when there is somewhere real to go |
- * | drop the "none required" text when a gate asks for no control | the gate test FAILS — a blank Checks line reads as "we cannot see checks", when none are configured |
- * | render the stage's deployment row from `stage.current` instead of the lane's | the per-lane release test already covers it; noted here because the deployment row is the SECOND consumer of that field |
- * | sort the journey by `wave.index` instead of `order` | ALL TESTS STAY GREEN, and that is CORRECT, not a gap: the server emits `order` as the union index with null-wave entries last, so the two orderings agree on every response it can produce. Recorded here so nobody "fixes" this by writing a test that pins an ordering the API does not promise |
- * | fall back to `deploymentTarget.name` when no facet value is declared | the no-facet test FAILS — the element appears carrying the name, which is exactly the "derived from what it is called" trap |
- * | join the facet as substrate · region · account · cluster | the four-value test FAILS on the fixed order |
- * | draw the registry node only on `buildsHere` (ignore `registry`) | the outpost-case and ambiguous node-order tests FAIL — a declared registry with no build draws nothing |
- * | draw the registry node for `state: "none"` too | the stated-absence test FAILS — a node appears for a fact the server said is absent |
- * | draw the registry node in the INFRA lane when a registry is declared | the infra-lane test FAILS |
- * | render `ambiguous` through the `declared` branch | the ambiguous header test FAILS — no count, no amber |
- * | link the registry name to `url + "/" + repository` (a guessed deep path) | the declared header test FAILS on the base-only href |
- * | drop the `instanceRole === "commander"` gate on the Scan & sign node | SIX tests FAIL — the outpost/undefined-role orders and every pre-§9.3 pinned chain grow a node this site never performs |
- * | draw the Scan & sign node in the infra lane too | the infra-lane test FAILS |
- * | mark a scan row `managed` from `scanner === "openscap"` instead of the wire's `managed` flag | the flag-not-name test FAILS — a trivy managed row loses its mark, an org openscap row gains one |
- * | make the Build tile reviewable whenever an artifact exists (ignore SBOM/PM) | the two "no click affordance" tests FAIL — a button appears with nothing to review |
- * | make the Scan & sign tile reviewable on scans only (ignore exports) | the exports-only test FAILS — a signed manifest is reviewable too |
- * | take the FIRST export as "newest" | the PM-line test FAILS — the older peer is named |
- * | take the FIRST digest as "latest" | the several-digests test FAILS |
- * | link an SBOM location whatever its scheme | the OCI-ref test FAILS — a non-URL is drawn as somewhere to go |
- * | render `artifact: null` through the "not observed" (unknown) branch of the Registry body | the absence-vs-unknown test FAILS |
- * | word the outpost's absent PM the way the commander's is | (pre-§10.1) the outpost test FAILED — superseded: the PM no longer renders on Build at all |
- * | keep the PM line on the Build tile (§10.1) | the "PM is ABSENT from the Build tile" test FAILS on `pipeline-build-pm` |
- * | make the Build tile reviewable on an export alone | the "an export alone does NOT make the Build tile clickable" test FAILS |
- * | render the PM line AFTER the sign lines | the scan → E6 → PM → sign order test FAILS |
- * | drop the manifest section from `ScanSignReviewBody` | the PM section test FAILS |
- * | make the Registry reviewable whenever an artifact exists (ignore `importedManifest`) | the §10.4 "absent → NO Review affordance" test FAILS — a button with nothing to review |
- * | render the absent-imported-manifest line on the commander too | the §10.4 absent test FAILS on the commander half |
- * | word the `importedManifest:unsigned` unknown as the absence sentence | the §10.4 stated-unknown test FAILS |
- * | read `exporterName ?? changeName` on the manifest line | the "nothing reads names" test FAILS |
- */
+/** The rendering half of a component's continuous pipeline. See docs/web.md §230. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -380,11 +324,7 @@ describe("a stage the component is NOT placed at", () => {
 });
 
 describe("the target's SUBSTRATE FACET — read from the target's declared properties, never its name", () => {
-  // pipeline-substrate-registry-scan.md §9.1: `substrate`, `account`, `region`, `cluster` are
-  // typed, optional string properties of a deployment-target (migration 0065). A quiet line beside
-  // the hint joins ONLY the values that are declared. Null is an ABSENCE of a declaration, not an
-  // unknown observation, so it earns no `—` and no badge — and nothing declared means no line at
-  // all. `name` is never read: `us-east-1-prod (k8s)` looks parseable and is exactly the trap.
+  // The substrate facets a target may declare. See docs/web.md §231.
   const facetOf = (html: string): string | null =>
     html.match(/data-testid="pipeline-target-facet"[^>]*>([^<]*)</)?.[1] ?? null;
 
@@ -1228,24 +1168,7 @@ describe("who MAINTAINS a place", () => {
   });
 });
 
-/**
- * pipeline-substrate-registry-scan.md §10.2 — WHICH OUTPOST a target is part of, by the owner's
- * TRUST-DOMAIN RULE. The server resolves it (`stages[].outpost` / `unplacedStages[].outpost`) and
- * the tile RENDERS THE STATE IT IS GIVEN. Every fixture below deliberately names the target
- * something outpost-shaped (`field-cluster`) with a stated outpost that is NOT the target's name, so
- * a tile that derived the line from `deploymentTarget.name` fails.
- *
- * MUTATION LOG (each applied ALONE, then reverted)
- * | Mutation | Result |
- * |---|---|
- * | render `outpost {deploymentTarget.name}` (derive from the name) | the "never reads the target name" tests FAIL |
- * | link the outpost line regardless of `instanceRole` | the plain-text-on-an-outpost-site test FAILS |
- * | render `peer-without-outpost` through the `outpost` branch | the peer test FAILS on "no outpost record" |
- * | render `unknown-domain` as `this instance` | the unknown test FAILS |
- * | render `peer-not-outpost` through the `peer-without-outpost` branch | the peer-not-outpost test FAILS on "no outpost record" / "Federation › Outposts" |
- * | word `peer-not-outpost` as `commander` regardless of `peerRole` | the retrans half ("relay …") and the "unset" tail FAIL |
- * | drop the line from `UnplacedStageCard` | the unplaced test FAILS |
- */
+/** Which outpost a target is part of, as rendered. See docs/web.md §232. */
 describe("which OUTPOST a place is part of — the server's stated resolution, never the target's name", () => {
   const PEER = "019f0000-0000-7000-8000-00000000fe1d";
   const OUTPOST_TARGET = {
@@ -1362,11 +1285,7 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     expect(outpostLine(html)).not.toContain("co-located");
     expect(line).not.toContain("field-cluster");
 
-    // On an OUTPOST site (or an unknown role) the SAME absence is stated, but the title does NOT
-    // point at Federation › Outposts: the server's self-shape door takes the write only from a
-    // commander-role instance (`outpost-binding.ts`, measured in
-    // `outpost-config-sync.integration.test.ts`) — an outpost's own record is commander-declared
-    // and arrives replicated, and a hint to declare it locally would guide the operator into a 400.
+    // On an OUTPOST site. See docs/web.md §233.
     for (const role of ["outpost", undefined] as const) {
       const other = renderToStaticMarkup(
         <StageCardForTest instanceRole={role} stage={selfStage} />
@@ -1519,31 +1438,7 @@ function outlineText(fragment: string): string {
     .trim();
 }
 
-/**
- * ADR-0028 INCREMENT 4 — A HELD STAGE IS LEGIBLE AS ONE.
- *
- * The defect in one line: a wave target whose trigger is withheld by a stage-scoped component
- * coupling keeps `change_wave_targets.status = "pending"` forever — the server's hold `continue`s
- * before the target is ever handed to an executor — and this view painted that identically to "the
- * wave has not reached this stage yet". Those are opposite facts. One is waiting on something NAMED
- * and clears itself; the other is waiting on nothing.
- *
- * The server half (`apps/server/src/coordination/stage-dependency-surfaces.integration.test.ts`)
- * proves `stages[].hold` is computed live and self-clearing. This file owns what a browser can still
- * undo: given that response, does the page say WHAT it is waiting on?
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `StatusPill` renders `status ?? "never deployed"` regardless of the hold | 1 fails — `expected 'pending' to contain 'held'`. The pill reads `pending`: the defect verbatim |
- * | `HoldSubnode` maps over `[]` instead of `hold.dependencies` | 4 fail — the naming, id-fallback, edge-provenance and per-lane cases. The card still says "Held here" and gives no way to find out by what |
- * | `holdFor` ignores the lane and returns `stage.hold` whenever it is set | 1 fails — `expected … not to contain 'payments-api'`. The infrastructure lane, whose release here succeeded a month ago, is painted as held by the software pipeline's coupling |
- * | `stateOf` maps a hold to `"blocked"` — the union member that already existed | 2 fail — `expected 'blocked' to be 'held'`. Worth keeping in mind: it type-checks, it renders, and it re-creates the permanent-red marker the server deliberately wrote `verdict: "hold"` rather than `"block"` to avoid |
- * | `arrowInto` checks `held` AFTER `approval` | 1 fails — `expected 'approval' to be 'held'` |
- * | `arrowInto` checks `held` BEFORE `blocked` (by dropping the `blocked` rung) | 1 fails — `expected 'held' to be 'blocked'`. This is the rung the ladder test was given a two-target fixture for; with one target per wave it would have stayed green, which is why the fixture holds a held target and a FAILED one in the same wave |
- */
+/** ADR-0028 INCREMENT 4 — A HELD STAGE IS LEGIBLE AS ONE. See docs/web.md §234. */
 describe("a HELD stage is not a `pending` one", () => {
   const HELD_CHANGE = "019f0000-0000-7000-8000-00000000e001";
   const OTHER_CHANGE = "019f0000-0000-7000-8000-00000000e002";
@@ -1774,13 +1669,7 @@ describe("a HELD stage is not a `pending` one", () => {
   });
 });
 
-/**
- * ONE TILE PER SOURCE (owner rule, 2026-08-14: "each source and target must be in its own tile —
- * commander and outposts alike; the only thing that ever shares a tile is a test with its target").
- * The target side already obeyed it (one StageCard per target under a wave label). This pins the
- * source side: N inputs → N tiles, side by side, and never two repos inside one tile. The
- * commander-as-opaque-input is itself a tile when present.
- */
+/** ONE TILE PER SOURCE. See docs/web.md §235. */
 describe("the SOURCE side is a row of tiles — one per input", () => {
   const SELF = { domainId: "d-self", name: "field-outpost", isSelf: true, role: "outpost" };
   const COMMANDER = { domainId: "d-cmd", name: "hq-commander", isSelf: false, role: "commander" };
@@ -1863,15 +1752,7 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
   });
 });
 
-/**
- * §10.6 (owner, 2026-08-16): "Global sources should be labeled as such in pipelines." The eyebrow is
- * READ off each mapping's own `scope` / `mirrorOfShared` — four cases — and it renders on EVERY site,
- * the commander's included (the old `showProvenance` gate hid every eyebrow unless a commander input
- * or a domain-local component was present, which is exactly the site whose global sources went
- * unlabelled). Nothing here reads `upstream` or the site's role: an undeclared scope on the
- * commander is NOT global, it is undeclared, and the tile says so in its title rather than guessing.
- * `sourceProvenance` is the one derivation; the render tests pin that the tiles honour it.
- */
+/** Global sources should be labelled as such in pipelines. See docs/web.md §236. */
 describe("§10.6 — the source tile's eyebrow is READ off scope/mirrorOfShared, on every site", () => {
   const SELF = { domainId: "d-self", name: "hq-commander", isSelf: true, role: "commander" };
   const src = (over: Partial<ComponentPipelineResponse["sources"][number]>) => ({
@@ -1950,14 +1831,7 @@ describe("§10.6 — the source tile's eyebrow is READ off scope/mirrorOfShared,
   });
 });
 
-/**
- * EACH SOURCE TILE GETS ITS OWN ARROW (owner, 2026-08-14: "each [source] should have its own arrow
- * so I can enable and disable each as needed", "they should also appear side by side" — for ALL
- * pipelines, commander and outpost). The describe above pins ONE-TILE-PER-SOURCE; this pins the two
- * things layered on top of it: a fan-in arrow PER tile instead of one shared connector for the whole
- * row, and the durable per-mapping enable/disable the correlation matcher now honours (migration
- * 0063's `matchComponentForSource`) — a toggle that does not change matching would be theatre.
- */
+/** EACH SOURCE TILE GETS ITS OWN ARROW. See docs/web.md §237. */
 describe("each source tile carries its own fan-in arrow, and its own enable/disable toggle", () => {
   const SELF = { domainId: "d-self", name: "field-outpost", isSelf: true, role: "outpost" };
   const COMMANDER = { domainId: "d-cmd", name: "hq-commander", isSelf: false, role: "commander" };
@@ -2092,13 +1966,7 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
   });
 });
 
-/**
- * A WAVE LABEL STATES ITS ORDER CLAIM (owner, 2026-08-14: "why would we deploy to gamma and prod
- * in parallel?"). Targets side by side are legitimately one wave that fans out (us-east-1-prod ∥
- * us-west-1-prod) — so a row that is NOT a declared wave must say so, or side-by-side placements
- * read as "released to all at once". Pinned: a declared wave labels itself "Wave N · name"; the
- * off-topology row labels itself as unordered placements and never as a wave.
- */
+/** A WAVE LABEL STATES ITS ORDER CLAIM. See docs/web.md §238. */
 describe("a wave label carries the ORDER claim, not just membership", () => {
   const entry = (name: string, id: string, waveIndex: number | null = null) => ({
     placed: true as const,
@@ -2159,14 +2027,7 @@ describe("a wave label carries the ORDER claim, not just membership", () => {
   });
 });
 
-/**
- * NOT ONE CLICK (owner, 2026-08-14): "Enabled is default. If clicking on it while enabled, it should
- * give you the option to disable for x period of time or until manually enabled again. There
- * should also be a confirmation screen. When disabled, users can enable but it also needs a
- * confirmation screen." The arrow opens a DIALOG; the dialog holds the choice and the confirm; the
- * mutation fires only from the confirm. Radix's dialog renders nothing under renderToStaticMarkup,
- * so the dialog body is pinned by rendering it open via its own component export.
- */
+/** NOT ONE CLICK. See docs/web.md §239. */
 describe("the arrow opens a dialog — closing offers a period or until-re-opened, and both directions confirm", () => {
   const src = (over: Partial<ComponentPipelineResponse["sources"][number]>) => ({
     id: "019f0000-0000-7000-8000-00000000d001",
@@ -2288,13 +2149,7 @@ describe("the arrow opens a dialog — closing offers a period or until-re-opene
   });
 });
 
-/**
- * GREY MEANS "NOT A SWITCH", NEVER "CLOSED" (owner question, 2026-08-14: "the grey arrows are not
- * clickable — is that intentional?"). Yes, and this pins the rule so it stays legible: only arrows
- * this domain can open/close are switches (green open / red closed, always clickable). The
- * commander's opaque-input arrow and every chain connector are NOT switches — grey, not clickable —
- * because there is nothing there for the operator to toggle.
- */
+/** GREY MEANS "NOT A SWITCH", NEVER "CLOSED". See docs/web.md §240. */
 describe("grey is reserved for arrows that are not switches", () => {
   it("the commander's opaque-input arrow is grey and NOT a button; a closed mapping's arrow is red AND a button", () => {
     const html = renderWithQueryClient(
@@ -2342,11 +2197,7 @@ describe("grey is reserved for arrows that are not switches", () => {
   });
 });
 
-/* ================================================================================================
- * §9.3 — the ARTIFACT on the tiles: Registry body (latest digest), Build (SBOM + PM), Scan & sign
- * (commander only). pipeline-substrate-registry-scan.md §9.3/§9.6. Every rendered value is READ
- * from `artifact` or stated absent; a tile is clickable exactly when it has something to review.
- * ============================================================================================== */
+// §9.3 — the ARTIFACT on the tiles. See docs/web.md §241.
 
 type Artifact = NonNullable<ComponentPipelineResponse["artifact"]>;
 type Sbom = NonNullable<Artifact["sbom"]>;
@@ -3001,11 +2852,7 @@ describe("the BUILD tile — the SBOM alone (§10.1), present or stated absent; 
   });
 });
 
-/* ================================================================================================
- * component-journey-view.md §3 Segment 2 — the "upstream build" marker: the observed CI run line
- * beneath "built upstream of CommanderSCP". Server-composed text rendered verbatim; the line exists
- * ONLY in the upstream case (no build binding) and ONLY when the server named a run.
- * ============================================================================================== */
+// component-journey-view.md §3 Segment 2. See docs/web.md §242.
 
 type ObservedRun = NonNullable<ComponentPipelineResponse["observedRun"]>;
 
@@ -3672,11 +3519,7 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// SITE SCOPE — owner rule 2026-08-17: "the global pipeline should have all things global; the
-// outpost pipeline should only have things managed by that outpost". Read off `stage.outpost`
-// against this instance's own trust domain — never a name, never `maintainedBy`.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
+// SITE SCOPE — owner rule 2026-08-17. See docs/web.md §243.
 describe("scopePipelineToSite — an outpost sees only the stages its own outpost manages; the commander sees all", () => {
   const SELF = "01a0032d-b479-714c-83c3-5a8a8a911d7a";
   const HQ = "019fece9-92b3-77f2-ba05-6ddb3aaf0791";

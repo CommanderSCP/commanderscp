@@ -1,8 +1,4 @@
-/**
- * URN scheme: `urn:scp:{org}:{type}:{slug-path}` (DESIGN.md §4.1). Callers may supply their own
- * URN (federation imports, IaC, deliberate naming); when omitted, one is derived from the
- * object's name so `POST /objects/{type}` never requires the caller to think about it.
- */
+/** URN scheme: `urn:scp:{org}:{type}:{slug-path}`. See docs/graph.md §197. */
 export function slugify(input: string): string {
   const slug = input
     .toLowerCase()

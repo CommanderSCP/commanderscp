@@ -2,35 +2,7 @@ import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import { lookup } from "node:dns/promises";
 
-/**
- * SSRF egress guard for plugin `ctx.http` (adversarial-review MAJOR #6). The `allowedHosts`
- * allowlist alone doesn't stop (a) a plugin being steered at the cloud metadata endpoint /
- * loopback / an internal service, or (b) an allowlisted HOSTNAME that DNS-resolves (or rebinds) to
- * an internal IP. This adds an internal-range deny-list enforced AFTER DNS resolution, plus the
- * caller disables HTTP redirect-following (a redirect can't be re-pointed at an internal host).
- *
- * The rule (see `assertEgressAllowed`):
- *  - link-local incl. cloud metadata 169.254.169.254 (169.254/16, fe80::/10) and the unspecified
- *    address (0.0.0.0, ::) are ALWAYS blocked — for EVERY plugin, no exceptions: no plugin ever
- *    legitimately reaches the metadata endpoint.
- *  - loopback (127/8, ::1) and private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7)
- *    are blocked UNLESS `allowInternalPrivate` is true. That flag is derived by the CALLER from the
- *    plugin's MODULE IDENTITY (subprocess-entry.ts's `OPERATOR_PLANE_MODULES`), NEVER from tenant
- *    config: only the genuine operator-plane escape hatches — `webhook-control` (its control-server
- *    URL is operator-configured behind `policy:write`) and `federation-https` (on-prem/single-host
- *    peers) — may reach internal hosts. EVERY tenant-configurable plugin (webhook-notify, github,
- *    argocd, terraform, managed-iac) has `allowInternalPrivate === false`, so a tenant that creates
- *    a binding with `config.url = http://127.0.0.1/...` or `http://10.x/internal` is BLOCKED —
- *    closing the SSRF hole an earlier "unscoped ⇒ allowed" heuristic (based on `allowedHosts`
- *    emptiness, which tenant bindings default to) had reopened. The `allowedHosts` allowlist is a
- *    SEPARATE, additional gate (a scoped plugin's hostname must be on it); it does NOT decide the
- *    internal-range allowance.
- *
- * Classifying an address is worth nothing unless it is the address actually dialled, so
- * `assertEgressAllowed` RETURNS what it verified and `createEgressPinRegistry` (below) makes that
- * set the only answer the connect-time resolver will give — see its doc for the rebinding window
- * that was open while the HTTP client resolved the name a second time on its own.
- */
+/** SSRF egress guard for plugin `ctx.http`. See docs/plugin-host.md §28. */
 
 export type IpClass = "loopback" | "linkLocal" | "unspecified" | "private" | "public";
 
@@ -102,15 +74,7 @@ export interface VerifiedEgressTarget {
   ips: string[];
 }
 
-/**
- * Throws (an `EgressGuardError`) if `url` is not a permitted egress target; returns the addresses
- * it verified. Enforced AFTER DNS resolution — see module doc. `allowInternalPrivate` MUST be
- * derived from the plugin's module identity by the caller (never from tenant config), and is true
- * ONLY for the operator-plane escape hatches.
- *
- * Returning the verified addresses is not a convenience: a caller that then lets the HTTP client
- * re-resolve the name has verified nothing (DNS rebinding, see {@link createEgressPinRegistry}).
- */
+/** Throws if the URL is not a permitted egress target. See docs/plugin-host.md §29. */
 export async function assertEgressAllowed(
   url: string,
   allowedHosts: string[],
@@ -154,24 +118,7 @@ export async function assertEgressAllowed(
   return { hostname, ips };
 }
 
-/**
- * Closes the TOCTOU between "the guard classified this name's addresses" and "the socket connected
- * somewhere". `assertEgressAllowed` used to be followed by a `fetch(url)` that performed its OWN,
- * INDEPENDENT `getaddrinfo` at connect time, so a hostname whose DNS an attacker controls could
- * answer the guard with a public address and the connect-time query, milliseconds later, with
- * `127.0.0.1` / `10.x` / `169.254.169.254` — a textbook DNS rebind that defeated every check above
- * for every tenant-configurable plugin.
- *
- * The registry's `lookup` is installed as the undici Agent's `connect.lookup`, which is the ONLY
- * resolver the socket ever consults. It answers exclusively from the pin the guard just wrote, so
- * the address connected to is provably the address classified; an unpinned hostname is refused
- * outright rather than falling back to DNS. The name itself still travels to the transport (TLS
- * SNI and certificate verification are unaffected — only the address selection is pinned).
- *
- * Pins are REFERENCE-COUNTED, not last-write-wins: two concurrent requests to one hostname each
- * hold the pin until their own body is read, so the first to finish cannot pull the address out
- * from under the second's in-flight connect.
- */
+/** Closes the gap between classifying a name and dialling it. See docs/plugin-host.md §30. */
 export interface EgressPinRegistry {
   /** Pins `target.hostname` to `target.ips`; call the returned release once the response body is
    *  fully read (the connection is long since established by then). */

@@ -2,78 +2,9 @@ import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { objects } from "../db/schema.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 
-/**
- * ================================================================================================
- * THE SOLE WRITER OF `managed_by_stack` — "a description is not an assertion" (drizzle/0068)
- * ================================================================================================
- *
- * ## What this closes
- *
- * The IaC prune pool — which live objects and relationships an apply DELETES — used to be read out
- * of `objects.labels` / `relationships.labels`, from the pair `scp:managed-by=iac` + `scp:stack=X`.
- * `labels` is writable at plain `object:write` AT THE OBJECT, validated by nothing. So the SUBJECT
- * of the decision wrote its own match key, at a strictly weaker permission than the one that
- * authored the desired state. Both directions are reproduced through real HTTP doors in
- * `iac-stack-ownership.integration.test.ts`:
- *
- *  - **Enrolment.** An Operator bound at ONE object, with no IaC authority at all, PATCHes the two
- *    keys onto it. The stack's UNCHANGED manifest then proposes deleting it — over the reason
- *    "previously managed by this stack", which is false — and the apply executes that delete under
- *    the applier's authority, taking the object's `source_mappings`, `placements` and
- *    `executor_bindings` with it.
- *  - **Escape.** The object's owner strips the two keys. The object leaves the pool, so when its
- *    stack later drops it from the manifest to decommission it, NO delete is proposed. It survives
- *    its own decommission silently.
- *
- * ## Why a column and not a reserved label namespace
- *
- * PR #247 reserved `scp.governance/` for keys a governance constraint may match on, and said in its
- * own census that this instance was "not fixable with this namespace". That is right, and the reason
- * is worth stating precisely rather than inherited: a `scp.governance/` key is written by an
- * AUTHORITY — an operator holding org-root `policy:write` — so the namespace's rule is a permission
- * bar. Stack ownership has no such principal. It is stamped by an apply, as a consequence of what a
- * manifest declares, and there is no permission that should let anyone type it directly. The honest
- * encoding of "not tenant data" in this schema is a column, which is what `origin_domain_id`,
- * `provenance`, `revision` and `domain_local` already are.
- *
- * A namespace would also have cost what a column gets for free: `labels` FEDERATE, and
- * `managed_by_stack` does not — it is absent from the journal payload, so a replica arrives owned by
- * nobody, which is the truth (the importing domain's IaC does not manage a row another domain
- * authored).
- *
- * DERIVED BY READING THE CODE, NOT REPRODUCED END-TO-END, and flagged as such because everything
- * else in this module's header was measured: `createObject`/`updateObject` put `labels` in the
- * journal payload verbatim and `import-repo.ts` writes them back, `fetchManagedObjects` had no
- * origin filter, and `deleteObject` refuses a foreign-origin row with a 409 that aborts the whole
- * apply. Each link is read directly; the chain was not executed against two live domains. Treat it
- * as a strong reason to prefer the column, not as a reported second defect.
- *
- * ## The one rule
- *
- * **A stack owns exactly the rows its manifest declares, plus the rows it already owned.** Nothing
- * else can put a row in a stack's prune pool, and nothing a request can send takes one out.
- *
- * Ownership is therefore stamped for every NON-DELETE entry in the diff — `create`, `update` and
- * `noop` alike. `noop` is not an optimisation to skip: a declared row that happens to be
- * byte-identical to what is stored is still a row this stack declares, and leaving it unstamped
- * would make it undeletable by the stack that owns it (the escape direction, arrived at by
- * accident). Each half below is ONE bulk UPDATE whose predicate skips rows already carrying this
- * stack, so an apply that changes no ownership writes no rows — this must not become per-object
- * write amplification on the hottest path IaC has.
- *
- * Ownership is never CLEARED here. A row leaves a stack by being pruned (which deletes it), and the
- * only other way out would be another stack declaring it — which is a `create`/`update`/`noop` in
- * that stack's diff, i.e. a re-stamp by this same function.
- */
+/** THE SOLE WRITER OF `managed_by_stack`. See docs/iac.md §166. */
 
-/**
- * Stamps `stackName` onto every object id given, skipping rows that already carry it.
- *
- * The caller passes the ids of every non-delete object entry in the applied diff. Rows outside that
- * list are untouched, including rows this stack owned before — an object that dropped out of the
- * manifest is handled by the PRUNE, which deletes it; silently disowning it instead would leave an
- * orphan no stack could ever clean up.
- */
+/** Stamps the stack onto every object, skipping owned rows. See docs/iac.md §167. */
 export async function stampObjectStackOwnership(
   tx: TenantTx,
   orgId: string,
@@ -89,11 +20,7 @@ export async function stampObjectStackOwnership(
         eq(objects.orgId, orgId),
         inArray(objects.id, [...objectIds]),
         isNull(objects.deletedAt),
-        // `IS NULL OR <> $stack`, spelled out because drizzle's query builder has no
-        // `IS DISTINCT FROM` (the relationship statement below, being raw SQL, uses the operator
-        // directly — same predicate, two spellings). The `IS NULL` arm is not belt-and-braces: a
-        // bare `<>` evaluates to NULL, not TRUE, against an unowned row, so leaving it out would
-        // skip precisely the rows that need stamping most — the ones being adopted.
+        // Spelled out, because the builder has no such helper. See docs/iac.md §168.
         or(isNull(objects.managedByStack), ne(objects.managedByStack, stackName))
       )
     );
@@ -106,18 +33,7 @@ export interface RelationshipOwnershipTriple {
   toId: string;
 }
 
-/**
- * The relationship half. One statement over a VALUES list rather than N lookups: the diff already
- * knows every triple (both endpoint ids are resolved before any mutation runs), so re-reading each
- * edge to find its id would be a round trip per declared edge for no extra information.
- *
- * THIS ALSO CLOSES A PRE-EXISTING ASYMMETRY, not just the label hole. Under the label scheme, only
- * relationship CREATES were stamped (`createRelationship` set the labels; nothing rewrote an edge
- * that already existed). So an edge a manifest declared but that some other door had already created
- * — `POST /components` writes a `contains` edge, for instance — was declared-but-unowned forever,
- * and could never be pruned by the stack that declared it. Objects never had that gap, because
- * adopting one rewrote its labels. Stamping every non-delete entry makes the two agree.
- */
+/** The relationship half. See docs/iac.md §169. */
 export async function stampRelationshipStackOwnership(
   tx: TenantTx,
   orgId: string,

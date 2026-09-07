@@ -48,12 +48,7 @@ describe("coordination/plan-compiler — pure toposort mode (no topology)", () =
   });
 
   it("rejects a 2-cycle", () => {
-    // UNCHANGED BY ADR-0028, and load-bearing because of it: increment 2 materialises every declared
-    // dependency as an edge, so two microservices whose CI each names the other now really do
-    // produce both edges. On the no-topology path that is a cycle and the plan is refused — a
-    // multi-target change touching both would 400 where it used to compile. Stage mode does not
-    // toposort and accepts the same input (plan-compiler-stages.test.ts, "a MUTUAL declaration");
-    // the asymmetry is real and is why this pins the toposort side explicitly.
+    // Unchanged by the increment, and load-bearing because of it. See docs/coordination.md §674.
     const result = compilePlan({
       targets: ["a", "b"],
       dependsOn: [
@@ -189,11 +184,7 @@ describe("coordination/plan-compiler — explicit topology mode", () => {
   });
 
   it("rejects a topology that places a dependent pair in the same parallel wave", () => {
-    // LEGACY MODE KEEPS THIS CHECK. ADR-0028 decision 6 removed the same-wave refusal from STAGE
-    // mode only, because the per-target trigger hold that replaces it is scoped by the wave target's
-    // deployment-target — and a legacy wave target IS the component, with no place attached, so
-    // there is nothing there for the hold to be scoped by. Dropping it here too would delete the
-    // guarantee with nothing taking it over. Do not "finish the job" by deleting this test.
+    // LEGACY MODE KEEPS THIS CHECK. See docs/coordination.md §675.
     const result = compilePlan({
       targets: ["app", "infra"],
       dependsOn: [{ from: "app", to: "infra" }],
@@ -250,19 +241,7 @@ describe("coordination/plan-compiler — explicit topology mode", () => {
 
 // Property-based tests (fast-check) — BUILD_AND_TEST.md §8 M3 DoD: "toposort property tests".
 
-/**
- * Generates a random DAG (never a cycle by construction: edges only point to LOWER indices) over
- * `n` labeled nodes.
- *
- * `n === 1` is special-cased to a fixed empty-edges arbitrary: with only one node, `a !== b`
- * (the "no self-loop" filter below) can NEVER hold, since both tuple halves are drawn from
- * `fc.integer({min: 0, max: 0})` — every single candidate is `[0, 0]`. fast-check's `.filter()`
- * retries a bounded number of times per draw before giving up, but with `numRuns: 200` across
- * five property tests below, and `n === 1` coming up on roughly 1/8 of all draws, this was
- * observed to make the WHOLE suite take minutes instead of milliseconds (thousands of guaranteed-
- * to-fail filter retries, not an infinite loop, but pathologically slow) — worth special-casing
- * outright rather than tuning retry limits.
- */
+/** Generates a random DAG. See docs/coordination.md §676. */
 function dagArbitrary() {
   return fc.integer({ min: 1, max: 8 }).chain((n) => {
     const nodes = Array.from({ length: n }, (_, i) => `n${i}`);

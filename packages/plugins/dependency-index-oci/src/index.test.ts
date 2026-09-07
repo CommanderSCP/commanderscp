@@ -1,9 +1,4 @@
-/**
- * The image index's transport is the vendored `skopeo` BINARY, not HTTP, so its fixtures are a fake
- * skopeo on disk rather than `nock` interceptors — but the documents it prints are the REAL ones:
- * `skopeo list-tags`'s `{"Repository":…,"Tags":[…]}` and `skopeo inspect`'s top-level `Digest`.
- * Nothing here reaches a network of any kind.
- */
+/** The transport is the vendored binary, not HTTP. See docs/plugins.md §35. */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";

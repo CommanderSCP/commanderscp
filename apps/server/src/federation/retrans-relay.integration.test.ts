@@ -37,47 +37,7 @@ import {
 } from "./retrans-relay.js";
 import type { TrustDomainId } from "@scp/schemas";
 
-/**
- * M15.5(c) — the RETRANS VALIDATE-THEN-RELAY (ADR-0019 §2), end to end: THE M15.5(c) DoD suite
- * (BUILD_AND_TEST.md §8). Three REAL isolated federation domains (separate Postgres databases —
- * the same topology-faithful harness federation.integration.test.ts uses), TWO real `registry:2`
- * containers (source + destination), the REAL cosign and skopeo binaries.
- *
- *   commander A ──.scpbundle──▶ retrans B ──signed byte tarball──▶ outpost C
- *        │  (metadata-only)          │        (the CDS crossing,        │
- *        └────.scpbundle (metadata, addressed to C)────────────────────┘
- *
- * Proven here, per the DoD:
- *  (a) FULL ROUND-TRIP — A exports a cosign-manifest-signed promotion (M17.3 E6) of an OCI image
- *      (cosign-signed by A's instance key at the SOURCE registry) + an SBOM blob; B (role:
- *      retrans) imports the .scpbundle (M17.4(a) verifies), relays: skopeo-pulls BY DIGEST from
- *      the source registry, VALIDATES with the M17.4 machinery, packages + cosign-signs the
- *      OCI-layout tarball; C imports the tarball: signature + checksums + local-authorized
- *      cross-check, pushes into the DEST registry by digest + re-inspects (install.sh pattern),
- *      records where the bytes landed — and C's UNCHANGED M17.4(a)+(b) gates pass end-to-end
- *      (the (b) gate is additionally shown to FAIL-CLOSE before the bytes landed).
- *  (b) TAMPER NEVER CROSSES — an artifact signed by the WRONG key at the source refuses the relay
- *      at B (block Decision `retrans-relay-validate` + hash-chained audit event, no tarball) and
- *      NOTHING of it reaches the destination registry; a tarball TAMPERED in CDS transit refuses
- *      at C (block Decision) with nothing pushed.
- *  (c) ALLOWLIST — a source host outside `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` is refused BEFORE any
- *      dial (the counting decoy server receives zero requests).
- *  (d) ROLE — a non-retrans instance refuses to run the relay (the ADR-0004 arm).
- *  (e) CREDS — the destination push credential is resolved from the EXISTING secrets vault
- *      (ADR-0019 §3 artifact-store class, per-registry key) against an AUTH-REQUIRING registry,
- *      and never appears in logs, Decisions, or audit events.
- *  (f) SOURCE CREDS + ENV ISOLATION — the SOURCE-read credential round-trip: the relay pull is
- *      refused by an auth-requiring source registry until `relay/source-read/<host>` is vaulted,
- *      then succeeds (skopeo pull AND cosign validate both authenticate via the per-invocation
- *      authfile/DOCKER_CONFIG); the password appears NOWHERE (stderr, Decisions, audit), and
- *      `process.env.DOCKER_CONFIG` is byte-identical before/during/after the run — sampled on an
- *      interval and with a CONCURRENT M17.4(b) pre-deploy verify (a different auth need) running
- *      unaffected: per-invocation subprocess env, never a process-global mutation.
- *  (g) TLS SCOPING — the validate pass grants cosign's `--allow-insecure-registry` ONLY to hosts
- *      in `SCP_RELAY_INSECURE_HOSTS` (per host, mirroring skopeo's `--…-tls-verify=false`); a
- *      plain-HTTP source NOT in the list is refused end-to-end with TLS verification on. (The
- *      cosign-side per-host wiring itself is unit-proven in artifact-verify.test.ts.)
- */
+/** M15.5(c) — the RETRANS VALIDATE-THEN-RELAY. See docs/federation.md §470. */
 
 const sha256 = (buf: Buffer): string => "sha256:" + createHash("sha256").update(buf).digest("hex");
 
@@ -125,11 +85,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   let attackerKeyPath: string;
   let cosignBin: string;
   let imageSignFlags: string[];
-  /** Flags forcing the LEGACY `sha256-<hex>.sig` tag attach scheme (empty when this cosign knows
-   *  no other scheme). Cosign v3 defaults to the OCI 1.1 referrers-FALLBACK tag (an image index)
-   *  against `registry:2`, so the (a) round-trip exercises that scheme; signing ONE image with
-   *  these flags makes the same suite run prove the relay's discovery finds the legacy scheme
-   *  too — both storage vintages covered regardless of the ambient cosign's default. */
+  /** Flags forcing the legacy signature tag scheme. See docs/federation.md §471. */
   let legacySchemeSignFlags: string[];
 
   let relayOutDir: string;
@@ -701,11 +657,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   // (b) TAMPER NEVER CROSSES.
 
   it("a tampered artifact at the source (signed by the WRONG key) refuses the relay with a block Decision + audit — and NOTHING reaches the destination registry", async () => {
-    // Real signature, WRONG key — a forged/substituted build — attached under the LEGACY
-    // `sha256-<hex>.sig` tag scheme (where this cosign can be told to): the relay's discovery
-    // must FIND the signature artifact under EITHER attach scheme first (the (a) round-trip
-    // already covers this cosign's default — the referrers-fallback index under cosign v3), and
-    // only THEN refuse on verification. A discovery miss would produce the wrong refusal reason.
+    // Real signature, WRONG key. See docs/federation.md §472.
     const tampered = await pushImage(srcHost, SRC_REPO, "tampered-artifact");
     signImage(tampered.ref, attackerKeyPath, legacySchemeSignFlags);
     const changeAtA = await proposeTrackedChangeAtA(tampered.digest);
@@ -928,11 +880,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     });
     expect(reset.refused).toBe(false);
 
-    // ENV ISOLATION (the multi-tenant guarantee): pin process.env.DOCKER_CONFIG to a sentinel,
-    // SAMPLE it on an interval THROUGHOUT the credentialed run, and run a CONCURRENT pre-deploy
-    // verify with a different auth need — the relay's registry auth must ride per-invocation
-    // subprocess env only. Under a process-global mutation the sampler observes the scratch
-    // config dir during the window and byte-identity fails.
+    // ENV ISOLATION (the multi-tenant guarantee). See docs/federation.md §473.
     const sentinel = path.join(scratch, "sentinel-docker-config");
     const savedDockerConfig = process.env.DOCKER_CONFIG;
     process.env.DOCKER_CONFIG = sentinel;
@@ -996,14 +944,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     expect(JSON.stringify(allAudit)).not.toContain(SRC_PULL_PASSWORD);
   }, 240_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (g) TLS SCOPING — `--allow-insecure-registry` only for SCP_RELAY_INSECURE_HOSTS hosts,
-  //     mirroring skopeo's per-host `--…-tls-verify=false`. The cosign-side per-host WIRING is
-  //     proven in artifact-verify.test.ts (unit, mocked cosign seam) — cosign's own
-  //     go-containerregistry auto-downgrades LOOPBACK registry hosts to HTTP regardless of the
-  //     flag, so a Testcontainers loopback registry cannot observe the negative case live. The
-  //     skopeo pull path CAN, end-to-end:
-  // ---------------------------------------------------------------------------------------------
+  // (g) TLS SCOPING. See docs/federation.md §474.
 
   it("a plain-HTTP source host not in SCP_RELAY_INSECURE_HOSTS is refused end-to-end (TLS verification enforced on the relay)", async () => {
     const result = await buildRelayTarball(retrans.db, {

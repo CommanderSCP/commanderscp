@@ -18,34 +18,7 @@ import {
   verbResponseFixture
 } from "../test-support/dependency-fixtures";
 
-/**
- * ADMIN › DEPENDENCIES — the wired-up page against a stubbed SDK
- * (docs/proposals/dependency-subscription-ui.md §12.5).
- *
- * What is pinned, and the mutation each pin exists to catch:
- *   - the ROLE GATE: any non-commander role renders the pointer and issues ZERO SDK calls (spy);
- *     mutation: issue the list read regardless of role → RED;
- *   - the WIRE gate: `dependencyManagement.managedHere: false` on a commander → pointer, no table;
- *   - the empty state renders ONLY after a successful zero-row read — never while pending or after
- *     an error; mutation: paint it during pending → RED;
- *   - the Declare dialog runs `dryRun: true` BEFORE the write and the Declare button is disabled
- *     until a preview exists for the SAME values; mutation: drop the preview gate → RED (the
- *     "disabled before preview" assertion and the "no non-dry-run call before preview" spy);
- *     invalidation is pinned PER FIELD — ecosystem, coordinate AND producer each re-disable Declare
- *     (mutation: drop any one of the three from the preview key → that field's case goes RED);
- *   - the picker's components.list query stays inside ObjectListQuerySchema (limit max 100 — a
- *     larger value is a 400 on the real server, invisible behind a mocked SDK); mutation: 200 → RED;
- *   - PICKER PAGING (§12.7): past 100 components, "Load more" fetches the next page via the
- *     SERVER's `nextCursor` and appends it — never a client-guessed offset, never more than one read
- *     in flight; mutation: drop the cursor from the second read → the schema-validity assertion and
- *     the exact-cursor assertion both go RED; mutation: fire the fetch twice per click → the
- *     "exactly one more read" count assertion goes RED;
- *   - every refusal status renders the server sentence; the retract dialog renders the real
- *     response's open bumps and stays open on them.
- *
- * The SDK, the auth context and `@tanstack/react-router`'s Link are stubbed; everything else is
- * the real component tree (Radix dialogs included) in a real DOM.
- */
+/** ADMIN › DEPENDENCIES. See docs/web.md §169. */
 
 type ProducersList = ListDependencyLineProducersResponse;
 

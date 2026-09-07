@@ -19,64 +19,17 @@ import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { slugify } from "./urn.js";
 
-/**
- * `placement` — one component at one deployment target (ADR-0026 D2/D3/D14, owner decision D17).
- *
- * THIS MODULE IS THE SINGLE WRITER that keeps a placement's two representations in agreement, and
- * that is its whole reason to exist. Migration 0051's header states the shape and why both halves
- * are needed; restated here because this is where it is enforced:
- *
- *   * `properties.componentId` / `properties.deploymentTargetId` are the SOURCE OF TRUTH. Only they
- *     can carry the unique index — nothing in the schema can reference a relationship id, and
- *     uniqueness over a PAIR of relationship rows is not expressible as one index.
- *   * The `places` / `placed_at` edges are DERIVED. Only they are traversable — `traverse`,
- *     blast-radius and the graph explorer walk `relationships`, and a placement whose endpoints
- *     lived only as property UUIDs would be an island in the graph.
- *
- * One fact in two places is a real cost and it is paid deliberately. It is contained by there being
- * exactly ONE local write path: `createPlacement` writes both in one transaction, and the generic
- * `/objects/placement`, overlay, IaC, discovery-accept and hand-fill doors are refused outright
- * (`graph/pair-bound-types.ts` — five doors, the last added 2026-08-18). The
- * federation path reproduces both halves without this module, because a replicated placement arrives
- * as an `object_upsert` plus its own `relationship_upsert` entries.
- */
+/** `placement` — one component at one deployment target. See docs/graph.md §132. */
 
-/**
- * The URN separator, and why it is `/` (owner decision D17, second addition).
- *
- * ADR-0026 D3 names a placement `<component>@<deployment-target>`, but a NAME is not a URN: `slugify`
- * maps every `[^a-z0-9]+` run to a single `-`, so `keycloak@commercial-prod` and a literal component
- * named `keycloak commercial prod` both derive `keycloak-commercial-prod`. Deriving the URN from the
- * display name would therefore be quietly AMBIGUOUS — and while D8 forbids relying on name-based
- * uniqueness anyway (migration 0051's index is the guarantee), an ambiguous identifier is its own
- * bug: two different placements would race for one URN and the loser would get an unexplainable 409.
- *
- * `/` is the fix and the only clean one available: the URN grammar's slug-path
- * (`UrnSchema` in packages/schemas/src/graph.ts) explicitly admits it, while `slugify` STRIPS it —
- * so a `/` in a placement URN can only ever be the separator this function put there, never a
- * character that leaked out of an endpoint's name. It also reads as what it is: a path from a
- * component to a place. No alphanumeric separator (`-at-`, `_at_`) has that property; each is
- * forgeable by an endpoint whose own name contains it.
- *
- * The DISPLAY name keeps `@` per D3. The two identifiers answer different questions and are allowed
- * to differ.
- */
+/** The URN separator, and why it is `/`. See docs/graph.md §133. */
 function derivePlacementUrn(orgSlug: string, componentName: string, targetName: string): string {
   return `urn:scp:${orgSlug}:placement:${slugify(componentName)}/${slugify(targetName)}`;
 }
 
-/**
- * The DERIVED edges, as one list so create and withdraw cannot drift apart — adding a third edge
- * type in one place and forgetting the other is precisely the incomplete-call-site shape this
- * repo keeps paying for.
- */
+/** The derived edges as one list, so create and withdraw agree. See docs/graph.md §134. */
 const PLACEMENT_DERIVED_EDGE_TYPES = ["places", "placed_at"] as const;
 
-/**
- * Migration 0051's pair index is the IDENTITY guarantee, not a backstop (see its header) — reached
- * either by a plain duplicate declaration or by two CONCURRENT ones under READ COMMITTED. Says what
- * actually happened, rather than the generic URN-collision 409, which would blame the name.
- */
+/** The pair index is the identity guarantee, not a backstop. See docs/graph.md §135. */
 function pairConflict(componentId: string, deploymentTargetId: string) {
   return conflict(
     `component '${componentId}' already has a placement at deployment-target '${deploymentTargetId}'`
@@ -114,14 +67,7 @@ export interface CreatePlacementInput {
   deploymentTargetIdOrUrn: string;
 }
 
-/**
- * Declares a placement: the object, its two derived edges, and a Decision, in ONE transaction.
- *
- * Placements are DECLARED, never inferred (D8) — nothing here pairs objects by name, and nothing
- * may. The proposal's own §1.2 data is the reason: `agentkit-bootstrap` / `agentkit-db-bootstrap-prod`
- * and `agentkit-selfhost` / `agentkit-hosted` look like pairs and are different Argo CD applications.
- * An undeclared pair stays undeclared until a human says otherwise.
- */
+/** Declares a placement. See docs/graph.md §136. */
 export async function createPlacement(
   tx: TenantTx,
   input: CreatePlacementInput
@@ -142,11 +88,7 @@ export async function createPlacement(
     );
   }
 
-  // Both-endpoint authority — the security check `createRelationship` alone does NOT do (it validates
-  // endpoint TYPES and cardinality, never authority). A placement grants the component reach into
-  // that deployment-target, and an executor binding attaches to the result, so the actor must hold
-  // `relationship:write` over BOTH ends. Modelled on `components-repo.ts`'s service check, one
-  // endpoint further: neither end here is the actor's own fresh object.
+  // Both-endpoint authority, which edge creation does not check. See docs/graph.md §137.
   await authorize(tx, {
     orgId: input.orgId,
     subjectObjectId: input.actorObjectId,
@@ -163,59 +105,14 @@ export async function createPlacement(
   const name = input.name ?? derivePlacementName(component.name, target.name);
   const baseUrn = input.urn ?? derivePlacementUrn(input.orgId, component.name, target.name);
 
-  // WITHDRAW-THEN-RE-DECLARE. `objects_org_id_urn_key` is a PLAIN unique constraint — unlike every
-  // partial index in this schema it does NOT filter `deleted_at IS NULL` — so a withdrawn placement
-  // holds its URN forever. Migration 0051's pair index deliberately frees the PAIR on withdrawal,
-  // and D8 makes withdraw-then-re-declare the only way to change a placement (there is no PATCH),
-  // so without this the documented lifecycle would 409 on its second step and 0051's header would
-  // describe something that does not work.
-  //
-  // Checked UP FRONT rather than caught: a unique violation aborts the whole Postgres transaction,
-  // so a retry inside the same `tx` cannot work without a savepoint, and this create writes two
-  // edges and a Decision after the object — all of which would be lost.
-  //
-  // The suffix is the new object's own id, following `webhook-processor.ts`'s precedent for the same
-  // collision, and appears ONLY on a re-declaration: the first declaration of any pair keeps the
-  // clean `<component>/<target>` URN. A caller-supplied `urn` is never rewritten — that is the
-  // caller asserting an identity, and silently altering it would be worse than the 409.
-  //
-  // A lost race here (two re-declarations of the same withdrawn pair at once) still cannot produce a
-  // duplicate: the pair index catches it and raises the 409 below. This only chooses a URN.
+  // Withdraw then re-declare, against a full unique constraint. See docs/graph.md §138.
   const id = input.id ?? uuidv7();
   let urn = baseUrn;
   if (!input.urn && (await urnIsTaken(tx, input.orgId, baseUrn))) {
     urn = `${baseUrn}-${id}`;
   }
 
-  // CONTAINMENT ROUTES 3 AND 4 — THE PAIR DOOR (owner ruling 2026-08-18, ADR-0037 Consequences).
-  //
-  // A placement is CONTAINED by both endpoints it names (`graph/containment.ts` `placementParentsSql`
-  // — read from these very properties), so declaring one adds a hop under the component AND under
-  // the deployment-target, exactly as a `domain_id` write or a `contains` edge adds one. `createObject`
-  // below runs the `domain_id` half of the invariant for the placement's route-1 parent and cannot
-  // see these two, because they arrive as properties. So the same arithmetic runs HERE, once per
-  // endpoint, before anything is written: `hops(endpoint) + 1 > bound` refuses (the placement is new,
-  // height 0, no downward walk). MEASURED before this existed: `POST /placements {component: <a
-  // component at hop ten>, deploymentTarget: <root target>}` answered 201, and `containmentChain` of
-  // the new placement then threw — a placement no policy, freeze or gate could ever scope.
-  //
-  // `authorize` above already 409s (ADR-0037's deny-probe) when an endpoint is itself PAST the bound
-  // and no grant is found before it; it passes at exactly the bound, which is the case this closes.
-  // An endpoint past the bound that a short route made readable is the conversion branch's case
-  // (`containmentParentChainForDoor` turns the walk's 409 into this door's 400).
-  //
-  // WHERE, and why not `createObject`: this module is the SINGLE local writer of a placement (module
-  // doc — the generic, overlay, IaC, discovery and hand-fill doors all refuse the type, and IaC apply funnels
-  // through THIS function), so the door is complete here for every local path. Federation import
-  // never reaches this function (a replica arrives as `object_upsert` + its own `relationship_upsert`
-  // entries, straight into `createObject` under `federationImport`), so the D1/D2 carve-out — the
-  // receiver does not referee a peer-authored containment, and `import-repo.ts`'s `object_upsert`
-  // branch has no try/catch, so one refusal would abort a whole signed bundle — is inherited by
-  // construction rather than restated as a flag. Hand-fill (`federation/handfill-repo.ts`) also wears
-  // `federationImport` but is a LOCAL operator's free-form request, not a channel; it used to admit a
-  // `placement` (proven: a hop-eleven placement landed there while this door refused the same pair)
-  // and now refuses the type outright as the fifth door of the pair-bound census
-  // (`graph/pair-bound-types.ts`), so every local placement write reaches THIS door.
+  // CONTAINMENT ROUTES 3 AND 4. See docs/graph.md §139.
   for (const endpoint of [component, target]) {
     const { hops } = await containmentParentChainForDoor(tx, input.orgId, id, endpoint.id);
     await assertContainmentDepthAdmits(tx, {
@@ -291,22 +188,7 @@ export interface WithdrawPlacementInput {
   idOrUrn: string;
 }
 
-/**
- * Withdraws a placement: BOTH derived edges and the object, soft-deleted in ONE transaction.
- *
- * This exists because `deleteObject` does not touch relationships — nothing in the graph cascades —
- * so a placement removed through the plain object delete would leave its `places` / `placed_at`
- * edges LIVE, pointing out of a dead object. That is not a tidiness issue, it is the exact failure
- * the properties-are-truth/edges-are-derived split has to defend against, and it would surface as a
- * traversal or blast-radius result naming a placement that no longer exists.
- *
- * It is also reachable, not hypothetical: migration 0051's unique index filters `deleted_at IS NULL`
- * on the OBJECT, so withdrawing frees the pair to be re-declared — and the re-declaration writes a
- * second pair of edges. Without this, one component would accumulate an edge per withdrawal, all
- * live, and the graph would report it placed at the same target N times.
- *
- * Edges first, then the object, so no intermediate state has a live edge out of a dead object.
- */
+/** Withdraws a placement. See docs/graph.md §140. */
 export async function withdrawPlacement(
   tx: TenantTx,
   input: WithdrawPlacementInput
@@ -348,32 +230,11 @@ export interface ListPlacementsQuery {
   /** Already-resolved component object id (the route resolves the id-or-URN ref). */
   componentId?: string | undefined;
   deploymentTargetId?: string | undefined;
-  /**
-   * The rows this caller's authority REACHES, as a subquery yielding `id`
-   * (`authz/list-door-scope.ts` builds it; `authz/readable-scope.ts` defines it).
-   *
-   * `null`/absent means NO FILTER — the caller holds the permission at the ORG ROOT, so this is
-   * today's query verbatim. It is NOT "matches nothing": a subject with no allow binding at all
-   * yields a real match-nothing subquery, and the two must never collapse.
-   */
+  /** The rows this caller's authority reaches, as a subquery. See docs/graph.md §141. */
   readableFilter?: SQL | null | undefined;
 }
 
-/**
- * Lists placements, optionally filtered by either end of the pair.
- *
- * Filters read the PROPERTIES, not the edges — the source of truth, and the half the unique index
- * covers. Reading the edges instead would answer subtly differently the moment the two ever
- * disagreed, and a query that silently disagrees with the constraint is worse than no query.
- *
- * ⚠️ {@link ListPlacementsQuery.readableFilter} is applied HERE, as a `WHERE` condition, and not in
- * the handler over the returned page. This list is keyset-paginated with `.limit(limit + 1)` and
- * derives `nextCursor` from the last row it selected, so a handler-side filter would shrink the
- * page AFTER the `LIMIT` — role-model.md §8.2 measured that shape returning one readable row on
- * page 1 and zero on pages 6 through 185, each with a valid `nextCursor`, while 27 of 30 `apps/web`
- * list call sites fetch exactly one page. Any future filter that expresses "which rows may this
- * caller see" belongs in `conditions` for the same reason.
- */
+/** Lists placements, optionally filtered by either end of the pair. See docs/graph.md §142. */
 export async function listPlacements(
   tx: TenantTx,
   orgId: string,
@@ -410,15 +271,7 @@ export async function listPlacements(
   };
 }
 
-/**
- * Live placements whose COMPONENT is one of `componentObjectIds` — the IaC ownership-scoped pool
- * (C1 decision Q4: a placement belongs to the stack that owns its component, the same rule
- * `listSourceMappingsForComponents` already applies to mappings).
- *
- * Reads the pair from `properties`, which ADR-0026 D17 makes the source of truth — the same half
- * `binding-resolution.ts`, `plan-service.ts` and `component-pipeline.ts` read. Returns nothing for
- * an empty id list rather than scanning the org.
- */
+/** Live placements whose COMPONENT is one of `componentObjectIds`. See docs/graph.md §143. */
 export async function listPlacementsForComponents(
   tx: TenantTx,
   orgId: string,

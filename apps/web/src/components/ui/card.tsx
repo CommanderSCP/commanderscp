@@ -1,11 +1,7 @@
 import * as React from "react";
 import { cn } from "../../lib/utils";
 
-/**
- * Card density comes ONLY from this `size` prop (design spec §1.4/§2.4) — routes pick a size and
- * never override CardContent padding ad hoc. The size flows to header/content/footer via context
- * so a call site sets it exactly once, on the Card.
- */
+/** Card density comes ONLY from this `size` prop. See docs/web.md §108. */
 export type CardSize = "default" | "compact" | "flush";
 
 const CardSizeContext = React.createContext<CardSize>("default");

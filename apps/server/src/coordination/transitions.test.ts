@@ -8,37 +8,7 @@ import {
   TERMINAL_STATES
 } from "./transitions.js";
 
-/**
- * BUILD_AND_TEST.md §8 M3 DoD: "Unit: EXHAUSTIVE legal/illegal transition table (every edge,
- * legal and illegal)". This test enumerates the full 8x8 cross product of `ChangeState` pairs
- * (64 ordered pairs, including same-state "pairs" — no self-transitions are legal) and asserts
- * `isLegalTransition` matches the expected edge set exactly, one assertion per pair — not a
- * sampling, not a summary count.
- *
- * MAJOR #8 fix (PR #7 review — "transition-table test is tautological"): the previous version
- * built its "expected" set FROM `transitions.ts`'s own `LEGAL_TRANSITIONS` constant — the exact
- * thing under test — so the main loop only ever proved `isLegalTransition` is self-consistent
- * with `LEGAL_TRANSITIONS`, never that either one actually matches the state machine DESIGN.md
- * §9.1 specifies. A mutation that added a spurious legal edge to `LEGAL_TRANSITIONS` (e.g.
- * `evaluated -> executing`, skipping the coordination step) would have updated both sides of the
- * old comparison identically and the test would still have passed.
- *
- * `EXPECTED_LEGAL_EDGES` below is transcribed LITERALLY and independently from DESIGN.md §9.1's
- * diagram and prose — it never imports or derives from `LEGAL_TRANSITIONS` — and the main loop
- * checks `isLegalTransition` against this hardcoded source of truth instead. `LEGAL_TRANSITIONS`
- * is still imported for the one test below that legitimately inspects it directly (every entry
- * carries a non-empty trigger verb) — that check is about a structural property of the exported
- * data itself, not a re-derivation of "what's legal," so it stays non-circular.
- *
- * DESIGN.md §9.1 diagram:
- * ```
- *  proposed ──▶ evaluated ──▶ coordinated ──▶ executing ──▶ validating ──▶ accepted
- *      │             │              │              │              │
- *      └─────────────┴──────┬───────┴──────────────┴──────┬───────┘
- *                           ▼                             ▼
- *                       cancelled                    rolled_back
- * ```
- */
+/** BUILD_AND_TEST.md §8 M3 DoD. See docs/coordination.md §1012. */
 const EXPECTED_LEGAL_EDGES: ReadonlySet<string> = new Set([
   // Happy path (top row of the diagram): each step is the engine's own
   // observe/compare/decide/coordinate progression.

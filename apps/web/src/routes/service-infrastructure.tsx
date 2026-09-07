@@ -10,21 +10,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { QueryErrorNotice } from "../components/query-error";
 import { CATEGORY_LABEL } from "./service-board";
 
-/**
- * `/services/$idOrUrn/infrastructure` — the pipelines bound to the SERVICE ITSELF.
- *
- * Infrastructure often serves a whole service: a cluster, a shared database, a VPC stands up once
- * and every component runs on top. Declaring that as N identical component bindings is duplication
- * that drifts the moment a component is added, so it is declared once on the service.
- *
- * This is a real pipeline, not a label, only because ADR-0027 added the SERVICE rung to
- * `resolveBindingForTarget`. Before it, a binding here was inert config that ALSO blocked releases
- * (fail-closed `no_executor`) — which is why the rung landed before this tab did, rather than the
- * view arriving first and implying an execution path that did not exist.
- *
- * It reads the SAME board response the Board tab does (one cached query, no second endpoint): the
- * per-pipeline summary is computed once server-side for both.
- */
+/** The pipelines bound to the service itself. See docs/web.md §491. */
 export function ServiceInfrastructurePage(): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
   const query = useQuery({
@@ -54,13 +40,7 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
   if (!board) return <p className="text-sm text-slate-500">No service.</p>;
 
   const bound = board.servicePipelines.filter((p) => p.bound);
-  // outpost-ui.md §9.3a (owner, 2026-08-14) — the same mixed-provenance model as the component
-  // pipeline, one rung up. A service maintained by another domain (on an outpost: the commander)
-  // has its GLOBALLY SHARED infra/config authored there — opaque to this domain, which only knows
-  // the source is the commander; whatever this domain binds at the service is its DOMAIN-SPECIFIC
-  // shared-infra input (a cluster shared by this service's components in this domain, say). A
-  // self-maintained or domain-local service is this domain's own — nothing ahead of it. Read from
-  // the board's `service.maintainedBy`/`domainLocal`, never inferred.
+  // The same mixed-provenance model as the sibling surface. See docs/web.md §492.
   const upstream = board.service.maintainedBy;
   const hasCommanderInput =
     !upstream.isSelf && upstream.domainId !== null && !board.service.domainLocal;

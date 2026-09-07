@@ -40,21 +40,7 @@ import {
 } from "./test-support/mtls-pki.js";
 import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 
-/**
- * M14.3 — the COMMANDER POKE SENDER, end-to-end against real Postgres + a real mTLS listener
- * (docs/proposals/outpost-poke.md §"Milestone scope", ADR-0009).
- *
- * A commander (the SENDER, presenting its enrolled `urn:scp:domain:<commanderDomainId>` client cert)
- * pokes an outpost (the RECEIVER, running a real HTTPS mTLS listener with the M14.2 poke endpoint and
- * receiver-side pokeMode=true for the commander). The wake is asserted by injecting a RECORDING
- * pg-boss into the outpost's deps: an accepted poke enqueues exactly one immediate
- * `FEDERATION_SYNC_QUEUE` tick (the pull runs on the loop's worker, never inline).
- *
- * Proves: (1) a poke-mode outpost peer IS poked over mTLS; (2) a pokeMode=false peer is NOT;
- * (3) an unreachable peer fails best-effort — no throw, no escalation, the live peer still poked;
- * (4) coalescing — multiple signals in one window collapse to at most one poke. Skipped wholesale
- * when `openssl` is unavailable (mirrors the M14.0/M14.2 mTLS suites).
- */
+/** The commander poke sender, end to end over real mTLS. See docs/federation.md §375. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.resolve(__dirname, "../../drizzle");
@@ -319,12 +305,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
   });
 
   it("FAIL-CLOSED: a poke-mode peer with a plain-HTTP baseUrl is NEVER dialed (defense in depth)", async () => {
-    // `pairPeer`'s effective-state guard makes {pokeMode: true, http baseUrl} unrepresentable, so the
-    // only way to get such a row is to bypass the repo entirely (a hand-edited DB, or a row predating
-    // the guard). The SENDER must not depend on the row being well-formed: dialing it would put
-    // `Authorization: Bearer <federation bearer>` on the wire in CLEARTEXT with no mutual auth
-    // (scheme-derived requireMtls never fires for http). Write the bad row by raw UPDATE and prove the
-    // sender skips it entirely — it is not even in the outcome set, and NOTHING is dialed.
+    // `pairPeer`'s effective-state guard makes {pokeMode. See docs/federation.md §376.
     const badDomainId = asTrustDomainId(randomUUID());
     const outpostKeyPub = (
       await withTenantTx(outpost.db, outpost.orgId, (tx) => ensureInstanceKey(tx, outpost.orgId))

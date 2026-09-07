@@ -19,42 +19,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * GOVERNANCE REACH IS TENANT-WRITABLE — and until this file, nothing recorded when it changed.
- *
- * The property (`governance/governance-reach.ts`): **the permission that changes what governance
- * REACHES is weaker than, and differently held from, the permission that AUTHORS governance.**
- * `Operator` holds `object:write` + `relationship:write`; `policy:write` belongs to `Administrator`
- * and `Owner` alone.
- *
- * ## This file drives REAL DOORS, deliberately
- *
- * The unit-testable half of this change is one map diff. What it cannot tell you is whether the
- * recorder RUNS — and "a component built, unit-tested green and never installed" is this repo's
- * dominant defect. So every case here goes through HTTP (`server.app.inject`) or through the repo
- * function a route calls, never through `recordGovernanceReachChange` directly.
- *
- * ## The four measured claims this file pins, two of which were wrong when first stated
- *
- *  - CLAIM (holds): `DELETE /relationships/{id}` authorizes `relationship:write` at BOTH endpoints,
- *    symmetric with create. An earlier reading that delete needed only `relationship:read` at the org
- *    was a misreading of the LIST handler. `CASE 2` pins the symmetry from the component side.
- *  - CLAIM (holds): a COMPONENT-scoped Operator cannot do this at all — authority expands strictly
- *    upward, so a component binding satisfies neither endpoint check at a service. `CASE 2`.
- *  - CLAIM (holds): route 1 (`objects.domain_id`) move-authorization belongs to
- *    `graph/containment-parent-authz.ts` (merged as #244; this branch is rebased on it) and is not
- *    duplicated here. This file records reach for route 1; it authorizes nothing.
- *  - CLAIM (STALE when stated): "#244 adds no authorization to `relationships-repo.ts`". It changes
- *    96 lines there — but for CYCLES, not for governance reach, so the residual below is untouched
- *    by it either way.
- *
- * ## The residual this change addresses, stated exactly
- *
- * An actor holding `relationship:write` at a SERVICE OR BROADER — but no `policy:write` — can detach
- * a component from a governed service and re-attach it under an ungoverned one. Both endpoint checks
- * pass legitimately; that is an ordinary platform-team Operator. `CASE 1` proves the move still
- * succeeds (this change is detection, not prevention) AND that it is now recorded.
- */
+/** GOVERNANCE REACH IS TENANT-WRITABLE. See docs/governance.md §191. */
 describe("a containment write that changes which policies reach an object", () => {
   let server: TestServer;
 
@@ -170,11 +135,7 @@ describe("a containment write that changes which policies reach an object", () =
     return edge!.id;
   }
 
-  /**
-   * A component inside a governed service, plus an ungoverned service to move it to.
-   * `contains` is `one_to_many` on the TO side (one service per component), so the escape is
-   * necessarily delete-then-create rather than a second create.
-   */
+  /** A component in a governed service, and one without. See docs/governance.md §192. */
   async function seedEstate(label: string): Promise<{
     org: TestOrg;
     governedServiceId: string;
@@ -360,11 +321,7 @@ describe("a containment write that changes which policies reach an object", () =
   it("CASE 4: tombstoning a CONTAINER detaches everything beneath it, and that is recorded against the container — through the `contains` route, because the `domain_id` route's delete is REFUSED outright", async () => {
     const org = await createTestOrg(server, "reach-route3");
 
-    // ROUTE-1 DEPENDENTS FIRST, AS THE NEGATIVE CONTROL. A domain whose live children name it via
-    // `objects.domain_id` cannot be tombstoned at all: `deleteObject`'s route-1 orphan guard (M20,
-    // the ui-review branch) answers 409 with the blockers named, because that delete would leave the
-    // children permanently unadministrable — nothing to record, because nothing happened. If that
-    // guard ever went quiet, this half is what goes red first.
+    // ROUTE-1 DEPENDENTS FIRST, AS THE NEGATIVE CONTROL. See docs/governance.md §193.
     const domain = await post(org.adminToken, "/api/v1/domains", { name: "route3-domain" });
     expect(domain.status, domain.body).toBe(201);
     const domainId = domain.json().id as string;
@@ -476,11 +433,7 @@ describe("a containment write that changes which policies reach an object", () =
   it("CASE 5: a move that ADDS governance is recorded as reach_extended, not as a loss", async () => {
     const e = await seedEstate("reach-extend");
 
-    // A SECOND component, born UNgoverned, moved IN. Deliberately not the seeded component moved out
-    // and back: `relationships_org_type_from_to_key` is not filtered on `deleted_at`, so re-creating
-    // a soft-deleted (type, from, to) triple 409s. That is worth pinning here in a comment because it
-    // is the same fact that makes the CASE 1 escape necessarily a move to a DIFFERENT container
-    // rather than a detach-and-reattach in place.
+    // A SECOND component, born UNgoverned, moved IN. See docs/governance.md §194.
     const moved = await post(e.org.adminToken, "/api/v1/components", {
       name: "reach-extend-mover",
       service: e.ungovernedServiceId

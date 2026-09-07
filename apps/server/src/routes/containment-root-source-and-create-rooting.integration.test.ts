@@ -10,39 +10,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE TWO EDGES `containment-parent-authz.ts` WAS INSTALLED ON ONLY HALF OF.
- *
- * The sibling file `containment-move-cycle-and-source-authz.integration.test.ts` pins the two
- * defects that module closed. Closing them left two edges uncovered, one in each direction:
- *
- *  - **R1 — THE SOURCE CHECK REFUSED TOO MUCH.** "A move is a write at two places" was implemented
- *    as "authorize at `current.domainId` unless it is `null`", and `null` is only ever the org root
- *    object ITSELF. Every ORDINARY object parented at the org root — which is the DEFAULT for every
- *    create that names no `domainId` — therefore carried the org root as its source container, so
- *    an otherwise unremarkable reorganisation into a container the actor owns outright demanded
- *    ORG-ROOT authority. A suite that only asserts refusals cannot see an over-broad guard, which is
- *    why the success case below is the load-bearing one.
- *
- *    The exemption is exactly the org root and nothing else, and it is PROVABLE rather than a
- *    judgement call: the source check exists because the source container's holders LOSE custody,
- *    and `assertRootedContainmentParent` has already proven — one line earlier, on this same path —
- *    that the destination reaches the org root. So the org root is on the moved row's chain both
- *    before and after; its holders lose nothing. No other container has that property.
- *
- *  - **R2 — THE ROOT-REACHABILITY INVARIANT WAS INSTALLED ON THE MOVE PATH ONLY.** `createObject`
- *    never called it, so a CREATE could put a fresh row under a parent whose own chain is broken
- *    (an ancestor soft-deleted) and produce exactly the unreachable state the move path refuses.
- *    The reasoning that let this through was "a fresh id cannot already be an ancestor" — true, and
- *    it covers the CYCLE refusal only. Root-reachability is a property of the PARENT's chain, not of
- *    the child's id, and a fresh id says nothing about it.
- *
- * Both are pinned on the HTTP door AND on the IaC apply door. Apply is a second, independent copy of
- * each decision — it carries its own source-check twin in `iac/plans-repo.ts` (which had R1 too, in
- * the same words) and it reaches `createObject` through its own drained check list without ever
- * calling the door helper (which is why R2's fix belongs at the repo, and why a door-only fix would
- * ship inert here).
- */
+/** The two edges that guard was installed on only half of. See docs/routes.md §96. */
 describe("the containment-parent invariant at the org root, and on the create path", () => {
   let server: TestServer;
 
@@ -269,12 +237,7 @@ describe("the containment-parent invariant at the org root, and on the create pa
       { role: "Administrator", scope: strandedId }
     ]);
 
-    // THE API WILL NOT STRAND `stranded` FOR US: `deleteObject`'s route-1 orphan guard (M20, the
-    // ui-review branch) refuses to tombstone a domain that live children still name — 409, blockers
-    // named — precisely so this shape cannot be produced through a door. Pinned as the negative
-    // control; the broken chain is then PLANTED the way the refusal's own doc says such rows arise
-    // ("a legacy row, or one planted before the doors were closed"): the tombstone is written
-    // straight onto the row, below every door.
+    // THE API WILL NOT STRAND `stranded` FOR US. See docs/routes.md §97.
     const deleted = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/domains/${doomedId}`,
@@ -289,11 +252,7 @@ describe("the containment-parent invariant at the org root, and on the create pa
         .where(and(eq(objects.orgId, org.orgId), eq(objects.id, doomedId)))
     );
 
-    // THE FIXTURE ITSELF, ASSERTED — and this one is the whole premise. `stranded` must really have
-    // lost its route to the org root, or every refusal below would be about something else. The
-    // ORG-ROOT ADMIN can no longer read it: containment walks refuse to pass through a tombstone, so
-    // its scope expansion terminates at itself and the admin's org-root binding no longer reaches
-    // it. The insider bound AT it still can, which is what makes the create attempt below reachable.
+    // THE FIXTURE ITSELF, ASSERTED. See docs/routes.md §98.
     expect((await getService(org.adminToken, strandedId)).status).toBe(403);
     expect((await getService(insider.token, strandedId)).status).toBe(200);
 

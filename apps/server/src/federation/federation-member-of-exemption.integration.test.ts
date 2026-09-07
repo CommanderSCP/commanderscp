@@ -15,39 +15,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * THE FEDERATION-IMPORT CARVE-OUT ON `member_of` IS DELIBERATE — pinned in BOTH directions
- * ================================================================================================
- *
- * `docs/authz/role-binding-door.md` §2a applies the no-escalation subset rule when a `member_of` edge is
- * created, at `graph/relationships-repo.ts`'s `createRelationship`. It is wrapped in
- * `if (!input.federationImport)`, and until this file existed **that condition was pinned by nothing
- * in either direction**: delete it and no test in the tree goes red, while a peer's signed bundle
- * carrying one membership entry starts 403ing — and `federation/import-repo.ts`'s replay branch has
- * per-entry handling for a 400 alone, so a 403 aborts the WHOLE bundle rather than skipping one edge.
- * A carve-out that only a comment defends is a carve-out somebody deletes while tightening a guard.
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THIS ENTERS AT `createRelationship` AND NOT AT `POST /federation/imports`
- * ------------------------------------------------------------------------------------------------
- * This repo's standing rule is to enter at the outermost layer, because a guard that agrees with
- * itself says nothing about whether the caller invokes it. Here the outermost layer for THIS FACT is
- * `createRelationship`: the carve-out is a branch inside that function, and `import-repo.ts`'s
- * `relationship_upsert` case does nothing but pass `federationImport` through to it. A signed-bundle
- * test would exercise signature verification, cursors and tail attestations — all of which have
- * their own suites — and would reach this branch through the same one-line hand-off. What such a test
- * would add over this one is the assertion that the importer PASSES `federationImport`, which
- * `federation/federation.integration.test.ts` already covers for every entry kind, so it is named
- * here rather than duplicated: **if `applyEntry`'s `relationship_upsert` branch ever stopped passing
- * `federationImport`, this file would stay green.**
- *
- * BOTH DIRECTIONS, because either alone is satisfiable by an accident:
- *
- *   - the EXEMPT case alone passes against a guard that was deleted outright;
- *   - the GUARDED case alone passes against a guard with no carve-out at all, which is the state
- *     that wedges a peer.
- */
+/** THE FEDERATION-IMPORT CARVE-OUT ON `member_of` IS DELIBERATE. See docs/federation.md §119. */
 describe("§2a's federation-import carve-out on `member_of`", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -177,52 +145,7 @@ describe("§2a's federation-import carve-out on `member_of`", () => {
   });
 });
 
-/**
- * ================================================================================================
- * §7'S ADMINISTRATOR FLOOR TAKES THE SAME CARVE-OUT — and it was pinned by nothing
- * ================================================================================================
- *
- * The floor (`docs/authz/role-binding-door.md` §7) is called from TWO NEW CHOKE POINTS this increment
- * added — `graph/relationships-repo.ts`'s `deleteRelationship` and `graph/objects-repo.ts`'s
- * `deleteObject` — and each call is wrapped in `!input.federationImport`, byte-identically to §2a's.
- * **Nothing would have failed if either `!input.federationImport` were dropped.** What it would do
- * is 409 a peer's `relationship_tombstone` or `object_tombstone`, and `federation/import-repo.ts`'s
- * replay branch has per-entry handling for a 400 alone — so that 409 aborts the peer's WHOLE signed
- * bundle and wedges the channel until somebody edits the code. The route suite
- * (`routes/rbac-administrative-floor.integration.test.ts`) names this gap explicitly under
- * "NOT MUTATION-PROVEN"; this block closes it, the same way and in both directions.
- *
- * WHY THE EXEMPTION IS RIGHT, not merely convenient: a replica of a principal or of a membership is
- * the AUTHORING domain's row. This instance cannot refuse its removal without diverging from the
- * authority that owns it, and the floor is a statement about who can administer THIS org — a
- * question the peer's tombstone did not ask and this instance cannot answer by refusing.
- *
- * THE `federationImport` HANDED IN NAMES THE **LOCAL** DOMAIN, deliberately. Both delete paths
- * enforce single-writer authority (`existing.originDomainId !== federationImport.originDomainId` ->
- * 409) before they reach the floor at all, so a foreign origin id would be refused for a reason that
- * has nothing to do with §7 and the case would stop measuring the carve-out. Passing the row's own
- * origin isolates `federationImport` as the ONE difference between the refusal and the admission —
- * which is the whole design of a both-directions pin.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — applied ALONE, marker counted off disk with `grep -nac`, measured, reverted
- * ------------------------------------------------------------------------------------------------
- *  8. `graph/relationships-repo.ts` — `if (existing.typeId === "member_of" && !input.federationImport)`
- *     narrowed to `if (existing.typeId === "member_of")`
- *       -> **1 failed, 3 passed.** "a REPLICATED `relationship_tombstone` that empties the floor is
- *          APPLIED, not refused". The peer's entry 409s; in production that aborts the whole signed
- *          bundle rather than skipping one edge. The GUARDED half of the same case stayed green,
- *          which is what says the carve-out is the difference and not a deleted guard.
- *  9. `graph/objects-repo.ts` — `!input.federationImport && !removedForeignShadow` narrowed to
- *     `!removedForeignShadow` on `deleteObject`'s `touchesRoleAuthority` probe
- *       -> **1 failed, 3 passed.** "a REPLICATED `object_tombstone` that empties the floor is
- *          APPLIED, not refused". The two call sites are separately measurable, so neither is
- *          covered only by the other.
- *
- * NOT MUTATION-PROVEN here, and named: the `!removedForeignShadow` arm of the same expression, and
- * the assertion that `import-repo.ts`'s `applyEntry` actually PASSES `federationImport` down to
- * these two functions — the same limit the §2a block above states for itself.
- */
+/** §7'S ADMINISTRATOR FLOOR TAKES THE SAME CARVE-OUT. See docs/federation.md §120. */
 describe("§7's federation-import carve-out on the administrator floor", () => {
   let server: TestServer;
 
@@ -254,11 +177,7 @@ describe("§7's federation-import carve-out on the administrator floor", () => {
     return {};
   }
 
-  /**
-   * AN ORG WHOSE ONLY ADMINISTRATOR IS A LIVE, CREDENTIALED USER REACHED THROUGH A TEAM — built
-   * through the public API, exactly as `routes/rbac-administrative-floor.integration.test.ts` builds
-   * it, so the state under test is one the doors would actually have permitted.
-   */
+  /** An org whose only administrator is reached through a team. See docs/federation.md §121. */
   async function orgAdministeredThroughATeam(label: string): Promise<{
     org: TestOrg;
     team: string;

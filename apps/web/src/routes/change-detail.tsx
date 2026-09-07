@@ -3,11 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight } from "lucide-react";
 import type { Change, ChangeState, ChangeStageDependencyTarget } from "@scp/sdk";
-// M4 governance types: @scp/schemas, not @scp/sdk — @scp/sdk's index.ts only re-exports the M3
-// (and earlier) wire types; M4 never added ApprovalRequest/Freeze/etc. there. Importing
-// @scp/schemas directly here is within bounds (eslint.config.mjs's own restricted-imports rule:
-// "apps/web/src may import only @scp/sdk and @scp/schemas"), matching how packages/cli/src/cli.ts
-// already sources these exact same types.
+// M4 governance types: @scp/schemas, not @scp/sdk. See docs/web.md §190.
 import type { ApprovalRequest } from "@scp/schemas";
 import { client } from "../lib/client";
 import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query-client";
@@ -49,17 +45,7 @@ const CANCELLABLE_STATES: ChangeState[] = [
 const ACCEPTABLE_STATES: ChangeState[] = ["validating"];
 const ROLLBACKABLE_STATES: ChangeState[] = ["executing", "validating", "accepted"];
 
-/**
- * `/changes/{id}` (BUILD_AND_TEST.md §8 M3 UI requirement: "...+ wave progression view") — one
- * `client.changes.explain()` call gets the change, its compiled plan/waves, and every Decision
- * made about it. Polls every 3s (`refetchInterval`) because wave/target progress is written by
- * the server-side reconciliation loop, not user action — `scp.change.transitioned` (SSE,
- * lib/use-event-stream.ts) only fires on whole-change state transitions, not intra-wave progress,
- * so polling is the only mechanism that reliably surfaces live wave movement here.
- *
- * Body order (design spec §4C): wave progression, then Decisions — the explainability core —
- * directly after it, then Approvals/Control runs as compact cards.
- */
+/** One change, with the wave progression view. See docs/web.md §191. */
 export function ChangeDetailPage(): React.JSX.Element {
   const id = useIdParam();
   const navigate = useNavigate();
@@ -155,37 +141,14 @@ export function ChangeDetailPage(): React.JSX.Element {
 
   const { change, plan, decisions, controlRuns, waitStatus, stageDependencyStatus } =
     explainQuery.data;
-  // These three gate ONLY on change STATE — whether the button is offered AT ALL for this lifecycle
-  // state.
-  //
-  // Accept/Rollback/Cancel are deliberately NOT additionally gated on the change's federation
-  // origin — and that is STILL correct, though for the opposite reason it used to be.
-  //
-  // WAS (M16.3 P2): the server did not refuse these on a foreign-origin change at all, so a UI
-  // gate would have simulated an enforcement that did not exist — which is exactly the defect PR
-  // #152 removed. That open question ("whether the server SHOULD refuse an accept on a change
-  // another domain drives") is now ANSWERED: S10 / PR #171 added
-  // `coordination/transition.ts`'s `enforceLocalChangeAuthority`, and all three verbs are refused
-  // with a 409 carrying `decision_id`. `foreign-origin-writes.integration.test.ts` measures the
-  // refusals; the "cancel SUCCEEDS" and "accept/rollback SUCCEED from validating" cases this
-  // comment used to cite no longer exist.
-  //
-  // IS: the buttons stay ungated on origin because the server's refusal is the thing worth
-  // showing. Blocking client-side would swallow the 409 and its `decision_id` — the record that
-  // makes the block explainable (charter principle 6) — and would re-introduce a second copy of an
-  // authority rule that lives in one place on the server. State remains the only client-side gate.
+  // These three gate ONLY on change STATE. See docs/web.md §192.
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canAccept = ACCEPTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
   // Provenance badge only — never a gate (see above).
   const foreign = isForeignOriginObject(change.originDomainId, ownDomainId);
   const waves = plan?.waves ?? [];
-  // ADR-0028 increment 4 — mirrors `change-pipeline.tsx`'s `holdFor` exactly (M25.UI review minor
-  // finding 1). Without this, `heldTargetCount`'s badge here (composed from BOTH the freeze and
-  // stage-dependency halves — routes/changes.ts) told an operator "see each target's own hold
-  // line for which" while no stage-dependency hold line existed on this page at all: `explain`
-  // was already loaded, `stageDependencyStatus` was already sitting on the response, and the only
-  // thing missing was threading it through.
+  // Mirrors the pipeline page's hold resolution exactly. See docs/web.md §193.
   function holdFor(target: { targetObjectId: string }): ChangeStageDependencyTarget | null {
     const found = stageDependencyStatus?.targets.find(
       (entry) => entry.targetObjectId === target.targetObjectId

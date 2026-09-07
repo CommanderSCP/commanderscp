@@ -3,12 +3,7 @@ import { describe, expect, it } from "vitest";
 import { verifierForSourceKind } from "./webhook-signature.js";
 import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
 
-/**
- * Server webhook ADAPTER REGISTRY (M15.1b). Proves the census point that MATTERS: an inbound webhook
- * resolves its verifier + event-hint mapper by `sourceKind` through the registry, so github keeps its
- * exact behavior AND gitea (which signs and names its event header differently) resolves its OWN
- * scheme — a miss here is a silent event drop. These are pure-function unit tests (no DB/Docker).
- */
+/** Server webhook ADAPTER REGISTRY. See docs/coordination.md §1072. */
 
 const rawBody = Buffer.from(JSON.stringify({ ref: "refs/heads/main", after: "a".repeat(40) }));
 const secret = "shared-webhook-secret";

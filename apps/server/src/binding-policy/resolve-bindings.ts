@@ -1,43 +1,4 @@
-/**
- * THE DOMAIN RECONCILER'S DECISION (ADR-0046 section 4; team-pipeline-iac section 6, D4, and
- * section 14 resolutions 2 and 7) - given the placements visible in this domain and the
- * `executorBinding` effects matching each target, decide which `executor_bindings` rows should
- * exist, and which placements are UNBOUND.
- *
- * PURE. No database, no I/O. The impure half - reading placements, matching policies against each
- * target's containment chain, writing rows - belongs to the reconciler loop; this is the decision
- * it carries out, so the rules below are unit-testable without a container.
- *
- * THREE RULES, EACH A REFUSAL TO GUESS
- *
- * 1. NEAREST RUNG WINS. A policy matched at the target itself beats one matched at its container,
- *    which beats one at the domain - the same depth ordering the rest of the governance machinery
- *    uses (`MatchedPolicy.matchedAt.depth`). That is what lets a domain declare one broad default
- *    and override it for a single cluster.
- *
- * 2. A TIE IS AMBIGUOUS, NOT A COIN FLIP. Two policies at the SAME depth naming DIFFERENT execution
- *    systems for one (target, Type, lane) is a state no rule can adjudicate: unlike a constraint
- *    there is no "more restrictive" answer - one of them is simply going to run the work. Picking
- *    the lower id would be reproducible and still wrong, and the operator would never learn they
- *    had written two. So it is reported, and NOTHING is bound - failing closed exactly as
- *    `registration-match.ts` does when two config sources match one repo.
- *
- *    Two policies at one depth naming the SAME system are not a tie. They agree, and agreeing twice
- *    is not a conflict.
- *
- * 3. NO ORG-TIER FALLBACK. A (target, Type) nothing matches is UNBOUND and reported (res 2). There
- *    is deliberately no default executor: a silent default is how an unbound placement
- *    FAKE-SUCCEEDS today (ADR-0006 case (a), the post-import hazard), and turning that silence into
- *    a reported state is half the reason this reconciler is worth building.
- *
- * THE TEST LANE FALLS BACK; IT DOES NOT DEFAULT (resolution 7)
- *
- * A `test` lane request with no `test` declaration resolves to the BUILD lane's answer, and the
- * result says so (`viaLaneFallback`). That is a real declaration someone wrote, attributable to a
- * policy - not an invented default. A domain that never separates lanes behaves exactly as it does
- * today; one that does gets separation from a single extra policy line. If the build lane is itself
- * unbound, the test lane is unbound too: fallback cannot manufacture an answer that does not exist.
- */
+/** THE DOMAIN RECONCILER'S DECISION. See docs/binding-policy.md §15. */
 
 import type { ExecutorBindingEffect, ExecutorLane, ExecutorType } from "@scp/schemas";
 
@@ -146,12 +107,7 @@ function resolveLane(candidates: readonly BindingContribution[]): LaneOutcome {
   return { outcome: "bound", contribution: winner };
 }
 
-/**
- * Resolve every placement's bindings.
- *
- * `contributionsByTarget` carries the effects that matched EACH target's own containment chain, so
- * this function never has to know how policy matching works.
- */
+/** Resolve every placement's bindings. See docs/binding-policy.md §16. */
 export function resolveExecutorBindings(
   needs: readonly PlacementBindingNeed[],
   contributionsByTarget: ReadonlyMap<string, readonly BindingContribution[]>

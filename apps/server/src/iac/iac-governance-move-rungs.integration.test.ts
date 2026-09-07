@@ -14,69 +14,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE IaC RUNG OF THE `governance:move` LATTICE (charter principle 3: API -> SDK -> CLI -> IaC ->
- * UI; the follow-up named in `docs/proposals/governance-reach-on-containment-move.md` §9.6 Q4).
- *
- * ============================================================================================
- * WHAT MAKES A RUNG DIFFERENT FROM EVERY OTHER MANIFEST COLLECTION
- * ============================================================================================
- * `sourceMappings`, `executorBindings` and `placements` treat an ABSENT collection and an EMPTY one
- * as the same thing, and both PRUNE. `producers` diverges (owner ruling 2026-08-17): absent means
- * UNMANAGED. `governanceMoveRungs` is the SECOND collection to diverge, and its reason is sharper.
- *
- * Pruning a mapping costs a route an operator notices the same day. Pruning a producer declaration
- * re-arms dependency confusion on a daily poll timer. Pruning a RUNG turns off a governance BAR, and
- * the symptom is an ABSENCE OF REFUSALS — moves that should have been refused quietly succeeding,
- * which nothing surfaces until somebody audits where a governed object ended up. So (1) here is the
- * NEGATIVE case, exactly as it is in `iac-dependency-producers.integration.test.ts`: a stack with a
- * standing rung whose manifest omits the key must plan NO rung entries and leave the rung alone.
- *
- * (5) is the positive half, and the two are only correct TOGETHER: a PRESENT collection is
- * authoritative over its members, or "unmanaged on absent" would mean IaC could enable a rung and
- * never disable one.
- *
- * ============================================================================================
- * WHAT EACH GATE REFUSES TO BE SATISFIED BY
- * ============================================================================================
- *  1. **THE RULING.** Not "the summary is zero" — that passes if the entries exist and happen to be
- *     noops. The assertion is that `diff.governanceMoveRungs` is ABSENT and the rung is still
- *     enforced after applying that plan.
- *  2. **WIRING**, read through the LATTICE and not through the table: `governanceMove.enforcement`
- *     — the same read the doors, the CLI and the Admin page use — must answer `enforced: true`. A
- *     plan that SHOWS a create and an apply that PERFORMS one are two different claims, and this
- *     repo has shipped the first without the second before.
- *  3. **THE WHOLE ACT, NOT THE ROW.** A rung write records a Decision under one kind and appends an
- *     audit event. A second door that writes only the row makes
- *     `GET /decisions?kind=governance.move_enforcement` — "every rung this org ever enabled or
- *     disabled" — silently FALSE for exactly the rungs an auditor came looking for (principle 6).
- *  4. **IDEMPOTENCE**, which for this collection is the ordinary case: `scp apply` re-runs.
- *  5. **THE MEMBER QUESTION**, settled behaviourally: removing B from `[A, B]` disables B, and A
- *     stays enforced.
- *  6. **THE AUTHORITY.** `policy:write` at-or-above the subject, against the REAL applying
- *     principal — on the ENABLE and on the DISABLE alike. Paired with a control apply by the same
- *     Operator so the 403 is a statement about the collection and not about Operators and plans.
- *     The disable half (c) is the one that matters more: narrowing the check to `create` would let
- *     an Operator turn a governance bar OFF, and a bar that is off announces itself only by an
- *     absence of refusals.
- *  7. **THE MONOTONE REFUSAL.** A manifest that drops a rung under an ENABLED upper rung fails its
- *     apply with the verb's own 409, naming the upper rung — reporting a successful disable that
- *     leaves every move under the subtree enforced anyway is the worst of both.
- *  8. **THE POINT OF THE WHOLE FEATURE**: a rung written by IaC feeds the SAME lattice. An Operator
- *     is refused a containment move under it, an Administrator makes the identical move, and the
- *     refusal NAMES the container the manifest declared.
- *
- * ============================================================================================
- * MUTATION LOG — each applied, watched fail, reverted, watched pass
- * ============================================================================================
- * | Mutation | Measured |
- * |---|---|
- * | delete `checks.push(governanceMoveRungScopeCheck(…))` from `prepareApplyChecks` | EXACTLY 1 fails: "(6)(b)" — `promise resolved … instead of rejecting`; the rung is written by a principal holding `policy:write` nowhere. "(6)(a)" stays green, which is what makes the 403 a statement about the COLLECTION and not about Operators and plans |
- * | narrow `prepareApplyChecks`'s rung loop to `if (entry.action === "create")` | EXACTLY 1 fails: "(6)(c)" — `promise resolved … instead of rejecting`, then the bar is measurably down. Before (6)(c) existed this mutation was GREEN across all 44 tests of this file, `move-enforcement.integration` and `governance-managed-write-doors`, and a probe confirmed an org-root Operator holding `policy:write` nowhere could disable a standing rung through it |
- * | apply calls the bare `enableGovernanceMoveRung` instead of `enableGovernanceMoveRungWithEffects` | EXACTLY 1 fails: "(3)", `expected [] to have a length of 1` — no Decision, no audit event. "(2) WIRING" STAYS GREEN, which is precisely why a rung-is-enforced gate is not sufficient on its own |
- * | an absent `governanceMoveRungs` key maps to `[]` in `computeDiffForManifest` | EXACTLY 1 fails: "(1)", on the SUBSTANTIVE assertion — `an absent governanceMoveRungs key manages nothing …: expected false to be true`. The standing bar was disabled by a manifest that merely forgot the key. This is the catastrophic direction and it is the one the message names |
- * | drop the `delete` loop from `executePlanDiff`'s rung block | 2 fail: "(5)" (`the dropped member's rung must be disabled: expected true to be false`) and "(7)" (`promise resolved … instead of rejecting` — a disable that never runs cannot be refused by the monotone check either). Recorded as two because the second shows the 409 is reached through the WRITE and not asserted independently of it |
- */
+/** THE IaC RUNG OF THE `governance:move` LATTICE. See docs/iac.md §24. */
 describe("iac: governance:move rungs (ADR-0038 §2)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -297,13 +235,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
 
   // (6) AUTHORITY — `policy:write` at-or-above the subject, against the REAL applying principal
 
-  /**
-   * `Operator` IS THE RIGHT PRINCIPAL, and the two cases are one pair on purpose. Operator carries
-   * `object:write` and NOT `policy:write` (the `0002` seed; `0010` adds `policy:write` to
-   * Administrator and Owner only), so at the ORG ROOT it holds authority over every object in the
-   * org and still holds none over a governance bar. Case (a) is what makes case (b) mean something:
-   * without it a 403 would be satisfied by an Operator who simply cannot apply plans at all.
-   */
+  /** That role is the right principal, and these are a pair. See docs/iac.md §25. */
   describe("(6) enabling a rung needs policy:write at-or-above the subject", () => {
     let operator: ScpClient;
 
@@ -341,18 +273,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
       });
     });
 
-    /**
-     * THE DISABLE HALF, and the reason it is a separate case rather than a variant of (b).
-     *
-     * `prepareApplyChecks` authorizes every NON-NOOP entry. Narrow that one predicate to
-     * `entry.action === "create"` and (a), (b) and every other gate in this file stay green while an
-     * Operator holding `policy:write` NOWHERE can delete a rung out of a manifest and turn a
-     * governance bar off. That is strictly worse than the enable direction it shares a check with:
-     * an unauthorized ENABLE announces itself the first time somebody is refused a move, an
-     * unauthorized DISABLE announces itself by an ABSENCE of refusals — nothing, until an audit
-     * notices where a governed object ended up. The same asymmetry is why an absent collection is
-     * unmanaged (1) rather than empty.
-     */
+    /** The disable half, and why it is a separate case. See docs/iac.md §26. */
     it("(c) …and the SAME Operator is REFUSED a plan that DISABLES one — the authority covers deletes, not just creates", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       function build(subjects: ("a" | "b")[]) {
@@ -440,14 +361,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
 
   // (8) THE POINT — a rung written by IaC feeds the SAME lattice the doors consult
 
-  /**
-   * This is the case the whole increment exists for. Everything above proves a row was written with
-   * the right ceremony; only this proves the row MEANS anything. If the IaC path wrote to some
-   * parallel place — or wrote a tier the doors do not recognise — every gate above would still be
-   * green and the feature would be inert. The Administrator's identical move is the control that
-   * makes the Operator's 403 a statement about `governance:move` rather than about the move being
-   * impossible.
-   */
+  /** This is the case the whole increment exists for. See docs/iac.md §27. */
   describe("(8) the moved-object doors consult the rung IaC wrote", () => {
     let operator: ScpClient;
 

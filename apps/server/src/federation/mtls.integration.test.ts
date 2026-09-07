@@ -34,21 +34,7 @@ import {
 } from "./test-support/mtls-pki.js";
 import { asTrustDomainId } from "@scp/schemas";
 
-/**
- * M9.3 (ADR-0001, `docs/adr/0001-in-app-federation-mtls.md`) — the attack-matrix integration
- * coverage for in-app federation mTLS. `fastify.inject()` (used everywhere else in this codebase)
- * fakes the request/response objects and never constructs a genuine `tls.TLSSocket` — there is no
- * real `request.raw.socket.getPeerCertificate()`/`.authorized` to assert against — so every test
- * here boots a REAL listener (`app.listen`) and drives it with `node:https`, presenting (or
- * withholding, or mis-presenting) a client certificate exactly as a real federation peer's
- * `federation-https` transport plugin would.
- *
- * PKI material is generated FRESH per test via `openssl` (`test-support/mtls-pki.ts`) — never
- * checked-in fixtures — since the SAN URI must encode a domain id each test only learns at
- * runtime (a freshly-paired peer's real UUID), and the expired-CRL tests need an exact,
- * deterministic `nextUpdate` rather than racing the wall clock. Skipped wholesale if `openssl`
- * isn't on PATH (mirrors `crl-parse.test.ts`/`crl-reload.test.ts`).
- */
+/** M9.3 (ADR-0001, `docs/adr/0001-in-app-federation-mtls.md`). See docs/federation.md §305. */
 describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", () => {
   let serversToClose: Array<() => Promise<void>> = [];
 
@@ -98,11 +84,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
     key?: Buffer;
   }
 
-  /** A real HTTPS client request optionally presenting a client certificate — Node's own
-   *  `https.request` (not `fetch`, which needs extra dispatcher plumbing to present a client cert
-   *  through undici — see `plugin-host/subprocess-entry.ts`'s doc comment on that gotcha). The
-   *  test client always sets `rejectUnauthorized: false` itself: it isn't validating the SERVER's
-   *  TLS identity, only exercising how the SERVER treats what the CLIENT presents. */
+  /** A real HTTPS request, optionally presenting a client cert. See docs/federation.md §306. */
   function httpsPost(opts: HttpsCallOpts): Promise<{ status: number; json: unknown }> {
     return new Promise((resolve, reject) => {
       const payload = JSON.stringify(opts.body);
@@ -244,11 +226,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
     return env;
   }
 
-  /** Sets up a test org + admin token + zero or more paired peers (each with a freshly-issued
-   *  leaf cert whose SAN URI encodes that peer's real domain id) — using a THROWAWAY plain-HTTP
-   *  server purely for setup (org/user/peer rows live in Postgres, independent of which Fastify
-   *  instance wrote them, so the ACTUAL mTLS-configured server under test is booted separately,
-   *  already knowing the CRL/CA it needs at construction time). */
+  /** Sets up an org, an admin token and any paired peers. See docs/federation.md §307. */
   async function setupOrgWithPeers(
     ca: TestCa,
     peerSpecs: { key: string; role?: "commander" | "outpost" }[]
@@ -497,11 +475,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
     const setup = await setupOrgWithPeers(ca, [{ key: "child-a" }]);
     const real = await bootServer(mtlsEnvFor(ca));
 
-    // /healthz is the k8s liveness/readiness probe path — no auth, and critically NO client cert.
-    // Under `requestCert: true, rejectUnauthorized: false` the TLS handshake still completes for a
-    // certless client, and /healthz never calls the federation mTLS gate, so it must answer 200.
-    // If this failed, enabling in-app mTLS would take down every probe (and every browser/CLI
-    // client that never presents a client cert) — the whole point of `rejectUnauthorized: false`.
+    // /healthz is the k8s liveness/readiness probe path. See docs/federation.md §308.
     const health = await httpsGet({ port: real.port, path: "/healthz", ca: ca.caCrtPem });
     expect(health.status).toBe(200);
 

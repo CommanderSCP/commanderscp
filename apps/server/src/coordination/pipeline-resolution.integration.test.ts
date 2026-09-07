@@ -10,37 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Pipeline inheritance — which release topology a change gets, and FROM WHICH RUNG
- * (ADR-0026, post-import-configuration.md §5, owner decisions D4 / D15).
- *
- * ============================================================================================
- * WHY EVERY TEST HERE ASSERTS THE RUNG, NOT JUST THE TOPOLOGY
- * ============================================================================================
- * This module's tests have a specific vacuity hazard, and it is the same shape as one already
- * caught in this work: the placement race test passed with its unique index removed entirely,
- * because a *different* constraint happened to serialise the writes. Here, a test asserting only
- * "component X's change resolved topology T" passes when X's own edge resolved it, when X's
- * SERVICE's edge resolved it, and when the ORG DEFAULT resolved it — three different behaviours,
- * one green assertion. Precedence would be entirely unenforced and nothing would say so.
- *
- * So every case asserts the rung and the object the winning edge hung off, and each rung is proven
- * by REMOVING THE RUNG ABOVE IT while the lower rungs stay in place — a design that fails if
- * precedence inverts, rather than merely if resolution stops working.
- *
- * **Mutation log** (each applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | drop rung 1 (skip the target's own edge) | "own edge WINS over the service's" fails |
- * | drop rung 2 (skip the owning service) | "inherits from the owning service" fails |
- * | drop rung 3 (skip the org root) | both org-default tests fail, incl. the D4 walk-past |
- * | reorder rungs — try the service before the target's own | "own edge WINS" fails |
- * | `targets_disagree` → resolve to the first target's answer | "declines to inherit" fails |
- * | drop the `deleted_at IS NULL` filter on the edge | "detaching stops inheritance" fails |
- * | drop the soft-deleted-topology join filter | "a tombstoned topology is NO pipeline" fails |
- * | omit `rung` from the Decision | every rung assertion in this file fails |
- */
+/** Which release topology a change gets, and from which rung. See docs/coordination.md §659. */
 describe("pipeline inheritance: the three-rung walk (D15)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -65,14 +35,7 @@ describe("pipeline inheritance: the three-rung walk (D15)", () => {
   const attach = (fromId: string, toId: string) =>
     admin.relationships.create({ typeId: "releases_via", fromId, toId });
 
-  /**
-   * Attaches an ORG DEFAULT for the duration of `fn`, then detaches it.
-   *
-   * `releases_via` is `many_to_one`, so the org root may hold at most ONE outgoing edge — a case
-   * that leaked its org default would 409 every later case that needs a different one, turning one
-   * real failure into a cascade that hides which test actually broke. `finally` so a failing
-   * assertion still cleans up.
-   */
+  /** Attaches an org default for the duration, then detaches. See docs/coordination.md §660. */
   async function withOrgDefault<T>(topologyId: string, fn: () => Promise<T>): Promise<T> {
     const edge = await attach(orgRootId, topologyId);
     try {

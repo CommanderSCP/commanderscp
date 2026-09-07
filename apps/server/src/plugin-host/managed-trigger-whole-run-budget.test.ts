@@ -5,50 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RUNNER_LAUNCHER_DEADLINE_LABEL } from "@scp/runner-launcher";
 import { SubprocessPluginHost } from "./host.js";
 
-/**
- * ================================================================================================
- * M23.1e — THE WIRING THAT HAD NO TEST AT ANY LEVEL, ASKED THE ONE QUESTION IT WAS NEVER ASKED
- * ================================================================================================
- *
- * `managed-trigger-budget.test.ts` is this file's sibling and it closed M23.1c: a managed run
- * longer than the 10s hang detector must not be SIGKILLed. It drives a stub `docker` whose ONE slow
- * step is `start`, because that was the shape of the defect it was written for.
- *
- * THAT SHAPE IS EXACTLY WHY THE NEXT DEFECT SURVIVED IT. `@scp/runner-launcher` handed
- * `{ timeout: spec.timeoutMs }` to `create`, to EVERY `docker cp`, to `start` and to the copy-out
- * INDEPENDENTLY — four to six sequential calls, each with a fresh, full budget — so a run's wall
- * clock was k x timeoutMs and nothing bounded the sum, while the host budget derived from it was
- * `timeoutMs + a constant`. With one slow step there is nothing to sum, so a suite built around one
- * slow step is structurally blind to it. Measured with four: `timeoutMs: 20_000`, steps of
- * 18s/9s/18s/9s (every one under the inner 20s bound), budget 50000ms, elapsed 50003ms —
- * `plugin 'managed-iac-overrun' call 'trigger' timed out after 50000ms`, container still held, no
- * ledger entry, so `reconcile.ts` issues a SECOND `tofu apply` while the first is still applying.
- *
- * SO THIS FILE'S STUB IS SLOW ON EVERY STEP. That is the whole difference, and it is the reason the
- * file exists rather than another case in the sibling.
- *
- * THE HOST IS DEFAULT-CONSTRUCTED, for the sibling's reason, restated because it is the standing
- * gate: `new SubprocessPluginHost()` with no options is `host-bootstrap.ts` verbatim, and every
- * other test in the repository that builds a host passes an explicit `callTimeoutMs` and drives a
- * fast fake executor. Passing options here would delete the test.
- */
+/** The wiring that had no test at any level, asked directly. See docs/plugin-host.md §71. */
 
 const RUN_BUDGET_MS = 7_000;
 /** What each of `create` / `cp` / `start` costs. Four such steps = 12s of work in a 7s budget. */
 const STEP_SECONDS = 3;
-/**
- * What the teardown costs. Under `RUNNER_REMOVE_TIMEOUT_MS` (30s), and deliberately NOT free: it is
- * the post-deadline work `MANAGED_TRIGGER_GRACE_MS` has to cover, and a stub that tore down
- * instantly would make that constant untestable here.
- *
- * IT IS NOT "THE ONLY WORK THAT HAPPENS AFTER THE RUN DEADLINE", WHICH IS WHAT THIS SAID — corrected
- * by M23.5. That was true of the DOCKER adapter, which is the one this file drives, and false of the
- * Kubernetes adapter, whose `finally` is three bounded calls; a step abandoned at the deadline can
- * also cost one `RUNNER_STEP_ABANDON_GRACE_MS` before the teardown even begins. The whole term is
- * `runnerPostDeadlineMs(kind)`, and the count it derives from is checked against the code by
- * `@scp/runner-launcher`'s `teardown-model.test.ts` — this file cannot see either, because it drives
- * one adapter through a stub `docker`.
- */
+/** What the teardown costs. See docs/plugin-host.md §72. */
 const TEARDOWN_SECONDS = 6;
 /**
  * What the run may take: the budget, plus one teardown, plus room for subprocess spawn and the RPC.
@@ -65,15 +27,7 @@ interface FakeDocker {
 const tempDirs: string[] = [];
 let host: SubprocessPluginHost | undefined;
 
-/**
- * A stub `docker` that is SLOW ON EVERY SUBCOMMAND and models the one property this file asserts
- * about the daemon: a container exists between `create` and `rm -f`. Absolute paths are baked into
- * the script text rather than passed as env, because `host.ts` allowlists the child's environment
- * and nothing set here would survive to the plugin subprocess, let alone to its grandchild.
- *
- * IT DOES NOT NEED TO MODEL `timeout` ITSELF: the real `execFile` in the plugin subprocess is doing
- * that, which is the point of driving this end to end rather than through a seam.
- */
+/** A stub that is slow on every subcommand, modelling one. See docs/plugin-host.md §73. */
 async function makeSlowFakeDocker(): Promise<FakeDocker> {
   const dir = await mkdtemp(join(tmpdir(), "scp-slow-docker-"));
   tempDirs.push(dir);
@@ -159,18 +113,7 @@ afterEach(async () => {
   await host?.stop();
   host = undefined;
   for (const dir of tempDirs.splice(0)) {
-    // ENOTEMPTY IS A RACE WITH A PROCESS THIS FILE DELIBERATELY ORPHANS, NOT A TIDINESS PROBLEM.
-    // The stub `docker` recreates its state directory (`mkdir -p "$STATE"`) at the top of EVERY
-    // invocation, and the cases here SIGKILL a plugin subprocess mid-run precisely so a grandchild
-    // outlives it. A `rm -r` that walks, empties and then `rmdir`s loses to an invocation that
-    // lands between the walk and the rmdir: measured once in ~15 full `pnpm -w test` runs as
-    // `Error: ENOTEMPTY: directory not empty, rmdir '/tmp/scp-fake-docker-…'`, failing a test whose
-    // own assertions had already passed.
-    //
-    // `maxRetries` IS THE DOCUMENTED ANSWER, not a sleep in disguise: `fs.rm` retries exactly this
-    // error set (EBUSY, EMFILE, ENFILE, ENOTEMPTY, EPERM) with linear backoff. Both files that
-    // orphan a grandchild carry it — the property is "a temp-dir cleanup racing a process the test
-    // deliberately left running", and it is two files wide.
+    // That error is a race with a process this file orphans. See docs/plugin-host.md §74.
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
@@ -244,11 +187,7 @@ describe("M23.1e: a MULTI-STEP managed run through a DEFAULT-CONSTRUCTED host ca
     expect(await containersHeld(fake)).toEqual([]);
     expect(argv).toContain("rm -f scp-runner-whole-run-probe-1");
 
-    // (vi) HIGH-2, END TO END: the container's own reap deadline had not passed while the run that
-    //      stamped it was still going. This is the FLOOR of that property — the sharp, scale-free
-    //      version (sampled continuously against a run that spends every millisecond of its budget)
-    //      is `@scp/runner-launcher`'s `whole-run-budget.test.ts`, because at these wall clocks the
-    //      two-minute grace hides the 18s overshoot that the defect actually produced.
+    // (vi) HIGH-2, END TO END. See docs/plugin-host.md §75.
     expect(stampedDeadlineMs(argv)).toBeGreaterThan(completedAt);
   }, 60_000);
 });

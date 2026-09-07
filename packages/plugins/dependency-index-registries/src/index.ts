@@ -1,29 +1,4 @@
-/**
- * `@scp/plugin-dependency-index-registries` — the FOUR LANGUAGE-ECOSYSTEM version indexes behind
- * ADR-0032 §7's third-party detection: the Go module proxy, the npm registry, PyPI, and a Maven
- * repository. The fifth ecosystem, container images, is `@scp/plugin-dependency-index-oci`: it
- * reaches a registry through the EXISTING vendored-skopeo channel rather than over `ctx.http`, so it
- * shares no transport with these and lives in its own package.
- *
- * FOUR PLUGINS, ONE PACKAGE — the `github`/`github-discovery` shape exactly. One subprocess-hosted
- * instance loads exactly one plugin, so each ecosystem gets its own `PluginModule` name
- * (`dependency-index-go`, `-npm`, `-pypi`, `-maven`) resolving to its own factory in this package.
- * The alternative — four packages differing only in a URL template and a body parser — would be
- * four copies of `common.ts`'s failure classifier, which is the one part that must not drift.
- *
- * WHAT THESE PLUGINS DO NOT DO, and it is the load-bearing half (ADR-0032 §7, "NEVER GUESS A
- * VERSION"): they do not rank, do not pick a "latest", do not filter to the major line, and do not
- * skip anything they do not understand. They return the index's own list, verbatim, in the index's
- * own spelling. Line membership and ordering are computed in ONE server-side place
- * (`apps/server/src/dependencies/version-index.ts`) over `@scp/dependency-manifests`'s single
- * `parseComparableVersion`/`compareVersions` pair. Four plugins each deciding what "newest" means
- * is four places for `"9" > "10"` to come back.
- *
- * AIR-GAP (charter principle 5): none of these has a default URL. Unconfigured, every one reports
- * `not_configured` — an explicit UNAVAILABLE, never an empty version list, because "nothing answered"
- * and "nothing newer exists" are opposite facts that produce identical bumps (none) and would make a
- * disconnected estate look permanently up to date.
- */
+/** The four language-ecosystem version indexes. See docs/plugins.md §47. */
 import type {
   DependencyIndexCapabilities,
   DependencyIndexDigestResult,
@@ -65,34 +40,12 @@ function toVersions(raw: Iterable<string>): DependencyIndexVersion[] {
   return out;
 }
 
-/**
- * The module proxy's CASE-ENCODING, which is not optional and not cosmetic.
- *
- * The proxy protocol requires every uppercase letter in a module path to be written as `!` followed
- * by its lowercase form, "to avoid ambiguity when serving from case-insensitive file systems".
- * `github.com/Masterminds/semver/v3` is fetched as `github.com/!masterminds/semver/v3`; sending the
- * raw path gets a 404 from `proxy.golang.org`, which this plugin would faithfully report as
- * `unknown_coordinate` — a correct-looking answer to a question we asked wrong, and one that would
- * silently exclude every capitalised module (a large share of real go.mod files) from detection.
- *
- * The coordinate itself is stored and compared VERBATIM everywhere else (ADR-0032 Context 2); this
- * encoding exists only inside the URL and never travels back out.
- */
+/** The module proxy's case encoding, which is not optional. See docs/plugins.md §48. */
 export function escapeGoModulePath(modulePath: string): string {
   return modulePath.replace(/[A-Z]/g, (ch) => `!${ch.toLowerCase()}`);
 }
 
-/**
- * `GET {base}/{escaped-module}/@v/list` — the real response is `text/plain`, one version per line,
- * UNORDERED, and legitimately EMPTY for a module with no tagged releases:
- *
- *     v1.0.0
- *     v1.1.0
- *     v1.2.0
- *
- * An empty body is therefore `available` with zero versions, NOT `malformed_response`: the module
- * exists and has no tagged version, which is a true fact about the line.
- */
+/** The list endpoint returns plain text, one version a line. See docs/plugins.md §49. */
 export function createGoIndexPlugin(): DependencyIndexPlugin {
   return {
     describeIndex(): DependencyIndexCapabilities {
@@ -110,11 +63,7 @@ export function createGoIndexPlugin(): DependencyIndexPlugin {
       const url = `${trimBase(config.baseUrl)}/${escapeGoModulePath(query.coordinate)}/@v/list`;
       const doc = await fetchIndexDocument(ctx, url, config);
       if (doc.status !== "ok") return doc;
-      // `ScopedHttpResponse.body` is JSON-parsed when it parses and is `undefined` for an EMPTY
-      // body — and an empty body is exactly what the proxy returns for a module with no tagged
-      // release, so it must reach the `available, zero versions` branch rather than being reported
-      // as a broken index. (Caught by "an EMPTY list body is 'available with zero versions'"; the
-      // first cut of this check treated it as `malformed_response`.)
+      // The body is undefined for an empty response, not null. See docs/plugins.md §50.
       const text = doc.body === undefined ? "" : doc.body;
       if (typeof text !== "string") {
         return unavailable(
@@ -140,21 +89,7 @@ export function encodeNpmName(name: string): string {
   return name.replace("/", "%2f");
 }
 
-/**
- * `GET {base}/{name}` with the ABBREVIATED packument `Accept`. The real full document embeds every
- * version's complete `package.json` and reaches tens of megabytes for a long-lived package;
- * `application/vnd.npm.install-v1+json` is the registry's own documented, much smaller projection
- * and carries the only field this needs:
- *
- *     { "name": "lodash",
- *       "dist-tags": { "latest": "4.17.21" },
- *       "versions": { "4.17.20": { "dist": {...} }, "4.17.21": { "dist": {...} } } }
- *
- * `dist-tags.latest` is deliberately IGNORED. It is a mutable pointer the publisher controls and it
- * is frequently NOT on the subscribed major line at all (a package on v5 publishes `latest: 5.x`
- * while a component subscribes to the v4 line); reading it would put an off-line version forward as
- * this line's head, which is exactly the wrong-version-is-worse-than-none failure of ADR-0032 §7.
- */
+/** `GET {base}/{name}` with the ABBREVIATED packument `Accept`. See docs/plugins.md §51. */
 export function createNpmIndexPlugin(): DependencyIndexPlugin {
   return {
     describeIndex(): DependencyIndexCapabilities {
@@ -200,26 +135,7 @@ interface PypiReleaseFile {
   yanked?: unknown;
 }
 
-/**
- * `GET {base}/pypi/{name}/json` — the real shape:
- *
- *     { "info": { "name": "requests", "version": "2.31.0" },
- *       "releases": { "2.30.0": [ { "filename": "...", "yanked": false } ],
- *                     "2.31.0": [ { "filename": "...", "yanked": false } ],
- *                     "0.0.1":  [] } }
- *
- * TWO KINDS OF ENTRY ARE EXCLUDED, and both are exclusions the INDEX ITSELF states rather than
- * inferences this plugin draws:
- *
- *  - a release whose files are ALL `yanked: true` — PEP 592's own "this release must not be
- *    selected by a resolver". Reporting it would let a subscription bump onto a version the
- *    publisher formally withdrew.
- *  - a release with NO files at all (`[]`) — PyPI keeps these as registered-but-unpublished
- *    versions; there is nothing to install, so it is not a version anything can move to.
- *
- * `info.version` is ignored for the same reason npm's `dist-tags.latest` is: it is the publisher's
- * newest overall, not this line's head.
- */
+/** `GET {base}/pypi/{name}/json` — the real shape. See docs/plugins.md §52. */
 export function createPypiIndexPlugin(): DependencyIndexPlugin {
   return {
     describeIndex(): DependencyIndexCapabilities {
@@ -275,30 +191,7 @@ export function mavenMetadataPath(coordinate: string): string | null {
   return `${groupId.split(".").join("/")}/${artifactId}/maven-metadata.xml`;
 }
 
-/**
- * Pull `<version>` texts out of the `<versions>` block of a real `maven-metadata.xml`:
- *
- *     <metadata>
- *       <groupId>org.springframework</groupId>
- *       <artifactId>spring-core</artifactId>
- *       <versioning>
- *         <latest>6.1.4</latest>
- *         <release>6.1.4</release>
- *         <versions><version>5.3.31</version><version>6.1.4</version></versions>
- *         <lastUpdated>20240215120000</lastUpdated>
- *       </versioning>
- *     </metadata>
- *
- * SCOPED TO THE `<versions>` BLOCK, not the whole document — `<latest>`/`<release>` are siblings
- * carrying version text too, and a document-wide scan would fold the publisher's "newest overall"
- * into the line's candidate set (the same mistake npm's `dist-tags` invites).
- *
- * Hand-rolled rather than pulling an XML library, for the reason `@scp/dependency-manifests`'s
- * `pom-xml.ts` states for itself: charter principle 5 wants these paths dependency-free and offline,
- * and the document is a fixed, tiny, machine-generated shape. Returns `null` — not an empty list —
- * when there is no `<versions>` block at all, so "this is not maven-metadata.xml" stays
- * distinguishable from "this artifact has no versions".
- */
+/** Pull the version texts out of a real Maven metadata file. See docs/plugins.md §53. */
 export function parseMavenMetadataVersions(xml: string): string[] | null {
   // `<versions/>` and `<versions></versions>` both mean "this artifact publishes nothing", which is
   // a TRUE fact and must return `[]` — only the ABSENCE of the block returns `null`. The first cut

@@ -44,44 +44,7 @@ import {
   type ReadTreeAtRefResult
 } from "@scp/git-provider-core";
 
-/**
- * `@scp/plugin-github` — the GitHub App `ExecutorPlugin` + `DiscoveryPlugin` (DESIGN.md §12,
- * BUILD_AND_TEST.md §8 M7 item 1): "the primary Discovery source... Auth: GitHub App, org-
- * installable, fine-grained permissions. Observe (push): webhooks. Observe (pull): polling
- * fallback. Trigger: workflow_dispatch/repository_dispatch of the org's OWN workflows. Status:
- * check runs + workflow conclusions. Discovery: repo/topology scan."
- *
- * ARCHITECTURE (M15.1a, ADR-0014): this package is a **thin GitHub ADAPTER** over the provider-
- * neutral `@scp/git-provider-core`. Everything provider-neutral (the idempotency/dedup cache, the
- * observe cursor protocol, correlation-hint normalization, the dispatch-then-persist trigger dance,
- * the `ExecutorPlugin` assembly) lives in the core; everything GitHub-specific (App-JWT→installation
- * -token auth, the base URL + REST wrapper, workflow_dispatch/repository_dispatch, X-Hub-Signature-
- * 256 webhook verification, GitHub event→hint mapping, the status/conclusion→phase map, the
- * `"github"` source_kind) lives here as a `GitProviderAdapter`. This package's EXTERNAL contract is
- * unchanged by the extraction: same `github`/`github-discovery` modules, same config schema, same
- * verbs, same observable behavior — proven by this package's unchanged `nock` suite.
- *
- * HONEST COVERAGE NOTE: every request/response shape below is exercised deterministically against
- * `nock` fixtures built from GitHub's published REST API docs — this package never talks to a
- * real github.com in its own test suite. The opt-in nightly live-sandbox job (a real GitHub App
- * installed against a real org) is what proves wire-format fidelity end to end; this PR's body
- * states that split explicitly.
- *
- * GITHUB API LIMITATION, DOCUMENTED (shapes this file's idempotency design):
- * `workflow_dispatch`/`repository_dispatch` return **204 No Content** — GitHub's API gives no run
- * id back synchronously, and a dispatched run carries no server-assigned field this plugin could
- * later use to prove "this run came from THIS dispatch call" (the workflow's own `client_payload`/
- * `inputs` aren't queryable via the runs-list API). This plugin's `trigger()` therefore: (1) dedups
- * on `idempotencyKey` FIRST, against its own persisted cache — so a retry never even calls GitHub
- * twice; (2) only for a genuinely NEW key, dispatches, then polls the workflow-runs list for the
- * newest run created after the dispatch call and adopts it as the correlated run. Under
- * concurrent dispatches of the SAME workflow this correlation step has a real, small race window —
- * a known, honest limitation of GitHub's public API surface, not something this plugin can close
- * unilaterally. The idempotency cache (file-backed when `ctx.config.statePath` is set, same
- * write-to-temp+rename pattern as `@scp/plugin-fake-executor`/`@scp/plugin-argocd`) is what makes
- * step (1) — the part `coordination/reconcile.ts`'s crash-safe retry actually depends on — solid
- * regardless.
- */
+/** The GitHub App executor and discovery plugin. See docs/plugins.md §191. */
 
 // Config + auth (GitHub App JWT -> installation access token)
 
@@ -220,12 +183,7 @@ async function githubApiHeaders(
   };
 }
 
-/**
- * `maxResponseBytes` defaults to {@link DEFAULT_API_RESPONSE_MAX_BYTES} — bounding EVERY call
- * through this function, not just `readFileAtRef`'s (M21.2 review MAJOR 5's fix, applied to the
- * one funnel every GitHub REST call in this adapter goes through). `readGet`'s contents fetch
- * overrides it with the tighter, decode-bound-derived ceiling from `resolveMaxResponseBytes`.
- */
+/** The response ceiling defaults so every call is bounded. See docs/plugins.md §192. */
 async function api(
   ctx: PluginContext,
   config: GithubConfig,
@@ -248,21 +206,9 @@ async function api(
   return { status: response.status, body: response.body, headers: response.headers ?? {} };
 }
 
-// -------------------------------------------------------------------------------------------
-// Webhook signature verification (fail-closed) + push/poll-equivalent event mapping — exported so
-// apps/server's change-sources webhook route can verify+parse GitHub deliveries with this exact
-// package, and so `observe()`'s polling fallback produces STRUCTURALLY equivalent ExecutorEvents
-// to what the webhook path produces for the same underlying activity (BUILD_AND_TEST.md §8 M7
-// DoD: "poll-vs-push equivalence").
-// -------------------------------------------------------------------------------------------
+// Webhook signature verification. See docs/plugins.md §193.
 
-/** GitHub signs webhook deliveries as `sha256=<hex hmac>` over the RAW request body
- *  (`X-Hub-Signature-256`). Verification MUST run against the raw bytes, not a re-serialized
- *  JSON.parse/stringify round trip (whitespace/key-order differences would break the HMAC) — the
- *  caller (routes/change-sources.ts) is responsible for capturing the raw body before Fastify's
- *  JSON parser touches it. `timingSafeEqual` throws if the two buffers differ in length, which we
- *  treat the same as "signature mismatch" rather than letting it escape as an unhandled error —
- *  fail-closed either way. */
+/** GitHub signs deliveries as a prefixed hex HMAC. See docs/plugins.md §194. */
 export function verifyGithubWebhookSignature(
   rawBody: Buffer,
   signatureHeader: string | undefined,
@@ -346,13 +292,7 @@ export function mapGithubWebhookEventToHint(
       return {
         repo,
         commitSha: pr?.head?.sha,
-        // THE SOURCE BRANCH, under its own name — NOT `ref`. GitHub spells a pull request's head
-        // branch unqualified (`scp/dep-bump/<id>`), so it is qualified here to the one spelling
-        // every consumer of a ref in this tree uses. It is deliberately not `ref`: a `refPattern`
-        // source mapping matches `ref`, and populating it here would start routing pull-request
-        // events by their head branch in every existing deployment. See
-        // `GitProviderEventHint.headRef` for the one consumer and the duplicate change its absence
-        // produced.
+        // THE SOURCE BRANCH, under its own name. See docs/plugins.md §195.
         headRef:
           typeof pr?.head?.ref === "string" && pr.head.ref.length > 0
             ? `refs/heads/${pr.head.ref}`
@@ -429,11 +369,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   let fileFetchBudget = MAX_COMMIT_FILE_FETCHES_PER_POLL;
   for (const commit of commits) {
     const occurredAt = commit.commit?.author?.date ?? new Date().toISOString();
-    // The commits LIST response carries no `files` (GitHub only returns them on the single-commit
-    // resource), so poll-vs-push equivalence for `paths` costs one extra GET per commit. Budgeted
-    // rather than unbounded: a repo that lands a large backlog between polls must not turn one
-    // observe tick into hundreds of API calls. Commits past the budget still produce an event —
-    // just without `paths`, so they route by the repo-only mappings exactly as before.
+    // The commits LIST response carries no `files`. See docs/plugins.md §196.
     const paths = fileFetchBudget > 0 ? await fetchCommitPaths(ctx, config, commit.sha) : undefined;
     if (fileFetchBudget > 0) fileFetchBudget -= 1;
     events.push({
@@ -453,44 +389,11 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
 
 const MAX_COMMIT_FILE_FETCHES_PER_POLL = 20;
 
-/**
- * Page size and per-poll page ceiling for the two LIST resources `observe()` polls.
- *
- * Both used to read whatever GitHub's default page held (30, newest-first) and stop. Anything older
- * than that page — a release train that lands 40 commits between two observe ticks, a busy
- * monorepo's workflow runs — was not "deferred to the next poll", it was gone: the cursor advances
- * to the newest entry seen, so the events beneath the page boundary were never correlated at all.
- *
- * Bounded rather than "follow rel=next to the end", in the same spirit as
- * `MAX_COMMIT_FILE_FETCHES_PER_POLL`: paginating an active repo without a ceiling turns one observe
- * tick into an unbounded API spend and a rate-limit outage. Five pages of 100 covers ~16x the old
- * window; past it the same truncation as before applies, which is the accepted (and now
- * substantially rarer) risk.
- *
- * A COLD START (no watermark) deliberately reads ONE page. There is no window to catch up on then —
- * only "how much history do we invent events for" — and inventing 500 is not better than 100.
- *
- * POLL_PAGE_SIZE is what we ASK for, never what we get: a list endpoint may serve fewer per page
- * than requested (github.com honours 100, but a self-hosted/proxied instance need not — Gitea's
- * `MAX_RESPONSE_ITEMS` clamp is the concrete case, see that adapter). Ending on a page shorter than
- * the REQUESTED size would then stop on page 1 and silently drop the rest, so each loop learns the
- * SERVED page size from page 1 and ends on a page shorter than that (or empty, or at the budget).
- */
+/** Page size and per-poll page ceiling for the two lists. See docs/plugins.md §197. */
 const POLL_PAGE_SIZE = 100;
 const MAX_POLL_PAGES = 5;
 
-/**
- * The changed-file set of ONE commit, via the single-commit resource (the only GitHub endpoint that
- * returns `files`). Best-effort by design: a non-2xx or unexpected shape yields `undefined` rather
- * than throwing, matching `pollCommits`' documented lenient observe posture.
- *
- * **Known limit, and it is a silent one.** GitHub caps this response at 300 files and does not
- * paginate them here, so a commit touching more than 300 files yields a TRUNCATED set. A path-scoped
- * mapping whose directory fell outside the truncation will not match, and the event then routes by
- * whatever repo-only mapping wins — i.e. it degrades to the pre-existing behaviour rather than
- * failing loudly. Acceptable because such commits are rare in a GitOps repo (the case this exists
- * for), but it is a real hole and should not be discovered later as a surprise.
- */
+/** The changed-file set of one commit, via a single resource. See docs/plugins.md §198. */
 async function fetchCommitPaths(
   ctx: PluginContext,
   config: GithubConfig,
@@ -514,11 +417,7 @@ async function fetchCommitPaths(
     }
     return out.size > 0 ? [...out].sort() : undefined;
   } catch {
-    // MUST swallow. `api()` THROWS on a transport failure (blocked host, DNS, connection reset) —
-    // only a non-2xx comes back as a status. Letting that escape would abort `pollCommits` mid-loop
-    // and lose the push events themselves, turning a best-effort enrichment into data loss: the
-    // release would never be coordinated at all, rather than merely routing by repo instead of by
-    // directory. Degrading to `undefined` is the whole point of this being an enrichment.
+    // Must swallow: the API call throws on a transport failure. See docs/plugins.md §199.
     return undefined;
   }
 }
@@ -565,15 +464,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   return events;
 }
 
-/** Polls the runs list for the newest run of `workflowId` created at/after `dispatchedAtMs` — the
- *  correlation step the module doc's GitHub API limitation note describes. Bounded retries (not
- *  an unbounded poll loop): GitHub typically materializes a run within a couple seconds of
- *  dispatch, and `coordination/reconcile.ts`'s own `status()` polling will keep checking on later
- *  reconcile ticks regardless — this only needs to succeed EVENTUALLY, not synchronously within
- *  `trigger()`'s own call budget, so a modest bounded attempt count here is a latency optimization,
- *  not a correctness requirement (a `trigger()` that returns with `externalId` still "pending
- *  correlation" is handled by returning a synthetic ref keyed on the idempotencyKey itself when
- *  correlation hasn't resolved yet — `status()` then re-attempts correlation on the next poll). */
+/** Polls for the newest run created at or after dispatch. See docs/plugins.md §200. */
 async function correlateDispatchedRun(
   ctx: PluginContext,
   config: GithubConfig,
@@ -600,13 +491,7 @@ async function correlateDispatchedRun(
   return undefined;
 }
 
-/** Adapter `triggerCI` hook — fires GitHub's own automation and returns a run ref, INCLUDING the
- *  GitHub-specific correlation step (dispatch returns 204 with no run id, so poll the runs list for
- *  the newest matching run). The idempotency dedup + persistence that wraps this call lives in
- *  `@scp/git-provider-core`; this hook is only ever called for a genuinely new key, so it never
- *  reads/writes the dedup cache itself. `markerKey` is the opaque suffix for an uncorrelated ref
- *  (repository_dispatch, or a workflow_dispatch whose run hasn't materialized yet) — derived from
- *  the same `idempotencyKey` the core dedups on when one is present. */
+/** Adapter `triggerCI` hook. See docs/plugins.md §201. */
 async function triggerCI(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const markerKey = intent.idempotencyKey ?? randomUUID();
@@ -728,26 +613,7 @@ function githubCapabilities(): ExecutorCapabilities {
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)) — the FIRST time this package reads a file
-// BODY out of a repo. `discover()` below calls the same contents endpoint but reads only
-// `entry.name`/`entry.type` off a DIRECTORY LISTING (see line ~758 and the marker-file test); it
-// never fetches or decodes a blob. This is that missing capability, and nothing more: it reads.
-//
-// GITHUB WIRE FACTS THIS DEPENDS ON (all from GitHub's published REST docs; like every other shape
-// in this file they are proven here only against `nock` fixtures — the nightly live-sandbox job is
-// what proves wire fidelity end to end):
-//   - `GET /repos/{owner}/{repo}/commits/{ref}` accepts a branch, tag or sha as `{ref}` and returns
-//     the commit object whose `sha` is what that ref RESOLVES TO.
-//   - `GET /repos/{owner}/{repo}/contents/{path}?ref={ref}` returns, for a blob, an object with
-//     `type: "file"`, `encoding: "base64"`, `size`, `content` (base64 WRAPPED AT 60 CHARS WITH
-//     EMBEDDED NEWLINES — `base64DecodedByteLength` strips whitespace for exactly this reason) and
-//     `sha` (the BLOB sha, NOT a commit sha — hence the separate resolve call above). For a
-//     DIRECTORY the same route returns a JSON ARRAY, which is how `not_a_file` is detected.
-//   - For a blob between 1 MB and 100 MB the same object comes back with `content: ""` and
-//     `encoding: "none"`; `decodeBoundedBase64` maps that to a `too_large` refusal because that is
-//     what GitHub means by it.
-// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)). See docs/plugins.md §202.
 
 /** One entry of a GitHub contents response for a FILE path. `sha` here is the blob sha. */
 interface GithubContentFile {
@@ -759,17 +625,7 @@ interface GithubContentFile {
   path?: string;
 }
 
-/**
- * A single authenticated GET on the read path, with the two failure modes the plugin HTTP client
- * makes non-obvious folded in:
- *
- *  - a 3xx that arrives as a STATUS is refused by `assertNoRedirect` with an explanation, rather
- *    than falling through as an anonymous "HTTP 302";
- *  - anything thrown by `ctx.http.request` — including a refused redirect under the production
- *    client (`redirect: "error"`, subprocess-entry.ts:285,295) and an egress-guard denial
- *    (`egressBlocked`, egress-guard.ts:83) — is re-thrown by `wrapProviderRequestError` naming which
- *    of those it was. Neither weakens any control; both make the failure legible.
- */
+/** One authenticated GET, with both failure modes folded in. See docs/plugins.md §203. */
 async function readGet(
   ctx: PluginContext,
   config: GithubConfig,
@@ -910,38 +766,16 @@ async function readFileAtRef(
   const config = asConfig(ctx.config);
   const repo = request.repo ?? `${config.owner}/${config.repo}`;
   const maxBytes = resolveMaxBytes(request.maxBytes);
-  // The TRANSPORT ceiling passed to every HTTP call this flow makes (M21.2 review MAJOR 5) — see
-  // `resolveMaxResponseBytes`'s doc for why it is derived from `maxBytes` rather than a flat
-  // constant. Applied to the ref-resolution call too, not just the contents fetch: harmless (that
-  // response is tiny) and simpler than threading two different bounds through one flow. GitHub's
-  // contents API is incidentally bounded already (`encoding: "none"` above 1MB) but this makes the
-  // bound explicit rather than relying on that provider behavior.
+  // The TRANSPORT ceiling passed to every HTTP call this flow makes. See docs/plugins.md §204.
   const maxResponseBytes = resolveMaxResponseBytes(maxBytes);
-  // All THREE caller-supplied strings that reach a route are asserted before any HTTP happens.
-  // `repo` and `ref` are not decoration: `encodeURIComponent("..")` is `".."`, so encoding alone
-  // let a ref of `../../../../user` reach `GET https://api.github.com/user` with this binding's
-  // installation token, and a raw `repo` of `acme/widgets?x=` terminated the route at the query
-  // string. See `assertSafeRef`/`assertSafeRepo` in `@scp/git-provider-core` for the full case.
+  // All three caller-supplied strings are asserted before HTTP. See docs/plugins.md §205.
   assertSafeRepo("github", repo, 2);
   assertSafeRepoPath("github", request.path);
   assertSafeRef("github", request.ref);
-  // `repo` reaches the routes below UNENCODED, deliberately. It used to be wrapped in
-  // `encodePathSegments`, which `assertSafeRepo`'s charset makes a provable IDENTITY
-  // (`REPO_SEGMENT` is `[A-Za-z0-9._-]`, every character URL-unreserved) — a call that READ as the
-  // control while the assert above was the entire control, and that no test could tell apart from
-  // its own deletion. The coupling it claimed to defend (a later relaxation of `REPO_SEGMENT`
-  // letting an un-encoded repo reach a URL) is now pinned where that charset actually lives:
-  // git-provider-core's read-file.test.ts "every character assertSafeRepo accepts is URL-identity"
-  // test FAILS the moment the charset admits anything needing an escape. `path` and `ref` below
-  // still encode for real — their charsets legitimately contain characters that must be escaped
-  // (a space in a path, for instance).
+  // `repo` reaches the routes below UNENCODED, deliberately. See docs/plugins.md §206.
   const repoPath = repo;
 
-  // STEP 1 resolves the ref to a commit sha; STEP 2 reads at that SHA rather than at the ref
-  // again — the two-call shape is forced (GitHub's contents response carries a blob sha, never a
-  // commit sha), but reading at the resolved sha is a deliberate choice on top of it: a branch can
-  // move between the two calls, and an inventory row that says "read at commit X" must be true of
-  // the bytes actually parsed.
+  // Resolve the ref to a sha, then read at that sha. See docs/plugins.md §207.
   const resolution = await resolveGithubRefToCommit(
     ctx,
     config,
@@ -967,13 +801,7 @@ async function readFileAtRef(
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. GitHub's
-// Trees API returns EVERY entry in ONE response (`recursive=1`, no page/per_page for that mode),
-// capped at GitHub's own internal ceiling (100,000 entries / 7MB) and flagged `truncated: true` if
-// it hit that ceiling — there is no follow-up page to ask for, so a truncated response is refused
-// here as `maxEntriesScanned` rather than silently matching only what arrived.
-// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12). See docs/plugins.md §208.
 
 interface GithubTreeEntry {
   path?: string;
@@ -1077,14 +905,7 @@ async function readFilesAtRef(
   return { outcome: "found", requestedRef: request.ref, commitSha, files };
 }
 
-/**
- * The GitHub `GitProviderAdapter` — every GitHub-wire-specific hook the provider-neutral
- * `@scp/git-provider-core` needs. The executor factory consumes `resolveStatePath`/`triggerCI`/
- * `pollCommits`/`pollRuns`/`getStatus`/`abortRun`/`capabilities`; `authorize`/`baseUrl` back this
- * adapter's own REST calls (`api()`), `verifyWebhook`/`mapEvent` back the server webhook path,
- * `mapStatusToPhase` backs `getStatus`, and `readFileAtRef` backs ADR-0032's manifest ingestion
- * (adapter-only — the factory never turns it into a fifth executor verb).
- */
+/** The GitHub `GitProviderAdapter`. See docs/plugins.md §209. */
 export const githubAdapter: GitProviderAdapter = {
   sourceKind: "github",
   authorize: (ctx) => githubApiHeaders(ctx, asConfig(ctx.config)),
@@ -1109,16 +930,7 @@ export function createGithubExecutorPlugin(): ExecutorPlugin {
   return githubExecutorPlugin;
 }
 
-// -------------------------------------------------------------------------------------------
-// Status reporting (DESIGN §12: "SCP posts a commit status/check so repos can make SCP
-// coordination a branch-protection gate"). Not part of the ExecutorPlugin verb set (there is no
-// generic "report back" verb — DESIGN §11's four verbs are it) — exposed as a plain function any
-// server-side caller with a github plugin instance's `ctx` can invoke directly. NOT YET WIRED into
-// `governance/gate-orchestrator.ts`'s decision path in this milestone (flagged, same "deferred but
-// present and tested" posture as federation-https's mTLS cert injection in M6) — the function
-// itself is implemented and unit-tested against nock fixtures; threading it into every gate
-// verdict generically (across every executor, not just github) is left as documented follow-up.
-// -------------------------------------------------------------------------------------------
+// Status reporting, so a repo can gate on our coordination. See docs/plugins.md §210.
 
 export interface CommitStatusInput {
   sha: string;
@@ -1154,13 +966,7 @@ export async function postCommitStatus(
   }
 }
 
-// -------------------------------------------------------------------------------------------
-// DiscoveryPlugin (DESIGN §11/§12 — "repo/topology scan proposing Service/Component objects and
-// source_mappings"; NEVER auto-commits, only proposes). `DiscoveryProposal` (plugin-api) carries
-// objects+relationships; a `component` object's `properties.sourceMapping` carries the
-// {repoPattern, pathPattern} the server-side "discovery accept" route turns into a real
-// `source_mappings` row ONLY on explicit operator acceptance (routes/discovery.ts, server-side).
-// -------------------------------------------------------------------------------------------
+// Discovery: a repo scan proposing service and component objects. See docs/plugins.md §211.
 
 interface RepoContentEntry {
   name: string;

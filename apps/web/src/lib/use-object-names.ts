@@ -1,20 +1,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { client } from "./client";
 
-/**
- * Resolve graph-object ids to display names + types, for surfaces whose payload carries only ids.
- *
- * WHY THIS EXISTS (spec §4C, second pass): the generalized `PipelineWaveCard` grew a `targetName`
- * slot in the overhaul, but the change/campaign wave payloads carry only `targetObjectId` — so the
- * slot sat empty and every wave target still rendered as a raw UUID. The lever existed; nothing
- * pulled it. This hook is the missing supply side, shared by change-detail and campaign-detail.
- *
- * WHY `graph.traverse` AND NOT A TYPED REGISTRY GET: a wave target may be a component, a service,
- * or any other graph object, and the typed clients 404 across types. `traverse` at depth 1 returns
- * the ROOT object itself (name + typeId) regardless of type — the same property the assembly board
- * and registry-detail already lean on — so one bounded call resolves any id without guessing its
- * registry. Results are cached per id by the query key, so revisits are free.
- */
+/** Resolve object ids to display names, for id-only payloads. See docs/web.md §143. */
 export interface ResolvedObject {
   name: string;
   typeId: string;

@@ -11,20 +11,7 @@ import {
 } from "../ui/dialog";
 import { WhyLink } from "./WhyLink";
 
-/**
- * The shared shell for every reason-carrying transition dialog (design spec §2.13): change
- * cancel/rollback today, campaign rollback after its own migration.
- *
- * MODULE CONTRACT for later adopters (campaign-detail.tsx): `testIdPrefix` drives every testid and
- * the label/input ids — `${prefix}-dialog`, `${prefix}-reason` (label htmlFor + input id),
- * `${prefix}-reason-input`, `${prefix}-submit` — so passing `testIdPrefix="rollback-campaign"`
- * reproduces the campaign dialog's pinned ids exactly; title/description/submitLabel carry the
- * campaign copy. No changes here are needed to adopt it.
- *
- * `reasonRequired` drives client-side enforcement of `RollbackChangeRequestSchema`'s
- * `reason: z.string().min(1)` (packages/schemas/src/changes.ts) — cancel's reason is optional
- * server-side, so it stays submittable empty.
- */
+/** The shared shell for every reason-carrying transition dialog. See docs/web.md §34. */
 export function ReasonDialog({
   open,
   title,

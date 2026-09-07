@@ -1,11 +1,4 @@
-/**
- * Test-only worker entry that HANGS on the sentinel expression `"__HANG__"` but evaluates every
- * other expression normally via `cel-js`. Unlike `hanging-cel-worker-entry.ts` (which hangs on
- * ANY message, so a respawned worker hangs again), this lets `cel-sandbox.test.ts` prove that the
- * SAME sandbox instance recovers after a timeout: the first call hangs and is terminated, and a
- * subsequent NON-sentinel call against the respawned worker succeeds (MINOR (b) — the pre-fix
- * timeout test only ever proved recovery via a brand-new sandbox, never that a wedged pool healed).
- */
+/** A worker that hangs on a sentinel and evaluates the rest. See docs/governance.md §430. */
 import { parentPort } from "node:worker_threads";
 import { evaluate } from "cel-js";
 

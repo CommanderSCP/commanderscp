@@ -10,30 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ADOPTION, AND THE THEFT IT IS NOT (proposal section 9, increment 7).
- *
- * Two halves of one read of `managed_by_stack`:
- *
- *  1. **Adoption is legal and VISIBLE.** A stack may claim an object no stack manages — that is how
- *     an existing estate comes under IaC, and the whole purpose of `scp iac export`. Section 9
- *     requires the plan to SAY SO, because it is the one action whose blast radius is invisible from
- *     the manifest alone: the manifest looks identical whether the URN is new or forty other things
- *     already point at it.
- *
- *  2. **Cross-stack adoption is refused.** Before this, `stampObjectStackOwnership`'s predicate was
- *     `managed_by_stack IS NULL OR <> $stack`, so an apply re-stamped ANY object in its diff,
- *     including one another stack owned — its own header treated that as the design. The effect was
- *     silent takeover, after which the losing stack's next apply either proposes deleting rows it no
- *     longer owns, or proposes nothing for an object it still believes it manages.
- *
- * MUTATION LOG - each applied, watched fail, reverted, watched pass (MEASURED)
- * | Mutation | Result |
- * |---|---|
- * | `computePlanDiff` stops collecting ownership conflicts | (3) FAILS — the thief's plan computes and the takeover proceeds |
- * | `prepareApplyChecks` skips `assertNoStackTheftAtApply` | (4) FAILS — a plan computed while the object was unmanaged still steals it after another stack claimed it. (3) stays GREEN, which is the point of having both doors: plan-time alone does not cover the review-then-apply gap. |
- * | the `adopted` qualifier is never set | (1) and (2) FAIL — an adoption becomes indistinguishable from an ordinary update |
- */
+/** ADOPTION, AND THE THEFT IT IS NOT (proposal section 9, increment 7). See docs/iac.md §4. */
 describe("IaC adoption and stack-theft refusal", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -121,17 +98,7 @@ describe("IaC adoption and stack-theft refusal", () => {
     const existing = await unmanagedService("b");
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
-    // MEASURED CORRECTION to this case's first version, which expected a plain adoption to be a
-    // `noop`: it is not, and cannot be. `managedLabels()` is merged into the diff target, so
-    // adopting an unmanaged object always changes `labels` at minimum and therefore always shows as
-    // an `update`. Asserting `noop` there was asserting something false about the design.
-    //
-    // The branch IS reachable, and only through the hazard `managed_by_stack` was introduced for
-    // (drizzle/0068): someone hand-writes the descriptive labels onto an object at plain
-    // `object:write`, so the labels claim IaC ownership while the server-written column says
-    // nobody owns it. The declared state then matches byte-for-byte — a genuine `noop` — while
-    // ownership still changes on apply. Calling that a plain no-op would hide the only thing that
-    // happens, which is precisely the "a description is not an assertion" failure.
+    // A measured correction to this case's first expectation. See docs/iac.md §5.
     const patched = await server.app.inject({
       method: "PATCH",
       url: `/api/v1/objects/service/${existing.id}`,

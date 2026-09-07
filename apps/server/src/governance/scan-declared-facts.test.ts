@@ -3,27 +3,7 @@ import { intersectDeclaredFacts, parseDeclaredFacts } from "./scan-declared-fact
 import { intersectApprovedOverrides, projectScanOverrideGrant } from "./scan-override-grants.js";
 import type { ScanApprovedOverrides } from "@scp/schemas";
 
-/**
- * M22.5 / M22.6 — THE TWO SERVER-SIDE FACT FOLDS, pure.
- *
- * Everything here is a function that takes rows (or a properties bag) and returns the fact the gate
- * hands to the matcher. The DATABASE reads and the WIRING are proven at the real gate in
- * `scan-declared-override-exclusions.integration.test.ts`; nothing in this file can say anything
- * about either, and it does not pretend to.
- *
- * MUTATIONS RUN (2026-08-17), measured against a baseline of 17 passed and reverted by an exact
- * inverse edit:
- *   U-1  UNION the per-target declarations instead of intersecting them  -> 3 failed.
- *   U-2  UNION the per-target grants instead of intersecting them        -> 2 failed.
- * A third, "read an unparseable status as `approved`", is covered by the projection cases below and
- * was not run separately.
- *
- * The property that makes these worth pinning separately is the INTERSECTION. ADR-0033 §3 forbids
- * unioning across a change's targets, and a union here is not a hypothetical mistake — it is the
- * shape a reader reaches for first, because "gather every fact about the change" is the obvious
- * phrasing and it is the wrong one. A single-target change (the overwhelmingly common shape) is
- * unaffected either way, so nothing but a deliberate multi-target test can tell the two apart.
- */
+/** M22.5 / M22.6 — THE TWO SERVER-SIDE FACT FOLDS, pure. See docs/governance.md §287. */
 
 describe("M22.5 — parseDeclaredFacts reads the strict shape and nothing else", () => {
   it("reads a well-formed bag, sorted by key", () => {
@@ -75,12 +55,7 @@ describe("M22.5 — parseDeclaredFacts reads the strict shape and nothing else",
   });
 
   it("ONE unrecognised entry discards the WHOLE bag — all or nothing, for a loosening", () => {
-    // MEASURED, and the opposite of what was written first. A per-entry filter is unreachable
-    // through the write door (which refuses the whole bag) and reachable only through federation
-    // import, where an unrecognised entry means either "the peer has a newer vocabulary" or
-    // "somebody wrote something we cannot interpret". For a LOOSENING both must resolve the same
-    // way: partially interpreting a document we do not fully understand is how a loosening acquires
-    // a meaning nobody authored.
+    // MEASURED, and the opposite of what was written first. See docs/governance.md §288.
     expect(
       parseDeclaredFacts({ security: { declarations: { egress: "none", BAD: "x" } } })
     ).toEqual({ declarations: [] });

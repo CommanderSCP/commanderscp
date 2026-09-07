@@ -15,50 +15,7 @@ import {
   listConfigSourceRegistrations
 } from "./config-sources-repo.js";
 
-/**
- * THE CONFIG-SOURCE REGISTRATION, AT EVERY DOOR THAT CAN WRITE ONE (ADR-0046 §1/§3, migration
- * 0100, team-pipeline-iac §4 D7/D9).
- *
- * ============================================================================================
- * WHAT THIS FILE HAS TO PROVE
- * ============================================================================================
- * A `config-source` row is not a document — it is an IDENTITY DELEGATION. It says "manifests from
- * this repo apply AS THIS TEAM", and the sync loop hands that team's object id to `executePlanDiff`
- * as `actorObjectId`, so the per-diff-entry `authorize()` ADR-0046 rests on runs AS THE TEAM and
- * passes. The whole guarantee — "a team's stack cannot mutate another team's service" — therefore
- * reduces to one question: who may write a row of this type, naming whom.
- *
- * Three properties, and none is provable by asserting a row exists:
- *
- *  1. **AUTHORITY OVER THE DELEGATED IDENTITY** — writing a config source that names team T
- *     demands `role_binding:write` AT T, at every door. `object:write` somewhere is not enough,
- *     and the UPDATE half matters more than the create half because the escalation is an EDIT.
- *  2. **THE CHECK IS NEVER SKIPPED** — an unresolvable team reference, or one naming a non-team
- *     subject, is a refusal. "No such object, so nothing to authorize against" is how an authority
- *     check becomes a formality.
- *  3. **D7 SINGLE OWNERSHIP** — a stack bound to a config source refuses a direct CLI apply with a
- *     409 naming it, and removing the registration returns that stack to CLI-push. Every unbound
- *     stack behaves exactly as it did before this increment.
- *
- * ============================================================================================
- * MUTATION LOG — each applied, watched fail, reverted, watched pass
- * ============================================================================================
- * | Mutation | Result (MEASURED, not predicted — two are wider than first written) |
- * |---|---|
- * | delete the `assertConfigSourceAuthoring` call from `createObject` | 4 FAIL — (1), (3), (4) and (5). Every case whose refusal is authored through a CREATE loses it at once, including the IaC apply door, which is the point: one choke point, four doors. |
- * | delete it from `updateObject` | (2) alone FAILS — the PATCH repoints `team` to a team the author does not administer and returns 200. |
- * | `authoring-guard.ts` skips (`continue`) instead of throwing on an unresolvable team | (3) alone FAILS — the ghost-team registration is written. |
- * | the permission drops from `role_binding:write` to `object:write` | 3 FAIL — (1), (2) and (5). The Operator-at-org-root actor is admitted at every delegation door, which is exactly the bar this guard exists to raise above. |
- * | delete the D7 block from `routes/plans.ts` | (6) alone FAILS — the repo-owned stack applies (200) and the next sync would silently revert it. |
- * | `findStackConfigSourceBinding` matches by `repoPattern` instead of the `stackTeams` claim | (6) alone FAILS — the UNBOUND stack is refused 409, i.e. registering a namespace would have locked stacks nobody claimed. |
- * | `listConfigSourceRegistrations` drops malformed rows instead of reporting them | (7) alone FAILS. |
- *
- * ONE DEFECT THIS FILE CAUGHT IN THE CODE UNDER TEST, recorded because the fix is not obvious from
- * the outside: case (7) first reported `detail: "Bad Request"`. A `ProblemError`'s `message` is the
- * RFC 9457 TITLE and the sentence naming the broken rule is on `detail` — so the honest-failure
- * report was carrying no information at all while passing an "is it reported?" assertion. Asserting
- * the TEXT, not the presence, is what found it.
- */
+/** A config-source row is an identity delegation. See docs/config-source.md §11. */
 describe("config-source: the delegation door and D7 single ownership", () => {
   let server: ListeningTestServer;
 
@@ -70,12 +27,7 @@ describe("config-source: the delegation door and D7 single ownership", () => {
     await server.close();
   });
 
-  /**
-   * Refusals are asserted as STATUS + `detail`, never as a thrown SDK error's message: the SDK
-   * surfaces the RFC 9457 TITLE ("Forbidden"), so `rejects.toThrow(/Forbidden/)` passes for any
-   * 403 — including one from a permission check that fired long before the guard under test. Every
-   * case below names the rule it is about.
-   */
+  /** Assert status and `detail`, never the SDK's error title. See docs/config-source.md §12. */
   async function call(
     method: "POST" | "PATCH" | "DELETE",
     url: string,

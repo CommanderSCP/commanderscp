@@ -27,19 +27,7 @@ function generateToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
-/**
- * Local-auth bootstrap (DESIGN.md §7, §3 `packages/plugins/local-auth`). The full IdentityPlugin
- * subprocess-isolated implementation arrives once the plugin host exists (M3); until then this
- * logic lives directly in the server, behind the same argon2 bootstrap-admin behavior the
- * plugin will eventually provide.
- *
- * Idempotent: safe to call on every boot. Creates the seeded org + graph root object + bootstrap
- * admin (as both an auth row and a graph `user` object bound to the built-in Owner role at the
- * org's root scope) only if they don't exist yet, and prints the one-time password once.
- *
- * Audit events written during bootstrap attribute `actorId = orgId` — a "system" placeholder,
- * since no user (graph subject) exists yet at the point the org root object itself is created.
- */
+/** Local-auth bootstrap, in-server until the plugin host exists. See docs/auth.md §13. */
 export interface BootstrapResult {
   orgId: string;
   /** Only set when this call actually created the admin (null if it already existed). */
@@ -150,15 +138,7 @@ export interface CreatedSession {
   expiresAt: Date;
 }
 
-/**
- * Issues a new opaque bearer/session token for an already-authenticated `(userId, orgId)` pair —
- * shared by every login path (local-auth `login()` below, OIDC `auth/oidc.ts`, device-flow claim
- * `auth/device-flow.ts` `pollDeviceAuth`) so token generation/hashing/expiry logic lives in
- * exactly one place. Accepts either the top-level `Db` or a `TenantTx`/plain transaction handle
- * so callers that must mint the session atomically inside a wider transaction (device-flow's
- * claim, which mints the session only once the row is confirmed claimable under `FOR UPDATE`)
- * can pass their `tx` straight through instead of opening a second, unrelated transaction.
- */
+/** Issues a session token: the one place every login path shares. See docs/auth.md §14. */
 export async function createSession(
   db: Db | TenantTx,
   params: { userId: string; orgId: string }
@@ -202,11 +182,7 @@ export async function login(
   return { token: session.token, expiresAt: session.expiresAt, orgName: org.name };
 }
 
-/**
- * Resolves a `users.id` to its full auth context — shared by `verifyToken` below and PAT
- * verification (auth/pat.ts), which both end at "I know the user row, now build the AuthContext"
- * after their own distinct token-lookup step.
- */
+/** Resolves a `users.id` to its full auth context. See docs/auth.md §15. */
 export async function resolveAuthContext(db: Db, userId: string): Promise<AuthContext | null> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) return null;
@@ -232,15 +208,7 @@ export async function verifyToken(db: Db, token: string): Promise<AuthContext | 
   return resolveAuthContext(db, session.userId);
 }
 
-/**
- * `POST /auth/logout` (routes/auth.ts, M2 step 4) — invalidates the session row a local-auth/
- * OIDC session token resolves to, so it's rejected by `verifyToken` immediately, even if the
- * client kept a copy. Expires it (UPDATE) rather than deleting the row: the runtime `scp_app`
- * login role is only granted SELECT/INSERT/UPDATE on auth-substrate tables, never DELETE (PR #4
- * security review, CRITICAL 3 — `drizzle/0002_rls_rbac_seed.sql` §1) — same externally-observable
- * effect (the token stops working) without widening that grant for a "logout" nicety. No-op if
- * the token doesn't match a live session — callers own deciding whether that's worth surfacing.
- */
+/** `POST /auth/logout` (routes/auth.ts, M2 step 4). See docs/auth.md §16. */
 export async function invalidateSessionByToken(db: Db, token: string): Promise<void> {
   await db
     .update(sessions)

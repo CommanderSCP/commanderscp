@@ -11,15 +11,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * IdP GROUP SYNC — reconciliation against a real graph
- * ================================================================================================
- *
- * THE PROPERTY UNDER TEST IS AUTHORITY, NOT EDGES. A sync that writes the right `member_of` rows
- * and does not change what anyone may DO would be an elaborate no-op, so every case here ends at
- * `hasPermission` — the same function the doors call — rather than at a row count.
- */
+/** IdP GROUP SYNC. See docs/auth.md §8. */
 describe("IdP group sync reconciles membership and therefore authority", () => {
   let server: TestServer;
   let org: TestOrg;

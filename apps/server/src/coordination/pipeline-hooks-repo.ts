@@ -11,20 +11,7 @@ import {
 import type { BakeAlarmReport } from "./pipeline-hook-verdicts.js";
 import { enqueueProbeScheduleRetraction } from "./continuous-probe-retractions-repo.js";
 
-/**
- * STORAGE for the pipeline test hooks and their evidence (team-pipeline-iac increment 8,
- * migration 0096).
- *
- * The contract is `packages/schemas/src/pipeline-behaviors.ts` and the consumers are the pure verdict
- * functions in `./pipeline-hook-verdicts.ts`. This module is the seam between them: it fetches, it
- * writes, and it shapes its output to the verdict functions' EXACT input types (`BakeAlarmReport`,
- * `LatestContinuousEvidence`) rather than to a parallel shape that merely looks similar. Where a
- * return type here is one the verdict module already declares, it is IMPORTED from there — a
- * structurally-identical local copy is exactly how two "matching" shapes drift apart.
- *
- * NO ROUTES AND NO ZOD SCHEMAS LIVE HERE. The write doors that will call `record*Evidence` stamp
- * `source` and `producerSubjectId` from the authenticated request; see those functions' docs.
- */
+/** STORAGE for the pipeline test hooks and their evidence. See docs/coordination.md §644. */
 
 /** A `pipeline_hooks` row. The per-kind columns are nullable because the four kinds carry different
  *  fields (see the table's doc comment); the closed per-kind shape is Zod's job at the write door. */
@@ -84,14 +71,7 @@ function toHookRow(row: typeof pipelineHooks.$inferSelect): PipelineHookRow {
   };
 }
 
-/**
- * Every hook declared on any of `componentObjectIds`.
- *
- * Batched by design: reconcile evaluates a whole wave's targets in one tick, and a per-component
- * query there is the N+1 that turns one tick into one query per target. An EMPTY id list returns `[]`
- * without touching the database — `inArray` with an empty array compiles to invalid SQL in drizzle,
- * which is a runtime error rather than the empty result a caller would reasonably expect.
- */
+/** Every hook declared on any of `componentObjectIds`. See docs/coordination.md §645. */
 export async function listHooksForComponents(
   tx: TenantTx,
   orgId: string,
@@ -110,18 +90,7 @@ export async function listHooksForComponents(
   return rows.map(toHookRow);
 }
 
-/**
- * Create-or-update keyed on the identity tuple, for the later plan-apply path.
- *
- * `ON CONFLICT` on the identity constraint rather than a read-then-branch: apply runs concurrently
- * with nothing today, but a lookup-then-insert has a window in which two applies both see no row and
- * both insert, and the constraint would then turn the second one into an error the operator has to
- * interpret instead of the convergence they asked for.
- *
- * Note this does NOT make a changed hook an in-place edit at the CONTRACT level — the manifest's
- * identity rule stands, and plan-diff still renders a kind/hookId change as delete + create because
- * those fields ARE the identity. What this updates is the payload BESIDE the identity.
- */
+/** Create-or-update keyed on the identity tuple. See docs/coordination.md §646. */
 export async function upsertHook(
   tx: TenantTx,
   orgId: string,
@@ -155,11 +124,7 @@ export async function upsertHook(
     })
     .returning();
   const hook = toHookRow(row!);
-  // OUTPOST-RUN PROBES — the declaration travels to the domain that will RUN it. Journalled on the
-  // same seam objects and relationships use (`appendJournalEntry`), unconditionally: WHICH peers
-  // receive it is `scope-filter.ts`'s decision, not this writer's, exactly as for `object_upsert`.
-  // Emitting here rather than at the IaC apply site means a hook written by any door — apply, a
-  // future API, a test harness — federates, instead of one door federating and the others not.
+  // The declaration travels to the domain that will run it. See docs/coordination.md §647.
   if (input.federationImport !== true)
     await appendJournalEntry(tx, {
       orgId,
@@ -214,21 +179,9 @@ export async function deleteHook(
     .returning();
   if (!row) return undefined;
   const hook = toHookRow(row);
-  // A `continuous` hook OWNS A SCHEDULE ON ITS EXECUTOR, and deleting the row does not remove it —
-  // the driver simply stops re-declaring it, and the cron keeps firing forever. Enqueued HERE, in
-  // `deleteHook` itself rather than at its callers, for the reason every "one door" in this repo
-  // exists: the IaC prune and the federation tombstone import are two callers today and a third
-  // would silently reopen the leak.
-  //
-  // FOR BOTH PATHS, including `federationImport` — an outpost that imported a hook declared its
-  // schedule locally, so retracting it is exactly as necessary there. The journal below is the
-  // thing that is import-conditional, not this.
+  // A continuous hook owns a schedule the delete cannot remove. See docs/coordination.md §648.
   if (hook.kind === "continuous") await enqueueProbeScheduleRetraction(tx, orgId, hook);
-  // The tombstone carries the SAME content hash the upsert did, so a receiver can tell which
-  // declaration is being removed rather than only which identity — the discipline
-  // `relationship_tombstone` follows (it passes `existing.contentHash`). A no-op delete journals
-  // NOTHING: apply-time prune legitimately asks for hooks a previous apply already removed, and a
-  // tombstone for a row that never existed would be a fact this instance cannot vouch for.
+  // The tombstone carries the same hash the upsert did. See docs/coordination.md §649.
   if (federationImport !== true)
     await appendJournalEntry(tx, {
       orgId,
@@ -255,17 +208,7 @@ export async function deleteHook(
 
 /** Where an evidence row came from. SERVER-STAMPED at every write door and NEVER read from a request
  *  body — `SubmitPipelineEvidenceRequestSchema` deliberately has no such field. */
-/**
- * WHO PRODUCED a piece of evidence. Server-side only — it appears nowhere in `openapi.v1.json`
- * (measured), so adding a member costs no oasdiff exception.
- *
- * `peer_reported` is the OUTPOST-RUN PROBE source: evidence a peer produced in its own domain and
- * journalled upward. It is STAMPED BY THE RECEIVER at import, never read from the entry's payload —
- * provenance is the authorization boundary, not the payload shape, and a shape-valid payload is
- * forgeable by anyone who can read the schema. A peer's journal is SIGNED, which proves who sent
- * it; it does not make the contents true, so the receiver records what it knows (this came from
- * that peer) rather than what the sender claimed about itself.
- */
+/** WHO PRODUCED a piece of evidence. Server-side only. See docs/coordination.md §650. */
 export type PipelineEvidenceSource =
   "rollout_analysis" | "pushed" | "executor_observed" | "peer_reported";
 
@@ -334,37 +277,7 @@ function toEvidenceRow(row: typeof pipelineEvidence.$inferSelect): PipelineEvide
   };
 }
 
-/**
- * Records a concluded test run, SUPERSEDING any prior run for the same
- * `(org, component, target, hookId, artifactDigest-or-commitSha)`. One row survives per key: the
- * newest.
- *
- * ===========================================================================================
- * WHY THIS IS SEMANTICS AND NOT A RETENTION HACK
- * ===========================================================================================
- * The distinction is worth being precise about, because "we delete the old row" reads like a
- * space-saving measure and is not one. The contract's stale-reads-as-ABSENT rule
- * (`ManifestContinuousHookSchema`, implemented by `evaluateContinuousHold`) means every consumer of
- * test-run evidence reads the LATEST row for a key and nothing else — an older row cannot affect any
- * verdict, in any direction, ever. So it is not redundant data being pruned for cost; it is data that
- * is UNREADABLE BY DESIGN, and keeping it would mean storing rows whose only possible effect is to
- * make a future reader think there is history to consult when the contract says there is not.
- *
- * The idiom is the one `federation/scan-evidence.ts` already uses and is cited here deliberately:
- * runs are grouped by the QUESTION they answer (`questionKey`) and only the newest run of each
- * question is consulted — "an older pass therefore cannot outvote a newer fail, and ... a newer pass
- * DOES clear an older fail". Both directions matter, and both are what makes this a REPLACE rather
- * than an insert-if-absent: a newer FAILING run must be able to displace an older passing one.
- *
- * ===========================================================================================
- * `source` AND `producerSubjectId` ARE STAMPED BY THE CALLER FROM THE REQUEST, NEVER FROM THE BODY
- * ===========================================================================================
- * `SubmitPipelineEvidenceRequestSchema` carries no producer field and must never gain one:
- * PROVENANCE IS THE AUTHORIZATION BOUNDARY, NOT THE PAYLOAD SHAPE, because a shape-valid payload is
- * forgeable by anyone who can read the schema (`federation/scan-evidence.ts`). This function takes
- * them as explicit parameters precisely so the stamping is visible at every call site rather than
- * defaulted somewhere a caller could forget to override.
- */
+/** Records a concluded test run, superseding any prior. See docs/coordination.md §651. */
 export async function recordTestRunEvidence(
   tx: TenantTx,
   orgId: string,
@@ -373,11 +286,7 @@ export async function recordTestRunEvidence(
   const artifactDigest = input.artifactDigest ?? null;
   const commitSha = input.commitSha ?? null;
 
-  // Supersede in the SAME transaction as the insert. Delete-then-insert rather than ON CONFLICT
-  // because the identity index is an EXPRESSION index (`coalesce(...)`, partial on kind='testRun'),
-  // which drizzle's `onConflictDoUpdate` target cannot name; the partial unique index in migration
-  // 0096 still stands behind this as the race guard, so two concurrent writers cannot both land a
-  // row for one key — the loser gets a unique violation and retries, which is the loud outcome.
+  // Supersede in the SAME transaction as the insert. See docs/coordination.md §652.
   await tx
     .delete(pipelineEvidence)
     .where(
@@ -409,13 +318,7 @@ export async function recordTestRunEvidence(
     })
     .returning();
   const evidence = toEvidenceRow(row!);
-  // OUTPOST-RUN PROBES, THE UPWARD HALF. A probe runs in the domain, so its result is produced
-  // HERE and the commander's gate needs it. Journalled on the same seam the hook declaration came
-  // down on, which is what makes the air gap work by construction: the entry rides return media
-  // with everything else, and no outpost ever needs an outbound credential to the commander.
-  //
-  // `federationImport` skips it for the same reason the hook doors do — a commander that
-  // re-journalled a peer's evidence would send it back, and with peers paired both ways, loop.
+  // OUTPOST-RUN PROBES, THE UPWARD HALF. See docs/coordination.md §653.
   if (input.federationImport !== true)
     await appendJournalEntry(tx, {
       orgId,
@@ -445,31 +348,7 @@ export async function recordTestRunEvidence(
   return evidence;
 }
 
-/**
- * Records one alarm-state report. THIS ACCUMULATES — it deliberately does NOT supersede.
- *
- * ===========================================================================================
- * WHY, AND WHAT THAT COSTS
- * ===========================================================================================
- * A bake gate is not asking "what is the latest alarm state"; it is asking "was the whole quiet
- * window observed, alarm-free, by a single source". `evaluateBakeGate` answers that by MERGING the
- * intervals a source asserted and checking they contiguously cover `[deployedAt, deployedAt +
- * quietWindowSeconds]` — "A GAP IS NOT COVERAGE". Superseding older reports would delete precisely
- * the earlier slices of the window that coverage is computed from, so a bake gate over a one-hour
- * window fed by five-minute reports would see exactly one five-minute interval and refuse forever.
- * The history IS the evidence here, in a way it structurally is not for test runs.
- *
- * THE CONSEQUENCE, STATED RATHER THAN GLOSSED: this table grows without bound. Retention for it is an
- * OPEN QUESTION and is deliberately left to the existing Decision/audit retention thread (ADR-0024's
- * retention classes, the measured 1.44 GB/day unbounded-decision incident) rather than invented here.
- * Inventing a local sweeper would be a second, uncoordinated retention policy in a tree that already
- * has one — and, worse, one written by the module least able to say which windows are still needed.
- *
- * `source` and `producerSubjectId` are stamped by the caller from the authenticated request, never
- * from the body — same rule as `recordTestRunEvidence`, and it bites harder here: coverage is
- * evaluated PER SOURCE, so a caller able to choose its own `source` could manufacture single-source
- * coverage of a window nobody observed.
- */
+/** Records one alarm-state report. THIS ACCUMULATES. See docs/coordination.md §654. */
 export async function recordAlarmEvidence(
   tx: TenantTx,
   orgId: string,
@@ -500,20 +379,7 @@ export interface LatestTestRunEvidenceQuery extends PipelineEvidenceBinding {
   hookId: string;
 }
 
-/**
- * The single latest test-run row for a (component, target, hook) and, when given, a specific binding.
- *
- * A binding field that is OMITTED is not filtered on; a binding field that is given is matched
- * exactly. That asymmetry is deliberate: `evaluateContinuousHold` asks "what is the latest word on
- * this target" with no binding, while `evaluatePostDeployGate` asks about the digest a specific wave
- * is promoting and must not be answered with evidence about different bytes. Passing an explicit
- * `null` means "bound to nothing here", which matches only rows that are themselves unbound on that
- * axis — the same reading `recordTestRunEvidence`'s supersession key uses, so a row written under one
- * binding is found by a query under the same binding.
- *
- * Ordered by `createdAt DESC` (the `pipeline_evidence_latest` index's trailing column), tie-broken by
- * `id DESC` — uuidv7 ids are time-ordered, so within one `now()` two rows still order by arrival.
- */
+/** The single latest test-run row for a hook and target. See docs/coordination.md §655. */
 export async function latestTestRunEvidence(
   tx: TenantTx,
   orgId: string,
@@ -556,23 +422,7 @@ export interface AlarmReportsInWindowQuery {
   windowEnd: Date;
 }
 
-/**
- * Every alarm-state report for a (component, target, hook) whose ASSERTED window overlaps the
- * required one, shaped as `BakeAlarmReport[]` — the exact input `evaluateBakeGate` takes.
- *
- * OVERLAP, NOT CONTAINMENT: a report that starts before the required window and ends inside it
- * covers a real slice of it, and dropping it here would manufacture a gap that the merge step would
- * then correctly refuse. Deciding coverage is the verdict function's job (it merges intervals and
- * checks contiguity, per source); this query's job is only to withhold nothing relevant. The
- * predicate is therefore the standard interval overlap `start <= requiredEnd AND end >= requiredStart`.
- *
- * The returned `source` is the SERVER-STAMPED column, never anything from the payload — see
- * `recordAlarmEvidence`. It is included because `evaluateBakeGate` partitions by it and a report
- * without it could not be attributed to a source at all.
- *
- * The return type is IMPORTED from `pipeline-hook-verdicts.ts` rather than redeclared, so this is a
- * compile-time guarantee of shape agreement rather than a resemblance maintained by hand.
- */
+/** Every alarm report whose window overlaps the required one. See docs/coordination.md §656. */
 export async function alarmReportsInWindow(
   tx: TenantTx,
   orgId: string,
@@ -615,18 +465,7 @@ export async function alarmReportsInWindow(
 // (`continuous-hold.ts`) both need, defined ONCE here rather than twice beside them.
 // ---------------------------------------------------------------------------------------------
 
-/**
- * INERTNESS PROBE — does this org declare ANY hook of this kind, at all?
- *
- * The property this buys is the one `governance/freeze-scope.ts` states for freezes and has its own
- * counting test for: an org that declares nothing pays ONE indexed read per change per tick and
- * nothing else — no placement resolution, no per-target evidence query, no per-hook loop. Both
- * admission callers ask this first and return an empty verdict set when it is false.
- *
- * It is a `LIMIT 1` existence read, not a count: the answer is a boolean and counting the rows of an
- * estate-sized table to produce one would be the same query written the expensive way. The
- * `(org_id, component_object_id, kind, hook_id)` unique index is a usable prefix scan on `org_id`.
- */
+/** Inertness probe: does this org declare any such hook. See docs/coordination.md §657. */
 export async function orgDeclaresHookKind(
   tx: TenantTx,
   orgId: string,
@@ -640,29 +479,7 @@ export async function orgDeclaresHookKind(
   return rows.length > 0;
 }
 
-/**
- * WHAT A WAVE TARGET IS, in the two coordinates every hook and every evidence row is keyed by.
- *
- * `pipeline_evidence` is keyed `(component_object_id, target_object_id, hook_id)` and
- * `pipeline_hooks` is keyed on the COMPONENT — but a wave target is a `placement` object id, which
- * is neither. This resolves the pair.
- *
- * BATCHED, and that is the whole reason it lives here rather than being `resolvePlacementPair`
- * called in a loop: `stage-dependency-hold.ts`'s single-target resolver issues one query per target,
- * which is exactly the N+1 `listHooksForComponents` was written to avoid on the line above it.
- *
- * A TARGET THAT IS NOT A PLACEMENT IS ITS OWN COMPONENT. A legacy-shaped wave target names a
- * component directly (see `resolvePlacementPair`, which returns `null` for one), and the honest
- * reading of "which component is this target about" is then the target itself. Evidence for such a
- * target is therefore keyed `(target, target, hookId)`. Returning nothing instead would make every
- * declared hook silently inapplicable on a legacy topology — a gate that is declared, rendered by
- * `scp iac render`, and enforces nothing.
- *
- * A SOFT-DELETED target resolves to NOTHING and is absent from the map: `containmentChain` does not
- * filter `deleted_at` on its base row and this one deliberately does, for the same reason
- * `freeze-hold.ts` refuses to hold a dead target — a hook cannot be about an object that was
- * deleted.
- */
+/** What a wave target is, in the two coordinates used. See docs/coordination.md §658. */
 export interface PipelineHookSubject {
   targetObjectId: string;
   componentObjectId: string;

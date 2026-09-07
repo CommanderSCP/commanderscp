@@ -9,27 +9,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ROUTE SHADOWING vs THE DECLARED CONTRACT (ADR-0023's first catch).
- *
- * Fastify prefers a literal static route over a parametric one, so `POST/GET
- * /api/v1/objects/service` — the M0 route — is the ONLY handler that ever runs for that exact
- * path. The SDK, meanwhile, has no idea: `client.object(type)` calls the GENERIC
- * `createObject`/`listObjects` operations for every type including `service`. The generic
- * operation's declared response is a full `GraphObject`, so the shadowing handler is bound by the
- * shadowED operation's contract whether or not anyone remembers it exists.
- *
- * It was not remembered: until ADR-0023 the M0 handler returned five fields, and
- * `client.object("service").create({...}).urn` was `undefined` at runtime while TypeScript
- * insisted it was a `string`. SDK response validation caught it on its first CI run.
- *
- * This file locks both halves:
- *  1. STRUCTURAL — the set of shadowed (parametric, literal) path pairs in the emitted spec is
- *     exactly the one known pair. A new shadowing route added later fails here, with the pair
- *     named, instead of quietly inheriting a contract nobody checked.
- *  2. BEHAVIOURAL — driven through the real SDK, which runs the generic operation's response
- *     validator against the shadowing handler's actual bytes.
- */
+/** ROUTE SHADOWING vs THE DECLARED CONTRACT. See docs/routes.md §276. */
 
 const SPEC_PATH = fileURLToPath(
   new URL("../../../../tools/openapi/openapi.v1.json", import.meta.url)

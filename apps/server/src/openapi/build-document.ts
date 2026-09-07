@@ -2,12 +2,7 @@ import { z } from "zod";
 import type { ZodObject, ZodTypeAny } from "zod";
 import type { CollectedRoute } from "./registry.js";
 
-/**
- * Fastify `/api/v1/orgs/:org/...` -> OpenAPI `/orgs/{org}/...`. The `/api/v1` prefix is stripped
- * because it's declared once as `servers[0].url` below — paths are relative to that per the
- * OpenAPI spec (and per what the generated SDK client expects: its `baseUrl` type is inferred
- * from `servers[0].url` and is meant to be combined with a *relative* operation path).
- */
+/** Fastify `/api/v1/orgs/:org/...` -> OpenAPI `/orgs/{org}/...`. See docs/openapi.md §2. */
 function toOpenApiPath(fastifyUrl: string): string {
   const withoutPrefix = fastifyUrl.startsWith("/api/v1")
     ? fastifyUrl.slice("/api/v1".length)
@@ -49,11 +44,7 @@ export function buildOpenApiDocument(routes: CollectedRoute[]): Record<string, u
 
     const responses: Record<string, unknown> = {};
 
-    // An SSE operation's 200 is a `text/event-stream` of `data:` frames, not a JSON body — the
-    // frame schema comes from `openapi.eventStream` because there is no Fastify response schema
-    // to read it from (see registry.ts). `text/event-stream` is also the exact marker
-    // `@hey-api/openapi-ts` looks for to generate a streaming operation rather than a
-    // request/response one, so this one key is what makes the stream SDK-consumable.
+    // An SSE 200 is a text/event-stream of frames, not a JSON body. See docs/openapi.md §3.
     if (route.openapi.eventStream) {
       responses["200"] = {
         description: "Server-Sent Events stream",

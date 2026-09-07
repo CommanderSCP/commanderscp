@@ -1,29 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compilePlan, type StagePlacement } from "./plan-compiler.js";
 
-/**
- * STAGE-SHAPED compilation (ADR-0026 §5): the change supplies COMPONENTS, the topology supplies
- * ordered PLACES, and each wave is the cartesian product — the placements of this change's
- * components at that wave's deployment-targets.
- *
- * These are unit tests because `compilePlan` is pure by contract (BUILD_AND_TEST.md §4.1); the DB
- * side of it — classifying a topology as stage- or legacy-shaped and resolving the placements —
- * is covered in `stage-compilation.integration.test.ts`.
- *
- * **Mutation log** (each applied alone, then reverted):
- *
- * | Mutation | Result |
- * |---|---|
- * | emit an empty wave as normal (drop `skipped`) | "an empty wave is emitted AND marked skipped" fails |
- * | omit empty waves entirely | the same test fails on wave count and index alignment |
- * | drop the `target_not_placed_in_any_wave` check | "a target placed nowhere the topology names" fails |
- * | restore the same-wave `depends_on` check | "COMPILES a dependent pair sharing a stage wave" fails |
- * | drop the co-placed cycle refusal | "a MUTUAL pair CO-PLACED is refused LOUDLY" fails |
- * | scope the cycle refusal to the target set instead of per place | "NEVER CO-PLACED still compiles" fails |
- * | filter placements by target set AFTER grouping (i.e. not at all) | "another change's placements" fails |
- * | sequential mode → one step for the whole wave | "sequential splits per place" fails |
- * | break the `gates` carry-through in `compileStages` | "a wave's gates SURVIVE stage-mode compilation" fails |
- */
+/** STAGE-SHAPED compilation (ADR-0026 §5). See docs/coordination.md §666. */
 describe("coordination/plan-compiler — stage mode (waves name places)", () => {
   const GAMMA = "target-gamma";
   const PROD = "target-prod";
@@ -164,15 +142,7 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
   });
 
   it("COMPILES a dependent pair sharing a stage wave (ADR-0028 decision 6 — was a refusal)", () => {
-    // THE LIVE BEHAVIOUR CHANGE of ADR-0028 increment 2, and the reason it needs its own release
-    // note. This exact input used to return `topology_violates_dependency`, which `plan-service.ts`
-    // turns into a 400 and `reconcile.ts` turns into `auto-cancelled: plan compilation failed`.
-    //
-    // Once every CI-declared dependency is materialised as a `depends_on` edge, that refusal would
-    // auto-cancel every multi-target change that touches both components — i.e. it would punish a
-    // CORRECTLY declared dependency. The ordering duty moved to the per-target trigger hold in
-    // `reconcile.ts`'s executing loop (increment 3), which can hold `api` at gamma while `db` runs
-    // there; a whole-wave verdict never could.
+    // The live behaviour change that needs its own release note. See docs/coordination.md §667.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [{ from: "api", to: "db" }],
@@ -210,12 +180,7 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
   });
 
   it("a MUTUAL pair CO-PLACED is refused LOUDLY — the hold could only deadlock on it", () => {
-    // Two microservices whose CI each names the other is a plausible declaration, and increment 2
-    // materialises BOTH edges. Stage mode never toposorts, so nothing downstream can order them:
-    // the per-target hold would withhold `api` until `db` succeeds at gamma and `db` until `api`
-    // succeeds at gamma, neither would ever be triggered, and the change would sit in `executing`
-    // behind a Decision forever. The removed same-wave check turned this input into a 400; a
-    // compile-time refusal keeps that loudness, which is the whole reason it is not left to run.
+    // Two microservices each naming the other is plausible. See docs/coordination.md §668.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [
@@ -240,11 +205,7 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
   });
 
   it("a MUTUAL pair that is NEVER CO-PLACED still compiles — no place, no deadlock", () => {
-    // The precision half of the refusal above, and the reason it is scoped per PLACE rather than
-    // over the whole target set. `api` is prod-only and `db` is gamma-only, so at every place one of
-    // them resolves to `not_placed` — which the hold treats as SATISFIED (ADR-0028 decision 4, a
-    // declared fact per ADR-0026 D8). Nothing is ever held, so refusing this would reject a working
-    // configuration on a technicality about edges.
+    // The precision half, scoped per place rather than globally. See docs/coordination.md §669.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [
@@ -261,15 +222,7 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
   });
 
   it("a cycle co-placed ONLY where the topology never goes still compiles — the refusal is no wider than the deadlock", () => {
-    // The second precision half. The pair IS co-placed — at `staging` — so a check keyed on "do
-    // these two share any place at all" refuses. But the topology names only gamma and prod, so
-    // `staging` never becomes a wave target, the hold (scoped by a wave target's deployment-target)
-    // can never look there, and nothing could ever deadlock. Refusing here would auto-cancel a
-    // pipeline that never co-schedules the pair: `compilePlan` -> 400 (`plan-service.ts`) ->
-    // `auto-cancelled: plan compilation failed` (`reconcile.ts`).
-    //
-    // This is why the refusal is handed the placements the plan actually SCHEDULES rather than
-    // every placement of the change's components.
+    // The second precision half. The pair IS co-placed. See docs/coordination.md §670.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [
@@ -291,19 +244,7 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
   });
 
   it("a MUTUAL pair declared in the CHANGE'S OWN stageDependencies is refused even when an edge is missing", () => {
-    // THE TOMBSTONE WEDGE. `materialiseStageDependencyEdges` deliberately treats a SOFT-DELETED edge
-    // as "already materialised" (a plain UNIQUE key, not a partial index), so an operator's one-off
-    // deletion of `api -> db` means that edge is never re-minted. `loadDependsOnEdges` filters on
-    // `deleted_at IS NULL`, so the compiler saw only `db -> api` and found no cycle.
-    //
-    // The RUNTIME hold does not read edges for this pair at all — it enforces the change's own
-    // DECLARATIONS, and a declaration is CHANGE-scoped, applying to EVERY target (the KNOWN
-    // LIMITATION in `changes-repo.ts`). So `api@gamma` holds behind `db@gamma` and `db@gamma` holds
-    // behind `api@gamma`: every target held, none failed, and reconcile's pure-hold return fires
-    // forever. The change wedges in `executing` behind a watchdog warn, and the loud
-    // `auto-cancelled: plan compilation failed` epitaph ADR-0028 promises never arrives.
-    //
-    // The compiler must therefore see what the HOLD enforces, not only what the graph still stores.
+    // THE TOMBSTONE WEDGE. See docs/coordination.md §671.
     const result = compilePlan({
       targets: ["api", "db"],
       // Only the surviving edge: `api -> db` hit the tombstone at propose and was skipped.
@@ -342,11 +283,7 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
   });
 
   it("a declaration that is NOT mutual still compiles and serialises — no false refusal", () => {
-    // The precision half. `db` is declared as a dependency of the change, which the KNOWN LIMITATION
-    // applies to BOTH targets — so `api` holds behind `db`, and `db`'s entry against itself is the
-    // `self` branch (satisfied, dropped, exactly as `buildDependencyMap` drops `from === to`). One
-    // wave per place, serialised inside it by the hold. Refusing this would auto-cancel the ordinary
-    // shape ADR-0028 exists to support.
+    // The precision half. See docs/coordination.md §672.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [],
@@ -364,11 +301,7 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
   });
 
   it("a mutual declaration whose `atTargets` never overlap still compiles — the hold cannot deadlock", () => {
-    // `atTargets` narrows WHERE a declaration applies, and the hold honours it. Here `api`'s
-    // coupling applies only at prod and `db`'s only at gamma: at gamma `db` holds behind `api` while
-    // `api` is free, at prod `api` holds behind `db` while `db` is free. Neither place deadlocks, so
-    // a refusal keyed on the declaration set as a whole would reject a working configuration — the
-    // same "no wider than the deadlock" rule that made the refusal per-place in the first place.
+    // `atTargets` narrows where a declaration applies. See docs/coordination.md §673.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [],

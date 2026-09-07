@@ -15,74 +15,7 @@ import {
 } from "./write-test-support.js";
 import { RUNNER_LAUNCHER_DEADLINE_LABEL, RUNNER_LAUNCHER_OWNER_LABEL } from "@scp/runner-launcher";
 
-/**
- * ================================================================================================
- * M23.0 — THE GOLDEN DOCKER ARGV FOR `scp-managed-dep`, RECORDED BEFORE ANYTHING MOVES
- * ================================================================================================
- *
- * WHY THIS FILE EXISTS, AND WHY M23.1 DID NOT RETIRE IT.
- * M23 extracts a `RunnerLauncher` port so the three managed executors can also launch their runners
- * as Kubernetes Jobs. That refactor's central promise is that **the Docker path is byte-for-byte
- * unchanged**. A promise like that is only checkable if the current bytes were written down FIRST,
- * by a test that existed BEFORE the refactor — otherwise the "unchanged" baseline is whatever the
- * refactor happens to emit, and the assertion is a tautology.
- *
- * THE PARAGRAPH THAT USED TO SIT HERE WAS WRONG, AND THIS ONE REPLACES IT. It said that until
- * M23.1 landed the port this file was the definition of "unchanged", and that when the port landed
- * these tests were "to be **deleted or superseded** by the port's own conformance suite". M23.1 HAS
- * LANDED. It did NOT retire this file, and that standing instruction is withdrawn — because the
- * port's conformance suite (`packages/runner-launcher/src/docker-adapter.test.ts`) and this file
- * prove DIFFERENT things, and neither implies the other:
- *   - THE CONFORMANCE SUITE drives `createDockerRunnerLauncher` DIRECTLY. Its subject is what the
- *     adapter emits FOR A GIVEN `RunnerSpec` — argv, per-call `timeout`/`maxBuffer`, both copy-out
- *     axes, the failure paths. A `RunnerSpec` is its INPUT.
- *   - THIS FILE drives `plugin.trigger()`. Its subject is THE OTHER HALF, which the conformance
- *     suite structurally cannot reach: that this plugin still hands the port THE SAME SPEC it used
- *     to build by hand. A spec field changed here — `networkMode` switched from this plugin's
- *     charter literal `"none"` to a read of `config.networkMode` — produces a perfectly
- *     CONFORMANT launch of the WRONG container, and the conformance suite is blind to it, because
- *     that spec is what it is handed rather than what it checks.
- * Deleting this file on the strength of the old sentence would take the plugin→port boundary to
- * ZERO coverage while every task stayed green — the vacuous-green class BUILD_AND_TEST.md §4.4
- * names, and the same reason `@scp/runner-launcher` no longer runs with `--passWithNoTests`.
- * RETIRE THIS FILE ONLY ALONGSIDE SOMETHING THAT COVERS THAT BOUNDARY, never merely alongside
- * something that covers the adapter.
- *
- * HOW THIS DIFFERS FROM `runner-containment.test.ts`, WHICH IT SITS BESIDE.
- * That file asserts a CHARTER PROPERTY — no network, no credential, no host — and is meant to
- * survive forever, in whatever launcher the plugin grows. It says "the argv contains no `-e`". This
- * file says "the argv is exactly THESE strings in THIS order, with THESE options", which is a much
- * stronger and much more perishable claim. They use the same recording seam and are deliberately
- * separate — but "perishable" means it must be CONSCIOUSLY re-recorded when the launch
- * legitimately changes, NOT that M23 consumes it. M23.1 came and went and both are still here.
- *
- * WHAT IS PINNED, AND WHY EACH PART IS PART OF THE PROMISE.
- *  1. THE FULL argv ARRAY of every `execFile`, in order — `create`, `cp` in, `start`, `cp` out,
- *     `rm` — including BOTH operand shapes: the **5-operand** contiguous form and the **7-operand**
- *     anchored form M21.7 added for split declarations.
- *  2. THE OPTIONS OBJECT alongside each argv. managed-dep runs **5 min / 8 MiB** — the shortest and
- *     smallest of the three (managed-iac 10 min / 16 MiB, managed-scan 10 min / 32 MiB), because
- *     this runner edits one manifest and prints nothing. `rm` alone carries a 30 s timeout AND NO
- *     `maxBuffer` AT ALL. `toStrictEqual` is what makes those absences part of the record rather
- *     than merely untested — a port that unified the three into one shared default would be a
- *     behaviour change wearing a refactor's clothes.
- *  3. THE NETWORK MODE IS A LITERAL, NOT A CONFIG READ, in this plugin alone (the 2026-08-15 charter
- *     amendment carries no operator qualifier, unlike managed-scan's). A context naming another mode
- *     must still produce `--network none`, and a port that plumbs `config.networkMode` through
- *     uniformly for all three must fail here.
- *  4. THE FAILURE PATH: on a rejected `start` there is **no copy-out at all** — like managed-scan,
- *     unlike managed-iac, which copies out unconditionally. This plugin's copy-out is also not
- *     catch-guarded, but its `trigger()` has an outer `try/catch`, so a failed copy-out lands as a
- *     FAILED run rather than a rejection (managed-scan's escapes `trigger()`; managed-iac's is
- *     swallowed entirely). Three call sites, three different answers — all three are measured.
- *
- * THE RECORDING SEAM is the one this package already uses in `runner-containment.test.ts` —
- * `vi.mock("node:child_process")` with a hand-written `execFile` and a stand-in runner that writes
- * real edited bytes on the copy-out, so the run reaches a real `succeeded` and no assertion above
- * can pass by nothing having happened. The only widening is that the options object (which that
- * file discards as `_opts`) is now recorded too, because point 2 is half the promise. No Docker is
- * required, so these run on every PR under `pnpm test`.
- */
+/** The golden Docker argv, recorded before anything moves. See docs/plugins.md §305. */
 
 interface ExecFileCall {
   file: string;
@@ -103,14 +36,7 @@ let startFailure: Error | undefined;
 /** Copy-OUT outcome. managed-dep does NOT guard it; the last test measures where the failure lands. */
 let cpOutOk = true;
 
-/**
- * M23.1 PHASE 4 — the reaper. `reap()` now runs at the top of every `run()`, issuing a `docker ps -a
- * --filter label=...` before `create` and stamping two more `--label` pairs onto every `create` it
- * issues. Neither is this file's subject (its own dedicated coverage is `@scp/runner-launcher`'s
- * `docker-adapter.test.ts` and `reaper.integration.test.ts`), so both are kept out of the golden
- * entirely: the `ps` call is answered with an empty listing and never recorded, and the two labels
- * are stripped off `create`'s argv before it reaches `calls`.
- */
+/** M23.1 PHASE 4 — the reaper. See docs/plugins.md §306. */
 function stripLauncherLabel(args: string[], key: string): string[] {
   const flagIndex = args.findIndex(
     (a, i) => a === "--label" && (args[i + 1] ?? "").startsWith(`${key}=`)
@@ -177,29 +103,7 @@ vi.mock("node:child_process", () => {
 
 const { createManagedDepExecutorPlugin, __resetManagedDepOutcomes } = await import("./index.js");
 
-/**
- * ================================================================================================
- * THE OPTIONS — `maxBuffer` AS A LITERAL, `timeout` AS THE BOUND IT MUST NOW LIE IN (M23.1e)
- * ================================================================================================
- * Deliberately NOT imported from `index.ts`: a golden that re-derives its expectation from the code
- * it is guarding cannot detect a change to that code. 8 MiB is written here because that is what the plugin does TODAY.
- *
- * WHY `timeout` STOPPED BEING AN EQUALITY. `RunnerSpec.timeoutMs` is the WHOLE-RUN budget since
- * M23.1e, so each step is issued with what is LEFT of it (`deadline - now`, off one clock read at
- * the top of `run()`). Handing every step the full `timeoutMs` was the defect this golden used to
- * pin: four sequential calls, each individually under the bound, made a run of four x
- * timeoutMs, which the host's own budget — sized `timeoutMs + grace` — then SIGKILLed, orphaning
- * the container and leaving the idempotency ledger unwritten.
- *
- * So the assertion is the PROPERTY: never ABOVE the caller's budget (that is the old behaviour
- * back), and never more than {@link BUDGET_SLACK_MS} below it in this seam, where every step
- * settles on the next tick — which is what stops a degenerate "always 1ms" from passing. The strict
- * decrease across a run and the refusal once nothing is left are proven where they can be measured:
- * `@scp/runner-launcher`'s `whole-run-budget.test.ts`.
- *
- * `toStrictEqual` KEEPS ITS TEETH — the matcher stands in for the `timeout` VALUE only, so the
- * ABSENCE of `maxBuffer` on `rm` and of every other key everywhere is still pinned exactly.
- */
+/** The options: the buffer as a literal, the timeout as a bound. See docs/plugins.md §307. */
 const BUDGET_SLACK_MS = 5_000;
 function runOpts(budgetMs: number, maxBuffer: number): unknown {
   return {
@@ -254,13 +158,7 @@ function depCtx(configOverrides: Record<string, unknown> = {}, base?: string) {
   };
 }
 
-/**
- * THE KEYS ARE FIXED NOW, AND THEY HAVE TO BE. They used to be `golden-npm-${Math.random()}` — free,
- * because nothing on the command line depended on them. Since the run's `--name` is derived from the
- * idempotency key, a random key would put a random string in the argv this file exists to record
- * literally. `__resetManagedDepOutcomes()` in `beforeEach` is what makes fixed keys safe: the outcome
- * cache that dedup reads is cleared between cases, so a repeated key is a fresh run.
- */
+/** THE KEYS ARE FIXED NOW, AND THEY HAVE TO BE. See docs/plugins.md §308. */
 function npmIntent(key: string, overrides: Record<string, unknown> = {}) {
   return {
     kind: "custom" as const,
@@ -300,13 +198,7 @@ function valuesIntent(key: string) {
   };
 }
 
-/**
- * The two host paths on this plugin's command line are a PER-RUN `mkdtemp` under the server-given
- * `workspaceRoot`, so they cannot be written as literals the way managed-iac's derived workspace or
- * managed-scan's server-supplied dirs can. Their SHAPE is asserted here — a `scp-dep-*` run
- * directory immediately under `workspaceRoot`, with `in`/`out` inside it — and only then are they
- * substituted, so every other byte of the argv stays a literal in the goldens below.
- */
+/** The two host paths are a per-run temporary directory. See docs/plugins.md §309. */
 function normalise(recorded: ExecFileCall[]): ExecFileCall[] {
   const cpIn = recorded.find((c) => c.args[0] === "cp" && String(c.args[2]).endsWith(":/work/in"));
   expect(cpIn, "no copy-IN was recorded; the run never reached the runner").toBeDefined();
@@ -468,11 +360,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
   });
 
   it("FAILURE — `start` rejects, and NO edited manifest is copied out; only `rm` follows", async () => {
-    // THE ASYMMETRY, MEASURED. managed-iac copies its workspace out even after a failed `start`;
-    // managed-dep does not, because there is nothing to salvage from a runner that did not finish
-    // the edit — and copying out a partial manifest would put unverified bytes where the verifiers
-    // read from. A refactor that gives all three launchers one shared sequence must break either
-    // this test or managed-iac's mirror of it.
+    // THE ASYMMETRY, MEASURED. See docs/plugins.md §310.
     startOk = false;
     const plugin = createManagedDepExecutorPlugin();
     const { ctx, httpCalls } = depCtx();
@@ -517,12 +405,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
   });
 
   it("A FAILED COPY-OUT LANDS AS A FAILED RUN — not swallowed, not a rejection; `rm` still runs", async () => {
-    // The third of three answers to the same Docker failure. managed-iac's copy-out is
-    // `.catch(() => undefined)`, so the run stays succeeded. managed-scan's is unguarded and its
-    // `trigger()` has no outer catch, so the error escapes `trigger()`. managed-dep's is unguarded
-    // too, but `trigger()` wraps everything, so the error becomes a failed outcome. Recorded as
-    // behaviour, without judgement — but it must not change silently while the refactor is called
-    // byte-for-byte identical.
+    // The third of three answers to the same Docker failure. See docs/plugins.md §311.
     cpOutOk = false;
     const plugin = createManagedDepExecutorPlugin();
     const { ctx } = depCtx();
@@ -541,22 +424,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
     expect(status.detail).toContain("docker cp");
   });
 
-  /**
-   * ==============================================================================================
-   * MEDIUM (verification pass 5) — A RUNNER THAT SAYS NOTHING STILL PRODUCES A RECORDED REASON
-   * ==============================================================================================
-   *
-   * The arm above passes on `run.stderr` alone, because that fixture's runner PRINTS. This plugin's
-   * detail used to be `— ${run.stderr.slice(0, 2000)}`, and `promisify(execFile)` always attaches
-   * `stderr` as a string — so a runner we killed on the budget, and a `docker` that never spawned,
-   * both recorded `the runner failed to edit 'package.json' — ` and stopped. managed-dep's failure
-   * detail is what a human reads when a dependency bump does not appear, and an em dash is not a
-   * reason.
-   *
-   * A SEPARATE ARM RATHER THAN A CHANGE TO THE ONE ABOVE: that one's subject is that the runner's
-   * OWN words survive, and this one's is that something survives when there are none. Merging them
-   * would leave neither pinned.
-   */
+  /** MEDIUM (verification pass 5). See docs/plugins.md §312. */
   it("A SILENT NON-ZERO RUNNER STILL RECORDS WHY — the detail is never an em dash and a space", async () => {
     startOk = false;
     // Exit 3 with NOTHING on either stream — the shape that used to record nothing at all.

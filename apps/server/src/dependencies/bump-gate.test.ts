@@ -22,45 +22,11 @@ import {
 } from "./bump-gate.js";
 import { buildBumpMergeIntentParameters } from "./bump-actuator.js";
 
-/**
- * M21.5's AUTO-MERGE LINK — the parts of it that are decidable without a database.
- *
- * The behaviour is proven end to end in `bump-dispatch.integration.test.ts` ("the auto-merge link"),
- * through the real ingress, the real router, the real queue, the real worker and the real governance
- * gate. This file covers the two things that suite structurally cannot: that the COMPOSITION ROOT
- * wires the router and the loop at all, and that the merge intent's parameter shape is the one the
- * plugin will accept.
- */
+/** M21.5's AUTO-MERGE LINK. See docs/dependencies.md §102. */
 
 const srcDir = dirname(fileURLToPath(import.meta.url));
 
-/**
- * ================================================================================================
- * THE CENSUS — because the integration suite registers the router ITSELF
- * ================================================================================================
- * This is the identical hazard `bump-dispatch.test.ts` records, one link further down the chain: an
- * integration test that starts its own pg-boss and its own loop passes whether or not `main.ts` ever
- * builds them, and a production process with no router on `domain-events` and no worker on
- * `dependency-bump-gate` would resolve `auto_merge`, downgrade it forever, and be green everywhere.
- * That is the fifth instance of "built and never installed" this milestone exists to not become a
- * sixth of, so it is asserted rather than reviewed.
- *
- * THIS BLOCK NO LONGER READS `main.ts` AT ALL, and the history of why is the point.
- *
- * It used to be three substring assertions. Measured on this very block (M21.7): commenting out
- * `const bumpGateLoop = await startBumpGateLoop(boss, {…})` and its `.stop()` left all 11 cases
- * green — and not only the two `toMatch`es. The "hands it the SHARED CEL sandbox" arm sliced the
- * call out with a regex and asserted on its TEXT, so it happily read `getSharedCelSandbox()` and
- * `host: pluginHost` out of the COMMENTED-OUT call.
- *
- * Stripping comments (`readStripped`) fixed that one case and not the class: a call in a DEAD
- * BRANCH survives stripping untouched, and on 2026-08-17 flipping `main.ts`'s background-work
- * condition to `false` left this file green again with the gate loop never starting.
- *
- * So the loop startups moved into `background-work.ts`'s importable `BACKGROUND_LOOPS`, and every
- * assertion below RUNS the registry entry instead of reading about it. The one census left in this
- * file is an ABSENCE assertion (no competing consumer), which is deliberately raw — see its comment.
- */
+/** The census, because the integration registers the router. See docs/dependencies.md §103. */
 /** A context whose `boss` records the queues it is asked to create. Everything else is absent on
  *  purpose: a loop that dereferenced `db` or `host` before deciding whether to run would fail here,
  *  which is information rather than noise. */
@@ -121,14 +87,7 @@ describe("the composition root actually wires the gate", () => {
   });
 
   it("hands it the SHARED CEL sandbox — 'the existing gate machinery' means literally the same one", async () => {
-    // WAS a regex that sliced `startBumpGateLoop(…)` out of `main.ts` and asserted on its TEXT. That
-    // check was satisfied by a COMMENTED-OUT call (measured, M21.7), and once comments were stripped
-    // it would still have been satisfied by a dead branch. It is now a question about what the
-    // registry entry DOES: does it take the sandbox from the one shared context, or fetch its own?
-    //
-    // The observable is the READ. If this entry were changed back to `sandbox: getSharedCelSandbox()`
-    // — the pre-extraction shape, which relied on that function memoising — `ctx.sandbox` would
-    // never be touched and this goes red.
+    // This was a regex over text, and what replaced it. See docs/dependencies.md §104.
     let sandboxReads = 0;
     const marker = { marker: "the one shared sandbox" } as unknown as CelSandbox;
     const recording: BackgroundLoopContext = {
@@ -152,14 +111,7 @@ describe("the composition root actually wires the gate", () => {
   });
 
   it("never takes a competing consumer on the shared domain-event stream", () => {
-    // `boss.work` on `domain-events` does not deduplicate — a second worker there steals M21.4's and
-    // the dispatcher's events and receives roughly half of its own. An ABSENCE assertion, so it
-    // reads RAW on purpose: a comment marker only makes a violation harder to hide, and anchoring
-    // would narrow what counts as one (`@scp/source-census`'s hash.ts doc states that rule).
-    //
-    // BOTH composition files, because the loop startups moved out of `main.ts` on 2026-08-17 — a
-    // census still aimed only at the old location is the "fixed some call sites" failure CLAUDE.md
-    // names as recurring here.
+    // `boss.work` on `domain-events` does not deduplicate. See docs/dependencies.md §105.
     for (const file of ["main.ts", "background-work.ts"]) {
       const raw = readFileSync(join(srcDir, "..", file), "utf8");
       expect(raw, `${file} registers a competing consumer on domain-events`).not.toMatch(
@@ -169,21 +121,7 @@ describe("the composition root actually wires the gate", () => {
   });
 });
 
-/**
- * ================================================================================================
- * THE PRODUCER — the one place the trigger is emitted
- * ================================================================================================
- * The gate job is worthless without something enqueuing it, and the enqueue is worthless without an
- * outbox row. `bump-dispatch.integration.test.ts` proves the whole chain against a real database;
- * this pins the SITE, because the emit lives in `coordination/webhook-processor.ts` — a file the
- * dependencies suite has no other reason to look at, and a place a later edit could quietly drop it
- * from while every dependency test stayed green.
- *
- * Stripped for the same reason as the block above, and here the raw read was arguably worse: this
- * census slices a BRANCH out with `/if \(authoredChangeId\) \{[\s\S]*?continue;/` and asks what is
- * inside it. Comments are the bulk of that branch's text, so a `writeOutboxEvent` named only in a
- * comment explaining the emit satisfied the assertion just as well as the emit did.
- */
+/** The producer: the one place the trigger is emitted. See docs/dependencies.md §106. */
 describe("the trigger is emitted at the ingress choke point (source census)", () => {
   const processorTs = readStripped(join(srcDir, "..", "coordination", "webhook-processor.ts"));
 
@@ -266,15 +204,7 @@ describe("the router predicate", () => {
   });
 });
 
-/**
- * ================================================================================================
- * THE MERGE DESCRIPTOR THE SERVER BUILDS IS ONE THE PLUGIN ACCEPTS
- * ================================================================================================
- * Same reasoning as `delegation-detection.test.ts`'s equivalent block for the authoring descriptor:
- * the server BUILDS this object and the plugin PARSES it, across a plugin-host RPC boundary where
- * the wire type is `Record<string, unknown>`. Typechecking proves nothing about that seam; only a
- * test that runs both halves does.
- */
+/** The merge descriptor the server builds is one accepted. See docs/dependencies.md §107. */
 describe("the merge descriptor crosses the plugin-host seam intact", () => {
   const EVIDENCED = "a1b2c3d4".repeat(5);
   const changeObjectId = "0198f3c1-1111-7000-8000-000000000001";

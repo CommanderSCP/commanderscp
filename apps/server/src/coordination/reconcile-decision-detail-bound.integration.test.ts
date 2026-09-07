@@ -13,29 +13,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changeWaveTargets, decisions } from "../db/schema.js";
 
-/**
- * HIGH (M23.0 verification pass 7) — AN UNBOUNDED `detail` IS AN UNBOUNDED DATABASE ROW, ONE PER
- * FAILING POLL, and this is the arm that proves the bound is INSTALLED rather than merely written.
- *
- * The failure-tail fix bounds `detail` at the port, which covers the three managed plugins. It does
- * NOT cover this write. `ExecutionStatus.detail` is free-form `string` on the plugin contract, so a
- * third-party executor — an org's own ArgoCD wrapper, a vendor's plugin — can return a megabyte,
- * and `reconcileExecutingChange` writes it into a `Decision`'s `inputContext` every time a wave
- * target reports `failed` or `aborted`. A `Decision` is permanent governed state (charter principle
- * 6). This repository has a production incident in exactly that family: unbounded `Decision` growth
- * at 1.44 GB/day, from a row rewritten every tick.
- *
- * WHY THE WITNESS HAS TO BE THE FAKE EXECUTOR. Every in-repo executor that produces a long `detail`
- * bounds its own at composition, enforced by `BoundedDetail` on its outcome store — so for all
- * three of them this write is the IDENTITY, and a test driven through any of them would pass with
- * the bound deleted. The case the bound exists for is a plugin this repository does not compose the
- * string for, and `detailByTarget` (added alongside this test, mirroring `forcePhase`) is the only
- * stand-in for one.
- *
- * DELETE-THE-WIRING, MEASURED: remove `boundDetail(...)` from `reconcile.ts`'s `inputContext` and
- * this test fails on `an unbounded plugin detail became an unbounded Decision row: expected 432078
- * to be less than or equal to 4000` — the whole 432 KB, in the row.
- */
+/** HIGH (M23.0 verification pass 7). See docs/coordination.md §733. */
 
 /** 432 KB of plugin-supplied noise with a recognisable byte at each end, so the test can tell a
  *  BOUND (both ends kept, middle elided) from a TRUNCATION (tail lost) from no bound at all. */
@@ -43,37 +21,15 @@ const CAUSE_HEAD = "THIRD-PARTY-EXECUTOR-SAID:";
 const CAUSE_TAIL = "the deployment was rejected by the admission webhook";
 const NOISE_UNIT = "noise from a vendor plugin that logs everything\n";
 const NOISE_TIMES = 9_000;
-/**
- * Sent as a RECIPE, not a literal. The plugin host passes plugin config on the subprocess ARGV
- * (`host.ts` `spawnInstance`), and Linux caps a single argument at MAX_ARG_STRLEN (128 KiB),
- * answering `spawn E2BIG` past it. macOS does not, so the 432 KB literal this test used to send
- * passed locally for weeks and failed the first time CI's integration shard actually ran it.
- * `detailRepeatByTarget` expands in-process, so the size under test never crosses the transport.
- */
+/** Sent as a RECIPE, not a literal. See docs/coordination.md §734. */
 const HUGE_DETAIL = `${CAUSE_HEAD}${NOISE_UNIT.repeat(NOISE_TIMES)}${CAUSE_TAIL}`;
 
-/**
- * THE SAME SIZE, BUT MADE OF ASTRAL CHARACTERS — the HIGH regression arm. `boundDetail` slices at
- * UTF-16 CODE-UNIT offsets, so a cut lands mid-surrogate-pair and the bounded string is ill-formed.
- * `isWellFormed()` says so in a unit test; POSTGRES is the authority, and this is where it rules:
- * `jsonb` refuses the value, the throw happens inside `reconcileExecutingChange`'s `withTenantTx`,
- * the whole transaction — Decision AND `updateWaveTargetObserved` — rolls back, and the poll
- * re-throws every tick forever behind a `console.error`. So the assertion that matters here is not
- * that the row is well-formed; it is that THE ROW EXISTS AT ALL.
- */
+/** THE SAME SIZE, BUT MADE OF ASTRAL CHARACTERS. See docs/coordination.md §735. */
 const ASTRAL_HEAD = "THIRD-PARTY-EXECUTOR-SAID:";
 const ASTRAL_TAIL = "the rollout was rejected 🙂";
 const ASTRAL_DETAIL = `${ASTRAL_HEAD}${"🙂🙃🚀🧨".repeat(3_000)}${ASTRAL_TAIL}`;
 
-/**
- * PLUGIN-CHOSEN TEXT ON `status().observed.images` — the SIBLING field, three lines from the one
- * the previous round bounded, written into `change_wave_targets.observed_state` on EVERY poll
- * including the non-terminal `observing` ones. Verification pass 7 measured this same seam at
- * `persistedImageChars=500017`; the fixture is 120 000 characters rather than 500 000 only because
- * the plugin host passes instance config to the subprocess on spawn and three half-megabyte
- * fixtures in one config is `spawn E2BIG`. 120 000 is still 15x the whole-payload budget, which is
- * what the arm measures.
- */
+/** PLUGIN-CHOSEN TEXT ON `status().observed.images`. See docs/coordination.md §736. */
 const IMAGE_HEAD = "ghcr.io/vendor/app:";
 const IMAGE_TAG_LEN = 60_000;
 /** Sent as a recipe (see HUGE_DETAIL) — 2 x 60 KB cannot cross the spawn argv on Linux. */
@@ -172,21 +128,7 @@ describe("reconcile: a plugin's `detail` is bounded before it becomes a Decision
     expect(ctx.detail!.endsWith(CAUSE_TAIL)).toBe(true);
     expect(ctx.detail).toContain("characters elided");
   });
-  /**
-   * HIGH REGRESSION (verification pass 7 -> fixed pass 8). THE ASSERTION IS THAT THE ROW EXISTS.
-   *
-   * Before the fix this test does not fail on a length or a shape — it TIMES OUT, because no
-   * `wave_target` Decision is ever written for this target and none ever will be. The measured
-   * failure, on every tick:
-   *
-   *   [reconcile] … poll failed (will retry next tick):
-   *     DrizzleQueryError: Failed query: insert into "decisions" (…, "input_context", …) values …
-   *       detail: 'Unicode low surrogate must follow a high surrogate.'
-   *
-   * This is the arm that checks the MODEL against the AUTHORITY. `isWellFormed()` is what the unit
-   * sweep asserts; whether Postgres agrees is a fact about Postgres, and only a real insert settles
-   * it.
-   */
+  /** HIGH REGRESSION (verification pass 7 -> fixed pass 8). See docs/coordination.md §737. */
   it("an ASTRAL `detail` still lands — the bound's own cut used to make the row unstorable", async () => {
     const org = await createTestOrg(server, "decision-detail-astral");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -256,20 +198,7 @@ describe("reconcile: a plugin's `detail` is bounded before it becomes a Decision
     expect(targetRow.status).toBe("failed");
   });
 
-  /**
-   * MEDIUM (verification pass 7, finding M2) — THE SIBLING FIELD ON THE SAME UNTRUSTED OBJECT.
-   *
-   * `observedStateFrom` reads `stateRef` and `observed.images` off the same free-form
-   * `ExecutionStatus` the round declared untrusted, three lines above the field it bounded, and
-   * `updateWaveTargetObserved` writes them on the succeeded, failed/aborted AND observing branches —
-   * every tick. Measured through this same `imagesByTarget` seam with no product code modified:
-   * `persistedImageChars=500017`, `rowJsonBytes=500093`.
-   *
-   * The assertion is on the SIZE OF THE PERSISTED ROW rather than on the images field, because the
-   * defect is about what a row costs, and because a bound expressed per-field is the thing that
-   * went stale: `ExecutionStatus.observed` is documented as additive, so the next signal an
-   * executor contributes lands here unbounded unless the bound is on the whole value.
-   */
+  /** MEDIUM (verification pass 7, finding M2). See docs/coordination.md §738. */
   it("120 KB of `observed.images` becomes a bounded `observed_state` row, not a verbatim one", async () => {
     const org = await createTestOrg(server, "observed-state-bound");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });

@@ -9,58 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 
-/**
- * `/connect/argocd` — the M19.1 "Connect Argo CD" wizard (P5 of
- * `docs/proposals/import-existing-executors.md`; ADR-0002 Mode A "point SCP at the execution system
- * I already run").
- *
- * WHY IT EXISTS. P1–P4 shipped the entire backend in July, and `scp connect argocd` wraps the flow —
- * so the single thing a fresh install most needs to do first is reachable only from a shell, with a
- * PAT and three commands. This is the same flow with a form in front of it.
- *
- * IT IS UI-ONLY, DELIBERATELY. Every step already has a public door: `secrets` → the generic
- * `object("execution-system").create` → `discovery.run` → `discovery.accept`. No API change, no
- * migration, no `pnpm gen`, no oasdiff exposure. `scp connect argocd`
- * (`packages/cli/src/cli.ts`, `connectCmd`) is the reference implementation and this mirrors its real
- * flags — `--url`, `--token`, `--name`, `--token-key`, `--allow-internal-egress` — rather than
- * inventing a second shape for the same act.
- *
- * =============================================================================================
- * THE THREE THINGS THIS FILE EXISTS TO GET RIGHT
- * =============================================================================================
- *
- * 1. THE IN-CLUSTER CASE IS THE FIRST CASE, NOT THE EDGE CASE. SCP's SSRF guard refuses private
- *    addresses, so a wizard with no internal-egress control fails for the most likely first user —
- *    an Argo CD at `http://argocd-server.argocd.svc`. The checkbox below writes the execution
- *    system's `allowInternalEgress` property and is labelled as what ADR-0003 says it is: a
- *    DECLARATION, not a grant. The operator's `SCP_INTERNAL_EGRESS_HOSTS` allowlist is the boundary;
- *    without the host in it the declaration buys nothing, and saying otherwise would teach an
- *    operator to expect a grant they did not make. Never a silent default.
- *
- * 2. IT COLLECTS A CREDENTIAL, AND THE CREDENTIAL LEAVES BY EXACTLY ONE DOOR. The Argo CD API token
- *    reaches `secrets.put` and nothing else — never a query cache, never a URL or search param,
- *    never router state, never a retained mutation `variables` (which is why every mutation here
- *    takes NO argument and closes over its input instead), never a log line, and cleared from
- *    component state the moment the write succeeds. `secrets` is write-only by contract, so the
- *    wizard cannot read it back and does not try. Charter credential asymmetry is unchanged: a
- *    scoped API token TO the operator's Argo CD, never that cluster's own credentials.
- *
- * 3. AN IMPORTED COMPONENT IS A GRAPH ORPHAN, AND THE LAST SCREEN SAYS SO. `discovery accept`
- *    creates components, executor bindings and `source_mappings` — and NO relationships:
- *    `coordinated_by` was never a registered relationship type and the argocd plugin returns
- *    `relationships: []` (the 2026-07-15 correction in the proposal's §3; measured live at 50 apps →
- *    50 components → 0 relationships). `ImportSummary` renders the counts THE SERVER RETURNED, and
- *    the orphan notice keys on that response's relationship count being zero — never on this file's
- *    belief about what the plugin emits. A label named after what the code was believed to do goes
- *    false the first time the code changes underneath it.
- *
- * NO CLIENT-SIDE CONNECTIVITY CHECK, ALSO DELIBERATELY. `scp connect argocd` does a best-effort
- * `GET /api/version` from the operator's own shell. A browser cannot reach a private in-cluster
- * address, so the same probe here would fail for exactly hazard 1 above — and it would be
- * simulating a server behaviour in the client, the class of thing PR #152 removed a gate for. STEP 2
- * IS the connectivity check, and a real one: it runs server-side, through the SSRF guard, with the
- * stored token. Stopping after step 1 is the `--no-validate` equivalent and reaches the same state.
- */
+/** `/connect/argocd` — the M19.1 "Connect Argo CD" wizard. See docs/web.md §320. */
 
 /** The discovery module registered for Argo CD (`KNOWN_DISCOVERY_MODULES`, plugin P3). */
 export const ARGOCD_DISCOVERY_MODULE = "argocd-discovery";
@@ -89,12 +38,7 @@ export function emptyDraft(): ConnectDraft {
   return { name: "argocd", serverUrl: "", token: "", tokenKey: "", allowInternalEgress: false };
 }
 
-/**
- * The subset of the generated SDK this wizard is allowed to touch, as a structural interface so a
- * test can hand in a double and MEASURE which doors were used — in particular that the token
- * reached `putSecret` and nothing else. Every method here is one already-public operation; there is
- * no wizard-specific endpoint anywhere in this flow.
- */
+/** The subset of the SDK this wizard may touch, structurally. See docs/web.md §321. */
 export interface ConnectDoors {
   putSecret(key: string, value: string): Promise<unknown>;
   createExecutionSystem(req: CreateObjectRequest): Promise<GraphObject>;
@@ -110,23 +54,12 @@ export const sdkDoors: ConnectDoors = {
     client.discovery.run({
       pluginModule: ARGOCD_DISCOVERY_MODULE,
       pluginInstanceId: instanceId,
-      // ONLY the system id. `POST /discovery/run` resolves `serverUrl`, `tokenSecretKey`,
-      // `secretRefs`, the egress allowlist and `allowInternalEgress` from the PERSISTED system and
-      // lets those win over anything a caller sends (routes/executors.ts) — the ADR-0003 fix for
-      // "a grant on system X authorizing egress to a caller-supplied address". So the wizard neither
-      // re-sends the URL nor ever handles the token again after step 1.
+      // ONLY the system id. See docs/web.md §322.
       config: { executionSystemId }
     })
 };
 
-/**
- * STEP 1, as one function: store the token, then register the system that references it.
- *
- * ORDER IS LOAD-BEARING and matches the CLI's. Secret first: an execution system whose
- * `tokenSecretKey` names a secret that does not exist is a system that fails at discovery time with
- * a confusing error, whereas a stored secret with no system yet is inert and simply overwritten by
- * the next attempt.
- */
+/** STEP 1, as one function. See docs/web.md §323. */
 export async function registerExecutionSystem(
   doors: ConnectDoors,
   draft: ConnectDraft
@@ -411,12 +344,7 @@ export function EnumerateStep({
 }
 
 export function ReviewStep({ proposal }: { proposal: DiscoveryProposal }): React.JSX.Element {
-  // WAS "3. Review and import", which called `discovery.accept` and wrote the whole proposal —
-  // objects, bindings and mappings — in one transaction. ADR-0047 retired that path: it bypassed
-  // strict create, and the components it made had no owning service.
-  //
-  // Now it scaffolds. The grouping question is asked before anything exists, and the operator
-  // commits the emitted code.
+  // This step used to import everything, and what replaced it. See docs/web.md §324.
   return (
     <Card data-testid="connect-argocd-review">
       <CardHeader>
@@ -442,12 +370,7 @@ export function ReviewStep({ proposal }: { proposal: DiscoveryProposal }): React
 
 // The result — hazard 3 lives here
 
-/*
- * `ImportSummary` IS GONE WITH THE WRITE IT SUMMARISED (ADR-0047). It counted the objects,
- * relationships, bindings and mappings that `discovery.accept` had just created. Nothing is created
- * here now — the wizard emits IaC and the operator commits it — so a summary of a write that did
- * not happen would be a screen describing an event that no longer exists.
- */
+// `ImportSummary` IS GONE WITH THE WRITE IT SUMMARISED. See docs/web.md §325.
 
 /** The registered execution systems this wizard is about — unchanged, and restored here because it
  *  sat inside the block `ImportSummary` occupied. */

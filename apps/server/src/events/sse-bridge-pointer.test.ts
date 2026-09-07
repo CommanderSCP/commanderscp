@@ -2,12 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { parsePointer } from "./sse-bridge.js";
 
-/**
- * The NOTIFY-payload gate (review findings SEC-1 cheap-fetch leg + SEC-3 log injection). Every
- * legitimate pointer id is an `outbox.id` (`uuid`), so anything not UUID-shaped cannot back a row
- * and must be rejected BEFORE it reaches the pool or a log line. This pins that the payload gate
- * is a UUID gate, not just a `typeof === "string"` gate.
- */
+/** The NOTIFY-payload gate. See docs/events.md §52. */
 describe("sse-bridge parsePointer — UUID gate", () => {
   it("accepts a well-formed {id, orgId} and carries orgId as a hint", () => {
     const id = randomUUID();

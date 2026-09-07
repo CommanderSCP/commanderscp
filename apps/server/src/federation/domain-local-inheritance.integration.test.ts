@@ -8,32 +8,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M20.5 (ADR-0031 §6a) — LOCALITY IS INHERITED AT CREATE, ONE HOP, ALONG EITHER CONTAINMENT ROUTE.
- *
- * ## Why this is a door census and not three happy-path cases
- *
- * §6a's one-hop rule is sound only *by induction*: reading the immediate parent equals what a full
- * ancestor walk would return **because every intermediate container was itself stamped at its own
- * create**. The ADR names the precondition explicitly and calls it load-bearing — every create door
- * must funnel through `createObject`'s containment-parent resolution or
- * `createComponentInService`'s container resolution.
- *
- * A door that resolves a parent by itself would produce a **shared object inside a domain-local
- * subtree**: no error, no leak at the moment of creation, and a silent hole the next time that object
- * is journaled. That is the M20.1 eight-door census one level up, and it is why every create door
- * that can name a container is exercised here rather than sampled.
- *
- * ## The two routes, and why both are needed
- *
- * `containment.ts` walks two parent routes, and an object can arrive under a container by either:
- *   - **`domain_id`** — resolved by `createObject` before the insert;
- *   - **`contains`** — the edge does not exist yet when `createObject` runs (it is written *after*
- *     the object), so `createComponentInService` reads the container and threads the flag in.
- *
- * Only testing the first would leave the component path — the one an operator actually uses for
- * "everything under this service is domain-local" — completely unguarded.
- */
+/** Locality is inherited at create, one hop, either route. See docs/federation.md §100. */
 describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both containment routes", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

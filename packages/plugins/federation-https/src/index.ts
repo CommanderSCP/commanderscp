@@ -9,41 +9,7 @@ import type {
   PluginManifest
 } from "@scp/plugin-api";
 
-/**
- * `@scp/plugin-federation-https` — the connected/intermittent transport (DESIGN.md §13):
- * "the outpost dials the commander over mTLS HTTPS to PULL config-journal segments and to PUSH
- * its own status/audit segments; the commander NEVER initiates a connection to an outpost." Both
- * `pull()` and `push()` are always called FROM the outpost's own scheduled sync job (apps/server's
- * federation sync scheduler) dialing OUT to the commander's public `/v1/federation/*` API — there
- * is no server (listening) half of this plugin, structurally: nothing in this package ever binds a
- * port or accepts an inbound connection. That is what makes "outpost-initiated-only" true by
- * CONSTRUCTION, not merely by convention — a commander has no code path here that could reach INTO
- * an outpost.
- *
- * All network I/O goes through the host-mediated `ctx.http` (`ScopedHttpClient`) — DESIGN.md §11:
- * "egress-controlled, instrumented HTTP — the only network path a plugin is given." This plugin
- * never opens a raw socket or TLS connection itself. Concretely, that means the mTLS client
- * certificate presentation for a given peer is a HOST-level concern: the subprocess plugin host
- * (apps/server/src/plugin-host/) resolves the target peer's vaulted client certificate (by
- * matching the request URL against the peer's registered `baseUrl` — federation/peers-repo.ts)
- * and configures the underlying HTTPS agent before dispatching the request. DEFERRED, FLAGGED IN
- * THE M6 PR BODY: wiring the subprocess host to actually inject per-peer mTLS certs into its
- * `ScopedHttpClient` implementation is real remaining work this milestone does not complete — the
- * plugin-side contract (this file) is what DOES land, structurally ready for that host wiring to
- * slot in behind it without another interface change. The FILE transport (`scp federation
- * export/import`, apps/server/src/routes/federation.ts + packages/cli) is fully implemented,
- * tested, and is what the two-domain E2E and every "SECURITY-SENSITIVE" DoD integration test
- * actually exercises — this plugin adds the LIVE/scheduled path on top of the identical verified
- * import logic, never a separate one.
- *
- * `pull`/`push` adapt between this package's stable `JournalSegment`/`BundleRef` wire shapes
- * (kept intentionally free of any `@scp/schemas` dependency — packages/plugins/* may import ONLY
- * `@scp/plugin-api`, BUILD_AND_TEST.md §7 import-boundary rule) and the actual `.scpbundle` JSON
- * the server's `/federation/exports`/`/federation/imports` endpoints speak: `entries`/the bundle
- * body are carried as opaque `unknown` payloads here, parsed and cryptographically verified
- * SERVER-SIDE (federation/import-repo.ts) exactly as a file-transport import is — this plugin
- * never itself trusts or interprets bundle contents, it only moves bytes.
- */
+/** The connected and intermittent federation transport. See docs/plugins.md §73. */
 
 export interface FederationHttpsConfig {
   /** The commander's public API base URL (e.g. `https://commander.example.com/api/v1`) — set on
@@ -65,12 +31,7 @@ function asConfig(config: unknown): FederationHttpsConfig {
   return { commanderBaseUrl: c.commanderBaseUrl, selfPeerName: c.selfPeerName };
 }
 
-/** Pulls the commander's config-journal since `cursor.sequence` — a single HTTP round trip to the
- *  commander's `POST /federation/exports`, dialed by the outpost. Returns the ENTIRE `.scpbundle`
- *  body as one `JournalSegment` (its `entries` field is the bundle's own entries array;
- *  `contentHash`/`signature` carry the bundle-level checksum/signature — the caller applies it via
- *  the same `importSyncBundle` the file transport uses, which re-verifies everything
- *  independently). */
+/** Pulls the commander's config-journal since `cursor.sequence`. See docs/plugins.md §74. */
 async function pull(ctx: PluginContext, cursor: DomainCursor): Promise<JournalSegment[]> {
   const config = asConfig(ctx.config);
   const response = await ctx.http.request({
@@ -99,16 +60,7 @@ async function pull(ctx: PluginContext, cursor: DomainCursor): Promise<JournalSe
   ];
 }
 
-/** Pushes this domain's own status/audit segment TO the commander — a `POST /federation/imports`
- *  dialed by the outpost, carrying THIS domain's own signed bundle (the commander applies it
- *  through the exact same fail-closed `importSyncBundle` path any import goes through — an
- *  outpost's push is not a trusted shortcut). `segment` here is expected to already be a full
- *  `.scpbundle` JSON payload (reconstructed by the caller from a real `exportSyncBundle` call
- *  against this domain's OWN journal) stashed across `entries`/`contentHash`/`signature` — see
- *  this module's doc for why
- *  the exact bundle envelope fields don't map 1:1 onto `JournalSegment`'s minimal shape; the
- *  caller is responsible for supplying a segment whose `entries` is literally the bundle body.
- */
+/** Pushes this domain's own status/audit segment TO the commander. See docs/plugins.md §75. */
 async function push(
   ctx: PluginContext,
   segment: JournalSegment & { bundle?: unknown }

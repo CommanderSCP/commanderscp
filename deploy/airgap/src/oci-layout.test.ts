@@ -5,13 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { readOciManifestDigest, verifyOciLayoutIntegrity } from "./oci-layout.js";
 
-/**
- * Builds a minimal-but-real OCI-layout directory by hand (no skopeo dependency for these unit
- * tests — a real skopeo-produced layout is exercised separately in the package README's manual
- * end-to-end run). The shape mirrors exactly what `skopeo copy ... oci:<dir>:<tag>` writes:
- * `index.json` naming one manifest blob by digest, and that blob's bytes stored content-
- * addressed at `blobs/sha256/<hex>`.
- */
+/** Builds a minimal-but-real OCI-layout directory by hand. See docs/airgap.md §45. */
 async function makeFakeOciLayout(dir: string, manifestBytes: string): Promise<string> {
   const digest = createHash("sha256").update(manifestBytes, "utf8").digest("hex");
   await mkdir(path.join(dir, "blobs", "sha256"), { recursive: true });

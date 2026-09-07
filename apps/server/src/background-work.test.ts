@@ -16,45 +16,7 @@ import {
   type BackgroundLoopContext
 } from "./background-work.js";
 
-/**
- * ================================================================================================
- * THE COMPOSITION ROOT'S BACKGROUND WORK, PROVEN BY RUNNING IT
- * ================================================================================================
- * This file exists because the thing it checks was, until now, checked by SUBSTRING MATCHES on
- * `main.ts` — and those were measured worthless twice over:
- *
- *   - M21.7: commenting `startBumpDispatchLoop(…)` out of `main.ts` left `bump-dispatch.test.ts`
- *     green at 20/20, including a case literally named "starts the worker, and stops it on
- *     shutdown", and left the whole apps/server unit suite green at 972/972.
- *   - 2026-08-17 (this change): flipping `main.ts`'s background-work condition to `false` — one
- *     token, killing ALL ELEVEN loops — left `bump-dispatch`, `bump-gate`, `inventory-ingestion`
- *     and `domain-event-routers` green at 79/79, and the full 972-test unit suite green.
- *     `domain-event-routers.test.ts` had recorded that exact mutation as a known-uncovered edge.
- *
- * `main.ts` cannot be imported (`main()` runs at module scope), so the fix was not a better regex —
- * it was to MOVE THE THING BEING CHECKED somewhere importable. `background-work.ts` holds the loop
- * registry and the role predicate; everything below EXECUTES them.
- *
- * WHAT IS PROVEN HERE, BEHAVIOURALLY:
- *   1. `runsBackgroundWork` — which process roles own loops, by calling it.
- *   2. The registry is COMPLETE — every `start…Loop` in the tree is registered or explicitly
- *      exempted, compared by function IDENTITY against what each module exports.
- *   3. Every registered loop ACTUALLY STARTS and reaches pg-boss, creating its own queue, when its
- *      config allows. Wrong arguments in a registry entry fail here, because the loop runs.
- *   4. Every registered loop's guard is OBEYED through the registry path — a refused loop creates
- *      no queue.
- *   5. `stop()` stops EVERY loop that was started, in order.
- *
- * WHAT IS *NOT* PROVEN HERE, STATED PLAINLY (see `@scp/source-census`'s package doc for the general
- * list): that `main.ts` calls `startBackgroundLoops` at all. That single link is still a substring
- * match — the one at the bottom of this file — because nothing can import `main.ts`. It is one call
- * rather than eleven plus eleven `.stop()`s, and the registry means a NEW loop cannot widen that
- * gap; but a mutation that deletes the call from `main.ts` entirely is caught only by that
- * substring, and a mutation that makes the enclosing branch dead is caught by NOTHING in this
- * package. Closing it needs a test that boots the real process against a real database and asks
- * the database which queues exist. That is not written, and this comment is not a substitute for
- * it — it is a record that the gap is known and where it lives.
- */
+/** The composition root's background work, proven by running. See docs/server.md §11. */
 
 /** A `boss` that RECORDS instead of refusing — the opposite polarity from
  *  `dependencies/commander-only.test.ts`'s probe (which throws on touch to prove a REFUSAL touched
@@ -146,11 +108,7 @@ describe("runsBackgroundWork", () => {
 
 describe("createsBootstrapAdmin", () => {
   it("is true for the HTTP-serving roles and FALSE for a pure worker", () => {
-    // The worker is the load-bearing case. It used to be true for every role, so the api and the
-    // worker raced on an empty database and the winner printed the bootstrap one-time password —
-    // a credential that is generated, shown once and never stored. When the worker won, the only
-    // copy landed in the worker's log, while every operator instruction (chart NOTES, docs,
-    // scripts/kind-drill.sh) says to read the API pod's. Reproduced 3/3 before this guard.
+    // The worker is the load-bearing case. See docs/server.md §12.
     expect(createsBootstrapAdmin({ role: "api" })).toBe(true);
     expect(createsBootstrapAdmin({ role: "all" })).toBe(true);
     expect(createsBootstrapAdmin({ role: "worker" })).toBe(false);
@@ -198,11 +156,7 @@ const discoveredLoopExports = await Promise.all(
   })
 );
 
-/**
- * Loop starters that are deliberately NOT in `BACKGROUND_LOOPS`, each with the reason — listed
- * rather than filtered by directory, because a path filter is exactly where the next unwired loop
- * hides (CLAUDE.md: census with no grep filters).
- */
+/** Loop starters deliberately not in that list, with reasons. See docs/server.md §13. */
 const NOT_COMPOSITION_ROOT_LOOPS: readonly { at: string; why: string }[] = [
   {
     at: "background-work.ts:startBackgroundLoops",
@@ -441,20 +395,7 @@ describe("startBackgroundLoops — the runner", () => {
 describe("the composition root calls the registry (SOURCE CENSUS — main.ts cannot be imported)", () => {
   const mainTs = readStripped(join(SRC_DIR, "main.ts"));
 
-  /**
-   * WHAT THIS PROVES: the characters `startBackgroundLoops(` appear in `main.ts`'s code, outside a
-   * comment.
-   *
-   * WHAT IT DOES NOT PROVE, and this list is not decoration — every item has shipped in this repo:
-   * that the enclosing branch is reachable (the MEASURED mutation: condition flipped to `false`,
-   * 79/79 green, whole suite green); that the call is not in a dead branch; that the context handed
-   * over is correct; that the returned handle is stopped. Only booting the real process against a
-   * real database and asking it which queues exist can prove those, and that test does not exist.
-   *
-   * It is kept because it is the cheapest possible detector for the single most likely edit — a
-   * merge or a revert that drops the line — and because everything AROUND it is now behavioural, so
-   * this is the whole of the residue rather than one of twenty-three such assertions.
-   */
+  /** WHAT THIS PROVES: the characters. See docs/server.md §14. */
   it("hands the loops to `startBackgroundLoops` and stops them on shutdown", () => {
     expect(mainTs).toMatch(/(?<![\w.$])startBackgroundLoops\s*\(/);
     expect(mainTs).toMatch(/backgroundLoops\.stop\(\)/);

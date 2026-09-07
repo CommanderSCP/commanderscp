@@ -10,12 +10,7 @@ export interface OutboxEventInput {
   data: unknown;
 }
 
-/**
- * Writes one CloudEvents-shaped row in the caller's transaction (DESIGN.md §8: "every domain
- * mutation writes a CloudEvents-1.0-shaped row to an outbox table in the same transaction").
- * The `outbox_notify_trigger` (drizzle/0002_rls_rbac_seed.sql) fires `pg_notify` after commit;
- * the worker's outbox relay (events/outbox-relay.ts) picks rows up from there.
- */
+/** Writes one CloudEvents-shaped row in the caller's transaction. See docs/events.md §40. */
 export async function writeOutboxEvent(tx: TenantTx, input: OutboxEventInput): Promise<void> {
   await tx.insert(outbox).values({
     id: uuidv7(),

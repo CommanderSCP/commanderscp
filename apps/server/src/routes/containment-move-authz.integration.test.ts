@@ -7,26 +7,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * THE CONTAINMENT PARENT IS AN AUTHORIZATION-BEARING FIELD, AND EVERY DOOR THAT WRITES IT MUST SAY SO.
- *
- * `objects.domain_id` is not an ordinary column. RBAC scope expands strictly UPWARD
- * (`authz/resolve.ts`), so the value of this one field decides *who else* holds authority over the
- * row. Two consequences, and this file pins both:
- *
- *  - **B1 — a MOVE is a write at two places.** Re-parenting X under V hands every holder of a
- *    binding at V (or above V) authority over X. A door that authorizes only at X therefore lets an
- *    actor with write over X alone plant it inside a stranger's subtree.
- *  - **B2 — `null` is not a containment parent.** A row with `domain_id IS NULL` is DETACHED: its
- *    scope expansion terminates at itself, so no ancestor binding — not even the org root Owner's —
- *    can ever reach it again.
- *
- * Every case here goes through the real HTTP doors (`server.app.inject`), never the repo functions:
- * the defect in both cases was a route that resolved the wrong scope, which a repo-level test cannot
- * see. Cases are grouped by DOOR rather than by defect, because the census that produced this file
- * is "every door that writes a caller-supplied `domainId` onto an existing row" — PATCH and PUT, on
- * the generic route, the typed-registry factory, and the bespoke component route.
- */
+/** The containment parent is an authorization-bearing field. See docs/routes.md §84. */
 describe("writing an object's containment parent is authorized at the destination", () => {
   let server: TestServer;
 

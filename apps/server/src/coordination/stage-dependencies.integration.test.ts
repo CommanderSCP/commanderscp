@@ -15,28 +15,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ADR-0028 increment 1 — the declaration channel, end to end and INERT.
- *
- * What is proved here: a stage dependency declared by a microservice's own CI (`scp change-source
- * report`, owner ruling D2) survives the whole ingress path and lands on the stored change with its
- * object references RESOLVED; an unresolvable one is refused where it was authored rather than
- * becoming a hold that never clears; and NOTHING about the release changes — every change below
- * still drives to `validating` exactly as it did before this increment, because nothing reads
- * `properties.stageDependencies` yet. That inertness is the point of the increment, so it is
- * asserted rather than assumed.
- *
- * Real reconcile loop, real Postgres, real (default fake-executor) execution — the same shape as
- * `coupling.integration.test.ts`, whose report-ingress section this mirrors deliberately: a
- * declaration made through the CI channel must behave identically to one made through `POST
- * /changes`, and the only way to know is to run both.
- *
- * INCREMENT 2 gave the declaration its first reader — `proposeChange` now materialises each entry as
- * a `depends_on` edge (`stage-dependency-edges.integration.test.ts`). The inertness asserted here is
- * unaffected and still worth asserting: an edge changes the GRAPH, not the release, and every change
- * below still drives to `validating` exactly as its undeclared twin does. If that stops being true,
- * it will be because something started reading the edges at run time, and this is where it shows.
- */
+/** The declaration channel, end to end and inert. See docs/coordination.md §917. */
 describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -85,13 +64,7 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
       properties: { environment }
     });
 
-  // -----------------------------------------------------------------------------------------
-  // PROPOSE-TIME RESOLUTION. Both halves of the reference — `dependsOn` and every `atTargets`
-  // member — are resolved to object ids where the declaration was AUTHORED. An unresolved
-  // `dependsOn` would be a hold that never clears; an unresolved `atTargets` would scope the
-  // coupling to a place that does not exist, which reads as "applies nowhere" — the mirror-image
-  // fail-open. Neither is allowed to be discovered later.
-  // -----------------------------------------------------------------------------------------
+  // PROPOSE-TIME RESOLUTION. Both halves of the reference. See docs/coordination.md §918.
 
   it("POST /changes stores the declaration with `dependsOn` and `atTargets` RESOLVED to object ids", async () => {
     const b = await createTestComponent(admin, { name: "resolve-dep-b" });
@@ -120,11 +93,7 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
     // shipping the channel separately is that it cannot change a live release.
     const b = await createTestComponent(admin, { name: "inert-dep-b" });
     const a = await createTestComponent(admin, { name: "inert-dep-a" });
-    // The twin releases DIFFERENT components on purpose. Two concurrent changes targeting the SAME
-    // component stall the first one in `executing` indefinitely — measured on this tree with two
-    // plain changes and no ADR-0028 field anywhere, so it is a pre-existing same-target contention
-    // and not this increment's business. Sharing a component here would make this test fail for a
-    // reason it does not test.
+    // The twin releases DIFFERENT components on purpose. See docs/coordination.md §919.
     const twinTarget = await createTestComponent(admin, { name: "inert-dep-twin" });
 
     const declared = await admin.changes.propose({
@@ -189,13 +158,7 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
   });
 
   it("a `dependsOn` naming a SERVICE is refused — it resolves, mints an edge, and could never hold", async () => {
-    // RESOLVING PROVES THE OBJECT EXISTS; IT DOES NOT PROVE THE DECLARATION CAN EVER BE ENFORCED.
-    // `depends_on` permits a service at both endpoints and service->service is the shape users
-    // write (`seed.ts` has one), so this used to be accepted all the way through: the edge was
-    // minted, the declaration stored, and nothing ever held. The hold asks
-    // `listPlacementsForComponents` for the dependency's placements, and a placement's component
-    // must be typeId `component` — so a service returns no rows, every verdict is `not_placed` ->
-    // satisfied, and not even the `stage_dependency_unscoped` warn fires. Silently inert forever.
+    // Resolving proves the object exists, not that it enforces. See docs/coordination.md §920.
     const a = await createTestComponent(admin, { name: `svc-dep-a-${randomUUID().slice(0, 8)}` });
     const service = await admin.object("service").create({
       name: `svc-dep-svc-${randomUUID().slice(0, 8)}`
@@ -228,11 +191,7 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
   });
 
   it("an `atTargets` entry that is not a deployment-target is refused for the same reason", async () => {
-    // The other half of the same property: an `atTargets` naming a component resolves fine and then
-    // matches no place at all, because the hold compares it against the placement's own
-    // `deploymentTargetId`. The coupling applies nowhere and the release runs uncoupled — which is
-    // exactly the fail-open the unresolvable-`atTargets` 404 above exists to prevent, wearing a
-    // valid id.
+    // The other half of the same property. See docs/coordination.md §921.
     const b = await createTestComponent(admin, { name: `at-type-b-${randomUUID().slice(0, 8)}` });
     const a = await createTestComponent(admin, { name: `at-type-a-${randomUUID().slice(0, 8)}` });
 
@@ -277,13 +236,7 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
   }, 60_000);
 
   it("the minted edge is attributed to the REPORTING PRINCIPAL, not to the system actor", async () => {
-    // The processor runs as SYSTEM_ACTOR_ID, which is right for the CHANGE — nobody asked for it, a
-    // push happened. It is wrong for the one thing on this path that IS a deliberate, authorized
-    // graph write: the `depends_on` edge a declaration mints. A minted edge changes
-    // `graph.dependentIds`, a live CEL policy input for the depended-on component, so an
-    // unattributable edge write is an auditability gap (charter principle 6) — "who declared that A
-    // depends on B?" has to have an answer, and the reporting principal only exists at the route
-    // that authorized it. Carried on the event row (migration 0054) so it survives to the processor.
+    // The processor runs as the system actor, right for a change. See docs/coordination.md §922.
     const b = await createTestComponent(admin, {
       name: `attrib-dep-b-${randomUUID().slice(0, 8)}`
     });
@@ -432,13 +385,7 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
     expect(JSON.stringify(refusals[0]!.inputContext)).toContain("stageDependencies");
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
-  // ROLLBACK. A rollback must NOT inherit the original's stage dependencies — undoing a release is
-  // not the release, and holding an undo behind the very dependency the undo exists to escape is
-  // exactly backwards. Today this holds because `rollback.ts` does not spread the original's
-  // properties; that is an accident a tidy-up refactor could undo, so it is pinned as behaviour —
-  // the same guard the `provides`/`requires` precedent carries deliberately.
-  // -----------------------------------------------------------------------------------------
+  // A rollback must not inherit the original's dependencies. See docs/coordination.md §923.
 
   it("a rollback of a change that declared stage dependencies inherits NONE of them", async () => {
     const b = await createTestComponent(admin, { name: "rollback-stagedep-b" });

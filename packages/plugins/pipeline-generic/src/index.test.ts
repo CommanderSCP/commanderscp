@@ -1,19 +1,4 @@
-/**
- * Behavioral test suite for `@scp/plugin-pipeline-generic` (extracted verbatim from
- * `@scp/plugin-terraform`'s Mode-1 implementation, M10.6 — see index.ts's module doc for the full
- * DESIGN.md §12 context). Unlike most plugin unit tests in this repo (webhook-control,
- * fake-executor, federation-https), which stub `ctx.http.request` with a hand-written function,
- * these tests run the plugin against a REAL `node:http`-based `ScopedHttpClient`
- * (test-support/real-http-client.ts) fixtured with `nock` — see that file's module doc for why
- * `node:http` and not the global `fetch()`. That buys genuine coverage of the plugin's URL
- * templating, header construction, and response-body parsing, not just "did we call
- * ctx.http.request with the object we expected."
- *
- * The trigger()-idempotency dedup cache is a MODULE-LEVEL variable (index.ts's `inMemoryState`),
- * not per plugin-instance state like fake-executor's — so every test in this file that doesn't
- * care about dedup uses a UNIQUE (or absent) `idempotencyKey` to avoid cross-test contamination
- * via that shared cache; only the tests that explicitly exercise dedup reuse a key on purpose.
- */
+/** Behavioral test suite for `@scp/plugin-pipeline-generic`. See docs/plugins.md §511. */
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -208,11 +193,7 @@ describe("trigger()", () => {
         };
         const first = await instanceA.trigger(ctxA, intent);
 
-        // A second, independently-obtained plugin handle + a second PluginContext object,
-        // sharing only `statePath` on disk — the same shape as a respawned subprocess plugin
-        // host instance (index.ts's module doc references @scp/plugin-argocd's identical dedup
-        // design). trigger() must read the dedup entry from the FILE, not from any in-process
-        // cache, and therefore never re-POST.
+        // A second independently obtained handle and context. See docs/plugins.md §512.
         const instanceB = createPipelineGenericExecutorPlugin();
         const ctxB = realHttpPluginContext({ triggerUrl: `${BASE_URL}/trigger`, statePath });
         const second = await instanceB.trigger(ctxB, intent);

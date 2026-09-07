@@ -33,14 +33,7 @@ import { evaluateContinuousHolds, type ContinuousHoldTargetVerdict } from "./con
 import { rollbackExemptible } from "../governance/freeze-scope.js";
 import { originalChangeDispatchedTarget } from "./wave-targets-repo.js";
 
-/** Reads `depends_on` edges among `targetIds` directly from the graph (DESIGN §9.3: "wave order
- * is computed from graph `depends_on` edges"). Both endpoints must be in `targetIds` — edges
- * pointing outside the change's target set don't constrain this plan's wave order.
- *
- * EXPORTED FOR `reconcile.ts`, which feeds the identical set to the stage-dependency hold (ADR-0028
- * decision 6): the compile-time same-wave refusal this set used to drive was replaced by a runtime
- * hold, and "the same set" is the whole content of calling it a replacement. Call this rather than
- * writing the query again — a second copy is where the two definitions would drift apart. */
+/** Reads the dependency edges among targets from the graph. See docs/coordination.md §687. */
 export async function loadDependsOnEdges(
   tx: TenantTx,
   orgId: string,
@@ -62,16 +55,7 @@ export async function loadDependsOnEdges(
   return rows.map((r) => ({ from: r.fromId, to: r.toId }));
 }
 
-/**
- * Decides whether a topology is STAGE-shaped (waves name deployment-targets — ADR-0026 §5) or
- * LEGACY-shaped (waves name the change's own targets), and resolves the placements stage mode
- * needs. Returns `undefined` for legacy, which leaves `compilePlan` on its original path.
- *
- * The classification is made from what the ids ARE, not from a flag on the document, because both
- * shapes exist in real data: the estate carries one topology naming deployment-targets and one
- * naming components. A MIXED topology is refused rather than guessed at — that is not a shape
- * anything can mean.
- */
+/** Decides whether a topology is STAGE-shaped. See docs/coordination.md §688. */
 async function resolveStagePlacements(
   tx: TenantTx,
   orgId: string,
@@ -121,12 +105,7 @@ async function resolveStagePlacements(
   return placements;
 }
 
-/**
- * Compiles and PERSISTS a change's plan (DESIGN §9.3: `plan -> waves -> wave_targets` rows). Pure
- * compilation is `plan-compiler.ts`'s job; this function does the DB I/O around it: resolving
- * `depends_on` edges, snapshotting the release topology document (if any) so a later topology
- * edit never retroactively changes an in-flight plan, and writing the rows.
- */
+/** Compiles and PERSISTS a change's plan. See docs/coordination.md §689. */
 export async function compileAndPersistPlan(
   tx: TenantTx,
   input: {
@@ -139,46 +118,21 @@ export async function compileAndPersistPlan(
 ): Promise<ChangePlan> {
   const dependsOn = await loadDependsOnEdges(tx, input.orgId, input.targetObjectIds);
 
-  // WHICH pipeline this change rolls (M12 P4A / ADR-0007) — the routing Type, read from the change
-  // itself rather than threaded through every caller — compileAndPersistPlan is invoked from
-  // reconcile, campaigns, rollback, promotion and the routes, and a plan is always FOR a change, so
-  // the change is the honest source. Every wave target of this change inherits it: one release = one
-  // source = one pipeline (owner, 2026-07-15), so the Type is a property of the change, not of each
-  // target. Changes with no `properties.type` fall back to 'configuration' (the server default).
+  // WHICH pipeline this change rolls (M12 P4A / ADR-0007). See docs/coordination.md §690.
   const changeRow = await tx.query.objects.findFirst({
     where: (t, { eq: eqOp, and: andOp }) =>
       andOp(eqOp(t.id, input.changeObjectId), eqOp(t.orgId, input.orgId))
   });
   const changeType = typeOf(changeRow?.properties as Record<string, unknown> | undefined);
 
-  // THE CHANGE'S OWN DECLARED COUPLINGS (ADR-0028), off the row already in hand — no second query.
-  // They exist here for ONE reason: `compileStages`'s co-placed cycle refusal has to see what the
-  // RUNTIME HOLD enforces, and the hold enforces declarations independently of whether any
-  // `depends_on` edge survives. `loadDependsOnEdges` above cannot supply that half — it filters
-  // `deleted_at IS NULL`, and `materialiseStageDependencyEdges` never re-mints an edge whose
-  // tombstone still occupies the unique key — so a mutual declaration with one deleted edge compiled
-  // clean and then wedged in `executing` forever. See `coPlacedCycle`.
-  //
-  // `malformed` is deliberately NOT passed. A malformed entry is unsatisfiable and holds every target
-  // (`stage-dependency-hold.ts`'s `undeclarable` branch), which is its own failure mode with its own
-  // remedy; it is not a CYCLE and this check must not start reporting it as one. Propose-time Zod
-  // validation makes such a row unreachable through the API in the first place.
+  // THE CHANGE'S OWN DECLARED COUPLINGS. See docs/coordination.md §691.
   const { stageDependencies: declaredStageDependencies } = stageDependenciesOf(
     changeRow?.properties as Record<string, unknown> | undefined
   );
 
   let topologyDocument: Record<string, unknown> | null = null;
   if (input.topologyObjectId) {
-    // LIVE-FILTERED, the same call `pipeline-resolution.ts`'s `attachedTopology` already makes on the
-    // INHERITED path, whose comment states the rule outright: "a change must not be born pointing at
-    // a tombstone." This is the EXPLICIT path — a `topologyObjectId` passed in by the caller — and it
-    // was the half that skipped the check, so a soft-deleted release-topology was still loaded,
-    // snapshotted into `change_plans.topology_document`, and left to determine the entire wave shape
-    // of the release. Two doors into one decision, one of them unguarded.
-    //
-    // Refusing is safe here in a way it is not at trigger time: this runs on the
-    // `evaluated -> coordinated` edge, so nothing has been dispatched yet and the 404 lands on the
-    // transition rather than mid-flight.
+    // Live-filtered, the same call the resolver already makes. See docs/coordination.md §692.
     const topology = await tx.query.objects.findFirst({
       where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
         andOp(
@@ -234,11 +188,7 @@ export async function compileAndPersistPlan(
         waveIndex: wave.waveIndex,
         name: wave.name,
         requiresFanIn: wave.requiresFanIn,
-        // A stage wave whose place holds none of this change's components is born `skipped`, not
-        // `pending`: both reconcilers already treat `skipped` as "nothing to wait for" when picking
-        // the active wave, so this needs no engine change — it just finally PRODUCES a status the
-        // engine has always been able to read. Left visible in the plan so an operator can see that
-        // gamma was declared and had no participants, rather than wondering where it went.
+        // A wave holding none of this change is born skipped. See docs/coordination.md §693.
         status: wave.skipped ? "skipped" : "pending"
       })
       .returning();
@@ -268,11 +218,7 @@ export async function compileAndPersistPlan(
   return toChangePlanShape(planRow, waveRows, targetRows);
 }
 
-/** Wire shape of `ChangeWaveTargetSchema.hold` — see that schema's doc for the four properties it
- *  satisfies. Built by `toWaveTargetHold` below from a live `FreezeHoldVerdict`, never persisted.
- *  EXPORTED: `CampaignWaveTargetSchema.hold` mirrors this shape exactly (freeze-only, since a
- *  campaign wave target has no stage-dependency half), and `campaign-plan-service.ts` builds it
- *  with the SAME `toWaveTargetHold` function below rather than a parallel reimplementation. */
+/** Wire shape of `ChangeWaveTargetSchema.hold`. See docs/coordination.md §694. */
 export type WaveTargetHold = NonNullable<ChangeWaveTarget["hold"]>;
 
 /** The FREEZE HALF alone — what `toWaveTargetHold` builds and what the campaign wave target's own
@@ -281,13 +227,7 @@ export type WaveTargetHold = NonNullable<ChangeWaveTarget["hold"]>;
  *  `continuousTests` to the CHANGE side could not silently widen the campaign side's contract. */
 export type WaveTargetFreezeHold = Pick<WaveTargetHold, "freezes">;
 
-/** `FreezeHoldVerdict` -> the wire `hold` shape (or `undefined` for an unheld target) — the ONE
- *  place a `FreezeHoldVerdict` becomes API surface, so the freeze-projection idiom
- *  (`describeFreezeForWaveTarget`) is applied exactly once. `scopeNames` is the caller's one-query
- *  resolution of every covering freeze's `scopeObjectId` (`resolveFreezeScopeNames` below) —
- *  passed in rather than re-queried per target. EXPORTED for `campaign-plan-service.ts`, which
- *  reuses this exact function for `CampaignWaveTargetSchema.hold` rather than re-deriving the wire
- *  shape from a `FreezeHoldVerdict` a second time. */
+/** `FreezeHoldVerdict` -> the wire `hold` shape. See docs/coordination.md §695. */
 export function toWaveTargetHold(
   verdict: FreezeHoldVerdict | undefined,
   scopeNames: Map<string, string>
@@ -306,25 +246,7 @@ export function toWaveTargetHold(
   };
 }
 
-/**
- * THE TWO HALVES OF `ChangeWaveTargetSchema.hold`, MERGED INTO THE ONE WIRE OBJECT.
- *
- * `freezes` STAYS REQUIRED and is `[]` for a target held ONLY by a continuous probe. That is the
- * deliberate shape: making a shipped, required response field optional is the oasdiff-visible
- * weakening this repo has already paid for once (`DependencyLineProducerSchema.declaredAt`, whose
- * dry-run projection was DROPPED rather than nullify a field every other reader relies on). An
- * empty array is a true statement — no freeze covers this target — and costs a client nothing,
- * because every existing consumer already reads `hold.freezes.length > 0` rather than `hold`'s mere
- * presence (`apps/web/.../PipelineWaveCard.tsx`).
- *
- * `continuousTests` is ABSENT, never `[]`, when no probe holds — the same present-only-while-held
- * convention `hold` itself follows, and the reason `evaluateContinuousHolds` returns an absent map
- * entry rather than an empty list for an unheld target.
- *
- * `undefined` for a target held by NEITHER, so an unheld wave target carries no `hold` key at all.
- * EXPORTED so the merge — the 2x2 of (freeze present/absent) x (continuous holds present/empty/absent) —
- * can be tested directly: its only caller composes it from two independent DB-backed predicates.
- */
+/** The two halves of the hold, merged into one wire object. See docs/coordination.md §696. */
 export function composeWaveTargetHold(
   freeze: WaveTargetFreezeHold | undefined,
   continuous: ContinuousHoldTargetVerdict | undefined
@@ -356,15 +278,7 @@ function toChangeWaveTargetShape(
     category: categoryOfType(waveTargetType),
     executorPluginId: row.executorPluginId,
     executorRef: (row.executorRef as Record<string, unknown> | null) ?? null,
-    // The snapshot reconcile persisted — the per-wave version (revision + deployed images) plus the
-    // OBSERVE-ONLY rollout snapshot (P4D). The raw jsonb already carries all three once merged (P4B
-    // revision + P4C images + P4D rollout); no query change.
-    // `truncation` (M23.1g) rides the same jsonb: `updateWaveTargetObserved` stamps it beside the
-    // bounded value, so it arrives here with no query change, exactly as `images` and `rollout`
-    // did. It is NAMED in this cast for the same reason the others are — the response serializer
-    // key-strips whatever `ChangeWaveTargetSchema.observed` does not declare, which is how
-    // `observedAt` stays internal, and a field left out of the cast would be a field the API
-    // silently drops.
+    // The snapshot reconcile persisted. See docs/coordination.md §697.
     observed:
       (row.observedState as {
         revision?: string;
@@ -389,25 +303,8 @@ function toChangeWaveTargetShape(
   };
 }
 
-/**
- * `freezeHolds` is OPTIONAL: `compileAndPersistPlan` (below) never passes it, because a plan is
- * only ever compiled on the `evaluated -> coordinated` edge — the change cannot be `executing`
- * yet, so `resolveWaveTargetFreezeHolds`'s own gate would return an empty map regardless, and
- * skipping the call there skips a query that could only ever come back empty. `getLatestPlanForChange`
- * (the GET read path) always computes and passes it. `heldTargetCount` is then emitted ONLY for
- * the wave admission currently governs (`activeWaveOf` — the same selector the evaluation itself
- * uses, so "which wave was evaluated" and "which wave carries the count" cannot drift): the
- * evaluation never looks at any other wave, and emitting `0` for an unevaluated future wave would
- * claim "evaluated, nothing held" about targets a standing freeze may well cover when their turn
- * comes (`ChangeWaveSchema.heldTargetCount`'s absent-vs-zero rule; M25.UI review minor finding 4).
- */
-/** THE ONE WAVE ADMISSION CURRENTLY GOVERNS — first wave not yet terminal. Shared by
- *  `resolveWaveTargetFreezeHolds` (which only ever evaluates THIS wave's targets) and
- *  `toChangePlanShape`'s `heldTargetCount` emission, so the two cannot disagree about which wave
- *  that is. EXPORTED: `campaign-plan-service.ts`'s `resolveActiveCampaignWaveFreezeHolds` uses the
- *  SAME selector over campaign waves (structurally compatible — both a raw `campaign_waves` row
- *  and the wire `CampaignWave` shape carry a bare `status` string), so "which wave admission
- *  governs" cannot drift between the change and campaign sides. */
+/** `freezeHolds` is OPTIONAL. See docs/coordination.md §698. */
+/** THE ONE WAVE ADMISSION CURRENTLY GOVERNS. See docs/coordination.md §699. */
 export function activeWaveOf<W extends { status: string }>(waves: W[]): W | undefined {
   return waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
 }
@@ -435,11 +332,7 @@ function toChangePlanShape(
         .sort((a, b) => a.waveIndex - b.waveIndex)
         .map((w) => {
           const waveTargets = targets.filter((t) => t.waveId === w.id);
-          // Freeze-held count only, here — the stage-dependency half of `heldTargetCount` is added
-          // by `routes/changes.ts`'s explain handler, which is the one caller that also computes
-          // `stageDependencyStatus` (see that field's doc for why the two halves live apart).
-          // ACTIVE WAVE ONLY: the evaluation never looks at any other wave, so any other wave's
-          // count would be a fabricated zero (absent = not evaluated; see the schema doc).
+          // Freeze-held count only, here. See docs/coordination.md §700.
           const heldTargetCount =
             freezeHolds !== undefined && w.id === activeWaveId
               ? waveTargets.filter((t) => freezeHolds.has(t.targetObjectId)).length
@@ -470,16 +363,7 @@ function toChangePlanShape(
   };
 }
 
-/**
- * WHICH TARGETS A HOLD CAN STILL ACT ON — resolved ONCE and shared by BOTH read-time hold
- * projections below, so "a hold is never reported against a target a hold can no longer act on"
- * has exactly one definition. It was written out inline inside the freeze projection; the
- * continuous projection needs the identical gate, and two copies of this predicate is precisely
- * the drift `stage-dependency-status.ts`'s own doc warns about for a THIRD copy of it.
- *
- * `null` when no hold of any kind can apply — the change is not `executing`, every wave is
- * terminal, or the active wave has nothing pending left.
- */
+/** Which targets a hold can still act on, resolved once. See docs/coordination.md §701. */
 interface WaveTargetHoldCandidates {
   /** EVERY target of the active wave, pending or not. The freeze half must ask about all of them:
    *  an `atomic` freeze's union (`freeze-hold.ts`'s `unionFreezes(byTarget)`) only ever sees the
@@ -525,35 +409,7 @@ async function resolveWaveTargetHoldCandidates(
   };
 }
 
-/**
- * THE READ-TIME HALF OF THE PER-TARGET CONTINUOUS-TEST HOLD (`ChangeWaveTargetSchema.hold
- * .continuousTests`, team-pipeline-iac increment 8 / D21).
- *
- * Reuses `evaluateContinuousHolds` — the SAME predicate `reconcile.ts`'s per-target loop refuses
- * on — rather than a second implementation, for the reason the freeze projection beside it states
- * and `continuous-hold.ts`'s own module doc repeats: a second copy of "stale-green is ABSENT, not
- * pass and not fail" is a second place to regress the one distinction the hook exists for.
- *
- * NEVER READ FROM THE `continuous_test` DECISION. That row has no clearing counterpart in the sense
- * that matters here — `reconcile.ts` does write an `allow` when the hold releases, but the LATEST
- * row of that kind is whatever the last TICK decided, and `explain` is answered between ticks. A
- * field fed from it would say "held" for up to a tick after fresh green landed and, on a change
- * whose reconcile is parked, forever. Re-derived here, the answer is true at the instant it is
- * read: submit fresh green and the very next `explain` omits the key, with no tick in between.
- * That is exactly what this projection's integration test measures.
- *
- * ASKS ONLY ABOUT THE PENDING SUBSET, unlike the freeze half. There is no union across targets in
- * this predicate — a probe's verdict for target A is derived from evidence keyed to A alone
- * ("a stale canary probe on target A says nothing about target B") — so a sibling's hold can never
- * be the reason this target is held, and asking about the wider set would buy nothing but rows.
- *
- * NO ROLLBACK EXEMPTION, deliberately. D7's exemption is about FREEZES — a human-declared pause a
- * rollback is allowed to step around to undo a bad release. A stale or failing canary probe is not
- * a policy anyone can be exempt from; it is a statement that nobody knows whether the target is
- * healthy, and reconcile's own per-target loop applies it to rollbacks exactly as it does to
- * anything else. Reporting an exemption here that the engine does not honour would be the
- * `explain`-disagrees-with-admission defect this file already fixed once, in the other direction.
- */
+/** THE READ-TIME HALF OF THE PER-TARGET CONTINUOUS-TEST HOLD. See docs/coordination.md §702. */
 async function resolveWaveTargetContinuousHolds(
   tx: TenantTx,
   orgId: string,
@@ -570,27 +426,7 @@ async function resolveWaveTargetContinuousHolds(
   });
 }
 
-/**
- * THE READ-TIME HALF OF THE WAVE-TARGET FREEZE-HOLD PROJECTION — reuses `evaluateFreezeHolds`
- * (`freeze-hold.ts`), the SAME predicate `reconcile.ts`'s engine loop consults, rather than a
- * second implementation that could drift from admission (campaigns-rework.md's instruction on
- * this exact field).
- *
- * ONLY THE TARGETS THE HOLD CAN STILL ACT ON ARE *RETURNED* — the shared
- * `resolveWaveTargetHoldCandidates` gate above, whose doc carries the argument for it
- * (`stage-dependency-status.ts`'s `isStillTriggerable`, mirrored).
- *
- * BUT `evaluateFreezeHolds` IS ASKED ABOUT EVERY ACTIVE-WAVE TARGET, not just the pending ones
- * (M25.UI review finding 2 — "atomic drift"). `reconcile.ts`'s admission loop asks the identical
- * question with `activeWave.targets.map((t) => t.targetObjectId)` (reconcile.ts, `loadFreezeHolds`)
- * — every target of the active wave, succeeded siblings included. That matters because an `atomic`
- * freeze's union (`freeze-hold.ts`'s `unionFreezes(byTarget)`) only ever sees the ids it was asked
- * about: if this function asked only about the pending subset, a target held SOLELY because an
- * `atomic` freeze covers an already-succeeded sibling would never surface here — the sibling that
- * proves the union was never even queried. Asking about the full set and filtering the RESULT to
- * the pending subset keeps the answer identical to what admission would do, while still never
- * reporting a hold against a target a hold can no longer act on.
- */
+/** The read-time half of the freeze-hold projection. See docs/coordination.md §703. */
 async function resolveWaveTargetFreezeHolds(
   tx: TenantTx,
   orgId: string,
@@ -604,12 +440,7 @@ async function resolveWaveTargetFreezeHolds(
     targetObjectIds: activeWaveTargetIds
   });
 
-  // D7'S ROLLBACK EXEMPTION, MIRRORED (M25.UI review finding 3). `reconcile.ts`'s actuator
-  // (`!( rollbackExemptible(frozen.freezes) && rollbackHasSomethingToUndoAt(...) )`) lets a
-  // rollback's trigger through an org-tier freeze for a target the original change actually
-  // dispatched. Without the same check here, `explain` reports that target `held` by the very
-  // freeze reconcile has already stepped around — a target sitting in `triggering` backoff after
-  // a real dispatch, described as still waiting on a freeze it was exempted from.
+  // D7'S ROLLBACK EXEMPTION, MIRRORED. See docs/coordination.md §704.
   const rollbackOfObjectId = candidates.rollbackOfObjectId;
   const isRollback = rollbackOfObjectId !== null;
 
@@ -629,11 +460,7 @@ async function resolveWaveTargetFreezeHolds(
   return holds;
 }
 
-/** Display names for every covering freeze's `scopeObjectId`, in ONE query — the same
- *  "resolve every id this response mentions, in one indexed IN()" idiom
- *  `stage-dependency-status.ts`'s `resolveNames` uses. Ids that resolve to nothing (a deleted
- *  scope object) are simply absent, and `toWaveTargetHold` renders `name: null` — never the id
- *  dressed up as a name. */
+/** Display names for every covering freeze, in one query. See docs/coordination.md §705. */
 /** EXPORTED for `campaign-plan-service.ts`, which resolves the SAME `scopeObjectId -> name` map
  *  for its own `FreezeHoldVerdict`s through this function rather than a second copy of the query. */
 export async function resolveFreezeScopeNames(
@@ -659,25 +486,7 @@ export async function getLatestPlanForChange(
   tx: TenantTx,
   orgId: string,
   changeObjectId: string,
-  /**
-   * `withFreezeHolds: false` (M25.UI review finding 4) skips BOTH read-time hold projections —
-   * `resolveWaveTargetFreezeHolds`, `resolveWaveTargetContinuousHolds` and `resolveFreezeScopeNames`
-   * — for a caller that only needs wave/target *status* data and never reads `.hold`/
-   * `heldTargetCount` off the result. The flag keeps its original name because its meaning is
-   * unchanged ("do not compose `hold`"); the continuous half joined the same switch rather than
-   * gaining a second one, because a caller that wants half a `hold` object does not exist and
-   * inventing the knob would be inventing the caller. `reconcile.ts`'s per-tick trigger branch
-   * is the one that matters: `advanceExecutingChanges` calls this UNCONDITIONALLY, once per
-   * `executing` change per 1 s tick, to find the active wave — and its OWN trigger branch already
-   * does a second, real freeze evaluation a few lines later (`loadFreezeHolds`, lazily, only when a
-   * target is actually pending). Leaving the default true here meant every such tick paid for a
-   * FULL freeze evaluation whose `ChangePlan.hold`/`heldTargetCount` shape reconcile then threw
-   * away unread, immediately followed by `loadFreezeHolds` redoing the identical work for the
-   * decision that actually acts on it — silently falsifying the "resolved lazily, inside the
-   * trigger branch" invariant documented beside `loadFreezeHolds` itself. Default stays `true`
-   * because every OTHER caller (`routes/changes.ts`'s explain handler) is a wire consumer that
-   * needs the projection.
-   */
+  /** This flag skips both read-time hold projections. See docs/coordination.md §706. */
   options?: { withFreezeHolds?: boolean }
 ): Promise<ChangePlan | null> {
   const planRow = await tx.query.changePlans.findFirst({

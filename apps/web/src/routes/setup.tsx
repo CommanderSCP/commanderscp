@@ -31,43 +31,15 @@ import { Skeleton, SkeletonRows } from "../components/ui/skeleton";
 import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 import { formatDate } from "../components/pipeline/wave-status";
 
-/**
- * `/setup` — the owner's "both" answer to outpost-ui.md §4/§8 Q1: a task-oriented setup landing
- * ALONGSIDE the in-place affordances Lane A/B already build (source-mapping authoring and
- * placements live on `component-pipeline.tsx`; the connect wizard is `routes/connect.tsx`). This
- * page adds nothing new to write — every action here is a link to a surface that already exists,
- * plus A4's freeze card, which had no UI anywhere before this.
- *
- * DATA-DRIVEN, NEVER ROLE-GATED (outpost-ui.md §2, `domain-local.tsx`'s module doc — same
- * precedent, cited here rather than re-argued): every row on this page keys on what a list call
- * actually returned. There is no read of this instance's declared federation role anywhere in
- * this file, and there must never be one — a commander-role org doing its own domain's setup
- * work is exactly the colocated case §2 exists to cover, and it needs this page rendered
- * identically to an outpost's.
- */
+/** `/setup` — the owner's "both" answer to outpost-ui.md §4/§8 Q1. See docs/web.md §497. */
 
-// -------------------------------------------------------------------------------------------
-// Setup checklist (A4's sibling in Lane B) — one row per "have you connected/placed/mapped X",
-// each a live count plus a link to the real authoring surface. Every count comes from a list call
-// this page actually makes; nothing here is a derived or invented number (CLAUDE.md honesty
-// rules — "never invent a label the API doesn't state").
-// -------------------------------------------------------------------------------------------
+// Setup checklist (A4's sibling in Lane B). See docs/web.md §498.
 
-/**
- * `sourceKind`s this wizard/pipeline knows how to route (mirrors `SOURCE_KINDS` in
- * `component-pipeline.tsx`'s A1 source-mapping panel). Kept as a separate literal rather than an
- * import: that file belongs to a different section of this same round. If the two ever diverge,
- * the fix is to hoist one shared constant — not to invent a third list.
- */
+/** `sourceKind`s this wizard/pipeline knows how to route. See docs/web.md §499. */
 const SOURCE_KINDS = ["github", "gitea", "gitlab"] as const;
 type SourceKind = (typeof SOURCE_KINDS)[number];
 
-/**
- * The raw list-call results this page's checklist is built from — shaped exactly like what each
- * `useQuery`/`useQueries` call below actually returns, so a test can hand this component a fixture
- * without standing up React Query at all. A field left `undefined` means "still loading" (or never
- * fetched); an object present, even with an empty `items`, means the call answered.
- */
+/** The raw list results this checklist is built from. See docs/web.md §500. */
 export interface SetupChecklistData {
   executionSystems?: { items: unknown[] };
   deploymentTargets?: { items: unknown[] };
@@ -172,12 +144,7 @@ export function buildChecklistRows(data: SetupChecklistData): ChecklistRowView[]
 
 type RouterLinkProps = React.ComponentProps<typeof Link>;
 
-/**
- * Outline-Button-styled router `Link` (design spec §2.12/§4B: every `→` literal dies, replaced by
- * `ArrowRight` on an outline Button). `Button` itself renders a `<button>`, so a navigating control
- * can't use it directly — same shape as `service-board.tsx`'s (unexported) `LinkButton`, duplicated
- * here rather than imported since that file belongs to a different section of this round.
- */
+/** Outline-Button-styled router `Link`. See docs/web.md §501. */
 function LinkButton({
   to,
   children,
@@ -256,23 +223,11 @@ export function SetupChecklistCard({ data }: { data: SetupChecklistData }): Reac
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// Freeze card (A4) — declare, list, lift, and (M25.UI increment 3) adjust the window.
-// `apps/server/src/routes/governance.ts`'s Freezes section registers `POST /freezes`,
-// `GET /freezes`, `GET /freezes/{id}`, `DELETE /freezes/{id}` (M25.1, lift) and
-// `PATCH /freezes/{id}` (M25.1, `updateWindow` — move `endsAt` in either direction). The
-// pre-M25.1 claim that this card could only ever declare and list is stale; see `FreezeRow` for
-// both write controls it now offers.
-// -------------------------------------------------------------------------------------------
+// Freeze card (A4). See docs/web.md §502.
 
 export type FreezeWindowStatus = "active" | "upcoming" | "past" | "lifted";
 
-/**
- * `lifted` is checked FIRST and outranks the window, because after M25.1 the window is no longer
- * the only thing that ends a freeze: `liftFreeze` retracts one immediately, whatever `endsAt`
- * says. Reading the window first would render a lifted-but-not-yet-expired freeze as `active` —
- * the UI asserting a freeze is in force that the engine has already stopped enforcing.
- */
+/** Lifted is checked first and outranks the window. See docs/web.md §503. */
 export function freezeWindowStatus(
   freeze: Pick<Freeze, "startsAt" | "endsAt" | "liftedAt">,
   now: Date
@@ -284,18 +239,7 @@ export function freezeWindowStatus(
   return "active";
 }
 
-/**
- * Active + upcoming freezes, soonest-starting first — plus freezes LIFTED early whose window has
- * not yet passed.
- *
- * That last clause is the whole reason this is not a one-line filter. A lift is a governance act
- * with a mandatory reason, and if the row vanished the instant it succeeded the operator would get
- * no confirmation that the thing they just retracted is actually retracted — the surface would go
- * silent at exactly the moment it should be most legible. Keeping it visible until the window it
- * WOULD have run to has passed bounds the list (it does not accumulate lifted rows forever) while
- * still showing the outcome. A freeze that simply expired is dropped as before: nothing was done
- * to it and there is nothing to confirm.
- */
+/** Active + upcoming freezes, soonest-starting first. See docs/web.md §504. */
 export function activeAndUpcomingFreezes(freezes: Freeze[], now: Date): Freeze[] {
   return freezes
     .filter((f) => {
@@ -305,12 +249,7 @@ export function activeAndUpcomingFreezes(freezes: Freeze[], now: Date): Freeze[]
     .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
 }
 
-/**
- * REPLACES the pre-M25.1 `NO_EARLY_LIFT_SENTENCE`, which said "there is no early-lift or delete
- * control yet". That was true of the server it was written against and became false the moment
- * `DELETE /api/v1/freezes/{id}` shipped. It is replaced in the SAME change that wires the Lift
- * control, so there is never a build in which the sentence and the surface disagree.
- */
+/** Replaces the earlier sentence about there being no lift. See docs/web.md §505. */
 const LIFT_SENTENCE =
   "This freeze runs until its end time unless it is lifted early. Lifting takes effect immediately and needs a reason.";
 
@@ -323,11 +262,7 @@ function freezeStatusBadge(status: FreezeWindowStatus): {
   return { label: "Upcoming", variant: "neutral" };
 }
 
-/** `<input type="datetime-local">`'s value is LOCAL wall-clock time with no offset — the exact
- *  inverse of `buildCreateFreezePayload`'s `new Date(form.startsAt)` parse, and the one this
- *  module needs to PREFILL the window-edit input from a wire `endsAt` (a UTC ISO instant). Local
- *  getters (`getFullYear`/`getMonth`/…), never UTC ones — a UTC read would silently shift the
- *  prefilled value by the viewer's own offset. */
+/** That input's value is local wall-clock with no offset. See docs/web.md §506. */
 export function toDatetimeLocalValue(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number): string => String(n).padStart(2, "0");
@@ -544,13 +479,7 @@ export function emptyFreezeForm(): FreezeFormState {
   return { scopeObjectId: "", name: "", startsAt: "", endsAt: "", reason: "", atomic: false };
 }
 
-/**
- * Shapes the `POST /freezes` body from the form's raw strings — exactly `CreateFreezeRequest`'s
- * fields, no more: `scopeObjectId`, an omit-when-blank `name` (optional per
- * `CreateFreezeRequestSchema`), `startsAt`/`endsAt` (the `<input type="datetime-local">` values,
- * local time with no offset, converted to the `z.string().datetime()` instants the wire schema
- * requires), and `reason`.
- */
+/** Shapes the `POST /freezes` body from the form's raw strings. See docs/web.md §507. */
 export function buildCreateFreezePayload(form: FreezeFormState): CreateFreezeRequest {
   const trimmedName = form.name.trim();
   return {
@@ -574,13 +503,7 @@ export interface DeclareFreezeFormProps {
   error?: unknown;
 }
 
-/**
- * The card's write surface — offered unconditionally (outpost-ui.md §6: "client-side pre-blocking
- * of writes" is rejected). `createFreeze` (governance.ts) answers 400/401/403 with no `decision_id`
- * (freezes have no gate-orchestrator Decision — measured, unlike change lifecycle transitions), so
- * the refusal is rendered verbatim through the same `queryErrorMessage` every other mutation here
- * uses, with no `decision_id`/"Why?" link to fabricate.
- */
+/** The card's write surface. See docs/web.md §508. */
 export function DeclareFreezeForm({
   value,
   onChange,
@@ -716,17 +639,7 @@ export function DeclareFreezeForm({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// Platform freezes card (M25.UI increment 3) — READ-ONLY. `apps/server/src/routes/
-// instance-freezes.ts`'s module doc states the reason at length: WRITE is operator-only, gated on
-// `SCP_OPERATOR_TOKEN` presented as `x-scp-operator-token` — a deployment-level credential this
-// browser session never holds and must never be asked to type into a form (same posture as
-// `admin-governance.tsx`'s instance rung — see that file's "NO BROWSER WRITE HERE, DELIBERATELY"
-// comment, mirrored below). READ is tenant-facing (`GET /v1/instance/freezes` needs no operator
-// token): a platform freeze is the one freeze a tenant cannot author and by default cannot
-// override, so a tenant that cannot even SEE it cannot be told why its release stopped (charter
-// principle 6) — hence a card at all, where the sibling instance-scan-floors doors have none yet.
-// -------------------------------------------------------------------------------------------
+// Platform freezes card (M25.UI increment 3). See docs/web.md §509.
 
 /** WHERE a platform freeze applies, in one structural phrase — never a raw `match` dump. Mirrors
  *  `freeze-hold.ts`'s server-side `freezeAddress` idiom, at the UI's own altitude: this is
@@ -737,12 +650,7 @@ export function platformFreezeMatchLabel(match: InstanceFreeze["match"]): string
   return `${match.environment} (every region)`;
 }
 
-/**
- * One platform freeze, read-only. `freezeWindowStatus`/`freezeStatusBadge` above are reused
- * UNCHANGED — `InstanceFreeze` carries the identical `startsAt`/`endsAt`/`liftedAt` shape `Freeze`
- * does, so a second copy of the same window arithmetic is not needed and would be exactly the kind
- * of drift risk this codebase's census discipline exists to catch.
- */
+/** One platform freeze, read-only. See docs/web.md §510. */
 export function PlatformFreezeRow({
   freeze,
   now
@@ -909,12 +817,7 @@ export function SetupPage(): React.JSX.Element {
     createFreeze.mutate(buildCreateFreezePayload(freezeForm));
   }
 
-  /**
-   * Lift, scoped per row. `variables` is read back for the error case so a refusal renders under
-   * the row it belongs to: `freeze:write` is checked AT EACH FREEZE'S OWN SCOPE, so a caller can
-   * legitimately be allowed to lift one freeze in this list and refused another, and a single
-   * card-level error banner would attribute the refusal to whichever row was clicked last.
-   */
+  /** Lift, scoped per row. See docs/web.md §511. */
   const liftFreeze = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string }) =>
       client.freezes.lift(id, { reason }),

@@ -4,14 +4,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Command } from "commander";
 
-/**
- * `scp connect argocd`'s printed "Next:" hint. `scp discovery accept` was removed with the route
- * it called (ADR-0047, commit c7aa2a9) and replaced by `scp iac scaffold`, but the hint kept
- * pointing at the gone command — an operator following it verbatim would hit "unknown command".
- * This pins the CURRENT hint text: `scp iac scaffold --from <executionSystemId>`, and that neither
- * the removed command name nor the old multi-flag `discovery run` invocation appears anywhere in
- * it.
- */
+/** `scp connect argocd`'s printed "Next:" hint. See docs/cli.md §106. */
 
 const CREATED_ID = "99999999-9999-4999-8999-999999999999";
 

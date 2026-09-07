@@ -1,19 +1,4 @@
-/**
- * `@scp/plugin-argocd` behavioral test suite — nock-fixtures every HTTP call so these tests are
- * deterministic and never touch the real network (CLAUDE.md: "Tests never touch the internet").
- *
- * Every `PluginContext` here is built with a REAL `ScopedHttpClient` (`./test-node-http-client.ts`
- * — node:http/https, not `fetch`; see that file's doc comment for why `fetch` doesn't work
- * against `nock@13.5.x`, the version pinned in this package's package.json). That means these
- * tests exercise `index.ts`'s actual `apiRequest()` wire path — method, URL, JSON body,
- * `Authorization` header, JSON response parsing — not just its in-process return values.
- *
- * `nock.disableNetConnect()` is on for the whole file (see `beforeAll` below) so a request this
- * suite forgot to fixture fails loudly (a clear "Nock: Disallowed net connect" rejection) instead
- * of hanging on a real DNS lookup. Every test that cares whether the plugin called the network
- * (or called it only once) asserts `scope.isDone()` explicitly, per this PR's constraint that a
- * test must not pass by accident from a stale/unused interceptor.
- */
+/** `@scp/plugin-argocd` behavioral test suite. See docs/plugins.md §12. */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -189,17 +174,7 @@ describe("trigger()", () => {
     });
 
     it("two trigger() calls with the SAME idempotencyKey against the same statePath hit the sync endpoint only once, even read back by a fresh ctx (the restart-recovery property)", async () => {
-      // NOTE: unlike @scp/plugin-fake-executor's `FakeExecutorPlugin` class, this plugin exports a
-      // stateless singleton object (`createArgoCdExecutorPlugin()` always returns the same
-      // `argoCdExecutorPlugin` — see index.ts), so there is no separate "instance" to construct.
-      // The property under test is the same one fake-executor's restart-recovery test proves —
-      // that the dedup mapping lives in the state FILE, not in any in-process object — so a fresh
-      // `PluginContext` (standing in for a respawned subprocess getting a fresh ctx from the host)
-      // sharing the same `statePath` must still see the first call's write. Because `loadState()`
-      // always re-reads the file from disk on every call regardless of object identity, reusing
-      // the singleton here is actually a slightly stronger proof than a fresh object would be: it
-      // shows the plugin holds no hidden in-process cache that a "new instance" might have simply
-      // not populated yet.
+      // Unlike the fake, this plugin exports a stateless factory. See docs/plugins.md §13.
       const scope = nock(SERVER_URL)
         .post("/api/v1/applications/idem-filebacked-app/sync", {})
         .reply(200, {});
@@ -336,13 +311,7 @@ describe("status()", () => {
     });
   }
 
-  // ADR-0028 decision 3 / docs/proposals/rollout-step-coupling.md §2.5 — EXHAUSTIVE pin of the
-  // health -> phase mapping a FINISHED sync uses (`phaseAfterFinishedSync` in index.ts). It had no
-  // test for `Suspended` at all, and the stage-coupling gate now reads its consequence: a
-  // `succeeded` phase terminalizes the wave target, reconcile stops polling it, and its observed
-  // canary weight is frozen at whatever the last poll saw. Every row here is therefore a
-  // behavioural contract with that gate, not an implementation detail — including the ones that
-  // stay NON-terminal, because those are what keep a dependency's weight refreshing.
+  // ADR-0028 decision 3 / docs/proposals/rollout-step-coupling.md §2.5. See docs/plugins.md §14.
   const finishedSyncArms: ReadonlyArray<{
     health: string | undefined;
     phase: string;
@@ -385,13 +354,7 @@ describe("status()", () => {
     });
   }
 
-  // The hazard of §2.5 in ONE fixture: an Application aggregating to `Suspended` while the Rollout
-  // underneath it is PAUSED at 10%. status() reports the target DONE (`succeeded`, progress 1) and
-  // carries weight 10 in the same response. reconcile.ts then skips this target on every later tick
-  // (`if (target.status === "succeeded") continue;`), so 10 is the LAST weight ever persisted for
-  // it — it stays 10 even after somebody promotes the Rollout to 100%. This is a pin of what SCP
-  // does GIVEN that input; whether Argo really aggregates a paused Rollout to `Suspended` cannot be
-  // established from this tree and must be checked against a live instance (§2.5).
+  // The hazard of §2.5 in ONE fixture. See docs/plugins.md §15.
   it("a 'Suspended' Application whose Rollout is paused at 10% reports BOTH terminal 'succeeded' AND weight 10 — the stale-snapshot shape the coupling gate must not trust as live", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     const appScope = nock(SERVER_URL)
@@ -585,11 +548,7 @@ describe("status()", () => {
     expect(result.stateRef).toBe("abc123");
   });
 
-  // ADR-0008 P4D (rollout, OBSERVE-ONLY): when the app manages an Argo Rollout, status() surfaces the
-  // rollout's phase/step/weight/message on ExecutionStatus.observed.rollout. Near-free phase/message
-  // come off the Rollout node in `status.resources[]` (SAME Application body); structured
-  // step/weight (+ authoritative phase/message) come from the LIVE Rollout manifest fetched via
-  // GET .../resource. EVERY field here is parsed from the mocked ArgoCD responses — never hardcoded.
+  // ADR-0008 P4D (rollout, OBSERVE-ONLY). See docs/plugins.md §16.
   it("populates observed.rollout (phase/step/weight/message) from the Rollout node + live manifest — REAL, not fabricated", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     const appScope = nock(SERVER_URL)
@@ -852,12 +811,7 @@ describe("observe()", () => {
   });
 
   it("carries the SYNCED REVISION, so repeated reconciles of an unchanged app dedupe away", async () => {
-    // `reconciledAt` advances on every Argo CD reconcile whether or not anything changed, so without
-    // the revision an event keyed on (app, reconciledAt) is a new row every ~3 minutes per app —
-    // measured at ~26k rows and ~150 MB a day on a 61-app instance, all describing nothing happening.
-    // The revision is what lets `observedEventIdentity` collapse them onto one row per deployed
-    // revision. Asserted on the VALUE, not merely that the field is set: the whole mechanism depends
-    // on it being the revision and not, say, the resourceVersion.
+    // `reconciledAt` advances whether or not anything changed. See docs/plugins.md §17.
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL)
       .get("/api/v1/applications")
@@ -880,13 +834,7 @@ describe("observe()", () => {
   });
 
   it("a MULTI-SOURCE app dedupes on status.sync.revisions, which the singular field never carries", async () => {
-    // The case the first attempt at this fix missed entirely. Argo CD reports a multi-source app's
-    // revisions in `status.sync.revisions` (an array, one per source) and leaves `revision` unset —
-    // it sets exactly one of the two. On the estate that surfaced this, 36 of 59 applications were
-    // multi-source, so reading only the singular field left the majority still churning.
-    //
-    // `commitSha` stays undefined because a tuple of revisions is not a commit SHA; the dedupe
-    // identity rides `stateRef` instead.
+    // The case the first attempt at this fix missed entirely. See docs/plugins.md §18.
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL)
       .get("/api/v1/applications")
@@ -984,11 +932,7 @@ describe("observe()", () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL).get("/api/v1/applications").reply(429, { message: "rate limited" });
 
-    // TODO(M7 follow-up): observe()/trigger()/status() in index.ts have no retry-with-backoff for
-    // 429/503 — a single non-2xx (including a transient rate-limit) throws immediately, relying
-    // entirely on whatever outer retry/backoff the coordination engine itself provides (if any).
-    // This test documents that as CURRENT behavior; adding real backoff would be a behavior
-    // change out of scope for this test-only PR.
+    // No retry backoff for rate limiting yet, and why. See docs/plugins.md §19.
     await expect(createArgoCdExecutorPlugin().observe(ctx)).rejects.toThrow(/HTTP 429/);
   });
 });
@@ -1101,18 +1045,7 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     expect(web?.externalRef).toBe("web-prod");
   });
 
-  /**
-   * PER-PATH ROUTING. `matchComponentForSource` returns exactly ONE component, so every app of a
-   * repo carrying an identical bare-repo mapping meant ONE of them won every push and the rest were
-   * unreachable. Measured on the live homelab 2026-08-03: 19 components across 4 repo patterns, one
-   * routable per repo. The 43 components that had path patterns routed correctly — the control.
-   *
-   * | Mutation | Result |
-   * |---|---|
-   * | emit no `pathPattern` (the old behaviour) | the per-source and dedupe assertions FAIL |
-   * | iterate only `primarySource` instead of every source | the multi-source test FAILS — the second repo gets no mapping at all |
-   * | drop the `seen` dedupe | the same-repo-twice case emits 2 identical mappings |
-   */
+  /** Per-path routing: the matcher returns exactly one component. See docs/plugins.md §20. */
   it("emits a path-scoped mapping per git source, deduped, for a multi-source app", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL)

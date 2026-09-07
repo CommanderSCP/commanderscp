@@ -24,31 +24,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Confirmed flake (2026-07-31, CI run 30631863957 job 91160378014): `scp login` exits 0, but the
- * VERY NEXT `scp <cmd>` in the same session occasionally sees "Not logged in" — `credentials.json`
- * not yet visible to the next `node <CLI_BIN>` subprocess's `readFile`, despite `login`'s own
- * `saveCredentials` being fully awaited before that process exits. Root cause NOT found: per-session
- * `configDir` isolation (this file), the `port: 0` server binding (harness.ts), and every awaited
- * subprocess call were all confirmed correct by code review, and two full local
- * `test:integration` runs (95 files / 791 tests each) produced zero repro. Whatever the underlying
- * cause — most plausibly a CI-runner-specific filesystem visibility delay between two independently
- * spawned processes — a fresh child process's `readFile` of a file another process just wrote is
- * exactly the boundary this credentials round-trip crosses, so guard it directly here rather than
- * masking the symptom with a blanket test retry: after `login`, poll for a parseable
- * `credentials.json` (bounded, short) before handing control back to the caller.
- *
- * BUDGET RAISED 2026-08-02 (CI run 30770220554 job 91556316977). The guard fired for real and still
- * lost: 5 attempts at `50 * attempt` is 500 ms of total patience, on a shard whose tests took 916 s
- * — i.e. a heavily loaded runner, which is exactly the condition the delay needs and the condition
- * under which 500 ms is thinnest. The guard's PURPOSE is to outlast a visibility delay of unknown
- * length, so a budget that short was never the right shape; this is the same fix, sized honestly.
- *
- * Now ~5 s across 16 attempts with the backoff capped, so the tail is patience rather than one long
- * final sleep. It stays a WAIT, not a retry-the-test: if `credentials.json` never becomes readable
- * the failure is still loud, still points at this boundary, and still refuses to let a "Not logged
- * in" error surface later as a confusing assertion failure somewhere unrelated.
- */
+/** Confirmed flake: the next command sees no credentials. See docs/test-support.md §1. */
 async function waitForCredentials(configDir: string): Promise<void> {
   const credentialsPath = path.join(configDir, "credentials.json");
   const attempts = 16;

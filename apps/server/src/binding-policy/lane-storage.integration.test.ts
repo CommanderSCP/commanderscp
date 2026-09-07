@@ -15,30 +15,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE LANE COLUMN AND THE WIDENED IDENTITY (migration 0105; ADR-0046 section 4, resolution 7).
- *
- * WHAT THIS HAS TO PROVE, and why a "the column stores a value" assertion would not:
- *
- *  1. **The widened key permits what the feature needs** - one target, one Type, TWO lanes. Under
- *     the old `UNIQUE (org, target, type)` that write was a constraint violation, so the feature
- *     was unrepresentable rather than merely unimplemented.
- *  2. **The lookup FILTERS on lane.** This is the dangerous half. `getExecutorBinding` was a
- *     `.limit(1)` over `(org, target, type)`; with two lanes present it returns an ARBITRARY row,
- *     so a deploy could be dispatched to the test-lane executor. The bug would be invisible - a
- *     binding IS returned, it is simply the wrong one.
- *  3. **The upsert keys on lane**, or writing the test lane destroys the build lane in place -
- *     the identical failure this repo's own comment records for Type before P3.
- *  4. **Nothing that existed changes.** Every caller that omits a lane means `build`, and every
- *     pre-migration row is in it.
- *
- * MUTATION LOG - each applied, watched fail, reverted, watched pass (MEASURED)
- * | Mutation | Result |
- * |---|---|
- * | `getExecutorBinding` drops its `eq(lane)` filter | 3 FAIL - (1), (2), (3). The unfiltered lookup makes the upsert's existence check wrong too, so the damage is wider than the read path it obviously breaks. |
- * | `upsertExecutorBinding` omits `lane` from its existence lookup | 2 FAIL - (1) and (3). The second lane UPDATES the first row in place instead of inserting: one row where two belong, which is the pre-P3 failure exactly. |
- * | the insert omits `lane`, relying on the column default | 3 FAIL - (1), (2), (3). Both rows land in `build`, so the second collides on the widened key. |
- */
+/** THE LANE COLUMN AND THE WIDENED IDENTITY. See docs/binding-policy.md §1. */
 describe("executor binding lanes (migration 0105)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

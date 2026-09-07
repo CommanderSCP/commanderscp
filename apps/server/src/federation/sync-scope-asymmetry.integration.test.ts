@@ -16,50 +16,7 @@ import { exportSyncBundle } from "./export-repo.js";
 import { importSyncBundle, type ImportSyncBundleResult } from "./import-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * THE SENDER-NARROW / RECEIVER-`full` ASYMMETRY — a misconfiguration that halts federation sync, and
- * that used to blame TAMPERING for it.
- *
- * `federation_peers.sync_scope` is per-side LOCAL config: set independently by the operator on each
- * domain, never carried on the wire, never reconciled. The receiver's default is `full`. So the most
- * likely field mistake in an outpost rollout — the outpost operator pairs the commander without
- * `--sync-scope` while the commander operator narrows what it SENDS — produces a receiver demanding
- * a gap-free chain from a sender that legitimately ships a sparse one.
- *
- * THE VERDICT IS UNCHANGED AND MUST STAY UNCHANGED (owner decision): the import is REFUSED,
- * fail-closed. A sparse run and a maliciously thinned one are the same bytes — the bundle signature
- * only proves the SENDER produced what arrived — so contiguity is the only check that catches an
- * entry deleted and re-signed, and this is the one place it is caught. Relaxing it to be friendlier
- * to a misconfiguration would trade a real detection for a diagnosability win that belongs in the
- * MESSAGE.
- *
- * WHAT IS PINNED HERE, therefore, is the message and the recovery:
- *  1. the refusal names the peer, states THIS side's `sync_scope` verbatim, explains that a narrower
- *     sender legitimately ships a sparse chain, and says what to compare — and never says "tamper";
- *  2. it is not a verdict either: it says a genuine break looks identical and must be investigated
- *     if the two sides already agree;
- *  3. NOTHING is applied and the cursor does not move;
- *  4. once the operator RE-ALIGNS the two scopes, sync resumes cleanly — in EITHER direction, and
- *     with the strict path fully intact afterwards (no one-way ratchet).
- *
- * (4) IS THE ONE THAT KEEPS BREAKING, AND PHASES 5-8 ARE WHERE IT IS NAILED DOWN (pre-M16 residual
- * W1). A receiver whose OWN scope was narrow holds a cursor with NO row hash — correct while it is
- * narrow, because a sparse chain has no linkable tail. WIDENING that peer back to `full` used to
- * leave the strict path comparing the peer's next, perfectly contiguous run against
- * JOURNAL_GENESIS_HASH, which it can never equal: the peer was wedged forever, by a SUPPORTED local
- * configuration change, and the message's prescribed recovery was inert. The fix is a ONE-SHOT
- * re-anchor permit `pairPeer` issues whenever the RESULTING `sync_scope` is `full` and the cursor is
- * anchorless — regardless of what the scope was before that call — keyed to a local, authenticated
- * operator action on config that never crosses the wire, which re-anchors the next run and relaxes
- * NOTHING else. So:
- *  5. re-widening BOTH sides resumes sync and restores a real anchor (PHASE 5, PHASE 6);
- *  6. and the permit does not reopen the deletion window the owner chose to keep closed: a
- *     re-signed run with a middle entry removed is refused WITH the permit in force (PHASE 5a) and
- *     after it has been consumed (PHASE 7);
- *  7. an anchorless cursor with NO permit — a state the current code no longer leaves a `full`-scope
- *     peer in on its own (PHASE 8 forces it directly to prove the message still describes it as
- *     what it is, rather than as a stale anchor — the W2 honesty fix).
- */
+/** THE SENDER-NARROW / RECEIVER-`full` ASYMMETRY. See docs/federation.md §547. */
 describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accurately, recoverable (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
@@ -262,13 +219,7 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
     await proposeOnCommander("scope-asym-change-4", "payments rollout four");
     receiverNarrowedResult = await importAtOutpost(await exportToOutpost());
 
-    // ── PHASE 5. THE OPERATOR UNDOES PHASE 4: both sides go back to `full`. This is THE WEDGE
-    // (pre-M16 residual W1). This side's cursor was advanced under the SPARSE regime and therefore
-    // carries NO row hash — it never held one, because a sparse chain has no linkable tail. The
-    // commander's next bundle is contiguous, gap-free and authentic, and used to be refused anyway
-    // (and forever after), because an absent anchor was read as genesis, which a mid-chain run can
-    // never equal. Widening is a LOCAL, AUTHENTICATED operator action, so it — and nothing that
-    // arrives on the wire — is what issues the one-shot re-anchor permit.
+    // ── PHASE 5. THE OPERATOR UNDOES PHASE 4. See docs/federation.md §548.
     cursorBeforeRewiden = await outpostCursor();
     await setCommanderScopeForOutpost({ mode: "full" });
     await setOutpostScopeForCommander({ mode: "full" });
@@ -309,11 +260,7 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
       thinAboveCursor(await exportToOutpost(), cursorAfterPostRewiden.sequence)
     );
 
-    // ── PHASE 8 (W2 — THE MESSAGE MUST DESCRIBE THE CODE'S ACTUAL STATE). An anchorless cursor
-    // with NO permit is not produced by any supported operation any more, so it is FORCED here:
-    // strip the row hash and the permit directly. What is pinned is that the refusal then says what
-    // actually happened — no anchor recorded, compared against genesis — instead of blaming a
-    // "last known-good anchor" and a "previous scope regime" that do not exist.
+    // The message must describe the code's actual state. See docs/federation.md §549.
     await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       tx
         .update(syncCursors)
@@ -490,25 +437,7 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
   });
 });
 
-/**
- * R1 — THE ALREADY-WEDGED POPULATION (pre-M16 residual W1, follow-up fix). The PHASE 5-8 tests above
- * all get to the wedged state via a scope TRANSITION (narrow → full), because that is how the fix in
- * e40e569 issued the re-anchor permit. But every peer the shipped W1 bug actually wedged got there
- * BEFORE that fix existed: its `sync_scope` already reads `full` (the operator widened it with the
- * pre-fix code — that widen is HOW it wedged) and its cursor is anchorless. There is no transition
- * left for that peer to make: `sync_scope` already says `full`. Under the transition-gated fix, the
- * refusal message's own prescribed recovery (`scp federation pair <peer> --sync-scope full`) was a
- * no-op — `previousScope.mode !== "full"` is false when the row already reads `full` — so the peer
- * stayed wedged forever, byte-identical refusal and all.
- *
- * THIS SUITE constructs that exact population DIRECTLY (peer paired at `full` throughout — never
- * narrowed, so there is genuinely no transition anywhere in this test's history — with an anchorless
- * cursor forced in afterward, the same technique PHASE 8 above uses), then runs the prescribed
- * recovery and asserts it actually works: the permit is issued and the peer's next run is accepted
- * with a strictly re-anchored cursor. It also re-confirms the permit issued this way is not a hole:
- * a re-signed bundle with a deleted middle entry is refused with the permit in force and again after
- * it is consumed, and a run starting above cursor+1 is refused too.
- */
+/** R1 — THE ALREADY-WEDGED POPULATION. See docs/federation.md §550. */
 describe("federation sync_scope full re-pair (R1): the ALREADY-WEDGED population (no transition) is healed", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
@@ -721,11 +650,7 @@ describe("federation sync_scope full re-pair (R1): the ALREADY-WEDGED population
     await rePairWithFull();
 
     const cursorAfterRepair = await outpostCursor();
-    // THE DEFECT, MADE CONCRETE: under the transition-gated fix, this call is a no-op for issuance
-    // — `previousScope.mode !== "full"` is false because the row already read `full` before AND
-    // after this call — so `reanchorFromSeq` would stay `null` and the peer would remain wedged
-    // forever. R1 keys issuance off the RESULTING scope and the cursor's actual (anchorless) state
-    // instead, so the permit IS issued here.
+    // THE DEFECT, MADE CONCRETE. See docs/federation.md §551.
     expect(cursorAfterRepair.reanchorFromSeq).toBe(cursorBefore.sequence);
     expect(cursorAfterRepair.sequence).toBe(cursorBefore.sequence);
     expect(cursorAfterRepair.rowHash).toBeNull();
@@ -777,16 +702,7 @@ describe("federation sync_scope full re-pair (R1): the ALREADY-WEDGED population
   });
 });
 
-/**
- * WHAT THE STRICT CHECK BUYS, stated as tests. Each case re-signs the bundle after mutating it,
- * which is what makes it meaningful: an in-transit attacker cannot get this far (the bundle checksum
- * and signature cover `{header, entries}` and are verified first), so these model the residual
- * threat — a signer, or anyone holding its key, producing bad content.
- *
- * The DELETION case is the one that decides the whole design. It is indistinguishable, byte for
- * byte, from a legitimately scope-narrowed sender; a receiver that tolerates holes takes it. Only
- * contiguity refuses it.
- */
+/** WHAT THE STRICT CHECK BUYS, stated as tests. See docs/federation.md §552. */
 describe("federation journal integrity: mutated and THINNED re-signed bundles are refused (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;

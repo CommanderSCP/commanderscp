@@ -6,31 +6,7 @@ import type { PluginContext } from "@scp/plugin-api";
 import type { RunnerLauncher, RunnerSpec } from "@scp/runner-launcher";
 import { createManagedScanExecutorPlugin } from "./index.js";
 
-/**
- * M23.1 — THE STANDING GATE THAT THE PORT IS INSTALLED, not merely present.
- *
- * See `@scp/plugin-managed-iac`'s file of the same name for why this is separate from
- * `launch-argv.golden.test.ts`: the golden proves the Docker bytes are unchanged and would keep
- * passing if this plugin retained a private copy of the launch sequence with `@scp/runner-launcher`
- * dead beside it. The only check that distinguishes the two is to delete the wiring — here, by
- * injecting a launcher that throws — and require a named test to die.
- *
- * M23.1 PHASE 2 CHANGED WHAT "DIES" LOOKS LIKE. Before phase 2, `trigger()` had no outer catch, so
- * an injected launcher's throw escaped as a REJECTION and this test asserted that. It no longer
- * does — `trigger()` now resolves, and the failure is recorded via `withRecordedOutcome` instead —
- * so the first test below was rewritten rather than deleted, to the STRICTER shape managed-dep's own
- * seam test already used: a plugin that kept a private, second launch path would report `succeeded`,
- * and one that recorded a generic failure without the injected launcher's own message would fail the
- * `detail` match. Editing this in place (rather than deleting it) is itself the gate for phase 2's
- * fix — a bare deletion here would make phase 2's whole "every path records" property untestable in
- * this plugin the same way it is meant to prove installed.
- *
- * THIS PLUGIN IS THE ONE WHERE THE SEAM'S CONFIG SURFACE HAS TEETH. `dockerBinary` decides which
- * executable runs, and managed-scan shipped a live RCE because it sat on `KNOWN_EXECUTOR_MODULES`
- * with no manifest, so `validatePluginConfig` returned early and a tenant binding could set it. The
- * second test below pins that the resolver is handed exactly that one field and nothing else has
- * been invented alongside it — M23.1 adds NO new key to the server-injected class.
- */
+/** The standing gate that the port is installed, not present. See docs/plugins.md §489. */
 
 // `reap` is stubbed on every fake below to satisfy the port — it is never called by a plugin
 // directly, only by the Docker adapter's own `run()` (see `@scp/runner-launcher`'s
@@ -120,27 +96,13 @@ describe("M23.1: managed-scan launches through the injected RunnerLauncher", () 
       }
     });
 
-    // `toStrictEqual` on the WHOLE object, not a property check: the point is the ABSENCE of any
-    // further adapter-selection key, because every key here joins the server-injected,
-    // never-tenant-settable class and must be added to all three enforcement layers in the same
-    // change. M23.2 is where that happens; M23.1 must not smuggle one in early.
-    // M23.2 UPDATED THIS LINE, AND IT WAS SUPPOSED TO. The comment above says "M23.2 is where that
-    // happens; M23.1 must not smuggle one in early" — so this assertion is the placeholder that
-    // makes the adapter-selection field arrive DELIBERATELY rather than by accident, and updating
-    // it is the act of arriving. It stays `toStrictEqual` on the WHOLE object for the reason it
-    // always was: every key here joins the server-injected, never-tenant-settable class and must
-    // move through all three enforcement layers in the same change. A FOURTH key appearing here
-    // still fails, which is the property being kept.
+    // `toStrictEqual` on the WHOLE object, not a property check. See docs/plugins.md §490.
     expect(resolverSaw).toStrictEqual([
       { dockerBinary: "/usr/local/bin/docker", runnerLauncher: undefined, kubernetes: undefined }
     ]);
     expect(seen).toHaveLength(1);
 
-    // THE WHOLE SPEC, `toStrictEqual`. See `@scp/plugin-managed-iac`'s file of the same name for the
-    // measurement that forced it: with the three goldens deleted, three load-bearing fields could be
-    // flipped at once and the whole repo stayed green. The goldens still own the Docker BYTES and
-    // the four preload combinations; these six fields now also live in a file that carries no
-    // deletion hazard in its header.
+    // THE WHOLE SPEC, `toStrictEqual`. See docs/plugins.md §491.
     expect(seen[0], "managed-scan's RunnerSpec changed").toStrictEqual({
       // Derived from the same key `externalId` is built from, so an orphaned container is traceable
       // to the run the commander is waiting on. Caller-supplied, never adapter-minted.
@@ -153,11 +115,7 @@ describe("M23.1: managed-scan launches through the injected RunnerLauncher", () 
       // A CONFIG READ (server-injected, default "none") — this class's charter clause is qualified
       // ("excepting operator-allowlisted registry pulls"), so the operator setting is legitimate.
       networkMode: "none",
-      // No preload dirs in this intent, so NEITHER `-e` pair fires. The two are INDEPENDENTLY
-      // conditional; that independence is the golden's four-combination matrix. They stay in `env`
-      // even when they DO fire: `SCP_SCAN_DB_DIR`/`SCP_SCAN_SCAP_DIR` are container PATHS, not
-      // secrets, which is why this plugin's five golden `create` lines did not move when the
-      // secrecy split landed.
+      // No preload dirs in this intent, so NEITHER `-e` pair fires. See docs/plugins.md §492.
       env: [],
       // NO CREDENTIAL AT ALL. A scan reads bytes the server already pulled; the runner holds
       // nothing, so no `--env-file` is ever written for this plugin.

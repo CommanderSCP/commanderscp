@@ -16,22 +16,7 @@ import {
   createManagedScanExecutorPlugin
 } from "./index.js";
 
-/**
- * HIGH (M23.0 verification pass 7) — FOR THIS PLUGIN THE FAILURE TAIL WAS UNREACHABLE AT EVERY
- * OUTPUT SIZE, and that is the sharpest form of the defect.
- *
- * The port appended the runner's last 2000 characters only when the output EXCEEDED 2000 (below
- * that it is already inside Node's `Command failed: <cmd>\n<stderr>` message and the append was
- * skipped as a duplicate) — and it appended them AFTER that message. This plugin then sliced
- * `runnerOutcomeDetail(result)` to 2000 characters FROM THE FRONT at capture. So the append existed
- * exactly when the message ahead of it was already longer than the slice: below 2000 there was no
- * append, above 2000 the append was past the cut. There was no size at which a Trivy failure's own
- * last words reached `status().detail`.
- *
- * Trivy is the worst case in the fleet — this plugin uses the largest `maxBuffer` of the three
- * (32 MiB) because a report is the biggest thing any managed runner prints — and an operator reading
- * a failed scan got 2000 characters of Node's preamble.
- */
+/** HIGH (M23.0 verification pass 7). See docs/plugins.md §462. */
 
 const REAL_CAUSE = "FATAL: unable to initialize a scanner: DB error: failed to download vuln DB";
 
@@ -111,11 +96,7 @@ describe("HIGH: a failed scan's own last words reach status().detail at every ou
   );
 
   it("THE OUTCOME CACHE ENTRY IS BOUNDED — measured at the STORE, not through status()", async () => {
-    // LOW (M23.0 verification pass 7, finding L2): this arm made exactly the claim in its own title
-    // while reading the value THROUGH `status()`, and its own comment admitted that "reading
-    // through `status()` twice cannot distinguish the two". It was true only because the `.slice`
-    // in `status()` had been removed — re-adding one would have made the test green and the title
-    // false. Now it reads the Map.
+    // LOW (M23.0 verification pass 7, finding L2). See docs/plugins.md §463.
     const plugin = createManagedScanExecutorPlugin(() => failingLauncher(2_000_000));
     const c = ctx();
     const ref = await plugin.trigger(c, {
@@ -139,15 +120,7 @@ describe("HIGH: a failed scan's own last words reach status().detail at every ou
   });
 });
 
-/**
- * MEDIUM (M23.0 verification pass 7, finding M1) — the same property in RAM. `outcomes` is a
- * module-level `Map` that nothing pruned, so a long-lived plugin instance accumulated one ~4 KB
- * entry per scan for the life of the process.
- *
- * DRIVEN THROUGH THE UNSUPPORTED-METHOD REFUSAL, which records a real outcome without launching
- * anything — so this is 1 000+ genuine cache writes rather than a stub poking the Map, and it runs
- * in milliseconds. It is also the one refusal in that file whose length a tenant chooses.
- */
+/** MEDIUM (M23.0 verification pass 7, finding M1). See docs/plugins.md §464. */
 describe("MEDIUM: the in-memory outcome cache is bounded by ENTRY COUNT", () => {
   it("the oldest entry is evicted once the cap is passed, and the newest is still readable", async () => {
     __resetManagedScanOutcomes();

@@ -12,11 +12,7 @@ import type { Db } from "../db/client.js";
 import { PokeRateLimiter } from "./poke-rate-limit.js";
 import { asTrustDomainId } from "@scp/schemas";
 
-/**
- * M14.3 unit coverage for the commander poke SENDER's pure pieces: the poke-target gate
- * (pokeMode + downstream-role + baseUrl), the fail-closed contentless dial, and the send-side
- * coalesce bucket. The two-domain network round trip is in `poke-sender.integration.test.ts`.
- */
+/** Unit coverage for the poke sender's pure pieces. See docs/federation.md §377. */
 
 function peer(overrides: Partial<FederationPeerRow>): FederationPeerRow {
   return {
@@ -90,11 +86,7 @@ describe("M14.3 sendPokeToPeer — contentless + fail-closed (SCOPE 2/5)", () =>
   });
 
   it("REFUSES a NON-https target even WITH client-cert material — and sends ZERO pokes", async () => {
-    // The credential-leak regression: `requireMtls` used to be DERIVED from the target's own scheme,
-    // so a plain-http poke target opted ITSELF out of mTLS and would have received
-    // `Authorization: Bearer <federation bearer>` in CLEARTEXT with no mutual authentication. It is
-    // now the CONSTANT true plus an outright non-https refusal. Proven against a REAL http listener:
-    // it must never see a single request.
+    // The credential-leak regression. See docs/federation.md §378.
     let requests = 0;
     const server: Server = createServer((_req, res) => {
       requests += 1;
@@ -132,20 +124,7 @@ describe("M14.3 send-side coalesce bucket — at most one poke per window (SCOPE
   });
 });
 
-/**
- * UNREADABLE mTLS MATERIAL DISABLES THE SENDER — the log and the behavior have to agree.
- *
- * `resolveFederationClientMtls` throws when the two env paths are set but the files cannot be read
- * (or only one is set). The sender caught that, logged "inert", and then computed `active` as
- * `Boolean(mtls) || federationClientMtlsConfigured(env)` — and that second disjunct is a pure
- * presence check over exactly the paths that are set in this case. So it stayed ACTIVE: a peer scan
- * (a DB query) per org per outbox batch, and a fail-closed refusal per peer per coalesce window,
- * forever, while the operator had been told it was doing nothing.
- *
- * The db is a Proxy that RECORDS every property access, so "did not scan peers" is measured rather
- * than inferred from an absent log line — the round's own catch swallows anything thrown inside it,
- * which is exactly how the active-after-failure sender stayed invisible.
- */
+/** UNREADABLE mTLS MATERIAL DISABLES THE SENDER. See docs/federation.md §379. */
 describe("createCommanderPokeSender — mTLS resolution that THROWS disables the sender", () => {
   /** Records touches instead of throwing: a throw would be swallowed by the round's catch. */
   function spyDb(): { db: Db; touches: string[] } {

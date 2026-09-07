@@ -6,35 +6,7 @@ import {
   PERSISTED_JSON_MAX_CHARS
 } from "./index.js";
 
-/**
- * ================================================================================================
- * PROTOTYPE POLLUTION FROM AN UNTRUSTED EXECUTOR'S RESPONSE — HIGH, M23.0 verification pass 14.
- * ================================================================================================
- * `JSON.parse` gives `__proto__` as an ORDINARY OWN PROPERTY, and a plugin's JSON-RPC response is
- * parsed exactly that way. `walkObjectFields` wrote every field with `out[field.key] = value`,
- * which for that one key is not a store at all — it is a call to `Object.prototype`'s `__proto__`
- * SETTER. Measured on the build before the fix:
- *
- *     input   {"revision":"abc","__proto__":{"polluted":true},"images":["i1"]}
- *     stored  {"revision":"abc","images":["i1"]}
- *     stored.polluted                      true
- *     getPrototypeOf(stored) === Object.prototype   false
- *     truncation                           undefined
- *
- * Three defects in one line: the stored object carries a PLUGIN-CHOSEN PROTOTYPE, the field is
- * charged to the budget and then silently DROPPED (two 3 000-character fields at a budget of
- * 4 000, one of them named `__proto__`: the other stored 1 950 characters where it now stores
- * 3 011), and the value came back changed with NO REPORT — the exact property M23.1g's gate holds,
- * missed because that gate's sweep had no such key in its shapes.
- *
- * THE FIX IS A REFUSAL, NOT A DEFINITION, and the reason is that this row is served over the
- * public API. `Object.defineProperty` would store the field honestly and leave the prototype
- * alone — but it would then ship `"__proto__": {...}` in a JSON response to the generated SDK, the
- * CLI and `apps/web`, handing every one of them a gadget that fires on `Object.assign({}, observed)`
- * (measured: it pollutes; a spread does not). A key that is never legitimate observed-executor
- * state is not worth carrying at that price. The loss is REPORTED rather than silent, which is the
- * whole difference between the fix and the defect.
- */
+/** Prototype pollution from an untrusted response. See docs/runner-launcher.md §379. */
 describe("HIGH: a `__proto__` key in a plugin response cannot reach the stored object", () => {
   /** True when anything reachable in `value` has a prototype the plugin chose. */
   const deepPolluted = (value: unknown): boolean => {
@@ -53,11 +25,7 @@ describe("HIGH: a `__proto__` key in a plugin response cannot reach the stored o
   };
 
   it("THE RUNTIME CLAIM THE GUARD RESTS ON, MEASURED RATHER THAN ASSUMED", () => {
-    // `isUnsafePersistedKey` refuses exactly one key. That is only correct if `__proto__` is the
-    // only string key for which `obj[k] = v` differs from defining an own data property — i.e. the
-    // only own property of `Object.prototype` that is an ACCESSOR, with no non-writable data
-    // property beside it. This is a claim about the RUNTIME, and a future runtime can falsify it,
-    // so it is enumerated here instead of asserted in a comment.
+    // `isUnsafePersistedKey` refuses exactly one key. See docs/runner-launcher.md §380.
     const names = Object.getOwnPropertyNames(Object.prototype);
     expect(names.length, "Object.prototype has no own properties to enumerate").toBeGreaterThan(5);
     const accessors = names.filter((key) => {
@@ -82,12 +50,7 @@ describe("HIGH: a `__proto__` key in a plugin response cannot reach the stored o
   });
 
   it("AND EXACTLY ONE KEY IS REFUSED — every other inherited name is ordinary data", () => {
-    // The other side of the measurement above. `constructor`, `toString`, `hasOwnProperty` and the
-    // rest of `Object.prototype` are WRITABLE DATA properties, so `out[k] = v` creates an own
-    // property exactly as it does for `revision`. Refusing them would silently drop legitimate
-    // observed state — an executor reporting a `constructor` field is odd, not dangerous — and a
-    // guard that is broader than the hazard is a guard nobody can reason about. Without this arm a
-    // predicate that refuses half of `Object.prototype` is green.
+    // The other side of the measurement above. See docs/runner-launcher.md §381.
     const inherited = ["constructor", "toString", "hasOwnProperty", "valueOf", "isPrototypeOf"];
     const input = JSON.parse(
       `{${inherited.map((k, i) => `"${k}":"v${i}"`).join(",")},"revision":"abc"}`
@@ -154,11 +117,7 @@ describe("HIGH: a `__proto__` key in a plugin response cannot reach the stored o
   });
 
   it("IT IS ALSO A BUDGET DEFECT: the refused field no longer charges its siblings", () => {
-    // The walk paid for `__proto__` out of the budget and stored nothing for it, so the money came
-    // off the siblings' share. Two 3 000-character fields at a budget of 4 000:
-    //
-    //     before   the surviving field stored 1 950 characters
-    //     after                              3 011
+    // The walk paid for the key and stored nothing for it. See docs/runner-launcher.md §382.
     const input = JSON.parse(
       `{"__proto__":${JSON.stringify("z".repeat(3_000))},"keep":${JSON.stringify("k".repeat(3_000))}}`
     );

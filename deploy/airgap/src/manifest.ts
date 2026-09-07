@@ -1,13 +1,4 @@
-/**
- * `manifest.json` (rich, for this package's own Node tooling) and `manifest.sh` (flat
- * `KEY=value` shell-sourceable, for install.sh) — two renderings of the same BundleManifest so
- * install.sh never needs a JSON parser (`jq` is not in this project's documented toolchain,
- * BUILD_AND_TEST.md §1) while verify-bundle.ts/tests get a real structured format.
- *
- * `manifest.sh` variable naming: `<UPPER_SNAKE_NAME>_DIGEST`, `_SOURCE_REF`, `_OCI_TAG` per
- * image, plus `BUNDLE_VERSION`/`BUNDLE_BUILT_AT`, and a `BUNDLE_IMAGE_NAMES` space-separated list
- * so install.sh can loop over images without knowing their names ahead of time.
- */
+/** Two renderings of one manifest: JSON for Node, flat for shell. See docs/airgap.md §44. */
 import type { BundleImage, BundleManifest } from "./types.js";
 
 function shellVarStem(imageName: string): string {

@@ -23,14 +23,7 @@ import {
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
 import { assertGovernanceMoveAdmits } from "../governance/move-enforcement.js";
 
-/**
- * The generic `/relationships` write endpoints must never let a client create or delete an
- * engine-owned relationship type directly (adversarial review MAJOR #7 for `approves`; M5 CRITICAL
- * for `coordinates`). The full rationale — and why the dedicated authority-checked paths that
- * legitimately create these edges still work (they call `createRelationship` directly, never this
- * guarded HTTP route) — lives in `graph/system-managed-relationships.ts`. Enforced with 403, at
- * BOTH create and delete.
- */
+/** The generic edge routes must never write a managed one. See docs/routes.md §375. */
 function assertNotSystemManagedRelationship(typeId: string): void {
   if (isSystemManagedRelationshipType(typeId)) {
     throw forbidden(
@@ -39,17 +32,7 @@ function assertNotSystemManagedRelationship(typeId: string): void {
   }
 }
 
-/**
- * Generic `/relationships` endpoints (DESIGN.md §4.1, §6) enforcing endpoint-type and cardinality
- * constraints from the relationship type registry at write time.
- *
- * Relationship writes (create/delete) require `relationship:write` at BOTH endpoints' scopes
- * (DESIGN.md §7; PR #4 security review, CRITICAL 1). This is load-bearing, not pedantry:
- * `member_of` edges feed RBAC subject expansion (authz/resolve.ts), so a from-side-only check
- * would let any subject with `relationship:write` somewhere add themselves `member_of` an
- * arbitrary team/group and inherit its role bindings. Applied uniformly to every relationship
- * type — a member_of-only carve-out would just invite the next type-specific escalation.
- */
+/** Generic `/relationships` endpoints. See docs/routes.md §376. */
 export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -91,11 +74,7 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
           permission: "relationship:write",
           scopeObjectId: request.body.toId
         });
-        // THE SECOND, OPT-IN BAR on a `contains` write (proposal §9.2 door (c), owner ruling
-        // 2026-08-18). A `contains` edge IS a containment parent — route 2 of the same walk
-        // `objects.domain_id` is route 1 of — so creating one MOVES the `to` object into the `from`
-        // container, with exactly the governance-reach consequence a `domainId` write has. Only
-        // `contains`; every other relationship type is an ordinary edge and reaches nothing.
+        // THE SECOND, OPT-IN BAR on a `contains` write. See docs/routes.md §377.
         if (request.body.typeId === "contains") {
           await assertGovernanceMoveAdmits(tx, {
             orgId: auth.orgId,
@@ -207,12 +186,7 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        // THE ADMINISTRATOR FLOOR (`docs/authz/role-binding-door.md` §7). Removing the `member_of` edge
-        // that makes an org's last administrative binding reachable is refused with 409 from
-        // `graph/relationships-repo.ts`'s `deleteRelationship` — a CHOKE POINT, so this route
-        // inherits the refusal and must declare it. Undeclared it would have been serialized as a
-        // bare Problem the generated SDK types as impossible. An added response code is additive
-        // under the oasdiff gate: `deleteRelationship` previously declared 200/401/403/404.
+        // THE ADMINISTRATOR FLOOR. See docs/routes.md §378.
         409: ProblemSchema
       }
     },
@@ -244,12 +218,7 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
           permission: "relationship:write",
           scopeObjectId: found.toId
         });
-        // Deleting a `contains` edge is a MOVE TO THE ORG ROOT: the child stops being contained by
-        // `from` and falls back to its `domain_id` route, which every rooted row terminates at. The
-        // destination is therefore the org root — and the org root is NOT exempt from this bar
-        // (unlike #244's `object:write` pair), because leaving a governed subtree for the top level
-        // is precisely the reach reduction `governance:move` gates. See
-        // `governance/move-enforcement.ts`.
+        // Deleting a `contains` edge is a MOVE TO THE ORG ROOT. See docs/routes.md §379.
         if (found.typeId === "contains") {
           await assertGovernanceMoveAdmits(tx, {
             orgId: auth.orgId,

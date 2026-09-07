@@ -17,26 +17,7 @@ import type { PluginHost } from "../plugin-host/contract.js";
 import { reconcileOrgTick } from "./reconcile.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 
-/**
- * ADR-0028 increment 4, surface 2 — THE HOLD AT THE TERMINAL, against the real `scp` binary.
- *
- * WHY THE REAL BINARY AND NOT `formatStageDependencyLines` ALONE. The renderer is unit-pinned in
- * `packages/cli/src/stage-dependency-surface.test.ts`, and that is the right level for what it says.
- * It cannot pin what this file pins: that the COMMANDS actually call it. Both call sites are inside
- * Commander `.action()` closures, which `cli-absent-formatters.test.ts` documents as the position
- * where ten correct-but-unheld guards hid through an entire mutation sweep — a renderer can be
- * perfect and simply never reached, and the unit test would not notice.
- *
- * THE `--output json` CASE IS THE ONE THAT WAS BROKEN, so it leads. That branch printed
- * `result.waitStatus` alone, and the fixture below is deliberately the shape that exposed it: a
- * change held by a stage dependency that declares NO `requires`. The two couplings are independent,
- * so this is the ordinary ADR-0028 shape rather than a corner — and before this increment it printed
- * the literal `null`, i.e. the scripted path reported "nothing is holding this change" about a change
- * whose trigger was being withheld, while the human path said HELD.
- *
- * Fixture conventions are `stage-dependency-hold.integration.test.ts`'s: `reconcileOrgTick` driven
- * directly so "N ticks" means exactly N, and a fresh org per case.
- */
+/** The hold at the terminal, against the real binary. See docs/coordination.md §925. */
 
 /** Mutable — the in-memory host closes over it and the plugin re-reads it on every call. */
 const executorConfig: {
@@ -176,19 +157,7 @@ describe("stage dependencies: `scp change wait-status` / `explain` (ADR-0028 inc
   }, 180_000);
 
   it("PRINTS `NOT ENFORCED` and the footer for a coupling that had no place to be scoped by", async () => {
-    // THE PATHS THE REVIEW CALLED DEAD. `stageDependencyMark`'s `unscopeable` arm and
-    // `formatStageDependencyLines`'s footer were pinned only against hand-written fixtures, and the
-    // reviewer's test was decisive: hard-coding the server's `unenforced` to `false` left all 43 of
-    // this increment's cases green. That does not mean the state is unreachable — it means nothing
-    // reached it. `stage-dependency-surfaces.integration.test.ts` now pins the server half; this is
-    // the terminal half, through the real binary, so the two cannot drift apart.
-    //
-    // THE SHAPE, and why it is the honest one: NO `topology:`, so `compilePlan` takes its toposort
-    // path and the wave targets name COMPONENTS rather than placements. A component is not a place,
-    // so a stage-scoped coupling has nothing to be scoped by and fails OPEN. The malformed entry
-    // beside it is what makes the state durable rather than one tick wide — the fail-open triggers
-    // its target immediately, and only a fail-CLOSED entry keeps the target awaiting a trigger long
-    // enough for an operator (or this test) to read the surface at all.
+    // THE PATHS THE REVIEW CALLED DEAD. See docs/coordination.md §926.
     const dependency = await componentAtGamma("cli-unenf-dep");
     const dependant = await componentAtGamma("cli-unenf-app");
     const change = await admin.changes.propose({

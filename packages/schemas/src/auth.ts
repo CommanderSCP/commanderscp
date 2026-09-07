@@ -15,22 +15,9 @@ export const LoginResponseSchema = z.object({
 });
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 
-// -------------------------------------------------------------------------------------------
-// Web UI v1 session discovery (M2 step 4, BUILD_AND_TEST.md §8 M2 item 2) — the SPA cannot
-// read the httpOnly `scp_session` cookie itself, so `getCurrentUser`/`logout` give it an API
-// surface to discover "am I logged in" and to end its session; `getAuthConfig` is public (no
-// auth) so the login page can decide whether to offer "Continue with SSO" before the visitor
-// has any credentials at all.
-// -------------------------------------------------------------------------------------------
+// Web UI v1 session discovery. See docs/schemas.md §6.
 
-/**
- * The install-time federation role of the INSTANCE serving this response (`SCP_FEDERATION_ROLE`,
- * `apps/server/src/config.ts`) — outpost-ui.md §9.2. It decides ONLY which nav and route table the
- * web shell mounts (a commander site vs the smaller outpost site); it authorizes nothing, and it is
- * deliberately NOT `federation_self.role` (per-org, advisory, post-install — M16.3 P3 refused that
- * axis for exactly this kind of decision). `retrans` never serves the SPA, so it never reaches a
- * browser, but the enum mirrors the config rather than the UI.
- */
+/** The install-time federation role of this instance. See docs/schemas.md §7. */
 export const InstanceRoleSchema = z.enum(["commander", "outpost", "retrans"]);
 export type InstanceRole = z.infer<typeof InstanceRoleSchema>;
 
@@ -43,14 +30,7 @@ export const CurrentUserSchema = z.object({
   username: z.string(),
   subjectObjectId: z.string().uuid(),
   instanceRole: InstanceRoleSchema,
-  /**
-   * Every role binding this caller holds ANYWHERE in the org, including ones reached through group
-   * or team membership (role-model.md §5 step 6).
-   *
-   * Bindings rather than a rank, because after drizzle/0099 there is no rank: the five purpose
-   * roles are deliberately unordered, so "SecurityOfficer" tells a client nothing unless it also
-   * knows what SecurityOfficer carries and WHERE the binding sits.
-   */
+  /** Every role binding this caller holds anywhere in the org. See docs/schemas.md §8. */
   roleBindings: z.array(
     z.object({
       roleId: z.string().uuid(),
@@ -59,22 +39,7 @@ export const CurrentUserSchema = z.object({
       effect: z.enum(["allow", "deny"])
     })
   ),
-  /**
-   * ⚠️ THE UNION OF PERMISSIONS HELD AT *SOME* SCOPE — NOT AUTHORITY EVERYWHERE.
-   *
-   * The name is `permissionsAnywhere` and not `permissions` on purpose, and it is the one place
-   * this step deviates from role-model.md §5 step 6's wording. A field called `permissions` on an
-   * endpoint called "me" reads as "what I can do", and the obvious client line —
-   * `me.permissions.includes("object:write")` to decide whether to render a Create button — is
-   * WRONG for exactly the principals these roles exist to express: a ComponentAdmin bound at one
-   * component holds `object:write` at that component and nowhere else, and would be shown a global
-   * control that 403s. The longer name makes the misuse visible at the call site.
-   *
-   * WHAT IT IS LEGITIMATELY FOR: coarse navigation. "Should the Policies section appear in the nav
-   * at all" is answerable from this union — if the caller holds `policy:write` nowhere, the section
-   * is dead for them everywhere. Anything finer than that is `GET /api/v1/authz/effective`, which
-   * takes the object and is the only field that can answer per-scope questions.
-   */
+  /** ⚠️ THE UNION OF PERMISSIONS HELD AT *SOME* SCOPE. See docs/schemas.md §9. */
   permissionsAnywhere: z.array(z.string())
 });
 export type CurrentUser = z.infer<typeof CurrentUserSchema>;

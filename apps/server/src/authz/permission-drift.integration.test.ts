@@ -6,96 +6,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PERMISSIONS } from "./resolve.js";
 import { buildTestServer, testDatabaseUrl, type TestServer } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * THE PERMISSION DRIFT GATE — role-model.md §5 step 4
- * ================================================================================================
- *
- * THREE POPULATIONS THAT MUST AGREE, and until this file existed nothing compared any two of them:
- *
- *   1. **What the code DEFINES** — `authz/resolve.ts`'s {@link PERMISSIONS}.
- *   2. **What the database GRANTS** — the `permissions` array on every built-in (`org_id IS NULL`)
- *      role, as the migrations actually left it.
- *   3. **What the code DEMANDS** — the permission literals appearing at call sites.
- *
- * THE FAILURE THIS EXISTS TO CATCH IS NOT HYPOTHETICAL. `org:admin` was defined in (1), granted to
- * Owner by drizzle/0002 in (2), and demanded at ZERO call sites in (3) — for its entire life. It
- * advertised authority in a roles listing and gated nothing. It was found because a human ran a
- * census by hand in 2026-08, which is not a control. Every population was internally consistent;
- * the defect was only ever visible BETWEEN them.
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THIS IS AN INTEGRATION TEST, AND WHY THE SEEDED HALF IS READ FROM A DATABASE
- * ------------------------------------------------------------------------------------------------
- * The obvious cheap version greps the migration SQL for permission literals. It was written, run,
- * and is wrong — measured on this repo, that census returns `org:admin` (a string drizzle/0099
- * REMOVES, so grepping the text reports the opposite of the truth), plus `scp:managed-by` and
- * `scp:stack`, which are governance LABEL KEYS and not permissions at all. Migrations are a
- * sequence of edits, and the only thing that knows their composition is a database that has run
- * them. So this test runs them and reads `roles`.
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THE CALL-SITE CENSUS READS BYTES INSTEAD OF SHELLING OUT TO grep
- * ------------------------------------------------------------------------------------------------
- * CLAUDE.md's standing hazard: some tracked source files contain literal NUL bytes (NUL is a
- * composite-key delimiter here and is correct), every search tool classifies those files as binary,
- * and a recursive search DROPS them with no output and exit 0/1 — indistinguishable from "no such
- * code exists". A census whose blind spot is invisible is worse than no census. `readFileSync`
- * has no such notion: it returns the bytes. This walk is also FILTERLESS by construction — it
- * descends every directory under `src/` and reads every `.ts` file, because a filter is exactly
- * where the next instance hides.
- */
+/** THE PERMISSION DRIFT GATE. See docs/authz.md §26. */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC_ROOT = path.resolve(HERE, "..");
 const DRIZZLE_DIR = path.resolve(HERE, "../../drizzle");
 
-/**
- * A permission this system DEFINES but deliberately grants to NO built-in role.
- *
- * Empty today, and that is the finding rather than an oversight: every one of the 22 permissions is
- * carried by at least one built-in. An entry here must say why the permission exists ungranted —
- * the honest case is one reserved for custom roles (role-model.md §5 step 10), which do not exist.
- */
+/** A permission defined but granted to no built-in role. See docs/authz.md §27. */
 const UNGRANTED_BY_DESIGN: Readonly<Record<string, string>> = {};
 
-/**
- * A permission this system DEFINES and GRANTS but demands at no call site.
- *
- * Empty today, deliberately and load-bearingly: `org:admin` is the only string that was ever in
- * this state, and drizzle/0099 removed it rather than documenting it. An entry here is a claim
- * that a permission which appears in `GET /roles` — advertising authority to every operator who
- * reads it — gates nothing, and that claim should be hard to make quietly.
- */
+/** A permission granted but demanded at no call site. See docs/authz.md §28. */
 const UNGATED_BY_DESIGN: Readonly<Record<string, string>> = {};
 
-/**
- * ================================================================================================
- * THE WIDENING REGISTRY — role-model.md §4.4's assertion, which is not about drift at all
- * ================================================================================================
- *
- * A built-in role row is a SHARED SINGLETON: `org_id IS NULL`, read by every org on the deployment
- * through the `roles` RLS `USING (org_id = current_org OR org_id IS NULL)` clause. So
- * `array_append`ing a permission to one does not widen a role — it widens EVERY EXISTING BINDING OF
- * THAT ROLE, in every org, at once, with no per-org opt-out and no re-check.
- *
- * `docs/authz/role-binding-door.md` §8 records why that cannot be fixed at the write door: the subset
- * rule is a WRITE-time test with no read-time mirror, so a binding written legitimately today
- * confers whatever its role gains tomorrow. Re-testing at resolve time would put ~20 permission
- * probes on the hot path of every authorization AND make a subject's authority depend on the
- * current authority of whoever granted it years ago. Refusing the migration is worse: appending to
- * a shared singleton is how every permission this system has ever added arrived.
- *
- * So the control is not a refusal, it is a DECLARATION: a migration that changes a built-in's
- * permission array must state, here, which role it changes and what the blast radius is. This
- * registry and the migrations are compared IN BOTH DIRECTIONS below.
- *
- * ⚠️ THE DECLARATIONS LIVE HERE RATHER THAN AS COMMENTS IN THE .sql FILES, and that is forced:
- * `drizzle-orm`'s migrator sha256s each migration's text into `__drizzle_migrations`, so editing an
- * applied file to add a comment changes a recorded hash. Entries below for migrations 0010 through
- * 0094 are BACKFILLED — they document history that predates the rule, and they were read off the
- * migrations rather than remembered.
- */
+/** THE WIDENING REGISTRY. See docs/authz.md §29. */
 type Widening = {
   /** The migration file's tag, exactly as `drizzle/_journal.json` carries it. */
   readonly migration: string;
@@ -234,16 +157,7 @@ function everyTypeScriptFile(dir: string): string[] {
   return out;
 }
 
-/**
- * Parse every statement that mutates a built-in role's `permissions` array out of the migration
- * SQL.
- *
- * DELIBERATELY OVER-BROAD ON THE PATTERN. It matches `array_append`, `array_remove` and `array_cat`
- * on a column named `permissions`, anywhere in the file, including inside a comment. A false
- * positive costs one registry entry; a false negative is a silent widening, which is the entire
- * thing being guarded. Wholesale replacement (`SET permissions = ARRAY[...]`) is matched too —
- * there are none today, and there being none is asserted rather than assumed.
- */
+/** Parse every role-array mutation, deliberately over-broad. See docs/authz.md §30. */
 function widenings(
   sql: string,
   tag: string
@@ -364,15 +278,7 @@ describe("the permission drift gate (role-model.md §5 step 4)", () => {
     });
 
     it("there is no wholesale replacement of a built-in's permissions array", () => {
-      // `SET permissions = ARRAY[...]` would silently rewrite a shared singleton's whole grant, and
-      // the append/remove parser above would not see it. There are none; if one ever lands, this
-      // fails and the parser needs to grow rather than the assertion being relaxed.
-      // CAPTURE THE TOKEN, DO NOT LOOK AHEAD PAST `\s*`. The first version of this used
-      // `SET\s+permissions\s*=\s*(?!array_)` and fired on every legitimate `array_append` in the
-      // tree — because `\s*` backtracks to match FEWER spaces, putting the lookahead at a position
-      // where the next characters are whitespace rather than `array_`, which duly is not `array_`.
-      // A negative lookahead behind a variable-width match asserts nothing. Reading the token and
-      // comparing it cannot express that bug.
+      // A whole-array assignment would slip past the parser above. See docs/authz.md §31.
       const offenders: string[] = [];
       for (const f of migrationFiles) {
         const sql = readFileSync(path.join(DRIZZLE_DIR, f), "utf8");

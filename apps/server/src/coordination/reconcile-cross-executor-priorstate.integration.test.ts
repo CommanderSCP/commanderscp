@@ -13,26 +13,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changeWaveTargets } from "../db/schema.js";
 
-/**
- * Regression: the forward-trigger "prior known-good state" snapshot (reconcile.ts's `sync` branch)
- * and the rollback prior-state lookup must only ever consider a prior SUCCEEDED execution that ran
- * on the SAME executor plugin instance as the current trigger.
- *
- * The bug: `findLatestSucceededExecution` returned a target's most recent succeeded execution
- * REGARDLESS of which executor ran it, and the caller then passed that (possibly FOREIGN) executor
- * ref to the CURRENT trigger's `client.status()`. In production this wedged a wave forever: a
- * component whose latest succeeded run was an infra push that fell back to the fake-executor, then
- * driven by a real argocd software promotion, called argocd `status()` with the fake ref — argocd
- * `GET /applications/<uuid>` → 403 → the trigger tx threw, the target never triggered, and every
- * reconcile tick re-threw the same 403.
- *
- * These tests drive the real reconcile loop against the real fake-executor subprocess host. The
- * fake-executor is deliberately forgiving (an unknown/foreign ref yields phase `pending` with NO
- * `stateRef`, never a throw), which makes the seam observable WITHOUT reproducing the argocd 403:
- * if the current trigger consults a foreign row, the snapshot comes back empty (priorStateRef
- * null); if it correctly consults the SAME-executor prior run, the snapshot carries that run's
- * versioned `stateRef`. The first test pins exactly that difference.
- */
+/** The prior known-good state snapshot, as a regression. See docs/coordination.md §727. */
 describe("reconcile: prior-state snapshot is scoped to the current executor instance", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -90,11 +71,7 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
     expect(change1Target[0]!.executorPluginId).toBe("fake-executor");
     const change1WaveId = change1Target[0]!.waveId;
 
-    // Poison: inject a MORE-RECENT succeeded wave target for the SAME component that ran under a
-    // DIFFERENT executor (a foreign argocd instance), carrying a ref only that executor could
-    // interpret. This is the row `findLatestSucceededExecution` used to pick (newest by updatedAt)
-    // regardless of executor. Attached to change #1's real wave/plan so it satisfies the repo's
-    // wave/plan inner joins.
+    // Poison: a more recent success under a different executor. See docs/coordination.md §728.
     const foreignTargetId = uuidv7();
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.insert(changeWaveTargets).values({
@@ -154,21 +131,13 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
     );
 
     expect(change2Target.executorPluginId).toBe("fake-executor");
-    // The crux: the snapshot used change #1's SAME-executor ref (fake-executor reported "v0"),
-    // proving the trigger did NOT call status() with the newer foreign argocd ref.
-    //   - pre-fix: the foreign row was selected; fake-executor.status(foreignRef) => pending, no
-    //     stateRef => priorStateRef === null (assertion fails).
-    //   - post-fix: change #1's fake-executor row is selected => stateRef "v0".
+    // The crux: the snapshot used change #1's SAME-executor ref. See docs/coordination.md §729.
     expect(change2Target.priorStateRef).toBe("v0");
     expect(change2Target.priorStateRef).not.toBe("foreign-state");
   });
 
   it("a foreign-executor succeeded run this executor can't interpret does not wedge the trigger", async () => {
-    // A component whose ONLY prior succeeded execution ran on a foreign executor, carrying a ref
-    // this executor cannot interpret. Post-fix the foreign row is invisible to the same-executor
-    // lookup, so no status() call is made against it and the target triggers normally. Pre-fix the
-    // foreign ref was handed to the current executor's status(); with a ref shaped like one that
-    // executor rejects, that call threw inside the trigger tx and wedged the wave forever.
+    // A component whose only prior success ran elsewhere. See docs/coordination.md §730.
     const comp = await createTestComponent(admin, { name: `xexec-wedge-${uuidv7().slice(0, 8)}` });
 
     // Borrow an existing real wave/plan so the injected foreign row satisfies the repo joins.

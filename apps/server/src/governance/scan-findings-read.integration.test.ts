@@ -15,52 +15,7 @@ import {
 } from "../test-support/harness.js";
 import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
-/**
- * M22.9 (ADR-0033 §7) — `GET /control-runs/{id}/findings` IS REGISTERED, AND THE MARKER REACHES THE
- * WIRE.
- *
- * `scan_findings` was write-only: two producers wrote it, both discarded the return, and the only
- * reads anywhere in the tree were integration tests reaching into the table. The read route closes
- * that. What it did NOT come with was a proof it is INSTALLED — the wire contract is pinned in
- * `packages/schemas/src/governance.test.ts` and the repo function in
- * `scan-findings.integration.test.ts`, and neither touches the handler, so deleting the `typed.route`
- * block killed no test. This repo's dominant defect is a component built, tested green against
- * itself, and installed nowhere.
- *
- * SO EVERY CASE HERE SPEAKS REAL HTTP to a really-listening server, and the rows under test are
- * produced by the REAL lifecycle gate driving the REAL subprocess plugin host running the REAL
- * `scan-result-control` against a loopback Trivy-shaped result. Nothing calls `loadScanFindings`.
- *
- * WHY `fetch` RATHER THAN THE SDK: `@scp/sdk`'s handwritten client exposes `controlRuns.listForChange`
- * and nothing else, and the generated `listControlRunFindings` is not re-exported from the package
- * index — so there is no SDK method to call today. That gap is real and worth naming: `apps/web` and
- * the CLI consume ONLY the SDK (charter principle 3), so until a wrapper lands this route has no
- * first-party consumer. These cases pin the HTTP surface the wrapper would sit on.
- *
- * WHAT THESE CASES DO NOT COVER, stated rather than glossed: the `unsupported` marker. It is produced
- * only by an OpenSCAP verdict, which arrives through the commander's managed scan step and not
- * through any bound ControlPlugin, so it cannot be reached over HTTP from here at all — it is pinned
- * at the producer in `scan-findings.integration.test.ts` (P2). `truncated` and ABSENT are both
- * reachable and both covered below, which is what makes "a non-`full` marker survives to the wire" a
- * measurement rather than an assumption.
- *
- * MUTATIONS RUN against this file (2026-08-18) — the MEASURED result, applied against a passing suite
- * and reverted by an exact inverse edit. Baseline: 5 passed. Nothing below is a prediction.
- *
- *   M-1  DELETE the whole `typed.route({ method: "GET", url: "/api/v1/control-runs/:id/findings" })`
- *        block from `routes/governance.ts`
- *          -> 5 failed here (F1-F5), all with `expected 404 to be 200`. AND: the server's ENTIRE unit
- *             suite stayed green under the same deletion — 81 files, 1173 tests — which is the
- *             measurement this file exists for. `packages/schemas/src/governance.test.ts` pins the
- *             wire CONTRACT and `scan-findings.integration.test.ts` pins the repo function, and
- *             neither of them ever reaches the handler.
- *
- *             NOTE WHAT F3 WOULD HAVE DONE ALONE: its cross-org assertion is `404`, which is exactly
- *             what a deleted route answers, so the tenancy case is satisfied by the mutation. It dies
- *             only because of the positive control on the line above it — the OWNER reading their own
- *             run and getting 200. That control is not decoration; without it the tenancy case is a
- *             test that passes when the feature is absent.
- */
+/** The findings route is registered, and the marker holds. See docs/governance.md §328. */
 
 const OPERATOR_TOKEN = "m22-9-findings-read-operator-token-fixture";
 const MATCH_DIGEST = "sha256:eeee888888888888888888888888888888888888888888888888888888888888";
@@ -70,12 +25,7 @@ interface TrivySource {
   close(): Promise<void>;
 }
 
-/**
- * Loopback-only Trivy fixture (never the internet). `?n=<count>` produces that many synthetic HIGH
- * findings — the only way to reach `SCAN_FINDINGS_PERSIST_CAP` through the real plugin; `?fix=y,n`
- * controls per-finding `FixedVersion`, which is what makes one finding excludable by a
- * `no_fix_available` clause and its neighbour not.
- */
+/** Loopback-only Trivy fixture. See docs/governance.md §329. */
 async function startTrivySource(): Promise<TrivySource> {
   const httpServer = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -300,11 +250,7 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
   }
 
   it("F1: the persisted decomposition of a REAL gate's scan verdict is readable, with the retention class the write decided", async () => {
-    // THE ROUTE'S REASON TO EXIST. `SCAN_EXCLUSION_EVIDENCE_CAP` (100) bounds the per-clause
-    // enumeration on `evidence.exclusions.applied` while `appliedCount` stays EXACT, so past 100
-    // exclusions these class-`E` rows are the ONLY per-finding record of what an operator chose to
-    // tolerate (ADR-0033 D10, charter principle 6). A run whose findings are all class `O` would not
-    // show that, which is why this fixture excludes one of the two.
+    // THE ROUTE'S REASON TO EXIST. See docs/governance.md §330.
     await admitAtInstance("no_fix_available");
     const { org, admin, component } = await orgWithComponent("findings-read");
 
@@ -348,25 +294,13 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
     // ...and the two facts only the WRITE knew. `E` is the accepted-risk row.
     expect(items.map((f) => f.retentionClass)).toEqual(["O", "E"]);
     expect(items[1]).toMatchObject({ pkgName: "openssl", severity: "low" });
-    // ABSENCE SURVIVES AS ABSENCE. `fixedVersion` is the field the `no_fix_available` clause matched
-    // on, and the row that has none omits the key rather than sending `null` — `ScanFindingSchema`'s
-    // attribution fields are `.optional()` and never nullable, so a `null` would fail the response
-    // schema (`toPersistedScanFinding` drops them for exactly that reason). A consumer that read
-    // `fixedVersion === null` as "no fix" would be reading a key that is never sent.
+    // ABSENCE SURVIVES AS ABSENCE. See docs/governance.md §331.
     expect(items[1]).not.toHaveProperty("fixedVersion");
     expect(items[0]).toMatchObject({ pkgName: "zlib", fixedVersion: "9.9.9" });
   });
 
   it("F2: the route PAGES by ordinal, and every page carries the marker", async () => {
-    // PAGING IS NOT OPTIONAL on this surface: `SCAN_FINDINGS_PERSIST_CAP` is 2000 rows per run and
-    // M22.0a made several runs per change the norm. Driven at `limit=1` over a two-row set rather
-    // than over a large one, because what needs proving is that the cursor ADVANCES and TERMINATES,
-    // and a 2000-row walk would prove the same thing 1000 times more slowly.
-    //
-    // THE MARKER ON THE SECOND PAGE is the assertion that is easy to omit and matters most: a
-    // consumer that pages sees `findingsRecord` on the first response and would otherwise have to
-    // remember it — and `ControlRunFindingsResponseSchema` makes it required precisely so no page can
-    // be read without it.
+    // PAGING IS NOT OPTIONAL on this surface. See docs/governance.md §332.
     const { org, admin, component } = await orgWithComponent("findings-page");
     const control = await scanControl(admin, org, {
       suffix: "findings-page",
@@ -447,11 +381,7 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
   });
 
   it("F4: a NON-scan control's run answers `findingsRecord: null` — the ABSENT state, said positively", async () => {
-    // THE STATE A BARE ARRAY CANNOT EXPRESS. `webhook-control` returns `status` and `evidence`
-    // verbatim from an operator-configured endpoint, so its run is a real, passing control outcome
-    // whose evidence is not a scan verdict — the same shape every pre-M22.1b run has. A consumer that
-    // read `items: []` and stopped would conclude "this scan found nothing"; the `null` says "there
-    // is no finding set here at all, and no exclusion can apply".
+    // THE STATE A BARE ARRAY CANNOT EXPRESS. See docs/governance.md §333.
     const { org, admin, component } = await orgWithComponent("findings-absent");
     const control = await admin.controls.create({
       name: "webhook-control-absent",
@@ -531,15 +461,7 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
   });
 
   it("F6: the SDK wrapper reaches the same route — API/SDK parity, not just an API", async () => {
-    // CHARTER PRINCIPLE 3: every capability is API -> SDK -> CLI -> IaC -> UI, and the UI and CLI
-    // consume ONLY the generated SDK. A route with no client wrapper therefore has no first-party
-    // consumer, which is how a surface ships complete-on-paper and unreachable in practice — the
-    // exact shape M22.9's admission door already shipped in once.
-    //
-    // Every other case here speaks raw `fetch` ON PURPOSE, so that a 404 means "the route is not
-    // registered" rather than "the wrapper is wrong". This one is the opposite question, and it is
-    // the only case in the file that can answer it: the wrapper was added AFTER the route, and an
-    // unexercised wrapper is the same defect class one layer up.
+    // CHARTER PRINCIPLE 3. See docs/governance.md §334.
     await admitAtInstance("no_fix_available");
     const { org, admin, component } = await orgWithComponent("findings-sdk");
 

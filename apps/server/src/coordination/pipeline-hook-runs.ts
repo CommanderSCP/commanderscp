@@ -23,60 +23,9 @@ import {
 } from "./executor-bindings-repo.js";
 import { recordTestRunEvidence } from "./pipeline-hooks-repo.js";
 
-/**
- * RUN TRACKING for pipeline test hooks (team-pipeline-iac increment 8, migration 0098) — the layer
- * between "SCP triggers a test workflow" and "evidence exists".
- *
- * ============================================================================================
- * THE GAP THIS CLOSES, STATED AS THE CONTRACT STATES IT
- * ============================================================================================
- * `TestRunEvidenceSchema.outcome` is `passed|failed` and nothing else, deliberately: "Evidence is a
- * record of something that FINISHED; an in-flight run is expressed by the ABSENCE of evidence."
- *
- * That is right for evidence and it leaves one fact homeless. Between dispatching a postDeploy suite
- * for wave N and that suite finishing, nothing in the database says the dispatch happened. The
- * reconcile tick runs once a second; every tick would look for evidence, correctly find none,
- * correctly conclude `awaiting` — and dispatch the suite again. `pipeline_hook_runs` records exactly
- * the one fact evidence structurally cannot: THAT WE ALREADY ASKED.
- *
- * It is not a second evidence table. `evaluatePostDeployGate` never reads it; the verdict functions
- * in `./pipeline-hook-verdicts.ts` see only `pipeline_evidence` rows, exactly as before. What this
- * module guarantees is that exactly one such row eventually appears per run, and that the run fires
- * once.
- *
- * ============================================================================================
- * THE SHAPE IS `reconcile.ts`'s, NOT A SECOND ONE
- * ============================================================================================
- * Both drivers below are deliberate copies of the two shapes `coordination/reconcile.ts` already
- * uses, because a second shape for the same problem is how two answers to one question get written:
- *
- *   TRIGGER — `triggerWaveTarget`'s crash-safe three steps (PR #7 review CRITICAL #2). tx A claims;
- *     the external `trigger()` call happens OUTSIDE any open transaction; tx B records the returned
- *     ref. A crash anywhere between leaves a durable claim and nothing else, and the next tick
- *     re-derives the SAME `idempotencyKey` and re-calls `trigger()`, which a conformant executor
- *     dedups into the same `ExternalRunRef`.
- *
- *   POLL — `reconcileExecutingChange`'s status loop: resolve the instance, `client.status(ref)`,
- *     map the phase, persist the observation in its own short transaction.
- *
- * BOTH TAKE `db`, NOT `tx`, AND THAT IS THE WHOLE POINT of the shape rather than a convenience. An
- * external RPC inside an open transaction is the bug reconcile.ts spent CRITICAL #2 removing: the
- * side effect is irreversible and the transaction is not, so any later failure in the same
- * transaction rolls back the record of a dispatch that really happened. The tx-taking halves are
- * exported separately (`claimHookRun`, `listNonTerminalHookRuns`, `applyHookRunObservation`) so a
- * caller that genuinely only wants the database half has one, without an executor call riding along.
- */
+/** RUN TRACKING for pipeline test hooks. See docs/coordination.md §616. */
 
-/**
- * A run's status, PINNED TO `ExecutionPhase` MEMBER FOR MEMBER.
- *
- * Not "similar to" it — the `PHASE_TO_STATUS` map below is a TOTAL `Record<ExecutionPhase, ...>`, so
- * a member added to `@scp/plugin-api`'s union and not handled here is a COMPILE ERROR rather than a
- * run that silently stays non-terminal forever and re-polls until the heat death of the estate. That
- * total-`Record` idiom is the one this repo already uses to pin `DependencyIndexEcosystem` and
- * `RolloutTargetClass` across the same package boundary, and it is used here for the same reason:
- * the two copies of the ecosystem vocabulary DID drift once, precisely because no test crossed it.
- */
+/** A run's status, pinned to the phase member for member. See docs/coordination.md §617. */
 export type HookRunStatus = ExecutionPhase;
 
 const PHASE_TO_STATUS: Record<ExecutionPhase, HookRunStatus> = {
@@ -98,44 +47,10 @@ export function isTerminalHookRunStatus(status: HookRunStatus): boolean {
   return (TERMINAL_STATUSES as readonly string[]).includes(status);
 }
 
-/**
- * Which executor Type a hook run resolves its binding on (ADR-0007 routing).
- *
- * ONE CONSTANT, USED BY BOTH THE TRIGGER AND THE POLL, and that is the property that matters rather
- * than the value. `reconcile.ts` has a comment on exactly this hazard — resolving the poll on a
- * different Type than the trigger used "would silently drive the wrong pipeline" — and it avoids it
- * by persisting the wave target's Type. This table does not carry a Type column, so agreement is
- * bought instead by there being a single definition that both paths read.
- *
- * `configuration` STAYS the Type. The prediction this doc used to carry — that §14's dedicated test
- * lane would arrive as a new member of `ExecutorTypeSchema` — turned out WRONG, and it is corrected
- * here rather than left to misdirect the next reader: the lane landed as a SEPARATE DIMENSION
- * (`ExecutorLaneSchema`, migration 0105) alongside the Type, not as a value inside it. A hook run
- * therefore resolves the same Type as everything else and discriminates on `HOOK_RUN_EXECUTOR_LANE`
- * below. That is the better shape — a lane is orthogonal to which pipeline a release drives, and
- * folding it into the Type would have made every (Type x lane) pair a new enum member.
- */
+/** Which executor Type a hook run resolves its binding on. See docs/coordination.md §618. */
 export const HOOK_RUN_EXECUTOR_TYPE = DEFAULT_BINDING_TYPE;
 
-/**
- * Which LANE a hook run dispatches on (§14 resolution 7, ADR-0046 §4) — `test`.
- *
- * SAME ONE-CONSTANT PROPERTY as the Type above, and it is load-bearing in a sharper way here. The
- * trigger resolves a plugin instance; the poll re-resolves it from the same derived carrier and
- * REFUSES to poll when the instance it finds is not the one the run was claimed under
- * (`pluginInstanceId`). So a trigger on `test` and a poll on the default `build` would not fail
- * loudly — the poll would resolve a different instance, decide the binding had changed, and leave
- * every run in flight forever while logging once per tick. Both paths read this constant.
- *
- * WHY `test` IS SAFE AS THE DEFAULT FOR EVERY ESTATE, including the ones that have never heard of
- * lanes: `resolveLaneBinding` falls back to the BUILD lane's row when no `test` binding is declared
- * (§14 res 7 — "a test lane request with no test declaration resolves to the build lane's answer").
- * An estate that never separates its lanes therefore behaves exactly as it did before this constant
- * existed. The fallback is read-time and deliberately NOT materialised by the reconciler, so hand-
- * authored estates — which is every estate today — never carry a test row, and asking for `test`
- * without the fallback would resolve NOTHING and make `ensureHookRunTriggered` throw its
- * loud-unbound refusal on every run.
- */
+/** Which lane a hook run dispatches on, as one constant. See docs/coordination.md §619. */
 export const HOOK_RUN_EXECUTOR_LANE: ExecutorLane = "test";
 
 // Identity and the idempotency key
@@ -157,29 +72,7 @@ export interface HookRunIdentity {
  *  function: what crosses to the plugin is the hex digest below. */
 const KEY_DELIMITER = "\u0000";
 
-/**
- * `TriggerIntent.idempotencyKey` for one logical run, DERIVED — never minted.
- *
- * ============================================================================================
- * WHY THIS IS A PURE FUNCTION OF THE IDENTITY AND NOT, SAY, THE ROW'S `id`
- * ============================================================================================
- * The contract's requirement is that the key be "IDENTICAL every time ... including after a
- * crash/resume where the engine can't tell whether the previous call's side effect actually fired".
- * The row id would satisfy that too (it is stable once claimed, and `claimHookRun` returns the
- * EXISTING row on conflict, so a retry re-reads the same id) — that is exactly what `reconcile.ts`
- * does with `waveTargetId`.
- *
- * Deriving from the identity instead buys one extra property that matters here and does not there:
- * the key is computable BEFORE the row exists, and by any caller, from facts alone. So the claim
- * and the trigger cannot disagree even in the window where the claim's outcome is unknown, and a
- * test can assert the key without reaching into storage. The two derivations agree in every case
- * anyway, because the row id is itself a function of the identity via the unique constraint.
- *
- * SHA-256 hex rather than the joined components: the pre-image contains NUL bytes and unbounded-ish
- * text, and this value crosses a JSON-RPC boundary into third-party plugin code that may forward it
- * to an executor with its own charset and length limits. A fixed 64-char lowercase-hex tail is safe
- * everywhere and reveals nothing about the tenant.
- */
+/** The idempotency key is derived, never minted. See docs/coordination.md §620. */
 export function hookRunIdempotencyKey(identity: HookRunIdentity): string {
   const preimage = [
     identity.orgId,
@@ -240,13 +133,7 @@ function toRunRow(row: typeof pipelineHookRuns.$inferSelect): PipelineHookRunRow
   };
 }
 
-/**
- * The BINDING CARRIER for a run — the graph object whose executor binding this run dispatches
- * through, and the object a later poll must resolve the SAME instance from.
- *
- * Derived rather than stored, so the two paths cannot disagree: the deployment target when there is
- * one, and the component when there is not (`postMerge`, which is not target-specific).
- */
+/** The BINDING CARRIER for a run. See docs/coordination.md §621. */
 export function hookRunBindingCarrier(
   run: Pick<PipelineHookRunRow, "targetObjectId" | "componentObjectId">
 ): string {
@@ -255,45 +142,7 @@ export function hookRunBindingCarrier(
 
 // 0b. The D23 capture — three facts that must ALL be present, or nothing
 
-/**
- * THE PIN A RUN IS CAPTURED AT, or `null`.
- *
- * ============================================================================================
- * THREE FACTS, ALL REQUIRED, NONE OF THEM INVENTED
- * ============================================================================================
- *   1. The DECLARED `WorkflowRef` (repo, branch, path) off the `pipeline_hooks` row — what the team
- *      wrote in IaC. On its own it is "a pointer into whatever the cluster happens to hold right
- *      now", which is exactly what D23 refuses to gate on.
- *   2. The BUILT COMMIT off the change's `source_ref` — read with `commitShaOfSourceRef`, the ONE
- *      definition of "which commit is this change about" that `gate-orchestrator.ts` already uses to
- *      bind a `postMerge` evidence lookup and a `github-check` control. A second reader here would
- *      be a run pinned to a different commit than the gate beside it asks about.
- *   3. The TEST BUNDLE `{repository, digest}` off `source_ref.testBundle` — the reference the build
- *      REPORTED (`ChangeReportRequestSchema.testBundle`). This is the fact that did not exist in the
- *      tree until now, and its absence is why every run's `captured_workflow` was NULL.
- *
- * ============================================================================================
- * WHAT THIS FUNCTION REFUSES TO DO, AND WHY EACH REFUSAL IS LOAD-BEARING
- * ============================================================================================
- * ANY of the three missing yields `null`, which the caller stores as NULL and the poll driver turns
- * into `no_captured_workflow`: terminal status recorded, NO evidence written, named reason logged.
- * That is today's behaviour preserved exactly, and it is preserved rather than patched because each
- * available shortcut is a lie of a different shape:
- *
- *   - Fabricating a digest (`sha256:` + zeros, or the image's own digest) would satisfy
- *     `CapturedWorkflowRefSchema`'s regex and produce evidence pinned to bytes nobody verified —
- *     the failure `evaluateScanCoverage`'s `not_digest_bound` refusal prevents one layer down.
- *   - Falling back to "the branch tip" for the commit would make "which tests gate this wave" a
- *     statement about whatever main holds today, which is the unreproducible thing D23 exists to
- *     replace.
- *   - Inferring the bundle repository by convention from the image repository (`acme/api` ->
- *     `acme/api-tests`) would bind a gate verdict to a location SCP GUESSED. D18's rule is that the
- *     source is always explicit, and this repo has already measured what a provenance label computed
- *     from "which branch matched" rather than read off the resolved object costs.
- *
- * PARSED, NOT ASSEMBLED: the result goes through `CapturedWorkflowRefSchema`, so a 7-character short
- * sha or a non-canonical digest yields `null` rather than a row that merely has the right keys.
- */
+/** THE PIN A RUN IS CAPTURED AT, or `null`. See docs/coordination.md §622. */
 export function deriveCapturedWorkflow(
   declaredWorkflow: unknown,
   sourceRef: unknown
@@ -342,23 +191,7 @@ export interface ClaimHookRunResult {
   claimed: boolean;
 }
 
-/**
- * Claims the right to trigger one run, or reports that somebody else already holds it.
- *
- * ============================================================================================
- * `ON CONFLICT DO NOTHING` RATHER THAN CATCH-THE-UNIQUE-VIOLATION, AND THIS IS NOT A STYLE CHOICE
- * ============================================================================================
- * The obvious spelling — insert, catch `23505`, then SELECT the existing row — does not work inside
- * a transaction, and fails in a way that looks like it works when the function is tested with its
- * own connection. A constraint violation ABORTS the enclosing PostgreSQL transaction; every
- * subsequent statement on it, including the recovery SELECT, fails with `25P02` until a rollback.
- * So the caught error would be swapped for a more confusing one, at exactly the moment the code path
- * is trying to be graceful. `ON CONFLICT DO NOTHING` never raises, so the transaction survives and
- * the follow-up read is a plain read.
- *
- * The UNIQUE constraint is still the guard — it is what makes the conflict happen. This is only the
- * spelling that lets the loser find out politely.
- */
+/** Claims the right to trigger, or reports who holds it. See docs/coordination.md §623. */
 export async function claimHookRun(
   tx: TenantTx,
   input: ClaimHookRunInput
@@ -495,15 +328,7 @@ export interface EnsureHookRunTriggeredInput {
    *  `postMerge`. Absent is permitted here and refused at the evidence write. */
   artifactDigest?: string | null;
   commitSha?: string | null;
-  /**
-   * An EXPLICIT D23 pin, overriding the one this function derives.
-   *
-   * NORMALLY OMITTED. The derivation below reads the change's own `source_ref` inside the claim
-   * transaction, so a caller cannot forget to supply the pin and silently get a run that writes no
-   * evidence — the failure this repo names "component built, never installed", in the one shape
-   * that produces no error anywhere. `null` and `undefined` both mean "derive it"; only a real
-   * object overrides.
-   */
+  /** An explicit pin overriding the derivation below. See docs/coordination.md §624. */
   capturedWorkflow?: CapturedWorkflowRef | null;
 }
 
@@ -513,22 +338,7 @@ export interface HookRunContext {
   masterKey: Buffer;
 }
 
-/**
- * Dispatches a hook's workflow exactly once per `(org, change, hookId, waveIndex)`, and returns the
- * run row either way.
- *
- * The three steps are `reconcile.ts`'s `triggerWaveTarget` steps, and the ordering is the design:
- *
- *   1. tx A — resolve the plugin instance and CLAIM the row. Committing this claim is what makes the
- *      dispatch decision durable and exclusive; the UNIQUE constraint arbitrates.
- *   2. OUTSIDE any transaction — `client.trigger()`, carrying the derived `idempotencyKey`.
- *   3. tx B — record the returned `ExternalRunRef` and move `pending` -> `running`.
- *
- * A caller that loses the claim in step 1 returns the winner's row and DOES NOT DISPATCH. A crash
- * between steps leaves a `pending` row with a NULL `externalRunId`; the next tick re-enters here,
- * loses nothing, re-derives the SAME key and re-calls `trigger()`, which a conformant executor
- * dedups into the same ref (`TriggerIntent.idempotencyKey`).
- */
+/** Dispatches a hook's workflow exactly once per key. See docs/coordination.md §625. */
 export async function ensureHookRunTriggered(
   db: Db,
   ctx: HookRunContext,
@@ -556,11 +366,7 @@ export async function ensureHookRunTriggered(
       targetObjectId: carrier,
       masterKey: ctx.masterKey,
       type,
-      // THE DISPATCH SEAM. This is the call that decides WHICH plugin instance the run executes on,
-      // and it defaulted to the build lane before increment 5 round B2 gave it a `lane`. Passing the
-      // lane to the `externalRef` lookup below and NOT to this one would produce a run whose row
-      // says `test` while it executes on the deploy executor — the two halves of one dispatch
-      // disagreeing, silently, in a way that reads as correct in the database.
+      // THE DISPATCH SEAM. See docs/coordination.md §626.
       lane: HOOK_RUN_EXECUTOR_LANE
     });
     if (!resolved) {
@@ -572,19 +378,10 @@ export async function ensureHookRunTriggered(
         `no '${type}' executor binding for ${carrier} — refusing to claim a '${input.hook.kind}' hook run that could not be dispatched`
       );
     }
-    // The SAME rule the dispatch seam above resolved through — `resolveLaneBinding` is the one
-    // definition of the lane fallback (increment 5 round B2), deliberately not re-implemented here
-    // as `getExecutorBinding(test) ?? getExecutorBinding(build)`. Two copies of a fallback is how
-    // one of them later grows a condition the other does not, and this one has an edge already: an
-    // AMBIGUOUS test lane must not fall back, because substituting the build lane would resolve an
-    // operator's conflict in favour of a declaration they never made for that lane.
+    // The SAME rule the dispatch seam above resolved through. See docs/coordination.md §627.
     const binding = (await resolveLaneBinding(tx, ctx.orgId, carrier, type, HOOK_RUN_EXECUTOR_LANE))
       ?.row;
-    // THE D23 CAPTURE, resolved HERE rather than asked of the caller (see `capturedWorkflow`'s doc).
-    // Read from the change row inside this transaction, so the pin is a fact about the change as it
-    // stands at the moment the dispatch becomes durable. A missing change row is a missing fact like
-    // any other — `null`, no pin, no evidence, named reason — never a throw that would wedge the
-    // dispatch of a run whose gate is perfectly able to say "awaiting".
+    // The capture is resolved here, not asked of the caller. See docs/coordination.md §628.
     const changeRow = await getChangeRow(tx, ctx.orgId, input.change.objectId).catch(() => null);
     const capturedWorkflow =
       input.capturedWorkflow ??
@@ -667,38 +464,16 @@ export async function ensureHookRunTriggered(
 // 3. Poll — observe non-terminal runs, and write evidence exactly once on the terminal edge
 // ---------------------------------------------------------------------------------------------
 
-/**
- * The D23 pin for a run, or `null` when the build's capture step has not produced one.
- *
- * PARSED, NOT CAST. The column is `jsonb` and its writers are server-side, but a value that merely
- * has the right keys is not a `CapturedWorkflowRef` — the schema's regexes are what make `commitSha`
- * a 40-hex git sha and `bundle.digest` a canonical `sha256:<64-hex>`, and those are exactly the
- * fields that make the evidence a statement about specific bytes rather than about the word
- * "passed". So it goes through `CapturedWorkflowRefSchema` and a failure yields `null`, which the
- * caller treats as "no pin", not as "close enough".
- */
+/** The pin for a run, or null; parsed rather than cast. See docs/coordination.md §629. */
 export function capturedWorkflowRefOf(run: PipelineHookRunRow): CapturedWorkflowRef | null {
   if (run.capturedWorkflow === null || run.capturedWorkflow === undefined) return null;
   const parsed = CapturedWorkflowRefSchema.safeParse(run.capturedWorkflow);
   return parsed.success ? parsed.data : null;
 }
 
-/**
- * Why a terminal run produced no evidence — returned so the caller can say so rather than leaving a
- * gate `awaiting` for a reason nobody can name.
- *
- * Every member is a MISSING FACT, not a failure to try. The rule they all serve is one this repo has
- * already paid for in the scan layer: unbound evidence is not evidence, and a shape-valid verdict
- * covering a digest it never examined is worse than no verdict at all
- * (`evaluateScanCoverage`'s `not_digest_bound`). So each of these makes the run terminal and writes
- * NOTHING.
- */
+/** Why a terminal run produced no evidence. See docs/coordination.md §630. */
 export type EvidenceSkipReason =
-  /** `capturedWorkflow` is absent or does not parse — i.e. `deriveCapturedWorkflow` could not
-   *  assemble all THREE of the declared `WorkflowRef`, the built commit, and the reported
-   *  `sourceRef.testBundle`. A build that reports no bundle lands here, which is the honest reading:
-   *  synthesising a bundle digest to satisfy the type would manufacture a pin to bytes nobody
-   *  verified. */
+  /** `capturedWorkflow` is absent or does not parse. See docs/coordination.md §631. */
   | "no_captured_workflow"
   /** `pipeline_evidence.target_object_id` is NOT NULL, because "an evidence row nobody can attribute
    *  is an evidence row nobody can revoke" — the authorization for evidence is scoped at the target.
@@ -719,43 +494,14 @@ export interface HookRunObservation {
   evidenceSkipped?: EvidenceSkipReason;
 }
 
-/**
- * How a terminal phase becomes a `TestRunEvidence.outcome`, which has only two members.
- *
- * `aborted` -> `failed` IS A JUDGEMENT AND IS RECORDED AS ONE. An aborted run did not conclude with
- * a verdict about the target, so `failed` overstates what is known; but the alternative — writing no
- * evidence — leaves `evaluatePostDeployGate` returning `awaiting` forever, because the run row now
- * exists and correctly suppresses a re-trigger. That is a silent, permanent hang at a gate, which is
- * strictly worse than a loud hold: `evaluateBakeGate`'s stated rule for safety interlocks is that
- * "'wrongly held' and 'wrongly released' are not comparable costs", and the same asymmetry decides
- * this. The full truth is not lost — the RUN row keeps `aborted`, so an operator reading the run
- * sees "cancelled", not "the suite failed".
- */
+/** How a terminal phase becomes one of two outcomes. See docs/coordination.md §632. */
 export function outcomeFor(status: HookRunStatus): TestRunEvidence["outcome"] | null {
   if (status === "succeeded") return "passed";
   if (status === "failed" || status === "aborted") return "failed";
   return null;
 }
 
-/**
- * Persists ONE observation of ONE run, and — on the non-terminal -> terminal edge only — writes the
- * corresponding `pipeline_evidence` test-run row.
- *
- * ============================================================================================
- * "EXACTLY ONE EVIDENCE ROW, EVEN IF THE RUN IS OBSERVED TWICE" HAS TWO INDEPENDENT GUARDS
- * ============================================================================================
- * The first is the edge condition: the UPDATE below only matches a row still in a NON-TERMINAL
- * status, so a second observation of an already-terminal run updates nothing, returns
- * `becameTerminal: false`, and never reaches the evidence write. Two concurrent worker replicas both
- * polling the same run therefore produce one evidence write, because only one UPDATE can win the
- * row.
- *
- * The second is `pipeline_evidence_test_run_identity` (migration 0096), the PARTIAL unique index
- * that makes test-run evidence newest-wins per binding. Even if the edge guard were somehow
- * bypassed, `recordTestRunEvidence` deletes-then-inserts within the key, so the table still holds
- * exactly one row. Belt and braces, deliberately: the second guard is a property of the schema and
- * survives a future caller that forgets the first.
- */
+/** Persists one observation, writing evidence on the edge. See docs/coordination.md §633. */
 export async function applyHookRunObservation(
   tx: TenantTx,
   orgId: string,
@@ -832,28 +578,7 @@ export async function applyHookRunObservation(
   return { run: next, becameTerminal: true, evidenceId: row.id };
 }
 
-/**
- * ONE ORG'S POLL PASS over every non-terminal hook run.
- *
- * ============================================================================================
- * THIS EXTENDS THE EXISTING RECONCILE TICK. IT IS NOT A SECOND LOOP, AND MUST NOT BECOME ONE.
- * ============================================================================================
- * It is called from `reconcileOrgTick`, in sequence with the other `advance*` steps, on the ONE
- * pg-boss tick job the engine already schedules. There is no `boss.work()` here and none may be
- * added: `boss.work()` is a COMPETING CONSUMER, so a second worker registered on the reconcile queue
- * would take ticks away from the engine rather than run alongside it, and a second queue would be a
- * second liveness surface to keep alive.
- *
- * MULTI-REPLICA SAFETY WITHOUT A CLAIM LOCK. Unlike `triggerWaveTarget`, this path takes no advisory
- * lock, because it does not need one: `status()` is a READ against the executor, so two replicas
- * polling the same run cost one extra HTTP call and nothing else, and the write is arbitrated by
- * `applyHookRunObservation`'s edge guard (only a still-non-terminal row can be moved). A lock here
- * would buy nothing and would add a way for the poll to stall.
- *
- * Mirrors `reconcileExecutingChange`'s status loop: `client.status(ref)` OUTSIDE any transaction, a
- * short transaction per observation, and a per-run try/catch so one unreachable executor cannot
- * abandon the rest of the org's runs.
- */
+/** ONE ORG'S POLL PASS over every non-terminal hook run. See docs/coordination.md §634. */
 export async function pollNonTerminalHookRuns(
   db: Db,
   ctx: HookRunContext
@@ -878,11 +603,7 @@ export async function pollNonTerminalHookRuns(
           targetObjectId: hookRunBindingCarrier(run),
           masterKey: ctx.masterKey,
           type: HOOK_RUN_EXECUTOR_TYPE,
-          // MUST match the trigger's lane, and the failure mode if it does not is quiet rather than
-          // loud: the guard below refuses to poll an instance that is not the one the run was
-          // claimed under, so a poll on the default `build` would decide the binding had changed and
-          // leave every test-laned run in flight forever, logging once per tick. Same one-constant
-          // discipline the Type already uses, for a sharper reason.
+          // Must match the trigger's lane; failure here is quiet. See docs/coordination.md §635.
           lane: HOOK_RUN_EXECUTOR_LANE
         })
       );

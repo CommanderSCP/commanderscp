@@ -22,26 +22,7 @@ import {
   type ScanFinding
 } from "./supply-chain.js";
 
-/**
- * M22.1b (ADR-0033 §7) — the pure half of "persist the findings": the cap, the record marker, the
- * per-row retention class, and the plugin→server transport seam.
- *
- * MUTATIONS RUN against this file (2026-08-17) — the MEASURED results, not predicted ones, because a
- * green suite proves nothing about whether it would have gone red:
- *
- *   1. `scanMethodCarriesFindings` returning `true` for `openscap`  -> 3 failed / 14 passed
- *        ("says so about the METHOD", "refuses an openscap set that DOES arrive with findings",
- *        "full / truncated / unsupported / ABSENT"). The mutation that matters most: it is the one
- *        an implementer makes by writing `return true` or by deriving the answer from
- *        `findings.length`.
- *   2. `capScanFindings` returning `truncated: false` unconditionally -> 3 failed / 14 passed
- *        ("caps a set OVER the cap", "the production cap is a real bound", "RE-CAPS server-side").
- *   3. `takeScanFindingsFromTransport` returning the evidence unchanged (no `delete`)
- *        -> 2 failed / 15 passed ("the transport keys DO NOT SURVIVE the read", "a MALFORMED payload
- *        records nothing"). That first one is the property that keeps findings out of the bundle.
- *   4. `scanFindingsRecordFor` returning `"full"` for `capped === undefined` -> 1 failed / 16 passed.
- *   5. `scanFindingRetentionClass` returning `"E"` unconditionally -> 1 failed / 16 passed.
- */
+/** M22.1b (ADR-0033 §7) — the pure half of "persist the findings". See docs/schemas.md §404. */
 
 const finding = (over: Partial<ScanFinding> = {}): ScanFinding => ({
   severity: "high",
@@ -261,24 +242,7 @@ describe("M22.1b — the plugin→server transport seam", () => {
   });
 });
 
-// ===========================================================================================
-// M22.2 (ADR-0033 §1–§4, §7) — the EXCLUSION dimension's pure half: what a clause reaches, what
-// refuses one outright, and how the post-exclusion count is derived.
-//
-// MUTATIONS RUN against this file (2026-08-17), each reverted by an exact inverse edit. MEASURED
-// results; baseline 33 passed. The WIRING mutations live in the header of
-// `apps/server/src/governance/scan-exclusions.integration.test.ts`.
-//
-//   S-1  skip the `record !== "full"` refusal entirely
-//          -> 4 failed (truncated refuses / OpenSCAP never excluded / an ABSENT record refuses /
-//             a truncated scan's effective counts equal its raw counts).
-//   S-2  give the not-yet-built classes a predicate (`() => true`)
-//          -> 1 failed ("a clause of a class whose PREDICATE is not yet built").
-//   S-3  stop decrementing in `effectiveSeverityCountsAfterExclusions`
-//          -> 1 failed ("effectiveSeverityCounts is severityCounts MINUS the excluded").
-//   S-4  drop the `pkgName` matcher comparison
-//          -> 2 failed (A MATCHER MISS / a finding that LACKS the field a clause names).
-// ===========================================================================================
+// M22.2 (ADR-0033 §1–§4, §7) — the EXCLUSION dimension's pure half. See docs/schemas.md §405.
 
 describe("M22.2: applying exclusion clauses to findings", () => {
   const admitted = (

@@ -20,15 +20,7 @@ import type {
   PluginHost
 } from "../plugin-host/contract.js";
 
-/**
- * §4-A3 / §7.1 item 3: the watchdog sweep used to run one org's ENTIRE stalled-change batch inside
- * one long `withTenantTx`, and the guarded flag UPDATE's affected-row count was never checked — so
- * two overlapping sweeps racing the same stalled change each committed their OWN Decision + audit
- * event + notification. This is the multi-replica proof the restructure exists to make true: N
- * genuinely concurrent sweeps (`Promise.all`, real independent transactions against the SAME
- * Postgres — not just JS-level interleaving) hitting the SAME stalled change produce EXACTLY one
- * of each.
- */
+/** The sweep ran a whole org's batch in one transaction. See docs/coordination.md §1020. */
 
 /** Counts `NotificationPluginClient.send()` calls without needing a real notification transport —
  *  every other plugin surface throws, since this fixture only drives the notification path. */

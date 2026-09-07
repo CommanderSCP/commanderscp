@@ -5,18 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { Command } from "commander";
 import type { RelayBuild } from "@scp/schemas";
 
-/**
- * M13.1b — THE CLI HALF OF THE AUTO-RELAY BUILD LEDGER'S OPERATOR READ SURFACE, `scp federation
- * relay-builds`.
- *
- * WHY THE WIRE AND NOT ONLY THE OPTIONS. A build in which `--status`/`--limit` exist, the help text
- * is perfect, and the action drops them on the floor before calling the SDK passes a surface-only
- * test completely. That "wording, not behaviour" shape is this project's second-most-common
- * recurring bug (`outpost-reconcile-precondition.test.ts`, `scan-exclusion-admissions-cli.test.ts`),
- * so `@scp/sdk` is mocked wholesale here and every assertion is against the ACTUAL call the mock
- * recorded, plus the rendered table text — the CLI consumes only the SDK (charter principle 3), so
- * intercepting it is the honest seam.
- */
+/** The CLI half of the auto-relay build ledger. See docs/cli.md §138. */
 
 interface ListCall {
   opts: { status?: string; limit?: number };

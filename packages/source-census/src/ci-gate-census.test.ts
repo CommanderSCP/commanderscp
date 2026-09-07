@@ -4,36 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-/**
- * ================================================================================================
- * THE GATE-REACHABILITY CENSUS — EVERY CI JOB EITHER BLOCKS MERGE OR IS NON-GATING BY NAME
- * ================================================================================================
- *
- * WHAT WENT WRONG, TWICE, AND WHAT ALMOST WENT WRONG A THIRD TIME. `main` branch protection
- * requires exactly two checks: "5z. Integration (aggregation gate)" and "3. Codegen drift". Every
- * other job blocks merge ONLY by being reachable from 5z's `needs:` closure — 5z treats any
- * non-success (skips included) as a failure, so a job in the closure that reds or is skipped reds
- * 5z. That reachability was HAND-MAINTAINED and it has already failed silently: job 4b
- * (helm-verify) sat reachable from nothing for weeks while its own comment claimed it gated
- * (ci.yml's CORRECTION note), and the 2026-08-31 needs-graph restructure moved
- * static-checks/unit-tests from transitive coverage (via the shard matrix) to hand-listed entries
- * in 5z's `needs:` — where forgetting one would have dropped it from branch protection with every
- * check still showing green in the PR list. ci.yml's comment on that list says "REMOVE A NAME
- * FROM THIS LIST AND IT LEAVES BRANCH PROTECTION"; this census is that sentence made machinery.
- *
- * THE RULE, BOTH DIRECTIONS. Every job in ci.yml must be reachable from 5z (in its `needs:`
- * closure, walked upward — a needed job's own needs also gate, because their failure skips it and
- * a skip is a failure at 5z), OR be named in NON_GATING with its documented reason. An allowlist
- * entry that becomes reachable, or names a job that no longer exists, is stale and fails. And
- * every job 5z `needs:` must ALSO appear in its result-check loop — `if: always()` means 5z runs
- * regardless, so a needs entry the loop never reads is a job whose failure 5z silently ignores.
- *
- * THE LIMIT, STATED PLAINLY (this package's rule): this census reads the WORKFLOW, not GitHub's
- * settings. It cannot see branch protection itself — if the required-check names change on the
- * GitHub side, or protection is disabled, nothing here reds. The two required names are asserted
- * against the jobs' `name:` fields below so a rename in ci.yml (which would orphan the protection
- * rule) is at least caught on this side.
- */
+/** THE GATE-REACHABILITY CENSUS. See docs/source-census.md §1. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../..");

@@ -1,18 +1,4 @@
-/**
- * The D7 single-ownership predicate (team-pipeline-iac proposal §4/§5, D7):
- *
- * > "The one new rule is single ownership per stack: a stack bound to a config source is
- * > repo-owned, and a direct CLI apply against it is refused (409 naming the owning config
- * > source) — otherwise the next sync would silently revert the push. Removing the stack from the
- * > config-source registration returns it to CLI-push."
- *
- * PURE LOGIC ONLY: whether a stack IS bound to a config source is a DB read (a later increment's
- * job, once the API-surface slot frees). This module is the decision that read feeds — given the
- * binding (or its absence), decide whether `scp apply`'s direct path is refused, and build the
- * self-explaining detail a 409 response carries. Every stack that is not repo-owned behaves exactly
- * as it does today (`allowed: true`, unconditionally) — this module changes nothing about that
- * path; it only adds the one new refusal D7 describes.
- */
+/** The D7 single-ownership predicate. See docs/config-source.md §4. */
 
 /** The config source a stack is bound to, as far as this predicate needs to know. `name` is
  *  carried alongside `id` so the refusal message is self-explaining without a second lookup — the
@@ -34,15 +20,7 @@ export type CliApplyDecision =
       message: string;
     };
 
-/**
- * `binding` is `null` for every stack not bound to a config source — including a stack that WAS
- * bound and had the binding removed (D7: "removing the stack from the config-source registration
- * returns it to CLI-push"), since that removal is exactly what turns this function's next call for
- * the same stack from the refusing branch back to `{ allowed: true }`. There is no third state:
- * "bound but ambiguous" is `registration-match.ts`'s concern at SYNC time, not this predicate's —
- * by the time a stack carries a binding here, sync has already resolved it to exactly one config
- * source.
- */
+/** A null binding returns the stack to CLI-push. See docs/config-source.md §5. */
 export function evaluateCliApplyOwnership(
   binding: StackConfigSourceBinding | null
 ): CliApplyDecision {

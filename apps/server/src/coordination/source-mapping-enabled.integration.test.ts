@@ -11,23 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `source_mappings.enabled` — the operator's PAUSE SWITCH (migration 0063, owner ask 2026-08-14,
- * component pipeline view: "each [source] should have its own arrow so I can enable and disable
- * each as needed").
- *
- * Unlike `mirrorOfShared` (0062, the same table's other declared marker), this one is NOT inert:
- * `matchComponentForSource` skips a disabled row as its first filter, so flipping it changes what
- * a push actually correlates to. Two properties are pinned here, and the second is the one that
- * matters — a toggle the matcher never checked would be theatre:
- *
- *   1. ROUND-TRIP through the public API: defaults to `true` on create, `false` when explicitly
- *      declared, flips both ways through `PATCH .../mappings/:id`, and every read (create/list)
- *      reflects the current value.
- *   2. ENFORCEMENT: with two mappings identical in every routing respect but one disabled, a push
- *      routes ONLY to the enabled one. Disabling the survivor makes the same push route to
- *      NOTHING. Re-enabling it makes the push route again.
- */
+/** `source_mappings.enabled` — the operator's PAUSE SWITCH. See docs/coordination.md §899. */
 describe("source mapping: enabled (the pause switch, migration 0063)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -119,12 +103,7 @@ describe("source mapping: enabled (the pause switch, migration 0063)", () => {
     expect(third?.componentObjectId).toBe(enabledTarget.id);
   });
 
-  // ==========================================================================================
-  // TIMED CLOSE (owner, 2026-08-14: "disable for x period of time or until manually enabled
-  // again"), migration 0064. The re-open is READ-TIME, like a freeze window: no timer job — the
-  // matcher checks the clock at every push. These pin all three states AND the automatic
-  // re-open, using bounds in the past/future rather than sleeping.
-  // ==========================================================================================
+  // A timed close, disabling for a period or until re-enabled. See docs/coordination.md §900.
 
   it("TIMED CLOSE: closed while now() < disabledUntil, and OPEN again — automatically, at read time — once the bound has passed", async () => {
     const sourceKind = `timed-close-${uuidv7()}`;

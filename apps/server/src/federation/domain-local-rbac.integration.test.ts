@@ -14,67 +14,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { roleBindings, roles } from "../db/schema.js";
 
-/**
- * M20.1 (ADR-0031 §1) — DECLARING AN OBJECT DOMAIN-LOCAL REQUIRES `federation:write`, AT EVERY DOOR.
- *
- * ## Why this file exists, and why it is a CENSUS rather than a handful of cases
- *
- * `domainLocal` was added to `CreateObjectRequestSchema` and `UpsertObjectRequestSchema` — and it
- * immediately appeared on **six** routes, not two, because `CreateComponentRequestSchema` and
- * `UpsertComponentRequestSchema` **extend** those bodies and the typed-registry factory generates a
- * create + upsert pair for every registered type. A door that accepted the field and forgot to
- * thread it would silently drop an operator's declaration; a door that threaded it but forgot to
- * authorize it would let `object:write` alone decide what crosses a security boundary.
- *
- * Guarding routes one at a time is the incomplete-call-site-census failure this project keeps
- * paying for (CLAUDE.md), so the coverage here is not a hand-written list. {@link declaringRoutes}
- * DERIVES the set from the committed OpenAPI document — every operation whose request body admits
- * `domainLocal` — and the drift test asserts that set is exactly what this file exercises. **Add a
- * seventh door and this file goes red until it is covered.** That is the property worth having; the
- * individual 403s below are what it protects.
- *
- * ## The actor, and the control that makes its 403s mean something
- *
- * `operator` is the built-in **Operator** role at the org root: `drizzle/0002` gives it
- * `object:write`, and `drizzle/0012` grants `federation:write` to Administrator/Owner **only**. So it
- * can create objects and cannot declare locality — which is exactly the distinction ADR-0031 draws,
- * and the same actor `outposts-rbac.integration.test.ts` uses for the mirror-image case.
- *
- * Every 403 from `operator` is therefore about the *federation* permission specifically. The first
- * test is the control that earns that reading: without proving this actor can create an ordinary
- * object, the whole file would pass just as well with a token holding no permissions at all.
- *
- * ## The PUBLISH door tests use two DIFFERENT actors, in the opposite direction
- *
- * `POST /objects/{type}/{idOrUrn}/publish` is gated on BOTH permissions, so it is exercised from
- * both sides and `operator` can only test one of them. The `federationOnly` /
- * `federationAndObjectWrite` pair below are org-defined roles differing in exactly `object:write`,
- * which is what makes that 403 attributable. Their cases say so explicitly; do not read the
- * paragraph above as covering them.
- *
- * ### MUTATION RUN (2026-08-25) for the publish `object:write` bar. MEASURED, not predicted.
- *
- * DELETE the `object:write` `authorize` from the publish handler in `routes/objects-generic.ts`
- *   -> 1 failed | 16 passed. "403 with federation:write but NO object:write" went red on
- *      `AssertionError: ... expected 200 to be 403`, and the returned body is the proof rather than
- *      the status: `"domainLocal":false,"version":2` — a subject holding `object:write` NOWHERE had
- *      cleared the locality flag and re-versioned a live estate row, which is the whole defect.
- *      THE OTHER PUBLISH CASES STAYED GREEN, including the `federation:write` 403 — so the new bar
- *      is not what makes them pass and they are not what makes it pass.
- *
- * ## What is asserted at each door — three things, because a status code alone is weak
- *
- *   1. `domainLocal: true` from `operator` → **403**, and **nothing was written** (no object exists
- *      at that urn afterwards). A refusal that still created the row is not a refusal.
- *   2. The *same* request without `domainLocal` → **201**. This is what stops the file from passing
- *      because the route is simply broken for this actor, and it is the mutation-sensitivity that
- *      makes each 403 attributable to `assertMayDeclareDomainLocal` rather than to the ordinary
- *      `object:write` check that precedes it.
- *   3. An admin (holding `federation:write`) sending `domainLocal: true` → **201 with
- *      `domainLocal === true` on the response**. Deleting the column from the INSERT, or dropping
- *      the field on the way through the route, turns this red — so the authorization test cannot
- *      pass while the feature it guards silently does nothing.
- */
+/** Declaring an object domain-local requires the permission. See docs/federation.md §106. */
 
 const OPENAPI_PATH = fileURLToPath(
   new URL("../../../../tools/openapi/openapi.v1.json", import.meta.url)
@@ -90,15 +30,7 @@ type OpenApiDoc = {
   >;
 };
 
-/**
- * Every `METHOD /path` in the committed contract whose request body admits `domainLocal`.
- *
- * Read from the emitted document rather than from the Zod sources because the document is what the
- * server actually validates against and what the SDK is generated from — and because a body reached
- * through `.extend()` (the component routes) is invisible to a reader scanning for the field name.
- * The schemas are emitted inline per operation, so a recursive walk is the honest way to find them;
- * `$ref` is followed one hop into `components.schemas` in case that ever changes.
- */
+/** Every contract door whose body admits the locality field. See docs/federation.md §107. */
 function declaringRoutes(doc: OpenApiDoc): string[] {
   const components = (doc as unknown as { components?: { schemas?: Record<string, unknown> } })
     .components?.schemas;
@@ -137,16 +69,7 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
   let org: TestOrg;
   let admin: ScpClient;
   let operator: TestUser;
-  /**
-   * The PUBLISH pair. Two org-defined roles differing in EXACTLY ONE permission, `object:write`, so
-   * the 403 below is attributable to the bar under test and to nothing else.
-   *
-   * Org-defined rather than built-in because no BUILT-IN role can express "federation:write without
-   * object:write": `drizzle/0012` puts `federation:write` on Administrator and Owner, and
-   * `drizzle/0002` puts `object:write` on both of those plus Operator and Approver, so every
-   * built-in holder of one holds the other. Comparing against `admin` instead would leave the 403
-   * explainable by any of four other permissions Administrator happens to carry.
-   */
+  /** The PUBLISH pair. See docs/federation.md §108. */
   let federationOnly: TestUser;
   let federationAndObjectWrite: TestUser;
   let serviceUrn: string;
@@ -189,12 +112,7 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
     serviceUrn = service.urn;
   }, 180_000);
 
-  /**
-   * A subject holding EXACTLY `permissions` at the org root.
-   *
-   * Viewer is bound purely so the harness mints an auth row and a live token; `object:read` grants
-   * no write anywhere and is no part of what is under test.
-   */
+  /** A subject holding EXACTLY `permissions` at the org root. See docs/federation.md §109. */
   async function createUserWithPermissions(permissions: string[]): Promise<TestUser> {
     const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
@@ -255,12 +173,7 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
     expect(inContract).toContain("POST /objects/{type}");
     expect(inContract.length).toBeGreaterThanOrEqual(26);
 
-    // Each door is accounted for by the code path that authorizes it. Two of these were found BY
-    // this census rather than before it: `/objects/service` and its `orgs/{org}` path-override form
-    // are LITERAL routes Fastify prefers over the parametric `/objects/{type}`, so they carry their
-    // own body schema and dropped `domainLocal` silently — the second occurrence of the exact
-    // hazard that schema's own comment already records, for `domainId`/`properties`/`labels`/
-    // `id`/`urn`.
+    // Each door is accounted for by the path that authorizes it. See docs/federation.md §110.
     const authorizedBy = new Map<string, RegExp[]>([
       ["objects-generic.ts", [/^POST \/objects\/\{type\}$/, /^PUT \/objects\/\{type\}\/\{urn\}$/]],
       ["components.ts", [/^POST \/components$/, /^PUT \/components\/\{urn\}$/]],
@@ -381,11 +294,7 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
   });
 
   it("POST /objects/{type}/{idOrUrn}/publish — 403 without federation:write, and the object stays domain-local", async () => {
-    // M20.4. Undoing a boundary decision cannot be cheaper than making it, so publish is gated on
-    // the same permissionS that declared locality — this case covers the `federation:write` half,
-    // and the two cases below cover the `object:write` half. Note this route takes NO body, so the census above
-    // (which reads request bodies) cannot see it — it is covered here explicitly, and this comment
-    // is why the census is a floor rather than the whole story.
+    // Undoing a boundary decision cannot be cheaper than making it. See docs/federation.md §111.
     const created = await admin
       .object("service")
       .create({ name: `publish-rbac-${randomUUID().slice(0, 8)}`, domainLocal: true });
@@ -403,14 +312,7 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
   });
 
   it("POST /objects/{type}/{idOrUrn}/publish — 403 with federation:write but NO object:write, and the object stays domain-local", async () => {
-    // THE ASYMMETRY THIS CLOSES. Declaring locality costs `object:write` AND `federation:write`
-    // (every 403 above). Publishing — the INVERSE verb, which UPDATEs the estate row, bumps
-    // `version`, and sweeps the object plus its edges onto the federation journal — cost only
-    // `federation:write`. So the FederationAdmin shape ("operates the link, does not edit the
-    // estate", `federation/handfill-repo.ts`) could mutate and re-version estate rows here.
-    //
-    // The actor differs from the one in the NEXT case in exactly one permission, so this 403 cannot
-    // be explained by anything but the `object:write` bar.
+    // THE ASYMMETRY THIS CLOSES. See docs/federation.md §112.
     const created = await newDomainLocalService("publish-no-objwrite");
 
     const res = await publishAs(federationOnly.token, created.id);

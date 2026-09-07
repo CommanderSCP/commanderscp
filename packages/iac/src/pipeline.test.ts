@@ -234,12 +234,7 @@ describe("@scp/iac: adoptTopologyUrn (§9/D5) — the export/adopt affordance", 
     expect(topology?.urn).toBe("urn:scp:payments-api:release-topology:image-topology");
   });
 
-  // MUTATION-PROVED (restored before commit): reverting `pipeline.ts`'s `ReleaseTopology(...)` call
-  // to drop the `...(resolved.props.adoptTopologyUrn !== undefined ? { urn: ... } : {})` spread makes
-  // this case fail — the synthesized topology's URN reverts to the derived one instead of the live
-  // URN supplied here, which is exactly the silent-duplication bug this prop exists to close (a
-  // second `scp apply` of an exported estate would create a SECOND topology object beside the real
-  // one and repoint `releases_via` at it).
+  // MUTATION-PROVED (restored before commit). See docs/iac.md §280.
   it("WITH it, the topology adopts the caller-supplied (live) URN instead of a derived one", () => {
     const stack = new Stack("payments-api");
     const svc = new Service(stack, "payments", { name: "Payments" });

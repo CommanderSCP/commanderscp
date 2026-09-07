@@ -6,21 +6,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * `fromRole` AUTHORING-TIME VALIDATION — role-model.md §5 step 6
- * ================================================================================================
- *
- * THE FAILURE IT REPLACES. Since the quorum-bypass fix, `hasRoleAtScope` resolves BUILT-IN role
- * names only. So a policy naming anything else is not merely wrong — it is UNSATISFIABLE: the gate
- * blocks forever, the Decision reads "0 of 1 approvals", and an operator staring at a live binding
- * of a role with exactly that name concludes the approval engine is broken. A typo and a custom
- * role produce an identical symptom, and nothing anywhere states what a legal value is.
- *
- * Entered through HTTP, and through BOTH verbs, because the guard sits at the `objects-repo`
- * choke point precisely so that every writer inherits it — a route-level check would have left the
- * update path and IaC apply able to author the unsatisfiable policy.
- */
+/** `fromRole` AUTHORING-TIME VALIDATION. See docs/routes.md §313. */
 describe("a policy's requireApprovals.fromRole must name a built-in role", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -45,11 +31,7 @@ describe("a policy's requireApprovals.fromRole must name a built-in role", () =>
     };
   }
 
-  // `/api/v1/policies`, NOT `/api/v1/objects/policy`: `policy` is a governance-managed type and the
-  // generic object door refuses it outright (403), because that door cannot check the scope
-  // authority `policy:write` requires. Writing this test against the generic endpoint would have
-  // exercised that refusal instead of this guard — every case would have "failed correctly" for
-  // entirely the wrong reason.
+  // `/api/v1/policies`, NOT `/api/v1/objects/policy`. See docs/routes.md §314.
   async function createPolicy(fromRole: string, name: string) {
     return server.app.inject({
       method: "POST",
@@ -107,14 +89,7 @@ describe("a policy's requireApprovals.fromRole must name a built-in role", () =>
         }
       }
     });
-    // MEASURED, NOT ASSUMED — and the first version of this test was VACUOUS. It used PUT with a
-    // body whose name/urn were rebuilt from a fresh `Date.now()`, so the urn did not match the
-    // policy just created; `upsertObjectByUrn` found nothing and took its CREATE branch. Deleting
-    // the update guard left the whole file green while deleting the create guard reddened this
-    // case — the tell that it was exercising create twice and update never.
-    //
-    // PATCH is the verb that reaches `updateObject` (routes/typed-registries.ts), so this is the
-    // assertion the update choke point actually answers for.
+    // MEASURED, NOT ASSUMED. See docs/routes.md §315.
     expect(edited.statusCode, edited.body).toBe(422);
     expect(edited.json().detail as string).toContain("'NotARole'");
   });
@@ -129,14 +104,7 @@ describe("a policy's requireApprovals.fromRole must name a built-in role", () =>
       method: "PUT",
       url: `/api/v1/policies/${id}`,
       headers: { authorization: `Bearer ${org.adminToken}` },
-      // The SAME name, so the SAME urn.
-      //
-      // WHICH BRANCH THIS TAKES IS MEASURED, AND IT IS NOT THE ONE THE OBVIOUS READING SUGGESTS:
-      // deleting the CREATE guard reds this case and deleting the UPDATE guard does not, so PUT is
-      // answered by `createObject` even against a matching urn. `upsertObjectByUrn` has three
-      // branches — create, a direct in-place `UPDATE ... SET` for the hand-filled-id case, and
-      // `updateObject` — and this test deliberately does not assert which one runs. It asserts the
-      // REFUSAL, which is the property; the PATCH case above is what pins the update choke point.
+      // The SAME name, so the SAME urn. See docs/routes.md §316.
       payload: policyBody("NotARole", name)
     });
     expect(edited.statusCode, edited.body).toBe(422);

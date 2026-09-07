@@ -1,39 +1,4 @@
-/**
- * M17.4(b) — PER-ARTIFACT BYTE VERIFICATION at the receiving outpost, a PRE-DEPLOY gate.
- *
- * ## Where this sits (and what it is NOT)
- *
- * M17.4 has two halves. Part (a) (#106, promotion-repo.ts::verifyPromotionManifest) is the
- * METADATA verify that runs at bundle IMPORT: it cosign-verifies the commander's self-binding
- * manifest and asserts `bundle.artifacts` EXACTLY equals the signed `manifest.artifacts` set — so
- * after (a), "the arrived artifact SET == the authorized SET" is already proven, and that verified
- * set is recorded on the imported change's `sourceRef.artifacts` (with `promotionManifest`).
- *
- * Part (b) — THIS module — is the complementary BYTE verify, and it deliberately canNOT run at
- * import: a federation bundle carries no bytes (ADR-0009), the operator side-loads the artifact
- * BYTES into the outpost's local registry AFTER the metadata import (or, commercially, the bytes
- * are commander-registry-resident). So (b) is a PRE-DEPLOY gate: before SCP triggers the deploy
- * executor for a promoted change, it re-reads the registry the bytes landed in and, for EACH
- * artifact in the (a)-verified authorized set, proves the BYTES are present and their signature
- * verifies against the exporter's distributed cosign public key. `verifyPromotionManifest` proved
- * "these are the authorized digests"; this proves "the bytes for THOSE digests are here and
- * authentic". Together they complete M17.4.
- *
- * ## Coordinate-not-execute (charter principle 1)
- *
- * SCP only READS the registry to verify — `cosign verify` (OCI, registry-attached signature) and
- * `cosign verify-blob` (blob, detached origin signature). It NEVER transports bytes between
- * registries/domains (that is byte TRANSPORT, M15.5) and NEVER re-scans — receiver-side
- * never-re-scan is UNCHANGED: the promotion scan step now executes once, at the commander, before
- * signing (ADR-0020), and the export gate already enforced a passing scan per substantive artifact
- * off that evidence — M17.1/E6. No byte-moving code lives here.
- *
- * ## Fail-closed
- *
- * A MISSING artifact (bytes absent from the reachable registry) OR a failing/tampered/wrong-key
- * signature makes that artifact FAIL, and any failing artifact blocks the deploy. Keyful and
- * offline throughout (no Fulcio/Rekor) — see @scp/cosign.
- */
+/** Per-artifact byte verification at the receiving outpost. See docs/federation.md §4. */
 import type { ArtifactRef } from "@scp/schemas";
 import { createHash } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
@@ -46,22 +11,7 @@ import {
   type VerifiedEgressTarget
 } from "../plugin-host/egress-guard.js";
 
-/**
- * ## Digest binding (substitution/replay defense)
- *
- * The signed promotion manifest binds `{type, digest, signatureRef}` — `location` is BUNDLE-SIDE
- * metadata, populated when the bytes land, and is NOT covered by any signature. So `location` is
- * hostile-controllable and must NEVER pick what gets verified: a location pointing at a DIFFERENT
- * validly-signed artifact (same exporter key) would otherwise pass. This module therefore binds
- * every verification to the AUTHORIZED `artifact.digest`:
- *
- *   - OCI: the ref handed to `cosign verify` is CONSTRUCTED from the location's repository part +
- *     `@<artifact.digest>` — cosign then registry-verifies content-addressed bytes AT that digest.
- *     If the location carries a digest suffix that differs from `artifact.digest`, that is a
- *     substitution attempt → fail closed WITHOUT invoking cosign.
- *   - blob: sha256 over the FETCHED bytes must equal `artifact.digest` before the detached
- *     signature verdict counts — validly-signed but WRONG bytes fail closed.
- */
+/** ## Digest binding. See docs/federation.md §5. */
 
 /** Normalize a sha256 digest (`sha256:<64 hex>` or bare hex) to lowercase `sha256:<hex>`;
  *  `null` when it is not a well-formed sha256 digest (unverifiable → caller fails closed). */
@@ -71,15 +21,7 @@ export function normalizeSha256Digest(raw: string): string | null {
   return /^[0-9a-f]{64}$/.test(hex) ? `sha256:${hex}` : null;
 }
 
-/**
- * Bind a resolved OCI reference to the AUTHORIZED digest: keep the repository (and any tag) part,
- * force the digest to `artifact.digest`. A resolved ref whose own digest suffix disagrees with the
- * authorized digest is a substitution attempt and fails WITHOUT invoking cosign.
- *
- * Exported for the M15.5(c) retrans relay (federation/retrans-relay.ts), whose skopeo PULL step
- * constructs its source refs with exactly this binding (ADR-0019 §2 step 2) — one implementation,
- * shared, so the pull path and the verify path can never bind differently.
- */
+/** Bind a resolved OCI reference to the AUTHORIZED digest. See docs/federation.md §6. */
 export function bindOciRefToAuthorizedDigest(
   resolvedRef: string,
   authorizedDigest: string
@@ -117,17 +59,7 @@ export interface ResolvedBlob {
   signature: string;
 }
 
-/**
- * Resolves each authorized artifact to the concrete thing `cosign verify` needs from the registry
- * the bytes landed in. This is the ONLY seam that knows HOW the outpost locates bytes in ITS
- * registry — decoupled on purpose from "verify the located bytes", because the concrete
- * byte-landing channel (operator side-load into local Gitea vs. commander registry) is M15.5's
- * concern. The verify logic below is registry-agnostic; it just consumes what the reader returns.
- *
- * BOTH methods return `null` when the artifact's BYTES are absent from the reachable registry — a
- * MISSING artifact, which the gate treats as fail-closed. They should NOT throw for "absent"; a
- * thrown error is an infrastructure fault and is likewise treated fail-closed by the caller.
- */
+/** Resolves each authorized artifact to what cosign needs. See docs/federation.md §7. */
 export interface ArtifactRegistryReader {
   /** The fully-qualified, digest-pinned image reference (`registry/repo@sha256:…`) this OCI
    *  artifact resolves to in the reachable registry, or `null` if it is not present. */
@@ -255,11 +187,7 @@ async function verifyOne(
   }
 }
 
-/** Whether OCI `cosign verify` may skip registry TLS verification: a blanket boolean, or —
- *  preferred — a PER-HOST predicate over the registry `host[:port]` the ref dials (lowercased,
- *  from {@link ociRegistryHostOf}), so TLS-off is scoped to an explicit operator allowlist
- *  exactly the way skopeo's `--src/dest-tls-verify=false` is (e.g. the M15.5(c) relay's
- *  `SCP_RELAY_INSECURE_HOSTS`). */
+/** Whether verify may skip registry TLS, and how narrowly. See docs/federation.md §8. */
 export type AllowInsecureRegistry = boolean | ((registryHost: string) => boolean);
 
 export interface VerifyAuthorizedArtifactSetArgs {
@@ -273,21 +201,11 @@ export interface VerifyAuthorizedArtifactSetArgs {
    *  not registry TLS, is the trust anchor for HTTP/self-signed registries, but TLS-off must
    *  still be host-scoped operator configuration, never a blanket default. */
   allowInsecureRegistry?: AllowInsecureRegistry;
-  /** Extra environment variables for the cosign `verify` subprocesses ONLY (e.g. `DOCKER_CONFIG`
-   *  pointing at a per-invocation scratch auth dir for credentialed source registries).
-   *  Per-invocation by design — callers must never feed cosign credentials by mutating
-   *  `process.env`, which would leak them into every concurrent subprocess (see
-   *  `VerifyImageOptions.env` in @scp/cosign). */
+  /** Extra environment for the verify subprocesses only. See docs/federation.md §9. */
   cosignEnv?: NodeJS.ProcessEnv;
 }
 
-/**
- * Verify EVERY artifact in the authorized set — the pre-deploy gate's core. Never throws: every
- * per-artifact failure (missing, tampered, wrong key, infra fault) is captured as `ok: false`, and
- * the aggregate `ok` is true only when ALL artifacts verified. An EMPTY set verifies vacuously
- * (`ok: true`) — a metadata-only promotion carrying no substantive bytes has nothing to byte-check,
- * exactly as the export scan gate passes vacuously over zero substantive artifacts.
- */
+/** Verify EVERY artifact in the authorized set. See docs/federation.md §10. */
 export async function verifyAuthorizedArtifactSet(
   args: VerifyAuthorizedArtifactSetArgs
 ): Promise<PerArtifactVerifyResult> {
@@ -308,30 +226,7 @@ export async function verifyAuthorizedArtifactSet(
   return { ok: failing.length === 0, outcomes, failing };
 }
 
-/**
- * The production {@link ArtifactRegistryReader}: resolves artifacts from their `ArtifactRef.location`
- * (and `signatureRef`) — the reference the receiving outpost's registry resolution populates when
- * the bytes land (M15.5). Registry-agnostic by construction:
- *
- *   - OCI: `location` (when set) is the fully-qualified, digest-pinned image ref in the local
- *     registry; absent an explicit `location`, an OCI `digest` alone does not locate a repository,
- *     so the artifact is UNRESOLVABLE → treated as absent (fail-closed) until the byte channel
- *     records where the image landed. The location's REGISTRY HOST is bundle-supplied and unsigned,
- *     so it is egress-guarded BEFORE cosign ever dials it: the host must appear in the
- *     operator-configured `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` allowlist (ADR-0019 §4; fail-closed
- *     when unset), symmetric with the blob URL guard below — digest binding already prevents
- *     SUBSTITUTION, this prevents a hostile bundle picking the egress TARGET.
- *   - blob: `location` is an HTTP(S) URL to fetch the blob bytes; `signatureRef` is an HTTP(S) URL
- *     to fetch the origin detached signature. A `404` (bytes not there yet) resolves to absent; a
- *     transport error propagates and the gate fails closed. BOTH URLs are bundle-supplied and
- *     unsigned, so they are SSRF-guarded before any request: they must fall under an
- *     operator-configured base URL (`SCP_ARTIFACT_BLOB_BASE_URLS`, fail-closed when unset), may
- *     never resolve to link-local/cloud-metadata or the unspecified address, redirects are refused,
- *     and responses are size-capped — see `assertBlobUrlAllowed`/`fetchBytes`.
- *
- * This reads bytes only to HASH/VERIFY them (a temp buffer, never re-pushed) — a registry READ, not
- * byte transport (M15.5). No credentials are held; the local registry is reachable to the outpost.
- */
+/** The production {@link ArtifactRegistryReader}. See docs/federation.md §11. */
 export class LocationRegistryReader implements ArtifactRegistryReader {
   /** Operator-configured base URLs blob `location`/`signatureRef` may fall under (SSRF guard). */
   private readonly allowedBlobBaseUrls: URL[];
@@ -353,12 +248,7 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
   async resolveOci(artifact: ArtifactRef): Promise<string | null> {
     const ref = artifact.location?.trim();
     if (!ref || ref.length === 0) return null;
-    // OCI-HOST EGRESS GUARD (fail-closed, BEFORE cosign ever dials): the location's registry host
-    // is bundle-supplied, unsigned metadata. Digest binding (verifyOne) already prevents artifact
-    // SUBSTITUTION, but `cosign verify` still performs registry-API GETs against whatever host the
-    // location names — a blind egress channel symmetric to the blob fetch. The host must be
-    // operator-allowlisted (SCP_ARTIFACT_OCI_REGISTRY_HOSTS); throwing surfaces as a
-    // `verification error (fail-closed)` on the artifact, exactly like the blob URL guard.
+    // OCI-HOST EGRESS GUARD. See docs/federation.md §12.
     this.assertOciRegistryHostAllowed(ref);
     return ref;
   }
@@ -367,11 +257,7 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
     const location = artifact.location?.trim();
     const sigRef = artifact.signatureRef?.trim();
     if (!location || !isHttpUrl(location)) return null;
-    // SSRF GUARD (fail-closed, BEFORE any request): `location`/`signatureRef` are bundle-supplied,
-    // unsigned strings — a hostile bundle must not turn the outpost into a blind in-cluster GET
-    // client at deploy time. Both URLs must fall under an operator-CONFIGURED blob base URL
-    // (SCP_ARTIFACT_BLOB_BASE_URLS), and even then may never target link-local (cloud metadata) or
-    // the unspecified address. Throwing here surfaces as a `verification error (fail-closed)`.
+    // SSRF GUARD (fail-closed, BEFORE any request). See docs/federation.md §13.
     const locationTarget = await this.assertBlobUrlAllowed(location);
     const bytes = await fetchBytes(location, locationTarget);
     if (bytes === null) return null; // absent (404) → fail-closed missing.
@@ -385,11 +271,7 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
     return { bytes, signature };
   }
 
-  /** Throws unless `url` falls under an operator-configured blob base URL (origin AND path prefix
-   *  — the port matters: a same-host different-port URL is a different service). Reuses the plugin
-   *  egress guard afterwards for the always-blocked classes (link-local/cloud-metadata,
-   *  unspecified), DNS-resolved; loopback/private are permitted because the operator explicitly
-   *  configured this base (the outpost-local registry is commonly in-cluster/private). */
+  /** Throws unless the URL falls under a configured blob base. See docs/federation.md §14. */
   private async assertBlobUrlAllowed(url: string): Promise<VerifiedEgressTarget> {
     if (this.allowedBlobBaseUrls.length === 0) {
       throw new Error(
@@ -409,23 +291,11 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
           `(SCP_ARTIFACT_BLOB_BASE_URLS) — bundle-supplied URLs cannot steer outpost egress (SSRF, fail-closed)`
       );
     }
-    // Defense in depth via the EXISTING plugin egress guard: link-local (169.254/16 incl. cloud
-    // metadata, fe80::/10) and unspecified are blocked unconditionally, after DNS resolution.
-    // Empty allowlist + allowInternalPrivate=true → only those always-blocked classes apply here.
-    // The verified ADDRESSES are returned so `fetchBytes` can dial one of them rather than letting
-    // `fetch` resolve the name a second time — the classification is worth nothing if the socket
-    // asks DNS again (see `createEgressPinRegistry`). An operator-allowlisted base URL whose DNS an
-    // attacker controls is a narrow case, but it is the exact case this guard is here for.
+    // Defense in depth via the EXISTING plugin egress guard. See docs/federation.md §15.
     return assertEgressAllowed(url, [], true);
   }
 
-  /** Throws unless the OCI ref's registry `host[:port]` matches an operator-configured allowlist
-   *  entry EXACTLY (case-insensitive; no suffix/wildcard matching — a `host:port` is a specific
-   *  service, exactly as the blob guard treats origins). UNSET/empty allowlist rejects every OCI
-   *  location (fail-closed) — the operator opts the OCI verify egress in explicitly, symmetric
-   *  with SCP_ARTIFACT_BLOB_BASE_URLS. `protected` (not private) so the M15.5(c) retrans relay's
-   *  source-registry reader (retrans-relay.ts) can apply the SAME guard to its skopeo-pull refs —
-   *  ADR-0019 §4: the relay's pull side uses the same two allowlists as the verify path. */
+  /** Throws unless the registry host is on the allowlist. See docs/federation.md §16. */
   protected assertOciRegistryHostAllowed(ref: string): void {
     if (this.allowedOciRegistryHosts.length === 0) {
       throw new Error(
@@ -451,26 +321,13 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
   }
 }
 
-/**
- * Normalize a registry `host[:port]` allowlist — the ONE parse shared by every comma-separated
- * host-list configuration surface (`SCP_ARTIFACT_OCI_REGISTRY_HOSTS`, the pre-deploy gate's
- * `SCP_ARTIFACT_INSECURE_HOSTS`, the relay's `SCP_RELAY_INSECURE_HOSTS`): entries trimmed and
- * lowercased, empties dropped — so membership checks against {@link ociRegistryHostOf}'s
- * lowercased output can never diverge between subsystems. Accepts the raw comma-separated env
- * string or an already-split array.
- */
+/** Normalize a registry `host[:port]` allowlist. See docs/federation.md §17. */
 export function parseRegistryHostList(raw: string | readonly string[] | undefined): string[] {
   const entries = typeof raw === "string" ? raw.split(",") : (raw ?? []);
   return entries.map((h) => h.trim().toLowerCase()).filter((h) => h.length > 0);
 }
 
-/**
- * The registry `host[:port]` an OCI reference would dial, lowercased, or `null` when the ref names
- * no explicit registry. Per the docker/OCI reference grammar the first `/`-separated component is a
- * registry host only when it contains a `.` or a `:` or is exactly `localhost` — otherwise the ref
- * is repo-only shorthand that an OCI client resolves against an IMPLICIT default registry, which an
- * allowlist can never vouch for → `null` (caller fails closed).
- */
+/** The registry host an OCI reference would dial, or null. See docs/federation.md §18. */
 export function ociRegistryHostOf(ref: string): string | null {
   const slash = ref.indexOf("/");
   if (slash <= 0) return null;
@@ -516,14 +373,7 @@ async function fetchBytes(url: string, target: VerifiedEgressTarget): Promise<Bu
     return await readBoundedBlob(url, dispatcher);
   } finally {
     release();
-    // `destroy()`, NOT `close()`. `close()` waits for every in-flight request to finish, and a
-    // response whose body was never read never finishes: on undici 7.29.0 an unread body >= 64 KiB
-    // leaves `close()` pending until the abandoned body is garbage-collected — measured here as
-    // still pending after 5s on 10/10 runs with a 1 MiB body. Every exit that does NOT read the
-    // body (a non-2xx, an over-cap `content-length`, a 404 that carries one) would hang the caller
-    // instead of failing closed, and the caller is a pre-deploy gate with no timeout of its own —
-    // an attacker-visible registry response would decide how long verification stalls. `destroy()`
-    // tears the socket down unconditionally, which is what "short-lived, never pooled" meant.
+    // `destroy()`, NOT `close()`. See docs/federation.md §19.
     await dispatcher.destroy();
   }
 }

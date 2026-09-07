@@ -16,28 +16,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * IaC-DECLARED ROLES AND ROLE BINDINGS — apply, prune, and every door still standing
- * ================================================================================================
- *
- * THE PROPERTY IS AUTHORITY, NOT ROWS. A plan that shows the right lines and an apply that writes
- * the right rows would both be satisfied by a feature that changes nothing anyone can do, so every
- * case here ends at `hasPermission` — the function the doors call — rather than at a row count.
- *
- * THE PRUNE IS THE DANGEROUS HALF and gets the most attention. Dropping a line from a manifest
- * REVOKES a person's access on the next apply (owner decision 2026-08-28, taken with that risk
- * named). Two properties bound it and both are pinned below: a binding granted through the typed
- * door carries `managed_by_stack = NULL` and is invisible to every manifest, and the administrative
- * floor refuses the revoke that would leave an org with nobody able to grant anything.
- *
- * THE HAND-GRANTED PROPERTY IS DEFENDED TWICE and the tests say so honestly: `managed_by_stack` is
- * filtered both when LOADING the prune population (`listStackManagedRoleBindings`) and again in the
- * delete helper. Removing EITHER alone leaves this file green — the loader mutation is caught by
- * the idempotence case, and the delete-helper filter is pure defence in depth. Removing BOTH reds
- * the suite loudly. That is a real redundancy rather than a gap, and it is recorded here so nobody
- * reads a surviving single mutation as proof the test is weak.
- */
+/** IaC-DECLARED ROLES AND ROLE BINDINGS. See docs/iac.md §47. */
 describe("IaC: roles and role bindings apply, prune, and respect the doors", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -136,14 +115,7 @@ describe("IaC: roles and role bindings apply, prune, and respect the doors", () 
   });
 
   it("REFUSES an apply whose principal lacks what it is granting (the subset rule, on the IaC path)", async () => {
-    // THE GAP THIS CLOSES, found by mutation: every other case here applies as the org's bootstrap
-    // ADMIN, who holds everything — so deleting the subset rule from the apply path changed
-    // nothing and all seven tests stayed green. A rule only exercised by a principal who satisfies
-    // it is not exercised at all.
-    //
-    // An OrgAdmin holds `role_binding:write` and NOT `freeze:override`, so a manifest of theirs
-    // that authors a role carrying it must be refused — the same bar `POST /roles` applies, on the
-    // path a config-source sync uses.
+    // THE GAP THIS CLOSES, found by mutation. See docs/iac.md §48.
     const orgAdmin = await createTestUser(server, org, [{ role: "OrgAdmin", scope: org.orgId }]);
     const restricted = new ScpClient({ baseUrl: server.baseUrl, token: orgAdmin.token });
 
@@ -246,11 +218,7 @@ describe("IaC: the RBAC doors are not bypassed by the apply path", () => {
   });
 
   it("names WHICH HALF of a binding it could not resolve — the guard is live, not dead code", async () => {
-    // Entered at the writer rather than the route deliberately: `prepareApplyChecks` resolves both
-    // endpoints first and 404s there, so the plan path cannot reach this guard — which is precisely
-    // how it came to be written against `getObjectByIdOrUrnAnyType`, a function that THROWS its own
-    // generic 404 and never returns a falsy value. Both refusals below were therefore unreachable
-    // from every caller, including this one, and "does not exist" was a string nothing could print.
+    // Entered at the writer rather than the route deliberately. See docs/iac.md §49.
     const orgAdmin = await createTestUser(server, org, [
       { role: "Administrator", scope: org.orgId }
     ]);

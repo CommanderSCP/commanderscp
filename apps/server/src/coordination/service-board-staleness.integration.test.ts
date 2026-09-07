@@ -16,28 +16,7 @@ import {
 } from "../test-support/harness.js";
 import { buildServiceBoard } from "./service-board.js";
 
-/**
- * DESIGN.md §13's OTHER honesty requirement, the one the board never satisfied: *"the commander UI
- * labels air-gapped domains \"as of &lt;bundle/date&gt;\" and never presents stale data as live
- * status."*
- *
- * Everything the board already says is about what it CAN SEE. Nothing said WHEN what it can see
- * arrived. A board rendering commander-driven changes on an outpost whose last successful sync was
- * three days ago looked byte-identical to one that synced four seconds ago — and the second half of
- * §13's sentence is a general ban, not a commander-only one.
- *
- * WHAT THIS PINS:
- *  1. the `asOf` label exists and names the LIMITING peer, with the transport it arrived over;
- *  2. an upstream WITHIN its own effective cadence produces NO caveat (the negative half — an
- *     always-on caveat is as dishonest as no caveat, and would train operators to ignore it);
- *  3. an upstream OVERDUE by that same cadence produces one, naming the same two board-level fields
- *     the blindness rule names, because it is the same two claims that stop being current;
- *  4. a peer this instance never dials (no baseUrl — the air-gap case §13 is actually about) gets
- *     the LABEL and `stale: null`, never a fabricated `false`.
- *
- * The peer is paired at FULL scope throughout, so the change-blindness arms are silent by
- * construction: any `summary.stable` caveat below can only have come from staleness.
- */
+/** The other honesty requirement the board never satisfied. See docs/coordination.md §872. */
 describe("service board staleness: an upstream is labelled, and an overdue one is not passed off as live", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -100,11 +79,7 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
   });
 
   it("the freshness anchor has an index that matches it — this runs per peer on every render", async () => {
-    // `lastConfirmedSyncImportAt` orders by `confirmed_at DESC LIMIT 1` on a ledger that only ever
-    // grows (no pruning, by design). The pre-existing `(org_id, peer_domain_id, created_at)` index
-    // cannot serve that ordering. Asserted against the catalog rather than an EXPLAIN because a
-    // planner on a near-empty test table will pick a seq scan regardless — what is checkable, and
-    // what actually regressed, is whether drizzle/0041's index is there and matches the predicate.
+    // Ordered on a ledger that only ever grows. See docs/coordination.md §873.
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.execute(
         sql`select indexdef from pg_indexes where tablename = 'bundle_transfers' and indexname = 'bundle_transfers_org_peer_confirmed'`
@@ -161,17 +136,7 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
     expect(result.asOf!.expectedWithinSeconds).toBe(60);
     expect(result.asOf!.stale).toBe(false);
 
-    // THE NEGATIVE HALF. A caveat that is always on is exactly as useless as no caveat: it teaches
-    // an operator to ignore the one signal that matters. Freeze visibility is PARTIAL the moment a
-    // peer exists, but nothing about CHANGE visibility is.
-    //
-    // M25.7 (owner decision D6) NARROWED WHY, not whether. This comment used to say "freezes never
-    // ride the journal" — true when written. A freeze authored `federate: true` now rides
-    // `object_upsert` as a graph object and is rebuilt into the receiver's own `freezes` table. The
-    // caveat still fires unconditionally on any peer because federation is OPT-IN and defaults off:
-    // a peer's un-federated freezes are invisible here and nothing reports how many there are. The
-    // ASSERTIONS below are unchanged, which is the point of recording the reason change here rather
-    // than silently leaving a stale parenthesis in a green test.
+    // THE NEGATIVE HALF. See docs/coordination.md §874.
     expect(result.unknownFields).not.toContain("summary.stable");
     expect(result.unknownFields).not.toContain("rows[].latestChangeId");
     expect(result.unknownFields).toContain("rows[].activeFreeze");
@@ -234,14 +199,7 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
   });
 
   it("an AIR-GAPPED peer gets the §13 LABEL and `stale: null` — never a fabricated `false`", async () => {
-    // The air-gap shape: no baseUrl, so this instance schedules no pulls for it and the live-pull
-    // columns stay NULL forever. Its state IS a week old; that is not a fault, and there is no
-    // cadence for it to be late against.
-    //
-    // Written directly rather than through `pairPeer`, deliberately: `pairPeer`'s update path is
-    // `baseUrl: input.baseUrl ?? existing.baseUrl`, so a re-pair can never CLEAR a baseUrl. Going
-    // through the repo here would silently leave the connected URL in place and quietly turn this
-    // into a second copy of the previous case.
+    // The air-gap shape. See docs/coordination.md §875.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .update(federationPeers)
@@ -291,22 +249,7 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
   });
 });
 
-/**
- * THE MASKING CASE — the defect the previous pass introduced while fixing a different one.
- *
- * `limitingUpstreamFreshness` was corrected to return the OLDEST reading (so a barely-late connected
- * peer could no longer mask an ancient air-gapped one in the LABEL). But the board then derived its
- * staleness caveat from that single returned reading's own `stale`, and the oldest reading is very
- * often the air-gapped one — whose `stale` is `null` by design, because no cadence applies to it.
- * Result: a peer that is genuinely, badly overdue lost its caveat entirely, in exactly the incident
- * the caveat exists to catch.
- *
- * TWO PEERS, both at FULL scope so neither blindness arm can fire:
- *   A — a commander on the 60s cadence whose last import confirmed an HOUR ago  → `stale: true`.
- *   B — air-gapped (no baseUrl), 21 days old                                    → `stale: null`,
- *       and OLDER, so it wins the label.
- * The label must still be B (the true freshness bound) AND the caveat must still fire for A.
- */
+/** THE MASKING CASE. See docs/coordination.md §876. */
 describe("service board staleness: an overdue peer is not masked by an older one that has no cadence", () => {
   let server: TestServer;
   let org: TestOrg;

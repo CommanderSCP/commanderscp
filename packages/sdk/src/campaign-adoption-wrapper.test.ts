@@ -4,15 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScpClient } from "./client.js";
 import { ScpResponseValidationError } from "./errors.js";
 
-/**
- * M25.5 — `client.campaigns.adoption()`, "has each of this campaign's components migrated yet?".
- * `GET /campaigns/{id}/adoption` already existed; only the hand-written `ScpClient` wrapper (and
- * the CLI command on top of it) was missing.
- *
- * Driven through the REAL generated client against a loopback HTTP server, same harness as
- * `dependency-read-surface-wrappers.test.ts` — DELETE THE WIRING: this test dies if the wrapper
- * line is removed from `client.ts` or points at the wrong generated request.
- */
+/** The adoption wrapper, driven through the real generated client. See docs/sdk.md §3. */
 
 const CAMPAIGN_ID = "77777777-7777-4777-8777-777777777777";
 

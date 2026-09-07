@@ -21,13 +21,7 @@ import {
 } from "./delivery-target.js";
 import { deliveryTargetSecretKey, parseDeliveryS3Credential } from "./retrans-relay.js";
 
-/**
- * M13.2a — DeliveryTarget VIEW resolution (proposal §13.2), unit-proven per gap:
- * per-peer beats env, env fallback is exactly today's behavior, BOTH-absent is a named
- * fail-closed problem (never a silent default path), a hostile stored dir never resolves
- * (and never silently falls back), and the inbox listing keeps the PR #112 traversal
- * guard — names only.
- */
+/** M13.2a — DeliveryTarget VIEW resolution. See docs/federation.md §79. */
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {
@@ -309,11 +303,7 @@ describe("listInbox — the §13.1a read surface: names only, no traversal", () 
   });
 });
 
-// ===========================================================================================
-// M13.2b — the s3-compatible provider: the endpoint/bucket allowlist (ADR-0019 §4 symmetry) and
-// the fail-closed resolution. The MinIO round-trip (put/list/get + multipart) is proven in the
-// integration suite; these unit tests pin the ALLOWLIST predicate + the fail-closed resolution.
-// ===========================================================================================
+// M13.2b — the s3-compatible provider. See docs/federation.md §80.
 
 const s3Target = (t: {
   endpoint: string;
@@ -475,17 +465,7 @@ describe("assertDeliveryTargetRooted — the pair-time gate, s3 sibling", () => 
   });
 });
 
-// ===========================================================================================
-// M13.1b — `resolveOnwardDeliveryDir`, the ONE onward-drop resolution shared by the M13.1a inbox
-// loop's validate-and-forward and the M13.1b auto-relay (the two halves of the same hop).
-//
-// `strict` exists because the two callers have different tolerances for a config gap. The inbox
-// loop is REACTIVE — a file arrived, and deferring it is visibly a stall an operator is already
-// looking at. The auto-relay is a TIMER: falling through to the instance-wide env dir would perform
-// the very action the operator-invoked route explicitly 400s on (`requireOutboundDir` refuses an s3
-// target), mark the build done, and leave the bytes in a directory the s3-expecting CDS never
-// watches — a silent boundary misdelivery nobody is watching a terminal for.
-// ===========================================================================================
+// The one onward-drop resolution both paths share. See docs/federation.md §81.
 
 describe("resolveOnwardDeliveryDir — the shared onward drop (M13.1a forward + M13.1b auto-relay)", () => {
   const peerId = (n: number) => asTrustDomainId(`00000000-0000-4000-8000-00000000000${n}`);
@@ -570,13 +550,7 @@ describe("resolveOnwardDeliveryDir — the shared onward drop (M13.1a forward + 
     ).toEqual({ dir: "/env/out" });
   });
 
-  /**
-   * THE REGRESSION (cd1bf1c): strict may only flag peers that CONFIGURED a target. A peer with no
-   * delivery target of its own is not a misconfiguration — it simply is not the boundary peer, and
-   * the normal CDS topology has exactly one of each. Flagging it refuses the drop on account of a
-   * peer that was never a candidate, which silently kills auto-relay in the standard two-peer
-   * deployment (upstream commander + downstream boundary peer, no instance env dir at all).
-   */
+  /** THE REGRESSION (cd1bf1c). See docs/federation.md §82. */
   it("STRICT: the normal two-peer topology resolves — a target-LESS upstream peer never blocks the boundary peer's dir", () => {
     const resolved = resolveOnwardDeliveryDir(
       [fsPeer("commander-a", 1), fsPeer("high-side", 2, "/roots/high/out")],

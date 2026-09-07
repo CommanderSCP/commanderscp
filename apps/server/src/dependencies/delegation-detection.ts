@@ -7,87 +7,13 @@ import {
 } from "../coordination/decisions-repo.js";
 import type { ManifestReader } from "./internal-release-version.js";
 
-/**
- * M21.5 — DOES THIS REPOSITORY ALREADY DELEGATE ITS DEPENDENCY UPDATES TO SOMEBODY ELSE?
- * (charter `scp-managed-dep` amendment 2026-08-13; ADR-0032 §8.)
- *
- * ============================================================================================
- * THIS IS LOAD-BEARING, NOT A NICETY, AND ADR-0032 §8 SAYS WHY IN ONE LINE
- * ============================================================================================
- * ADR-0002 §3's gate 1 asks whether an execution system for this class of change already exists. For
- * dependency bumps the honest answer is that **gate 1 FAILS wherever Renovate or Dependabot exists**
- * — that IS the execution system for this class — so the router's default verdict is COORDINATE and
- * the owner's Mode C selection was made with that analysis in hand. What keeps gate 1 coherent is
- * that **opting a component in is itself the gate-1 flip**: enabling dependency subscriptions
- * declares CommanderSCP the execution system for this class in that domain.
- *
- * A flip can only mean something if it is exclusive. If a component enables subscriptions while its
- * repository still delegates the same manifests to Renovate, then *two actuators edit one file* —
- * which is not a merge conflict to be resolved but a pair of systems each believing it owns the
- * declared version, racing on every release of every line. So the refusal below is not defensive
- * hygiene; it is the condition that makes the gate-1 flip a true statement.
- *
- * ============================================================================================
- * WHY A STORED PROBE RATHER THAN A READ AT THE MOMENT OF AUTHORING
- * ============================================================================================
- * The refusal belongs at the choke point M21.3's sibling guard already uses — `graph/objects-repo.ts`'s
- * `createObject`/`updateObject` — for exactly the reasons that guard's header sets out: the typed
- * `/policies` route is NOT the boundary, and three free-form-`typeId` doors reach `createObject`
- * with the same document. But answering "does this repository delegate?" requires READING FILES OUT
- * OF A REPOSITORY, and `createObject` runs inside a tenant transaction that already holds two per-org
- * advisory locks to commit. Doing provider I/O there would hold those locks across a network call.
- *
- * So the question is answered ASYNCHRONOUSLY, where the repository is already being read — the same
- * `readFileAtRef` route M21.4 built for the inventory — and the ANSWER is persisted as a `Decision`.
- * The choke-point guard then performs one indexed read (`decisions_org_subject_kind_created`, the
- * exact shape `latestDecisionForSubjectKind` was indexed for) inside the transaction and refuses on
- * a `block`.
- *
- * A Decision is the right home for this and not a convenient one: it is the platform's own
- * explainability substrate (charter principle 6 — "every engine verdict persists a Decision record
- * with its inputs; every blocked response carries a `decision_id`"), it is org-scoped and RLS-covered
- * like everything else, `insertDecisionIfChanged` already solves the daily-re-probe write
- * amplification that cost 1.44 GB/day elsewhere, and the refusal the operator reads can hand back the
- * very `decision_id` that explains itself. A bespoke table would have been a fifth place to migrate
- * and a second place to explain from.
- *
- * ============================================================================================
- * WHAT ABSENT MEANS, STATED RATHER THAN LEFT TO INFERENCE
- * ============================================================================================
- * No probe on record means NO DELEGATION HAS BEEN OBSERVED — not "delegation is unknown, refuse".
- * That is the charter's own reading: it refuses to enable "for a component whose repository ALREADY
- * delegates the same manifests", which is a refusal predicated on an observed fact. Requiring a
- * positive clean probe first would make enablement depend on an ingestion having run, and an operator
- * would meet a refusal that named nothing.
- *
- * The cost of that reading is real and is covered rather than accepted: a policy authored BEFORE the
- * probe would stand. The actuator seam (`bump-actuator.ts`) re-checks the same stored verdict before
- * every single authored bump, so a delegation discovered later stops the writes even though it did
- * not stop the policy. Two halves, one stored fact, neither of them fail-open.
- *
- * ============================================================================================
- * WHEN IN DOUBT, IT COVERS
- * ============================================================================================
- * Every ambiguity in {@link delegationCoversManifest} resolves towards "yes, it covers" — an
- * unparseable `renovate.json`, a `dependabot.yml` naming an ecosystem this code does not map, a
- * config shape newer than this parser. Guessing "no" would let two actuators loose on one file, which
- * is the failure this whole module exists to prevent; guessing "yes" costs a legible refusal that
- * names the file and can be resolved by deleting it. The asymmetry is not close.
- */
+/** Does this repository already delegate its updates. See docs/dependencies.md §153. */
 
 /** The verdict `kind` these probes are recorded under. Read by the choke-point guard and by the
  *  actuator seam; both use `latestDecisionForSubjectKind`, so this string is the join. */
 export const DEPENDENCY_DELEGATION_DECISION_KIND = "dependency_delegation";
 
-/**
- * Every path a delegating configuration is known to live at.
- *
- * Renovate's own documented discovery order plus Dependabot's single location. `.renovaterc` (no
- * extension) is JSON despite the name — that is Renovate's convention, not an assumption made here.
- * A `renovate` key inside `package.json` is deliberately NOT probed: it would require reading and
- * parsing every component manifest for a config that Renovate itself deprecated, and the residual is
- * recorded in {@link probeDependencyUpdateDelegation} rather than hidden.
- */
+/** Every path a delegating configuration is known to live at. See docs/dependencies.md §154. */
 export const DELEGATION_CONFIG_PATHS = [
   "renovate.json",
   "renovate.json5",
@@ -122,15 +48,7 @@ export interface DelegationConfig {
   note: string;
 }
 
-/**
- * Dependabot's `package-ecosystem` values mapped into ADR-0032's five. Only the five matter: a
- * `cargo`/`bundler`/`nuget` entry is real delegation but of a class SCP does not author, so it
- * cannot collide and is not a reason to refuse.
- *
- * An UNRECOGNISED value is NOT dropped — see {@link parseDependabotConfig}, where it widens the
- * config to `coversEverything`. A value this map has not learned yet is exactly the case where
- * guessing "does not collide" is the dangerous guess.
- */
+/** The provider's ecosystem values mapped into our five. See docs/dependencies.md §155. */
 const DEPENDABOT_ECOSYSTEM_TO_SCP: Record<string, string> = {
   npm: "npm",
   gomod: "go",
@@ -145,15 +63,7 @@ const DEPENDABOT_ECOSYSTEM_TO_SCP: Record<string, string> = {
  *  outside this set cannot collide with a bump SCP would write. */
 const SCP_AUTHORED_ECOSYSTEMS = new Set(["go", "oci", "npm", "python", "maven"]);
 
-/**
- * Read a delegating configuration, or return `undefined` when this file is not one.
- *
- * PARSING IS DELIBERATELY SHALLOW. Renovate's config language is large (presets, `packageRules`,
- * regex managers, inherited org config) and Dependabot's is small; reimplementing either faithfully
- * would be a second, drifting copy of somebody else's product. What this needs to decide is one
- * boolean — could this config edit the same manifest SCP is about to edit? — and every shortcut
- * below widens rather than narrows the answer.
- */
+/** Reads a delegating configuration, or returns nothing. See docs/dependencies.md §156. */
 export function parseDelegationConfig(
   configPath: string,
   content: string
@@ -216,18 +126,7 @@ function parseRenovateConfig(configPath: string, content: string): DelegationCon
   return base;
 }
 
-/**
- * Dependabot's `updates:` list, read WITHOUT a YAML parser.
- *
- * The server has no YAML dependency and adding one to answer a boolean would be a new required
- * dependency for a probe. What is needed is the set of `package-ecosystem` and `directory` values,
- * both of which are scalar keys on list items — a line scan finds them, and anything the line scan
- * cannot make sense of widens the result to `coversEverything` rather than narrowing it.
- *
- * The honest bound, stated rather than discovered: a `dependabot.yml` using YAML anchors, flow
- * mappings, or multi-line strings for these keys is not narrowed by this reader — it is reported as
- * covering everything, which refuses more than strictly necessary and never less.
- */
+/** Dependabot's `updates:` list, read WITHOUT a YAML parser. See docs/dependencies.md §157. */
 export function parseDependabotConfig(configPath: string, content: string): DelegationConfig {
   const base: DelegationConfig = {
     tool: "dependabot",
@@ -285,12 +184,7 @@ export function parseDependabotConfig(configPath: string, content: string): Dele
     };
   }
   if (unmappedEcosystems.size > 0 && ecosystems.size === 0) {
-    // EVERY entry named an ecosystem SCP does not author bumps for (bundler, cargo, nuget, …), so no
-    // collision with a bump SCP would write is possible. The unmapped names are carried through as
-    // the config's `ecosystems` — a NON-EMPTY list disjoint from SCP's, which is what makes
-    // `delegationCoversManifest` answer "does not cover". Leaving the list empty here would have
-    // meant "unrestricted" and refused every enablement in the org, which is the opposite claim and
-    // is the defect `delegation-detection.test.ts`'s bundler case caught.
+    // Every entry naming an ecosystem we do not author for. See docs/dependencies.md §158.
     return {
       ...base,
       ecosystems: [...unmappedEcosystems].sort(),
@@ -315,14 +209,7 @@ export function parseDependabotConfig(configPath: string, content: string): Dele
   };
 }
 
-/**
- * Does `config` claim the manifest at `manifestPath` (declaring a dependency of `ecosystem`)?
- *
- * Directory matching is by PREFIX on path segments, which is how both tools scope themselves: a
- * `directory: /services/api` claims `services/api/package.json` and does not claim
- * `services/api-v2/package.json`. `/` claims everything under it — for Dependabot that is the
- * documented meaning of the repository root, and it is also the shape a bare `directory: "/"` takes.
- */
+/** Does `config` claim the manifest at `manifestPath`. See docs/dependencies.md §159. */
 export function delegationCoversManifest(
   config: DelegationConfig,
   manifestPath: string,
@@ -361,15 +248,7 @@ export interface DelegationProbeSubject {
 export interface DelegationProbeResult {
   /** True when at least one config was found that covers at least one of the component's manifests. */
   delegated: boolean;
-  /**
-   * True only when EVERY candidate path in {@link DELEGATION_CONFIG_PATHS} was answered — found or
-   * genuinely absent. False the moment one of them could not be read.
-   *
-   * It is a separate field from `delegated` because the two answer different questions and the
-   * difference is the whole refusal: `delegated: false` means "no delegating config was found",
-   * which is a claim about the repository, and it may only be made when the repository was actually
-   * readable. See {@link delegationProbeIsInconclusive}.
-   */
+  /** True only when every candidate path was answered. See docs/dependencies.md §160. */
   conclusive: boolean;
   configs: DelegationConfig[];
   /** For each colliding config, which of the component's manifests it claims. */
@@ -379,27 +258,7 @@ export interface DelegationProbeResult {
   unreadable: { configPath: string; detail: string }[];
 }
 
-/**
- * ============================================================================================
- * "WE COULD NOT CHECK" MUST NEVER RESOLVE TO "GO AHEAD AND WRITE TO IT"
- * ============================================================================================
- * A probe that read nothing looks EXACTLY like a probe that found nothing — same `configs: []`, same
- * `collisions: []`, same `delegated: false` — and that is how a bad credential, a provider 5xx or an
- * egress refusal turned into an `allow` verdict and an authored commit. This is the one refusal
- * standing between CommanderSCP and two actuators editing one file, and the cost of the two mistakes
- * is not symmetric: a refused bump is a component that keeps declaring an older version and says so;
- * a wrong one is a commit in somebody else's repository, racing Renovate on every release.
- *
- * So an inconclusive probe is not a verdict at all. It is recorded as NOTHING —
- * {@link recordDelegationProbe} refuses to persist it rather than writing a weaker `allow`, because
- * a stored `allow` would then be read as a standing fact by both readers long after the outage that
- * produced it. The dispatcher skips the candidate with a named cause and re-derives on the next
- * advance.
- *
- * A probe that DID find a collision is conclusive enough to refuse whatever else failed to read:
- * more unread config could only add collisions, never remove the one already found. That is why the
- * test is `!delegated && !conclusive` rather than `!conclusive`.
- */
+/** Could not check must never resolve to go ahead. See docs/dependencies.md §161. */
 export function delegationProbeIsInconclusive(result: DelegationProbeResult): boolean {
   return !result.delegated && !result.conclusive;
 }
@@ -409,21 +268,7 @@ export function delegationProbeFailureDetail(result: DelegationProbeResult): str
   return result.unreadable.map((u) => `${u.configPath} (${u.detail})`).join("; ");
 }
 
-/**
- * Read every candidate config out of the component's repository and decide whether any of them
- * claims a manifest this component declares.
- *
- * `reader` is M21.4's `ManifestReader` — the SAME server-side route to `readFileAtRef` the inventory
- * uses, which resolves the git-provider binding CONFIGURED FOR THAT REPO and refuses to read one
- * repository with another binding's credential. Reusing it is deliberate: a second way to read a
- * user's repo would be a second place for that restraint to be forgotten.
- *
- * RESIDUAL, stated rather than hidden: a `renovate` key inside `package.json` is a supported (if
- * deprecated) Renovate config location and is not probed here, because probing it means parsing every
- * component manifest for a config. A repository configured that way is not detected, and the
- * actuator's re-check inherits the same blind spot — this is the known bound of the detection, not a
- * bug in it.
- */
+/** Reads every candidate config and decides whether any. See docs/dependencies.md §162. */
 export async function probeDependencyUpdateDelegation(
   reader: ManifestReader,
   subject: DelegationProbeSubject
@@ -475,21 +320,7 @@ export async function probeDependencyUpdateDelegation(
   };
 }
 
-/**
- * Persist the probe's verdict against the component.
- *
- * `insertDecisionIfChanged` rather than `insertDecision`, and that is not an optimisation: this probe
- * is re-run on a TIMER (every ingestion pass over a component), which is the exact writer shape that
- * produced 1.44 GB/day of byte-identical rows elsewhere in this system. A repository's delegation
- * status changes when somebody adds or deletes a file; the verdict should be written then and not
- * once per pass.
- *
- * AN INCONCLUSIVE PROBE IS REFUSED HERE, not merely skipped by the one caller that exists today.
- * The refusal belongs at the WRITER because that is the only place every future producer of this
- * verdict must pass through: a caller that forgot the check would otherwise persist an `allow` that
- * both readers then treat as a standing fact about a repository nobody could read. It throws BEFORE
- * touching `tx`, so it is a decision about the argument rather than a database outcome.
- */
+/** Persist the probe's verdict against the component. See docs/dependencies.md §163. */
 export async function recordDelegationProbe(
   tx: TenantTx,
   orgId: string,

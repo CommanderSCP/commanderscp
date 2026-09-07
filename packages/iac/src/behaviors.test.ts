@@ -14,28 +14,7 @@ import {
   Workflow
 } from "./index.js";
 
-/**
- * THE TYPED PIPELINE BEHAVIOURS (L2) — `behaviors.ts`.
- *
- * ============================================================================================
- * THE ONE PROPERTY THAT MATTERS, AND WHY IT IS AN EQUALITY RATHER THAN A SHAPE ASSERTION
- * ============================================================================================
- * D16(1): "an L1-authored entry and its L2 equivalent synthesize identically." A shape assertion
- * on the L2 output would pass while the two doors drifted — which is the failure this library is
- * most exposed to, because the L1 door is what a standards package or a generated file uses and
- * the L2 door is what a human writes. So the central case builds the SAME declaration both ways
- * and compares whole manifests.
- *
- * ============================================================================================
- * MUTATION LOG — each applied, watched fail, reverted, watched pass (MEASURED)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `Workflow` stops inheriting `repo` from the pipeline (hard-codes `""`) | 3 FAIL — (1), (2), (3). The L1/L2 equality is the first to go, which is the drift this case exists to catch |
- * | `PipelineBase.componentUrn` returns the URN even at the shared rung | (5) FAILS — a service-rung hook is accepted and synthesizes keyed on a SERVICE urn, which no read path resolves |
- * | `ContinuousTest` passes `props.every` through without `.toSeconds()` | (3) FAILS — a raw `Duration` reaches the entry, the hazard `duration.ts`'s header records |
- * | `PostDeployTest` defaults `stage` to `"production"` instead of omitting it | 2 FAIL — (1) and (2). Absent means EVERY wave (D21(a)), so a default silently REMOVES gates |
- */
+/** THE TYPED PIPELINE BEHAVIOURS. See docs/iac.md §170. */
 describe("@scp/iac L2: typed pipeline behaviours", () => {
   const REPO = "payments/payments-api";
 
@@ -161,12 +140,7 @@ describe("@scp/iac L2: typed pipeline behaviours", () => {
   it("(5) a hook under a SERVICE-rung pipeline is REFUSED, naming why rather than guessing a component", () => {
     const stack = new Stack("shared-rung");
     const svc = new Service(stack, "payments", { name: "payments" });
-    // D8's shared-rung exception: the pipeline attaches to the SERVICE, so it names no component,
-    // and which components inherit it is resolved at READ time by the nearest-rung ladder.
-    // The SERVICE is the scope — that is how the shared rung is spelled (`resolvePipelineCtorArgs`
-    // sets `isComponentScoped` from `scope instanceof Component`), not a `scope:` prop.
-    // No `service:` prop in the nested form — that belongs to the ROOT form, which auto-creates a
-    // component. Here the scope IS the service.
+    // D8's shared-rung exception. See docs/iac.md §171.
     const shared = new ImagePipeline(svc, { repo: REPO, waves: [] });
     const workflow = new Workflow(shared, "integration", { path: ".argo/integration.yaml" });
     expect(() => new PostDeployTest(workflow)).toThrow(

@@ -11,17 +11,7 @@ import {
   recordingCtx as fakeCtx
 } from "./write-test-support.js";
 
-/**
- * The credential clause, exercised against a recording fake of `ctx.http`.
- *
- * "Repository-write credentials are issued per run, scoped to the single repository under change,
- * and are never standing credentials" is a sentence about REQUESTS — which endpoint is called, what
- * body it carries, and whether the token is revoked — so it is testable exactly here and nowhere
- * else in the tree.
- *
- * The fixtures and the recording client are shared with `repo-write.matrix.test.ts`, so the wire
- * behaviour proven here and the refusals proven there are demonstrably about the same request.
- */
+/** The credential clause, against a recording fake. See docs/plugins.md §319. */
 
 // A throwaway RSA key, generated in-test, so no key material is committed and the JWT signing path
 // is genuinely exercised rather than stubbed.
@@ -208,14 +198,7 @@ describe("publishBump — one file, one branch, one pull request", () => {
     expect(result.pullRequestNumber).toBe(AUTHORED_PULL_REQUEST);
   });
 
-  /**
-   * THE SAME PROPERTY AS THE MERGE PATH'S, AT THE OTHER CALL SITE. `findOpenPullRequest` used to
-   * filter on the head branch alone and return `list.body[0]`, so the "duplicate" this run adopts as
-   * its own could be a pull request somebody else opened from the same branch to a different base —
-   * and for an `auto_merge` delivery this run would then merge it. One branch can legitimately have
-   * several open pull requests against several bases; the one this run is a retry of is the one into
-   * OUR base.
-   */
+  /** THE SAME PROPERTY AS THE MERGE PATH'S, AT THE OTHER CALL SITE. See docs/plugins.md §320. */
   it("REFUSES to adopt a duplicate pull request that targets a DIFFERENT base", async () => {
     const { ctx } = fakeCtx((req) => {
       if (req.method === "POST" && req.url.endsWith("/git/refs")) {
@@ -264,16 +247,7 @@ describe("publishBump — one file, one branch, one pull request", () => {
   });
 });
 
-/**
- * ================================================================================================
- * `mergeAuthoredBranch` — THE NEW REPOSITORY-WRITE AUTHORITY, AND EVERY CONDITION ON IT
- * ================================================================================================
- * Until M21.5's auto-merge link the only merge reachable in the tree was the tail of a publish, so
- * this is a genuine widening: SCP can now change a repository's default branch without a human
- * clicking anything. Each test below pins one of the conditions that make that permissible, and each
- * asserts the MECHANISM (a request, a refusal reason) rather than only the outcome — a test that
- * asserted "it did not merge" would stay green with the precondition deleted.
- */
+/** The repository-write authority, and every condition on it. See docs/plugins.md §321. */
 describe("mergeAuthoredBranch — merging is conditioned, never merely authorized", () => {
   const mergeTarget = { ...target };
 
@@ -302,17 +276,7 @@ describe("mergeAuthoredBranch — merging is conditioned, never merely authorize
     expect(calls.some((c) => c.url.endsWith("/git/refs"))).toBe(false);
   });
 
-  /**
-   * ============================================================================================
-   * THE BASE BRANCH IS COMPARED, NOT MERELY CARRIED — the blocker this block exists for
-   * ============================================================================================
-   * `target.baseBranch` was asserted safe and then DISCARDED: never sent, never compared. Combined
-   * with "merge whichever open pull request the listing returns first", that meant an open pull
-   * request from SCP's branch to `production`, while the governed grant was about `main`, MERGED —
-   * and the server recorded a `merged` Decision naming `main`. Anyone with write or triage on the
-   * repository can retarget a pull request or open a second one from a branch they can see, so this
-   * is a reachable widening of the grant, not a hypothetical.
-   */
+  /** THE BASE BRANCH IS COMPARED, NOT MERELY CARRIED. See docs/plugins.md §322. */
   it("REFUSES a pull request whose base is not the base the grant named", async () => {
     const { ctx, calls } = fakeCtx(
       githubHandler({

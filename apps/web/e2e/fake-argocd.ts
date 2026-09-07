@@ -1,28 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 
-/**
- * A fake Argo CD API server for the M19.1 "Connect Argo CD" wizard spec — the LOCAL-target half.
- *
- * =============================================================================================
- * THERE IS A SECOND COPY OF THIS, AND THAT IS DELIBERATE. KEEP THEM IN STEP.
- * =============================================================================================
- * This suite runs in two modes (see `global-setup.ts`). In LOCAL mode the SCP server is in-process,
- * so this module simply listens on 127.0.0.1. In COMPOSE-STACK mode — which is what CI job 9 runs —
- * the SCP server is inside a container and can only reach a service on its own compose network, so
- * the fake there is a container: `deploy/compose/docker-compose.e2e.yml`, an inline `node -e` script
- * on the already-built `scp` image (no second image to pull, which keeps that job offline).
- *
- * The alternative — one implementation reached over the host network via `host-gateway` — was
- * rejected: it trades a small, self-detecting duplication for a new networking dependency in the CI
- * job whose networking has historically been the fragile part. Self-detecting because
- * `connect-argocd.spec.ts` asserts these exact Application NAMES, so the two fakes drifting apart
- * turns job 9 red on the pull request rather than rotting quietly.
- *
- * WHY IT DEMANDS A BEARER TOKEN. Without that, a green spec would prove only that the click path
- * works. With it, a green spec proves the credential really travelled secrets store → server →
- * plugin subprocess → Argo CD, which is the half of the wizard that has no other end-to-end cover.
- */
+/** A fake Argo CD API server for the connect wizard. See docs/web.md §8. */
 
 /** The Applications both fakes serve. `connect-argocd.spec.ts` asserts these names. */
 export const FAKE_ARGOCD_APPS = [

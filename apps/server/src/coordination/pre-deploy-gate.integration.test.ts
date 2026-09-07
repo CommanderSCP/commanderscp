@@ -35,37 +35,7 @@ import {
 import { asTrustDomainId } from "@scp/schemas";
 import { TrustDomainId } from "@scp/schemas";
 
-/**
- * M17.4(b) — PER-ARTIFACT BYTE VERIFICATION, the operator-loaded pre-deploy VERIFY
- * (coordination/pre-deploy-gate.ts + federation/artifact-verify.ts), end to end against a REAL
- * local OCI registry (`registry:2` via Testcontainers) and the REAL cosign binary (the same
- * pinned/PATH resolution every other cosign call uses — @scp/cosign).
- *
- * The scenario modeled is exactly the production shape: a cross-boundary promotion was imported
- * METADATA-ONLY (M17.4(a), #106 — the change's `sourceRef` carries the verified
- * `promotionManifest` + typed `artifacts[]` authorized set, `importedFromDomain` names the
- * exporting peer), then the operator side-loaded the artifact BYTES into the outpost's reachable
- * registry. Before reconcile's `coordinated -> executing` edge triggers the deploy executor, the
- * gate must prove — for EVERY artifact in the authorized set — that the bytes are present and
- * their signature verifies against the EXPORTER's distributed cosign public key
- * (`currentPeerCosignPublicKey`, E5): `cosign verify` (registry-attached sig) for `oci`,
- * `cosign verify-blob` (origin detached sig, `signatureRef`) for `blob`. Keyful/offline.
- *
- * Fail-closed axes proven here: MISSING bytes, a wrong-key/tampered image signature, a bad blob
- * signature, SUBSTITUTION via the unsigned `location` (a different validly-signed image/blob than
- * the manifest-authorized digest — digest binding), SSRF (a bundle-supplied blob URL outside
- * the operator-configured `SCP_ARTIFACT_BLOB_BASE_URLS` is rejected WITHOUT being fetched), and
- * the symmetric OCI-HOST guard (ADR-0019 §4 / M15.5(c): a bundle-supplied OCI location whose
- * registry host is outside the operator-configured `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` is rejected
- * WITHOUT cosign ever dialing it, and an UNSET allowlist refuses every OCI verify) — each
- * BLOCKS the deploy with a `block` Decision + hash-chained audit event, PARKS the change, and
- * never fires `trigger()`. Scope axes: a domain-local change (no manifest — ADR-0013 exemption)
- * and a pre-manifest imported change deploy UNGATED, exactly as before.
- *
- * Coordinate-not-execute: the suite's registry reads happen inside cosign/the gate — SCP never
- * pushes, copies, or transports bytes (byte TRANSPORT is M15.5; the operator side-load here is
- * the TEST harness playing the operator, not SCP).
- */
+/** Per-artifact byte verification, the pre-deploy verify. See docs/coordination.md §707. */
 
 const sha256 = (buf: Buffer): string => "sha256:" + createHash("sha256").update(buf).digest("hex");
 
@@ -435,12 +405,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     };
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // (a) PASS — bytes present, image + blob signatures verify against the exporter key -> deploy.
-  // Doubles as the OCI-host allowlist POSITIVE axis: the image's registry host IS the
-  // operator-allowlisted SCP_ARTIFACT_OCI_REGISTRY_HOSTS entry (beforeAll), so the verify dials it
-  // exactly as before the allowlist existed.
-  // ---------------------------------------------------------------------------------------------
+  // Pass: bytes present and both signatures verify. See docs/coordination.md §708.
   it("(a) PASS: present + exporter-signed oci image AND blob => the deploy proceeds", async () => {
     const image = await pushImage("scp/pass-img", "pass");
     signImage(image.ref, exporterKey.keyPath);
@@ -578,11 +543,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(decisionId).toEqual(expect.any(String));
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (f) SUBSTITUTION (oci) — `location` is UNSIGNED bundle-side metadata; pointing it at a
-  // DIFFERENT validly-signed image (same exporter key!) must NOT pass. The gate binds verification
-  // to the manifest-signed `artifact.digest`, so the mismatch fails closed before cosign runs.
-  // ---------------------------------------------------------------------------------------------
+  // (f) SUBSTITUTION (oci). See docs/coordination.md §709.
   it("(f) SUBSTITUTION-OCI: a location pinning a different validly-exporter-signed image than the authorized digest is BLOCKED on digest mismatch", async () => {
     // BOTH images genuinely signed by the exporter — the substitution's whole point is that the
     // decoy's registry-attached signature IS valid; only the digest binding can catch it.
@@ -603,11 +564,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(reason).toContain(victim.digest); // names the authorized digest the location tried to dodge
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (g) SUBSTITUTION (blob) — validly-signed bytes whose sha256 != the authorized digest. The
-  // detached signature verifies (exporter key, real bytes) — only hashing the FETCHED bytes and
-  // requiring equality with `artifact.digest` catches the swap.
-  // ---------------------------------------------------------------------------------------------
+  // (g) SUBSTITUTION (blob). See docs/coordination.md §710.
   it("(g) SUBSTITUTION-BLOB: exporter-signed blob bytes whose sha256 differs from the authorized digest are BLOCKED on digest mismatch", async () => {
     // The exporter validly signs the DECOY bytes; the manifest authorized a DIFFERENT document.
     const decoy = await serveSignedBlob(
@@ -634,11 +591,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(reason).toMatch(/blob digest mismatch/i);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (h) SSRF — a hostile bundle-supplied blob `location` steering the outpost at an internal
-  // service it can reach. The guard must reject BEFORE any request leaves the process: only
-  // operator-configured base URLs (SCP_ARTIFACT_BLOB_BASE_URLS) are fetchable.
-  // ---------------------------------------------------------------------------------------------
+  // SSRF: a hostile blob location aimed at an internal host. See docs/coordination.md §711.
   it("(h) SSRF: a blob location targeting a non-allowlisted internal endpoint is BLOCKED fail-closed WITHOUT being fetched", async () => {
     const hitsBefore = forbiddenHits;
     const bytes = Buffer.from(`{"sbom":"ssrf-${randomUUID()}"}`);
@@ -659,13 +612,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(forbiddenHits).toBe(hitsBefore);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (i) OCI-HOST EGRESS (ADR-0019 §4, the #108 residual closed) — a hostile bundle-supplied OCI
-  // `location` naming a NON-allowlisted registry host. Digest binding already prevents
-  // substitution, but cosign would still DIAL that host (blind registry-API GETs — the egress
-  // channel symmetric to the blob fetch). The guard must reject BEFORE cosign is invoked: the
-  // decoy endpoint (hit-counting, reachable) must see ZERO requests.
-  // ---------------------------------------------------------------------------------------------
+  // (i) OCI-HOST EGRESS (ADR-0019 §4, the #108 residual closed). See docs/coordination.md §712.
   it("(i) OCI-HOST: an oci location naming a non-allowlisted registry host is BLOCKED fail-closed WITHOUT cosign ever dialing it", async () => {
     const hitsBefore = forbiddenHits;
     // A well-formed, digest-pinned ref at the decoy host — the digest MATCHES the authorized one,
@@ -689,12 +636,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(forbiddenHits).toBe(hitsBefore);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (j) OCI-HOST UNSET — SCP_ARTIFACT_OCI_REGISTRY_HOSTS unset refuses EVERY OCI verify
-  // (fail-closed, symmetric with the blob allowlist; the DELIBERATE M15.5(c) behavior change —
-  // operators must set the variable on upgrade). Even a present, correctly-exporter-signed image
-  // in the local registry is refused: the operator has not opted the OCI egress in.
-  // ---------------------------------------------------------------------------------------------
+  // (j) OCI-HOST UNSET. See docs/coordination.md §713.
   it("(j) OCI-HOST UNSET: with no configured allowlist, every OCI verify is refused fail-closed — even a valid artifact", async () => {
     const image = await pushImage("scp/unset-env-img", "unset-env");
     signImage(image.ref, exporterKey.keyPath); // genuinely valid — would pass axis (a) if configured
@@ -794,12 +736,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   }, 60_000);
 
   it("SCOPE (e3): a METADATA-ONLY promotion (manifest, ZERO artifacts) deploys ungated and records NOTHING", async () => {
-    // M16.1 (I2)'s second vacuous exit, and the sharper of the two: this change IS a verified
-    // cross-boundary promotion — it carries `promotionManifest` and came from a peer WITH a
-    // registered cosign key — it simply has no substantive bytes to verify (config/policy-only).
-    // `runPreDeployArtifactGate` returns on `artifacts.length === 0` before any cosign runs.
-    // An `allow` Decision here would read, in the boundary segment and in the audit log, exactly
-    // like a change whose artifacts were fetched and cryptographically verified. Nothing was.
+    // The second vacuous exit, and the sharper of the two. See docs/coordination.md §714.
     const { changeId, componentId } = await proposeImportedChange([]);
 
     await tick();
@@ -814,19 +751,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(await passAuditFor(changeId)).toHaveLength(0);
   }, 60_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // THE PER-TICK FLOOD (M16.1 review B5). A change parked in `waiting` on an outstanding
-  // cross-change prerequisite is re-swept EVERY tick, and `advanceWaitingChanges` runs this gate on
-  // each one (defence-in-depth: `waiting -> executing` is a second edge into execution). Before I2
-  // a passing verify wrote nothing, so that was free. Persisting the pass made every tick a new
-  // `allow` Decision + a new hash-chained `.passed` audit event, for as long as the wait lasts —
-  // the very "Decision per tick" flood `advanceWaitingChanges`'s own doc comment forbids, arriving
-  // through a different door, and an audit chain asserting fresh events where nothing happened.
-  //
-  // (Unreachable in production today ONLY because `applyPromotionImport` strips `requires`, which
-  // is a coincidence and precisely why that call site is labelled defence-in-depth. This test
-  // constructs the shape directly rather than relying on that coincidence to stay true.)
-  // ---------------------------------------------------------------------------------------------
+  // THE PER-TICK FLOOD. See docs/coordination.md §715.
   it("re-ticking a WAITING manifest-carrying change records the pass ONCE, not once per tick", async () => {
     const image = await pushImage("scp/waiting-img", "waiting");
     signImage(image.ref, exporterKey.keyPath);
@@ -875,19 +800,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(await gateDecisionsFor(changeId)).toHaveLength(1);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // THE OTHER HALF OF THE B5 IDEMPOTENCE GUARD (M16.1 review D1). The suppression above is keyed on
-  // BOTH `previous?.verdict === "allow"` AND the authorized-artifact-SET-KEY comparing equal
-  // (`decisionArtifactSetKey(previous.inputContext) === artifactSetKey(verifiedArtifacts)`) —
-  // never on the verdict alone. A change whose authorized artifact set CHANGES between two gate
-  // runs over the SAME change row (e.g. a re-promotion landing before the change leaves
-  // `coordinated`) is a DIFFERENT statement from the first allow, over a set that was never
-  // verified before, and must be recorded as its own Decision + `.passed` audit event — not
-  // shadowed by the earlier allow's decision_id. If it were shadowed, `boundary-segment.ts`'s
-  // latest-verdict read would report `verified` for image B's artifact set on the strength of a
-  // verify that only ever looked at image A: the fabricated-pass class M16.1 (I2) exists to rule
-  // out, reached through the fix for B5.
-  // ---------------------------------------------------------------------------------------------
+  // THE OTHER HALF OF THE B5 IDEMPOTENCE GUARD. See docs/coordination.md §716.
   it("a REWRITTEN authorized artifact set on the same change row gets its OWN Decision, not the stale allow's id", async () => {
     const imageA = await pushImage("scp/rewrite-a-img", "rewrite-a");
     signImage(imageA.ref, exporterKey.keyPath);

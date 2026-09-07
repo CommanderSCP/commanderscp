@@ -1,19 +1,7 @@
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
 
-/**
- * SSRF internal-range deny-list for `@scp/plugin-smtp-notify` (adversarial-review MAJOR #6 residual
- * (d)). smtp-notify dials a raw SMTP socket and so can't inherit `apps/server`'s `ctx.http`
- * egress-guard; this is the same defense applied to its own connect path. It is ALWAYS a
- * tenant-configurable plugin (never an operator-plane escape hatch), so it blocks EVERY non-public
- * target — metadata/link-local/unspecified AND loopback/private — enforced AFTER DNS resolution.
- * The classifier is duplicated from `apps/server/src/plugin-host/egress-guard.ts` because a plugin
- * may import only `@scp/plugin-api` (no shared server code).
- *
- * Kept in its own file so `index.test.ts`'s SMTP-protocol tests (which must reach a loopback fake
- * server) can `vi.mock` it away, while `egress.test.ts` / `index.egress.test.ts` prove the guard
- * itself blocks internal targets.
- */
+/** SSRF internal-range deny-list for `@scp/plugin-smtp-notify`. See docs/plugins.md §533. */
 
 type IpClass = "loopback" | "linkLocal" | "unspecified" | "private" | "public";
 
@@ -46,16 +34,7 @@ export function classifyIp(rawIp: string): IpClass {
   return "public";
 }
 
-/**
- * Throws if `host` (a literal IP or a name that DNS-resolves) reaches any non-public address;
- * returns the EXACT addresses it verified.
- *
- * The caller MUST dial one of the returned addresses. Handing the NAME back to `net.connect` makes
- * this check worthless: that call performs its own `getaddrinfo`, so a hostname whose DNS an
- * attacker controls answers here with a public IP and answers the connect, milliseconds later, with
- * `127.0.0.1` / `10.x` / `169.254.169.254` — classic DNS rebinding, straight through the deny-list
- * above. See `index.ts`'s `connectSocket`, which keeps the name only for TLS SNI/identity.
- */
+/** Throws if `host`. See docs/plugins.md §534. */
 export async function assertHostNotInternal(host: string): Promise<string[]> {
   const stripped = host.replace(/^\[|\]$/g, "");
   const ips =

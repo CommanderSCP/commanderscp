@@ -9,16 +9,7 @@ import {
   unexpectedCalls
 } from "./openapi-conformance.js";
 
-/**
- * M16.2 phase B (B4) — the no-bypass MATCHER, unit-tested on every PR.
- *
- * `outposts-no-bypass.spec.ts` uses this module to assert that every API path the browser requested
- * is a declared OpenAPI operation. That spec is MAIN-ONLY (every E2E job in
- * `.github/workflows/ci.yml` is gated on `push` to `main`), so if the matcher ever degraded into
- * "accepts everything" the sweep would keep passing and nobody would learn anything from it. This
- * file is the guard on the guard: it exercises the REJECTION cases, against the real emitted
- * contract, in the unit-test job.
- */
+/** M16.2 phase B (B4) — the no-bypass MATCHER, unit-tested on every PR. See docs/web.md §15. */
 
 const doc = loadOpenApiDocument();
 const operations = operationsOf(doc);
@@ -75,16 +66,7 @@ describe("openapi conformance: the matcher can actually reject", () => {
     expect(apiPathOf("http://localhost:1234/assets/index-abc123.js")).toBeNull();
   });
 
-  /**
-   * THE EXEMPTION IS GONE, and this is what replaced it.
-   *
-   * `GET /api/v1/events/stream` (the SSE live-update channel) used to be the sweep's one carve-out:
-   * a raw `app.get` the emitter never saw, opened by `use-event-stream.ts` from `RootLayout` — on
-   * EVERY page — with a hand-built URL and a raw `EventSource`. The SSE API-parity work declared the
-   * operation and moved the UI onto the generated SDK, so it is now DECLARED and passes on its own
-   * merits. Asserting that here (rather than just deleting the old tests) is what stops a
-   * regression that dropped the declaration from silently reinstating the gap.
-   */
+  /** THE EXEMPTION IS GONE, and this is what replaced it. See docs/web.md §16. */
   it("accepts the SSE stream as a DECLARED operation — no carve-out involved", () => {
     const sse = { method: "GET", path: "/events/stream" };
     expect(isDeclaredOperation(operations, sse)).toBe(true);

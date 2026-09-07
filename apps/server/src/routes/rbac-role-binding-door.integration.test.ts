@@ -18,255 +18,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * STEP 5 — THE ROLE AND ROLE-BINDING WRITE DOOR (role-model.md §5 step 5)
- * ================================================================================================
- *
- * `role_binding:write` was seeded onto Administrator and Owner by `drizzle/0002` and checked at ZERO
- * call sites for its entire life. `routes/role-bindings.ts` is the first thing that checks it — and
- * a door that GRANTS AUTHORITY is the most escalation-prone surface in the programme, because every
- * other door in the system can be opened by writing the right binding at this one.
- *
- * So this file is not "coverage for four new endpoints". It is the behavioural record of eight
- * invariants, each of which ships a working-looking escalation if it is missing:
- *
- *   1. `role_binding:write` AT-OR-ABOVE the binding's scope — NECESSARY, and NOT SUFFICIENT.
- *   2. THE NO-ESCALATION SUBSET RULE, computed by running `hasPermission` per permission of the
- *      TARGET role — never by reading the actor's own role rows — and applied on DELETE TOO.
- *   3. `effect` is not settable through the write API, by any path.
- *   4. `bindable_at` is validated, because `role_bindings.scope_object_id` has no type constraint.
- *   5. D5 — `Administrator` refuses NEW bindings and names a purpose role; EXISTING ones resolve.
- *   6. An audit event AND a Decision per grant and per revoke, IN THE SAME TRANSACTION as the write.
- *   7. THE SAME SUBSET RULE ON A `member_of` EDGE (§8 below, `role-binding-door.ts` §2a). Writing a
- *      membership into a role-bearing group confers that role with NO `role_bindings` row, so
- *      invariant 2 is only true if this one is. The guard lives at
- *      `graph/relationships-repo.ts`'s `createRelationship` rather than at `POST /relationships`,
- *      and NOTHING IN THIS FILE CAN TELL THE DIFFERENCE — that is
- *      `iac/iac-member-of-role-escalation.integration.test.ts`'s job, measured in mutation 13.
- *   8. THE ADMINISTRATOR FLOOR (§9 below). Not an authority bar — both bars pass legitimately
- *      when the org's only Owner revokes itself, and the org is then unadministrable forever.
- *      **THIS FILE MEASURES ONE OF ITS FOUR DOORS.** The floor is an invariant of the ORG, not a
- *      rule on the revoke handler: `DELETE /relationships/{id}`, `DELETE /objects/team/{id}` and
- *      `DELETE /objects/user/{id}` can each empty it in four plain sequential requests, and
- *      `routes/rbac-administrative-floor.integration.test.ts` is where those are pinned. Nothing
- *      here would fail if the other three regressed.
- *   9. D7's ACKNOWLEDGEMENT is likewise measured in that file, not here. What this file's `grant()`
- *      helper does is AUTO-ACKNOWLEDGE, so cases about the subset rule are not also cases about
- *      D7 — see its docblock.
- *
- * ------------------------------------------------------------------------------------------------
- * THE REFUSALS ARE THE FEATURE, AND EVERY ONE IS PAIRED WITH AN ADMISSION
- * ------------------------------------------------------------------------------------------------
- * A lone 403 proves nothing — a typo'd URL, a schema rejection, a missing fixture and a genuinely
- * enforced bar all produce one. So every refusal below is paired with an ADMISSION on the same door
- * with the same body, differing only in the actor or in the single field under test. The pair is
- * what says the ACTOR'S STANDING decided it rather than the request being malformed.
- *
- * EVERY CASE ENTERS AT THE ROUTE through `app.inject`, with a real bearer token from the real login
- * flow, against real PostgreSQL. Calling `assertMayWriteRoleBinding` directly would prove the guard
- * agrees with itself and say nothing about whether the ROUTE calls it — which is this repo's
- * dominant failure (a component built, tested, and wired nowhere).
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THE EXPECTED PERMISSION SETS ARE COMPUTED FROM `GET /roles` AND NOT HARD-CODED
- * ------------------------------------------------------------------------------------------------
- * `roles.permissions` is a mutable `text[]` — eight migrations have appended to the built-ins so
- * far. A literal `["freeze:override", "change:emergency", "campaign:deadline-override"]` in this
- * file would be a SECOND copy of the seed that drifts from it silently, and the drift direction that
- * matters is the dangerous one: a migration that quietly hands OrgAdmin `freeze:override` would make
- * the escalation case start passing for the wrong reason. {@link permissionsOf} reads the live
- * catalogue through the API, and {@link missingFor} derives the exact refusal set from it, so the
- * assertion is "everything the target role has that the actor lacks is named" — which stays true
- * whatever the arrays become, and fails loudly if the difference ever becomes empty.
- *
- * ------------------------------------------------------------------------------------------------
- * FIXTURE BINDINGS ARE WRITTEN THROUGH THE HARNESS, NOT THROUGH THE DOOR — DELIBERATELY
- * ------------------------------------------------------------------------------------------------
- * `createTestUser` writes `role_bindings` rows straight through the repo layer, applying none of
- * this door's refusals (its docblock says so). That is what makes the fixtures this file needs
- * possible AT ALL: an EXISTING `Administrator` binding that pre-dates D5's deprecation, and an
- * `OrgAdmin` binding at a SERVICE that `bindable_at` would refuse — both are exactly what a live
- * deployment's hand-written SQL left behind, which is the population the door has to keep working
- * for. Anything this file MEASURES goes through the route.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied ALONE, CONFIRMED ON DISK, measured, then reverted (2026-08-27)
- * ------------------------------------------------------------------------------------------------
- * Every mutation below was confirmed to have landed by re-reading the mutated file off disk
- * (`grep -nac` on the injected marker, checked against a known-positive count) BEFORE the run, and
- * confirmed reverted by the same count going to zero afterwards. A mutation that never applied
- * reads as a pass, and this programme has produced one.
- *
- * The failure counts include CASCADES, and the cascades are part of the measurement: two of these
- * mutations let an OrgAdmin delete the org's own Owner binding, after which the bootstrap admin's
- * token stops working and six later cases fail on `audit:read`. That is what the defect does to an
- * estate, not noise.
- *
- *  1. `app.ts` — deleted `registerRoleBindingRoutes(app, deps);` (import left in place, so the
- *     module still compiles and still type-checks — "built, never installed" exactly)
- *       -> **THE WHOLE SUITE DIED, 21 skipped, 1 failed suite.** The `beforeAll` hook threw
- *          `GET /roles setup failed: 404 {"message":"Route GET:/api/v1/roles not found",...} — the
- *          role-binding routes are NOT REGISTERED. Check that `app.ts` still calls
- *          `registerRoleBindingRoutes(app, deps)`; the module compiling is not the same fact as the
- *          door being installed.` Nothing else in the tree noticed: `tsc --noEmit` was clean.
- *  2. `role-binding-door.ts` §2 — deleted the whole subset-rule loop and its `throw forbidden`
- *       -> **10 failed.** Four directly: "an org-root `role_binding:write` holder CANNOT mint
- *          themselves Owner" (`expected 201 to be 403`, the response body carrying
- *          `"roleName":"Owner"` — the OrgAdmin really did become Owner); "OrgAdmin CANNOT grant
- *          SecurityOfficer" (`expected 201 to be 403`, `"roleName":"SecurityOfficer"`); the
- *          `member_of` case's ceiling half; and "DELETE is refused when the binding OUTRANKS the
- *          caller" (`expected 200 to be 403`). Then six CASCADES — the Owner binding was really
- *          gone, and every later case using the bootstrap token failed
- *          `lacks 'audit:read' at the org root` / `lacks 'type_registry:read'`.
- *  3. `role-binding-door.ts` §2 — replaced the per-permission `hasPermission` loop with a read of
- *     the actor's own `role_bindings` rows joined to `roles` (the "obvious" implementation)
- *       -> **1 failed, and only 1:** "the subset rule holds for authority inherited through
- *          `member_of`": `expected 403 to be 201`, detail `subject '<id>' may not grant role
- *          'ComponentAdmin' at scope '<component>': it carries 10 permission(s) the subject does not
- *          itself hold there — approval:write, audit:read, change:accept, freeze:write, graph:query,
- *          object:read, object:write, relationship:read, relationship:write, type_registry:read`.
- *          Every other case stayed green, including all four escalation refusals. THIS IS THE
- *          MEASUREMENT THE DOOR'S DOCBLOCK IS ABOUT: one test is the whole distance between the
- *          correct implementation and the plausible one, and deleting it would leave a
- *          group-derived administrator silently unable to administer anything.
- *  4. `routes/role-bindings.ts` DELETE handler — deleted the `assertMayWriteRoleBinding` call
- *       -> **7 failed.** Two directly: "DELETE is refused when the binding OUTRANKS the caller"
- *          (`expected 200 to be 403`, response body `"roleName":"Owner"`) and "DELETE also demands
- *          bar §1" (`expected 403 to be 201`). Five cascades, same mechanism as mutation 2.
- *  5. `role-binding-door.ts` — `assertRoleBindableAtScope` early-returns unconditionally
- *       -> **1 failed.** "a binding at a NONSENSICAL SCOPE TYPE is refused": `expected 201 to be
- *          422`, the body showing a `ComponentAdmin` binding landed on a `user` object.
- *  6. `role-binding-door.ts` — `assertBindableSubject` early-returns unconditionally
- *       -> **1 failed.** "a binding to a NON-SUBJECT object is refused": `expected 201 to be 422`,
- *          the body showing a binding whose subject is a `component`.
- *  7. `role-binding-door.ts` — `DEPRECATED_BUILTIN_ROLES` emptied to `{}`
- *       -> **2 failed.** "a NEW `Administrator` binding is refused and NAMES a purpose role":
- *          `expected 201 to be 422`, `"roleName":"Administrator"`. "`GET /roles` marks
- *          `Administrator` deprecated": `expected false to be true`. ONE mutation breaking BOTH is
- *          the measurement that the listing and the refusal are one fact rather than two that agree.
- *  8. `roles-repo.ts` `insertRoleBinding` — `effect: "allow"` -> `effect: "deny"`
- *       -> **1 failed.** "`effect` cannot be set through ANY path": `expected 'deny' to be 'allow'`.
- *          Proves the case reads the PERSISTED effect rather than echoing the response.
- *  9. THE MASS-ASSIGNMENT CLAIM HAS TWO LAYERS, so it took two mutations to find which one holds.
- *     9a. `roles-repo.ts` — `effect: "allow"` ->
- *         `effect: (input as unknown as { effect?: string }).effect ?? "allow"`, AND
- *         `routes/role-bindings.ts` spreading `...body` into the insert input
- *           -> **0 failed, 21 passed.** The repo happily honours an `effect` it is handed; the
- *              request never carries one, because `CreateRoleBindingRequestSchema` is a plain
- *              `z.object` and Zod STRIPS the unknown key before the handler sees it.
- *     9b. the same two edits PLUS `.passthrough()` on `CreateRoleBindingRequestSchema`
- *         (`packages/schemas` rebuilt to `dist` — apps/server imports the built package, and
- *         skipping that step is a FALSE GREEN)
- *           -> **1 failed.** "`effect` cannot be set through ANY path": `expected 'deny' to be
- *              'allow'`. SO THE ZOD CONTRACT IS THE LOAD-BEARING LAYER, not the repo's literal.
- *              Anyone loosening that schema — for an unrelated field — re-opens this, and the
- *              repo's hard-coded `'allow'` is the belt, not the braces.
- * 10. `routes/role-bindings.ts` POST — the `appendAuditEvent` call moved OUT of the write's
- *     `withTenantTx` and into a second one, awaited after the first committed
- *       -> **1 failed.** "a failure after the write rolls BOTH the binding and its audit event
- *          back (one transaction)": `the role binding survived a failure after the write — it is
- *          not in the audit event's transaction: expected [ { …(2) } ] to have a length of +0 but
- *          got 1`. The estate held authority that nothing recorded being granted — charter
- *          principle 6's exact failure mode.
- * 11. `routes/role-bindings.ts` — `GET /role-bindings`'s `if (!verdict.ok)` -> `if (false && ...)`
- *       -> **1 failed.** "`GET /role-bindings` demands `audit:read`": `expected 200 to be 403`,
- *          with a 20-row page of the org's ENTIRE binding table — every principal, role and scope —
- *          in the body of the response to a caller holding nothing.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG, ROUND 2 (2026-08-27) — §2a's `member_of` guard and §7's last-administrator floor
- * ------------------------------------------------------------------------------------------------
- * 12. `graph/relationships-repo.ts` — deleted the whole
- *     `if (type.id === "member_of" && !input.federationImport)` block
- *       -> **1 failed here** ("THE EXPLOIT CHAIN": `expected 201 to be 403`, the response body being
- *          the minted edge itself — `"typeId":"member_of"`, `"deletedAt":null` — from the Operator's
- *          user object to the Owner-bearing group) **plus 1 in
- *          `iac/iac-member-of-role-escalation.integration.test.ts`**. Both doors, one deletion.
- * 13. THE SAME BLOCK MOVED into `routes/relationships.ts`'s POST handler — the "obvious" placement,
- *     byte-identical call
- *       -> **0 failed in THIS file, 25 passed; 1 failed in the IaC file.** Every case here that
- *          names the escalation passed against a placement that leaves `POST /plans/{id}/apply`
- *          minting the edge. This file cannot see the difference, which is exactly why the IaC case
- *          exists and why the guard is at the choke point.
- * 14. `role-binding-door.ts` — `assertNotLastAdministrativeBinding` early-returns unconditionally
- *     (**THE FUNCTION IS GONE**, replaced 2026-08-27 by the org-wide
- *     `assertOrgRetainsAdministrativeFloor` this handler now calls AFTER the delete; the equivalent
- *     mutation is number 3 in `routes/rbac-administrative-floor.integration.test.ts`'s log, which
- *     fails these same two cases plus five more across two other files)
- *       -> **1 failed.** "the LAST org-root administrative binding cannot be revoked":
- *          `expected 200 to be 409`, the body being the org's only `"roleName":"Owner"` binding,
- *          returned as successfully revoked. That is the brick.
- * 15. `role-binding-door.ts` — `if (remaining > 0) return;` -> `if (remaining < 0) return;`, making
- *     the floor a BLANKET refusal of every org-root administrative revoke
- *       -> **2 failed.** The ADMISSION half of the same case (`expected 409 to be 200` revoking one
- *          of TWO Owners) and, separately, "an EXISTING `Administrator` binding is REVOKABLE".
- *          Without this mutation the guard could refuse everything and case 14 would still be green.
- * 16. `role-binding-door.ts` — `missingPermissionsFor`'s per-permission `hasPermission` loop replaced
- *     by a read of the actor's own `role_bindings` rows (mutation 3's shape, re-measured because the
- *     loop was EXTRACTED into a shared helper in this round and an extraction can lose the property)
- *       -> **1 failed, and only 1:** "the subset rule holds for authority inherited through
- *          `member_of`". Identical to the original measurement, so the one-definition refactor kept
- *          the distinction the whole door rests on.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG, ROUND 3 (2026-08-27) — §0's ORG LOCK, §2b's ORDERING, and the role-NAME measurement
- * ------------------------------------------------------------------------------------------------
- * EVERY ONE OF THESE FIRED ON ATTEMPT 0 of its loop. Applied alone, confirmed on disk by a `grep
- * -nac` on the injected marker before the run and by the same count going to zero after.
- *
- * 17. `routes/role-bindings.ts` DELETE handler — deleted `await lockOrgRoleAuthority(tx,
- *     auth.orgId);` (the transaction, both authority bars and §7's floor all left intact)
- *       -> **1 failed, on attempt 0.** "CONCURRENCY: two simultaneous revokes cannot empty an org's
- *          administrative bindings": `expected [ 200, 200 ] to deeply equal [ 200, 409 ]`, both
- *          response bodies being the `"roleName":"Owner"` binding each actor had just successfully
- *          revoked. THAT IS THE BRICK, in one round trip. Every sequential case in this file —
- *          including the two that exist specifically to pin §7 — stayed green against it.
- * 18. `role-binding-door.ts` — deleted the lock from `assertMayJoinRoleBearingSubject`
- *       -> **1 failed, on attempt 0.** "CONCURRENCY: a `member_of` join and a grant onto the same
- *          team cannot both be admitted": `[201, 201]`, the bodies being the SecurityOfficer binding
- *          on the team and the `member_of` edge into it. Neither door saw the other's write.
- * 19. `routes/role-bindings.ts` POST handler — deleted the lock there, leaving §2a's intact
- *       -> **1 failed, on attempt 0**, same case, same `[201, 201]`. Proving BOTH sides separately
- *          is what says one instrument covering the whole org is required rather than a guard on
- *          each door: with either side unlocked there is no mutual exclusion at all.
- *          ⚠️ This mutation did NOT fail against the case's first fixture (grant `Owner`, empty
- *          team) — 6 attempts, all green. The grant path reached §2b about fifteen round trips
- *          after the join had already committed, so the join simply always won and the outcome was
- *          always a legal SERIAL one. The fixture now grants the 9-permission `SecurityOfficer` and
- *          pre-binds a benign `Viewer` to the team; both are documented at the case. A mutation that
- *          does not fire is not evidence the code is right, and this one nearly read as such.
- * 20. `routes/role-bindings.ts` POST — `assertGrantReachesOnlyBindableMembers` moved back IN FRONT
- *     of `assertMayWriteRoleBinding` (its original position)
- *       -> **1 failed.** "§2b's 422 names group members only AFTER the authority bars": `expected
- *          422 to be 403`, and the 422's detail — handed to a principal holding no
- *          `role_binding:write` anywhere — named the group's member by NAME, by id and by type.
- * 21. `role-binding-door.ts` `assertMayWriteRoleBinding` — added the role-NAME bar §2a says it
- *     deliberately does not add (`hasRoleAtScope(actor, role.name, scope)`)
- *       -> **1 failed.** "MEASUREMENT (open, not a guard): role NAME authority is conferred by a
- *          permissions-subset grant": `expected 403 to be 201`. The measurement is therefore not
- *          vacuous — it changes colour the moment anyone closes the property it records.
- *
- * NOT MUTATION-PROVEN, and named rather than left implied:
- *
- *   - the duplicate-grant 409. Its guard is `role_bindings_grant_key` (drizzle/0097) plus
- *     `isUniqueViolation`, and every mutation available turns the 409 into a 500 rather than into the
- *     silent second row the case is about — so the test pins the surfaced conflict, and
- *     drizzle/0097's own suite pins the constraint.
- *   - §2a's FEDERATION-IMPORT CARVE-OUT. No case here builds a signed bundle, so nothing would fail
- *     if the `!input.federationImport` condition were dropped and a peer's membership entry started
- *     403ing — which would wedge that peer's whole bundle. `federation/import-repo.ts`'s own suites
- *     do not carry a `member_of` entry either.
- *   - §2a's NESTED-GROUP closure. `inheritableBindingsOf` seeds `subjectExpandCte` at the target
- *     group, so joining group G also inherits the bindings of every group G is itself `member_of`.
- *     Every case here uses a flat group, so narrowing that query to the group's OWN bindings would
- *     not fail anything.
- *   - §2a's `effect = 'allow'` filter. Inheriting a `deny` narrows the joiner and is deliberately not
- *     gated; no case builds a group holding a deny row.
- *   - §0's lock against a THIRD writer. Both concurrent cases fire exactly two requests. A pair of
- *     concurrent `member_of` joins, or a join racing an IaC apply, is covered by the same lock and is
- *     not measured here.
- */
+/** STEP 5 — THE ROLE AND ROLE-BINDING WRITE DOOR. See docs/routes.md §344. */
 describe("the role-binding write door (role-model.md §5 step 5)", () => {
   let server: TestServer;
   let org: TestOrg;
@@ -327,15 +79,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     return perms;
   }
 
-  /**
-   * Everything `target` carries that `actor` does not — the EXACT set the subset rule must name in
-   * its refusal. Derived from the live catalogue rather than written down, so a migration that
-   * changes either array changes this expectation with it.
-   *
-   * Asserts non-empty: if a future migration ever made the difference empty, the refusal case would
-   * silently become an admission case still spelled as a refusal, which is the vacuous-test shape
-   * this repo keeps producing.
-   */
+  /** Everything the target carries that the actor does not. See docs/routes.md §345. */
   function missingFor(actorRole: string, targetRole: string): string[] {
     const held = new Set(permissionsOf(actorRole));
     const missing = permissionsOf(targetRole).filter((p) => !held.has(p));
@@ -347,28 +91,12 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     return missing;
   }
 
-  /**
-   * A brand-new principal holding NOTHING, to be the passive SUBJECT of a grant.
-   *
-   * ONE PER CASE, NEVER SHARED. `role_bindings_grant_key` (drizzle/0097) makes
-   * `(org, subject, role, scope, effect)` unique, so a subject reused across two cases turns the
-   * second one's 201 into a 409 — and the first draft of this file hit exactly that. Worse than the
-   * noise: a grant landing in case A silently changes what case B's actor HOLDS, which moves the
-   * subset rule's answer. The Owner-escalation case measured 3 missing permissions instead of 4
-   * because an earlier case had granted `SecurityOfficer` to the actor as its own admission half.
-   * Fresh subjects make every case's authority state a function of the fixture alone.
-   */
+  /** A brand-new principal holding nothing, as the subject. See docs/routes.md §346. */
   async function freshSubject(): Promise<TestUser> {
     return createTestUser(server, org, []);
   }
 
-  /**
-   * The `member_of` closure below an object — D7's `acknowledgedPrincipalIds` value — read with the
-   * DOOR'S OWN walk rather than re-derived here. A fixture helper, not an assertion: the affordance
-   * a real client uses (`GET /role-bindings/grant-preview`) is measured on its own case, and using
-   * it for every fixture would make an unrelated preview regression fail thirty cases about
-   * something else.
-   */
+  /** The `member_of` closure below an object. See docs/routes.md §347. */
   async function empoweredIds(orgId: string, subjectId: string): Promise<string[]> {
     const reached = await withTenantTx(server.deps.db, orgId, async (tx) =>
       principalsReachedBy(tx, orgId, subjectId)
@@ -379,15 +107,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
       .sort();
   }
 
-  /**
-   * AUTO-ACKNOWLEDGES BY DEFAULT (D7). Every case in this file that predates the acknowledgement is
-   * about something else — the subset rule, `bindable_at`, D5 — and would otherwise 422 on a field
-   * it is not measuring. Pass the key EXPLICITLY (including `undefined`, which JSON serialisation
-   * drops, producing an absent field) to control it; the D7 cases all do.
-   *
-   * The auto value is computed at CALL TIME, after whatever fixture the case has just built, which
-   * is exactly what a correct client does.
-   */
+  /** AUTO-ACKNOWLEDGES BY DEFAULT. See docs/routes.md §348. */
   async function grant(
     token: string,
     body: Record<string, unknown>
@@ -470,15 +190,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     scopedBinder = await createTestUser(server, org, [{ role: "OrgAdmin", scope: serviceS }]);
     operator = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
 
-    // The group-derived administrator. `groupBinder` holds NOTHING directly; the authority is on
-    // the GROUP, and `hasPermission`'s `subject_expand` walks `member_of` from_id -> to_id to
-    // find it. A door that read `role_bindings WHERE subject_id = groupBinder` sees zero rows.
-    //
-    // ⚠️ THE EDGE IS WRITTEN BEFORE THE GROUP'S BINDING, AND THAT ORDER IS LOAD-BEARING NOW. §2a's
-    // guard refuses a `member_of` write into a group that ALREADY holds bindings the actor does not
-    // hold; writing the membership first (into a group that holds nothing) is the shape a real
-    // deployment uses too — seat the team, then grant it a role. Reversing these two statements
-    // would make this fixture fail at setup, which is the correct behaviour and not a bug in it.
+    // The group-derived administrator. See docs/routes.md §349.
     groupBinder = await createTestUser(server, org, []);
     const binderGroup = await withTenantTx(server.deps.db, org.orgId, async (tx) =>
       createObject(tx, {
@@ -548,12 +260,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("WIRING: the four operations are REGISTERED on the app, not merely written", async () => {
-    // THE ONLY CHECK THAT WORKS for this repo's dominant failure class is deleting the wiring and
-    // watching a test die. `app.ts`'s comment beside `registerRoleBindingRoutes(app, deps)` names
-    // this case; delete that line and every assertion below turns into a 404, starting here.
-    //
-    // All four verbs, because Fastify registers them independently and three of the four could be
-    // present while one was dropped in a merge — which would read as "the door is installed".
+    // Deleting the wiring is the only check that works here. See docs/routes.md §350.
     const roles = await call("GET", org.adminToken, "/api/v1/roles");
     expect(roles.statusCode, roles.body).toBe(200);
 
@@ -611,11 +318,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("bar §1 is AT-OR-ABOVE: a service-scoped binder reaches beneath it and not sideways", async () => {
-    // `scopedBinder` holds org-root-grade permissions, bound AT `serviceS`. `scopeExpandCte` walks
-    // UPWARD from the binding's scope object, so the question "does the actor hold
-    // `role_binding:write` at THIS scope" resolves true for `serviceS` and everything beneath it,
-    // and false for a sibling service. The asymmetry IS the security property — a binding at a
-    // component never reaches its service, and one at a service never reaches its sibling.
+    // A binder holding root-grade permissions, bound at a service. See docs/routes.md §351.
     const subject = await freshSubject();
     const beneath = await grant(scopedBinder.token, {
       subjectId: subject.objectId,
@@ -735,11 +438,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("the subset rule holds for authority inherited through `member_of`, not just direct bindings", async () => {
-    // THE CASE THAT DISTINGUISHES A CORRECT IMPLEMENTATION FROM THE OBVIOUS ONE. `groupBinder` has
-    // ZERO rows in `role_bindings` — its whole authority is the group's org-root OrgAdmin binding,
-    // reached by `hasPermission`'s `subject_expand` walking `member_of`. A door that answered the
-    // subset question by reading the ACTOR'S OWN role rows sees an empty array here and refuses
-    // every grant, so a group-derived administrator would be silently unable to administer.
+    // The case distinguishing a correct implementation from one. See docs/routes.md §352.
     const direct = await withTenantTx(server.deps.db, org.orgId, async (tx) =>
       tx
         .select({ id: roleBindings.id })
@@ -836,13 +535,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("DELETE also demands bar §1: `role_binding:write` at-or-above the binding's scope", async () => {
-    // THE REVOKE PATH APPLIES BOTH BARS, not just the subset rule. `serviceAdmin` has full
-    // authority over `serviceS` and no `role_binding:write` anywhere.
-    //
-    // WHICH BAR REFUSED IS READ OFF THE MESSAGE, not inferred from the status code — both bars
-    // throw 403. Bar §1 is evaluated FIRST and `authorize` names the permission and the scope;
-    // bar §2's refusal is a different sentence entirely ("may not revoke a binding of role …"),
-    // so a body containing `role_binding:write` is bar §1 and nothing else.
+    // THE REVOKE PATH APPLIES BOTH BARS, not just the subset rule. See docs/routes.md §353.
     const created = await grant(org.adminToken, {
       subjectId: (await freshSubject()).objectId,
       roleId: roleId("Viewer"),
@@ -868,14 +561,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   // =============================================================================================
 
   it("`effect` cannot be set through ANY path — body, query string, or mass assignment", async () => {
-    // A `deny` row overrides every `allow` at any matching scope, so a writable `effect` would let
-    // a `role_binding:write` holder DISABLE authority rather than confer it — and the subset rule
-    // is unsound for that direction (writing a deny is not granting authority, so "is deny-X a
-    // subset of my permissions" is a category error, not a hard question). The contract therefore
-    // has no `effect` at all, and the repo hard-codes `'allow'`.
-    //
-    // MEASURED AT THE PERSISTED ROW, never at the response body: a handler that echoed its input
-    // would satisfy an assertion on the response while writing whatever it liked.
+    // A deny row overrides every allow at any matching scope. See docs/routes.md §354.
     const subject = await freshSubject();
     const body = await grant(orgAdmin.token, {
       subjectId: subject.objectId,
@@ -928,11 +614,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("a binding at a NONSENSICAL SCOPE TYPE is refused (role-model.md §1.3h)", async () => {
-    // `role_bindings.scope_object_id` is a bare `uuid NOT NULL REFERENCES objects(id)` with no type
-    // constraint, so a binding at a `user` is accepted by the database and silently INERT. Inert is
-    // not the end of it: `objects.domain_id` carries no type constraint either, so an object
-    // parented under that `user` would make the binding SUDDENLY CONFER AUTHORITY — a grant that
-    // was harmless when written and is not afterwards, with nothing in between to notice.
+    // The scope column is a bare reference, with what that means. See docs/routes.md §355.
     const subject = await freshSubject();
     const refused = await grant(orgAdmin.token, {
       subjectId: subject.objectId,
@@ -1043,13 +725,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("an EXISTING `Administrator` binding still RESOLVES — this is a refusal, not a removal", async () => {
-    // `legacyAdministrator` was bound before the deprecation (through the harness, exactly as a live
-    // deployment's hand SQL did). Every such binding must keep working, or D5 is a breaking change
-    // that 403s the estate's administrators on upgrade.
-    //
-    // PROVEN AT AN UNRELATED DOOR, not at this one: `secret:write` is Administrator-tier
-    // (drizzle/0099 §2a) and an Operator is refused it, so a 200 here is the ROLE resolving rather
-    // than the endpoint being ungated.
+    // `legacyAdministrator` was bound before the deprecation. See docs/routes.md §356.
     const secret = await call(
       "PUT",
       legacyAdministrator.token,
@@ -1223,14 +899,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("a failure after the write rolls BOTH the binding and its audit event back (one transaction)", async () => {
-    // CHARTER PRINCIPLE 6 requires the audit event to be written in the SAME TRANSACTION as the
-    // action. The failure mode it exists to prevent is authority that exists with nothing recording
-    // that it was granted — which is precisely what an audit append in a second transaction
-    // produces the first time it fails.
-    //
-    // FORCED, not simulated: a trigger on `audit_events` that RAISEs when the reason matches a
-    // magic string. The grant's row insert and its Decision both happen BEFORE the audit append, so
-    // if the three are not one transaction the binding survives the failure.
+    // The audit event must be written in the same transaction. See docs/routes.md §357.
     const subject = await freshSubject();
     const magic = `same-tx-probe-${randomUUID()}`;
     const admin = new pg.Client({ connectionString: testDatabaseUrl() });
@@ -1391,18 +1060,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   }
 
   it("THE EXPLOIT CHAIN: a lesser principal cannot self-join a group that holds a powerful role", async () => {
-    // MEASURED BEFORE THE GUARD, with real requests, and it is the whole reason §2a exists:
-    //
-    //   step 0  OrgAdmin mints itself Owner                                        -> 403 (§2 holds)
-    //   step 1  Owner binds Owner to a GROUP                                       -> 201
-    //   step 2  Operator POST /relationships {member_of, from:<self>, to:<group>}  -> 201
-    //   step 3  resolve                                                            -> Operator IS Owner
-    //
-    // `authz/resolve.ts`'s `subject_expand` walks `member_of` from_id -> to_id, so a binding held by
-    // a group resolves for every member. Creating that edge takes `relationship:write` at BOTH
-    // endpoints — a check designed for exactly this attack, which only constrains a principal whose
-    // `relationship:write` is NARROW. An org-root Operator's is not, so the escalation floor was
-    // OPERATOR: four rungs below Administrator.
+    // Measured before the guard, with real requests. See docs/routes.md §358.
     const powerGroup = await freshGroup("power");
 
     // STEP 1, and it must still be ADMITTED — "bind SecurityOfficer to the security team" is the
@@ -1415,11 +1073,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     });
     expect(bindToGroup.statusCode, bindToGroup.body).toBe(201);
 
-    // STEP 2 — and this is the request that used to answer 201.
-    //
-    // The actor holds org-root `relationship:write` at BOTH endpoints, so the pre-existing
-    // both-endpoint check passes and cannot be what refuses this. The companion case below proves
-    // that positively: the SAME actor joins a binding-free group and gets 201.
+    // STEP 2 — and this is the request that used to answer 201. See docs/routes.md §359.
     expect(permissionsOf("Operator")).toContain("relationship:write");
     const refused = await call("POST", operator.token, "/api/v1/relationships", {
       typeId: "member_of",
@@ -1500,11 +1154,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     expect(admitted.statusCode, admitted.body).toBe(201);
     expect(await memberOfEdges(operator.objectId, plainGroup)).toHaveLength(1);
 
-    // REMOVAL IS A NARROWING AND STAYS UNGATED, in both directions. Taking a principal out of a
-    // group takes authority AWAY, so gating it on holding the authority being removed is how a
-    // compromised membership becomes unremovable. Proven on the ROLE-BEARING group, which is the
-    // only shape where the distinction can be observed: the Operator cannot join it (above) and
-    // must still be able to leave it.
+    // REMOVAL IS A NARROWING AND STAYS UNGATED, in both directions. See docs/routes.md §360.
     const powerGroup = await freshGroup("power-leave");
     const bound = await grant(org.adminToken, {
       subjectId: powerGroup,
@@ -1530,18 +1180,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   // =============================================================================================
 
   it("the LAST org-root administrative binding cannot be revoked, and the second-to-last can", async () => {
-    // MEASURED ON A FRESH ORG before the guard: `DELETE /role-bindings/<own Owner binding>` returned
-    // 200 and left ZERO bindings. Every endpoint then 403s — `GET /roles` and `GET /role-bindings`
-    // included — and nothing can restore a binding, because restoring one needs the
-    // `role_binding:write` that nobody now holds. The only fix is hand-written SQL, which is
-    // verbatim the failure mode `packages/schemas/src/rbac.ts` says this door exists to eliminate.
-    //
-    // BOTH AUTHORITY BARS PASS LEGITIMATELY, so this cannot be fixed by tightening either: the actor
-    // holds `role_binding:write`, and Owner's permissions are trivially a subset of Owner's. Nothing
-    // counted what would be left.
-    //
-    // A FRESH ORG, because the shared fixture org has four org-root `role_binding:write` holders and
-    // the guard is therefore silent there — which is itself the point of the admission half.
+    // MEASURED ON A FRESH ORG before the guard. See docs/routes.md §361.
     const solo = await createTestOrg(server, "rbac-solo");
     const soloOwnerSubject = (
       (
@@ -1627,11 +1266,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   // 10. THE OTHER ORDERING — a binding written ONTO a group somebody already joined (§2b)
   // =============================================================================================
 
-  /** Tombstone an object's row while leaving its edges live — the shape a REPLICA edge, a
-   *  federation-import object tombstone, or a pre-cascade restored dump produces. Written raw ON
-   *  PURPOSE: `deleteObject` cascade-tombstones locally-authored edges, so the local
-   *  `DELETE /users/{id}` path cannot produce it and a fixture built through that door would leave
-   *  §2b's liveness arm untested while looking like it tested it. */
+  /** Tombstone an object's row while leaving its edges live. See docs/routes.md §362. */
   async function tombstoneObjectRowOnly(objectId: string): Promise<void> {
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       await tx.execute(
@@ -1645,17 +1280,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   }
 
   it("ORDERING: join an EMPTY group first, then grant to it — what is and is not refused", async () => {
-    // THE REVERSED ORDERING, MEASURED END TO END. §2a guards the join; this is the sequence that
-    // routes around it by joining BEFORE the group has anything to inherit.
-    //
-    // WHAT THIS CASE PINS, and the wording is the point: step 2 is ADMITTED, and that is the correct
-    // answer rather than a hole this file failed to close. Every authority bar on the grant door is a
-    // question about the ACTOR, the ROLE and the SCOPE — `authorize('role_binding:write', scope)` and
-    // `missingPermissionsFor(actor, role.permissions, scope)` — and NONE of them reads the subject's
-    // identity. So "could this granter have granted Owner to this principal directly?" has the same
-    // answer for every principal in the org, and a refusal phrased that way could never fire. The
-    // assertion below states the measured outcome rather than an aspiration, so that if anyone later
-    // makes the grant door subject-sensitive this case fails and has to be re-reasoned.
+    // THE REVERSED ORDERING, MEASURED END TO END. See docs/routes.md §363.
     const team = await freshGroup("reversed-order");
 
     // STEP 1 — the Operator joins while the team holds nothing. MUST be 201: it is the same request
@@ -1744,11 +1369,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("§2b ADMISSION PAIR: the same grant to the same team lands once the membership is clean", async () => {
-    // WITHOUT THIS THE GUARD COULD REFUSE EVERY GROUP GRANT AND LOOK CORRECT — and "bind
-    // SecurityOfficer to the security team" is the entire point of group bindings, so a blanket
-    // refusal here is an availability bug wearing a security guard's clothes.
-    //
-    // Same role, same scope, same actor, a team with LIVE members: 201.
+    // Without this, the guard could refuse everything and pass. See docs/routes.md §364.
     const team = await freshGroup("clean-members");
     const memberA = await freshSubject();
     const memberB = await freshSubject();
@@ -1816,15 +1437,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("§2a: joining a group that holds an org-defined role COLLIDING with a built-in name is refused", async () => {
-    // THE ROLE-**NAME** HOLE IN A PERMISSIONS-ONLY SUBSET TEST. `hasRoleAtScope` resolves approval
-    // quorums by matching `rl.name` with NO `org_id` predicate, so a ZERO-permission org row named
-    // 'Approver' makes its holders eligible voters everywhere a policy names Approver. That row is
-    // vacuously a subset of everything, so `missingPermissionsFor` returns `[]` and the join door
-    // admitted it while the GRANT door (`assertRoleAcceptsNewBindings`) refuses writing it. One
-    // predicate now answers both.
-    //
-    // The row and its binding are written raw because the API refuses to create either — which is
-    // the population this refusal is for: a hand-written row, or one from a restored dump.
+    // THE ROLE-**NAME** HOLE IN A PERMISSIONS-ONLY SUBSET TEST. See docs/routes.md §365.
     const collidingRoleId = randomUUID();
     const quorumGroup = await freshGroup("quorum-bypass");
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
@@ -1913,11 +1526,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   // =============================================================================================
 
   it("the floor is not satisfied by a binding on an EMPTY group — the two-request brick", async () => {
-    // MEASURED against the row-counting version of §7: bind a `role_binding:write`-carrying role to
-    // a team nobody is in, then revoke the real Owner. `count(*)` saw two rows, permitted the delete,
-    // and the org was left holding one binding that resolves for NOBODY — unadministrable, with
-    // hand-written SQL the only recovery, which is verbatim the failure mode the floor exists to
-    // eliminate. A guard bypassable in two requests is not a floor.
+    // MEASURED against the row-counting version of §7. See docs/routes.md §366.
     const solo = await createTestOrg(server, "rbac-empty-group-floor");
     const listSolo = async () =>
       (
@@ -1971,11 +1580,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
       payload: { reason: "revoking the only REACHABLE administrative binding" }
     });
     expect(refused.statusCode, refused.body).toBe(409);
-    // The message moved from "live user or service account" to "live principal that can
-    // AUTHENTICATE" when the floor's anchor moved from the graph object's TYPE to the CREDENTIAL
-    // (`docs/authz/role-binding-door.md` §7, third revision — the phantom brick). Matched on the phrase
-    // that is about THIS case (an empty group) plus the permission, so the assertion stays about the
-    // refusal rather than about the sentence around it.
+    // The message moved from naming types to naming reachability. See docs/routes.md §367.
     expect(refused.body).toContain("role_binding:write");
     expect(refused.body).toContain("a binding on an EMPTY group");
 
@@ -1989,11 +1594,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     });
     expect(stillWorks.statusCode, stillWorks.body).toBe(200);
 
-    // THE ADMISSION PAIR, AND IT IS THE POINT OF THE WHOLE FIX: put a LIVE principal in that team and
-    // the identical revoke is admitted. Without this the floor could simply refuse every org-root
-    // revoke and the refusal above would still be green — and a group binding that never counts is
-    // the mirror availability bug (an org that seats its administrators through a team could never
-    // retire the bootstrap admin).
+    // THE ADMISSION PAIR, AND IT IS THE POINT OF THE WHOLE FIX. See docs/routes.md §368.
     const successor = await createTestUser(server, solo, []);
     const joined = await server.app.inject({
       method: "POST",
@@ -2127,19 +1728,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     expect((await listSolo()).items.map((b) => b.id)).toContain(restoredId);
   });
 
-  // =============================================================================================
-  // 12. CONCURRENCY — the third ordering, which is NEITHER
-  // =============================================================================================
-  //
-  // §7's floor and §2a/§2b are CHECK-THEN-ACT. Two earlier revisions of this door argued in comments
-  // that running the check inside the write's transaction made a race impossible. It does not:
-  // PostgreSQL's default READ COMMITTED gives every STATEMENT a fresh snapshot, so two concurrent
-  // transactions both read a survivor and both commit.
-  //
-  // A SEQUENTIAL TEST CANNOT OBSERVE THIS. Every case above fires one request at a time and every
-  // one of them stayed green against the racy code — which is what made two rounds of reviewers
-  // believe the comments. These cases fire with `Promise.all` and assert the outcome is one a SERIAL
-  // execution could have produced.
+  // Concurrency: the third ordering, which is neither of those. See docs/routes.md §369.
 
   async function listBindingsAs(token: string) {
     const res = await server.app.inject({
@@ -2171,21 +1760,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   }
 
   it("CONCURRENCY: two simultaneous revokes cannot empty an org's administrative bindings", async () => {
-    // THE MEASUREMENT THIS CASE EXISTS FOR — fresh org, two different actors, `Promise.all` of two
-    // `DELETE /role-bindings` for the last two org-root administrative bindings, against §7 as it
-    // stood with the count and the delete in one transaction and NO LOCK:
-    //
-    //   attempt 1 -> [200, 200]   administrative bindings remaining = 0   GET /roles = 403 ** BRICK **
-    //   attempt 2 -> [200, 409]   1 left
-    //   attempt 3 -> [409, 200]   1 left
-    //
-    // That is the same brick §7 was written to eliminate, reached in ONE round trip instead of two,
-    // by an actor who needs no group and no second grant — strictly easier than the two-request
-    // bypass the reachable-principal rewrite closed.
-    //
-    // REPEATED, because a race that fires two times in three still passes a single attempt one time
-    // in three. Each attempt gets its OWN org so the two actors are always the org's last two
-    // administrators.
+    // The measurement this case exists for, on a fresh org. See docs/routes.md §370.
     const ATTEMPTS = 8;
     const outcomes: string[] = [];
 
@@ -2213,11 +1788,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
       const secondBindingId = (granted.json() as { id: string }).id;
       expect(await administrativeBindingCount(solo.orgId)).toBe(2);
 
-      // TWO DIFFERENT ACTORS, EACH RETIRING THEIR OWN BINDING, SIMULTANEOUSLY — which is the shape
-      // the brick was measured on. Each actor holds standing for its OWN request under every
-      // interleaving, so a refusal here can only be §7's 409 and never a 403 about the actor having
-      // lost the binding the other one deleted; that is what makes "exactly one 200 and one 409" an
-      // assertion about the floor rather than about which request lost a foot-race.
+      // Two actors each retiring their own binding at once. See docs/routes.md §371.
       const [byBootstrap, bySecond] = await Promise.all([
         server.app.inject({
           method: "DELETE",
@@ -2266,32 +1837,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("CONCURRENCY: a `member_of` join and a grant onto the same team cannot both be admitted", async () => {
-    // THE OTHER HALF OF §0, AND WHY THE INSTRUMENT HAD TO BE ONE THAT COVERS BOTH. §2a reads
-    // `role_bindings` for a binding the concurrent grant has not written yet; §2b reads
-    // `relationships` for a membership the concurrent join has not written yet. Neither reads a row
-    // the other locks, so no `SELECT ... FOR UPDATE` anywhere can serialize them — only something
-    // that covers the org.
-    //
-    // THE FIXTURE IS BUILT SO THAT **EVERY SERIAL ORDER REFUSES EXACTLY ONE OF THE TWO**, which is
-    // what makes the assertion deterministic rather than a coin flip:
-    //
-    //   grant first -> grant 201 (the team's members are clean)
-    //                  join  403 (§2a: the team now holds SecurityOfficer, the actor is an Operator)
-    //   join first  -> join  201 (the team holds only a role the actor already has)
-    //                  grant 422 (§2b: the team now reaches a soft-deleted principal through G)
-    //   NEITHER     -> 201 + 201  <- the defect: the team holds the role AND reaches the joined group
-    //
-    // THE TWO FIXTURE CHOICES BELOW ARE ABOUT THE WINDOW, and tuning them is safe because the
-    // assertion is an INVARIANT — under the lock it holds at any speed, so widening the window can
-    // only make a REGRESSION easier to catch, never make a correct implementation flaky.
-    //   - `SecurityOfficer` (9 permissions) rather than `Owner` (20): the grant's subset rule runs
-    //     one `hasPermission` per permission of the granted role, and §2b — the read that has to be
-    //     protected on this side — runs AFTER all of them.
-    //   - the team pre-holds `Viewer`, a role the Operator already has in full: §2a therefore reads
-    //     a NON-empty binding set and runs its own probe loop after the read it has to protect,
-    //     while still admitting the join.
-    // Without both, the join finishes about fifteen round trips before the grant reaches §2b, so a
-    // grant-side mutation is masked by the join simply always committing first.
+    // Why the instrument had to be one that covers both. See docs/routes.md §372.
     const ATTEMPTS = 6;
     const outcomes: string[] = [];
 
@@ -2356,12 +1902,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   // =============================================================================================
 
   it("§2b's 422 names group members only AFTER the authority bars have admitted the caller", async () => {
-    // §2b's refusal is the one message on the grant path derived from rows the request does not
-    // name: the ids, names and types of the principals inside a group. Ordered with the SHAPE
-    // refusals — where it originally sat, "because it IS one" — it answered "who is in this group?"
-    // for any caller who could reach the route, including one about to be told they have no standing
-    // at all. `docs/authz/role-binding-door.md` §7's 409 was already placed after the bars for exactly
-    // this reason; this case is what keeps the two consistent.
+    // The one grant-path message derived from other rows. See docs/routes.md §373.
     const team = await freshGroup("disclosure");
     const ghost = await freshSubject();
     expect((await joinGroup(org.adminToken, ghost.objectId, team)).statusCode).toBe(201);
@@ -2395,16 +1936,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("MEASUREMENT (open, not a guard): role NAME authority is conferred by a permissions-subset grant", async () => {
-    // NOT A REFUSAL CASE. This records a property `docs/authz/role-binding-door.md` §2a and §8 state is
-    // OPEN, so that the statement in those comments is measured rather than asserted — and so that
-    // anyone who later closes it has a case that changes colour.
-    //
-    // THE PROPERTY. A role confers two things: its permission array, and quorum eligibility wherever
-    // a policy names it — `hasRoleAtScope` matches `rl.name`, which is how `requireApprovals
-    // .fromRole: "Approver"` resolves. The subset rule compares permissions only, so an actor whose
-    // permissions are a strict superset of R's may grant R while holding no binding of NAME R.
-    // §2a's built-in-name-collision check does not reach this: the role here is the genuine built-in
-    // `Approver`, not an org row impersonating it.
+    // NOT A REFUSAL CASE. See docs/routes.md §374.
     expect(
       permissionsOf("Approver").filter((p) => !permissionsOf("OrgAdmin").includes(p)),
       "Approver must stay a permission-subset of OrgAdmin, or this measurement is of something else"

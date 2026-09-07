@@ -12,23 +12,7 @@ import {
 import { startCliSession, type CliInvocation } from "../test-support/cli-runner.js";
 import { insertDecision } from "./decisions-repo.js";
 
-/**
- * ADR-0028 increment 4 — `GET /decisions?kind=…`, and the CLI flag it exists for.
- *
- * THE QUESTION IT ANSWERS, stated the way the operator asks it: "was my coupling enforced here?"
- * `federation/promotion-repo.ts` has promised `scp decision list --kind stage_dependency` as the
- * answer since ADR-0028 landed, and the filter did not exist — `--subject-id` alone was the whole
- * surface, which requires already knowing the change id. That is precisely what the person asking
- * does not have.
- *
- * THE KIND-WITHOUT-SUBJECT CASE IS THE POINT, so it is the first case here rather than an
- * afterthought: with a subject the query was already served by drizzle/0044's index, and it is the
- * subjectless shape that needed drizzle/0056 to stop being a parallel seq scan.
- *
- * Decisions are written through `insertDecision`, the repo's own writer, across SEVERAL subjects —
- * a single-subject fixture would pass identically if the implementation had quietly required
- * `subjectId` alongside `kind`, which is the shape this test exists to refuse.
- */
+/** The `kind` filter, and the CLI flag it exists for. See docs/coordination.md §414. */
 describe("decisions: the `kind` filter (ADR-0028 increment 4)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

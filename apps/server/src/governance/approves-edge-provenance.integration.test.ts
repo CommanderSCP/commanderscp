@@ -18,25 +18,7 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * THE `approves` EDGE'S FEDERATION PROVENANCE — the org id is not a domain id
- * ================================================================================================
- *
- * `castApprovalVote` stamped `relationships.origin_domain_id` with the ORG id, where every other
- * writer of that column stamps `federation_self.domain_id` — a uuid MINTED per org, unrelated to
- * `org_id`. The edge therefore claimed an origin domain present in no `federation_self` row.
- *
- * The damage is LOCAL as well as federated, which is why this file asserts the cascade and not
- * only the column: `graph/objects-repo.ts`'s `deleteObject` tombstones touching edges under
- * `origin_domain_id = self.domain_id`, so the `approves` edge missed the filter and survived the
- * deletion of its own endpoint — live, dangling, forever.
- *
- * Two halves, because the defect has two populations: rows written from now on (the code fix) and
- * rows already on disk (drizzle/0110). The second is exercised by re-running the migration's own
- * SQL against a row put back into the broken state — the file on disk is the fixture, so a future
- * edit to that SQL is measured rather than assumed.
- */
+/** THE `approves` EDGE'S FEDERATION PROVENANCE. See docs/governance.md §6. */
 describe("the `approves` edge is stamped with this domain's minted domain id", () => {
   let server: TestServer;
   let org: TestOrg;

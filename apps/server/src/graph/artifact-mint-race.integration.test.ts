@@ -13,15 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `mintArtifactObjects` / `upsertArtifactByIdentity` (ADR-0045 D2) — the identity race a
- * concurrent double-mint creates, and the FIX for the dead race-catch this file pins:
- * `createObject` (objects-repo.ts) already converts the raw pg `23505` unique violation into a
- * `ProblemError` 409 BEFORE `artifacts-repo.ts`'s own `catch` ever sees it, so a
- * `isUniqueViolation(err, "objects_artifact_one_per_digest_type")` check there can never match —
- * the 409 used to escape `mintArtifactObjects` uncaught instead of converging, which could reject
- * a signature-verified promotion import over nothing but timing.
- */
+/** `mintArtifactObjects` / `upsertArtifactByIdentity` (ADR-0045 D2). See docs/graph.md §1. */
 describe("mintArtifactObjects: the identity race converges instead of throwing", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -56,12 +48,7 @@ describe("mintArtifactObjects: the identity race converges instead of throwing",
     expect(second[0]!.id).toBe(first[0]!.id);
   });
 
-  /**
-   * Resolves once some backend in this database is genuinely PARKED on a lock — the positive
-   * signal that proves the second mint's INSERT collided with the first's still-open one, rather
-   * than hoping a fixed sleep bought enough time (`test-support/integration-sleep-census.test.ts`).
-   * Polls fast (25ms) because the state is local and near-instant.
-   */
+  /** Resolves once a backend is genuinely parked on a lock. See docs/graph.md §2. */
   async function waitForBlockedBackend(db: Db, timeoutMs = 20_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -83,16 +70,7 @@ describe("mintArtifactObjects: the identity race converges instead of throwing",
     "FORCED INTERLEAVING: a mint racing an in-flight, uncommitted insert of the same identity " +
       "converges on the winner's row — never a 409 escaping the caller",
     async () => {
-      // The deterministic form of the race, driven at the repo seam so the interleaving is exact
-      // rather than hoped for: tx1 inserts the artifact row directly (bypassing the mint wrapper's
-      // own find-first check, exactly as a genuinely concurrent second promotion attempt would look
-      // to THIS call) and STAYS OPEN, holding both unique indexes' entries uncommitted, while tx2
-      // runs the real `mintArtifactObjects` path. Under READ COMMITTED, tx2's own
-      // `findArtifactByIdentity` read returns nothing no matter when it lands inside this window (it
-      // cannot see tx1's uncommitted row), so it always proceeds to INSERT — which then blocks
-      // behind tx1's uncommitted row until tx1 commits, at which point Postgres raises the unique
-      // violation `createObject` turns into a 409 `ProblemError`. That is exactly the shape the fix
-      // in `artifacts-repo.ts` exists to catch and resolve by re-reading, rather than let escape.
+      // The deterministic race, driven at the repo seam. See docs/graph.md §3.
       const digest = `sha256:${randomUUID().replace(/-/g, "")}`;
       const artifactType = "oci";
 

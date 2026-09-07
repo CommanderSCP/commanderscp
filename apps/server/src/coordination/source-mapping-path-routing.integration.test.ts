@@ -13,23 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Path-based routing — one repository fanning out to per-directory components.
- *
- * THE BUG THIS FIXES, stated concretely because the failure was silent. `matchComponentForSource`
- * returns ONE component: the most-constrained mapping, ties broken oldest-first. A `path_pattern`
- * mapping was skipped outright whenever the event carried no path, and nothing populated a path for
- * a git push — the hint had only a SINGULAR `path`, which cannot represent a commit because a
- * commit touches many files. So on a monorepo every mapping was necessarily repo-only, every
- * repo-only mapping ranked equally, and the OLDEST one won every event forever. Every other mapping
- * on that repository never fired, and every release was attributed to one arbitrary component.
- *
- * Measured on the homelab before the fix: 45 of 47 source mappings had never fired, and 286 changes
- * across four repositories had landed on exactly two components.
- *
- * Each case uses its own `sourceKind` — the match is scoped to (orgId, sourceKind), so a private
- * sourceKind is what makes "these mappings and no others matched" true.
- */
+/** Path routing: one repository fanning out to components. See docs/coordination.md §902. */
 describe("source mapping: a repository routes by changed path, not just by name", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

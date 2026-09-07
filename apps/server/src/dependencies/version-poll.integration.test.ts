@@ -48,44 +48,7 @@ import {
   pollOrgDependencyVersions
 } from "./version-poll.js";
 
-/**
- * M21.4 — THE DAILY VERSION POLL AGAINST REAL POSTGRES (ADR-0032 §7).
- *
- * The ranking algebra is proven without a database in `version-index.test.ts`, and each index
- * plugin against recorded fixtures in its own package. THIS file proves the four things only the
- * real database, the real enablement resolver and the real plugin code can:
- *
- *  1. PERSIST-ON-CHANGE HOLDS ACROSS TWO TICKS. A second, identical poll writes ZERO new `decisions`
- *     rows. A daily poll restating a byte-identical verdict per dependency is exactly the shape that
- *     produced the measured 1.44 GB/day flood (ADR-0024).
- *  2. THE WORK-LIST IS M21.3'S RESOLUTION. A component whose subscription is not enabled, and a line
- *     that is opted out, are never polled at all — no Decision, no observation — and the enabled
- *     ones ARE, which is the negative control without which those absences prove nothing.
- *  3. AN UNAVAILABLE INDEX RECORDS NOTHING ON THE LINE. `latest_version` stays NULL, the verdict is
- *     `unavailable`, and the reason is readable. "No index answered" must never look like
- *     "up to date".
- *  5. THE INGRESS SPLIT HOLDS (ADR-0032 §7). An INTERNAL line — one this org DECLARES it produces —
- *     is NEVER asked of an index, with the negative control that a third-party line IS. That is the
- *     dependency-confusion failure: a stranger's package sharing the coordinate answering `9.9.9`
- *     and overwriting the head the org's own production release put there.
- *  4. THE AIR-GAP ASYMMETRY IS REAL. With ONLY a local registry configured — no
- *     `SCP_DEPENDENCY_INDEX_*_URL`, no operator feed — image detection works END TO END (head tag
- *     plus content digest) while all four language ecosystems report unavailable. That is
- *     ADR-0032 §7's "images need no fallback" as a behaviour rather than an intention.
- *
- * MUTATION LOG — each applied, watched fail, reverted, watched pass:
- * | Mutation | Result |
- * |---|---|
- * | drop `produced_by_object_id IS NULL` from the poll's hydration AND make `asThirdPartyLine` return every line (the pre-fix state — BOTH barriers) | "an INTERNAL line is NEVER asked of an index" FAILS: `npm:@acme/internal-lib` appears in the fetched coordinates |
- * | drop the SQL predicate ALONE | still PASSES — the `ThirdPartyLine` brand's own read of the same column refuses it. That is the defence-in-depth claim measured rather than asserted: either barrier alone still holds, and the test is written against the state where neither does |
- * | inherit the stored digest when an advance resolves none (`input.latestDigest ?? before.latestDigest`) | "a NEW tag whose digest cannot be resolved never inherits the PREVIOUS version's digest" FAILS — the row reads 3.19.2 with 3.19.1's bytes |
- * | make `evaluateHeadMovement` never return `behind_head` | "an index that no longer offers the head does NOT walk the line backwards" FAILS — the head drops to 4.17.21 |
- *
- * The plugin host here is IN-PROCESS but the PLUGINS ARE THE REAL ONES, constructed by their real
- * factories from the real `resolveIndexInstanceConfig` output — only the subprocess transport is
- * skipped (the `createInMemoryFakeHost` precedent). A stub returning canned versions would have
- * proven the test's own fixture, not the plugin.
- */
+/** M21.4 — THE DAILY VERSION POLL AGAINST REAL POSTGRES. See docs/dependencies.md §420. */
 describe("M21.4 dependency version poll (ADR-0032 §7)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -233,11 +196,7 @@ describe("M21.4 dependency version poll (ADR-0032 §7)", () => {
     server = await listenTestServer();
     org = await createTestOrg(server, "dep-version-poll");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    // NOTE there is no acting-user lookup here, and that is the point: the tick threads
-    // `SYSTEM_ACTOR_ID` into the resolution (`version-poll.ts`'s `buildLineWorkList`), because a
-    // background job has no human actor. Every policy below is therefore authored at an `objectRef`
-    // scope, which matches for any caller — a `group`-scoped ENABLE would resolve NOT-enabled here,
-    // the safe direction §6 guarantees.
+    // No acting-user lookup here, and that is the point. See docs/dependencies.md §421.
 
     scratch = mkdtempSync(join(tmpdir(), "scp-version-poll-"));
     feedDir = join(scratch, "feed");
@@ -316,20 +275,7 @@ esac
 
   // (0) The index subprocesses have a LIFECYCLE (M21.4 MINOR E)
 
-  /**
-   * A DAILY JOB THAT NEVER STOPS WHAT IT STARTS ACCUMULATES WITH TENANCY.
-   *
-   * Every other plugin-host caller starts instances derived from operator CONFIGURATION (an
-   * executor binding), which persists — leaving those children up between ticks is right. This job
-   * is the first whose instances come from its own WORK-LIST: up to five per org, started on demand
-   * by `queryLineHead`. Nothing leaked per tick (`start()` skips an id it already holds), which is
-   * exactly why this was invisible: the symptom is a standing subprocess count that grows with the
-   * number of orgs and never falls, held for the worker's lifetime by a job that runs once a day.
-   *
-   * The set stopped is a RECEIPT from `queryLineHead` (`onIndexInstanceStarted`), not a second
-   * derivation of which instances "should" be running — so an instance this sweep starts cannot be
-   * one it forgets to stop.
-   */
+  /** A daily job that never stops what it starts accumulates. See docs/dependencies.md §422. */
   it("stops every index plugin instance it started, and starts at least one (M21.4 MINOR E)", async () => {
     const host = realIndexHost();
     await pollOrgDependencyVersions(server.deps.db, org.orgId, { host, env: AIRGAP_ENV });
@@ -612,11 +558,7 @@ esac
   });
 
   it("a NEW tag whose digest cannot be resolved never inherits the PREVIOUS version's digest", async () => {
-    // The row asserts a PAIR — "3.19.1 is these bytes" — because a mutable tag is not an identity
-    // (ADR-0032 §7). While `latestDigest` was optional, a poll that moved the version and omitted
-    // the digest left the previous version's bytes standing beside the new tag, and the row then
-    // claimed a (tag, digest) combination that never existed in any registry. Nothing errors, and
-    // an operator reading it has no way to know.
+    // The row asserts a PAIR. See docs/dependencies.md §423.
     const lineId = lineIds.get("oci:registry.internal/acme/base")!;
     const before = await inOrg((tx) => getDependencyLineById(tx, org.orgId, lineId));
     expect(before?.latestVersion, "the fixture this test depends on").toBe("3.19.1");
@@ -667,13 +609,7 @@ esac
   // (5) The ingress split — an internal line is never polled
 
   it("an INTERNAL line is NEVER asked of an index, while a third-party line IS", async () => {
-    // THE FAILURE THIS PINS IS DEPENDENCY CONFUSION. `@acme/internal-lib` is published by this org
-    // and its head is DERIVED from the org's own accepted production releases
-    // (`internal-release-detection.ts`). A public npm index that happens to carry a package of the
-    // same name answers `9.9.9`; polling it overwrites the head the org's own release put there and
-    // every subscriber is bumped onto a stranger's package. The split is not a filter in the poll —
-    // it is `listThirdPartyDependencyLinesByIds`'s SQL plus the `ThirdPartyLine` brand that
-    // `queryLineHead` demands.
+    // THE FAILURE THIS PINS IS DEPENDENCY CONFUSION. See docs/dependencies.md §424.
     const internalLineId = await declare(subscribed, {
       ecosystem: "npm",
       coordinate: "@acme/internal-lib",
@@ -768,33 +704,7 @@ esac
 
   // (6) THE RACE ACROSS THE TRANSACTION BOUNDARY — rule 0 at the write door
 
-  /**
-   * REPLAY OF THE MEASURED RACE, at the seam where the interleaving is exact.
-   *
-   * Test (5) above proves the poll never ASKS about a line that is internal when the work-list is
-   * built. It cannot prove anything about a line that becomes internal AFTERWARDS, and that gap was
-   * not hypothetical — it was measured end to end against this same Postgres:
-   *
-   *   t0  buildLineWorkList (tx1) returns the coordinate as a THIRD-PARTY line
-   *   t1  the producer is declared; the head is confirmed cleared to null
-   *   t2  the poll's own write call lands  -> {"recorded":true,"movement":"advanced"}
-   *       head = 2.99.0, and one `scp.dependency.line_head_advanced` row: THE BUMP FAN-OUT FIRED
-   *   then the line is internal, so buildLineWorkList never visits it again to correct itself,
-   *       and internal detection's real 2.1.0 is refused as `behind_head` — PERMANENTLY WRONG
-   *
-   * WHY THE INTERLEAVING IS DRIVEN AND NOT AWAITED. Both ingresses deliberately do their network
-   * work with NO transaction open, so the window is a real wall-clock gap in production; here it is
-   * produced by calling the three steps in order, which is `boundary-segment.integration.test.ts`'s
-   * precedent ("the deterministic form of the race, driven at the repo seam so the interleaving is
-   * exact"). `recordDependencyLineHead(..., "third_party")` is verbatim what `pollWork` calls —
-   * same function, same arguments — so nothing here is a re-implementation of the path under test.
-   *
-   * MUTATION LOG — applied, watched fail, reverted, watched pass:
-   * | Mutation | Result |
-   * |---|---|
-   * | delete rule 0 from `recordDependencyLineHead` (the pre-fix state) | BOTH tests below FAIL: the public 2.99.0 records and advances, one outbox row appears, and the internal 2.1.0 is then refused `behind_head` |
-   * | keep rule 0 but read the declaration BEFORE the `FOR UPDATE` | still passes here (this is a same-connection replay), which is why the ordering argument lives in `recordDependencyLineHead`'s header rather than in an assertion |
-   */
+  /** Replay of the measured race, at the exact seam. See docs/dependencies.md §425. */
   it("a declare landing mid-poll REFUSES the in-flight public head, fires no bump, and leaves the line fixable", async () => {
     const coordinate = `@acme/race-declare-${uuidv7().slice(0, 8)}`;
     const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
@@ -871,18 +781,7 @@ esac
     expect(workAfter.map((w) => w.line.id)).not.toContain(lineId);
   });
 
-  /**
-   * THE SAME RACE WITH THE ARROW REVERSED — a RETRACTION landing mid-flight of an internal-release
-   * derivation. `internal-release-detection.ts` reads the producer in phase 1, fetches the
-   * producer's manifest from a git provider in phase 2 with NO transaction open, and writes in
-   * phase 3; a retract in that window used to let the org's own version land on a coordinate that
-   * is third-party again.
-   *
-   * IT IS THE WORSE-READING DIRECTION, not the tidier one (`resetLineHead`'s header): a stale
-   * internal head on a third-party coordinate wedges the poll behind a version no registry ever
-   * published, AND `latest_version` is an input to the M22 vendor scan rule, so it can grant a scan
-   * pass against evidence the world never produced.
-   */
+  /** THE SAME RACE WITH THE ARROW REVERSED. See docs/dependencies.md §426. */
   it("a retract landing mid-derivation REFUSES the in-flight internal head, and the public head then records", async () => {
     const coordinate = `@acme/race-retract-${uuidv7().slice(0, 8)}`;
     const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
@@ -941,39 +840,7 @@ esac
     expect(polled.line.latestVersion).toBe("2.3.1");
   });
 
-  /**
-   * THE SAME RACE ONE LEVEL FINER — a TRANSFER, not a retraction.
-   *
-   * The two tests above prove rule 0 refuses an ingress writing to a line of the wrong CATEGORY.
-   * They cannot prove anything about the wrong MEMBER of the right category, and that gap was the
-   * previous fix's own bug: `evaluateIngressAuthority` took `{ hasDeclaredProducer: boolean }` and
-   * `recordDependencyLineHead` supplied it as `declaration !== null`, so the door asked "is a
-   * producer declared?" and never "is THIS producer declared?".
-   *
-   * A TRANSFER IS AN ORDINARY, SUPPORTED ACT, which is why this is not an exotic interleaving:
-   * `POST /dependencies/producers` upserts, and the last commit added `displacedProducerObjectId`
-   * to that route's Decision precisely because coordinates move between components. Measured at
-   * this seam before the fix:
-   *
-   *   t0  declare -> P; P's internal detection reads the declaration in phase 1
-   *   t1  declare -> Q  (the transfer; the verb clears the head, as both verbs do)
-   *   t2  P's in-flight phase-3 write lands
-   *       {"recorded":true,"movement":"advanced","detail":"'2.9.9' is the first head observed…"}
-   *       outbox: line_head_advanced -> bump PRs into every subscriber's repo, onto P's version
-   *   then Q's genuine 2.4.0 is refused `behind_head` FOREVER — the poll never visits a declared
-   *       line, backward movement is refused, and no API resets `latest_version`.
-   *
-   * DRIVEN, NOT AWAITED, for the same reason as (6): the window is a real wall-clock gap in
-   * production (phase 2 fetches a manifest out of a user repo with no transaction open), and
-   * `recordDependencyLineHead(..., { kind: "internal", producerObjectId })` is verbatim what
-   * `internal-release-detection.ts:526` calls with `item.identity.producerComponentObjectId`.
-   *
-   * MUTATION LOG — applied, watched fail, reverted, watched pass:
-   * | Mutation | Result |
-   * |---|---|
-   * | revert the identity check — drop the transfer arm, which is all `{ hasDeclaredProducer: boolean }` could express | THIS test FAILS at the first assertion, and the pre-fix state past that point was MEASURED rather than described: `{"recorded":true,"movement":"advanced","detail":"'2.9.9' is the first head observed on this line"}`, outbox delta **+1** (`line_head_advanced` fired), and Q's genuine `2.4.0` then `{"recorded":false,"reason":"behind_head"}` — permanently, since the poll never visits a declared line. The other two race tests in this block STAY GREEN, which is why this case had to be written separately |
-   * | keep the identity but report the refusal as `line_is_third_party` | FAILS on the reason assertion only: the write is refused, but the Decision then asserts the coordinate is third-party when it is internal and owned by Q |
-   */
+  /** THE SAME RACE ONE LEVEL FINER. See docs/dependencies.md §427. */
   it("a TRANSFER landing mid-derivation REFUSES the FORMER producer's head, and the NEW producer's records", async () => {
     const coordinate = `@acme/race-transfer-${uuidv7().slice(0, 8)}`;
     const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
@@ -1085,28 +952,7 @@ esac
     expect(again.line.latestVersion).toBe("2.5.0");
   });
 
-  /**
-   * THE REFUSAL'S EXPLANATION, READ BACK OUT OF THE `decisions` TABLE — the CALL SITE, not the
-   * helper.
-   *
-   * `norecordFor` is pinned pure in `version-poll.test.ts`, and that unit case is necessary and not
-   * sufficient: restoring the ONE FIXED SENTENCE this function replaced ("a head never moves
-   * backwards and never leaves the line it names") at the call site left 352 tests green. A rule
-   * proven in isolation while its only consumer is free to ignore it is the same shape as a guard
-   * nobody exercises — the explanation the operator actually reads comes from `decisionFor`, and
-   * nothing asserted what `decisionFor` put there.
-   *
-   * SO THE DECLARE LANDS INSIDE THE REAL POLL, not at the repo seam. `pollOrgDependencyVersions`
-   * builds its work-list in one transaction, does the index round trip with NO transaction open, and
-   * writes in another — so a host whose `listVersions` declares the producer occupies exactly the
-   * window the race replay above drives by hand, with the difference that this one goes on to write
-   * the Decision. That is the only way to read the persisted text of a `line_is_internal` refusal.
-   *
-   * MUTATION — applied, watched fail, reverted, watched pass:
-   * | Mutation | Measured |
-   * |---|---|
-   * | `norecord: norecordFor(refusal.reason)` -> the old fixed sentence at the `not_recorded` call site | this case fails on BOTH halves: the ownership sentence is absent, and the version sentence is present on a refusal that is not about the version |
-   */
+  /** The refusal's explanation, read back from the table. See docs/dependencies.md §428. */
   it("the PERSISTED Decision for a line_is_internal refusal explains OWNERSHIP, not version ordering", async () => {
     const coordinate = `@acme/norecord-call-site-${uuidv7().slice(0, 8)}`;
     const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });

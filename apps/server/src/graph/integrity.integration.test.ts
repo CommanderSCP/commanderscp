@@ -11,30 +11,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { objects, relationships } from "../db/schema.js";
 
-/**
- * GRAPH INTEGRITY REPORT + repair through the ordinary doors.
- *
- * ============================================================================================
- * THE FIXTURE HAS TO FORGE LEGACY DATA, AND THAT IS THE POINT
- * ============================================================================================
- * `deleteObject` now CASCADES, so the normal door can no longer produce a dangling edge — which is
- * exactly why the backlog needs a report rather than a guard. To test the report at all, the
- * fixture must soft-delete an object the way the pre-cascade code did: an UPDATE of `deleted_at`
- * alone, leaving the edges live.
- *
- * That write happens AFTER the creating requests have committed, and the row is read back to prove
- * it took effect. A fixture that silently updates nothing would leave this suite measuring an
- * intact graph and passing for the wrong reason.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | report only `from`-side deaths | the `to`-side test FAILS (`owns` edges on the live estate are all to-side) |
- * | mark replica edges `repairable: true` | the replica test FAILS — repair would attempt a row `deleteRelationship` refuses |
- * | drop the `deleted_at is not null` filter on orphan mappings | the orphan-mapping test FAILS. It did NOT fail before that test existed — the first pass of this file had no mapping coverage at all, and the mutation exposed the hole rather than the code |
- */
+/** GRAPH INTEGRITY REPORT + repair through the ordinary doors. See docs/graph.md §55. */
 describe("graph integrity report", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

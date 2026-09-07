@@ -8,15 +8,7 @@ import {
   type SeverityCeiling
 } from "./scan-evidence.js";
 
-/**
- * THE BOUNDARY SCAN-EVIDENCE RULE — the algebra, in isolation from Postgres.
- *
- * Every case here is an authorization case: `evaluateScanCoverage` is what decides whether an
- * artifact may cross a security-domain boundary, and it is the SHARED core of the M17.3 E6 export
- * gate and the ADR-0020 promotion scan step's short-circuit. The end-to-end proofs (a real
- * `webhook-control` row refused at a real export, a real superseding failure) live in
- * `federation.integration.test.ts`; this file pins the rule's edges cheaply and exhaustively.
- */
+/** THE BOUNDARY SCAN-EVIDENCE RULE. See docs/federation.md §501. */
 
 const DIGEST = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

@@ -12,21 +12,7 @@ type ManifestContinuousHook = z.infer<typeof ManifestContinuousHookSchema>;
 type ManifestBakeAlarmsHook = z.infer<typeof ManifestBakeAlarmsHookSchema>;
 type ManifestPostDeployHook = z.infer<typeof ManifestPostDeployHookSchema>;
 
-/**
- * PURE verdict logic for the four pipeline test hooks (`packages/schemas/src/pipeline-behaviors.ts`
- * on main is the contract; its doc comments are the specification these functions implement, not
- * background reading).
- *
- * Every function here takes `now: Date` as an EXPLICIT parameter and never reads the clock itself.
- * That is what makes each one directly testable without faking `Date.now()`, and it is also what
- * keeps `now` out of the Decision records the callers (not this file) will write — see
- * `buildHookFreshnessContext` below and `HookFreshnessContextSchema`'s doc comment for why the
- * comparison is read-time (ADR-0033) while the persisted record must stay byte-stable across ticks
- * (ADR-0024, the measured 1.44 GB/day incident).
- *
- * NO DATABASE, NO ROUTES, NO NEW ZOD SCHEMAS. This module only decides; callers fetch evidence and
- * persist Decisions.
- */
+/** PURE verdict logic for the four pipeline test hooks. See docs/coordination.md §636. */
 
 export interface ContinuousHoldVerdict {
   held: boolean;
@@ -42,11 +28,7 @@ export interface ContinuousHoldVerdict {
   lastReportedAt: string | null;
 }
 
-/**
- * The latest `testRun` evidence bound to a `continuous` hook's (component, target), or `null` when
- * none has ever arrived. Callers resolve this from the evidence store; this module only decides
- * what it means.
- */
+/** The latest test-run evidence bound to a continuous hook. See docs/coordination.md §637. */
 export type LatestContinuousEvidence = Pick<TestRunEvidence, "outcome" | "completedAt"> | null;
 
 export function evaluateContinuousHold(
@@ -110,16 +92,7 @@ interface Interval {
   end: number;
 }
 
-/**
- * Merge a set of intervals belonging to ONE source, and report whether the merged result fully
- * covers `[requiredStart, requiredEnd]`.
- *
- * A GAP IS NOT COVERAGE. Two reports whose intervals do not touch or overlap leave a slice of the
- * required window unobserved by this source, and an unobserved slice is exactly the silence this
- * hook exists to refuse to read as quiet (see `AlarmStateEvidenceSchema`'s doc comment). The
- * "close enough" version of this function — merging intervals that are merely close, or unioning
- * total covered seconds without checking contiguity — is the bug this comment is here to head off.
- */
+/** Merge one source's intervals and report full coverage. See docs/coordination.md §638. */
 function coversWindow(intervals: Interval[], requiredStart: number, requiredEnd: number): boolean {
   if (intervals.length === 0) return false;
   const sorted = [...intervals].sort((a, b) => a.start - b.start);
@@ -145,11 +118,7 @@ export function evaluateBakeGate(
   hook: Pick<ManifestBakeAlarmsHook, "quietWindowSeconds">,
   reports: BakeAlarmReport[],
   targetDeployedAt: Date,
-  /** Unused by the three clauses below — the required window and the reports' own asserted
-   *  windows are all the decision needs. Kept as an explicit parameter for signature symmetry
-   *  with the other verdict functions (never `Date.now()` inside any of them) and so a future
-   *  read-time rule (e.g. refusing to satisfy before the window has fully elapsed) has a place to
-   *  land without changing every call site. */
+  /** Unused by the three clauses below. See docs/coordination.md §639. */
   _now: Date
 ): BakeGateVerdict {
   const requiredStart = targetDeployedAt.getTime();
@@ -175,11 +144,7 @@ export function evaluateBakeGate(
     return { satisfied: false, reason: "alarm_firing", firingAlarms, coveredBy: [] };
   }
 
-  // (b) Satisfying requires at least one source AFFIRMATIVELY covering the WHOLE required window
-  // with zero alarms in it (already established above — no firing alarms survived clause (a)).
-  // A source that never reported contributes nothing in either direction: it neither holds nor
-  // clears. Coverage is evaluated PER SOURCE — source A's reports never fill source B's gaps —
-  // and the gate is satisfied if ANY single source achieves full coverage on its own.
+  // Satisfying needs one source covering the whole window. See docs/coordination.md §640.
   const bySource = new Map<BakeAlarmReport["source"], Interval[]>();
   for (const report of reports) {
     const intervals = bySource.get(report.source) ?? [];
@@ -214,13 +179,7 @@ export interface PostDeployGateVerdict {
  *  arrived yet. */
 export type PostDeployEvidence = Pick<TestRunEvidence, "outcome"> | null;
 
-/**
- * NOTE FOR CALLERS: `awaiting` maps onto the control system's `expired` status, the shipped
- * convention for "started, ask me later" — `packages/plugins/github-check` returns `expired` for
- * still-running CI, and `governance/control-runner.ts` re-polls only `expired`, on a cooldown
- * (`EXPIRED_RECHECK_INTERVAL_MS`). `awaiting` must NEVER be mapped to `fail`: an in-flight test is
- * not a failed test, and doing so would block a wave on a test that has not finished running.
- */
+/** NOTE FOR CALLERS. See docs/coordination.md §641. */
 export function evaluatePostDeployGate(
   hook: Pick<ManifestPostDeployHook, "hookId">,
   evidence: PostDeployEvidence,
@@ -250,16 +209,7 @@ export type FreshnessLatestEvidence = {
   commitSha: string | null;
 } | null;
 
-/**
- * Builds a `HookFreshnessContextSchema`-shaped value for a Decision's `inputContext`.
- *
- * Deliberately takes NO `now` and produces none: `staleAfter` is `completedAt + maxAgeSeconds`,
- * computed once from data that is already stable, so the record stays BYTE-IDENTICAL across ticks
- * while the underlying evidence is unchanged (ADR-0024's persist-on-change; the measured
- * 1.44 GB/day incident this is here to avoid repeating). The COMPARISON against the clock is
- * `evaluateContinuousHold`'s job, done fresh every tick (ADR-0033); this function only records the
- * boundary that comparison will use, not the result of making it.
- */
+/** Builds the freshness context a Decision records. See docs/coordination.md §642. */
 export function buildHookFreshnessContext(
   hook: FreshnessHookInput,
   latestEvidence: FreshnessLatestEvidence

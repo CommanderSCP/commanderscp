@@ -169,23 +169,9 @@ describe("sync journal hash chain (pure)", () => {
   });
 });
 
-/**
- * THE END-TO-END PROOF that `verifyJournalChain` — documented in this module as "the fail-closed
- * gate a tampered or truncated segment must never pass" — actually covers what a peer can put in a
- * payload.
- *
- * On the base commit it did not. `canonicalStringify` dropped any `__proto__` subtree, so a peer
- * could append arbitrary content to a SIGNED entry's payload and the recomputed `rowHash` came out
- * identical, the signature still verified, and `valid` came back `true`. The tamper was invisible
- * precisely BECAUSE the canonicalizer refused to look at it.
- */
+/** THE END-TO-END PROOF that `verifyJournalChain`. See docs/schemas.md §205. */
 
-/**
- * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
- * that three named keys are absent only proves those three are absent; this proves NOTHING was
- * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
- * so it is checked rather than assumed.
- */
+/** Snapshot every Object.prototype key, not three named ones. See docs/schemas.md §206. */
 const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
 
 describe("a __proto__ subtree grafted onto a signed payload no longer passes verifyJournalChain", () => {

@@ -1,13 +1,4 @@
-/**
- * Graph visual encoding — SHAPE says what a node IS, COLOR says which group it BELONGS TO.
- *
- * Keeping those two channels independent is the whole design. Type was previously encoded as
- * colour, which meant colour could say only one thing at a time and a graph of eight components
- * was eight identical purple dots. Shape is a stable, absolute property of a node (a component is
- * a component wherever you look at it), so it belongs on the channel that never changes; group
- * membership is RELATIVE to what you are currently looking at, so it belongs on the channel that
- * is recomputed per view.
- */
+/** Graph visual encoding. See docs/web.md §121. */
 
 /** Cytoscape node shapes, containers angular and leaves round, descending by rung. */
 export const NODE_SHAPE_BY_TYPE: Record<string, string> = {
@@ -48,11 +39,7 @@ export function sizeForType(typeId: string | undefined): number {
   return (typeId && NODE_SIZE_BY_TYPE[typeId]) || DEFAULT_NODE_SIZE;
 }
 
-/**
- * Categorical fill palette. Deliberately avoids the health ring's green/amber/red so a fill and a
- * ring on the same node are never confusable — health is an overlay on the BORDER, group is the
- * FILL, and the two must stay readable together.
- */
+/** Categorical fill palette. See docs/web.md §122. */
 export const GROUP_PALETTE = [
   "#2563eb",
   "#7c3aed",
@@ -69,24 +56,7 @@ export const GROUP_PALETTE = [
 /** Nodes with no resolvable group (nothing contains them in this view). */
 export const UNGROUPED_COLOR = "#64748b";
 
-/**
- * Which node's colour a node should inherit, GIVEN what is currently being looked at.
- *
- * The rule the owner specified (2026-08-10): colour is decided at the highest level IN SCOPE.
- * Looking at the org, every service is a different colour; looking at a service, each assembly or
- * directly-held component is a different colour; looking at an assembly, each component is. All
- * three are the same rule — **walk `contains` upward until you reach a child of the thing you are
- * looking at, and take that ancestor's identity** — so this is one function rather than three
- * special cases, and a future rung inherits it for free.
- *
- * With no `rootId` (an org-level map) the walk goes all the way to the topmost ancestor present,
- * which for a graph of bare services is each service itself.
- *
- * Cycles cannot occur through `contains` (the server refuses `assembly -> assembly` outright, and
- * a component has exactly one parent by unique index), but the walk is still bounded — a
- * hand-authored relationship type could in principle produce one, and a hung layout is a worse
- * failure than a mis-coloured node.
- */
+/** Which node's colour to inherit, given what is focused. See docs/web.md §123. */
 export function deriveGroupIds(
   objects: { id: string }[],
   edges: { fromId: string; toId: string; typeId?: string }[],
@@ -113,11 +83,7 @@ export function deriveGroupIds(
   return groups;
 }
 
-/**
- * Stable group -> colour assignment. Sorted by group id so the same graph renders the same colours
- * across reloads: keying off insertion order would repaint the whole graph whenever the API
- * returned rows in a different order, which reads as though something changed when nothing did.
- */
+/** Stable group -> colour assignment. See docs/web.md §124. */
 export function assignGroupColors(groupIds: Iterable<string>): Map<string, string> {
   const unique = [...new Set(groupIds)].sort();
   const colors = new Map<string, string>();

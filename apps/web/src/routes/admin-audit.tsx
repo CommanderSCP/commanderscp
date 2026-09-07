@@ -22,30 +22,7 @@ import { QueryErrorNotice } from "../components/query-error";
 import { DecisionDetailDialog } from "../components/decision/DecisionDetailDialog";
 import { formatRelative } from "./admin-dependencies";
 
-/**
- * ADMIN › AUDIT — the hash-chained audit log, browsable (owner-approved 2026-08-23; charter
- * principle 6: "audit events are hash-chained and written in the same transaction as the action";
- * server route `GET /api/v1/audit-events`, `apps/server/src/routes/audit-events.ts`; SDK
- * `client.auditEvents.list`).
- *
- * WIRE ORDER, STATED HONESTLY: `listAuditEvents` (`audit/audit-repo.ts`) orders ascending by `seq`
- * — "the order `scp audit verify` needs to re-walk the chain" per that module's own doc comment —
- * and the cursor only ever moves forward (`gt(seq, afterSeq)`). There is no descending/newest-first
- * request this API can answer; this table therefore reads OLDEST FIRST, walking the chain from its
- * start, exactly like every consumer of this endpoint. It is not a "recent activity" feed — an org
- * with a long history needs several "Load more" clicks to reach today. Flagged in openQuestions as
- * a real usability gap, not silently reversed client-side: reversing per PAGE (the only thing this
- * cursor lets you fetch) would not produce newest-first order at all, only a scrambled one.
- *
- * INTEGRITY IS NOT PROVEN HERE: the chain hash is verified by `scp audit verify` (the CLI walks
- * `beforeHash`/`afterHash`/`prevHash`/`rowHash`) — this page renders the rows the server returns and
- * makes no claim about the chain's integrity beyond that. Stated in the header, not implied by
- * merely displaying the hash columns.
- *
- * `audit:read` gate (M16.3 offer-the-write — the READ, here — rule): a viewer without the
- * permission gets the server's 403 rendered verbatim by `QueryErrorNotice`, the same as every other
- * admin read in this app; the page issues the one read and shows whatever it says.
- */
+/** ADMIN › AUDIT. See docs/web.md §166. */
 
 function DecisionIdCell({ decisionId }: { decisionId: string }): React.JSX.Element {
   const [open, setOpen] = useState(false);

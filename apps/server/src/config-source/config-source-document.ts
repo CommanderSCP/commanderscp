@@ -1,23 +1,4 @@
-/**
- * The `config-source` DOCUMENT — pure shape rules for the registration object migration 0100
- * registers (ADR-0046 §1; team-pipeline-iac §4, D2/D7/D9).
- *
- * Everything here is a fact about one `properties` bag and nothing else: no DB, no authorization,
- * no I/O. The two consumers are the authoring door (`authoring-guard.ts`, which refuses a
- * malformed or over-reaching document at `graph/objects-repo.ts`'s create/update choke point) and
- * the registry read (`config-sources-repo.ts`, which turns stored rows into the
- * `ConfigSourceRegistration` values `registration-match.ts` already decides over).
- *
- * ================================================================================================
- * WHY THE STRICTNESS IS HERE AND NOT IN THE REGISTERED JSON SCHEMA
- * ================================================================================================
- * Migration 0100's header has the long form. Short version: the registered `property_schema` is
- * Ajv-validated on the RECEIVING side of federation with no try/catch, so a constraint there that a
- * peer one migration behind cannot satisfy fails that peer's WHOLE signed bundle. "Exactly one of
- * `repo`/`repoPattern`" is precisely such a constraint — it encodes a closed set of addressing
- * modes — so it lives here, at the operator's door, where the cost of a refusal is one 400 to the
- * author. Strict at the operator's door, permissive on the wire.
- */
+/** The `config-source` DOCUMENT. See docs/config-source.md §8. */
 
 import { badRequest } from "../errors.js";
 
@@ -91,13 +72,7 @@ function parseStackTeams(
   return out;
 }
 
-/**
- * Parse and validate a `config-source` object's `properties`, or throw a 400 naming the defect.
- *
- * `subject` is the caller's own description of the row ("config-source 'payments-fleet'"), so one
- * refusal reads the same whether it came from the generic object route, an IaC apply, or a
- * hand-fill.
- */
+/** Parse a config-source document, or 400 naming the defect. See docs/config-source.md §9. */
 export function parseConfigSourceDocument(
   properties: Record<string, unknown>,
   subject: string
@@ -128,14 +103,7 @@ export function parseConfigSourceDocument(
   };
 }
 
-/**
- * Every team a document delegates TO — the default `team` plus every value in `stackTeams`,
- * deduplicated and sorted so a refusal names them in the same order every run.
- *
- * This is the set the authoring door must hold authority over, and it is computed from the
- * document rather than passed in, so a field added to the delegation surface later cannot reach a
- * door that never learned to look at it.
- */
+/** Every team the document delegates to, computed not passed. See docs/config-source.md §10. */
 export function delegatedTeamRefs(document: ConfigSourceDocument): string[] {
   return [...new Set([document.team, ...Object.values(document.stackTeams)])].sort();
 }

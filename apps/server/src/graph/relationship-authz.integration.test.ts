@@ -8,13 +8,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * PR #4 security review, CRITICAL 1: relationship writes require `relationship:write` at BOTH
- * endpoints' scopes (docs/DESIGN.md §7). The attack this forecloses: `member_of` edges feed
- * RBAC subject expansion (authz/resolve.ts), so a from-side-only check would let any subject
- * with `relationship:write` at their own user object add themselves `member_of` any team/group
- * and inherit its role bindings — privilege escalation through the graph itself.
- */
+/** PR #4 security review, CRITICAL 1. See docs/graph.md §163. */
 describe("relationship writes: both-endpoint authorization", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

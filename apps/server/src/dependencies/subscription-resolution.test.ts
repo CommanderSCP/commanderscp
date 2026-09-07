@@ -11,38 +11,7 @@ import {
   type PolicyEffect
 } from "../governance/policy-model.js";
 
-/**
- * M21.3 — THE ENABLEMENT MERGE, as a pure function (ADR-0032 §6).
- *
- *     effective_enabled(component, line) =
- *         instance_unlocked  AND  component_enabled  AND  NOT line_opted_out
- *
- * Every property below is a property of the ALGEBRA, not of a database, which is exactly why the
- * merge was extracted as a pure function (BUILD_AND_TEST.md §4.1). No Postgres here; the DB-backed
- * half is proven in `subscription-resolution.integration.test.ts`.
- *
- * Seven properties are load-bearing and each is asserted in the direction that can FAIL OPEN:
- *
- *   1. ABSENT NEVER MEANS ENABLED. No contributions ⇒ not enabled.
- *   2. THE INSTANCE LEVEL UNLOCKS AND NEVER ACTIVATES. `unlocked` alone enables nothing (ADR-0006:
- *      managed execution is never a default).
- *   3. A DISABLE ALWAYS WINS over any number of enables at any tier.
- *   4. ORDER-INDEPENDENCE — proven by exhausting every permutation of the contribution list, not by
- *      one hand-picked shuffle.
- *   5. MOST-RESTRICTIVE-WINS for `granularity` and `delivery`; auto-merge is never acquired by
- *      merging two policies that each meant something safer.
- *  5b. SILENCE IS A VOTE, NOT AN ABSTENTION. (5) only ever composes two DECLARED values, and the
- *      composition that can fail open is SILENT + DECLARED — a component that authored
- *      `{enabled: true}` beside an org-wide `auto_merge`. Pinned in both arrangements.
- *   6. A MISTYPED SELECTOR KEY IS REFUSED, NOT STRIPPED INTO A WILDCARD — on an enable AND on an
- *      opt-out, the two directions being loose in different senses.
- *   7. A WILDCARD IS RECORDED EXPLICITLY (`selector: {}`), so an explanation never leaves
- *      "matched everything on purpose" and "matched everything by accident" looking alike.
- *
- * Every assertion of an ABSENCE carries a NEGATIVE CONTROL in the same test — a test proving nothing
- * happened is vacuous unless it also proves the thing that SHOULD happen did. Concretely: each
- * "not enabled" case is re-run with the one blocking element removed, and must come out enabled.
- */
+/** M21.3 — THE ENABLEMENT MERGE, as a pure function. See docs/dependencies.md §375. */
 
 const LINE: DependencyLineKey = { ecosystem: "npm", coordinate: "@acme/lib", major: "1" };
 
@@ -322,20 +291,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     ).toBe("auto_merge");
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (5b) SILENCE IS A VOTE, NOT AN ABSTENTION — the silent+declared composition
-  //
-  // Every case above compares two DECLARED values, which is the composition that cannot fail open.
-  // The one that CAN is silent-plus-declared: a component team authors `{enabled: true}` and says
-  // nothing about delivery, and an ORG-WIDE policy declares `auto_merge`. If absence were "no
-  // opinion", the MIN would be taken over the declared value alone and the team would be handed the
-  // privileged option — SCP merging commits into their repo with no pull request — by a policy they
-  // do not own and never read. ADR-0032 §8 puts the choice with the TEAM; 0062's header says
-  // auto-merge is "never inherited from silence".
-  //
-  // So a silent contribution votes for the DEFAULT, and the answer to "may a broader scope grant
-  // auto-merge to a narrower one that stayed silent?" is NO, pinned in both directions below.
-  // -----------------------------------------------------------------------------------------
+  // (5b) SILENCE IS A VOTE, NOT AN ABSTENTION. See docs/dependencies.md §376.
 
   it("(5b) a SILENT enable is not an abstention — a declared auto_merge beside it resolves pull_request", () => {
     // The measured defect, in its exact shape: the component asked for a subscription and nothing

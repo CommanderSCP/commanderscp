@@ -9,18 +9,7 @@ import {
   type VendorInventoryRow
 } from "./scan-vendor-latest.js";
 
-/**
- * M22.4 (ADR-0033, owner decision D1) — THE VENDOR RULE'S ARITHMETIC, pure.
- *
- * Everything here is about the direction of a MISSING fact. A vendor-pass removes a finding before
- * it is counted, so an absence read the wrong way does not produce an error, it produces a PASS —
- * and the pass looks exactly like a component that really is current. Each `it` below is one of the
- * absences ADR-0033 and the M22 definition of done enumerate, and each asserts the refusal by its
- * NAME rather than by "not at head", so a future edit that collapses two refusals into one has to
- * say so out loud.
- *
- * MUTATIONS RUN — measured, each reverted by an exact inverse edit; recorded in the increment report.
- */
+/** The vendor rule's arithmetic, kept pure. See docs/governance.md §402. */
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 /** The default poll interval is daily, so the default bound is three days. Computed, never spelled,

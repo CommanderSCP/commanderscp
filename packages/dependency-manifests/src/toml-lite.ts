@@ -1,39 +1,4 @@
-/**
- * A deliberately small TOML reader — just enough of the grammar to read the six tables
- * `pyproject.toml` keeps dependencies in, and nothing more.
- *
- * **Why hand-rolled rather than a dependency.** Charter principle 5 makes air-gap and offline
- * builds first-class ("vendored tooling", no runtime network calls), and there is no TOML parser
- * anywhere in the tree (checked at HEAD: no `@iarna/toml`, no `smol-toml`, no `toml` in any
- * workspace `package.json`), so using one would mean adding a genuinely new vendored dependency for
- * six table lookups.
- *
- * **AMENDED (M21.7).** This comment used to say the package "deliberately has zero third-party
- * dependencies so it can be dropped into an ephemeral runner image". Both halves are now qualified:
- * the package takes exactly one dependency, `yaml`, for `kubernetes-images.ts` (`types.ts` records
- * the trade and why a hand-rolled YAML subset was refused where a hand-rolled TOML subset was
- * taken), and the runner image never contained this package at all — `apps/runner-dep/Dockerfile`
- * is `FROM scratch` plus BusyBox, with no Node runtime. The argument for hand-rolling THIS reader
- * is unchanged and does not rest on either: a new vendored dependency for six table lookups is a
- * bad trade, and a line-oriented TOML scanner's failure mode is a missing table rather than a
- * confidently wrong tree.
- *
- * **What "small" means, precisely.** This reader understands: table headers (`[a.b]`), array-of-table
- * headers (`[[a.b]]`), bare and quoted and dotted keys, basic and literal strings including their
- * multi-line (`"""` / `'''`) forms, arrays (nested, multi-line, trailing commas), and inline tables.
- * It does NOT understand dates, integers-with-underscores, floats or booleans as *values* — those
- * are read as an opaque `other`, which is correct here because every value this package cares about
- * is a string, an array of strings, or an inline table of them.
- *
- * The multi-line string and array support is not gold-plating. Both appear constantly in real
- * `pyproject.toml` files (`description = """…"""`, `classifiers = [ … ]` spanning 30 lines), and a
- * line-oriented scanner that did not track them would mistake a `[Programming Language :: …]`
- * classifier entry for a TABLE HEADER and start attributing subsequent keys to a table that does
- * not exist. That is a silent wrong-answer bug, not a missing-feature bug.
- *
- * Anything the reader cannot make sense of raises {@link ManifestParseError} rather than being
- * skipped, so a manifest we misread cannot masquerade as a manifest that declares nothing.
- */
+/** A deliberately small TOML reader. See docs/dependency-manifests.md §81. */
 import { ManifestParseError } from "./types.js";
 
 export type TomlValue =
@@ -304,14 +269,7 @@ function readValue(r: Reader): TomlValue {
 }
 
 /**
- * Scan a TOML document into a flat list of `(table path, key, value)`.
- *
- * A flat list, rather than a nested object, because every consumer here asks "give me the entries
- * of table X" and a flat list answers that without any merge semantics — and merge semantics are
- * where a partial TOML implementation gets subtly wrong (dotted keys inside a table header, the
- * same table opened twice, arrays of tables). Keeping the shape flat keeps the reader honest about
- * how little it claims to understand.
- *
+ * Scan a TOML document into a flat triple list. See docs/dependency-manifests.md §82.
  * @throws {ManifestParseError} on anything it cannot parse.
  */
 export function scanToml(content: string): TomlEntry[] {

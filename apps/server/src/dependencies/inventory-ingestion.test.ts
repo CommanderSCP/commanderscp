@@ -25,22 +25,11 @@ import {
   type SkippedManifest
 } from "./inventory-ingestion.js";
 
-/**
- * M21.2 — the PURE half of dependency-inventory ingestion (BUILD_AND_TEST.md §4.1: anything testable
- * as a pure function must be written as one). The database-backed behaviour — the enablement gate
- * refusing to fetch, the per-manifest failure handling, the prune, idempotency, and the fact that
- * anything CALLS the ingestion at all — is in `inventory-ingestion.integration.test.ts`.
- */
+/** M21.2 — the PURE half of dependency-inventory ingestion. See docs/dependencies.md §287. */
 describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", () => {
   describe("the parser table", () => {
     it("covers exactly the SEVEN dependency-manifest filenames this build can read", () => {
-      // Six for the five ecosystems, plus M21.7's `values.yaml` — the Helm/Kubernetes image
-      // reader, which emits into the SAME `oci` ecosystem a Dockerfile does.
-      //
-      // PINNED AS A LIST rather than as a size, because the cost of a new entry is not one read: it
-      // is one read PER PROBE PREFIX (`candidateManifestPaths` is a cross product), against
-      // `MAX_MANIFEST_READS`. Adding a filename here without re-deriving that budget freezes real
-      // manifests behind `read_budget_exhausted`, silently, on every pass.
+      // Six for the five ecosystems, plus M21.7's `values.yaml`. See docs/dependencies.md §288.
       expect([...MANIFEST_PARSERS.keys()].sort()).toEqual([
         "Dockerfile",
         "go.mod",
@@ -60,11 +49,7 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
     });
 
     it("`values.yml` and `Chart.yaml` are NOT registered, each for its own stated reason", () => {
-      // Helm itself only ever reads `values.yaml`, so a `values.yml` in a repository is not a
-      // chart's values file — treating it as one would be a filename-shaped inference. `Chart.yaml`
-      // is a different refusal: its `dependencies[].version` names SUBCHARTS from a Helm
-      // repository, which is a sixth ecosystem (a new enum member, a new DB check-constraint value
-      // and a new version index), not an image.
+      // Helm only reads one filename, so the other is not one. See docs/dependencies.md §289.
       expect(MANIFEST_PARSERS.has("values.yml")).toBe(false);
       expect(MANIFEST_PARSERS.has("Chart.yaml")).toBe(false);
     });
@@ -368,12 +353,7 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
     });
 
     it("a manifest whose EVERY declaration is unresolved is `unsupported`, never `ok / 0 rows`", () => {
-      // M21.7's class fix. `ok / 0 rows` is this table's own words for "read fine, genuinely
-      // declares nothing", and a file that DECLARED something SCP could not read is the opposite
-      // statement. Nothing here is YAML-specific: the fixture is a DOCKERFILE, because the defect
-      // predates the YAML parser by four milestones (`FROM ${BASE}` and a `pom.xml` of
-      // `${revision}` both hit it) and fixing only the instance that exposed it is the
-      // incomplete-census failure.
+      // M21.7's class fix. See docs/dependencies.md §290.
       const stamp = projectIngestionStamp({
         manifests: [read("Dockerfile", 0, 2)],
         skipped: []
@@ -425,11 +405,7 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
 
   describe("manifestStampOutcome — `unsupported` and `unreadable` carry different operator actions", () => {
     it("splits `manifest_unparseable` STRUCTURALLY, not by reading the skip's prose", () => {
-      // The one reason pushed by two different branches: a malformed body (fix the file, and the
-      // next pass may succeed) and "no parser is registered for this filename in this build"
-      // (nothing to fix). They are told apart by asking MANIFEST_PARSERS the same question the
-      // skipping branch asked — the alternative, matching on the detail sentence, is a label named
-      // after a string that any reword breaks.
+      // The one reason pushed by two different branches. See docs/dependencies.md §291.
       expect(manifestStampOutcome("services/api/go.mod", "manifest_unparseable")).toBe(
         "unreadable"
       );
@@ -454,35 +430,7 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
   });
 
   describe("the wiring census — this feature's whole failure mode is being built and not installed", () => {
-    /**
-     * M21 has shipped FOUR components with no production caller (a guard reaching one of four
-     * doors, a detection with no caller, an actuator with no dispatcher, a config schema never
-     * registered), and this ingestion was the fifth. Every one of them had passing tests, because
-     * tests called the component directly.
-     *
-     * So the acceptance criterion is not "the function works", it is WIRED — and the only thing
-     * that can regress the wiring is an edit to the composition root, which no unit or integration
-     * test of this module would otherwise touch.
-     *
-     * NEITHER HALF IS A SUBSTRING ANY MORE, and it took three rounds to get here — which is the
-     * most useful thing this comment can record.
-     *
-     * Round 1: both halves matched text in `main.ts`. Deleting `startInventoryIngestionLoop`'s OWN
-     * `boss.createQueue`/`boss.work` left this green and left the entire suite green, because
-     * nothing executed the loop.
-     * Round 2 (M21.7): the ROUTER list moved into the importable `events/domain-event-registry.ts`
-     * and its registration became a real assertion. The LOOP half stayed text, and was read RAW, so
-     * commenting the whole `startInventoryIngestionLoop` block out left all 38 cases green.
-     * `readStripped` closed the comment case and no other.
-     * Round 3 (2026-08-17): stripping was still not enough — flipping `main.ts`'s background-work
-     * condition to `false` killed this loop with the file green, because text cannot see a dead
-     * branch. The loop startups moved into `background-work.ts`'s importable `BACKGROUND_LOOPS`,
-     * and the assertions below now RUN the registry entry.
-     *
-     * The end-to-end half is still `inventory-ingestion.integration.test.ts`'s "the production path"
-     * block: a real pg-boss, this capability's real router, `startInventoryIngestionLoop` itself,
-     * and the assertion that a domain event lands ROWS IN THE TABLE.
-     */
+    /** Four components shipped with no production caller. See docs/dependencies.md §292. */
 
     it("the production registry registers THIS router, under THIS capability's guard", () => {
       // By function identity, not by name: the mis-binding this rules out is the registry pairing
@@ -506,15 +454,7 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
         queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: true })
       ).toContain(INVENTORY_INGESTION_QUEUE);
 
-      // AN OUTPOST NO LONGER GETS IT (ADR-0032 §7d, owner decision 2026-08-17). This assertion was
-      // the exact inverse until then — "every federation role, deliberately (§3: each domain
-      // derives its OWN inventory)" — and it was green, because that is precisely what the guard
-      // did. The decision reversed the QUESTION, not the mechanics: a FIELD outpost never
-      // ORIGINATES a dependency bump, it RECEIVES the resulting change down the global pipeline the
-      // commander manages, so the inventory it used to derive fed nothing that could ever act on
-      // it. A deployment that declares `SCP_FEDERATION_ROLE=outpost` — the config below — IS a
-      // field outpost; an HQ outpost is the commander itself and is the accepted case above
-      // (ADR-0032 §7d's vocabulary note, read out of the code in `commander-only.ts`).
+      // An outpost no longer gets it, by owner decision. See docs/dependencies.md §293.
       expect(
         queuesFor({ role: "worker", federationRole: "outpost", federationRoleDeclared: true })
       ).not.toContain(INVENTORY_INGESTION_QUEUE);

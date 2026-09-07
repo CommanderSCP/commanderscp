@@ -1,13 +1,4 @@
-/**
- * SCAFFOLD GROUPING — the pure decision behind `scp iac scaffold` and the `/connect` wizards
- * (ADR-0047; team-pipeline-iac section 7).
- *
- * MOVED HERE FROM `@scp/cli` when the wizards became scaffolder UI. It was always pure — no SDK
- * calls, no I/O — and it has two consumers now: the CLI, which writes the emitted code to disk, and
- * the web wizard, which shows it for a human to commit. A second copy in the browser would be a
- * second definition of "which components are ungrouped", and the whole point of ADR-0047 is that
- * the ungrouped set is surfaced rather than defaulted. One definition, two callers.
- */
+/** Scaffold grouping: the pure decision behind the command. See docs/iac.md §316. */
 
 import type { DiscoveryProposal } from "@scp/schemas";
 import { slugify } from "./urn.js";
@@ -27,13 +18,7 @@ export interface ScaffoldGroupingResult {
   readonly ungrouped: UngroupedComponent[];
 }
 
-/**
- * Groups a `discovery run` proposal's components into services (ADR-0047: "the orphan problem is
- * solved at authoring time, where a human is present") — PURE, no SDK calls; `group` is the CLI's
- * `--group <name>=<service>` flags collapsed to a lookup table. Every discovered `component` object
- * either lands in exactly one returned `ServiceSpec`, or is reported in `ungrouped` — never both,
- * and never silently dropped.
- */
+/** Groups a `discovery run` proposal's components into services. See docs/iac.md §317. */
 export function groupDiscoveryProposal(
   proposal: DiscoveryProposal,
   group: Record<string, string>

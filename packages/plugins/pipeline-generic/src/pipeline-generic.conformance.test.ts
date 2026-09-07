@@ -1,23 +1,4 @@
-/**
- * Wires `@scp/plugin-pipeline-generic` into `@scp/plugin-testkit`'s generic `ExecutorPlugin`
- * conformance suite (BUILD_AND_TEST.md §4.2: "every shipped plugin runs the relevant `@scp/
- * plugin-testkit` suite in its own package tests"). The suite itself lives in plugin-testkit and
- * knows nothing about this package's specifics — this file is only the fixture factory.
- *
- * Unlike the fake-executor/webhook-control conformance fixtures (which stub `ctx.http.request`
- * directly), this fixture backs `ctx.http` with `test-support/real-http-client.ts`'s REAL
- * `node:http`-based client and fixtures the wire with `nock` — this is genuinely an HTTP-calling
- * plugin, so this is the conformance fixture that proves the plugin's ACTUAL network path (URL
- * templating, response parsing) satisfies the generic contract, not a hand-rolled stub standing
- * in for it.
- *
- * The generic suite calls trigger/status/abort/observe in an order and cadence this file doesn't
- * control (and shouldn't need to know — that's the whole point of a shared conformance suite).
- * Every interceptor below is `.persist()`ed so it answers an unbounded number of times with one
- * deterministic, contract-satisfying response, rather than trying to predict exact call counts —
- * that precision belongs in index.test.ts, which asserts exact request shapes and exact call
- * counts for the dedup/idempotency behavior this suite only smoke-tests.
- */
+/** Wires this plugin into the generic executor conformance suite. See docs/plugins.md §516. */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";

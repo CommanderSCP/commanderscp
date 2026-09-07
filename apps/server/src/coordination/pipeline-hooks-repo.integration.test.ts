@@ -25,23 +25,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * `pipeline_hooks` / `pipeline_evidence` (migration 0096) against REAL PostgreSQL.
- *
- * Every claim this file makes is one the storage layer could get wrong SILENTLY, so each is proved
- * by executing a query rather than by reading the code that builds one:
- *
- *   - the identity UNIQUE constraint is proved by making PostgreSQL REJECT a duplicate tuple, from a
- *     raw insert that bypasses `upsertHook` entirely. Proving only that `upsertHook` avoids a
- *     duplicate would prove a property of `upsertHook`, not of the table — and the table is what the
- *     next write door will meet.
- *   - RLS isolation is proved by SELECTing with NO org filter at all from a second tenant's
- *     transaction. A query that filtered by `org_id` would pass whether or not RLS existed, which is
- *     the whole class of test that makes a missing policy invisible.
- *   - the round-trip test feeds a row written by `recordAlarmEvidence` straight into
- *     `evaluateBakeGate`. Two shapes that "look the same" are how a repo and its consumer drift; the
- *     only check that catches it is running one into the other.
- */
+/** `pipeline_hooks` / `pipeline_evidence`. See docs/coordination.md §643. */
 describe("pipeline hooks + evidence storage", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

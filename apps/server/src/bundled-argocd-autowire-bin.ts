@@ -1,32 +1,4 @@
-/**
- * Bundled Argo CD auto-wire entrypoint (M11 — the "zero token plumbing" step of Mode B, docs/
- * proposals/bundled-executor-backends.md). `deploy/helm`'s bundled-argocd-autowire Job runs exactly
- * `node dist/bundled-argocd-autowire-bin.js` as a Helm `post-install,post-upgrade` hook when
- * `bundledExecutor.argocd.enabled`. It mints a SCOPED (never admin) Argo CD API token and stores it
- * in SCP's encrypted secret store so an operator can bind any graph object to the `argocd` executor
- * with `--secret-refs '{"tokenSecretKey":"<key>"}'` and no manual token creation.
- *
- * Why a DB-seed bin (like migrate-bin.ts) rather than the public API: this is INSTALL-TIME bootstrap
- * plumbing, run by the operator's `helm install` (not by scpd at runtime), so it uses the same admin
- * `DATABASE_URL` + `SCP_SECRETS_MASTER_KEY` the migrations Job already uses — no bootstrap PAT
- * chicken-and-egg. It never holds Argo CD's kube credentials: it obtains only a scoped API token
- * (applications get/sync), which is exactly what the credential-asymmetry invariant permits.
- *
- * Idempotent: re-running (e.g. a `helm upgrade`) simply re-mints + overwrites the stored token.
- * The per-object executor BINDING is deliberately NOT seeded here — bindings attach to a graph
- * object (Component/DeploymentTarget), which the operator creates later; the value delivered here is
- * that the token already exists, so the bind is a single command with no token step.
- *
- * Env contract (all injected by the Helm hook Job):
- *   SCP_ARGOCD_SERVER_URL        in-cluster Argo CD API base (http, behind NetworkPolicy), e.g.
- *                                http://scp-argocd-server.scp-argocd.svc
- *   SCP_ARGOCD_ADMIN_SECRET_NS   namespace of Argo CD's initial-admin secret (scp-argocd)
- *   SCP_ARGOCD_ADMIN_SECRET_NAME argocd-initial-admin-secret
- *   SCP_ARGOCD_ACCOUNT           the scoped account to mint a token for (scp-coordinator)
- *   SCP_ARGOCD_TOKEN_SECRET_KEY  the SCP secret key to store the token under
- *   SCP_BOOTSTRAP_ORG            the org whose secret store receives the token
- *   DATABASE_URL, SCP_SECRETS_MASTER_KEY   admin DB + master key (same as migrate-bin)
- */
+/** Bundled Argo CD auto-wire entrypoint. See docs/server.md §28. */
 import { readFile } from "node:fs/promises";
 import { eq } from "drizzle-orm";
 import { loadConfig } from "./config.js";

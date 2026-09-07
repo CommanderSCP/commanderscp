@@ -21,54 +21,7 @@ import { pairPeer } from "./peers-repo.js";
 import { ensureFederationSelf, initFederationSelf, type FederationSelf } from "./self-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * ================================================================================================
- * M25.7 (owner decision D6, ADR-0043) — AN ORG-TIER FREEZE DECLARED AT THE COMMANDER BLOCKS AT THE
- * OUTPOST. AND THE FOUR CONTROLS WITHOUT WHICH THAT SENTENCE IS CHEAP.
- * ================================================================================================
- *
- * THIS INCREMENT RETRACTS A DELIBERATE, TESTED ABSENCE. Until 2026-08-24 no freeze could cross a
- * boundary at all: a freeze was a projection row with no graph object, `JournalEntryKindSchema`
- * carries nine kinds and none is freeze-shaped, `coordination/service-board-precedence.integration.
- * test.ts` pinned the absence, and `apps/web/src/routes/outpost-configuration.tsx` explained it to
- * operators verbatim. D6 overturns it for the ORG TIER ONLY.
- *
- * Run on the real two-database harness (`test-support/isolated-domain.ts` — two separate Postgres
- * DATABASES, because federation import preserves an object's id VERBATIM and two orgs sharing one
- * physical `objects` table would collide on a primary key no real deployment can), through the real
- * export -> verify -> import path, exactly as `outpost-config-sync.integration.test.ts` does for
- * ADR-0022's `outpost` object. No new harness: the point of choosing a graph object is that there is
- * no freeze-specific transport to test.
- *
- * ================================================================================================
- * THE ASSERTION IS ADMISSION, NOT ROW EXISTENCE
- * ================================================================================================
- * A `freezes` row at the outpost proves replication and nothing else. What D6 asked for is that the
- * freeze STOPS SOMETHING, so case B drives `coordination/freeze-hold.ts`'s `evaluateFreezeHolds` —
- * the predicate `reconcile.ts`'s per-target `continue` actually reads before triggering a wave
- * target — and asserts the replicated component is HELD, naming the commander's freeze id.
- *
- * ================================================================================================
- * THE CONTROLS, AND WHY EACH ONE EXISTS
- * ================================================================================================
- *  - CASE D — a freeze authored WITHOUT `federate` appears in NO bundle entry and produces NO row
- *    at the outpost. Without this, "it federates" is satisfied by a change that federates
- *    EVERYTHING, which is both the wrong feature and a confidentiality regression.
- *  - CASE E — a PLATFORM-tier freeze still does not federate. The sync journal is org-scoped at
- *    every layer and `instance_freezes` has no `org_id`; ADR-0040 and GLOSSARY both say so and both
- *    must stay true after this increment.
- *  - CASE C — re-importing the same bundle converges. `ON CONFLICT (id) DO UPDATE` on a key that is
- *    the ORIGIN's freeze id is the whole idempotency argument; a duplicate row would double every
- *    hold and make the second one un-liftable from anywhere.
- *  - CASE F — the outpost cannot LIFT or SHORTEN the commander's freeze, through either write verb
- *    or through the raw graph write path. A guard on `objects` alone would leave `freezes.lifted_at`
- *    — the column the window predicate actually filters on — locally writable.
- *  - CASE G — an outpost-declared `domainLocal` freeze never travels (ADR-0031).
- *
- * NO FIXED SLEEPS ANYWHERE (`integration-sleep-census.test.ts` is a CI gate). Nothing here is
- * asynchronous in the wall-clock sense: every step is a transaction this test drives itself, and the
- * one clock-sensitive predicate (`evaluateFreezeHolds`) takes an injectable `now`.
- */
+/** An org-tier freeze declared at the commander blocks below. See docs/federation.md §226. */
 describe("M25.7: an org-tier freeze federates and blocks at the outpost (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;

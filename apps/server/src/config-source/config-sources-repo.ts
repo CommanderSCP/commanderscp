@@ -1,28 +1,4 @@
-/**
- * THE DB-BACKED CONFIG-SOURCE REGISTRY — the read half of ADR-0046 §1, and the layer the four pure
- * modules beside it were written to be called from (`registration-match.ts`'s own header names
- * this as "a later increment's job").
- *
- * Config sources are ordinary graph objects of type `config-source` (migration 0100): there is no
- * table, no projection row, and no second write anywhere. So the registry read is a plain typed
- * select over `objects`, and this module's whole job is turning stored rows into the two shapes its
- * callers already decide over — `ConfigSourceRegistration` for `registration-match.ts`, and
- * `StackConfigSourceBinding` for `cli-apply-guard.ts`.
- *
- * ================================================================================================
- * A ROW THAT DOES NOT PARSE IS REPORTED, NEVER SKIPPED
- * ================================================================================================
- * `authoring-guard.ts` refuses a malformed document at every local write door, so a malformed row
- * should not exist. "Should not" is not "cannot": the door is deliberately exempt on the federation
- * import path (a throw there wedges a peer's whole bundle — ADR-0033 §8), and a row written before
- * the guard existed does not re-validate itself.
- *
- * Dropping such a row from the list would produce the precise failure §4 of the proposal rules out:
- * a repository silently ahead of the graph, with a registration that exists, looks fine in a list,
- * and never syncs. So {@link listConfigSourceRegistrations} returns the malformed ones ALONGSIDE the
- * valid ones, with the reason attached, for the sync loop to surface as status. This costs the
- * caller one field it must decide what to do with — which is the point.
- */
+/** THE DB-BACKED CONFIG-SOURCE REGISTRY. See docs/config-source.md §13. */
 
 import { and, eq, isNull } from "drizzle-orm";
 import { objects } from "../db/schema.js";
@@ -82,15 +58,7 @@ async function selectConfigSourceRows(tx: TenantTx, orgId: string) {
     );
 }
 
-/**
- * Read every live config source in the org.
- *
- * Not paginated, deliberately: every consumer needs the WHOLE set to answer its question at all —
- * `registration-match.ts`'s two refusals are "this repo matched more than one registration" and
- * "another registration already claims this stack name", and both are false-negative-prone on a
- * page. One registration covers a team's entire fleet of repos (D9), so the row count is
- * per-team-ish, not per-repo.
- */
+/** Read every live config source in the org. See docs/config-source.md §14. */
 export async function listConfigSourceRegistrations(
   tx: TenantTx,
   orgId: string
@@ -116,12 +84,7 @@ export async function listConfigSourceRegistrations(
       malformed.push({
         id: row.id,
         name: row.name,
-        // `.detail`, NOT `.message`. A `ProblemError`'s `message` is the RFC 9457 TITLE — the bare
-        // word "Bad Request" (`errors.ts`) — and the sentence saying WHICH rule the row breaks is
-        // on `detail`. Reporting the title would satisfy every "is it reported?" test while telling
-        // an operator staring at a repo that will not sync exactly nothing, which is the failure
-        // this module's header says it exists to prevent. Measured, not assumed: case (7) of
-        // `config-source-doors.integration.test.ts` failed on precisely this.
+        // `.detail`, NOT `.message`. See docs/config-source.md §15.
         detail: readRefusalDetail(error)
       });
       continue;
@@ -139,35 +102,7 @@ export async function listConfigSourceRegistrations(
   return { registrations, malformed, documents, names };
 }
 
-/**
- * The D7 lookup: is this stack repo-owned, and by which config source?
- *
- * BINDING IS THE EXPLICIT `stackTeams` CLAIM, never the repo pattern. §4 is precise about this —
- * "per-stack ownership: `stackName → team` … Binding a stack here marks it repo-owned (D7)" — and
- * the distinction matters in the direction that protects the operator: a team registering its whole
- * repo namespace does NOT thereby lock every stack name it might ever push from a terminal. A stack
- * becomes repo-owned when someone writes it into the map, which is a thing they did on purpose.
- *
- * THAT IS HALF THE PREDICATE, AND THE OTHER HALF ARRIVES IN ROUND C (D26, owner ruling
- * 2026-08-27 — proposal §5). §4's map and D9's default-team rule disagree about an UNCLAIMED
- * stack: `registration-match.ts` resolves one to the registration's default team and the sync will
- * apply it, but nothing here marks it repo-owned, so a CLI push to that stack succeeds and the next
- * sync silently reverts it — D7's own failure mode, reached by forgetting a line rather than by
- * doing anything wrong. The ruling is that **ownership follows delivery**: the sync records every
- * stack it has applied for a config source, and this function returns the explicit claims UNION
- * that record. `stack-delivery-repo.ts` writes it when the sync applies a stack, and this function
- * returns the explicit claims UNION it.
- *
- * ORDER OF THE UNION IS NOT ARBITRARY: the explicit claim is checked FIRST, because it is what an
- * operator wrote and is therefore what a refusal should name. The delivered record answers only for
- * a stack nobody claimed — precisely the case that was unprotected.
- *
- * WHEN TWO REGISTRATIONS CLAIM ONE STACK NAME this returns the lowest-id one, and that is a
- * reporting choice, not an adjudication: the answer to "is this stack repo-owned" is `true` under
- * either, so the 409 fires either way and only the name it prints is at stake.
- * `resolveConfigSourceForSync` refuses that same state loudly (`stack_owned_elsewhere`) when the
- * sync itself runs, which is where it can be fixed.
- */
+/** The D7 lookup. See docs/config-source.md §16. */
 export async function findStackConfigSourceBinding(
   tx: TenantTx,
   orgId: string,

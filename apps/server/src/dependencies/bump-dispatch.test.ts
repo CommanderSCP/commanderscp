@@ -22,13 +22,7 @@ import {
 import { DEPENDENCY_LINE_HEAD_ADVANCED_EVENT } from "./dependency-inventory-repo.js";
 import { manifestIsEditableInThisBuild } from "./bump-actuator.js";
 
-/**
- * M21.5 — the three pure decisions the bump dispatcher makes, pinned without a database.
- *
- * The WIRING is proven in `bump-dispatch.integration.test.ts`, through the router, the queue and the
- * loop; this file covers the parts that would otherwise only be exercised incidentally by it — the
- * role guard's two axes, the router's predicate, and the plan that decides what a bump would SAY.
- */
+/** The three pure decisions the dispatcher makes. See docs/dependencies.md §70. */
 
 const npmLine = (
   overrides: Partial<Pick<DependencyLine, "ecosystem" | "major" | "tagPattern" | "latestVersion">>
@@ -40,45 +34,10 @@ const npmLine = (
   ...overrides
 });
 
-/**
- * ================================================================================================
- * THE CENSUS THAT `bump-dispatch.integration.test.ts` STRUCTURALLY CANNOT DO
- * ================================================================================================
- * That file registers the router and starts the loop ITSELF, because that is the only way to drive
- * them deterministically against a Testcontainers database. Which means it would keep passing if
- * the composition root never wired either one — the production process would start with no router on
- * `domain-events` and no worker on `dependency-bump`, and every subscribed component would receive
- * nothing, forever, with a green suite. That is the EXACT failure this milestone exists to close,
- * four times over, so it gets an assertion of its own rather than a reviewer's attention.
- *
- * BOTH HALVES ARE NOW ASSERTED BY RUNNING THEM, and neither is a substring any more.
- *
- * The ROUTER half moved first (M21.7): the router list lives in `events/domain-event-registry.ts`,
- * a pure importable value. The LOOP half followed (2026-08-17): the eleven loop startups moved out
- * of `main.ts` into `background-work.ts`'s `BACKGROUND_LOOPS`, for exactly the same reason and after
- * exactly the same measurement.
- *
- * WHAT THE SUBSTRING VERSION OF THIS BLOCK WAS WORTH, measured twice:
- *   - commenting out `const bumpDispatchLoop = await startBumpDispatchLoop(boss, {…})` left this
- *     describe block — INCLUDING the case named "starts the worker, and stops it on shutdown" —
- *     passing 20/20, and the whole apps/server unit suite green at 972/972 (M21.7, on RAW text);
- *   - flipping `main.ts`'s background-work condition to `false`, killing this loop and ten others,
- *     left it green again — this time even with comments stripped, because stripping cannot see a
- *     dead branch.
- *
- * So the claim below is now membership in a registry that `background-work.test.ts` STARTS, checked
- * by FUNCTION IDENTITY. `@scp/source-census`'s package doc lists what the text version could never
- * have proven; this file no longer relies on any of it.
- */
+/** The census the integration suite structurally cannot do. See docs/dependencies.md §71. */
 describe("the composition root actually wires it", () => {
   it("registers the router in the production registry, under THIS capability's guard", () => {
-    // Identity, not name: the mis-binding this rules out is the registry pairing this router with
-    // some OTHER capability's guard, and thereby authoring repository writes from an outpost. Until
-    // ADR-0032 §7d (2026-08-17) that hazard was concrete — internal detection's guard allowed every
-    // federation role, so binding to it would have been a live escape. Every dependency guard now
-    // reaches the same verdict (`commander-only.test.ts` proves that across the full matrix), which
-    // makes this assertion a defence against the NEXT divergence rather than a current one — and
-    // that is exactly when an identity check is worth keeping rather than deleting.
+    // Identity, not name. See docs/dependencies.md §72.
     const entries = DOMAIN_EVENT_ROUTERS.filter(
       (entry) => entry.factory === advancedLineHeadRouter
     );
@@ -145,14 +104,7 @@ describe("the composition root actually wires it", () => {
   });
 
   it("never takes a competing consumer on the shared domain-event stream", async () => {
-    // `boss.work` on `domain-events` does not deduplicate — a second worker there STEALS M21.4's
-    // events and receives roughly half of its own. An ABSENCE assertion, so it deliberately reads
-    // the files RAW: a comment marker only makes a violation harder to hide, and stripping would
-    // narrow what counts as one (`@scp/source-census`'s hash.ts doc states this rule).
-    //
-    // Both composition files, because the loops MOVED: checking only `main.ts` after 2026-08-17
-    // would be a census aimed at where the code used to be — the exact "fixed some call sites"
-    // failure CLAUDE.md names.
+    // `boss.work` on `domain-events` does not deduplicate. See docs/dependencies.md §73.
     const srcDir = dirname(fileURLToPath(new URL(".", import.meta.url)));
     for (const file of ["main.ts", "background-work.ts"]) {
       const raw = readFileSync(join(srcDir, file), "utf8");
@@ -225,11 +177,7 @@ describe("the router predicate", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- as above
     await router.route(boss as any, event("scp.change.transitioned"));
     expect(sent).toEqual([
-      // OPTIONS ARE CAPTURED AND ASSERTED EMPTY on purpose. This used to send
-      // `{ singletonKey: lineId }` with a comment claiming it collapsed a redelivery; pg-boss scopes
-      // every `singleton_key` uniqueness index to the `short`/`singleton`/`stately` policies, and
-      // this queue is created with the default `standard`, so the key was recorded and ignored. An
-      // inert option is invisible unless something looks at it — so this looks.
+      // OPTIONS ARE CAPTURED AND ASSERTED EMPTY on purpose. See docs/dependencies.md §74.
       { queue: DEPENDENCY_BUMP_QUEUE, job: { orgId: "o1", lineId: "line-1" }, options: undefined }
     ]);
   });
@@ -442,11 +390,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
   });
 
   it("refuses a DUE bump into a file this build's editor may not write, BEFORE any container", () => {
-    // A file KIND the write allowlist does not name — `kustomization.yaml` is inventoried nowhere
-    // and writable nowhere, and it is the shape that stays refused now that M21.7's split-shape
-    // round opened `values.yaml`. Refused here so the Decision carries a reason an operator can act
-    // on; dispatched, it would come back as the plugin's own `not_a_known_manifest`, which reads as
-    // a broken runner.
+    // A file KIND the write allowlist does not name. See docs/dependencies.md §75.
     const plan = planBump({
       line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
       declaration: {
@@ -483,11 +427,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
   });
 
   it("M21.7 SPLIT SHAPES: the same line and versions in a chart's values.yaml ARE now due", () => {
-    // This is the behaviour change the split-shape round exists for. Until it landed, an image
-    // pinned in Helm values was visible-but-unbumpable: SCP could see 3.19.1 existed and refused to
-    // author the edit. The `values.yaml` basename is now on both restatements of the write
-    // allowlist, and the plugin locates `image: {repository, tag}` by an anchor derived from the
-    // manifest's own parse.
+    // The behaviour change the split-shape round exists for. See docs/dependencies.md §76.
     expect(
       planBump({
         line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
@@ -502,15 +442,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     ).toEqual({ due: true, fromVersion: "3.18.0", toVersion: "3.19.1" });
   });
 
-  /**
-   * ADR-0032 §8i — A DECLARATION PINNED BY A DIGEST AS WELL AS A TAG.
-   *
-   * The defect this pins was silent and complete: the whole pipeline ACCEPTED a tag-only edit of
-   * `{repository, tag, digest}` (and of `FROM alpine:3.19@sha256:…`), every verifier agreed, and the
-   * pull request merged — while containerd went on resolving by the untouched digest, so the
-   * running image never moved. Nothing errored. The only observable was a manifest that named 1.2.4
-   * in its tag and 1.2.3's bytes in its digest.
-   */
+  /** A declaration pinned by a digest as well as a tag. See docs/dependencies.md §77. */
   it("refuses a DUE bump for a declaration pinned by a DIGEST as well as a version", () => {
     const plan = planBump({
       line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
@@ -582,17 +514,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
   });
 });
 
-/**
- * THE WRITE ALLOWLIST, PINNED ACROSS THE TWO MODULES THAT RESTATE IT.
- *
- * `manifestIsEditableInThisBuild` (server) and `manifestParserFor` (`@scp/plugin-managed-dep`'s
- * `MANIFEST_MATCHERS`) are the same closed set written twice — the convention `BUMP_BRANCH_PREFIX`
- * already follows, because the server may not take a build-time dependency on a plugin package.
- * Two copies of an allowlist is precisely the incomplete-census shape, so this is where they are
- * proven equal, IN BOTH DIRECTIONS: a path the server would let through and the plugin refuses is a
- * wasted container and a misleading verdict; a path the server refuses and the plugin would accept
- * is a bump this build silently stops authoring.
- */
+/** The write allowlist, pinned across both modules. See docs/dependencies.md §78. */
 describe("the write allowlist, pinned across the two modules that restate it", () => {
   const CASES: ReadonlyArray<readonly [string, string]> = [
     ["npm", "package.json"],

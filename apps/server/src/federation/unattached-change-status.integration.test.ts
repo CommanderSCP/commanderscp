@@ -14,25 +14,7 @@ import {
   recordUnattachedChangeStatus
 } from "./unattached-change-status-repo.js";
 
-/**
- * The STORE semantics behind the board's evidence-derived change-blindness caveat (drizzle/0040).
- * `coordination/service-board-scope-mismatch.integration.test.ts` proves the end-to-end behaviour
- * over two real databases; this pins the properties that make the mechanism HONEST rather than a
- * ratchet, each of which is a way the caveat could otherwise become permanent or wrong:
- *
- *  1. IDEMPOTENT under replay. DESIGN §6: "a federation bundle import is literally a replay of
- *     public-API writes that converges no matter how many times it is applied." A from-genesis
- *     re-sync re-delivers the same `change_status` entries; the store must converge on one row per
- *     (peer, change), not accumulate one per import.
- *  2. THE STATE IS THE CURRENT READING. A change that moves on to a settled state must stop
- *     matching the board's IN_FLIGHT filter — otherwise one long-completed change makes a board
- *     claim ignorance forever.
- *  3. PROPOSE-TIME NAMING SURVIVES A TRANSITION. `urn`/`name` ride only the propose payload; a
- *     later transition entry carries neither, and must not erase them.
- *  4. IT SELF-CLEARS. Once the change's own `object_upsert` lands, the ignorance is over and the
- *     row goes — the property that separates this from a counter that can only go up.
- *  5. IT IS ORG-ISOLATED, like every other tenant table (DESIGN §4.2).
- */
+/** The store semantics behind the board's blindness caveat. See docs/federation.md §563. */
 describe("federation_unattached_change_status — the store behind the evidence-derived caveat", () => {
   let server: TestServer;
   let org: TestOrg;

@@ -6,35 +6,14 @@ import { insertDecision } from "./decisions-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { enforceLocalChangeAuthority } from "./transition.js";
 
-/**
- * Rollback-as-its-own-Change (DESIGN.md §9.4): "A rollback is its own Change, linked to the
- * original, referencing the prior known-good executor state... executed through the same
- * plan/wave machinery." Manual trigger only in M3 — automatic gate-failure triggers are M4.
- *
- * This function creates the rollback Change and writes the trigger Decision immediately (DESIGN
- * §9.4: "every rollback writes a Decision record naming its trigger") — BEFORE the rollback
- * change has done any work. The rollback then progresses through proposed -> ... -> accepted via
- * the exact same reconciliation loop as any other change (coordination/reconcile.ts), and once
- * ITS wave targets have been triggered with `TriggerIntent.kind: "rollback"` carrying each
- * target's captured `prior_state_ref`, the ORIGINAL change is transitioned to `rolled_back`
- * (coordination/reconcile.ts, on the rollback's own promotion) via the guarded transition
- * function like any other transition.
- */
+/** Rollback-as-its-own-Change (DESIGN.md §9.4). See docs/coordination.md §843. */
 export interface TriggerRollbackInput {
   orgId: string;
   originalChangeObjectId: string;
   actorObjectId: string;
   requestId: string;
   reason: string;
-  /** DESIGN §9.4: "Triggers: automatic (gate/control failure policy...) or manual" — the
-   *  rollback_trigger Decision's `inputContext.trigger` records WHICH, so the audit/explain trail
-   *  can actually distinguish an operator's `scp change rollback` from
-   *  `coordination/reconcile.ts`'s `autoRollbackOnFailure` policy firing, rather than every
-   *  rollback reading as "manual" regardless of who/what triggered it. Explicit per call site
-   *  (routes/changes.ts passes "manual", reconcile.ts passes "automatic") rather than inferred
-   *  from `actorObjectId` — inferring from "is this the system actor" would silently mislabel any
-   *  future system-triggered-but-still-effectively-manual path (e.g. an API automation acting as
-   *  a service account). Defaults to "manual" so pre-M4 callers/tests need no changes. */
+  /** DESIGN §9.4: "Triggers: automatic. See docs/coordination.md §844. */
   trigger?: "manual" | "automatic";
 }
 

@@ -1,14 +1,6 @@
 import { z } from "zod";
 
-/**
- * Object health contract (observe-enrichment signal 4; ADR-0008 decision 4). SCP does NOT probe,
- * poll, or compute health — this is a PUSH-IN record an owner (or, later, an opt-in health-source
- * binding writing the SAME row) supplies, stored as an object-referencing PROJECTION row keyed by
- * `objects(id)` (DESIGN §4.1), NOT a new top-level concept table (charter principle 2). The
- * `source` field is binding-ready: an owner push writes `source:'owner'` today; a future
- * Prometheus/HTTP-probe binding on the 60s observe cadence writes `source:'prometheus:<query>'`
- * into the same projection with no schema change (ADR-0008 non-goal: per-observation history).
- */
+/** Object health contract. See docs/schemas.md §297. */
 
 export const HealthStatusSchema = z.enum(["healthy", "degraded", "down", "unknown"]);
 export type HealthStatus = z.infer<typeof HealthStatusSchema>;
@@ -34,13 +26,7 @@ export const HealthRecordSchema = z.object({
 });
 export type HealthRecord = z.infer<typeof HealthRecordSchema>;
 
-/**
- * Batch latest-health read over a caller-supplied object-id set — the graph node-payload JOIN
- * (`POST /graph/subgraph` returns EDGES ONLY, so health is joined at the node source in a parallel
- * follow-up call, mirroring the subgraph batch-by-ids pattern). `objectId` is the exploration root
- * that scopes `graph:query` authorization, identical to `SubgraphRequestSchema`. Objects with no
- * pushed health are simply absent from `records` — the UI renders them grey/unknown (no fabrication).
- */
+/** Batch latest-health read over a caller-supplied object-id set. See docs/schemas.md §298. */
 export const HealthBatchRequestSchema = z.object({
   objectId: z.string().uuid(),
   ids: z.array(z.string().uuid()).min(1).max(2000)

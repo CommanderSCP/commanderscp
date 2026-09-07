@@ -30,44 +30,7 @@ import {
   type RunnerResult
 } from "@scp/runner-launcher";
 
-/**
- * `@scp/plugin-managed-iac` — the `scp-managed-iac` executor (DESIGN.md §12 Mode 2, charter's
- * Managed Execution Exception, BUILD_AND_TEST.md §8 M7 item 3): "a thin orchestrator inside
- * scpd; each run launches an ephemeral runner container from [the `scp-runner-iac`] image... Org-
- * supplied credentials are held scoped and encrypted in SCP's secret store and injected only into
- * the ephemeral runner for the duration of the run. The plan output is persisted as the change's
- * evidence; apply proceeds only when the change's gates pass."
- *
- * SECURITY MODEL (adversarial-review CRITICAL #1 — the reason this file's config shape is what it
- * is): the fields that decide WHAT image runs, on WHICH network, and against WHICH host directory
- * are **operator/server-governed, NEVER tenant-suppliable**. A tenant (any org member with plain
- * `object:write` on a Component) configures ONLY `infraCredsSecretKeys` + `timeoutMs` (the
- * manifest's `configSchema` below is `additionalProperties: false` and does NOT list runnerImage/
- * networkMode/workspace — so a binding that tries to set them is rejected at create/update by
- * `routes/executors.ts`'s config validation). The server injects `runnerImage`/`networkMode`/
- * `workspaceRoot`/`statePath` into this plugin's config when it provisions the instance
- * (`coordination/executor-bindings-repo.ts`'s `resolveExecutorPluginInstance`), so by the time
- * this code reads `ctx.config`, those values are the vetted server settings, not anything a tenant
- * chose. Two further hardening measures below: (1) the runner workspace is **copied into the
- * container** (`docker cp`), never bind-mounted — there is no tenant- OR server-path that becomes
- * a host mount, so `workspaceDir: "/"`-style host-root escapes are structurally impossible; the
- * host workspace directory itself is derived server-side from `orgId`+`targetRef` under the
- * operator's `workspaceRoot`, so it can't be steered outside that root. (2) the container is
- * launched with NO docker socket mount and the server-fixed `--network` (default `none`).
- *
- * COORDINATION-NOT-EXECUTION, PRESERVED AT THE TYPE LEVEL EVEN HERE: this is the one scoped
- * exception where `trigger()`'s body performs real infrastructure work — but it still does so
- * behind the unchanged `ExecutorPlugin` verb (no new `execute()`/`deploy()` method), and it holds
- * credentials ONLY for THIS org's infrastructure, ONLY for the duration of one ephemeral
- * container, injected via `docker create -e`, redacted out of any returned evidence, and never
- * reachable from this plugin's own subprocess environment.
- *
- * SYNCHRONOUS TRIGGER (deliberate v1 simplification — "trivial-to-moderate IaC deployments" is
- * DESIGN's own scoping for Mode 2): `trigger()` runs the container to completion. Idempotency is
- * enforced BEFORE any container ever launches (the dedup cache below, backed by a server-provided
- * durable `statePath` — the strongest idempotency guarantee of any M7 executor, because
- * double-applying live infrastructure is the highest-stakes failure mode).
- */
+/** `@scp/plugin-managed-iac` — the `scp-managed-iac` executor. See docs/plugins.md §416. */
 
 export interface ManagedIacConfig {
   /** SERVER-INJECTED (never tenant): the vetted, pinned `scp-runner-iac` image reference. */
@@ -89,17 +52,7 @@ export interface ManagedIacConfig {
    *  injected by `resolveExecutorPluginInstance` from `SCP_MANAGED_RUNNER_DOCKER_BINARY`, so the
    *  `?? "docker"` fallback below is for this package's own unit tests, not a tenant hook. */
   dockerBinary?: string;
-  /**
-   * SERVER-INJECTED (never tenant) — WHICH LAUNCHER ADAPTER RUNS THIS PLUGIN'S RUNNER (M23.2).
-   *
-   * Absent, or anything other than `"kubernetes"`, means the Docker adapter — so a deployment that
-   * does not opt in behaves byte-identically, which is what makes a second adapter safe to merge.
-   * The same TWO INDEPENDENT DEFENCES `dockerBinary` has apply here from day one: this plugin's
-   * manifest is `additionalProperties: false` with these keys absent, so a binding carrying either
-   * is rejected at the write door (`plugin-manifests-runner-launcher.test.ts` pins the refusal by
-   * name), and the server injects them LAST so a regression in the write door downgrades from a
-   * launcher swap to an accepted-but-overwritten key.
-   */
+  /** SERVER-INJECTED (never tenant). See docs/plugins.md §417. */
   runnerLauncher?: "docker" | "kubernetes";
   /** SERVER-INJECTED (never tenant): the Kubernetes launcher's deployment settings. Required when
    *  {@link runnerLauncher} is `"kubernetes"` — the resolver refuses BY NAME when it is missing,
@@ -152,17 +105,7 @@ function workspaceDirFor(
   return join(config.workspaceRoot, safe(orgId), safe(targetRef ?? "default"));
 }
 
-/**
- * WHERE THE TRANSIENT `--env-file` IS STAGED — the plugin's OWN server-governed state dir, which is
- * `dirname(statePath)`: `resolveExecutorPluginInstance` always injects a durable per-instance
- * `statePath` under `pluginStateDir()` (executor-bindings-repo.ts, "always set"), so in production
- * this is the same directory the dedup cache already lives in.
- *
- * NOT the workspace: the workspace is `docker cp`'d INTO the container, and a credential file must
- * never be a candidate for that. NOT `os.tmpdir()` either — the port refuses to choose, precisely
- * because a shared temp dir is not a place a credential belongs. The fallback is for this package's
- * own unit tests, which are the only callers that leave `statePath` unset.
- */
+/** WHERE THE TRANSIENT `--env-file` IS STAGED. See docs/plugins.md §418. */
 function secretEnvDirFor(config: ManagedIacConfig): string {
   return config.statePath
     ? dirname(config.statePath)
@@ -186,12 +129,7 @@ function redactSecrets(text: string, secretValues: string[]): string {
 interface RunOutcome {
   externalId: string;
   succeeded: boolean;
-  /** {@link BoundedDetail}, NOT `string`, and that is the fix rather than a decoration: this record
-   *  is written to a DURABLE, replicated, never-pruned JSON file keyed by `idempotencyKey`, and
-   *  `reconcile.ts` copies it from there into a `Decision`'s `inputContext`. The type is what makes
-   *  "you cannot store an unbounded reason here" a compile error at all fourteen write sites in this
-   *  file instead of a comment on one of them. See `@scp/runner-launcher`'s
-   *  {@link RUNNER_DETAIL_MAX_CHARS}. */
+  /** A bounded detail rather than a string, which is the fix. See docs/plugins.md §419. */
   detail: BoundedDetail;
   stateRef?: string;
 }
@@ -200,39 +138,12 @@ interface DedupState {
   keys: Record<string, RunOutcome>;
 }
 
-/**
- * BOUNDING ONE ENTRY DID NOT BOUND THE LEDGER (MEDIUM, M23.0 verification pass 7 finding M1). The
- * previous round capped each `detail` and left `state.keys` — a `Record` keyed by `idempotencyKey`
- * with no pruning anywhere — to grow forever. Measured at 500 keys: `bytes=2074290`,
- * `bytesPerKey=4149`. The per-entry cap was working; the map was a different quantity.
- *
- * AND THE SIZE IS A PER-POLL COST HERE, not just a disk cost, which is what makes this the worse of
- * the three: `loadState` `JSON.parse`s the WHOLE file on every `status()` call and `saveState`
- * rewrites it whole on every `trigger()`, so an unbounded ledger is O(total history ever) of parsing
- * on a loop that ticks once a second. That is the 1.44 GB/day family properly stated — an unbounded
- * write per key, re-read forever.
- *
- * THE RULE: keep the most recent {@link RUN_OUTCOME_CACHE_MAX_DURABLE} outcomes, drop the oldest.
- * What an entry must outlive is `trigger()` (which runs the container synchronously to completion
- * BEFORE writing the entry) plus reconcile's next `status()` poll a second later, plus a
- * crash-and-retry window in which reconcile re-issues the same `idempotencyKey`. Dropping an entry a
- * retry then asks for would mean re-running an `apply` that already ran — the one hazard worth
- * naming — so 200 is set far above anything that can be in flight rather than at the smallest
- * workable number. Ceiling on the file: 200 x ~4.2 KB, about 840 KB, and that is the WORST case;
- * a typical `detail` is a few hundred bytes.
- */
+/** BOUNDING ONE ENTRY DID NOT BOUND THE LEDGER. See docs/plugins.md §420. */
 function pruneDedupState(state: DedupState): number {
   return pruneOutcomeRecord(state.keys, RUN_OUTCOME_CACHE_MAX_DURABLE);
 }
 
-/**
- * WHAT THIS FILE COMPOSES — a `detail` that is a plain `string` (MEDIUM, M23.0 verification pass 7
- * finding M3). `RunOutcome.detail` is still {@link BoundedDetail}, so no READER of the ledger can be
- * handed a megabyte; what changed is WHERE the conversion happens. A brand on a FIELD forces one at
- * every literal that constructs the record, which is how one concept came to have 26 manual call
- * sites across four packages — most of them, on a delete-the-wiring sweep, pinned by no failing
- * test. Three sites of one concept means the boundary is wrong; the answer is not 23 more tests.
- */
+/** WHAT THIS FILE COMPOSES. See docs/plugins.md §421. */
 type PendingOutcome = Omit<RunOutcome, "detail"> & { detail: string };
 
 /** THE ONLY WAY AN OUTCOME ENTERS THE LEDGER. One bound, at the store. */
@@ -244,17 +155,7 @@ const dedupCache = createFileBackedJsonCache<DedupState>(() => ({ keys: {} }));
 const loadState = dedupCache.load;
 const saveState = dedupCache.save;
 
-// -----------------------------------------------------------------------------------------
-// Runner container launch — COPY the workspace in/out (never bind-mount; CRITICAL #1 + fixes the
-// dind CI failure where a bind-mounted host /tmp path isn't shared with the dind daemon). The ONE
-// place credentials are materialized as env vars, on the CHILD `docker` invocations only.
-//
-// M23.1: the five-step create/copy-in/start/copy-out/remove sequence itself now lives in
-// `@scp/runner-launcher`, shared with `@scp/plugin-managed-scan` and `@scp/plugin-managed-dep` —
-// three hand-rolled copies of one mechanism were three places a fix had to be remembered. What
-// stays HERE is everything that is this plugin's own: which operands, which env, and the
-// copy-out policy (`always` + `swallow`) that no other caller shares.
-// -----------------------------------------------------------------------------------------
+// Runner container launch. See docs/plugins.md §422.
 
 async function resolveInfraCreds(
   ctx: PluginContext,
@@ -275,13 +176,7 @@ async function runRunnerContainer(
   workspaceDir: string,
   /** The dedup cache key for this run — see {@link RunnerSpec.runId} on why the CALLER supplies it. */
   cacheKey: string,
-  /**
-   * RESOLVED ONCE, by the caller — `trigger()` resolves these before this function is called (M23.1
-   * phase 2), rather than this function resolving them itself, because `trigger()` also needs the
-   * secret VALUES to build the `redact` closure {@link withRecordedOutcome} uses on the FAILURE path,
-   * and resolving twice would mean the credential fetch and the credential the failure-path redactor
-   * knows about could, in principle, diverge.
-   */
+  /** RESOLVED ONCE, by the caller. See docs/plugins.md §423. */
   infraCreds: Record<string, string>,
   extraEnv: Record<string, string> = {}
 ): Promise<RunnerResult> {
@@ -292,11 +187,7 @@ async function runRunnerContainer(
     runnerLauncher: config.runnerLauncher,
     kubernetes: config.kubernetes
   }).run({
-    // DERIVED FROM THE IDEMPOTENCY KEY, so a retry of the same run addresses the same container
-    // name. That is the whole reason `runId` is caller-supplied rather than adapter-minted: no
-    // adapter could know that two launches are the same run, and this plugin's dedup cache is
-    // exactly the thing that does. `toRunnerRunId` is injective, so two DIFFERENT keys can never
-    // collapse onto one name (which would make one run tear down the other's container).
+    // Derived from the idempotency key, so a retry addresses one. See docs/plugins.md §424.
     runId: toRunnerRunId(cacheKey),
     // ATTRIBUTION FOR AN ORPHAN (M23.0 defect 1). A container the daemon made for a `create` that
     // then timed out is now findable — `docker ps -a --filter label=scp.executor=scp-managed-iac`.
@@ -311,26 +202,13 @@ async function runRunnerContainer(
     // rightly so: it is a path inside the container, and hiding it buys nothing while making the
     // command line harder to read.
     env: Object.entries(extraEnv).map(([k, v]) => `${k}=${v}`),
-    // THE CREDENTIALS, AND THE ONE PLACE THEY ARE MATERIALIZED. M23.0 recorded that these rode the
-    // `create` argv, readable from the host process table by any local process; they now travel as
-    // `secretEnv`, which the Docker adapter delivers through a mode-0600 `--env-file` it unlinks the
-    // instant `create` returns. STILL PARTIAL, and named as such at `RunnerSpec.secretEnv`: the
-    // value is in `docker inspect` for the container's life and on a disk for one `create`. The
-    // split's real payoff is M23.2 — Kubernetes maps `secretEnv` to a per-run Secret, where an
-    // undifferentiated list would have become `env[].value` and put the credential in etcd.
-    //
-    // THE ORDER IS THE CONFIG'S OWN KEY ORDER, unchanged, and `extraEnv` is no longer merged in
-    // ahead of it — the two lists are now disjoint by construction rather than by spelling.
+    // THE CREDENTIALS, AND THE ONE PLACE THEY ARE MATERIALIZED. See docs/plugins.md §425.
     secretEnv: Object.entries(infraCreds).map(([k, v]) => `${k}=${v}`),
     secretEnvDir: secretEnvDirFor(config),
     // COPIED, never bind-mounted (CRITICAL #1 + the dind-share fix): there is no host path that
     // becomes a container mount, so a `workspaceDir: "/"`-style escape is structurally impossible.
     copyIn: [{ hostDir: workspaceDir, containerPath: "/workspace" }],
-    // THE ASYMMETRY THAT IS THIS PLUGIN'S ALONE, and it is load-bearing on both axes: the evidence
-    // comes back out even after a FAILED run (a failed apply may still have produced a partial
-    // plan.json worth persisting), and a copy-out that itself fails is SWALLOWED (the run stays
-    // succeeded). managed-scan and managed-dep do the opposite on both. Pinned by the goldens; a
-    // port that normalised the three into one sequence must break them.
+    // The asymmetry that is this plugin's alone, on both axes. See docs/plugins.md §426.
     copyOut: {
       containerPath: "/workspace",
       hostDir: workspaceDir,
@@ -341,12 +219,7 @@ async function runRunnerContainer(
     maxBuffer: 16 * 1024 * 1024
   });
 
-  // THE SECOND, INDEPENDENT REDACTION — this plugin's own knowledge of which values are secret,
-  // applied on top of whatever the adapter already stripped (see `withRecordedOutcome`'s `redact`
-  // for why the plugin may not depend on that having happened). `failure.detail` joins the set it
-  // covers: it embeds `err.message`, which on a `create` failure is where an unredacted
-  // `-e AWS_SECRET_ACCESS_KEY=…` would appear, and it is now the string that reaches the DURABLE
-  // ledger — the highest-value channel this plugin has.
+  // THE SECOND, INDEPENDENT REDACTION. See docs/plugins.md §427.
   if (result.succeeded) {
     return {
       succeeded: true,
@@ -403,14 +276,7 @@ async function trigger(
   try {
     state = await loadState(config.statePath);
   } catch (err) {
-    // LOW-6: `loadState`/`saveState` used to sit OUTSIDE `withRecordedOutcome`'s guarded region, so
-    // a corrupt state file (`JSON.parse` throwing non-ENOENT) made `trigger()` reject UNRECORDED —
-    // no outcome, no externalId the caller could later poll `status()` with. FAIL CLOSED rather than
-    // treating the read failure as "no prior run": this cache is exactly what tells a retry apart
-    // from a run that already applied, so an unreadable cache must refuse to launch, not guess.
-    // Recorded as this run's own outcome — a fresh single-key state is safe to write precisely
-    // because the OLD file was unreadable: nothing recoverable from it is lost by overwriting what
-    // could not be read anyway.
+    // State load and save now sit inside the guarded region. See docs/plugins.md §428.
     const refusalState: DedupState = { keys: {} };
     storeOutcome(refusalState, cacheKey, {
       externalId,
@@ -445,25 +311,11 @@ async function trigger(
   const workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
   let outcome: PendingOutcome = { externalId, succeeded: false, detail: "" };
 
-  // THE REDACTION SET FOR THE FAILURE PATH (M23.1 phase 2), populated the moment credentials are
-  // actually resolved inside the guarded body below. Starts empty, so a throw BEFORE that point
-  // redacts against nothing (safe: no credential has been fetched yet) and a throw AFTER it redacts
-  // against exactly what THIS run fetched. NOT the identity function, unlike managed-scan's: a raw
-  // `docker create` rejection's message carries `-e KEY=<value>` before `RunnerLaunchError`'s own
-  // redaction ever runs, and this catch must not assume that redaction already happened — an
-  // injected test launcher, or a future adapter, can throw something `RunnerLaunchError` never
-  // touched. THE STAKES ARE HIGHER HERE THAN IN managed-scan: this plugin's `record` writes to a
-  // durable, replicated, backed-up JSON file (`saveState`), and `reconcile.ts` copies that `detail`
-  // into an `insertDecision` `inputContext` from there — an identity redactor would turn one
-  // ephemeral log line into a permanent database row carrying a credential.
+  // THE REDACTION SET FOR THE FAILURE PATH. See docs/plugins.md §429.
   let secretValues: string[] = [];
   const redact = (text: string): string => redactSecrets(text, secretValues);
 
-  // EVERY PATH OUT OF THE REST OF THIS FUNCTION RECORDS AN OUTCOME. Before this, `trigger()` had no
-  // outer catch at all — a `create`/`copy-in` failure, a `writeSourceFiles` refusal, or a `mkdir`
-  // error propagated straight out as a rejection, `state.keys[cacheKey]` was never written, and
-  // `status()` reported `pending` forever (indistinguishable from "still running"): the SAME
-  // property managed-scan had, fixed here with the SAME helper but a genuinely redacting closure.
+  // EVERY PATH OUT OF THE REST OF THIS FUNCTION RECORDS AN OUTCOME. See docs/plugins.md §430.
   await withRecordedOutcome(
     {
       record: (succeeded, detail) => {
@@ -551,12 +403,7 @@ async function trigger(
   try {
     await saveState(config.statePath, state);
   } catch (err) {
-    // LOW-6: THE RUN ALREADY HAPPENED (succeeded or failed) by this point — for `apply`/`rollback`
-    // that may be a LIVE infrastructure mutation. Rejecting here would tell the caller "nothing
-    // happened" when something did, and a caller that reacts to a rejection by retrying could
-    // double-apply — the exact failure mode this cache exists to prevent. So this is BEST EFFORT and
-    // LOUD, never a rejection: the caller still gets its real `externalId`, and the failure to
-    // persist is logged at error level rather than swallowed silently.
+    // LOW-6: THE RUN ALREADY HAPPENED. See docs/plugins.md §431.
     ctx.logger.error("managed-iac: run completed but the dedup state could not be saved", {
       externalId,
       succeeded: outcome.succeeded,
@@ -579,12 +426,7 @@ async function status(ctx: PluginContext, ref: ExternalRunRef): Promise<Executio
   }
   return {
     phase: outcome.succeeded ? "succeeded" : "failed",
-    // NO SLICE. The evidence is bounded WHERE IT IS COMPOSED (`@scp/runner-launcher`'s
-    // `boundDetail`, enforced by `RunOutcome.detail`'s type) and it is bounded KEEPING BOTH ENDS.
-    // The `.slice(0, 4000)` that used to be here was the third of three consumers each front-slicing
-    // a string none of them built, and it discarded the runner's last words — the diagnosis — for
-    // any run that printed more than ~1.8 KB. It also bounded nothing that mattered: the durable
-    // ledger behind `loadState` had already been written unsliced.
+    // No slice: the evidence is bounded where it is composed. See docs/plugins.md §432.
     detail: outcome.detail,
     stateRef: outcome.stateRef,
     progress: 1
@@ -609,22 +451,9 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-/**
- * THE LAUNCHER SEAM (M23.1). `resolveLauncher` defaults to the Docker adapter — the only one that
- * exists until M23.2 — and is a FACTORY PARAMETER rather than a config field on purpose: adapter
- * selection is not tenant-facing, and adding a config field would mean adding it to the
- * server-injected/never-tenant-settable class in all three enforcement layers for no behaviour a
- * caller can yet ask for. Tests pass a substitute here, which is what makes "the plugin really goes
- * through the port" falsifiable rather than a claim about the source text.
- */
+/** THE LAUNCHER SEAM. See docs/plugins.md §433. */
 export function createManagedIacExecutorPlugin(
-  // THE DEFAULT IS THE SELECTING RESOLVER, NOT THE DOCKER ONE — M23.2, AND THIS LINE IS THE WIRING.
-  // `subprocess-entry.ts` constructs this plugin with NO argument, so whatever stands here is what
-  // every production run uses. While it was `resolveDockerRunnerLauncher`, an operator could set
-  // `runnerLauncher: "kubernetes"` through every layer of the chart and every managed run would
-  // still shell out to a `docker` binary the `scpd` image does not ship — a feature correctly built
-  // and installed nowhere, which is this repository's dominant defect class (CLAUDE.md). Delete
-  // this and `runner-launcher-selection.test.ts`'s named case for this plugin dies.
+  // THE DEFAULT IS THE SELECTING RESOLVER, NOT THE DOCKER ONE. See docs/plugins.md §434.
   resolveLauncher: ResolveRunnerLauncher = resolveRunnerLauncher
 ): ExecutorPlugin {
   return {
@@ -638,12 +467,7 @@ export function createManagedIacExecutorPlugin(
 
 export const managedIacExecutorPlugin: ExecutorPlugin = createManagedIacExecutorPlugin();
 
-/**
- * Manifest `configSchema` is the TENANT-facing surface only — `additionalProperties: false` so a
- * binding that tries to set the server-governed runnerImage/networkMode/workspace* fields is
- * REJECTED at create/update (routes/executors.ts's config validation). The server injects those
- * fields into this plugin's runtime config itself (executor-bindings-repo.ts).
- */
+/** Manifest `configSchema` is the TENANT-facing surface only. See docs/plugins.md §435. */
 export const manifest: PluginManifest = {
   id: "managed-iac",
   kind: "executor",
@@ -653,11 +477,7 @@ export const manifest: PluginManifest = {
     additionalProperties: false,
     properties: {
       infraCredsSecretKeys: { type: "object", additionalProperties: { type: "string" } },
-      // BOUNDED AT BOTH ENDS (M23.1c). The `maximum` is the half that was missing: with only a
-      // floor, a tenant could set 2^31 and make the runner unkillable by its own timeout AND
-      // unbound the plugin-host RPC budget derived from it. Enforced at every write door by
-      // `validatePluginConfig` (Ajv honours `maximum`), and clamped again host-side for rows
-      // stored before the ceiling existed.
+      // BOUNDED AT BOTH ENDS. See docs/plugins.md §436.
       timeoutMs: {
         type: "integer",
         minimum: MANAGED_RUN_TIMEOUT_MIN_MS,

@@ -1,30 +1,12 @@
 import pg from "pg";
 import { deriveRuntimeDatabaseUrl } from "../db/provision.js";
 
-/**
- * LEVER 3 — per-worker template-DB isolation, pure helpers + the clone routine. Kept side-effect
- * free (no top-level `await`) so that test-support/global-setup.ts can import the constants/helpers
- * without triggering a clone in the main process; the actual clone is driven by the thin
- * `setupFiles` entry test-support/per-worker-db.ts, which runs inside each worker fork.
- *
- * WHY per-worker databases: the integration suite ran serially (`singleFork`) because two files
- * sharing one database collide on instance-scoped singleton tables (`scan_requirement_floors`,
- * `scanner_assignments` — no `org_id`, tests DELETE them wholesale), the single global `pgboss`
- * schema + reconcile queue, and the outbox relay's org-filter-less `SELECT ... FOR UPDATE SKIP
- * LOCKED`. A private database per worker neutralizes all three, so files in different workers run
- * truly in parallel. Files WITHIN a worker still run serially and share that worker's database —
- * exactly the (safe) isolation the suite already relied on under `singleFork`.
- */
+/** Per-worker template-DB isolation, kept side-effect free. See docs/test-support.md §2. */
 
 /** The migrated template database globalSetup builds; every worker clones from it. */
 export const TEMPLATE_DATABASE_NAME = "scp_template";
 
-/**
- * Advisory-lock key that serializes `CREATE DATABASE ... TEMPLATE scp_template` across workers.
- * `CREATE DATABASE` from a template fails if ANY session (including another worker's concurrent
- * clone, which briefly connects to the template to copy it) is attached to the source, so workers
- * take this lock on the shared admin database before cloning. Arbitrary constant, unique to this use.
- */
+/** Advisory-lock key that serializes. See docs/test-support.md §3. */
 const CLONE_ADVISORY_LOCK_KEY = 0x5c_70_c1_0e;
 
 /** Returns the same connection URL with only the database name (URL path) swapped. */
@@ -39,21 +21,11 @@ function workerId(): string {
   return process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? "1";
 }
 
-/**
- * Clones a private database for the current worker from `scp_template` and repoints the three
- * `TEST_*_DATABASE_URL` env vars at it. Idempotent per worker: keyed off `process.env`, which
- * persists across Vitest's per-file module-registry resets within the same fork, so re-imports of
- * the setup file skip the (expensive) re-clone while still inheriting the overridden env URLs.
- */
+/** Clones a private database per worker, idempotently. See docs/test-support.md §4. */
 export async function provisionWorkerDatabase(): Promise<void> {
   const workerDatabase = `scp_w${workerId()}`;
 
-  // NOTE: under the current config this early return NEVER fires. `isolate: true` gives every test
-  // file a fresh child process, so `process.env` does not carry between files and the clone is
-  // redone per file (measured 2026-08-03). Kept because it is correct and would take effect under
-  // `isolate: false` — but do not read it as "the expensive re-clone is skipped". Today every file
-  // pays a full DROP + CREATE DATABASE, which is both a real per-file cost and the reason cross-file
-  // data sharing cannot happen at all (see vitest.integration.config.ts).
+  // NOTE: under the current config this early return NEVER fires. See docs/test-support.md §5.
   if (process.env.SCP_TEST_WORKER_DATABASE === workerDatabase) return;
 
   const baseAdminUrl = process.env.TEST_DATABASE_URL;
@@ -74,11 +46,7 @@ export async function provisionWorkerDatabase(): Promise<void> {
       await admin.query(
         `CREATE DATABASE ${quoteIdent(workerDatabase)} TEMPLATE ${quoteIdent(TEMPLATE_DATABASE_NAME)}`
       );
-      // Database-level grants are NOT copied by TEMPLATE (only in-database objects are), so re-issue
-      // the one the template's migration 0008 granted: pg-boss re-runs `CREATE SCHEMA IF NOT EXISTS
-      // pgboss` on every boot, whose ACL check is against database-level CREATE regardless of whether
-      // the schema already exists. Without this, `withEventRelay` boots fail with "permission denied
-      // for database scp_w<id>".
+      // Database-level grants are NOT copied by TEMPLATE. See docs/test-support.md §6.
       await admin.query(`GRANT CREATE ON DATABASE ${quoteIdent(workerDatabase)} TO scp_pgboss`);
     } finally {
       await admin.query("SELECT pg_advisory_unlock($1)", [CLONE_ADVISORY_LOCK_KEY]);

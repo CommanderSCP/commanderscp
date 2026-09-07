@@ -14,23 +14,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * Change target-authority (M12 P4B Phase 2). A `change`, like a `campaign`, binds its authority to
- * a DECLARED `properties.targets` field, and P4B makes that load-bearing (a `requires`/`provides`
- * coupling against an object you don't control is an escalation). Two holes are closed here, mirror-
- * imaging campaign's own SECURITY tests (`campaign.integration.test.ts`):
- *   1. `POST /changes` now authorizes `object:write` over EVERY target, not just the change's domain.
- *   2. the generic `/objects/change` route refuses every write verb, so a change can be created and
- *      mutated ONLY through the typed, target-checked path.
- *
- * ADR-0028 added a THIRD declared field that reaches out of the actor's own scope, and the last
- * section of this file covers it: `stageDependencies` is materialised as a `depends_on` edge
- * (`changes-repo.ts`), and `createRelationship` performs no authz of its own — so every door that
- * carries a declaration has to demand the same both-endpoint `relationship:write`
- * `POST /relationships` demands, or `POST /changes` becomes a way to mint the edge the graph route
- * refuses. Both doors are exercised: the typed propose, and the persist-then-process ingress whose
- * processor runs as SYSTEM_ACTOR_ID and therefore cannot do the check itself.
- */
+/** Change target-authority (M12 P4B Phase 2). See docs/coordination.md §255. */
 describe("change target-authority (M12 P4B Phase 2)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -135,11 +119,7 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
   // ADR-0028 — the declared STAGE DEPENDENCIES, which mint a `depends_on` edge.
 
   it("SECURITY: a stage dependency naming a component OUTSIDE the actor's authority is refused, and mints NO edge", async () => {
-    // The `targets` check above passes cleanly here — the actor owns its target and its domain — so
-    // a rejection can only come from the `stageDependencies` check. Without it, `POST /changes`
-    // writes a `depends_on` edge onto a component at the org root that `POST /relationships` refuses
-    // this same actor with 403, and nothing ever prunes it: `graph.dependentIds` is a live CEL
-    // policy input, so the victim's governance verdicts can be flipped by a stranger's release.
+    // The `targets` check above passes cleanly here. See docs/coordination.md §256.
     const outsideDependency = await createTestComponent(admin, {
       name: `sd-outside-${randomUUID().slice(0, 8)}`
     });
@@ -238,12 +218,7 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
   });
 
   it("SECURITY: the CI ingress door demands the SAME edge authority — object:write alone cannot declare a dependency", async () => {
-    // THE SECOND DOOR. `POST /change-sources/{kind}/report` (and the raw `/webhook` beside it) lifts
-    // `stageDependencies` off the body and threads it into the same `proposeChange`, but the
-    // processor runs as SYSTEM_ACTOR_ID — so the reporting principal only exists at the route, and
-    // the check has to be there or be vacuous. The ingress permission is `object:write` at the org
-    // root, which is NOT `relationship:write`: this reporter holds the former and not the latter,
-    // which is exactly the gap a route-name census misses.
+    // THE SECOND DOOR. See docs/coordination.md §257.
     const dependency = await createTestComponent(admin, {
       name: `sd-ingress-dep-${randomUUID().slice(0, 8)}`
     });
@@ -303,16 +278,7 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
   });
 
   it("SECURITY: `properties.stageDependencies` is not a third door — the typed field is the only one", async () => {
-    // THE DOOR A CENSUS BY FIELD NAME MISSES. `POST /changes` authorizes the TYPED
-    // `stageDependencies` and passes `properties` through untouched, so as long as `proposeChange`
-    // honoured a `properties.stageDependencies` fallback, the identical declaration the typed field
-    // 403s could be smuggled in beside it and the hold would honour it: an authority bypass, plus
-    // disclosure of the named component's deployment state through the hold Decision's
-    // `branch`/`dependencyStatus`.
-    //
-    // Closed the way `requires` was — no fallback at all — because no legitimate caller needs one:
-    // campaign fan-out and rollback pass no properties, and federation promotion STRIPS
-    // `stageDependencies` before it re-proposes.
+    // THE DOOR A CENSUS BY FIELD NAME MISSES. See docs/coordination.md §258.
     const outsideDependency = await createTestComponent(admin, {
       name: `sd-props-outside-${randomUUID().slice(0, 8)}`
     });

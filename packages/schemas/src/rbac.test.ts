@@ -11,36 +11,7 @@ import {
   RoleSchema
 } from "./rbac.js";
 
-/**
- * ================================================================================================
- * THE RBAC CONTRACTS — what the SCHEMA refuses, as opposed to what the door refuses
- * ================================================================================================
- *
- * `routes/role-bindings.ts`'s handlers are exercised against real PostgreSQL in `apps/server`. This
- * file is about the layer BELOW them: several of this increment's security properties are enforced
- * by the Zod contract and by nothing else, so they are invisible to a test that goes through the
- * route — a request the schema rejects never reaches a handler, and a field the schema STRIPS
- * reaches it as `undefined` no matter what the client sent. If the contract silently relaxed, the
- * integration suite would stay green while the property was gone.
- *
- * The four properties pinned here, each with the consequence of losing it:
- *
- *  1. `effect` (and `roleName`) are NOT writable. `role_bindings.effect` is `'allow' | 'deny'` and a
- *     deny overrides every allow at any matching scope; the module doc rules a deny out of this
- *     increment because the no-escalation subset rule is UNSOUND for one. The repo never reads the
- *     field off the body, so what actually blocks the mass assignment is that the contract drops it.
- *  2. `acknowledgedPrincipalIds` is OPTIONAL. D7's requirement is CONDITIONAL (groups and teams
- *     only) and is enforced at the door with a 422. Making it schema-required would force every
- *     grant to a user to carry `[]` and would be a BREAKING request change on this repo's oasdiff
- *     gate — the shape was chosen so the operation stays true if it is ever cut and re-landed.
- *  3. `undefined` and `[]` are DIFFERENT values that survive parsing distinctly. The door reads them
- *     as "I did not look" and "I looked and it is empty" and admits only the second for a group. A
- *     `.default([])` on this field would erase that distinction silently, and the exploit D7 exists
- *     to stop — seat the group AFTER the grant — would be admitted with no acknowledgement at all.
- *  4. Response fields that a client must not have to derive — `Role.deprecated`,
- *     `GrantPreviewResponse.acknowledgementComplete` — are REQUIRED and always present, because an
- *     absent field reads as "old server" and the client guesses.
- */
+/** THE RBAC CONTRACTS. See docs/schemas.md §358. */
 
 const UUID_A = "11111111-1111-4111-8111-111111111111";
 const UUID_B = "22222222-2222-4222-8222-222222222222";

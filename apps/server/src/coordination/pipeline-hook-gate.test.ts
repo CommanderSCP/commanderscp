@@ -6,12 +6,7 @@ import {
   type PipelineHookGateEntry
 } from "./pipeline-hook-gate.js";
 
-/**
- * Pure decision-logic tests for the two exported functions this module owns that need no
- * `TenantTx`: the loud guard the module doc calls "THE ASSERTION", and the reason-tree composer
- * `gates.ts` folds into a wave-gate Decision. `evaluatePipelineHookGate` itself is a DB seam
- * (hooks, evidence, changes reads) and stays with `pipeline-hook-admission.integration.test.ts`.
- */
+/** Pure decision logic for the two functions needing no tx. See docs/coordination.md §604. */
 
 describe("assertWaveGateHookKind — continuous must never reach a wave gate", () => {
   it("throws for 'continuous', naming why it must not be here", () => {

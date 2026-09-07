@@ -1,16 +1,4 @@
-/**
- * Thin `node:child_process` wrapper used by the cosign wrapper in this package. Every
- * external-binary invocation goes through here so there is exactly one place that logs the
- * literal argv being run (useful for the "prove there's no hidden network call" audits this
- * package's own README/tests do) and turns a non-zero exit into a thrown Error carrying stdout
- * + stderr, instead of swallowing the failure the way a bare `execFileSync` in a try/catch does.
- *
- * Deliberately uses `execFileSync` (argv array, no shell) rather than `exec`/a shell string —
- * this is the same choice `scripts/doctor.mjs` and `tools/helm-verify/src/verify.ts` make
- * elsewhere in this repo, and it matters here specifically: image references, registry hosts,
- * and file paths can contain characters (`:`, `/`, `@`) that would be
- * shell-metacharacter-adjacent if this ever went through a shell.
- */
+/** One place that logs every argv and raises on a non-zero exit. See docs/cosign.md §18. */
 import { execFileSync } from "node:child_process";
 
 export interface RunResult {

@@ -12,12 +12,7 @@ function authHeader(token: string): { authorization: string } {
   return { authorization: `Bearer ${token}` };
 }
 
-/**
- * M2 typed registries (BUILD_AND_TEST.md §8 M2 item 1): thin layers over the same
- * objects/object_types substrate the generic `/objects/{type}` endpoint uses. Uses `app.inject`
- * directly (not the SDK) to exercise the real HTTP contract, mirroring
- * test-support/smoke.integration.test.ts's style.
- */
+/** M2 typed registries (BUILD_AND_TEST.md §8 M2 item 1). See docs/routes.md §416. */
 describe("typed registries: thin layers over the generic graph substrate", () => {
   let server: TestServer;
 

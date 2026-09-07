@@ -9,12 +9,7 @@ import {
   type ListeningTestServer
 } from "../test-support/harness.js";
 
-/**
- * `@scp/iac` server-side plan/apply — full round trip via the SDK (BUILD_AND_TEST.md §8 M2 item
- * 4). DoD (b): "an `@scp/iac` stack applied twice is a no-op the second time (plan shows zero
- * actions)". `plans-cli.integration.test.ts` covers the same core property driven through the
- * real `scp` binary instead of the SDK directly.
- */
+/** `@scp/iac` server-side plan/apply. See docs/routes.md §308. */
 describe("plans: @scp/iac server-side plan/apply", () => {
   let server: ListeningTestServer;
 
@@ -321,12 +316,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // C1 — sourceMappings / executorBindings (docs/proposals/post-import-configuration.md §8).
-  // These two are PROJECTION TABLES, not graph objects, so nothing here can be inferred from the
-  // object/relationship tests above: their ownership, their prune scope and their write path are
-  // all separate code.
-  // -----------------------------------------------------------------------------------------
+  // C1 — sourceMappings / executorBindings. See docs/routes.md §309.
 
   it("C1 round trip: a stack declares a mapping + a binding, they land, and a re-plan is all-noop", async () => {
     const org = await createTestOrg(server, "plans-c1-roundtrip");

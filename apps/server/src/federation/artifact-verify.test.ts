@@ -1,19 +1,4 @@
-/**
- * Unit wiring of `verifyAuthorizedArtifactSet`'s cosign-facing options (the @scp/cosign seam is
- * mocked — these prove the WIRING; the live cosign behavior rides the M15.5(c)/M17.4(b)
- * integration suites):
- *
- *   - PER-HOST TLS scoping: the `allowInsecureRegistry` predicate form grants cosign's
- *     `--allow-insecure-registry` for exactly the registry host each bound ref dials — mirroring
- *     skopeo's per-host `--…-tls-verify=false` (SCP_RELAY_INSECURE_HOSTS) — and NEVER for an
- *     unlisted or hostless ref. This cannot be observed live against a Testcontainers loopback
- *     registry: cosign's go-containerregistry auto-downgrades loopback registry hosts to HTTP
- *     with or without the flag, so the negative case only shows on non-loopback hosts.
- *   - PER-INVOCATION subprocess env: `cosignEnv` (e.g. a scratch `DOCKER_CONFIG` for credentialed
- *     source registries) reaches the cosign invocation as its `env` option — the multi-tenant
- *     alternative to a process-global `process.env` mutation, which would leak one org's registry
- *     auth into every concurrently spawned subprocess.
- */
+/** Unit wiring of the verifier's cosign-facing options. See docs/federation.md §1. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -137,14 +122,7 @@ describe("verifyAuthorizedArtifactSet cosign wiring", () => {
   });
 });
 
-/**
- * The BLOB byte channel, fetched for real over loopback. `resolveBlob` classifies the URL's
- * addresses with the egress guard and then dials one of THEM — it no longer hands the hostname back
- * to `fetch`, which would resolve it a second time and reopen the DNS-rebinding window the guard
- * exists to close (see `plugin-host/egress-guard.ts`'s `createEgressPinRegistry`, where the pin is
- * proven at socket level). These cases keep that rewiring honest: the bytes still arrive, an absent
- * blob is still `null`, and an off-allowlist URL is still refused before any request.
- */
+/** The BLOB byte channel, fetched for real over loopback. See docs/federation.md §2. */
 describe("LocationRegistryReader.resolveBlob (real loopback fetch)", () => {
   let server: Server;
   let base: string;
@@ -205,13 +183,7 @@ describe("LocationRegistryReader.resolveBlob (real loopback fetch)", () => {
   });
 
   it("a registry FAULT fails closed PROMPTLY — the unread response body must not hold the dial open", async () => {
-    // The reader throws on a non-2xx without reading the body, and undici's `Agent.close()` waits
-    // for in-flight requests: a body nobody reads never finishes, so the teardown hung until the
-    // abandoned body was garbage-collected (measured on undici 7.29.0: 10/10 runs still pending
-    // after 5s with this 1 MiB response). `pre-deploy-gate` calls the verifier with no timeout of
-    // its own, so that turned a fail-closed verification error into an unbounded stall the
-    // registry's response size gets to decide. The bound below is the assertion; the test timeout
-    // is only the backstop for the "never settles" case.
+    // The reader throws on a non-2xx without reading the body. See docs/federation.md §3.
     const reader = new LocationRegistryReader({ allowedBlobBaseUrls: [`${base}/blobs/`] });
     const startedAt = Date.now();
     await expect(

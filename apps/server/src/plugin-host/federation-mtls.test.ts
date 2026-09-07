@@ -15,19 +15,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
 
-/**
- * M8 hardening (DESIGN.md §13, BUILD_AND_TEST.md §8 M8 item 6, "Federation mTLS transport
- * identity") — SECURITY-SENSITIVE: proves `federation-https` genuinely presents a client
- * certificate over a real TLS handshake, and that a peer without a valid one is rejected. Not a
- * unit test of the Agent-construction code in isolation — this spawns a REAL `federation-https`
- * subprocess (`SubprocessPluginHost`) and drives it against a REAL `node:https` server requiring
- * (`requestCert: true`) and verifying (`rejectUnauthorized: true`) client certificates, exactly the
- * posture a real commander domain's `federation-https` server-side listener would run.
- *
- * No Postgres needed (this is entirely plugin-host + subprocess + a loopback TLS server), so this
- * lives under `pnpm test`, not the Testcontainers integration suite — same tier as
- * `plugin-host/host.test.ts`.
- */
+/** Federation mutual TLS, and what the hardening added. See docs/plugin-host.md §37. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.resolve(__dirname, "test-support/mtls-fixtures");
@@ -49,11 +37,7 @@ interface TestServerHandle {
   close(): Promise<void>;
 }
 
-/** A real HTTPS server requiring AND verifying client certificates — `rejectUnauthorized: true`
- *  means Node's TLS layer itself refuses the handshake for any peer that doesn't present a
- *  certificate signed by `ca`, before this server's request handler ever runs. Responds to any
- *  request with a minimal, well-formed `.scpbundle` body so a successfully-authenticated
- *  `federation-https` `pull()` call has something valid to parse. */
+/** A real server requiring and verifying client certificates. See docs/plugin-host.md §38. */
 function startTestServer(): Promise<TestServerHandle> {
   return new Promise((resolve, reject) => {
     let lastRequestAuthorized: boolean | undefined;

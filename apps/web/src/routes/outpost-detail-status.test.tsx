@@ -2,26 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { FederationPeerStatus } from "@scp/schemas";
 
-/**
- * `OutpostStatusCard` — the per-outpost detail page's FIRST section, and until now the only
- * exported component on this branch with no test of any kind.
- *
- * WHAT THIS FILE OWNS, and why it is not a duplicate of `outposts-honesty.test.tsx`: that file pins
- * the OVERVIEW row. This card renders the same cells on a different page, and the failure mode it
- * missed is not a wording failure but a CRASH. `recentTransfers` is required-not-optional by
- * `FederationPeerStatusSchema` and BEFORE ADR-0023 the generated SDK validated no response, so a
- * server that omitted the key reached `transfers.length` on `undefined`. On the overview that throw
- * kills one row's page; here the card is the first child of the detail route, so the throw took
- * Status AND Settings AND Configuration down together — a white screen where three sections should
- * be. SINCE ADR-0023 that body rejects at the SDK boundary instead; these cases drive the CARD
- * directly, which is the only level at which the card's own guard can be pinned.
- *
- * The guard therefore has to be pinned by RENDERING with the key absent, not by reading the source:
- * removing `?? []` from `outpost-detail.tsx` must make the first test below throw.
- *
- * `Link` is stubbed for the same reason as in `outposts-honesty.test.tsx` — `useRouter` throws
- * outside a `RouterProvider`.
- */
+/** The detail page's first section, and what it claimed. See docs/web.md §392. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>

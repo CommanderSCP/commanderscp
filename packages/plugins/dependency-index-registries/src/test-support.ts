@@ -1,12 +1,4 @@
-/**
- * Test-only support. NOT re-exported from `index.ts`.
- *
- * `nock@13.5.6` (the version this repo pins) does NOT intercept the global `fetch`/undici — proven
- * empirically by the github plugin's own spike and documented in `packages/plugins/github/src/
- * github-test-support.ts`. It patches Node's `http`/`https` core modules only. So the
- * `ScopedHttpClient` fixtures run against is built on `node:http`/`node:https` directly; a
- * fetch-based one would sail past every fixture in this package and hit the real network.
- */
+/** Test-only support, deliberately not re-exported. See docs/plugins.md §54. */
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type {

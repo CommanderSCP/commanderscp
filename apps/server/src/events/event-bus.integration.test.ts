@@ -23,26 +23,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * BUILD_AND_TEST.md §8 M3 item 8 DoD: "the event-bus integration suite passes against BOTH
- * Postgres and NATS backends." events/event-bus.ts's own doc comment explains why there's only
- * ONE `EventBus` implementation (`publish()` always just writes the transactional outbox row —
- * the backend can't change that, no broker can join a Postgres COMMIT) and where the two
- * configured backends actually diverge: events/outbox-relay.ts's fan-out step, additionally
- * republishing to a real JetStream stream (events/nats-fanout.ts) when `natsFanout` is passed.
- * So this suite's job is to prove the thing that differs — the relay, driven by a REAL `nats:2.10
- * -js` Testcontainers instance for the "nats" half — delivers with PARITY across both configured
- * backends (every event reaches the pg-boss `domain-events` queue and every connected SSE
- * subscriber, and the outbox row is only ever marked processed once every configured sink has
- * accepted it — the transactional at-least-once guarantee, DESIGN.md §8, that lets a
- * partially-failed relay batch retry safely instead of silently dropping an event: see
- * outbox-relay.ts's `relayOnce`, which COMMITs only after every sink in the loop iteration
- * succeeded), PLUS the one behavior that genuinely differs per backend: NATS JetStream's
- * broker-side idempotent de-dup keyed by the outbox row id (`msgID`), which Postgres has no
- * equivalent of. Actually killing the relay mid-batch to prove crash/resume is already exercised
- * end to end at the coordination layer (coordination.integration.test.ts "worker-crash resume");
- * re-driving that same proof here would just duplicate it, so it isn't repeated in this file.
- */
+/** BUILD_AND_TEST.md §8 M3 item 8 DoD. See docs/events.md §11. */
 describe("EventBus: real backend containers", () => {
   let natsContainer: StartedTestContainer;
   let natsUrl: string;
@@ -87,15 +68,7 @@ describe("EventBus: real backend containers", () => {
         };
         sseHub.on(org.orgId, onEvent);
 
-        // Hermetic starting point (shared-Postgres singleFork suite): most integration test files
-        // create objects — hence outbox rows — but run no relay, so a large backlog of
-        // permanently-unprocessed rows accumulates ahead of what this test publishes. This relay
-        // drains OLDEST-first, 100 rows per ~1s poll, so a big enough backlog can push delivery of
-        // THESE three fresh (newest) rows past even a generous timeout (observed as a flake once
-        // the M3 coordination test suites, which land ahead of this file and generate many
-        // transition/outbox rows, inflated the backlog). Marking the pre-existing backlog processed
-        // makes the relay reach these three rows promptly and deterministically. Uses a throwaway
-        // admin/superuser connection — test-only diagnostics, never how the app itself queries.
+        // Hermetic starting point (shared-Postgres singleFork suite). See docs/events.md §12.
         const preClean = new pg.Client({ connectionString: testDatabaseUrl() });
         await preClean.connect();
         await preClean.query(`UPDATE outbox SET processed_at = now() WHERE processed_at IS NULL`);
@@ -115,13 +88,7 @@ describe("EventBus: real backend containers", () => {
             }
           });
 
-          // Generous timeout: this suite runs alongside every other `withEventRelay: true`
-          // integration test in the same singleFork Vitest process (test-support/global-setup.ts),
-          // each with its own 1s-poll relay/reconcile-loop timers competing for the event loop and
-          // the shared Testcontainers Postgres — under that full-suite load the default 15s
-          // waitUntil budget has been observed to be too tight even though delivery itself is
-          // healthy (coordination.integration.test.ts's own waits already budget up to 20s for the
-          // same reason).
+          // Generous timeout: this suite shares one forked process. See docs/events.md §13.
           await waitUntil(async () => (received.length >= 3 ? received : undefined), {
             describe: `sseHub delivers all 3 published events for org ${org.orgId} (${backend} backend)`,
             timeoutMs: 90_000
@@ -134,26 +101,7 @@ describe("EventBus: real backend containers", () => {
         expect(new Set(received.map((e) => e.subject))).toEqual(new Set(expectedSubjects));
         const eventIds = received.map((e) => e.id);
 
-        // "Ack": the relay's per-row loop only reaches the trailing UPDATE (and the batch only
-        // COMMITs) after pg-boss's send, the SSE publish, and (nats backend) the JetStream
-        // publish all succeeded — so seeing `processed_at` set here, read from a connection that
-        // bypasses RLS entirely (admin/superuser, test-only diagnostics — never how the app
-        // itself queries), is proof the WHOLE batch committed, not merely that the in-process SSE
-        // EventEmitter (which can't itself fail) happened to fire.
-        //
-        // POLLED, NOT READ ONCE — this fixes a real race, observed failing CI on PR #172 as
-        // "expected null not to be null". The SSE wait above returns as soon as the in-process
-        // EventEmitter has fired for all three events, and the relay publishes to SSE INSIDE the
-        // batch, BEFORE the trailing UPDATE and the COMMIT. So `received.length >= 3` is genuinely
-        // satisfiable while `processed_at` is still NULL, and a bare SELECT here is a coin flip
-        // decided by how fast the commit lands after the last publish. Under full-suite load (49
-        // files, competing 1s-poll timers, one shared Postgres — see the SSE wait's own comment)
-        // it loses that flip. The pg-boss assertion immediately below ALREADY wraps itself in
-        // `waitUntil` for exactly this reason and says so; this one was simply missed.
-        //
-        // This does NOT weaken the assertion. The claim is "the whole batch commits", not "the
-        // batch has already committed by the instant SSE fired" — nothing in the design promises
-        // the latter. A relay that never commits still fails here, on the timeout.
+        // Ack means every sink accepted it, not just the first. See docs/events.md §14.
         const admin = new pg.Client({ connectionString: testDatabaseUrl() });
         await admin.connect();
         try {
@@ -174,12 +122,7 @@ describe("EventBus: real backend containers", () => {
           expect(outboxRows.rows).toHaveLength(3);
           for (const row of outboxRows.rows) expect(row.processed_at).not.toBeNull();
 
-          // pg-boss delivery: the SAME relay commit also reached the `domain-events` queue — a
-          // job-queue subscriber, a distinct fan-out target from SSE's broadcast — for BOTH
-          // backends, since outbox-relay.ts always sends to pg-boss regardless of
-          // `config.eventBus.backend`. `job` is a live queue table, `archive` is where pg-boss
-          // moves completed jobs on its own maintenance schedule — union both so this isn't
-          // racing that internal timing.
+          // The same commit also reached the job queue, a distinct sink. See docs/events.md §15.
           await waitUntil(
             async () => {
               const bossJobs = await admin.query<{ count: string }>(

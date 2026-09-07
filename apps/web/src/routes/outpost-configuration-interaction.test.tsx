@@ -3,26 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OutpostConfig } from "@scp/schemas";
 import { fire, render } from "../test-support/render-dom";
 
-/**
- * M16.2 phase B (B3) — WHAT THE CLICK ACTUALLY SENDS.
- *
- * THE ONE THING THIS FILE OWNS, and the reason it is not in `outpost-configuration.test.tsx`: every
- * other web test renders to a STRING (`renderToStaticMarkup`), which cannot fire a handler. So the
- * reconcile panel's central guarantee — that the default button sends the SURVIVOR IT NAMED, never a
- * bare re-derive-it-yourself call — was pinned only as the `data-keep` ATTRIBUTE rendered beside the
- * handler. MEASURED: replacing `onClick={() => onReconcile(defaultKeep.objectId)}` with
- * `onClick={() => onReconcile(undefined)}` left all 102 web tests green.
- *
- * WHY THE DIFFERENCE MATTERS AT RUNTIME, not just on principle. A bare `POST …/reconcile` with no
- * `?keep=` re-derives the survivor SERVER-SIDE (`outposts-repo.ts` `byAuthority`) at request time —
- * AFTER the operator has read a prediction computed from a possibly-stale `listOutposts()` cache. A
- * claimant row that appeared since that fetch is then soft-deleted having NEVER been previewed, and
- * if it is locally authored that is a journaled tombstone which PROPAGATES to the outpost. A stale
- * `?keep=` id cannot do that: it fails safe with the server's 400.
- *
- * This file runs in a happy-dom environment (docblock above) so the handlers can be invoked for
- * real; see `src/test-support/render-dom.tsx` for why that dependency was taken.
- */
+/** M16.2 phase B (B3) — WHAT THE CLICK ACTUALLY SENDS. See docs/web.md §350. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>

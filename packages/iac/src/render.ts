@@ -5,32 +5,7 @@ import type {
   ManifestPipelineHook
 } from "@scp/schemas";
 
-/**
- * D21(d): `scp iac render` regenerates the human-readable pipeline picture from a SYNTHESIZED
- * manifest — pure string transforms, exactly like `Stack.synth()`/`products.ts` are pure; the CLI
- * (`packages/cli/src/cli.ts`) owns the only I/O (reading `--manifest`, writing `--write`).
- *
- * ============================================================================================
- * THE HARD PART, AND THE REASON THIS EXISTS: D21(d)'S "ALL GATES", HONESTLY
- * ============================================================================================
- * "`scp iac render` shows ALL gates that will apply, including estate-imposed ones the team never
- * declared (the scan gate at the registry) — the picture must be the truth, not the team's subset
- * of it." This module runs OFFLINE against a manifest file alone (D21(d)'s own constraint — render
- * is a local dev-loop tool, not an API call), so it genuinely cannot see domain binding policy, an
- * org's scan requirements, or anything else that lives server-side. Two things follow, and both are
- * load-bearing:
- *
- *   1. The FIXED estate-imposed gates the canonical journey (D21/D22) always applies — the registry
- *      scan + origin signature, the commander's per-crossing signature, the build's own unit gate —
- *      are DOCUMENTED FACTS about how this platform's build/promotion path works, not something a
- *      manifest could ever carry (D22's build order runs entirely inside the team's own build
- *      workflow, before SCP ever sees the artifact). Render states them explicitly, every time, for
- *      every build-family pipeline, so the picture is never just "what this team happened to type".
- *   2. Beyond that fixed set, render CANNOT know what a domain's binding policy or an org's own
- *      additional scan/security rules require — that is real information this view does not have.
- *      `MANIFEST_ONLY_DISCLAIMER` says so, in the output, every time — an honest boundary line
- *      rather than a picture that LOOKS complete and silently isn't (D21(d)'s literal test).
- */
+/** Regenerates the human-readable pipeline picture. See docs/iac.md §311. */
 
 const BUILD_FAMILY: ReadonlySet<ExecutorType> = new Set([
   "image",
@@ -44,11 +19,7 @@ const BUILD_FAMILY: ReadonlySet<ExecutorType> = new Set([
   "go"
 ]);
 
-/** Kinds `PLACEMENT_MATRIX` (`infra.ts`) ever gives a non-empty row — i.e. kinds that cross a CDS
- *  boundary on their way to a real deploy target, as opposed to publish-only artifacts. Duplicated
- *  as a literal (not imported from `infra.ts`) on purpose: `render.ts` only needs the KIND names,
- *  not the compatibility matrix itself, and importing `infra.ts` here would pull `@scp/schemas`'s
- *  `InfraKind` type into a module whose whole job is staying a thin, manifest-only reader. */
+/** Kinds `PLACEMENT_MATRIX` (`infra.ts`) ever gives a non-empty row. See docs/iac.md §312. */
 const PLACED_KINDS: ReadonlySet<ExecutorType> = new Set([
   "image",
   "chart",
@@ -152,12 +123,7 @@ function estateImposedGateLines(kind: ExecutorType): string[] {
   return lines;
 }
 
-/**
- * Renders ONE pipeline's picture, pure — the body of the generated block. `componentUrn`/`kind`
- * identify which `releases_via` relationship this is for (a manifest may declare several pipelines,
- * one per `releases_via` edge — image + infrastructure sharing a repo is the worked example's own
- * shape); the topology object it points to carries the waves.
- */
+/** Renders ONE pipeline's picture, pure. See docs/iac.md §313. */
 export function renderPipelineLines(
   manifest: DesiredStateManifest,
   componentUrn: string,
@@ -256,12 +222,7 @@ export function formatPipelineBlock(pipeline: RenderedPipeline): string {
   ].join("\n");
 }
 
-/**
- * The full generated section — every pipeline's block, the honesty disclaimer, wrapped once in the
- * BEGIN/END markers `updateGeneratedSection` looks for. This is what `--write` inserts and what
- * plain `scp iac render` prints to stdout, so the two are always byte-identical modulo where they
- * land (drift-check: running `--write` twice on an unchanged manifest is a no-op diff).
- */
+/** The full generated section. See docs/iac.md §314. */
 export function renderManifestSection(manifest: DesiredStateManifest): string {
   const pipelines = renderManifestPipelines(manifest);
   const blocks =
@@ -279,13 +240,7 @@ export function renderManifestSection(manifest: DesiredStateManifest): string {
   ].join("\n");
 }
 
-/**
- * `--write`'s pure string surgery: replaces the marked generated section in `existingSource` with
- * `generatedSection`, or APPENDS it (with a blank-line separator) when no marker is present yet —
- * the first run against a hand-authored file. Idempotent: calling this twice in a row with the same
- * `generatedSection` on its own output is a no-op, which is what makes `scp iac render --write` a
- * meaningful CI drift check (regenerate, then `git diff --exit-code`).
- */
+/** `--write`'s pure string surgery. See docs/iac.md §315. */
 export function updateGeneratedSection(existingSource: string, generatedSection: string): string {
   const beginIndex = existingSource.indexOf(RENDER_BEGIN_MARKER);
   if (beginIndex === -1) {

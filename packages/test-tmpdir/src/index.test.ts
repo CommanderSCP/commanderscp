@@ -12,12 +12,7 @@ import {
 
 const PREFIX = join(tmpdir(), "scp-test-tmpdir-selftest-");
 
-/**
- * The real assertion here is cross-test: a directory created in one `it()` must be gone by the
- * time the NEXT `it()` runs, because that is exactly the property `managed-trigger-budget.test.ts`
- * needed (cleanup between tests in the same file, not only at the end of the file) — see this
- * package's `index.ts` module doc for why `afterEach` and not `afterAll`.
- */
+/** The real assertion here is cross-test. See docs/test-tmpdir.md §3. */
 let dirFromPreviousTest: string | undefined;
 
 describe("mkdtempTracked", () => {
@@ -69,11 +64,4 @@ describe("mkdtempTrackedForFile", () => {
   });
 });
 
-/**
- * POSITIVE CONTROL FOR `assertInsideTest` (index.ts). Every `it()` above calls the per-test pair
- * from inside a running test, which is the case the guard must stay SILENT for — so a guard that
- * threw unconditionally, or whose `getCurrentTest()` detection broke and reported "no test"
- * always, reds this file rather than passing quietly. The refusing half is driven in
- * `guard-outside-test.test.ts`, which needs its own file because stubbing `vitest/suite` is
- * module-scoped.
- */
+/** POSITIVE CONTROL FOR `assertInsideTest`. See docs/test-tmpdir.md §4. */

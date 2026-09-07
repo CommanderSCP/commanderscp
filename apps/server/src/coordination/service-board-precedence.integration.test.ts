@@ -20,31 +20,7 @@ import { proposeChange } from "./changes-repo.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import { buildServiceBoard } from "./service-board.js";
 
-/**
- * REGRESSION, THE OTHER DIRECTION. `service-board-federation.integration.test.ts` pins that an
- * honest UNKNOWN must not be reported as a comforting `stable`. This file pins the converse, which
- * is the SAME defect with the arrow reversed: an honest unknown must never DISPLACE a real
- * observation.
- *
- * THE DEFECT, reproduced on the repo's two-database federation topology: an outpost drives its OWN
- * change against one of its components, compiles a plan, and a wave FAILS — the one operational fact
- * that outpost genuinely holds. A commander-origin change then replicates in, targeting the same
- * component. The board merged its two lookups by "whichever `created_at` is greater", and for a
- * REPLICA that key is FABRICATED: `objects.created_at` is `defaultNow()` at IMPORT time (the
- * `object_upsert` journal payload carries no createdAt), so every freshly imported change outranks
- * every pre-existing local one. The row flipped into the not-driven-here bucket, `summary.blocked`
- * fell to 0, and the outpost operator lost the failure their own instance had observed — replaced by
- * a row that says, correctly but uselessly, "another domain drives this and I cannot see it."
- *
- * THE FIX this pins: a STRICT FALLBACK. The planned arm — everything this domain compiled and rolled
- * itself — is authoritative for any component it covers; the declared (graph-object) arm answers
- * ONLY for components the planned arm returns nothing for. There is no cross-clock comparison left,
- * in either direction.
- *
- * The board below asserts BOTH behaviours in one response, since they must coexist: the
- * locally-driven blocked component keeps its observation, while a component whose only change is the
- * commander's is still honestly reported as not driven here.
- */
+/** REGRESSION, THE OTHER DIRECTION. See docs/coordination.md §859. */
 describe("service board precedence: an observation outranks a replica (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
@@ -56,11 +32,7 @@ describe("service board precedence: an observation outranks a replica (Testconta
   let sharedComponentId: string;
   /** Targeted ONLY by a commander change — the not-driven-here control. */
   let commanderOnlyComponentId: string;
-  /**
-   * Targeted by a PLAN-LESS local change AND (later, newer by import time) a commander replica.
-   * Neither side compiled a plan, so arm 1 is silent and arm 2 alone decides — the case where the
-   * fabricated ordering key still applied after the arm-1/arm-2 fallback landed.
-   */
+  /** A plan-less local change, and a newer commander replica. See docs/coordination.md §860. */
   let contestedComponentId: string;
   let contestedLocalChangeId: string;
   let localChangeId: string;
@@ -243,15 +215,7 @@ describe("service board precedence: an observation outranks a replica (Testconta
       return change.id;
     });
 
-    // 3b. M25.7 (owner decision D6) — the commander ALSO declares a FEDERATING freeze over the
-    //     shared component: the row the outpost DRIVES. This fixture is what the inverted pin at
-    //     the bottom of this file is about, and it did not exist before M25.7 because it could not:
-    //     `attachFreezeObject` and `freezes.object_id` are that increment's.
-    //
-    //     The window is anchored to the real clock because `buildServiceBoard` resolves freezes at
-    //     `new Date()` and has no clock seam — a fixed calendar window would make this fixture
-    //     silently inert the day it passed, which is the vacuous-test shape. No sleep is involved:
-    //     the window is simply declared open around now.
+    // The commander also declares a federating freeze. See docs/coordination.md §861.
     federatedFreezeId = await withTenantTx(commander.db, commander.orgId, async (tx) => {
       const row = await createFreeze(tx, {
         orgId: commander.orgId,
@@ -271,20 +235,7 @@ describe("service board precedence: an observation outranks a replica (Testconta
       return attached.id;
     });
 
-    // 3c. M25.7 — THE PAIRED FIXTURE, and the reason it exists is a defect in the FIRST version of
-    //     the inversion below. That version asserted `unknownFields` does NOT contain
-    //     `"activeFreeze"` for the federated row — an assertion nothing in the fixture could ever
-    //     falsify, because `activeFreeze` reaches a row's `unknownFields` on exactly one code path
-    //     (`service-board.ts`'s `!latest.drivenHere` branch, `componentFreeze ? [] : [...]`), and
-    //     the federated row is driven here, so its `unknownFields` is `[]` by construction. A
-    //     negative assertion over a value nothing can produce measures nothing at all.
-    //
-    //     The pair fixes that by making the SAME field appear and not appear for a reason the
-    //     fixture controls. The commander declares a second freeze, over the component the outpost
-    //     does NOT drive, and declares it WITHOUT `federate` — so this one really is invisible at
-    //     the outpost, that row's `activeFreeze` is null, and the row SAYS SO. The case below then
-    //     asserts both directions plus the fact that separates them (exactly ONE `freezes` row
-    //     crossed), so "the freeze arrived" and "the board gave up" cannot be confused.
+    // The paired fixture, and the defect that produced it. See docs/coordination.md §862.
     nonFederatingFreezeId = await withTenantTx(commander.db, commander.orgId, async (tx) => {
       const row = await createFreeze(tx, {
         orgId: commander.orgId,
@@ -366,12 +317,7 @@ describe("service board precedence: an observation outranks a replica (Testconta
     expect(row!.changeName).toBe("worker rollout");
     expect(row!.unknownFields).toContain("attention.blocked");
 
-    // Both behaviours in ONE board: one real local observation, one honest unknown, nothing stable.
-    // Three components, three distinct honest outcomes in ONE response:
-    //   shared     -> blocked        (a real local observation, arm 1)
-    //   contested  -> releasing      (a real local observation, arm 2, driver class beat import time)
-    //   commanderOnly -> notDrivenHere (an honest unknown)
-    // Nothing is `stable`: not one component is genuinely settled, and none is claimed to be.
+    // Both behaviours in ONE board. See docs/coordination.md §863.
     expect(outpostBoard.summary).toEqual({
       releasing: 1,
       blocked: 1,
@@ -383,11 +329,7 @@ describe("service board precedence: an observation outranks a replica (Testconta
   });
 
   it("ARM 2: a plan-less LOCAL change outranks a newer replica — driver class beats import time", () => {
-    // Neither domain compiled a plan for this component, so the authoritative arm-1 lookup is silent
-    // and arm 2 alone decides. Both candidates sit in the SAME table, ordered by `objects.created_at`
-    // — but the replica's is its IMPORT time, so it is always "newer" than a local change proposed
-    // before the bundle arrived. Ranking by driver class first makes the surviving createdAt
-    // comparison same-clock, so the change this domain actually drives wins.
+    // Neither domain compiled a plan, so the first arm is silent. See docs/coordination.md §864.
     const row = outpostBoard.rows.find((r) => r.component.id === contestedComponentId);
     expect(row).toBeDefined();
     expect(row!.latestChangeId).toBe(contestedLocalChangeId);
@@ -397,45 +339,7 @@ describe("service board precedence: an observation outranks a replica (Testconta
     expect(row!.unknownFields ?? []).not.toContain("changeState");
   });
 
-  // ============================================================================================
-  // DELIBERATE INVERSION (M25.7, owner decision D6, ADR-0043) — READ THE RETIRED PIN FIRST
-  // ============================================================================================
-  //
-  // THE RETIRED PIN, verbatim, because it is the thing this file was cited for across the codebase
-  // and a reader who finds only the new case will re-derive the old claim and be wrong:
-  //
-  //     it("freeze visibility is declared board-level on a federated instance (freezes never ride
-  //        the journal)", () => {
-  //       // Freezes are a local projection that is never journaled, so a freeze declared in the
-  //       // commander is invisible here for EVERY row — including the one the outpost drives. That
-  //       // is a property of the deployment, not of any row's driver, so it is stated once at the
-  //       // response level. Without it a driven-here row's `activeFreeze: null` would read as "no
-  //       // freeze applies".
-  //       expect(outpostBoard.unknownFields).toEqual(
-  //         expect.arrayContaining(["serviceFreeze", "rows[].activeFreeze"])
-  //       );
-  //     });
-  //
-  // WHAT WAS TRUE WHEN IT WAS PINNED. A freeze was a `freezes` projection row and nothing else:
-  // `db/schema.ts` said the generic object model has no place for freezes, and
-  // `JournalEntryKindSchema` admits nine entry kinds, none freeze-shaped. So no freeze could cross
-  // a boundary by any route, and the board's caveat rested on a structural impossibility. This
-  // parenthetical was cited as the measurement by `outpost-configuration.tsx`,
-  // `outpost-ui.md` and `campaigns-rework.md`.
-  //
-  // WHAT CHANGED. Owner decision D6 (2026-08-23): an ORG-TIER freeze declared `federate: true` gains
-  // a `freeze` graph object and rides the EXISTING `object_upsert`, and `import-repo.ts` rebuilds
-  // its projection row at the receiving instance, where it blocks. The parenthetical is now false.
-  //
-  // WHAT DID NOT CHANGE, AND WHY THE CAVEAT SURVIVES. `federate` DEFAULTS TO FALSE and nothing in a
-  // bundle reports the freezes a peer withheld, so a null `activeFreeze` is still not "no freeze
-  // applies" — only the reason moved, from "structurally impossible" to "opt-in and unreportable".
-  // Deleting the caveat would have been the wrong inversion; so would silently flipping the title
-  // and leaving the same one-line assertion, which is the vacuous shape this repo names.
-  //
-  // The two cases below therefore split the old one: the RULE that survived, and the FACT that
-  // retracted it — the second measured on a real freeze that really crossed.
-  // ============================================================================================
+  // DELIBERATE INVERSION (M25.7, owner decision D6, ADR-0043). See docs/coordination.md §865.
 
   it("THE RULE THAT SURVIVED: freeze visibility is still declared board-level, because federation is opt-in and a peer's withheld freezes are unreportable", () => {
     // Unchanged assertion, retained deliberately. It fires on ANY paired peer, and it must: the
@@ -459,18 +363,7 @@ describe("service board precedence: an observation outranks a replica (Testconta
     // verbatim, which is what keeps a Decision written here resolvable at the commander.
     expect(row!.activeFreeze!.id).toBe(federatedFreezeId);
     expect(row!.activeFreeze!.reason).toBe("commander-declared, federating");
-    // A DRIVEN-HERE ROW DECLARES NOTHING UNOBSERVABLE — a shape check, deliberately spelled as an
-    // equality rather than as `not.toContain("activeFreeze")`.
-    //
-    // The `not.toContain` form shipped here first and was a VACUOUS TEST, in the strict sense: it
-    // could not fail. `service-board.ts` puts `"activeFreeze"` into a row's `unknownFields` on
-    // exactly one path — the `!latest.drivenHere` branch — and this row is driven here, so the
-    // array is `[]` whatever the freeze does. A negative assertion over a value nothing in the
-    // fixture can produce measures the fixture's shape, not the feature.
-    //
-    // The claim it was reaching for — "this domain names `activeFreeze` unknown when it cannot see
-    // one, and does not when it can" — is real, and is measured by its own case below, on the pair
-    // of rows the fixture built for it.
+    // A DRIVEN-HERE ROW DECLARES NOTHING UNOBSERVABLE. See docs/coordination.md §866.
     expect(row!.unknownFields ?? []).toEqual([]);
 
     // NON-VACUITY, MEASURED (2026-08-24), not predicted. Deleting the
@@ -489,19 +382,7 @@ describe("service board precedence: an observation outranks a replica (Testconta
   });
 
   it("THE DISCRIMINATING PAIR: `federate` is what decides whether a commander freeze is an OBSERVATION here or an UNKNOWN — same board, two rows, one difference", async () => {
-    // ==========================================================================================
-    // THE FALSIFIABLE FORM OF THE CLAIM ABOVE.
-    //
-    // Two commander-declared freezes, both live, both over components of this same service, in the
-    // same bundle. They differ in exactly one field — `federate` — and the board has to tell them
-    // apart the only honest way it can: the one that CROSSED is reported as a real
-    // `activeFreeze`; the one that did not is reported as a null whose unobservability is NAMED.
-    //
-    // The half this pins that nothing else could: a board that simply never received either freeze
-    // would show `activeFreeze: null` twice and satisfy any single-row assertion about the second
-    // row. The `freezes`-table check below is what rules that out — exactly one row crossed, and it
-    // is the federated one.
-    // ==========================================================================================
+    // THE FALSIFIABLE FORM OF THE CLAIM ABOVE. See docs/coordination.md §867.
 
     // PREMISE at the DECLARING end. Both freezes are live at the commander; the difference under
     // test is federation, not one of them having been mistyped into a closed window.

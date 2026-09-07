@@ -5,22 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RelayedEvent } from "@scp/sdk";
 import { render } from "../test-support/render-dom";
 
-/**
- * M26.1 (proposal multi-region-instance-resilience.md §7.1 item 1, closing §4-A1): the two web-side
- * catch-up triggers a best-effort, no-replay SSE stream needs (ADR-0025 D4) — a synthetic
- * `scp.sse.resync` frame from the server-side bridge, and this hook's OWN stream (re)establishment,
- * which can happen without one (a browser<->api-pod network blip the bridge's LISTEN never saw).
- *
- * Both are proven by DELETING THE WIRING, not by reading `use-event-stream.ts`'s source: each test
- * below fails if its corresponding one-line hookup — `onOpen: resync` or the `event.type ===
- * RESYNC_EVENT_TYPE` branch — is removed, because nothing else in this file would invalidate the
- * cache for that trigger.
- *
- * `client.events.stream()` is mocked at the module boundary (not `resilientEventStream` — that
- * reconnect/backoff machinery is proven in packages/sdk/src/event-stream.test.ts already) with a
- * push-controlled async iterator, so a test can drive one frame at a time and assert against the
- * REAL `QueryClient`'s invalidation state instead of a spied call.
- */
+/** The event stream's reconnect behaviour, as the hook sees. See docs/web.md §136. */
 
 const OWN_DOMAIN_USER = {
   userId: "11111111-1111-4111-8111-111111111111",
@@ -134,12 +119,7 @@ describe("useEventStream: cache invalidation on the two catch-up triggers (M26.1
     queryClient.setQueryData(["probe"], "fresh");
 
     const view = await renderHost(queryClient);
-    // The mount's own `onOpen` (proven independently by the sibling test below) already
-    // invalidated everything once. `invalidate()` is a no-op on an already-invalidated query
-    // (query-core's guard: `if (!state.isInvalidated) dispatch(...)`), so a second
-    // `invalidateQueries()` call from the resync frame would be UNOBSERVABLE unless this is reset
-    // first — `setQueryData` dispatches a `"success"` action, which query-core's reducer clears
-    // `isInvalidated` on, giving this test a clean baseline attributable to the resync frame alone.
+    // The mount's own `onOpen`. See docs/web.md §137.
     await waitUntil(
       () => queryClient.getQueryState(["probe"])?.isInvalidated === true,
       "the initial onOpen invalidation to land, before it is reset below"
@@ -167,11 +147,7 @@ describe("useEventStream: cache invalidation on the two catch-up triggers (M26.1
 
     const view = await renderHost(queryClient);
 
-    // The mock's `onOpen` already fired synchronously inside `client.events.stream()`, before this
-    // point — this is the FIRST (and, in this test, only) connection, and no `scp.sse.resync` frame
-    // is ever pushed. If `onOpen: resync` were removed from `use-event-stream.ts`'s call into
-    // `client.events.stream()`, `onOpenCalls` below would still be 1 (the mock itself always calls
-    // it) but the query would never be marked invalidated — that is the property this asserts.
+    // The mock's open callback already fired synchronously. See docs/web.md §138.
     expect(onOpenCalls).toBe(1);
     await waitUntil(
       () => queryClient.getQueryState(["probe"])?.isInvalidated === true,

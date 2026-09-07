@@ -1,23 +1,6 @@
 import { z } from "zod";
 
-/**
- * M13.3b-ii — OFFLINE SCANNER-DB PRE-LOAD + REFRESH (ADR-0020, proposal §13.3b).
- *
- * The commander's promotion scan step (`federation/promotion-scan-step.ts`) runs the
- * `scp-runner-scan` container `--network none`; the Trivy vulnerability DB is either BAKED into that
- * image at build time (the fail-closed fallback) or PRE-LOADED from a server-maintained cache that
- * the operator keeps fresh. This file carries the TYPED shapes for that cache's operator surface
- * (API -> SDK -> CLI, charter principle 3): its status, the operator-configurable staleness policy,
- * the connected refresh, and the air-gap operator-load.
- *
- * WHY OPERATOR-LOADED, NOT PROMOTION-CHANNEL, FOR THE AIR-GAP (owner decision 2026-07-24): the
- * commander sits at the TOP of the federation with NO into-commander byte channel — the relay flows
- * downward + change-bound, and `.scpbundle` is metadata-only (ADR-0009). So a disconnected commander
- * cannot RECEIVE a DB over the promotion channel. The operator instead carries the cosign-signed DB
- * blob across the CDS and loads it into the cache (digest-bound + detached-signature verify before
- * accept). The proposal §13.3b's "promotion-channel refresh (air-gapped)" was wrong for the commander
- * and is corrected to operator-loaded (proposal §13.3b + the scan-db-refresh runbook).
- */
+/** M13.3b-ii — OFFLINE SCANNER-DB PRE-LOAD + REFRESH. See docs/schemas.md §379. */
 
 /** WHERE the DB the runner will consume came from. `baked` = the build-time image bake (the
  *  fail-closed fallback, as stale as the image); `refreshed` = a connected operator-invoked skopeo
@@ -47,13 +30,7 @@ export type ScanDbThresholdFired = z.infer<typeof ScanDbThresholdFiredSchema>;
 export const DEFAULT_SCAN_DB_SOFT_MAX_AGE_HOURS = 7 * 24;
 export const DEFAULT_SCAN_DB_HARD_MAX_AGE_HOURS = 30 * 24;
 
-/**
- * The commander-level, INSTANCE-SCOPED staleness policy — modeled EXACTLY like M17.5's
- * `scan_requirement_floors` (governance/scan-requirements.ts + drizzle 0029): no `org_id`, tenant
- * SELECT (a gate a tenant cannot inspect is not explainable), operator-only write. A company applies
- * its own rules at RUNTIME (owner decision 2026-07-24), no redeploy. Both bounds nullable so an
- * operator can clear one back to the built-in default without deleting the row.
- */
+/** The commander-level, INSTANCE-SCOPED staleness policy. See docs/schemas.md §380. */
 export const ScanDbStalenessPolicySchema = z.object({
   /** Soft max age in hours — beyond this the DB is WARN (still scans). `null` ⇒ built-in default. */
   softMaxAgeHours: z.number().int().positive().nullable(),
@@ -77,11 +54,7 @@ export const PutScanDbStalenessPolicyRequestSchema = z.object({
 });
 export type PutScanDbStalenessPolicyRequest = z.infer<typeof PutScanDbStalenessPolicyRequestSchema>;
 
-/**
- * The DB cache's status — tenant-readable so a blocked promotion's Decision (and an operator's
- * `scp scan-db status`) can explain WHY the DB failed closed / warned. Surfaces the age + source +
- * schema compatibility + which threshold fired + the active thresholds (item 4/5, owner 2026-07-24).
- */
+/** The DB cache's status. See docs/schemas.md §381. */
 export const ScanDbStatusSchema = z.object({
   /** Whether a DB cache dir is configured at all (`SCP_MANAGED_SCAN_DB_CACHE`). Unset ⇒ the runner
    *  uses the image-baked DB (source `baked`), and there is no staleness gate (as stale as the image). */
@@ -120,15 +93,7 @@ export const RefreshScanDbResponseSchema = z.object({
 });
 export type RefreshScanDbResponse = z.infer<typeof RefreshScanDbResponseSchema>;
 
-/**
- * Air-gap operator-load — the operator produced a cosign-signed DB blob at the connected side
- * (skopeo-pull + repackage + cosign sign-blob), walked it across the CDS, and placed it (plus its
- * detached signature + the signing public key) on a path reachable by the commander. The server
- * VERIFIES the detached signature (and, when given, the digest) BEFORE accepting the bytes into the
- * cache (atomic swap). No new federation message/flow; the blob is the SAME `type:'blob'` shape as
- * the connected-repackage. Paths are server-local (operator-token gated) so hundreds of MB never
- * traverse the JSON API.
- */
+/** Air-gap operator load: a signed database blob. See docs/schemas.md §382. */
 export const LoadScanDbRequestSchema = z.object({
   /** Server-local path to the DB blob (a gzipped tar of the trivy cache `db/` dir). */
   blobPath: z.string().min(1),

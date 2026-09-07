@@ -12,26 +12,9 @@ import { Notice } from "./ui/notice";
 import { Alert } from "./ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
-/**
- * M20 (ADR-0031) — the three UI surfaces of a domain-local object: the badge, the create-form
- * declaration, and the one-way publish verb.
- *
- * Everything in this file keys on the OBJECT's own `domainLocal` bit, never on the instance's
- * federation role. That is deliberate and load-bearing (ADR-0031 §Consequences): the commander's
- * UI simply never receives a domain-local object, so there is nothing to conditionally hide — and
- * a role-gated view would reintroduce exactly the failure mode M16.3's write-control census found.
- * Do not add `federation.self` checks here.
- */
+/** M20 (ADR-0031) — the three UI surfaces of a domain-local object. See docs/web.md §40. */
 
-/**
- * Worn wherever the object's name is (list row, detail header). `domainLocal` is a declared fact,
- * not an unknown — so this is a neutral pill (spec §1.5), not the amber-dashed honesty badge.
- *
- * M20.7 (ADR-0031 §6c): `inheritedFrom` is the server-stamped provenance — `null` means declared
- * directly, present means inherited at create from that container. It is READ, never derived
- * (the whole point of asking the server for it), and it is HISTORY: where the bit came from, not
- * whether that container still withholds publication. Never use it to predict a §6b refusal.
- */
+/** Worn wherever the object's name is (list row, detail header). See docs/web.md §41. */
 export function DomainLocalBadge({
   inheritedFrom
 }: {
@@ -54,18 +37,7 @@ export function DomainLocalBadge({
   );
 }
 
-/**
- * The create-form declaration. Create-time only by contract (ADR-0031 §6): shared → domain-local
- * is refused permanently after the fact, so this checkbox is the ONE moment the property can be
- * set — the help text says so instead of letting the operator find out from a 409 later.
- *
- * M20.5 (§6a): declared on a CONTAINER (domain, service, assembly), locality propagates — anything
- * created underneath inherits at ITS create, one hop, along either containment route. The help
- * text names that, and names the boundary: inheritance happens at create only, never as a
- * retrofit of an existing subtree. The payload contract stays omit-when-unchecked — an explicit
- * `domainLocal: false` inside a local container is a 400 by design (the operator asked for shared
- * and must not silently get local), and omitting the field is what lets inheritance decide.
- */
+/** The create-form declaration. See docs/web.md §42. */
 export function DomainLocalCreateField({
   checked,
   onChange
@@ -98,11 +70,7 @@ export function DomainLocalCreateField({
   );
 }
 
-/**
- * The confirm copy, exported as its own component so `domain-local.test.tsx` can pin the
- * load-bearing phrases without fighting Radix's portal (which renders nothing under
- * `renderToStaticMarkup`).
- */
+/** The confirm copy, exported so the test can render it. See docs/web.md §43. */
 export function PublishConfirmBody(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-2 text-sm text-slate-600">
@@ -126,15 +94,7 @@ export function PublishConfirmBody(): React.JSX.Element {
   );
 }
 
-/**
- * The publish verb (ADR-0031 §6) — an ACTION with an effect, deliberately not a field edit, so
- * the card renders it as one: an explicit button, an irreversible-confirm dialog, and a visible
- * report of the edge sweep afterwards (published vs withheld buckets).
- *
- * Renders `null` unless the object is domain-local (or was just published in this session — the
- * result panel must survive the refetch that flips `domainLocal` to false). Gating is data-driven
- * only; see the module doc.
- */
+/** The publish verb (ADR-0031 §6). See docs/web.md §44. */
 export function DomainLocalPublishCard({
   object,
   typeId,
@@ -272,15 +232,7 @@ export function DomainLocalPublishCard({
   );
 }
 
-/**
- * One bucket of the edge-sweep report, rendered from the DESCRIBED arrays
- * (`publishedRelationships`/`withheldRelationships`) the contract grew after this UI's first cut
- * flagged the bare-id arrays as illegible. Each row is edge type → other endpoint by name, urn in
- * the tooltip. The withheld bucket's endpoint links to its own page when its type is a routed
- * registry — "publish that endpoint" is the operator's next action, and its publish card lives
- * there. A vanished endpoint degrades urn/name to the id server-side, so the name is always safe
- * to render (and the failed registry lookup makes such a row plain text, not a dead link).
- */
+/** One bucket of the edge-sweep report, from the arrays. See docs/web.md §45. */
 function EdgeBucket({
   heading,
   edges,
@@ -317,11 +269,7 @@ function EdgeBucket({
   );
 }
 
-/**
- * The provenance stamp's container (M20.7), linked into its registry page when its urn names a
- * routed type — same urn-derived link decision as EndpointName below, same degradation to plain
- * text when the type segment resolves to no registry.
- */
+/** The provenance stamp's container. See docs/web.md §46. */
 export function ProvenanceLink({
   source
 }: {
@@ -348,16 +296,7 @@ export function ProvenanceLink({
   );
 }
 
-/**
- * The other endpoint, linked into its registry page when its urn names a routed type.
- *
- * Exported for `domain-local.test.tsx`, which pins BOTH branches — because the no-link branch
- * rides on a server-side FALLBACK, not a contract (the M20 author's caveat, 2026-08-13): a
- * vanished endpoint currently degrades `otherEndpointUrn` to the raw id, which happens to have no
- * type segment and so resolves to no registry. If that fallback ever changes shape (say, to the
- * literal string "unknown"), the pinned test is what turns the change into a red test instead of
- * a dead link discovered by an operator.
- */
+/** The other endpoint, linked when its urn names a route. See docs/web.md §47. */
 export function EndpointName({ edge }: { edge: SweptRelationship }): React.JSX.Element {
   // `urn:scp:{org}:{type}:{slug}` — segment 3 is the typeId. A degraded urn (vanished endpoint:
   // the server substitutes the raw id) has no such segment and resolves to no registry.

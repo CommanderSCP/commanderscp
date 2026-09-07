@@ -4,65 +4,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { matchingParen, readStripped } from "@scp/source-census";
 
-/**
- * ================================================================================================
- * THE FIXED-SLEEP REGISTRY — a CI guard for the flake class that cost three sessions a day
- * ================================================================================================
- *
- * THE PROPERTY: *a fixed wall-clock sleep standing in for "the asynchronous engine has had its
- * chance", followed by an assertion about what did or did not happen in that window.*
- *
- * Such a test is not merely slow. It is wrong in BOTH directions at once, and which direction it
- * lands in depends on how busy the machine is:
- *
- *   - Under contention it FAILS SPURIOUSLY, because the thing it waited for had not happened yet.
- *     The worst shape is a sleep that is silently also the wait for ARRIVAL: `assertStaysExecuting`
- *     slept 3-4s and then asserted `state === "executing"`, so a change still walking
- *     `proposed -> evaluated -> coordinated` reported the same failure as one that had escaped the
- *     gate. Measured on 2026-08-17: four independent sessions chasing phantom regressions in
- *     governance.integration.test.ts, a different test failing each run and every one of them
- *     passing in isolation.
- *   - On an idle machine it PASSES VACUOUSLY, because "several ticks" was never several ticks. The
- *     arithmetic those comments relied on is simply not true here: `RECONCILE_TICK_INTERVAL_SECONDS`
- *     is 1, but the tick re-schedules itself with `startAfter: 1` onto pg-boss, whose polling
- *     interval defaults to 2000ms and is not overridden anywhere in this repo, and each tick then
- *     walks EVERY org in the database (`runReconcileSweep`). Measured: a 2025ms median tick with ONE
- *     org, 2821ms (max 5972ms) with 21, and `propose -> executing` going from 1391ms to **10903ms**
- *     over the same range — against a 4000ms grace, in a file that creates 28 orgs. A 3s "several
- *     ticks" grace is at most one tick, and often zero. `RECONCILE_TICK_BUDGET_MS` in `harness.ts`
- *     carries the full table.
- *
- * THE REMEDY IS A POSITIVE SIGNAL, not a longer sleep — `harness.ts`'s `assertStaysExecuting` and
- * `waitForChangeParked` are the worked examples. Both watch something the engine WRITES when it
- * does the thing the test is asserting about (`reconcile_cursor_at` for "the gate refused again",
- * `reconcile_blocked_at` for "the failed wave has been parked and will never be served again"), so
- * they are exactly as slow as the engine actually is and cannot be made vacuous by a fast box or
- * flaky by a slow one.
- *
- * WHAT THIS GUARD CAN AND CANNOT DO. It is a source census — `@scp/source-census`'s doc comment
- * lists the six things one still cannot prove, all of which apply here. It cannot tell a
- * legitimate sleep from an illegitimate one; that is what the registry below is for. What it buys
- * is that ADDING one becomes a deliberate act that fails CI until somebody writes down which side
- * of the property it falls on.
- *
- * THE MATCH IS DELIBERATELY WIDER THAN "A BIG NUMBER". The first census written for this bug
- * grepped `setTimeout\(\w+, [0-9_]{4,}` and reported the governance file clean — while the second
- * copy of the very helper under repair sat in `scoped-scan-requirements.integration.test.ts`
- * spelled `setTimeout(resolve, graceMs)`. A named constant is not a smaller hazard than a literal;
- * it is the same hazard with the number moved. So: every `setTimeout` in an integration test counts
- * EXCEPT one whose delay is a literal under 1000ms (a yield or a debounce nudge, not a stand-in for
- * engine progress).
- */
+/** THE FIXED-SLEEP REGISTRY. See docs/test-support.md §32. */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_SRC = join(HERE, "..");
 
-/**
- * Every surviving fixed sleep in an integration test, with the count expected in that file and why
- * it is there. Counts are EXACT in both directions: a file that grows one fails, and a file that
- * loses its last one fails too, so a stale entry cannot sit here pretending to authorise something
- * that no longer exists.
- */
+/** Every surviving fixed sleep, with an exact expected count. See docs/test-support.md §33. */
 const REGISTRY: Record<string, { count: number; why: string }> = {
   "coordination/boundary-segment.integration.test.ts": {
     count: 1,
@@ -126,14 +73,7 @@ function integrationTestFiles(dir: string): string[] {
   return out;
 }
 
-/**
- * Every `setTimeout(callback, delay)` in `source` whose delay is NOT a literal under 1000ms.
- *
- * The argument list is walked with {@link matchingParen} rather than matched by a regex, for the
- * same reason `exportedDeclarations` does it: `[^)]*` cannot cross a callback that has its own
- * parentheses, so `setTimeout(() => resume(), 5_000)` is invisible to the obvious pattern. A census
- * whose filter cannot see a form is a census that certifies that form clean.
- */
+/** Every `setTimeout` delay that is not a small literal. See docs/test-support.md §34. */
 function fixedSleeps(source: string): string[] {
   const out: string[] = [];
   for (const match of source.matchAll(/setTimeout\s*\(/g)) {

@@ -12,21 +12,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE CORRELATED-INFRASTRUCTURE LANE (owner decision, 2026-08-24) — through the real HTTP route.
- * An infrastructure change is CORRELATED to a component when its wave/bound target names a
- * deployment-target one of the component's placements ALSO names, or the component is `hosted_on`
- * it; a `provides`/`requires` coupling additionally correlates, with its own `route`. Each entry
- * states its provenance (`correlatedVia.route` + `target`), read off the server's own matching.
- *
- * ALSO COVERED: a change found via BOTH the placement/hosted_on arm and the coupling arm at once —
- * the merge keeps the placement/hosted_on route (and its named target) and still surfaces
- * `coupledKey`, per `component-pipeline.ts`'s `coupledKeyByChangeId` overlay (~:1131-1207).
- *
- * NOT COVERED here: a federation/cross-domain fixture (no two-domain harness exists for this
- * suite, the same gap `component-pipeline.integration.test.ts`'s own mutation log records for
- * `maintainedBy`).
- */
+/** THE CORRELATED-INFRASTRUCTURE LANE. See docs/coordination.md §289. */
 describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -56,12 +42,7 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
     return res.json().correlatedInfra;
   }
 
-  /** Compiles a change's plan directly, the same shortcut `component-pipeline.integration.test.ts`
-   *  takes: compilation is what writes the `change_wave_targets` rows this feature reads, and the
-   *  reconcile loop's OWN job (locking, state transitions) is covered elsewhere. `topologyObjectId:
-   *  null` compiles LEGACY-shaped: the change's own `targets` become the wave target ids verbatim,
-   *  which is how an infrastructure change against a deployment-target OBJECT (no component at all)
-   *  lands `change_wave_targets.target_object_id` on the deployment-target's own id. */
+  /** Compiles a change's plan directly, the same shortcut. See docs/coordination.md §290. */
   async function compile(
     change: { id: string },
     targetObjectIds: string[],

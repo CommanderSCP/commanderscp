@@ -10,60 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE THREE `source_mappings` MUTATION DOORS TAKE `object:write` AT THE ORG ROOT **OR** AT THE
- * MAPPING'S OWN COMPONENT — and the credential/discovery doors next to them still take the org root
- * and nothing else.
- *
- * ============================================================================================
- * WHY THIS FILE EXISTS
- * ============================================================================================
- * `authz/resolve.ts` expands a checked scope strictly UPWARD, so a check pinned at `auth.orgId` can
- * be satisfied by an org-root binding and by NOTHING else. The pause switch, the scope label and
- * the delete-by-tuple door were all pinned that way, which made the mappings of a component
- * unreachable to the very role that administers the component (docs/proposals/role-model.md
- * §4.2/§8). Increment 2.5a adds the component as a second arm.
- *
- * IT IS A DISJUNCTION, NOT A MOVE, and that is the whole subtlety. Replacing the org-root arm with
- * the component would NOT have been a pure widening, because `scopeExpandCte` is liveness-blind on
- * its SEED row only: it joins every ANCESTOR `deleted_at IS NULL`, so a component whose containment
- * parents have been tombstoned expands to the seed alone and matches no binding at all — the
- * org-root Owner's included. `authz/org-root-arm.ts`'s `checkAtOrgRootOrScopes` carries the full
- * argument and is the ONE definition every door 2.5a re-scoped composes; the stranded-mapping case
- * below is this family's two-API-call reproduction of it, and it is the merge-loser case the DELETE
- * door was built for.
- *
- * ============================================================================================
- * AND WHY IT ALSO TESTS DOORS THAT WERE DELIBERATELY LEFT ALONE
- * ============================================================================================
- * The re-scope above is an `object:write`-plus-`auth.orgId` pattern, and the same two files hold
- * three more instances of that pattern that MUST NOT be re-scoped (role-model.md §8.6): the
- * encrypted-secret doors, the webhook-secret door, and `/discovery/run`, which makes SCP dial an
- * execution system with stored credentials. Sweeping them mechanically would hand a component-scoped
- * administrator the org's execution-system credentials. Nothing in the tree pinned their org-root
- * requirement — all 334 `403` assertions in `apps/server` were enumerated and ZERO covered any of
- * these doors — so the next person running this census could sweep them and ship green. The last two
- * cases below are that pin.
- *
- * IT WAS THREE DISCOVERY DOORS AND IS NOW ONE. `/discovery/accept` went with ADR-0047 and
- * `/discovery/backfill-source-mappings` followed it; each took its own case with it, and the pin for
- * the survivor lives in the credential-doors case below, which probes `/discovery/run` directly.
- *
- * The backfill door was the sharpest instance while it existed, and its lesson is worth keeping
- * after it: 2.5a briefly SUBSTITUTED its org-root check with a per-component `hasPermission`, which
- * authorized once per MATCHED component — so an empty proposal authorized nothing whatsoever and any
- * authenticated principal reached the handler. A door's own bar may be ADDED to from inside a loop,
- * never SUBSTITUTED by one.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | drop `assertSourceMappingWritable`'s COMPONENT arm (check the org root only, i.e. today's pin) | ALL THREE widening cases FAIL — pause switch, scope label and delete-by-tuple each stop at their FIRST assertion, the component-bound admin acting on their own row, with `403 ... lacks 'object:write' at the org root and at source-mapping component '<id>'` where 200 was expected. The tombstoned-ancestor case stays green, so this mutation isolates the widening and nothing else |
- * | drop `assertSourceMappingWritable`'s ORG-ROOT arm (check the component only) | the tombstoned-ancestor case FAILS at its first door, the pause switch: `403 ... lacks 'object:write' at the org root and at source-mapping component '<id>'` where 200 was expected. Nothing else in the file moves — which is exactly why this case had to be written: the ordinary org-root assertions elsewhere all sit on components with LIVE ancestors |
- * | delete the `authorize` at `PUT /secrets/{key}` (a credential door has no object to re-scope TO, so a sweep can only weaken it) | the credential-door case FAILS: 200 where 403 was expected |
- */
+/** The three mapping mutation doors take write at the root. See docs/routes.md §27. */
 describe("source-mapping write doors are scoped at the component, credential doors are not", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -242,21 +189,7 @@ describe("source-mapping write doors are scoped at the component, credential doo
   });
 
   it("the org-root Owner still reaches a STRANDED mapping whose component's ancestors are all tombstoned", async () => {
-    // ==========================================================================================
-    // THE CASE THAT MAKES THE RE-SCOPE A DISJUNCTION RATHER THAN A MOVE.
-    //
-    // `scopeExpandCte` seeds its walk with the raw uuid (no liveness filter), but joins every
-    // ANCESTOR `deleted_at IS NULL`. So the chain is CUT at the first tombstone and `scope_expand`
-    // collapses to the seed alone, which matches NO binding — including the org-root Owner's. A
-    // component-only check would therefore 403 the Owner on the very rows this DELETE door exists
-    // to remove: a component merge (M12 P5d, `docs/proposals/organize-after.md` §2.4 — ADR-0026 is
-    // about PLACEMENTS and says nothing about merges) soft-deletes the loser component and does not
-    // re-point its `source_mappings`, and `deleteObject`'s orphan guard counts only children with
-    // `deleted_at IS NULL`, so the loser's containment parents become deletable straight after.
-    //
-    // Built here with ordinary API calls in the same order an operator would: delete the component,
-    // then its service, then its domain. Nothing below reaches into the database.
-    // ==========================================================================================
+    // THE CASE THAT MAKES THE RE-SCOPE A DISJUNCTION RATHER THAN A MOVE. See docs/routes.md §28.
     const kind = `stranded-${randomUUID().slice(0, 8)}`;
     const label = randomUUID().slice(0, 8);
 
@@ -389,14 +322,7 @@ describe("source-mapping write doors are scoped at the component, credential doo
     const key = `cred-${randomUUID().slice(0, 8)}`;
     const kind = `cred-${randomUUID().slice(0, 8)}`;
 
-    // Each pair is (refused for the component-bound admin, NOT refused for the org root). The
-    // second half of every pair is what makes the first half meaningful: it proves the request was
-    // otherwise well-formed and that only the actor's standing decided the outcome.
-    //
-    // `PUT`/`DELETE /secrets/{key}` and `PUT .../webhook-secret` write the org's encrypted
-    // credential material; role-model.md §1.3d splits these into their own `secret:write`
-    // permission rather than widening them. `POST /discovery/run` is the door that makes SCP dial an
-    // execution system with a stored token.
+    // Each pair: refused for one principal, allowed for the other. See docs/routes.md §29.
     const put = await call("PUT", mineToken, `/api/v1/secrets/${key}`, { value: "v" });
     expect(put.status, put.body).toBe(403);
     const putAsOwner = await call("PUT", org.adminToken, `/api/v1/secrets/${key}`, { value: "v" });
@@ -424,11 +350,7 @@ describe("source-mapping write doors are scoped at the component, credential doo
     // still proven immediately below by `/discovery/run`, which carries the same org-root bar and
     // is the door that still exists — so the case keeps its subject, one probe lighter.
 
-    // `/discovery/run`'s org-root bar is `object:read`, which the component-bound Administrator
-    // holds AT THEIR COMPONENT and nowhere else — so it refuses for exactly the reason under test.
-    // The owner's control stops at 400 (an empty argocd config fails `validatePluginConfig`), which
-    // is downstream of the authorize call and therefore proves it passed — and, unlike a 200, it
-    // dials nothing.
+    // The discovery route's org-root bar is a different one. See docs/routes.md §30.
     const run = {
       pluginModule: "argocd-discovery",
       pluginInstanceId: `probe-${randomUUID().slice(0, 8)}`,

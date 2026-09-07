@@ -4,18 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScpClient } from "./client.js";
 import { ScpResponseValidationError } from "./errors.js";
 
-/**
- * M21.6 — the two dependency READ wrappers, `dependencySubscriptions.inventory()` and
- * `dependencySubscriptions.bumps()`, driven through the REAL generated client against a loopback
- * HTTP server (the same harness as `response-validation.test.ts`).
- *
- * DELETE-THE-WIRING: each test dies if its wrapper line is removed from `client.ts` (the method is
- * gone), if the wrapper is pointed at the wrong generated request (the recorded URL changes), or if
- * the wrapper stops passing the path/query through (the recorded URL loses the id or the page
- * query). The response bodies are well-formed on purpose: `sdk.gen.ts`'s per-operation
- * `responseValidator` runs on this path too, so a body the schema refuses would fail the test for
- * the WRONG reason — and the last case pins that the validator IS on this path.
- */
+/** The two dependency read wrappers, through the real client. See docs/sdk.md §51. */
 
 const COMPONENT_ID = "33333333-3333-4333-8333-333333333333";
 const LINE_ID = "44444444-4444-4444-8444-444444444444";

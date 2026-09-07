@@ -9,22 +9,7 @@ export interface DecryptCanaryResult {
   decryptsAttempted: number;
 }
 
-/**
- * D6 / B3 BOOT CANARY (multi-region-instance-resilience.md §7.3). Proves the configured
- * `SCP_SECRETS_MASTER_KEY` actually decrypts this instance's vault BEFORE serving — the failure mode
- * it exists to catch is a member cluster (or a restored instance) booting with the WRONG master key,
- * where every stored plugin credential is silently undecryptable and every executor call fails only
- * later, one at a time, with no single loud signal.
- *
- * SPECIFIED AGAINST RLS (the v0.1 canary "could never run"): `secrets` is FORCE-RLS, so an UNSCOPED
- * `SELECT FROM secrets` returns zero rows *vacuously* and a canary written that way passes on a vault
- * it never read. So this enumerates orgs on the un-RLS'd `orgs` table, then attempts exactly one
- * decrypt PER ORG inside `withTenantTx` (which sets `app.current_org_id`, the only way the row is
- * visible). A zero-row org is skipped — a genuinely empty vault is not a failure. `decryptSecretValue`
- * throws on an AES-256-GCM auth-tag mismatch (a wrong key), which propagates out as the refusal.
- *
- * The caller (main.ts, production mode only) treats a throw as fail-closed: refuse to serve.
- */
+/** D6 / B3 BOOT CANARY. See docs/secrets.md §3. */
 export async function runSecretsDecryptCanary(
   db: Db,
   masterKey: Buffer

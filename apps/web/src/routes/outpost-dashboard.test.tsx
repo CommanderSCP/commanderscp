@@ -1,17 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { heldInputsCaption, heldInputsSummary } from "./outpost-dashboard";
 
-/**
- * pipeline-substrate-registry-scan.md §10.6 on the OUTPOST DASHBOARD — the one `SourceMapping`
- * consumer the first §10.6 census missed: it captioned every mapping held on the site "domain-
- * specific" BY CONSTRUCTION (site-role inference), never reading `scope`/`mirrorOfShared`. A
- * mapping declared `scope: global` (the API accepts it on any site) or a `mirrorOfShared` row is
- * not domain-specific, so the caption now states the held count (a fact) and ONLY the labels the
- * rows actually declare.
- *
- * MUTATION (applied alone, then reverted): count `held` as `domain` regardless of `scope` → the
- * "declared labels only" case FAILS (`1 domain-specific` for an undeclared row).
- */
+/** pipeline-substrate-registry-scan.md §10.6 on the OUTPOST DASHBOARD. See docs/web.md §388. */
 describe("outpost dashboard §10.6: held inputs are counted, labels are READ", () => {
   it("no mappings → 'no inputs held here yet' — never 'no domain-specific inputs' (nothing was declared)", () => {
     const summary = heldInputsSummary([]);

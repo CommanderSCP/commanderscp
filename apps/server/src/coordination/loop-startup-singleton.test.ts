@@ -3,43 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { matchingParen, productionSourceFiles, readStripped } from "@scp/source-census";
 
-/**
- * ================================================================================================
- * A STARTUP KICK MAY NEVER SHARE THE INTERVAL CHAIN'S SINGLETON KEY
- * ================================================================================================
- *
- * THE PROPERTY: *a self-rescheduling pg-boss loop's STARTUP `boss.send` must not carry the same
- * `singletonKey` as the reschedule inside its own handler.*
- *
- * WHY IT IS FATAL, in pg-boss's own terms (10.4.2, `src/plans.js`):
- *   - the unique index is `(name, singleton_on, COALESCE(singleton_key,''))` WHERE `state <>
- *     'cancelled'`, so a COMPLETED or ACTIVE job STILL HOLDS the slot;
- *   - `singleton_on` is a wall-clock BUCKET (`floor(epoch/singletonSeconds)*singletonSeconds`);
- *   - a losing insert is `ON CONFLICT DO NOTHING RETURNING id` — it returns NULL **silently**, and
- *     no call site checks.
- * A self-rescheduling loop's only other source of ticks is the reschedule inside its handler, so one
- * swallowed send means no job -> no handler -> no reschedule -> **the loop is dead forever**, with no
- * error, no log, and no failing health check. That is the same shape as the starvation bug that
- * stopped production coordination for 13 days behind green health checks (CLAUDE.md).
- *
- * THIS IS NOT HYPOTHETICAL. M26.1's §4-A4 item gave six loops' startup sends the chain's `"tick"`
- * key. Measured: a 60s loop's first reschedule (sent ~2s after its startup job, inside the SAME 60s
- * bucket) was swallowed by that just-completed startup job — the loop ran ONE sweep and died, on
- * ~58 of every 60 boots, in production as well as in tests. It reached CI as four integration files
- * timing out waiting for engine progress, with no error anywhere.
- *
- * THE REMEDY IS AN UNKEYED STARTUP SEND — no key and no window, so it ALWAYS inserts
- * (`LOOP_STARTUP_SEND_IS_UNKEYED`, events/pgboss.ts). A distinct key with a short window was tried
- * second and is ALSO wrong: it fixed the chain collision but then swallowed a crash-restarted
- * worker's kick with that worker's OWN previous boot, killing crash resumption. Any key+window can
- * swallow, because job_i4 counts completed jobs; only "no window" cannot. §4-A4's replica dedupe is
- * deliberately given up — redundant sweeps are safe (FOR UPDATE SKIP LOCKED), a dead loop is not.
- *
- * HOW THIS CENSUS DECIDES. Within each `boss.send(...)` call, a `startAfter` marks the RESCHEDULE
- * (the chain deliberately owns `"tick"`); a send WITHOUT `startAfter` is a startup kick, and a
- * startup kick carrying `singletonKey: "tick"` is the defect. Comment-stripped so a doc comment
- * quoting the bad shape (there is one, in events/pgboss.ts) cannot trip it.
- */
+/** A startup kick may never share the interval singleton key. See docs/coordination.md §553. */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_SRC = join(HERE, "..");
@@ -48,20 +12,7 @@ const SEND_CALL = /boss\.send\s*\(/g;
 const CHAIN_KEY = /singletonKey\s*:\s*"tick"/;
 const RESCHEDULE_MARKER = /startAfter\s*:/;
 
-/**
- * THE INGREDIENT THAT MAKES A SEND SWALLOWABLE — `singletonSeconds`, not `singletonKey`.
- *
- * `job_i4` is `(name, singleton_on, COALESCE(singleton_key,'')) WHERE state <> 'cancelled' AND
- * singleton_on IS NOT NULL`, and `singleton_on` is populated ONLY when `singletonSeconds` is passed.
- * So:
- *   - a key WITHOUT seconds constrains nothing at all under the standard policy (no `singleton_on`
- *     ⇒ the row is not in the index). `internal-release-loop.ts` and `inventory-ingestion-loop.ts`
- *     both send `{singletonKey: changeObjectId}` in that shape;
- *   - seconds WITHOUT a key still takes a slot, since the key is `COALESCE(singleton_key,'')`.
- * Matching on `singletonSeconds` therefore catches every immediate send that pg-boss can silently
- * drop, and only those. Matching on the literal `"tick"` — which is all this census originally did —
- * missed the second occurrence of this very bug, where the key was `"startup"`.
- */
+/** THE INGREDIENT THAT MAKES A SEND SWALLOWABLE. See docs/coordination.md §554. */
 const SWALLOWABLE_WINDOW = /singletonSeconds\s*:/;
 
 interface Offender {

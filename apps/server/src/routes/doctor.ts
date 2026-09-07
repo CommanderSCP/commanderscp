@@ -33,18 +33,7 @@ function requireOperatorToken(deps: AppDeps, request: FastifyRequest): void {
   }
 }
 
-/**
- * `GET /api/v1/doctor` — operational self-checks for the CALLER'S OWN org (`scp doctor`).
- *
- * READ-ONLY, and there is deliberately no companion repair endpoint: see `packages/schemas/doctor.ts`
- * and `graph/integrity-repo.ts` for the same argument. Tenant-scoped like every other report, so one
- * org's operator can never inspect another's. The INSTANCE-wide form of the same checks runs once at
- * boot (`main.ts` -> `federation/self-origin-check.ts::warnOnFederationSelfOriginDivergence`) —
- * that one can span orgs because it answers to the operator of the instance, not to a bearer token.
- *
- * Nothing here may be added to the reconcile hot path. These checks exist BECAUSE a per-tick probe
- * was rejected: it costs a query on a one-second loop and floods the log for a legitimately idle org.
- */
+/** Operational self-checks for the caller's own org. See docs/routes.md §144. */
 export function registerDoctorRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 

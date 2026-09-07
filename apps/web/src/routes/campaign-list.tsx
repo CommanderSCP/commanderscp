@@ -2,11 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Flag } from "lucide-react";
-// M5 types: @scp/schemas, not @scp/sdk — @scp/sdk's index.ts only re-exports M2/M3-era wire
-// types; it never added a Campaign re-export block. Importing @scp/schemas directly
-// here is within bounds (eslint.config.mjs's own restricted-imports rule: "apps/web/src may
-// import only @scp/sdk and @scp/schemas"), matching how change-detail.tsx already does the same
-// thing for M4's ApprovalRequest.
+// M5 types: @scp/schemas, not @scp/sdk. See docs/web.md §188.
 import type { CampaignStatus } from "@scp/schemas";
 import { client } from "../lib/client";
 import { campaignListKey } from "../lib/query-client";
@@ -76,11 +72,7 @@ function parseLines(value: string): string[] {
     .filter((line) => line.length > 0);
 }
 
-/**
- * `/campaigns` (BUILD_AND_TEST.md §8 M5 UI requirement: "campaign board") — every Campaign in
- * the org, plus a "Create Campaign" dialog wrapping `client.campaigns.propose`
- * (packages/sdk/src/client.ts).
- */
+/** The campaign board, and what each row carries. See docs/web.md §189. */
 export function CampaignListPage(): React.JSX.Element {
   const navigate = useNavigate();
   const queryClient = useQueryClient();

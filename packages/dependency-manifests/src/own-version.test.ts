@@ -2,27 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ManifestParseError } from "./types.js";
 import { readDeclaredProjectVersion } from "./own-version.js";
 
-/**
- * The PRODUCER-side reader (M21.4, ADR-0032 §7a).
- *
- * The property under test throughout is the THREE-WAY OUTCOME. `declared`, `absent` and
- * `unresolved` are three different facts about a repository, and every collapse between them is a
- * lie a caller cannot detect:
- *
- *   - `unresolved` collapsed into `absent`  ⇒ "this project has no version", of a project that has
- *     one, sending whoever reads the Decision to look in the wrong place;
- *   - `absent` collapsed into a THROW       ⇒ "we could not read the manifest", of a manifest we
- *     read perfectly well;
- *   - a THROW collapsed into `absent`       ⇒ a 404 HTML body reported as "declares no version".
- *
- * So each case below asserts the DISCRIMINANT, not merely that something non-fatal came back.
- *
- * MUTATION LOG — applied, watched fail, reverted, watched pass:
- * | Mutation | Result |
- * |---|---|
- * | maven: take the first `<version>` in document order (drop the `<project>`-depth check) | "never mistakes a DEPENDENCY's or the PARENT's version" FAILS with `1.0.0-parent`, and the inherited case FAILS too |
- * | report an inherited/`dynamic` version as `absent` instead of `unresolved` | both "unresolved, not absent" cases FAIL — the collapse this file exists to prevent |
- */
+/** The PRODUCER-side reader. See docs/dependency-manifests.md §52. */
 describe("readDeclaredProjectVersion — npm", () => {
   it("reads `version`, and reports its absence as absent rather than as a failure", () => {
     expect(readDeclaredProjectVersion("npm", '{"name":"@acme/api","version":"2.5.1"}')).toEqual({

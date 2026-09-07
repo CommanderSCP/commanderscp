@@ -1,15 +1,6 @@
 import { z } from "zod";
 
-/**
- * M2 typed-registry ergonomics (BUILD_AND_TEST.md §8 M2 item 1). The typed convenience endpoints
- * (routes/typed-registries.ts) and their `owns`/`consumes`/`depends_on` sub-resources
- * (routes/ownership.ts) are structurally identical to the generic `/objects/{type}` and
- * `/relationships` endpoints — they reuse `GraphObjectSchema`, `CreateObjectRequestSchema`,
- * `UpdateObjectRequestSchema`, `UpsertObjectRequestSchema`, `ObjectListResponseSchema`,
- * `RelationshipSchema`, and `RelationshipListResponseSchema` directly (graph.ts). This file only
- * adds the handful of shapes that don't exist yet: the ownership/consumes/depends-on request
- * bodies, and path params for routes with a second id-or-urn segment in the URL.
- */
+/** M2 typed-registry ergonomics. See docs/schemas.md §378. */
 
 /** `POST /{basePath}/{idOrUrn}/owners` body — the owner's type is resolved at write time. */
 export const AddOwnerRequestSchema = z.object({

@@ -16,31 +16,7 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 
-/**
- * `@scp/plugin-argocd` — the ArgoCD `ExecutorPlugin` (DESIGN.md §12, BUILD_AND_TEST.md §8 M7
- * item 2): "Observe: Application get/watch — health + sync status is the actual-state input to
- * reconciliation. Trigger: sync of an Application the org already defined (optionally setting
- * target revision). Abort: terminate operation. Rollback: sync to previous known-good revision."
- *
- * Modeled against ArgoCD's documented REST API (`/api/v1/applications/{name}`, `.../sync`,
- * `.../operation`) — every call goes through `ctx.http` (the host-mediated, egress-controlled
- * client; DESIGN §11), never a raw fetch. HONEST COVERAGE NOTE (mirrors this PR's "deterministic
- * vs. live-sandbox" split): the request/response shapes below are exercised deterministically
- * against `nock` fixtures built from ArgoCD's published API docs, NOT against a live server — the
- * golden-path E2E's "ArgoCD-in-kind" variant and the opt-in nightly live-sandbox job are what
- * actually prove wire-format fidelity against a real ArgoCD instance.
- *
- * Idempotency (coordination/reconcile.ts's crash-safe trigger contract — `idempotencyKey` must
- * dedup to the SAME `ExternalRunRef` without re-firing `sync`): ArgoCD's sync API has no native
- * idempotency-key concept, so this plugin keeps its own small dedup cache, file-backed when
- * `ctx.config.statePath` is set (same write-to-temp+rename pattern `@scp/plugin-fake-executor`
- * uses, for the identical reason: a subprocess-host restart mid-wave must not lose the mapping).
- * HONEST LIMITATION: unlike fake-executor's cache (the only system of record), a REAL ArgoCD sync
- * is itself close to idempotent — syncing an Application already at the target revision is a fast
- * no-op — which bounds the damage if this cache is ever lost (e.g. `statePath` unset, or the state
- * file itself is lost) and a retry re-issues `sync`. Tracked as a documented, narrower guarantee
- * than fake-executor's, not silently assumed equivalent.
- */
+/** `@scp/plugin-argocd` — the ArgoCD `ExecutorPlugin`. See docs/plugins.md §21. */
 
 export interface ArgoCdConfig {
   serverUrl: string;
@@ -100,20 +76,12 @@ function parseAppName(externalId: string): string {
   return idx === -1 ? externalId : externalId.slice(0, idx);
 }
 
-/** CRITICAL #2: a rollback with no prior known-good revision must NEVER be turned into a sync (an
- *  empty-revision sync re-applies the CURRENT — i.e. the bad — revision, then reports success). It
- *  fails closed instead: `trigger()` mints a ref with this prefix and does NOT call ArgoCD;
- *  `status()`/`abort()` recognize it and report a terminal `failed`, so the wave target fails
- *  cleanly rather than silently re-deploying the broken revision as a "successful rollback". */
+/** A rollback with no prior good revision must never sync. See docs/plugins.md §22. */
 const ROLLBACK_UNAVAILABLE_PREFIX = `argocd-rollback-unavailable${REF_DELIMITER}`;
 
 // ArgoCD REST shapes (subset — only the fields this plugin reads/sends)
 
-// A single managed-resource entry in the Application's `status.resources[]`. For an app-managed
-// Argo Rollout there is one entry with kind=Rollout, group=argoproj.io, whose `health.status` is
-// Argo CD's built-in Lua assessment (Healthy|Progressing|Degraded|Suspended|Missing|Unknown) and
-// `health.message` often carries human rollout detail ("Rollout is paused ..."). This gives a
-// phase-ish + message signal near-free — no extra API call (it rides the SAME Application body).
+// One managed-resource entry in the application's status. See docs/plugins.md §23.
 interface ArgoResourceStatus {
   group?: string;
   version?: string;
@@ -181,28 +149,7 @@ async function apiRequest(
   return { status: response.status, body: response.body };
 }
 
-/**
- * MAJOR #3 — health -> phase AFTER a sync operation has finished (`operationState.phase` is
- * "Succeeded", or absent-but-"Synced"). The bug this fixes: ArgoCD does NOT clear
- * `operationState` after a sync, so if the app degrades post-sync the old code returned "running"
- * FOREVER and the reconciler waited on a dead deployment indefinitely. A finished sync that left
- * the app Degraded/Missing is a TERMINAL failure. Progressing is still legitimately rolling out
- * (keep polling); Unknown is genuinely ambiguous (keep polling — the stuck-change watchdog is the
- * backstop, not perpetual silence here); Suspended is a valid stable state (succeeded).
- *
- * SECOND CONSUMER — the stage-coupling gate (docs/adr/0028-stage-scoped-component-coupling.md
- * decision 3, docs/proposals/rollout-step-coupling.md §2.5). "succeeded" here is TERMINAL
- * downstream: `reconcile.ts` skips a wave target whose status is `succeeded` (`if (target.status
- * === "succeeded") continue;`), so that target is never polled again and the canary weight in its
- * last `observed_state` snapshot is frozen for good. The `Suspended` arm is where that bites — IF a
- * paused Argo Rollout aggregates to Application health `Suspended` (unverified against a live Argo
- * from this tree; the vendored install.yaml carries no Rollout health Lua), a dependency paused at
- * 10% reads as DONE to the gate and its stored weight stays 10 even after somebody promotes it to
- * 100%. Any gate reading that weight — the `minWeight` qualifier — must therefore treat a TERMINAL
- * target's snapshot as potentially STALE, never as live truth. Every arm below is pinned in
- * `index.test.ts` ("a FINISHED sync with health ..."); changing one is a behaviour change for that
- * gate, not a refactor.
- */
+/** MAJOR #3 — health -> phase AFTER a sync operation has finished. See docs/plugins.md §24. */
 function phaseAfterFinishedSync(health: string | undefined): ExecutionPhase {
   switch (health) {
     case "Healthy":
@@ -239,11 +186,7 @@ function rolloutFromResource(res: ArgoResourceStatus | undefined): ObservedRollo
   return rollout.phase !== undefined || rollout.message !== undefined ? rollout : undefined;
 }
 
-// Parse the OBSERVE-ONLY structured rollout fields off a LIVE Argo Rollout manifest (the JSON STRING
-// GET /api/v1/applications/{name}/resource returns). Surfaces only fields Argo actually provides:
-// `phase` (RolloutPhase), `message`, `currentStepIndex` → step, and canary weight (Rollouts ≳ v1.1).
-// Any field the manifest omits is omitted here — never invented. Returns undefined on parse failure
-// or an empty result.
+// Parse the observe-only rollout fields off a live manifest. See docs/plugins.md §25.
 function rolloutFromManifest(manifestJson: string): ObservedRollout | undefined {
   let parsed: { status?: LiveRolloutStatus };
   try {
@@ -343,15 +286,7 @@ function mapArgoPhase(app: ArgoApplication | undefined): ExecutionStatus {
   };
 }
 
-/**
- * The revision(s) an Application is synced to, as ONE deterministic string — the dedupe identity of
- * its current state. `undefined` when Argo CD reports neither shape (an app that has never synced),
- * which lets the identity fall back to the reconcile timestamp rather than to a fabricated value
- * that would collapse different applications onto one key.
- *
- * Positional order is preserved for the multi-source case: `revisions` is one entry per declared
- * source, so re-ordering would make two different deployments look identical.
- */
+/** The synced revisions as one deterministic dedupe identity. See docs/plugins.md §26. */
 function syncStateRef(app: ArgoApplication): string | undefined {
   const single = app.status?.sync?.revision;
   if (single) return single;
@@ -380,34 +315,7 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
       occurredAt: new Date(occurredAtMs).toISOString(),
       correlation: {
         correlationKey: app.metadata.name,
-        // The SYNCED REVISION, and it is what makes this event deduplicable.
-        //
-        // `reconciledAt` advances on EVERY Argo CD reconcile — roughly every three minutes per
-        // application, whether or not anything changed — so an event keyed only on the app name and
-        // that timestamp is a new row per reconcile forever. Measured on a 61-application instance:
-        // ~20 events per app per 30 minutes, with ONE distinct revision between them. About 26k
-        // rows and ~150 MB a day describing nothing happening.
-        //
-        // With the revision here, `observedEventIdentity` (`coordination/observe.ts`) keys the event
-        // as `<app>|<revision>` instead of `<app>|<reconciledAt>`, so repeated reconciles of an
-        // unchanged application collapse onto one row and a genuine redeploy still creates a new
-        // one. The plugin still EMITS per reconcile — it is stateless between polls and cannot know
-        // the previous revision — but the server now rejects the repeats as duplicates, which is
-        // exactly what dedupe is for and costs one no-op insert per application per poll.
-        //
-        // Deliberate consequence: a health flap at the SAME revision (Healthy → Degraded → Healthy)
-        // no longer produces an event. That is correct for this path — `observe` exists to detect
-        // NEW WORK, and a status change on an already-deployed revision is not new work; live status
-        // reaches the engine through `status()` on the changes it is already tracking.
-        //
-        // MULTI-SOURCE is the case that makes this two fields instead of one. Argo CD reports a
-        // single-source app's revision in `status.sync.revision` and a multi-source app's in
-        // `status.sync.revisions` — an array, one entry per source, and it sets exactly one of the
-        // two. Reading only the singular field sees NOTHING on a multi-source app: on this estate
-        // that was 36 of 59 applications, all of which kept churning after the first attempt at
-        // this fix. So `commitSha` carries the revision only when there genuinely is one, and
-        // `stateRef` carries the dedupe identity in both shapes — a joined tuple is not a commit
-        // SHA, and putting one in a field named for a commit would lie to every consumer.
+        // The synced revision, which is what makes this dedupable. See docs/plugins.md §27.
         commitSha: app.status?.sync?.revision,
         stateRef: syncStateRef(app),
         labels: { application: app.metadata.name }
@@ -528,12 +436,7 @@ async function abort(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResu
   }
   const config = asConfig(ctx.config);
   const appName = parseAppName(ref.externalId);
-  // MINOR — only terminate if there IS an in-flight operation, and don't blindly DELETE an
-  // operation that may be a NEWER one than the run this ref was minted for. ArgoCD's terminate
-  // endpoint targets "the current operation" (there is no per-operation id to scope to), so the
-  // best available guard is: GET the app first, and only issue the terminate when an operation is
-  // actually Running/Terminating. A settled/absent operation → nothing to abort (avoids
-  // terminating a subsequent, unrelated sync).
+  // Only terminate when there is an in-flight operation. See docs/plugins.md §28.
   const { status: getStatus, body } = await apiRequest(
     ctx,
     config,
@@ -600,14 +503,7 @@ export const manifest: PluginManifest = {
   }
 };
 
-// -------------------------------------------------------------------------------------------
-// DiscoveryPlugin (M12 P3, docs/proposals/import-existing-executors.md) — "import my existing
-// Argo CD": enumerate its Applications (the SAME `GET /api/v1/applications` observe() already
-// uses) and PROPOSE one `component` per Application, recording the Application NAME on
-// `properties.argocdApplication` so a subsequent execution-system binding's `externalRef` (M12 P2)
-// coordinates the right app. NEVER auto-commits — `POST /discovery/accept` materializes the
-// proposal. Same one-npm-package-two-plugins shape as @scp/plugin-github (executor + discovery).
-// -------------------------------------------------------------------------------------------
+// Discovery: import an existing Argo CD estate. See docs/plugins.md §29.
 interface ArgoAppSource {
   repoURL?: string;
   path?: string;
@@ -632,14 +528,7 @@ function primarySource(spec: ArgoAppForDiscovery["spec"]): ArgoAppSource | undef
   return spec?.sources?.find((s) => s.repoURL);
 }
 
-/**
- * Extracts an `owner/repo` slug from a GitHub repo URL — https OR ssh (`git@`/`ssh://`), with or
- * without a trailing `.git`. This is the form the github executor's events carry
- * (`${config.owner}/${config.repo}`) and correlation glob-matches against; an Argo CD
- * `spec.source.repoURL` gives the FULL URL, which would never match (M12 P5 fix — the auto-created
- * source_mappings were unreachable). Returns undefined for a non-GitHub host, so no github mapping is
- * proposed for it (correlation is github-shaped; the operator maps a non-GitHub source by hand).
- */
+/** Extracts an `owner/repo` slug from a GitHub repo URL. See docs/plugins.md §30. */
 export function githubRepoSlug(repoURL: string): string | undefined {
   const m = repoURL.match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/i);
   return m ? `${m[1]}/${m[2]}` : undefined;
@@ -684,35 +573,7 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
         externalRef: name
       });
     }
-    // M12 P5 (owner Q3, github-webhook path): a source_mapping per git source, so pushes to it
-    // correlate to this component. `source_kind:'github'`, `repoPattern` = the `owner/repo` SLUG
-    // (github events carry that, not the full URL). Skipped for a non-GitHub repoURL.
-    //
-    // ==========================================================================================
-    // `pathPattern` — WHY IT IS EMITTED NOW, WHEN THE ORIGINAL M12 P5 COMMENT SAID IT COULD NOT BE
-    // ==========================================================================================
-    // That comment read: "No `pathPattern`: a github push event carries no per-app path, so a
-    // path-set mapping would never match ... per-path precision is a follow-up that needs the github
-    // plugin to emit changed paths." True when written. THE FOLLOW-UP SHIPPED — the github plugin
-    // emits changed paths and `correlation.ts`'s `matchesAnyPath` consumes them (`hint.paths`) — and
-    // nobody came back here. A comment naming a pending follow-up is a signal to sweep, not evidence
-    // it was handled (CLAUDE.md).
-    //
-    // The cost of leaving it, measured on the live homelab 2026-08-03: `matchComponentForSource`
-    // returns exactly ONE component, so with every app of a repo carrying an identical bare-repo
-    // mapping, ONE of them won every push and the rest were unreachable — 19 components sharing 4
-    // repo patterns, of which one per repo could ever be routed to. The 43 components that DID have
-    // path patterns (added by hand for homelab-gitops) routed correctly, which is the control.
-    //
-    // ALL sources, not just `primarySource`: 32 of the homelab's 51 apps are multi-source, and every
-    // source is an input that should correlate. The object metadata above still describes the PRIMARY
-    // source only — deliberately unchanged, since that is descriptive and rewriting it would churn
-    // every imported component's properties for no routing benefit.
-    //
-    // `path` becomes `path/**` — the form the working mappings already use, and the one that matches
-    // the files UNDER a chart directory rather than the directory entry itself. A source with a
-    // repoURL but no `path` (a Helm-repo-only source, or a kustomize root) still emits a repo-only
-    // mapping, which is exactly right: there is nothing narrower to say about it.
+    // M12 P5 (owner Q3, github-webhook path). See docs/plugins.md §31.
     const gitSources = (app.spec?.sources ?? []).concat(app.spec?.source ? [app.spec.source] : []);
     const seen = new Set<string>();
     for (const src of gitSources) {

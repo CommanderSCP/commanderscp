@@ -34,24 +34,7 @@ import type {
 import { runLaunchOrderingConformanceSuite } from "./ordering-conformance.js";
 import type { LaunchOrderingSubstrate, RunnerStepKind } from "./ordering-conformance.js";
 
-/**
- * ================================================================================================
- * M23.2 — THE KUBERNETES ADAPTER, AT THE SEAM THAT CAN RECORD AND HOLD EVERY EFFECT
- * ================================================================================================
- *
- * WHAT THIS FILE IS AND IS NOT. It is the Kubernetes counterpart of `docker-adapter.test.ts`: it
- * proves WHAT the adapter sends and, through `ordering-conformance.ts`, WHEN. It cannot prove that
- * an API server accepts any of it, that a Job actually runs, that a `subPath` mount lands the bytes
- * where the runner looks for them, or that a pod's log is readable — a fake agrees with itself by
- * construction, and owner decision 3 says so in those words ("a fake Kubernetes client only proves
- * the adapter agrees with itself"). `kubernetes-adapter.integration.test.ts` drives a REAL kind
- * cluster for exactly that, and the two are complementary rather than redundant: the real cluster is
- * the only thing that can speak to acceptance, and this file is the only thing that can drive every
- * branch of the failure mapping cheaply on every PR.
- *
- * THE DOCKER PATH IS UNTOUCHED BY EVERYTHING HERE. No file in `packages/plugins/*` moves, and the
- * three `launch-argv.golden.test.ts` files do not move by a byte — the whole point of M23.1's port.
- */
+/** The adapter at the seam that records every effect. See docs/runner-launcher.md §200. */
 
 const NAMESPACE = "scp";
 const WORKSPACE_ROOT = "/scp-workspace";
@@ -81,14 +64,7 @@ interface HeldOp {
   deliver(failure?: Error): void;
 }
 
-/**
- * A FAKE API SERVER AND A FAKE SHARED VOLUME.
- *
- * Deliberately STATEFUL rather than a canned response list: the adapter POSTs a Job and then PATCHes
- * and DELETEs it BY NAME, and a response list cannot notice that the name it is asked about is not
- * the name it was given. The fake stores what it was sent and answers from it, so a step aimed at the
- * wrong object 404s here for the same reason it would against a real API server.
- */
+/** A FAKE API SERVER AND A FAKE SHARED VOLUME. See docs/runner-launcher.md §201. */
 function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {}) {
   const ops: RecordedOp[] = [];
   const jobs = new Map<string, Record<string, unknown>>();
@@ -148,18 +124,7 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
   };
   const heldOpen: HeldOp[] = [];
 
-  /**
-   * WHICH PORT STEP AN OP MARKS — the Kubernetes spelling of `docker-adapter.test.ts`'s
-   * `stepKind(args)`, and derived the same way: from what was SENT, not from a flag the adapter set
-   * for the test's benefit.
-   *
-   * ONLY THE FIRST OP OF EACH STEP MARKS IT, and the rule is structural rather than a de-duplication
-   * hack: `start` is one PATCH followed by N status GETs and one log GET, and `teardown` is a Job
-   * DELETE followed by a Secret DELETE and a directory removal. The op that MARKS the step is the one
-   * that cannot happen twice — the PATCH, the Job DELETE, the Job POST — so a step is recorded
-   * exactly once no matter how long its tail is. Everything else returns `undefined` and is invisible
-   * to `issued()`, including the `reap()` listing GET that every `run()` schedules.
-   */
+  /** WHICH PORT STEP AN OP MARKS. See docs/runner-launcher.md §202. */
   const orderingStepOf = (op: RecordedOp): RunnerStepKind | undefined => {
     if (op.kind === "copyDir") return op.step === "copy-in" ? "copy-in" : "copy-out";
     if (op.kind === "removeDir") return undefined;
@@ -212,12 +177,7 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
       if (clash) {
         return { status: 409, body: JSON.stringify({ kind: "Status", reason: "AlreadyExists" }) };
       }
-      // THE API SERVER STAMPS `metadata.uid` ON CREATE, AND THIS FAKE HAS TO TOO — not for realism's
-      // sake but because the adapter READS it: the per-run Secret's `ownerReference` needs the Job's
-      // uid, and a fake that echoed the POSTed body unchanged would make every `secretEnv` run
-      // refuse with "the Job create response carried no metadata.uid". Monotonic rather than random
-      // so a RECREATED Job of the same name gets a DIFFERENT uid, which is the property the
-      // stale-owner arm below turns on.
+      // The API server stamps a uid, so this fake does too. See docs/runner-launcher.md §203.
       uidCounter += 1;
       const stamped = {
         ...(body as Record<string, unknown>),
@@ -259,12 +219,7 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
         (j) => (j as { metadata: { name: string } }).metadata.name === name
       );
       if (foreign !== -1) foreignJobs.splice(foreign, 1);
-      // KUBERNETES' GARBAGE COLLECTOR, MODELLED — and it is modelled because the adapter DEPENDS on
-      // it. `ownerReferences` is what makes the per-run Secret's deletion survive a SIGKILL of this
-      // process, and a fake in which deleting a Job left its owned Secret behind would let a
-      // regression that dropped the `ownerReference` pass every unit test in this file. The real
-      // behaviour is proved against a real API server in `kubernetes-adapter.kind.test.ts`; this is
-      // the model that keeps the unit suite from being wrong in the same direction.
+      // KUBERNETES' GARBAGE COLLECTOR, MODELLED. See docs/runner-launcher.md §204.
       collectOrphanedSecrets(gone?.metadata?.uid);
       return { status: 200, body: "{}" };
     }
@@ -363,12 +318,7 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
         workspaceVolume: WORKSPACE_VOLUME,
         perRunSecrets: opts.perRunSecrets === true,
         runAsNonRoot: opts.runAsNonRoot === true,
-        // THE ADAPTER'S OWN DEFAULT, NOT `1` — M23.5 verification pass 19. `sleep` is stubbed to
-        // resolve immediately below, so this number is NEVER A DELAY here: it costs the suite
-        // nothing, and it is read as a FACT by `kubernetesStartVerdict` ("how old may a landed
-        // observation be and still speak for the budget?"). At `1` every fixture's blind window was
-        // a hundred poll intervals wide and the arm that reasons about staleness could not be
-        // exercised honestly.
+        // THE ADAPTER'S OWN DEFAULT, NOT `1`. See docs/runner-launcher.md §205.
         pollIntervalMs: KUBERNETES_POLL_INTERVAL_MS,
         sleep: () => Promise.resolve(),
         io,
@@ -412,17 +362,7 @@ const sequenceOf = (ops: RecordedOp[]) =>
 
 describe("M23.2 adapter selection: explicit operator config, never detection", () => {
   it("AN UNSET `runnerLauncher` IS DOCKER — every deployment that does not opt in is unchanged", () => {
-    // THIS IS NOT THE MODULE-CYCLE PROOF, AND IT SAID IT WAS. The sentence here used to read: "if
-    // any binding of this file's imports were read at module-evaluation time rather than at call
-    // time, THIS line would throw a TDZ ReferenceError before the assertion." It was measured false
-    // one commit later — `kubernetes-adapter.ts` had exactly such a top-level read
-    // (`RUNNER_LAUNCHER_DEADLINE_ANNOTATION = RUNNER_LAUNCHER_DEADLINE_LABEL`), this case stayed
-    // GREEN, and the built package could not be imported by Node at all: every managed plugin
-    // subprocess died at load. Vitest resolves the cycle through its own module graph in the other
-    // order, so a claim about Node's loader cannot be checked here at all.
-    // `module-load.integration.test.ts` builds the package and loads it with `node`, which is the
-    // only instrument that can settle it. What THIS case still proves is the ordinary thing its
-    // name says: an unset `runnerLauncher` yields a working Docker launcher.
+    // THIS IS NOT THE MODULE-CYCLE PROOF, AND IT SAID IT WAS. See docs/runner-launcher.md §206.
     const launcher = resolveRunnerLauncher({ dockerBinary: "/opt/bin/podman" });
     expect(typeof launcher.run).toBe("function");
     expect(typeof launcher.reap).toBe("function");
@@ -447,15 +387,7 @@ describe("M23.2 adapter selection: explicit operator config, never detection", (
   });
 
   it("M23.5: THE DEPLOYMENT'S POD CONVENTIONS SURVIVE THE WHOLE CHAIN — settings -> resolver -> adapter -> Job", async () => {
-    // THIS TEST EXISTS BECAUSE THE MUTATION TABLE FOUND TWO LINKS NOTHING GATED, and both are the
-    // component-built-never-installed shape. `kubernetes-launch.golden.test.ts` calls `jobManifest`
-    // DIRECTLY, so it stays green when the block never reaches it; `managed-runner-selection.test.ts`
-    // reads `managedRunnerSettings()`, so it stays green when nothing consumes what that returns.
-    // Deleting `...(k8s.pod ? { pod: k8s.pod } : {})` from `resolveRunnerLauncher`, or
-    // `...(config.pod ? { pod: config.pod } : {})` from the `create` step, reddened NOTHING across
-    // all three suites: a channel built end to end and connected in the middle by nobody.
-    //
-    // So this drives the SHIPPED selection path and reads the bytes that were actually POSTed.
+    // The mutation table found two links nothing gated. See docs/runner-launcher.md §207.
     const c = cluster();
     const launcher = resolveRunnerLauncher({
       runnerLauncher: "kubernetes",
@@ -820,14 +752,7 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
 
   it("`budget-exhausted` — a step reached with the budget spent is REFUSED, not issued", async () => {
     const c = cluster();
-    // Never terminal: the poll loop spins until the deadline, exactly as a wedged runner would.
-    //
-    // THE FIXTURE WAS NOT WHAT ITS COMMENT SAID, and M23.5 is where that mattered. `containerStatuses:
-    // []` on a `Running` pod is a shape no kubelet produces — a pod is `Running` only once every
-    // container has been created — and the distinction was invisible while every non-terminal poll
-    // had the same verdict. It does not any more: a run where the container never started is
-    // `spawn-failed` ("nothing ran"), not `budget-exhausted` ("SIGTERMed mid-flight, state unknown").
-    // So the wedged runner is now described as a wedged runner: RUNNING, and never finishing.
+    // Never terminal: the loop spins until the deadline. See docs/runner-launcher.md §208.
     c.setPod({
       metadata: { name: "p1" },
       status: {
@@ -845,21 +770,7 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
     expect(c.jobs.size).toBe(0);
   });
 
-  // ================================================================================================
-  // M23.5 — THE THREE ROUTES THAT ALL REPORTED `budget-exhausted` AFTER BURNING THE WHOLE BUDGET
-  // ================================================================================================
-  //
-  // `kubernetesTermination` reads `pod.status.containerStatuses` AND NOTHING ELSE. Every route below
-  // was measured on a real cluster, and every one produced the identical verdict — "the whole-run
-  // budget ran out and the runner was stopped mid-flight" — which for managed-iac means "a `tofu
-  // apply` was SIGTERMed mid-flight, so the real infrastructure state is unknown". Two of the three
-  // ran NOTHING. `FATAL_WAITING_REASONS`' own doc calls that "the single worst misdiagnosis available
-  // here", about a set that catches a container the kubelet refused; these are the routes where no
-  // container was ever asked for, and nothing looked at them.
-  //
-  // AND THE EVIDENCE WAS BEING DELETED. Nothing read `job.status.conditions` or the Job's events, and
-  // teardown deletes the Job — so the only record of a `FailedCreate` went with it. It is read here
-  // while the run is still alive.
+  // The three routes that all reported budget exhausted. See docs/runner-launcher.md §209.
 
   it("M23.5 ROUTE 1 — a ResourceQuota rejects the pod CREATE: `spawn-failed`, carrying the API server's own words", async () => {
     const c = cluster();
@@ -880,12 +791,7 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
     // NOT `budget-exhausted`. Nothing ran, so nothing was mutated — which is `spawn-failed`'s
     // wording, verbatim, and the only honest thing to tell an operator holding a `tofu apply`.
     expect(result.failure!.kind).toBe("spawn-failed");
-    // AND THE BOUND THAT ENDED IT IS REPORTED, NOT SUPPRESSED (M23.5 verification pass 20). This
-    // asserted `false` while the run had polled to the deadline and the message said so, because the
-    // producer forced the flag down to keep `budget-exhausted` from winning the classification.
-    // `classifyRunnerFailure` now tests {@link RUNNER_NEVER_STARTED_CODE} itself, ahead of the flag,
-    // so the KIND is settled by what the producer declared and the FLAG is free to say which clock
-    // ran out. The two answer different questions; they were one field.
+    // AND THE BOUND THAT ENDED IT IS REPORTED, NOT SUPPRESSED. See docs/runner-launcher.md §210.
     expect(result.failure!.deadlineExceeded).toBe(true);
     expect(result.failure!.code).toBe("RunnerContainerNeverStarted");
     // THE DIAGNOSIS THAT USED TO BE DELETED WITH THE JOB.
@@ -965,20 +871,9 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
     expect(result.failure!.detail).toContain("NOT this run's own budget");
   });
 
-  // ================================================================================================
-  // M23.5 D2 + D3 — THE VERDICT IS A FUNCTION OF OBSERVED FACTS, NOT OF WHERE THE CLOCK WAS NOTICED
-  // ================================================================================================
-  //
-  // TWO DEFECTS, ONE PROPERTY. `budget-exhausted` beat `spawn-failed` 6 runs in 20 (D2) and
-  // `exit-nonzero` beat `signalled` 6 runs in 10 against a real cluster (D3), and both are the same
-  // thing: a verdict decided by WHICH LINE of the control flow happened to observe the state, rather
-  // than by what the state WAS.
+  // The verdict follows observed facts, not the clock. See docs/runner-launcher.md §211.
 
-  /** MODELS `AbortSignal.timeout(req.timeoutMs)` FIRING — the way a real transport discovers the
-   *  deadline. The request is ISSUED with what little was left of the budget (the deadline had not
-   *  passed when `spend` checked), the clock crosses while it is in flight, and it rejects. This is
-   *  the shape a guard placed before the call cannot cover, because the guard and the call are not
-   *  atomic — which is why moving the guard to the top of the loop fixed nothing. */
+  /** MODELS `AbortSignal.timeout(req.timeoutMs)` FIRING. See docs/runner-launcher.md §212. */
   function abortingPodGetIo(inner: KubernetesRunnerIo, thresholdMs = 100): KubernetesRunnerIo {
     return {
       ...inner,
@@ -997,11 +892,7 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
   }
 
   it("M23.5 D2 — THE DEADLINE DISCOVERED BY THE TRANSPORT, NOT BY A GUARD, IS STILL `spawn-failed`", async () => {
-    // THE ARM THE PREVIOUS ROUND'S FIX COULD NOT PASS. A check at the top of the poll loop reads the
-    // clock and then issues `GET pods`; the clock can cross in between, and then the REQUEST reports
-    // the deadline instead. The same is true of `GET events`, `GET job` and `GET log` — four places
-    // to discover it, every one of which used to yield "a `tofu apply` was SIGTERMed mid-flight, so
-    // the real infrastructure state is unknown" for a run in which NOTHING EVER STARTED.
+    // THE ARM THE PREVIOUS ROUND'S FIX COULD NOT PASS. See docs/runner-launcher.md §213.
     const c = cluster();
     c.setPod(undefined);
     const result = await c
@@ -1042,11 +933,7 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
   });
 
   it("M23.5 D2 — THE LOG READ IS THE FOURTH DISCOVERY POINT, and it may not overwrite a decided verdict", async () => {
-    // THE ONE PLACE THE DEADLINE CAN FIRE WITH THE ANSWER ALREADY KNOWN. `termination` says the
-    // runner exited 3; the log is DIAGNOSIS, read afterwards. Letting a refused log read throw
-    // replaces "the runner exited 3" with "a `tofu apply` was SIGTERMed mid-flight, so the real
-    // infrastructure state is unknown" — discarding a known outcome for the worst sentence this
-    // package produces, at the last possible moment.
+    // The one place the deadline fires with the answer known. See docs/runner-launcher.md §214.
     const c = cluster();
     c.setPod({
       metadata: { name: "p1" },
@@ -1329,35 +1216,9 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
   });
 });
 
-// ==================================================================================================
-// M23.5 VERIFICATION PASS 18 — WHAT A LAUNCHER THAT COULD NOT SEE IS ALLOWED TO SAY
-// ==================================================================================================
-//
-// `!everStarted` MEANT TWO THINGS AT ONE SITE. "Observed, and nothing had started" — the fact D2's
-// fix rests on — and "never observed at all", which is not a fact about the run at all. The second
-// was unguarded, and MEASURED against a real cluster it is the one that happens: the unsuspend PATCH
-// reaches the API server and succeeds, every `GET pods` after it stalls past the budget, the real
-// Job and the real kubelet do the work, a real container writes a real file to the real volume — and
-// the durable record says `spawn-failed: … so NOTHING RAN and nothing was mutated — the Job had not
-// yet been observed`. THE EVIDENCE THAT THE CLAIM IS UNFOUNDED IS IN THE SAME SENTENCE AS THE CLAIM.
-//
-// TWO MUTATIONS SURVIVED THE WHOLE SUITE BEFORE THESE CASES EXISTED, and each has its arm below:
-//   S1  `let waiting = "the Job had not yet been observed"` -> "the pod was observed and no
-//       container had started": a lie about what was observed, in the operator-facing detail.
-//       377/377 green. Nothing pinned the never-observed case at all.
-//   S2  `api()`'s `const deadlineExceeded = runDeadline.spent()` -> `= true`: 377/377 unit AND
-//       18/18 kind green. Nothing pinned that a transport failure with budget LEFT is not a budget
-//       exhaustion, in either adapter's spelling.
+// M23.5 VERIFICATION PASS 18. See docs/runner-launcher.md §215.
 
-/**
- * A TRANSPORT THAT ANSWERS NOTHING — `AbortSignal.timeout` firing on every `GET pods`, which is what
- * an API-server stall or a partition looks like from inside this adapter. Unconditional, unlike D2's
- * `abortingPodGetIo`, which only fires near the deadline and therefore always leaves the run an
- * observation to reason from: the WHOLE point here is a run that never gets one.
- *
- * `letThrough` reads succeed first, so the same fixture produces the negative control — one landed
- * observation, and the verdict is entitled to say nothing started again.
- */
+/** A TRANSPORT THAT ANSWERS NOTHING. See docs/runner-launcher.md §216. */
 function stallingPodGetIo(inner: KubernetesRunnerIo, letThrough = 0): KubernetesRunnerIo {
   let through = 0;
   return {
@@ -1425,11 +1286,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   });
 
   it("THE NEGATIVE CONTROL: a landed observation, still current, is enough to say nothing started", async () => {
-    // WITHOUT THIS ARM, "call every deadline `outcome-unknown`" passes the case above — and ROUTE 1
-    // and ROUTE 2, where the cluster SAID why it could not start the pod, would stop telling an
-    // operator that nothing was touched. The distinguishing fact is a read that COMPLETED, AND that
-    // is no older than one poll interval when the budget runs out (pass 19: the second half was
-    // missing, and the title of this case used to claim ONE landed read was enough on its own).
+    // Without this arm, calling every deadline unknown passes. See docs/runner-launcher.md §217.
     const c = cluster();
     c.setPod(undefined);
     c.setEvents([
@@ -1452,17 +1309,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   });
 
   it("PASS 19: A LANDED READ THAT WENT STALE CANNOT SAY THE RUN NEVER STARTED", async () => {
-    /**
-     * THE DEFECT PASS 18 LEFT STANDING, at the seam. Its fix moved the boundary to WHETHER a read
-     * landed — not to WHEN. Let exactly ONE `GET pods` through, the one issued immediately after
-     * the unsuspend and before any pod exists, then stall every read after it: `observed` is true,
-     * arm 6 is skipped, and arm 7 said "NOTHING RAN and nothing was mutated" about the 990ms of the
-     * budget that nothing in this process could see.
-     *
-     * `kubernetes-adapter.kind.test.ts` runs the same shape against a REAL cluster, where the pod,
-     * the container and the file it writes are real. This arm is the cheap gate for the same
-     * property; that one is the proof that the property matters.
-     */
+    /** THE DEFECT PASS 18 LEFT STANDING, at the seam. See docs/runner-launcher.md §218. */
     const c = cluster();
     c.setPod(undefined);
     // ONE READ LANDS, AND THEN THE REST OF THE BUDGET PASSES UNSEEN. `pollIntervalMs` is what says
@@ -1484,22 +1331,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(result.failure!.detail).toMatch(/saw NOTHING FOR THE LAST \d+ms/);
   });
 
-  /**
-   * A TRANSPORT THAT CONSUMES ALL BUT `shortfallMs` OF THE BOUND IT WAS HANDED, AND THEN REJECTS —
-   * M23.5 verification pass 20, and the ONE fixture in this file that does not let real time decide
-   * how much of the bound was used.
-   *
-   * WHY IT HAS TO MOVE THE CLOCK ITSELF. Every other fixture here waits `req.timeoutMs + 5` on a
-   * real `setTimeout`, so it always OVERSHOOTS the bound — and `Date.now() - issuedAt >= boundGiven`
-   * is true for an overshoot with or without the slack `api()` subtracts. That is exactly why
-   * removing the slack survived 392 unit and 20 kind cases. The case that separates them is an
-   * UNDERSHOOT of less than a millisecond, which is what a real `AbortSignal.timeout` produces: it
-   * fires on a libuv timer and `issuedAt`/`Date.now()` come from the wall clock, the sub-millisecond
-   * disagreement D4 already measured turning a budget kill into a verdict about the tenant's runner.
-   * A real `setTimeout` cannot be asked to fire early, so the clock is faked and stepped by an exact
-   * amount instead — `toFake: ["Date"]` only, so every `setTimeout` in the adapter (the poll sleep,
-   * `withStepBound`'s abandon timer) is still a real one.
-   */
+  /** A transport consuming all but a sliver of its bound. See docs/runner-launcher.md §219. */
   function boundConsumingPodGetIo(
     inner: KubernetesRunnerIo,
     opts: { letThrough: number; shortfallMs: number }
@@ -1534,27 +1366,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   }
 
   it("PASS 20: A REQUEST THAT MISSED ITS BOUND BY LESS THAN A MILLISECOND STILL RAN OUT OF BUDGET", async () => {
-    /**
-     * THE MUTATION THAT SURVIVED EVERYTHING. `api()` asks whether the request consumed the bound it
-     * was handed:
-     *
-     *     Date.now() - issuedAt >= boundGiven - RUNNER_MIN_STEP_BUDGET_MS
-     *
-     * and dropping the `- RUNNER_MIN_STEP_BUDGET_MS` passed 392/392 unit and 20/20 kind, because
-     * every fixture in both suites overshoots its bound on a real timer. A real transport does not:
-     * an `AbortSignal.timeout` fires on a libuv timer while `issuedAt` and `Date.now()` are wall
-     * clock, so the measured elapsed can land a hair SHORT of the bound that ended the request.
-     *
-     * WITHOUT THE SLACK THAT MISS BECOMES `deadlineExceeded: false`, the verdict falls out of arm 7
-     * into arm 8, and the record turns from "the runner container never started within the whole-run
-     * budget … NOTHING RAN" into `outcome-unknown` — "check the target's real state before
-     * re-running". A FALSE UNKNOWN sends an operator to inspect infrastructure after a transient,
-     * which is the same family of defect as a verdict that depended on WHERE the deadline was
-     * discovered, one order of magnitude smaller.
-     *
-     * ONE MILLISECOND SHORT, DELIBERATELY: inside `RUNNER_MIN_STEP_BUDGET_MS`, so the slack is what
-     * decides the answer and nothing else is.
-     */
+    /** THE MUTATION THAT SURVIVED EVERYTHING. See docs/runner-launcher.md §220. */
     const shortfallMs = 1;
     expect(
       shortfallMs > 0 && shortfallMs < RUNNER_MIN_STEP_BUDGET_MS,
@@ -1587,11 +1399,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   });
 
   it("PASS 20: THE NEGATIVE CONTROL — a request that broke well inside its bound did NOT run out", async () => {
-    // WITHOUT THIS ARM, `deadlineExceeded = true` passes the case above — and S2's whole finding
-    // (a reset with budget left is not a budget exhaustion) would stop being pinned at the one site
-    // that can now tell the two apart by a measured margin rather than by which fixture was used.
-    // 60ms of a 200ms bound is six times `RUNNER_MIN_STEP_BUDGET_MS`, so 60ms of budget really is
-    // left: this transport broke, it did not run out of time.
+    // Without this arm, always-exceeded passes the case above. See docs/runner-launcher.md §221.
     const result = await withFrozenClock(async () => {
       const c = cluster();
       c.setPod(undefined);
@@ -1629,11 +1437,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   });
 
   it("S2 — AND THE SAME RESET AFTER AN OBSERVATION MUST NOT BECOME `NOTHING RAN`", async () => {
-    // THE ARM WHERE S2'S MUTATION CHANGES THE SENTENCE AND NOT ONLY THE FLAG. One `GET pods` lands
-    // (the pod is Pending, nothing started), the next resets, and 10 seconds of budget remain — so
-    // the Job is still perfectly able to start a pod after this run stops looking. With
-    // `deadlineExceeded` forced true this becomes `spawn-failed`: "NOTHING RAN and nothing was
-    // mutated", asserted about a Job that is still live.
+    // The arm where the mutation changes the sentence too. See docs/runner-launcher.md §222.
     const c = cluster();
     c.setPod({ metadata: { name: "p1" }, status: { phase: "Pending" } });
     const result = await c
@@ -1691,11 +1495,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   });
 
   it("A REFUSED UNSUSPEND IS `spawn-failed`, never `exit-nonzero` — the chart shipped without `patch`", async () => {
-    // THE SAME CLASS FROM THE RBAC SIDE, and it was live for a release: the chart's Role granted
-    // `create,get,list,watch,delete` on `batch/jobs` and NO `patch`, so `start` was a 403 on every
-    // managed run. A numeric `code` is what `classifyRunnerFailure` reads as an exit status, so an
-    // operator was told "the runner itself exited non-zero" — code 403 — about a Job that never left
-    // `suspend: true`.
+    // The same class from the RBAC side, live for a release. See docs/runner-launcher.md §223.
     const c = cluster();
     c.overrides.push({
       match: (r) => r.method === "PATCH",
@@ -1710,11 +1510,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   });
 
   it("THE LOG READ MAY NOT OVERWRITE A DECIDED VERDICT — for ANY reason, not only the deadline", async () => {
-    // THE THIRD INSTANCE THE CENSUS TURNED UP. M23.5 made a log read REFUSED BY THE DEADLINE
-    // degrade, and left every other way it can fail — a Role without `pods/log`, a 500, a reset —
-    // able to replace the verdict exactly as before. A 403 is a NUMERIC `code`, so the operator was
-    // told "the runner itself exited non-zero" with 403 as the exit status, about a runner whose
-    // real exit code (3) this process was holding at that moment.
+    // THE THIRD INSTANCE THE CENSUS TURNED UP. See docs/runner-launcher.md §224.
     const c = cluster();
     c.setPod({
       metadata: { name: "p1" },
@@ -1739,11 +1535,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   });
 
   it("AN UNSUSPEND THAT WAS NEVER ISSUED SAYS SO — and no PATCH is on the wire to contradict it", async () => {
-    // THE KNOWABLE HALF OF "NOBODY ANSWERED". A copy-in on a slow network filesystem finishes
-    // legitimately, inside its own bound, with nothing left for the step after it; `spend` then
-    // refuses the unsuspend BEFORE issuing it, so the Job is exactly as `create` left it. Sweeping
-    // this into `outcome-unknown` would tell an operator to go and inspect infrastructure that was
-    // never touched — a weaker claim than the truth is still the wrong claim.
+    // THE KNOWABLE HALF OF "NOBODY ANSWERED". See docs/runner-launcher.md §225.
     const c = cluster();
     const io: KubernetesRunnerIo = {
       ...c.io,
@@ -1760,18 +1552,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(result.failure!.kind).toBe("spawn-failed");
     expect(result.failure!.detail).toContain("NEVER ISSUED");
     expect(result.failure!.detail).toContain("NOTHING RAN");
-    /**
-     * AND THE BOOLEAN AGREES WITH THE SENTENCE — M23.5 verification pass 20, MEDIUM.
-     *
-     * This record used to read `deadlineExceeded: false` under a message that begins "the whole-run
-     * budget of 300ms (RunnerSpec.timeoutMs) was already spent when this run reached 'start'". The
-     * budget PROVABLY ended this run — that is the entire reason the unsuspend was never issued, and
-     * the remedy an operator needs is to raise `timeoutMs` — and the one field a caller is told to
-     * read as "which bound ended the run" denied it. Nothing pinned either half, so the flip is
-     * pinned in BOTH directions here: the flag is true, and the kind stays `spawn-failed` rather
-     * than becoming `budget-exhausted` ("SIGTERMed mid-flight") about a Job still sitting at
-     * `suspend: true`.
-     */
+    /** AND THE BOOLEAN AGREES WITH THE SENTENCE. See docs/runner-launcher.md §226. */
     expect(
       result.failure!.deadlineExceeded,
       `a run the budget stopped before 'start' was recorded as not a budget failure: ${result.failure!.detail}`
@@ -1903,11 +1684,7 @@ describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels 
     copyOut: undefined
   });
 
-  // THE OPT-OUT ARM COMES FIRST BECAUSE IT IS THE ONE THAT INVERTED. Until M23.4 `perRunSecrets`
-  // defaulted to false and this was the shipped behaviour of every Kubernetes deployment; the owner
-  // granted the RBAC on 2026-08-20, so the chart now renders the rule by default and this is what an
-  // operator who deliberately turns it back off gets. It has to stay a loud refusal either way — the
-  // failure it replaces is a 403 from inside a promotion, minutes in.
+  // The opt-out arm comes first because it is what inverted. See docs/runner-launcher.md §227.
   it("WITH THE CAPABILITY OFF THE RUN IS REFUSED AT `secret-env` — nothing is created", async () => {
     const c = cluster({ perRunSecrets: false });
     await expect(c.launcher().run(withSecret)).rejects.toThrow(
@@ -1967,17 +1744,7 @@ describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels 
     ]);
   });
 
-  // ================================================================================================
-  // M23.4 — THE CREDENTIAL'S LIFETIME IS THE JOB'S, ENFORCED BY THE CLUSTER AND NOT BY A `finally`
-  // ================================================================================================
-  //
-  // WHY THIS BLOCK EXISTS AT ALL. M23.1a moved the credential out of the `docker create` argv; M23.1d
-  // then found that the mode-0600 `--env-file` it moved into was left on disk whenever the plugin
-  // host SIGKILLed the subprocess mid-`trigger()`, because no `finally` survives a SIGKILL. That
-  // defect is now reachable on the OTHER adapter, in a worse place: a Kubernetes Secret does not sit
-  // on one machine's disk, it sits in etcd and in every etcd backup, replicated across the control
-  // plane. The answer is not a better `finally`. It is `ownerReferences` — the cluster deleting the
-  // Secret because the Job it belongs to is gone, whether or not this process still exists.
+  // The credential's lifetime is the job's, cluster-enforced. See docs/runner-launcher.md §228.
 
   it("THE SECRET IS OWNED BY THE JOB — with the Job's REAL uid, not its name", async () => {
     const c = cluster({ perRunSecrets: true });
@@ -1994,11 +1761,7 @@ describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels 
     const owners = (
       secretPost.body as { metadata: { ownerReferences?: Record<string, unknown>[] } }
     ).metadata.ownerReferences;
-    // THE UID COMES FROM THE CREATE RESPONSE, and this is the assertion that a `uid: jobName` or a
-    // `uid: ""` regression fails: the fake stamps `uid-N` on create, so a uid derived from anything
-    // the adapter already knew would not match. An ownerReference with a WRONG uid is worse than
-    // none — the collector treats the owner as already deleted and removes the Secret out from under
-    // a live run, which is a `CreateContainerConfigError` on a pod that has not started yet.
+    // The uid comes from the create response. See docs/runner-launcher.md §229.
     expect(owners).toStrictEqual([
       {
         apiVersion: "batch/v1",
@@ -2040,11 +1803,7 @@ describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels 
   });
 
   it("THE LAUNCHER DYING MID-RUN: the cluster deletes the Secret, because NOTHING in this process can", async () => {
-    // THE ONE THAT MATTERS, AND THE ONE NO `finally` CAN PASS. The plugin host's hang detector
-    // (`apps/server/src/plugin-host/host.ts`) SIGKILLs a subprocess mid-`trigger()`. Modelled here
-    // the only way a single process can model its own death: the run is PARKED at `start` and then
-    // never touched again — no teardown, no `finally`, not one further op from the launcher — and
-    // the Secret's disappearance is caused entirely by the Job going away.
+    // THE ONE THAT MATTERS, AND THE ONE NO `finally` CAN PASS. See docs/runner-launcher.md §230.
     const c = cluster({ perRunSecrets: true });
     c.hold("start");
     const abandoned = c.launcher().run(withSecret);
@@ -2160,15 +1919,7 @@ describe("M23.2: a run that lost its name tears down NOTHING", () => {
   });
 
   it("A 409 ON THE SECRET POST IS ORPHAN DEBRIS — this run's OWN Job is torn down, the debris is NOT", async () => {
-    // M23.4 INVERTED THIS CASE, AND THE INVERSION IS THE POINT. Until M23.4 the Secret POST came
-    // FIRST, so a 409 there meant "another run holds this runId" and the correct response was to
-    // touch nothing at all. Now the JOB POST stakes the name (which is what lets the Secret carry an
-    // `ownerReference` to it), so a Secret 409 is only reachable AFTER a Job POST that did NOT 409 —
-    // i.e. this run owns the name, and what is behind it is a Secret whose owning Job is gone. Two
-    // different objects, two different owners, two different answers:
-    //   - the Job this run just created is ITS OWN, so teardown deletes it;
-    //   - the Secret is not, so nothing here deletes it. The collector will, because its
-    //     `ownerReference` no longer resolves.
+    // M23.4 INVERTED THIS CASE, AND THE INVERSION IS THE POINT. See docs/runner-launcher.md §231.
     const c = cluster({ perRunSecrets: true });
     const launcher = c.launcher();
     // A REALISTIC VALUE, and the reason is a real property of the port's redaction: it is a plain
@@ -2215,11 +1966,7 @@ describe("M23.2: a run that lost its name tears down NOTHING", () => {
     expect(
       requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/secrets/"))
     ).toBe(false);
-    // AND YET THE DEBRIS IS GONE BY THE END OF THE RUN — collected, not deleted. The assertion
-    // directly above is what makes this one mean something: no `DELETE .../secrets/...` was issued
-    // by the adapter at all, so the only thing that could have removed it is the garbage collector
-    // reacting to the Job teardown, which is precisely the mechanism the whole ordering exists to
-    // buy. A retry therefore succeeds rather than looping on the same 409 forever.
+    // AND YET THE DEBRIS IS GONE BY THE END OF THE RUN. See docs/runner-launcher.md §232.
     expect(c.secrets.has("scp-runner-r1-env")).toBe(false);
     await expect(launcher.run(spec({ secretEnv, copyOut: undefined }))).resolves.toMatchObject({
       succeeded: true
@@ -2412,33 +2159,7 @@ describe("M23.2: `reap()` removes foreign, expired Jobs and nothing else", () =>
 
 // THE ORDERING CONFORMANCE SUITE — inherited, not re-derived
 
-/**
- * THE KUBERNETES SUBSTRATE.
- *
- * `ordering-conformance.ts` was written for this moment and says so: "M23.2 adds a Kubernetes-Job
- * adapter... The Kubernetes adapter inherits every case below by writing a substrate, not by
- * re-deriving the race." This is that substrate, and every one of the ten cases is MEANINGFUL for a
- * Job-based launcher — none is skipped. Two are worth naming because their premise changes shape:
- *
- *   THE COPY-INS ARE SEQUENTIAL. On Docker the hazard is two `docker cp`s racing into one container
- *   and racing `start`. Here the copies are ordinary filesystem writes into a shared volume, and the
- *   race they would lose is worse rather than milder: an unawaited copy-in lets the PATCH that
- *   unsuspends the Job fire while bytes are still landing, so the runner starts against a partial
- *   workspace. Same case, same assertion, a hazard that is if anything sharper.
- *
- *   WITH NO COPY-OUT, TEARDOWN STILL WAITS ON `start`. Its `issued()` expectation is
- *   `["create","start","teardown"]`, i.e. it requires `create` and `start` to be TWO issued steps. A
- *   Job is created running, and an adapter that collapsed them would fail this case. `suspend: true`
- *   is what keeps them two, and it is the right answer for an independent reason (the name must be
- *   staked before the bytes move) — so this case is not merely satisfied, it is the check that the
- *   design decision stayed made.
- *
- * WHAT IT STILL CANNOT SEE, inherited verbatim from the Docker substrate's own caveat: it proves each
- * step is awaited before the next is ISSUED; it does not prove the process the adapter waited on is
- * the one that finished. Here that gap is wider than on Docker — a held PATCH is not a running pod —
- * and `kubernetes-adapter.integration.test.ts` against a real kind cluster is the only thing that can
- * close it.
- */
+/** THE KUBERNETES SUBSTRATE. See docs/runner-launcher.md §233. */
 function kubernetesOrderingSubstrate(): LaunchOrderingSubstrate {
   const c = cluster();
   let runIdSequence = 0;
@@ -2475,11 +2196,7 @@ describe("M23.2: the substrate is not vacuous", () => {
   });
 
   it("A HELD STEP IS ISSUED AND DOES NOT SETTLE — the one property that makes the suite honest", async () => {
-    // If `hold` delayed the ISSUE rather than the SETTLE, every held case above would pass while
-    // proving nothing. `ordering-conformance.ts` records the measurement that this protection lives
-    // in the held cases' own pre-release assertions; this is that property stated directly against
-    // the Kubernetes substrate, so a substrate regression fails HERE with a readable message rather
-    // than as nine confusing failures.
+    // The hold delays the settle, not the issue. See docs/runner-launcher.md §234.
     substrate.hold("start");
     let settled = false;
     const run = substrate.launcher

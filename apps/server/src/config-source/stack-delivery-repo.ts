@@ -1,22 +1,4 @@
-/**
- * THE DELIVERY RECORD (D26, owner ruling 2026-08-27) — which stacks a config source has actually
- * applied, and therefore owns.
- *
- * `config-sources-repo.ts`'s header states the gap this closes: §4 makes the explicit `stackTeams`
- * map the D7 binding, D9 gives an unclaimed stack the registration's default team, and between them
- * sat a stack the sync applies every time the repo changes while the CLI-apply guard called it
- * unowned — so a push succeeded and the next sync silently reverted it. Ownership follows delivery.
- *
- * ================================================================================================
- * ONE STACK HAS ONE OWNER, AND THE DATABASE IS WHAT SAYS SO
- * ================================================================================================
- * The primary key is `(org_id, stack_name)`. {@link recordStackDelivery} therefore does an UPSERT
- * whose `DO UPDATE` is GUARDED by `config_source_id` — a second config source delivering a stack
- * the first already owns updates ZERO rows, and this function reports that as
- * `owned_by_other_source` rather than swallowing it. An unguarded `DO UPDATE` would be
- * last-writer-wins, which is exactly what D9 says must never happen, and it would be invisible: the
- * insert would "succeed" every time and the owner would flip with whichever repo pushed last.
- */
+/** THE DELIVERY RECORD. See docs/config-source.md §26. */
 
 import { and, eq, sql } from "drizzle-orm";
 import { configSourceStacks } from "../db/schema.js";

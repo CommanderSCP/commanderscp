@@ -1,44 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { KubernetesApiRequest, KubernetesRunnerIo, RunnerSpec } from "./index.js";
 
-/**
- * ================================================================================================
- * M23.5 HIGH-2 — WHAT MAY HAPPEN AFTER THE RUN DEADLINE IS COUNTED FROM THE CODE
- * ================================================================================================
- *
- * THE DEFECT WAS NOT THE NUMBER. `call-policy.ts` writes the arithmetic out and chose 60s as "two
- * worst-case teardowns" of `RUNNER_REMOVE_TIMEOUT_MS`. That was true when a teardown was one
- * `docker rm -f`. The Kubernetes `finally` is THREE bounded calls, so sixty seconds of bounded work
- * consumed the entire grace and left nothing for the outcome write the grace exists to protect.
- *
- * AND THEN THIS FILE ASKED THE WRONG QUESTION. Its first version asked *what does the teardown
- * `finally` issue?* — one question narrower than the property, which is *what bounded call can be
- * issued after the run deadline?* The same round that wrote it added one that is in no teardown
- * `finally`: the Docker adapter's secret-env `unlink`, in `create`'s own `finally`, whose comment
- * says outright "BOUNDED LIKE A TEARDOWN, NOT SPENT FROM THE BUDGET". Two things hid it:
- *
- *   1. THE COUNTER FILTERED ON SHAPE. `dockerCalls.filter((c) => c.args[0] === "rm")` can only ever
- *      count a `docker rm`; an `fs.unlink` was structurally invisible to it. A filter is where the
- *      next instance hides (CLAUDE.md).
- *   2. THE FIXTURE COULD NOT REACH THE CASE. It drove a bare `spec()` with no `secretEnv`, so no
- *      env-file was ever staged and no `unlink` was ever possible. The KUBERNETES counter beside it
- *      passed `secretEnv` deliberately and said why — "a spec without `secretEnv` would count two
- *      and agree with a model that is wrong by a third". The reasoning was applied to one adapter
- *      and not the other.
- *
- * Measured cost: `run()` returned 64004ms into a run whose stated bound (`runnerRunBoundMs("docker",
- * 1000)`, whose own doc calls itself "THE BOUND `run()` IS HELD TO") was 33000ms — 1004ms past the
- * host's SIGKILL, so `withRecordedOutcome` never writes and `reconcile.ts` retries into a second
- * `tofu apply`.
- *
- * SO THE COUNTING RULE IS TIME, NOT SHAPE: drive each adapter to a run whose budget is ALREADY
- * SPENT, record EVERY effect it issues — `execFile`, `fs`, `io.request`, `io.removeDir`, whatever
- * later arrives — and count the ones at or after the deadline. Nothing is filtered by what a call
- * looks like, so a fifth kind of post-deadline call reddens this the same way a fourth `DELETE`
- * would. The other direction is the type checker: `withPostDeadlineBound` accepts only a name
- * declared in `RUNNER_POST_DEADLINE_CALLS`, and `RUNNER_POST_DEADLINE_CALL_COUNT` is that list's
- * length rather than a second copy of it — so no number anywhere has to be remembered.
- */
+/** What may happen after the deadline, counted from code. See docs/runner-launcher.md §409. */
 
 /** One effect an adapter had on the outside world, and WHEN. The name is for diagnosis only —
  *  nothing counts or excludes on it, which is the whole point. */
@@ -162,11 +125,7 @@ function countAfter(deadlineAt: number): number {
   return effects.filter((e) => e.at >= deadlineAt).length;
 }
 
-/** NON-VACUITY, AND THE ONE THING THAT COULD POLLUTE THE WINDOW. `reap()` is `void`-scheduled at
- *  the top of `run()` and is NOT post-deadline work of this run; both fixtures answer its listing
- *  with nothing to remove, so its only effects are the listing itself and (on Docker) the
- *  `readdir` of `secretEnvDir`. If either ever drifted into the window the count would be wrong,
- *  so it is asserted out rather than filtered out. */
+/** Non-vacuity, and the one thing that could pollute it. See docs/runner-launcher.md §410. */
 function expectSweepSettledBeforeTheWindow(deadlineAt: number): void {
   const late = effects.filter(
     (e) => e.at >= deadlineAt && (e.name === "docker ps" || e.name === "fs readdir")
@@ -256,11 +215,7 @@ async function countKubernetesPostDeadline(): Promise<number> {
   return countAfter(deadlineAt);
 }
 
-/**
- * THE CENSUS SLOT. Every kind in {@link RUNNER_POST_DEADLINE_CALLS} must have a counter here, and
- * the arm below asserts the two key sets are EQUAL — so a third adapter cannot join the model with
- * its declared calls checked by nothing.
- */
+/** THE CENSUS SLOT. See docs/runner-launcher.md §411. */
 const COUNTERS: Record<keyof typeof RUNNER_POST_DEADLINE_CALLS, () => Promise<number>> = {
   docker: countDockerPostDeadline,
   kubernetes: countKubernetesPostDeadline

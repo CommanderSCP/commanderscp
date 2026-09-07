@@ -10,27 +10,7 @@ import {
   type FederationSyncLoopHandle
 } from "./federation-sync.js";
 
-/**
- * §4-A4, AFTER THE SECOND CORRECTION — federation-sync's startup send is UNKEYED, and the property
- * this file pins is LIVENESS: the forced pull-on-(re)connect must ALWAYS be enqueued.
- *
- * THIS FILE PREVIOUSLY ASSERTED THE OPPOSITE, and that is the whole lesson. It required two replicas
- * starting together to collapse to exactly ONE `"startup"`-keyed job, treating cross-replica dedupe as
- * the goal and a distinct key as the safe way to get it. The distinct key did fix the collision it was
- * aimed at (a pending `"tick"` job absorbing the startup send — still pinned below), but `job_i4` is
- * `WHERE state <> 'cancelled'`, so the slot is also held by COMPLETED jobs. The job a restarting worker
- * most reliably collides with is therefore ITS OWN PREVIOUS BOOT, and a swallowed startup send means no
- * forced pull: the loop still ticks on its interval, so nothing errors, nothing logs, and no health
- * check fails — the outpost is simply stale for a whole window. That is the reliability floor M14.4
- * added this send to hold up.
- *
- * It surfaced as a wall-clock-dependent CI flake (whether a restart shared a 10s bucket with the boot
- * before it), which is why a green run on a developer's machine meant nothing. The current gate for the
- * behaviour is `federation-sync-loop.integration.test.ts`'s RESTART case, which seeds the colliding
- * completed row so it fails 100% of the time against a keyed send rather than by luck.
- *
- * A test asserting a defect is worse than no test: it makes the fix look like the regression.
- */
+/** §4-A4, AFTER THE SECOND CORRECTION. See docs/federation.md §155. */
 describe("§4-A4 startFederationSyncLoop: the startup pull is always enqueued", () => {
   let previousLoopFlag: string | undefined;
 
@@ -81,11 +61,7 @@ describe("§4-A4 startFederationSyncLoop: the startup pull is always enqueued", 
       loop1 = await startFederationSyncLoop(boss1, domain.db);
       loop2 = await startFederationSyncLoop(boss2, domain.db);
 
-      // THE DELIBERATE INVERSION of this test's original assertion (which demanded exactly 1).
-      // Every constraint that collapses these two also lets a completed job swallow a restart's
-      // send, and there is no window size that separates the two cases. The redundant pull is
-      // cheap and self-correcting — a tick claims work per peer and imports advance a forward-only
-      // cursor — whereas the swallowed one is silent and lasts a full interval.
+      // THE DELIBERATE INVERSION of this test's original assertion. See docs/federation.md §156.
       expect(startupRows(await jobRows(domain.adminUrl, FEDERATION_SYNC_QUEUE))).toHaveLength(2);
     } finally {
       await loop1?.stop();
@@ -112,11 +88,7 @@ describe("§4-A4 startFederationSyncLoop: the startup pull is always enqueued", 
         { startAfter: 3_600, singletonKey: "tick", singletonSeconds: 3_600 }
       );
 
-      // OBSTACLE 2 (the bug the FIRST fix introduced): this worker's OWN previous boot, already
-      // completed, sitting in the bucket a `singletonKey: "startup"` + `singletonSeconds: 10` send
-      // would target. `singleton_on` is a truncated bucket, not `now()` — the expression is copied
-      // from pg-boss 10.4.2 `src/plans.js`. Both the current and next bucket are seeded so a
-      // rollover between this insert and the send below cannot quietly un-reproduce the collision.
+      // OBSTACLE 2 (the bug the FIRST fix introduced). See docs/federation.md §157.
       const client = new pg.Client({ connectionString: domain.adminUrl });
       await client.connect();
       try {

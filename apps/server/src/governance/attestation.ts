@@ -8,20 +8,7 @@ import { instanceKeys } from "../db/schema.js";
 // importing back from it here would close an import cycle. See util/canonical-json.ts's doc.
 import { canonicalJson } from "../util/canonical-json.js";
 
-/**
- * Ed25519 approval attestation (DESIGN.md §10.2 "review decision": "every approval is
- * cryptographically attested at creation — the domain instance signs (Ed25519 domain key) a
- * canonical record binding the approver's subject id and IdP subject, the approved object's URN
- * and content hash, the decision id, and the timestamp... SCP performs all signing and validation
- * itself — no external PKI"). SECURITY-SENSITIVE (M4 PR body flag: "approval quorum integrity").
- *
- * The signature does not, by itself, add authorization (that's `authz/resolve.ts`'s
- * `hasRoleAtScope`, checked before a vote is even accepted — attestation.ts never gates anything).
- * What it buys: an approval record that is tamper-evident and independently verifiable — by
- * `scp audit verify` today, and by an importing domain validating a Promotion Bundle's approvals
- * as evidence once federation (M6) exists (DESIGN §13) — without SCP needing to trust the
- * `approval_votes` row's plain columns alone.
- */
+/** Ed25519 approval attestation. See docs/governance.md §17. */
 
 export interface InstanceKeyPair {
   id: string;
@@ -29,14 +16,7 @@ export interface InstanceKeyPair {
   privateKey: string; // base64 (PKCS8 DER) — server-side only, never sent to a client
 }
 
-/** Reads this org's signing key, generating and persisting one on first use (no migration seed —
- *  key material must never live in committed SQL). M6: org-scoped (schema.ts's updated doc
- *  comment on `instanceKeys` explains why) — every caller now supplies `orgId`, which in a real
- *  deployment is this instance's one org, but lets federation's tests model two distinct domains
- *  as two orgs with genuinely different keys. Race-safe: a duplicate-insert on concurrent
- *  first-use callers for the SAME org is resolved by re-reading rather than erroring, relying on
- *  `instance_keys_org_id_key`'s unique constraint (schema.ts) to make the loop below always
- *  converge on whichever row was inserted first. */
+/** Reads the org's signing key, generating one on first use. See docs/governance.md §18. */
 export async function ensureInstanceKey(tx: TenantTx, orgId: string): Promise<InstanceKeyPair> {
   const existing = await tx
     .select()

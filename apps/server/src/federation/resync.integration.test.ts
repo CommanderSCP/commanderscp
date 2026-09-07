@@ -19,13 +19,7 @@ import {
 import { permitCursorReanchor, FEDERATION_DIVERGENCE_DECISION_KIND } from "./cursors-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * §7.2.6 RESYNC — the mutually-authorized recovery. A = commander/exporter, B = full-scope
- * outpost/importer. Proves: the signed handshake (B signs, A verifies-and-consents), the
- * force-overwrite re-convergence (a divergent replica ahead in revision is overwritten to the
- * exporter's reality — the whole point; a normal import would no-op), both-sides Decisions +
- * generation bumps, the cleared standing divergence lifting rail 5, and a forged request refused.
- */
+/** §7.2.6 RESYNC — the mutually-authorized recovery. See docs/federation.md §468. */
 describe("federation resync: signed handshake, force-overwrite convergence, divergence cleared", () => {
   let domainA: IsolatedDomain;
   let domainB: IsolatedDomain;

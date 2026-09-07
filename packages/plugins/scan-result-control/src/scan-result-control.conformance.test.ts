@@ -1,10 +1,4 @@
-/**
- * Wires `@scp/plugin-scan-result-control` into `@scp/plugin-testkit`'s generic `ControlPlugin`
- * conformance suite (BUILD_AND_TEST.md §4.2). Like the webhook-control fixture, this file knows
- * nothing the suite doesn't — it points `ctx.http` at a stub returning a well-formed, clean,
- * digest-matching Trivy result so the shape-only conformance assertions (well-formed
- * `ControlOutcome`, always-present evidence) hold.
- */
+/** Wires this plugin into the generic control conformance suite. See docs/plugins.md §530. */
 import type { PluginContext, ScopedHttpResponse } from "@scp/plugin-api";
 import { runControlConformanceSuite } from "@scp/plugin-testkit";
 import { createScanResultControlPlugin } from "./index.js";

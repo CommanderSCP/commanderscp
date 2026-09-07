@@ -1,37 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Component, Service, Stack } from "./index.js";
 
-/**
- * THE L1 DOOR FOR THE INCREMENT-8 CONTRACT — `pipelineHooks`, `rollouts`, `convergence`.
- *
- * ============================================================================================
- * WHAT WAS BROKEN, MEASURED BEFORE THIS FILE EXISTED
- * ============================================================================================
- * The contract merged in #294 and the server half has been live since: `plans-repo.ts` applies
- * `pipelineHooks` through `upsertHook`, `render.ts` displays them per component, the gates read
- * them, and `POST /plans` accepts them. **And `@scp/iac` could not emit one by any route.** There
- * were no L2 constructs (`duration.ts` said so in a comment) and — the part that made it a blocker
- * rather than an ergonomic gap — no L1 hatch and no assembly: `synth()` did not build the three
- * collections at all, so even a hand-rolled declaration would have been dropped on the floor.
- *
- * D16(1) promises that no L2 construct may block reaching L1. For these three collections there was
- * no L1 to reach, which is a stronger failure than the promise anticipated: the whole increment-8
- * runtime was unreachable from a CDK program, and the only way to author a hook was to hand-write
- * manifest JSON and POST it — exactly the experience the construct library exists to replace.
- *
- * ============================================================================================
- * MUTATION LOG — each applied, watched fail, reverted, watched pass
- * ============================================================================================
- * | Mutation | Result (MEASURED) |
- * |---|---|
- * | `synth()` stops assembling `pipelineHooks` into `candidate` | 4 FAIL — (1), (2), (3), (7). This is the pre-existing bug, and it fails silently: the declaration simply is not in the output. |
- * | `addPipelineHook` spreads the caller's object AFTER the resolved `componentUrn` instead of before | (2) FAILS — a smuggled `componentUrn` attaches the hook to another component. **SURVIVED the first version of case (2)**, which passed a well-typed spec and asserted the URN matched: true under both spread orders. The smuggled key is what makes it discriminating. |
- * | the hook sort key drops `hookId` | (4) FAILS — same-kind siblings stop sorting deterministically, so declaration order changes the bytes. |
- * | `pipelineHooks` emitted as `[]` when empty instead of omitted | (5) FAILS. The omission is load-bearing: absent means UNMANAGED for this collection, so emitting `[]` would make a program that declares no hooks RETRACT every hook the component has — a disarmed gate, whose symptom is an absence of refusals. |
- *
- * The `rollouts`/`convergence` omissions are pinned by the same case (5); they follow the ORDINARY
- * rule (absent = empty = prune) because neither gates anything.
- */
+/** THE L1 DOOR FOR THE INCREMENT-8 CONTRACT. See docs/iac.md §276. */
 describe("@scp/iac L1: the increment-8 manifest collections", () => {
   function stackWithComponent(): { stack: Stack; component: Component } {
     const stack = new Stack("behaviors");
@@ -64,15 +34,7 @@ describe("@scp/iac L1: the increment-8 manifest collections", () => {
 
   it("(2) the CONSTRUCT decides the subject — a `componentUrn` smuggled into the spec does not win", () => {
     const { stack, component } = stackWithComponent();
-    // The type `Omit`s `componentUrn`, so this is only reachable from JavaScript or through a cast
-    // — which is exactly why it is worth pinning. The hatch spreads the caller's object FIRST and
-    // writes the resolved URN AFTER, so the construct wins; the opposite order would let a stray
-    // key silently attach a hook to a component the caller never passed, and every type-level
-    // protection would be intact while it happened.
-    //
-    // THIS CASE WAS VACUOUS WHEN FIRST WRITTEN. It passed a well-typed spec and asserted the URN
-    // matched, which is true under BOTH spread orders — the mutation that reverses them survived
-    // it. The smuggled key is what makes the assertion discriminating.
+    // The type omits that field, so this is reachable only from JS. See docs/iac.md §277.
     stack.addPipelineHook(component, {
       kind: "postMerge",
       hookId: "postMerge",
@@ -195,11 +157,7 @@ describe("@scp/iac L1: the increment-8 manifest collections", () => {
       hookId: "bad",
       workflow,
       everySeconds: 300,
-      // A RUNTIME contract violation, not a type error: `maxAgeSeconds` is
-      // `z.number().int().positive()`, whose refinements are invisible to TypeScript (the inferred
-      // type is plain `number`), so `-1` typechecks and only Zod refuses it. That is exactly what
-      // this case is for — synth must still VALIDATE the collection it now assembles, and D16(5)
-      // requires the refusal to name the construct path.
+      // A RUNTIME contract violation, not a type error. See docs/iac.md §278.
       maxAgeSeconds: -1
     });
     // MEASURED path, not assumed: `Component` scopes to the STACK and takes its service as a prop

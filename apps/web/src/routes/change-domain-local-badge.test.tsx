@@ -2,34 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BoundarySegment, Change, ChangeExplainResponse } from "@scp/sdk";
 
-/**
- * M20-A3 (ADR-0031 §5, docs/proposals/outpost-ui.md) — `Change.domainLocal` RENDERED.
- *
- * Two things get pinned here, at two different altitudes, for the same reason
- * `change-pipeline-boundary-always-shown.test.tsx` gives for owning the page altitude separately
- * from `change-pipeline-boundary-honesty.test.tsx`'s component altitude: a component-level test
- * proves the piece is correct in isolation, but only a page-level render proves the page actually
- * WIRES `change.domainLocal` through to it — deleting the `{change.domainLocal && <DomainLocalBadge
- * />}` line, or forgetting to pass `domainLocal` into `NoBoundarySegment`, passes every
- * component-level check while silently regressing the page.
- *
- *   1. `NoBoundarySegment` (`components/pipeline/BoundarySegmentStrip.tsx`) — given `domainLocal`,
- *      states the HONEST reason a domain-local change's boundary segment is absent ("never leaves
- *      its domain") instead of the generic "not yet promoted" reading. Component-level, mirroring
- *      `change-pipeline-boundary-honesty.test.tsx`'s existing coverage of the non-domain-local copy.
- *   2. `ChangePipelinePage` (`routes/change-pipeline.tsx`) — renders the SAME `DomainLocalBadge`
- *      every domain-local object wears (§ domain-local.test.tsx) next to the change title when
- *      `change.domainLocal`, absent when not, and drives the honest `NoBoundarySegment` copy above
- *      off the real `explain()` response. Reuses the exact mocking harness
- *      `change-pipeline-boundary-always-shown.test.tsx` established (stub `useQuery` off
- *      `queryKey[1]`, stub the router `Link`, stub `../lib/client`).
- *
- * `change-detail.tsx` renders the identical one-line `{change.domainLocal && <DomainLocalBadge />}`
- * pattern; it is not separately harnessed here because no test in this codebase yet mounts
- * `ChangeDetailPage` (its four `useMutation` calls have no existing mock precedent to follow) and
- * inventing one is out of scope for this change. `DomainLocalBadge` itself is already pinned by
- * `components/domain-local.test.tsx`; what is new here is the CONDITION that gates it.
- */
+/** M20-A3 (ADR-0031 §5, docs/proposals/outpost-ui.md). See docs/web.md §194. */
 
 const { NoBoundarySegment } = await import("../components/pipeline/BoundarySegmentStrip");
 

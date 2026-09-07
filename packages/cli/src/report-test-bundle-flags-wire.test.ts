@@ -4,31 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChangeReportRequestSchema } from "@scp/schemas";
 
-/**
- * `scp change-source report` — THE D23/D13 FLAGS ACTUALLY REACH THE REQUEST BODY.
- *
- * ============================================================================================
- * WHAT WAS BROKEN, AND WHY IT MADE THE WHOLE INCREMENT UNREACHABLE FROM CI
- * ============================================================================================
- * Increment 8 shipped `ChangeReportRequestSchema.commitSha` (#316), `.testBundle` (#316) and
- * `.artifactClass` (#317), and the CLI could send NONE of them — it had `--sbom-*` and
- * `--artifact-digest` and stopped there. `scp change-source report` is THE channel a build declares
- * through (a raw provider webhook cannot carry any of this), so in practice no CI step could produce
- * a D23 pin at all: `deriveCapturedWorkflow` needs the declared workflow, the built commit AND the
- * bundle, and two of those three had no flag. Every declared hook would trigger, terminalize, write
- * no evidence, and hold its wave forever with a correctly-named reason nobody could act on.
- *
- * That is charter principle 3 (API → SDK → CLI → IaC → UI) failing at the CLI rung, and it is the
- * same built-never-installed shape #317 closed one layer down — which is why this file asserts the
- * VALUES ON THE WIRE and not merely that the options are registered. A flag that parses into a
- * variable nothing threads is exactly as useless as no flag, and `stage-dependencies-flags.test.ts`
- * (registration + pure parsers) could not tell the two apart. The `dependency-read-verbs-wire`
- * lesson applies verbatim: a `return;` at the top of the action leaves a fully green package.
- *
- * Every asserted body is parsed by `ChangeReportRequestSchema` itself rather than compared to a
- * retyped literal, so a future contract change cannot leave these flags emitting a shape the API
- * refuses.
- */
+/** `scp change-source report`. See docs/cli.md §139. */
 
 const reportCalls: { sourceKind: string; req: Record<string, unknown> }[] = [];
 

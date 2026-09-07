@@ -4,14 +4,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiscoveryProposal, GraphObject, RunDiscoveryRequest } from "@scp/schemas";
 
-/**
- * `scp iac scaffold` — DRIVEN through `buildProgram().parseAsync([...])` against a stubbed
- * `@scp/sdk` (house pattern). What matters here — and what a unit test of `groupDiscoveryProposal`
- * alone cannot pin — is that the ACTION BODY resolves the execution-system into a discovery request,
- * calls `discovery.run`, and prints the grouped/ungrouped split honestly (ADR-0047's whole point:
- * "the orphan problem is solved at authoring time" only holds if ungrouped components are actually
- * loud here, not just correctly computed by a pure function nothing calls).
- */
+/** `scp iac scaffold`. See docs/cli.md §123. */
 
 const EXECUTION_SYSTEM_ID = "0198f000-0000-7000-8000-000000000001";
 const EXECUTION_SYSTEM_URN = "urn:scp:acme:execution-system:argocd-prod";

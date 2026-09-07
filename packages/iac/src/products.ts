@@ -1,27 +1,7 @@
 import type { InfraKind } from "@scp/schemas";
 import { isInfraProductConstruct, type InfraProductScope } from "./infra.js";
 
-/**
- * D20's products module — "the infra pipeline's synth emits a typed products module alongside its
- * manifest ... a product the infra pipeline never declared fails at COMPILE TIME". PURE, exactly
- * like `Stack.synth()` (no I/O in here) — this file only computes what the module's TEXT should be;
- * writing it to disk lives beside `synthToFile` in `index.ts`, the same layering split the manifest
- * side already makes.
- *
- * INTERFACE-TYPED PER D24: the emitted `products` const carries an EXPLICIT type annotation
- * (`readonly payBlue: ICluster`), not an inferred literal object type — that is what makes
- * `products.payBlue: ICluster` the thing an IDE shows at the use site, and it is the property that
- * turns `rpm.placeAt(products.payBlue)` into a compile error in the CONSUMING repo: `PlaceableTarget
- * <"rpm">` is `IInstanceGroup` only (`infra.ts`), and `ICluster`/`IInstanceGroup` are structurally
- * distinct on their `kind` literal (`infra.ts`'s `IInfraProductRef<Kind>`). `products.placeAt.
- * typecheck.test.ts` proves that mechanism the same way `pipeline.placeAt.typecheck.test.ts` proves
- * D24's compile rung: `@ts-expect-error` lines swept by `tsc --noEmit`.
- *
- * THE WIRE STILL CARRIES ONLY THE NAME/URN REFERENCE (D20): the generated module's values are
- * exactly the `{urn, typeId, kind}` shape `Cluster.fromUrn(...)` would hand back — this file adds no
- * new manifest shape, it is authoring sugar over the SAME synthesized `deployment-target` objects
- * `infra.ts` already emits.
- */
+/** D20's products module. See docs/iac.md §300. */
 
 const INFRA_KIND_INTERFACE_NAME = {
   cluster: "ICluster",
@@ -43,12 +23,7 @@ export interface ProductEntry {
   readonly urn: string;
 }
 
-/**
- * camelCase JS identifier from any construct id/slug — `pay-blue` -> `payBlue`, `pay_blue` ->
- * `payBlue`, `Pay Blue` -> `payBlue`. Every run of non-alphanumeric characters is a word boundary,
- * matching how `slugify` (`urn.ts`) already treats separators, so an id built by hand and one built
- * by `slugify` camelCase to the same identifier.
- */
+/** camelCase JS identifier from any construct id/slug. See docs/iac.md §301. */
 export function camelIdentifier(input: string): string {
   const parts = input
     .trim()
@@ -63,17 +38,7 @@ export function camelIdentifier(input: string): string {
     .join("");
 }
 
-/**
- * Every infra product owned anywhere under `scope` (D19: "declared by — scoped to — the
- * Infrastructure/Configuration pipeline that manages it"), as `ProductEntry`s — SORTED BY URN (the
- * same determinism convention `Stack.synth()` uses for `objects`/`relationships`), so declaration
- * order in the authoring program never changes the generated module's bytes, only content does.
- *
- * Throws if two products under `scope` camelCase to the SAME identifier (e.g. `pay-blue` and
- * `pay_blue` are two different construct ids that collide once slugified into JS) — a generated
- * module with a duplicate key would silently drop one product rather than fail loudly, and this is
- * the one place that can still be caught before the module ships.
- */
+/** Every infra product owned anywhere under `scope`. See docs/iac.md §302. */
 export function collectProducts(scope: InfraProductScope): ProductEntry[] {
   const owned = scope.stack._resourcesWithin(scope).filter(isInfraProductConstruct);
   const sorted = [...owned].sort((a, b) => a.urn.localeCompare(b.urn));
@@ -88,12 +53,7 @@ export function collectProducts(scope: InfraProductScope): ProductEntry[] {
         `Products module for "${scope.path}": both "${existing.urn}" and "${resource.urn}" map to ` +
           `the identifier "${identifier}" — rename one of the two construct ids so the generated ` +
           `module does not silently drop one of them.` +
-          // WHEN THE TWO URNs PRINT THE SAME, the collision is upstream of this module and the
-          // sentence above is unactionable on its own: a URN is slugified (lowercased), so ids
-          // differing only in case derive ONE URN and the tree carries two objects claiming it.
-          // `Stack.synth()` refuses that outright; this line is for the paths that reach here
-          // WITHOUT going through synth (`productsModuleSource` is callable on its own), so the
-          // author is told which defect they actually have.
+          // When two urns print the same, the collision is upstream. See docs/iac.md §303.
           (existing.urn === resource.urn
             ? ` Both URNs are identical, which means the construct ids differ only in case or ` +
               `punctuation — they are two constructs sharing one object identity, and Stack.synth() ` +
@@ -113,12 +73,7 @@ export function collectProducts(scope: InfraProductScope): ProductEntry[] {
   return entries;
 }
 
-/**
- * Renders `entries` as the module's TypeScript SOURCE TEXT — pure string building, deterministic
- * given a deterministic `entries` (which `collectProducts` already guarantees by sorting on URN).
- * Exported separately from `productsModuleSource` so a test (or a caller with its own product list,
- * e.g. the D20 aggregated `targets.*` form) can render without needing a live construct tree.
- */
+/** Renders `entries` as the module's TypeScript SOURCE TEXT. See docs/iac.md §304. */
 export function renderProductsModule(entries: readonly ProductEntry[]): string {
   const header =
     "// GENERATED by `@scp/iac` synth (team-pipeline-iac.md D20) — DO NOT EDIT BY HAND.\n" +

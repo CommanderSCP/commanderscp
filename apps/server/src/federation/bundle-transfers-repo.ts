@@ -4,26 +4,7 @@ import type { BundleTransfer, TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { bundleTransfers } from "../db/schema.js";
 
-/**
- * Bundle-transfer tracking (DESIGN.md §13). Purely observational bookkeeping — never consulted for
- * authority/idempotency decisions (the journal's own sequence/hash chain is what makes replication
- * safe); this just gives the commander UI/CLI something to show for an air-gapped peer's
- * outstanding handoffs.
- *
- * PER-HOP AND INSERT-ONLY (doc corrected 2026-07-29, M16.1). This is NOT a lifecycle: no production
- * path updates a row — this module exposes no update, and the only `update(bundleTransfers)` in the
- * tree is a test fixture backdating `confirmed_at`
- * (`coordination/service-board-staleness.integration.test.ts`). One row per `.scpbundle` an instance
- * produced or consumed, in THAT instance's own database:
- *   `created`   — the EXPORTER, on producing a bundle (export-repo, exportPromotionBundle).
- *   `submitted` — a RETRANS only, for its onward drop (retrans-relay).
- *   `confirmed` — the RECEIVER, on a successful import (import-repo, applyPromotionImport,
- *                 retrans-relay's inbound hop).
- * CONSEQUENCE: in the commander's own database an export can only ever read `created`, so the
- * commander may say "exported" and MUST declare the handoff unknown — see
- * `coordination/boundary-segment.ts`. The DESIGN §13 aspiration ("confirmed when a returned bundle
- * carries the outpost's import cursor") is UNBUILT and named there as future increment M16.4.
- */
+/** Bundle-transfer tracking (DESIGN.md §13). See docs/federation.md §55. */
 
 function toBundleTransfer(row: typeof bundleTransfers.$inferSelect): BundleTransfer {
   return {
@@ -93,38 +74,7 @@ export async function recordBundleTransfer(
   return toBundleTransfer(row);
 }
 
-/**
- * When a signed sync bundle from `peerDomainId` was last CONFIRMED as imported here — the one
- * transport-agnostic freshness anchor this instance has, and the basis of DESIGN §13's
- * "as of &lt;bundle/date&gt;" label.
- *
- * WHY THIS AND NOT `federation_peers.lastPullSuccessAt`. That column is stamped only by the
- * live-pull scheduler (`federation-sync.ts`), which iterates `role === "commander" && baseUrl` —
- * so on an AIR-GAPPED instance it is NULL forever, and a freshness label derived from it would
- * render "never synced" on an instance that imports bundles weekly. Every import path instead
- * funnels through `importSyncBundle` → `recordBundleTransfer(direction:'import', kind:'sync',
- * status:'confirmed')`: the live pull, `POST /v1/federation/imports` (a pushed bundle or
- * `scp federation import`), and the unattended air-gap inbox loop alike. `status:'confirmed'` is
- * only ever written on IMPORT rows (exports insert `'created'` and this module exposes no update),
- * so the predicate is unambiguous.
- *
- * The row also carries HOW it arrived (`transport`, drizzle/0041) — the honest source for the
- * label's live-pull-vs-bundle distinction, which nothing else can reconstruct after the fact. NULL
- * on pre-0041 rows and reported as such rather than guessed.
- *
- * Purely observational, exactly as this module's header says — it feeds a LABEL, never an
- * authority or idempotency decision.
- *
- * PERF: runs once per peer on every service-board render. drizzle/0041's partial index
- * `bundle_transfers_org_peer_confirmed` matches this predicate and INCLUDEs `transport`, so it is
- * an index-only seek no matter how deep the (never-pruned, by design) transfer history gets — but
- * only since drizzle/0070. 0041 built the index as bare `confirmed_at DESC`, which PostgreSQL reads
- * as NULLS FIRST, while this read asks for `DESC NULLS LAST`; those are different orderings, the
- * index was therefore INELIGIBLE, and every board render seq-scanned the whole ledger and sorted it
- * — the exact plan 0041's header says it exists to abolish. Measured at 20,000 rows: 364 buffers
- * and a top-N heapsort over every row, against 4 buffers for the seek. Do not "simplify" the
- * `NULLS LAST` away to match an index; the index is what moved.
- */
+/** When a bundle from this peer was last confirmed imported. See docs/federation.md §56. */
 export function lastConfirmedSyncImportQuery(
   tx: TenantTx,
   orgId: string,
@@ -183,12 +133,7 @@ export async function lastConfirmedSyncImportAt(
   };
 }
 
-/**
- * M16.1 (I1) — every ledger row whose bundle checksum is one of `checksums`: the PER-CHANGE cut of
- * this per-hop ledger, reached through the stamp `federation/boundary-bundle-ref.ts` writes onto a
- * change's `sourceRef`. Ordered oldest-first so a caller reads the hops in the order they happened.
- * An empty input (a change that never crossed a boundary) short-circuits to `[]` without a query.
- */
+/** Every ledger row whose bundle checksum is one of these. See docs/federation.md §57. */
 export async function listTransfersByChecksums(
   tx: TenantTx,
   orgId: string,
@@ -203,23 +148,7 @@ export async function listTransfersByChecksums(
   return rows.map(toBundleTransfer);
 }
 
-/**
- * M16.2 phase A (E3) — THE PENDING-EXPORT HIGH-WATER MARK for one peer: the highest
- * `through_sequence` over the SYNC EXPORT rows this instance has written for it, plus the identity of
- * that bundle (its Ed25519 `checksum`) and when it was produced here.
- *
- * This is the strongest statement a commander can honestly make about a peer's sync progress, and it
- * is deliberately ONE-SIDED. `sync_cursors` records only what WE applied FROM a peer; `export-repo.ts`
- * ships only this domain's own entries, so a return bundle cannot carry our sequences back; and this
- * ledger has no production UPDATE path, so an export row is inserted `created` and never advances.
- * Nothing here means "the peer applied it" — only "we put it on the wire". A field named for
- * application at the peer would be fabrication; that is future increment M16.4's work.
- *
- * `null` when this instance has never exported a sync bundle to the peer — never `0`, which a reader
- * would take for "synced through the beginning". Ordered by `through_sequence DESC` rather than
- * `created_at` because a later resume-from-cursor export can legitimately cover a lower range, and the
- * question asked here is "how far have we ever exported?".
- */
+/** The pending-export high-water mark for one peer. See docs/federation.md §58. */
 export async function lastSyncExportForPeer(
   tx: TenantTx,
   orgId: string,

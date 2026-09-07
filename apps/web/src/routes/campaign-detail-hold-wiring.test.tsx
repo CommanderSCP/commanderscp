@@ -6,35 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 // `RollbackCampaignResponse` the same way.
 import type { CampaignExplainResponse } from "@scp/schemas";
 
-/**
- * THE CAMPAIGN-LAYER HOLD-PARITY WIRING GATE (M25.UI) — the change-wave layer's freeze-hold
- * projection (`ChangeWaveTargetSchema.hold` / `ChangeWaveSchema.heldTargetCount`,
- * `change-pipeline-hold.test.tsx`) extended to campaign waves
- * (`CampaignWaveTargetSchema.hold` / `CampaignWaveSchema.heldTargetCount`).
- *
- * UNLIKE the change-pipeline hold fix, there is no separate value for `campaign-detail.tsx` to
- * discard: a campaign wave target's `hold` rides the target object itself (mirroring the FREEZE
- * half of `ChangeWaveTargetSchema.hold`, which `PipelineWaveCard` already reads straight off
- * `target.hold` with no side-channel prop), and `campaign-detail.tsx` already passes each
- * `explain()` wave straight into `PipelineWaveCard` unmodified
- * (`<PipelineWaveCard wave={wave} .../>`) — the card's `PipelineWaveLike`/`PipelineWaveTargetLike`
- * props are STRUCTURAL, satisfied by `CampaignWave`/`CampaignWaveTarget` the moment the wire type
- * carries the fields, exactly as that module's own contract states
- * ("campaign-detail.tsx migrates onto it later WITHOUT changes here").
- *
- * The gate this file still closes: nothing here proves the ACTUAL rendered page reflects that —
- * a future refactor of `campaign-detail.tsx` (e.g. mapping `wave` through an intermediate object
- * that drops unfamiliar keys, or hand-rolling a wave card instead of reusing
- * `PipelineWaveCard`) could silently stop passing `hold`/`heldTargetCount` through, and no
- * server-side or schema-side test would ever see it. `renderToStaticMarkup(<CampaignDetailPage/>)`
- * is the only altitude at which "the page renders what `explain()` sent" is a claim at all.
- *
- * MUTATION-PROVEN (re-run when touching the wave-board mount): replacing
- * `<PipelineWaveCard wave={wave} .../>` with a version that strips `hold`/`heldTargetCount` off
- * `wave` before passing it down reds every assertion in the first `it` here while
- * `PipelineWaveCard.test.tsx`'s own direct tests stay green — the same gap class
- * `component-pipeline-correlated-infra-wiring.test.tsx` closes for the component-pipeline page.
- */
+/** THE CAMPAIGN-LAYER HOLD-PARITY WIRING GATE. See docs/web.md §186. */
 
 const CAMPAIGN_ID = "3d4e5f6a-7b8c-4d9e-8f0a-1b2c3d4e5f6a";
 const TARGET_ID = "5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f";

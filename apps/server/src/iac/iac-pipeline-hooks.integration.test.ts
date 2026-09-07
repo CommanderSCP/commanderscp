@@ -13,54 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE IaC RUNG OF THE PIPELINE-HOOK CONTRACT (team-pipeline-iac increment 8, D11/D21; charter
- * principle 3: API -> SDK -> CLI -> IaC -> UI).
- *
- * ============================================================================================
- * WHAT THIS FILE EXISTS TO STOP
- * ============================================================================================
- * `DesiredStateManifestSchema` has accepted a `pipelineHooks` key since the collection was
- * specified, and the server ignored it ENTIRELY. A team could declare a `postDeploy` gate, watch
- * `scp apply` report `applied`, and have no gate. That is the worst shape a coordination platform
- * can ship: a decorative safety declaration. Every case below is a claim about the WIRE, the DIFF
- * or the ROWS — never about a function existing.
- *
- * ============================================================================================
- * WHAT MAKES A HOOK DIFFERENT FROM `sourceMappings`/`executorBindings`/`placements`
- * ============================================================================================
- * Those three treat an ABSENT collection and an EMPTY one as the same thing, and both PRUNE.
- * `producers` diverges (owner ruling 2026-08-17) and `governanceMoveRungs` diverges
- * (proposal §9.6 Q4). `pipelineHooks` is the THIRD, and its argument is the rung's argument
- * verbatim:
- *
- *   - Pruning a mapping costs a route an operator notices the same day.
- *   - Pruning a HOOK disarms a GATE. A vanished `postDeploy` entry stops gating every wave's exit;
- *     a vanished `bakeAlarms` entry stops holding the widening. The symptom in both cases is an
- *     ABSENCE — of refusals, of holds, of anything — and nothing surfaces it until a bad release
- *     walks the whole fleet unimpeded.
- *
- * So (3) here is the NEGATIVE case, exactly as (1) is in `iac-dependency-producers.integration.ts`
- * and `iac-governance-move-rungs.integration.ts`: a stack with standing hooks whose manifest omits
- * the key must plan NO hook entries and leave every hook alone. (2) and (4) are the positive half,
- * and the three are only correct TOGETHER — without them, "unmanaged on absent" would mean IaC
- * could arm a gate and never disarm one.
- *
- * ============================================================================================
- * MUTATION LOG — each applied, watched fail, reverted, watched pass
- * ============================================================================================
- * | Mutation | Measured |
- * |---|---|
- * | REMOVE THE PRUNE-SKIP: `computeDiffForManifest` maps an absent `pipelineHooks` key to `[]` instead of `null`, and the pool guard is dropped — so absent behaves exactly like empty | EXACTLY 1 fails: "(3) an ABSENT pipelineHooks key manages NOTHING", on the SUBSTANTIVE assertion — `an absent pipelineHooks key manages nothing — the standing hooks must survive: expected [] to deeply equal [ { kind: 'bakeAlarms', …(6) }, …(1) ]`. Two standing gates were disarmed by a manifest that merely forgot the key. This is the catastrophic direction and it is the one the message names. NOTHING ELSE MOVED — (2), (4) and (5) stayed green, which is what makes this a statement about the ABSENT case and not about pruning in general |
- * | `pipelineHookKey` drops `hookId`, so the diff key ignores it | EXACTLY 1 fails: "(5) … renaming the hookId plans both lines" — `expected { 'postDeploy/smoke-v2': 'noop' } to deeply equal { 'postDeploy/smoke': 'delete', …(1) }`. A renamed hook read as "matches current state" and the apply did nothing at all |
- * | drop `checks.push(...)` from `prepareApplyChecks`'s hook loop, keeping the resolve | 2 fail: "(6)(b)" and "(6)(c)", both `promise resolved … instead of rejecting`. A Viewer holding `object:write` NOWHERE armed a gate, and disarmed a standing one. "(6)(a)" stays green, which is what makes the 403 a statement about the COLLECTION and not about Viewers and plans |
- * | narrow that same loop to `entry.action === "create"` | EXACTLY 1 fails: "(6)(c)" — `promise resolved … instead of rejecting`, and the standing gate is measurably gone. This is why (c) exists as a case of its own: an unauthorized ARM announces itself the first time a wave is held; an unauthorized DISARM announces itself by an absence of holds |
- *
- * The two sibling `absent-means-unmanaged` files were mutation-proven on the same run and are NOT
- * vacuous: mapping an absent `producers` key to `[]` reds their "(1)" (`expected undefined to be
- * '01a0437f-…'`), and doing the same to `governanceMoveRungs` reds theirs (`expected false to be
- * true`). Recorded here because a rule with three instances is only as good as its weakest test.
- */
+/** THE IaC RUNG OF THE PIPELINE-HOOK CONTRACT. See docs/iac.md §31. */
 describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -91,11 +44,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
     path
   });
 
-  /**
-   * The live rows for a component, read through the SAME function the reconcile path's gate reads
-   * through (`listHooksForComponents`) rather than a SELECT written here — so a green in this file
-   * cannot disagree with what actually gates a wave.
-   */
+  /** The live rows, read through the function the loop uses. See docs/iac.md §32. */
   const hooksOf = async (componentUrn: string) => {
     const component = await admin.components.get(componentUrn);
     const rows = await inOrg((tx) => listHooksForComponents(tx, org.orgId, [component.id]));
@@ -118,18 +67,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
       (diff.pipelineHooks ?? []).map((entry) => [`${entry.hookKind}/${entry.hookId}`, entry.action])
     );
 
-  /**
-   * THE PLAN IS THE WHOLE STORY (property 7), asserted as a FUNCTION so every case below gets it
-   * rather than one case claiming it.
-   *
-   * Compares the rows before an apply with the rows after, and requires that EVERY difference is
-   * named by a plan line and every plan line is honoured:
-   *   - a row that appeared must have a `create` entry whose declaration matches it FIELD FOR FIELD;
-   *   - a row that vanished must have a `delete` entry likewise;
-   *   - a row that survived unchanged must have a `create` or `noop` entry, or no entry at all when
-   *     the collection was unmanaged.
-   * A write the plan did not show, or a shown write that did not land, fails here.
-   */
+  /** THE PLAN IS THE WHOLE STORY. See docs/iac.md §33. */
   const assertPlanExplainsTransition = (
     diff: PlanDiff,
     before: Awaited<ReturnType<typeof hooksOf>>,
@@ -179,15 +117,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
     ).toEqual([...plannedDeletes].sort());
   };
 
-  /**
-   * A stack with one service and one component, plus whatever `pipelineHooks` value is asked for.
-   *
-   * `hooks: undefined` OMITS the key entirely — the shape `Stack.synth()` produces for a pipeline
-   * that declares none, and exactly the shape that makes "unmanaged" and "I declare none"
-   * indistinguishable. `@scp/iac` has no hook construct yet (increment 8 wires the SERVER half), so
-   * a declaring manifest is hand-authored here, which is also the only way to express the
-   * present-but-empty statement `Stack.synth()` cannot emit.
-   */
+  /** A stack with one service and component, plus the hooks. See docs/iac.md §34. */
   const buildStack = (stackName: string, hooks?: ManifestPipelineHook[]): DesiredStateManifest => {
     const stack = new Stack(stackName);
     const service = new Service(stack, "svc", { name: "Svc" });
@@ -390,16 +320,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
 
   // (4) PRESENT-BUT-EMPTY IS A DELIBERATE STATEMENT — and it is the OPPOSITE of absent
 
-  /**
-   * The pair (3)+(4) is the whole ruling, and neither half means anything alone. (3) alone would be
-   * satisfied by a build that ignores the collection entirely — which is exactly the state this
-   * increment found. (4) alone would be satisfied by prune-on-absent. Only together do they say
-   * "the KEY's presence is the statement".
-   *
-   * `Stack.synth()` cannot emit this shape (it omits an empty collection), so this is the
-   * hand-authored escape hatch `ManifestPipelineHookSchema` documents — the only way IaC can remove
-   * a stack's LAST hook.
-   */
+  /** The pair is the whole ruling; neither half means anything. See docs/iac.md §35. */
   describe("(4) a PRESENT-but-EMPTY pipelineHooks array prunes EVERY hook on a component this stack owns", () => {
     it('`"pipelineHooks": []` plans a delete for each and removes them all', async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
@@ -461,13 +382,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
       assertPlanExplainsTransition(plan.diff, live, now);
     });
 
-    /**
-     * THE PAYLOAD HALF, and the one that would go silently wrong if the diff keyed on the identity
-     * tuple alone. `(componentUrn, kind, hookId)` is unchanged here — only `stage` moves — so an
-     * identity-keyed diff reads `noop` while the apply's `ON CONFLICT DO UPDATE` rewrites the gate.
-     * D21(a) is emphatic that adding a `stage` REMOVES gates: this transition narrows a
-     * gate-every-wave to a gate-at-prod, which is precisely the change that must not be invisible.
-     */
+    /** The payload half, which would go silently wrong. See docs/iac.md §36. */
     it("narrowing a postDeploy hook's stage plans both lines too — an identity-keyed diff would call it a noop", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       const componentUrn = componentUrnOf(stackName);
@@ -521,20 +436,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
       expect(await hooksOf(foreignUrn)).toEqual([]);
     });
 
-    /**
-     * THE AUTHORITY PAIR, and the two cases are one pair on purpose: (a) is what makes (b) mean
-     * something, because without it a 403 would be satisfied by a principal who simply cannot apply
-     * plans at all.
-     *
-     * `Viewer` AT THE ORG ROOT IS EXACTLY THE RIGHT PRINCIPAL, and the choice is the whole design of
-     * the pair. `POST /plans` needs `object:read` at the org root, which a Viewer has — so it can
-     * compute and submit. It holds `object:write` NOWHERE, which is what the hook loop demands. And
-     * the two manifests below are BYTE-IDENTICAL apart from the `pipelineHooks` key: every object
-     * and relationship entry is a `noop` (the admin already applied this exact stack), so the
-     * all-noop plan in (a) pushes NO checks at all and applies. The ONLY difference between an apply
-     * that succeeds and an apply that 403s is the hook. Drop `checks.push(...)` from
-     * `prepareApplyChecks`'s hook loop and (b) goes green while nothing else in the suite moves.
-     */
+    /** THE AUTHORITY PAIR, and the two cases are one pair on purpose. See docs/iac.md §37. */
     describe("(b) the apply authorizes object:write at the OWNING COMPONENT", () => {
       let viewer: ScpClient;
       let stackName: string;
@@ -579,15 +481,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
         expect(await hooksOf(componentUrn)).toEqual([]);
       });
 
-      /**
-       * THE DISARM DIRECTION, and it is a separate case rather than a variant of (b) for the reason
-       * the rung file gives one: narrow `prepareApplyChecks`'s hook loop to `action === "create"`
-       * and (a), (b) and every other gate here stay green while a principal holding `object:write`
-       * NOWHERE can drop a hook out of a manifest and DISARM a standing gate. That is strictly
-       * worse than the arm direction it shares a check with — an unauthorized arm announces itself
-       * the first time a wave is held; an unauthorized disarm announces itself by an absence of
-       * holds, which is to say never.
-       */
+      /** The disarm direction, as a separate case. See docs/iac.md §38. */
       it("(c) …and is REFUSED a plan that PRUNES one — the authority covers deletes, not just creates", async () => {
         const componentUrn = componentUrnOf(stackName);
         const standing: ManifestPipelineHook = {

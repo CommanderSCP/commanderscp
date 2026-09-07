@@ -1,28 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { SubprocessPluginHost } from "./host.js";
 
-/**
- * M21.4 (ADR-0032 §7a) — THE GIT-PROVIDER FILE READ CROSSES THE PLUGIN-HOST BOUNDARY.
- *
- * These spawn REAL child processes (like `host.test.ts`) and touch no database, so they belong at
- * the unit layer. They exist because M21.2's `readFileAtRef` was, until this milestone, unreachable
- * from the server: it is a `GitProviderAdapter` hook and deliberately not an `ExecutorPlugin` verb
- * (ADR-0032 §9), and no plugin-host client shape carried a file-read method. Three of the five
- * ADR-0032 §7a ecosystems therefore recorded nothing, every time, under
- * `manifest_reader_unavailable`.
- *
- * WHAT MAKES THESE REAL PROOFS RATHER THAN SHAPE ASSERTIONS. Neither needs a network:
- *
- *  - the POSITIVE test asserts an error message that ONLY `@scp/git-provider-core`'s
- *    `assertSafeRepo` produces, and the github adapter runs it before any HTTP. So seeing that text
- *    means the call travelled server → JSON-RPC → subprocess → `loadPlugin`'s adapter hook and
- *    executed inside it. A stub, a mis-wired dispatch, or a client that never left the server
- *    cannot produce it.
- *  - the NEGATIVE test pins that a non-git module refuses by naming the missing HOOK. Before the
- *    wiring, every module answered `unknown method "readFileAtRef" for an ExecutorPlugin instance`
- *    — which is what the dispatch's default arm still says for a genuinely unknown verb, so the two
- *    outcomes stay distinguishable.
- */
+/** The git file read crosses the plugin-host boundary. See docs/plugin-host.md §40. */
 
 let host: SubprocessPluginHost | undefined;
 
@@ -90,14 +69,7 @@ describe("PluginHost.gitFileRead (M21.4, ADR-0032 §7a)", () => {
   }, 30_000);
 });
 
-/**
- * M21.4 MINOR E — instances started from a WORK-LIST need a lifecycle.
- *
- * `stop()` tears down everything; there was no way to stop ONE. The dependency version poll starts
- * an index instance per (ecosystem, org) on demand and, with no partial stop, those children stood
- * for the worker's lifetime — up to five per org on a multi-tenant commander, for a job that runs
- * once a day.
- */
+/** Instances started from a work list need a lifecycle. See docs/plugin-host.md §41. */
 describe("PluginHost.stopInstances (M21.4)", () => {
   it("stops the named instance and leaves the others running", async () => {
     host = new SubprocessPluginHost({ callTimeoutMs: 20_000 });

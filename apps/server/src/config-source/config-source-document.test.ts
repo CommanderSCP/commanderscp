@@ -5,24 +5,9 @@ import {
   parseConfigSourceDocument
 } from "./config-source-document.js";
 
-/**
- * The pure half of the config-source authoring door. Everything asserted here is a fact about one
- * `properties` bag; the door that CALLS it, and the authority check that follows the parse, are
- * driven end to end in `config-source-doors.integration.test.ts`.
- *
- * The cases are chosen around one property: **a refusal here is the only thing standing between a
- * malformed registration and a silent non-sync.** Migration 0100 deliberately keeps these rules OUT
- * of the registered JSON Schema (a closed rule there fails a peer's whole signed bundle), so if a
- * rule is not enforced in this file it is not enforced anywhere.
- */
+/** The pure half of the config-source authoring door. See docs/config-source.md §6. */
 describe("config-source document", () => {
-  /**
-   * Every refusal here is a `ProblemError`, whose `message` is the RFC 9457 TITLE ("Bad Request")
-   * and whose sentence lives on `detail` (`errors.ts`). Asserting on `.toThrow(/…/)` therefore
-   * matches the title and passes for ANY 400 — which is how a test that names one rule ends up
-   * green for a different one. This helper returns the detail so each case asserts the rule it is
-   * about.
-   */
+  /** Assert on `detail`, since the title matches any 400. See docs/config-source.md §7. */
   function refusalDetail(fn: () => unknown): string {
     try {
       fn();

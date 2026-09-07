@@ -5,46 +5,14 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readStripped } from "@scp/source-census";
 
-/**
- * SCANNER CONTAINMENT — the 13.3a DoD's "grep-level proof the scanners exist only in the runner
- * image" (proposal §13.3, ADR-0020 §1, DESIGN.md §3).
- *
- * THE INVARIANT. `trivy` and `oscap` live in EXACTLY ONE place: `apps/runner-scan`, the separate
- * image the `scp-managed-scan` orchestrator launches as an ephemeral, single-shot, `--network none`
- * container — exactly as `tofu` lives only in `scp-runner-iac`. The `scpd` runtime image carries no
- * scanner at all, and no SCP process ever executes one directly.
- *
- * WHY IT IS A TEST AND NOT A CONVENTION. The containment is what makes the Managed Execution
- * Exception's blast radius argument true: a scanner is a large, fast-moving, untrusted-input-parsing
- * binary, and the reason it may run at all is that it runs isolated, offline, and disposably. A
- * `RUN dnf install openscap-scanner` added to the root Dockerfile "to make a diagnostic easier", or
- * an `execFile("trivy", …)` added to a server route, would quietly move the scanner INTO the
- * long-lived, network-reachable, credential-holding process — the exact thing the design forbids —
- * and nothing else in the build would notice.
- *
- * WHY `git ls-files` AND NOT A DIRECTORY WALK. A walk would sweep in `node_modules`, build output,
- * and untracked scratch files. Some of those (a vendored Go module, a downloaded binary) contain
- * scanner tokens, so a walk-based gate would either be permanently red or — far worse — be "fixed"
- * with exclusions until it passed vacuously. Tracked files are exactly the set this repo is
- * accountable for.
- *
- * NON-VACUITY. Both detectors are exercised against synthetic POSITIVE samples below. If either is
- * ever weakened into a regex that matches nothing, the negative-control tests fail — so a green run
- * of this file always means "the detectors work AND found nothing", never "the detectors are dead".
- */
+/** Scanner containment: they exist only in the runner image. See docs/plugins.md §501. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../../..");
 
 const RUNNER_SCAN_PREFIX = "apps/runner-scan/";
 
-/**
- * Directories whose files are checked for scanner INVOCATION. Deliberately the product surface —
- * the code that ships in an image or runs on a commander. `.github/` is out of scope on purpose:
- * CI is a build-time concern, not the runtime image, and a CI job legitimately may run a scanner
- * over this repo's own artifacts. That is a different question from "does the SCP runtime carry a
- * scanner", which is what this file is about.
- */
+/** Directories whose files are checked for scanner INVOCATION. See docs/plugins.md §502. */
 const PRODUCT_DIRS = ["apps/", "packages/", "deploy/", "scripts/", "tools/"];
 
 const EXECUTABLE_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash", ".py"];
@@ -63,18 +31,7 @@ function read(path: string): string {
   return readFileSync(resolve(REPO_ROOT, path), "utf8");
 }
 
-/**
- * A file this gate SWEEPS, read tolerantly. `git ls-files` lists the INDEX, and the index and the
- * WORKTREE disagree routinely — a file `rm`'d but not yet `git rm`'d, a half-applied patch, an
- * interrupted rebase. Feeding that straight into {@link read} made this file die with a bare
- * `ENOENT ... launch-argv.golden.test.ts` at the "NO product code outside apps/runner-scan EXECUTES
- * a scanner binary" test — a repo-wide SECURITY gate going red with a message about a test file and
- * nothing about scanners. The cheap fix under time pressure is the one this file's header warns
- * against: narrowing the sweep until it passes. So the candidate set is UNCHANGED and unreadable
- * candidates are skipped instead — and every caller then asserts its non-vacuity floor over the
- * files ACTUALLY READ, so a worktree full of missing files cannot masquerade as a clean sweep
- * either.
- */
+/** A file this gate SWEEPS, read tolerantly. See docs/plugins.md §503. */
 function sweep(paths: string[]): { path: string; text: string }[] {
   const read: { path: string; text: string }[] = [];
   for (const path of paths) {
@@ -99,11 +56,7 @@ export function dockerfileScannerHits(text: string): string[] {
   return text.split("\n").filter((line) => SCANNER_PROVISION.test(line));
 }
 
-// -------------------------------------------------------------------------------------------------
-// DETECTOR 2 — code that EXECUTES a scanner. Command position only: `trivy` appearing as a method
-// name, a string literal, a pin variable or a comment is not an invocation, and flagging those would
-// make the gate unmaintainable (and therefore, eventually, disabled).
-// -------------------------------------------------------------------------------------------------
+// DETECTOR 2 — code that EXECUTES a scanner. Command position only. See docs/plugins.md §504.
 
 const SCANNER_BINARIES = "trivy|oscap";
 
@@ -229,32 +182,16 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
   });
 
   it("the orchestrator plugin launches `docker`, never a scanner", () => {
-    // RAW for the ABSENCE half: `invocationHits` finding nothing is the assertion, and stripping
-    // could only shrink what it searches. THE SWEEP NOW COVERS THE PORT TOO — M23.1 moved the
-    // create/copy/start/remove sequence into `@scp/runner-launcher`, and a containment gate that
-    // still looked only at the plugin would have stopped covering the file that actually spawns
-    // processes.
+    // RAW for the ABSENCE half. See docs/plugins.md §505.
     expect(invocationHits(read("packages/plugins/managed-scan/src/index.ts"))).toEqual([]);
     expect(invocationHits(read("packages/runner-launcher/src/index.ts"))).toEqual([]);
 
-    // …and it really does launch containers (so the assertions above are about a live code path).
-    // STRIPPED for the PRESENCE half: this is the non-vacuity guard, and a guard satisfiable by a
-    // comment describing the launch would let the launch itself be deleted with the containment
-    // assertion above passing trivially.
-    //
-    // IT TAKES BOTH HALVES NOW, and that is the point of asserting them separately: the plugin must
-    // still hand a runner spec to the port (`.run({`, reached through the injected resolver), and
-    // the port must still exec the container CLI. Either one going missing would leave "no scanner
-    // is executed here" true for the uninteresting reason that nothing is executed at all.
+    // …and it really does launch containers. See docs/plugins.md §506.
     const pluginSource = readStripped(
       resolve(REPO_ROOT, "packages/plugins/managed-scan/src/index.ts")
     );
     expect(pluginSource).toMatch(/resolveLauncher\(\{[^}]*\}\)\.run\(\{/);
-    // `spawnRunnerProcess`, NOT `execFileAsync`, SINCE M23.6 CLAUSE 1. Every spawn in the package
-    // now goes through one recorded function so that "nothing was spawned on the Kubernetes path"
-    // can be an assertion rather than a hope; `no-docker-on-kubernetes.test.ts` censuses that
-    // `execFileAsync` is referenced exactly once, inside it. The claim this line makes is unchanged:
-    // the port still hands the container CLI an argv.
+    // `spawnRunnerProcess`, NOT `execFileAsync`, SINCE M23.6 CLAUSE 1. See docs/plugins.md §507.
     expect(readStripped(resolve(REPO_ROOT, "packages/runner-launcher/src/index.ts"))).toMatch(
       /spawnRunnerProcess\(\s*\n?\s*dockerBinary,/
     );

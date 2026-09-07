@@ -5,22 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { managedDepServerSettings, managedRunnerSettings } from "./executor-bindings-repo.js";
 import { pluginCtx } from "../federation/promotion-scan-step.js";
 
-/**
- * M23.2 — LAYER 3 OF THE THREE, AND THE HALF NO PLUGIN PACKAGE CAN SEE.
- *
- * Each plugin's own `runner-launcher-selection.test.ts` proves that a plugin CONSTRUCTED THE WAY
- * PRODUCTION CONSTRUCTS IT honours `config.runnerLauncher`. That leaves the other half open: does
- * anything in production ever PUT `runnerLauncher` in that config? A selection every plugin obeys
- * and nothing ever sets is a feature installed nowhere — the class CLAUDE.md names as this
- * repository's dominant one.
- *
- * THE PRECEDENT IS EXACT AND IT IS THIS FUNCTION. `dockerBinary` shipped injected on the binding
- * path and ABSENT on the binding-free `managed-dep` dispatch, so an operator's podman applied to two
- * managed classes out of three — and the comment describing the hole was corrected to match the
- * broken behaviour instead of the behaviour being fixed. A launcher SELECTION with the same shape
- * has a larger blast radius: the commander's own promotion scan, or the ordinary bump dispatch,
- * would stay on Docker on a Kubernetes deployment, i.e. exactly as dead as M23 exists to fix.
- */
+/** Layer three, and the half no plugin package can see. See docs/coordination.md §555. */
 
 const SAVED = new Map<string, string | undefined>();
 function setEnv(key: string, value: string | undefined): void {
@@ -133,20 +118,7 @@ describe("M23.2: `managedRunnerSettings()` is the one place the launcher is chos
   });
 });
 
-/**
- * M23.5 — THE POD CONVENTIONS EVERY OTHER POD IN THIS CHART INHERITS, AND THIS ONE DID NOT.
- *
- * `deploy/helm` creates six pods. Five are Helm templates and every one of them sets
- * `.Values.imagePullSecrets`, `.Values.image.pullPolicy` and a `resources` block. The sixth — the
- * runner Job — is built by `jobManifest()` at run time from what THIS function returns, and what it
- * returned described a namespace, a workspace and two booleans. Nothing about the pod, so nothing
- * about the pod was inherited: not just the two fields that were reported, but every convention.
- *
- * MEASURED, on a real cluster, image already loaded on the node and tagged `:latest`:
- * `spawn-failed, code=ErrImagePull — failed to pull and unpack image docker.io/library/
- * scp-probe-runner:latest`. Unset `imagePullPolicy` is `Always` for `:latest`; the identical image
- * runs fine under `docker create`. That is charter principle 5 broken in production by an omission.
- */
+/** The pod conventions this one pod did not inherit. See docs/coordination.md §556. */
 describe("M23.5: the deployment's pod conventions reach the runner Job", () => {
   it("ABSENT BY DEFAULT — a deployment that states none carries no `pod` key at all", () => {
     selectKubernetes();
@@ -243,13 +215,7 @@ describe("M23.2: every production construction path carries the selection", () =
   });
 
   it("THE THREE BINDING INJECTION SITES SPREAD THE WHOLE SLICE, not one field of it", () => {
-    // A SOURCE ASSERTION, and it is the honest instrument for this one: the binding paths need a
-    // tenant transaction and a real object row, so driving them here would test the fixture. What
-    // has to be true is structural — each managed module's server-injected block takes EVERYTHING
-    // `managedRunnerSettings()` returns, so a field added to that function reaches every binding
-    // without a fourth edit. The failure this prevents is the one that already happened once:
-    // `serverInjected.dockerBinary = …` named ONE field, so the next field silently reached none of
-    // the three.
+    // A source assertion, and the honest instrument here. See docs/coordination.md §557.
     const here = dirname(fileURLToPath(import.meta.url));
     const source = readFileSync(resolve(here, "executor-bindings-repo.ts"), "utf8");
     const spreads = source.match(/Object\.assign\(serverInjected, managedRunnerSettings\(\)\);/g);

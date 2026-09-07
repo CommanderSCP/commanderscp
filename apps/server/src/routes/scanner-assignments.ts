@@ -16,32 +16,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { withOperatorDb } from "./operator-db.js";
 import { requireInstanceOperator } from "../auth/operator-auth.js";
 
-/**
- * M13.3a — the SCANNER-ASSIGNMENT REGISTRY's API surface (ADR-0020 §2, proposal §13.3), API-first
- * per charter principle 3 (API -> SDK -> CLI). This is the DELIBERATE TWIN of
- * `routes/instance-scan-floors.ts`: same two-audiences / two-credentials shape, same operator-write
- * mechanics, because scanner assignments are instance-scoped config exactly as scan floors are.
- *
- *  - **READ is tenant-facing.** Any authenticated tenant principal may see the assignments — a scan
- *    step / gate a tenant cannot inspect is not explainable (charter principle 6). The read runs
- *    inside the ordinary tenant transaction under the table's tenant-read RLS policy (drizzle/0035),
- *    the same path `resolveScannersForType` takes; it leaks nothing across tenants because the table
- *    holds NO per-tenant rows — it is instance-wide configuration.
- *
- *  - **WRITE is operator-only, and deliberately NOT an RBAC permission.** These assignments bind
- *    EVERY org on the deployment; a tenant admin must never author them. So no role can grant it: the
- *    write requires the deployment-level `SCP_OPERATOR_TOKEN` (config.operatorToken), presented as
- *    `x-scp-operator-token`, and executes over the `scp_operator` connection (`withOperatorDb`)
- *    because the request-serving `scp_app` role holds no write grant on the table and no write RLS
- *    policy existed for it at all (drizzle/0035 — two independent barriers, mirrored from 0029;
- *    0076 adds the operator role as the one principal both barriers admit). Unset token ⇒ the
- *    surface is CLOSED (403), never a fallback to a tenant credential.
- *
- *    THAT LINE USED TO READ "the ADMIN connection", AND THE CODE MATCHED IT, AND BOTH WERE WRONG ON
- *    the shape it mattered on: api/worker pods hold no admin credential (the chart gives
- *    `DATABASE_URL` to the migrations Job alone), so the write dialed `config.databaseUrl`'s
- *    `localhost:5432` fallback inside its own pod. `routes/operator-db.ts` has the full account.
- */
+/** M13.3a — the SCANNER-ASSIGNMENT REGISTRY's API surface. See docs/routes.md §407. */
 
 interface AssignmentRow extends Record<string, unknown> {
   executor_type: string;

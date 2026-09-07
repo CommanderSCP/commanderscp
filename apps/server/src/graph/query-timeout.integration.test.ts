@@ -17,11 +17,7 @@ import {
 import { getOrgRootObjectId } from "./objects-repo.js";
 import { GraphQueryTimeoutError, withStatementTimeout } from "./query-timeout.js";
 
-/**
- * Defensive graph guardrail (adversarial review of PR #15) — see query-timeout.ts's module doc
- * for the full "why" (the `impact-of` recursive CTE's measured fan-in^depth blowup; the CTE fix
- * itself is a separate, pending owner decision — this suite is only about the timeout bound).
- */
+/** Defensive graph guardrail (adversarial review of PR #15). See docs/graph.md §153. */
 describe("graph query statement_timeout guardrail", () => {
   it("withStatementTimeout: a genuinely slow statement is cancelled near the configured bound, not left to run to completion — and the error is GraphQueryTimeoutError, not a raw driver error", async () => {
     const config = loadConfig({
@@ -82,43 +78,7 @@ describe("graph query statement_timeout guardrail", () => {
   }, 15_000);
 });
 
-/**
- * Route-level confirmation that `GraphQueryTimeoutError` (thrown by `withStatementTimeout` above)
- * actually reaches the client as the RFC 9457 HTTP 408 problem-details response `routes/graph.ts`
- * promises (catch `GraphQueryTimeoutError` → `errors.ts`'s `requestTimeout()`) — not a raw 500, not
- * a hung request. Adversarial review of PR #18 flagged that this end-to-end mapping lost its only
- * assertion when the M9.1 CTE fix (below) turned its old pathological-topology fixture into a fast
- * 200 — the `withStatementTimeout`-level tests above only assert the error TYPE (via a `pg_sleep`
- * unit call), never that a real route response carries it as a 408.
- *
- * Deliberately does NOT rebuild the old EXPONENTIAL fan-out^depth topology to force this — the
- * whole point of M9.1 is that a normal topology no longer explodes (see the suite below), so
- * reintroducing that shape here would be exactly the slow/flaky test this task was told to avoid.
- *
- * It's tempting to reach for `config.ts`'s existing `SCP_GRAPH_QUERY_TIMEOUT_MS` seam (already
- * exercised below at a looser 3000ms) turned down to the tightest non-disabling value (1ms —
- * Postgres treats `statement_timeout = 0` as "disabled", i.e. unlimited) against a trivially small
- * (2-node) graph. Empirically that is FLAKY, not just slow: `statement_timeout` cancellation is
- * delivered via a timer signal (Postgres `timeout.c`), and at ~1ms the race between "does the
- * signal get delivered and observed at the next `CHECK_FOR_INTERRUPTS`" and "does the (genuinely
- * sub-millisecond, on a 2-node graph, warm connection) query just finish first" is decided by OS
- * timer/scheduling jitter, not by the query actually being slow — repeated local runs against a
- * 2-node graph at 1ms came back a clean 200 (no cancellation at all) as often as a 408. Widening
- * the *graph* (still no depth beyond one hop, still linear — not the old exponential shape) instead
- * widens the gap between "real query cost" and "timeout bound" enough to make the outcome
- * deterministic: a single-level fan-in of WIDTH ordinary objects that all `depends_on` one target
- * (bulk INSERT, same technique the CTE-fix suite below uses).
- *
- * SIZING (corrected). An earlier version used WIDTH=1000 against the 10ms bound below and claimed a
- * "~4-5x margin, flake-free". That held in ISOLATION but occasionally returned 200 in the FULL
- * suite: after ~340 prior tests Postgres's shared buffers are warm, so the 1000-row walk finished
- * under 10ms before the timer fired — a real flake, not a phantom. The walk is CPU-bound and
- * O(WIDTH), so the fix is simply a much larger margin: WIDTH=30000 costs on the order of hundreds of
- * ms of unavoidable CPU work (~50-150x the 10ms bound), which no cache warmth or faster machine can
- * compress below 10ms, and full-suite CPU contention only makes slower (more likely to cancel).
- * 30k rows is one bulk INSERT (~1s to seed) and is still NOT the pathological shape — linear fan-in,
- * one hop, no recursion-step blowup is even possible here.
- */
+/** Route-level confirmation that `GraphQueryTimeoutError`. See docs/graph.md §154. */
 describe("GET /api/v1/graph/query/:name — GraphQueryTimeoutError maps to HTTP 408 (route level)", () => {
   let server: TestServer;
   let pool: ReturnType<typeof createPool>;
@@ -154,19 +114,7 @@ describe("GET /api/v1/graph/query/:name — GraphQueryTimeoutError maps to HTTP 
 
     const org = await createTestOrg(server, "graph-timeout-408");
 
-    // A single-level fan-in: WIDTH ordinary service objects, each with its own depends_on edge
-    // into one target — genuine, non-exponential work (see module doc for why this width/timeout
-    // pair was chosen). Bulk INSERT bypassing the API, same technique as the CTE-fix suite below.
-    //
-    // WIDTH sized for a LARGE margin (~50-150x), not a tight one. The prior 1000/10ms pair was
-    // flake-free in ISOLATION but occasionally returned 200 in the FULL suite: by then Postgres's
-    // shared buffers are warm from ~340 prior tests, so the 1000-row walk finished under the 10ms
-    // bound before the timeout fired. A ~10ms recursive walk of 1000 warm rows is CPU-bound and
-    // O(WIDTH), so 30k rows costs ~30x that — hundreds of ms of unavoidable CPU work that no cache
-    // warmth or faster machine can compress below the 10ms bound, while full-suite CPU contention
-    // only makes it slower (more likely to cancel, never less). 30k rows is one bulk INSERT (~1s to
-    // seed) and is still emphatically NOT the pathological shape — linear fan-in, one hop, no
-    // recursion-step blowup.
+    // A single-level fan-in. See docs/graph.md §155.
     const WIDTH = 30_000;
     const raw = await RawScpAppClient.connect();
     const originDomainId = randomUUID();
@@ -235,17 +183,7 @@ describe("GET /api/v1/graph/query/:name — GraphQueryTimeoutError maps to HTTP 
   }, 15_000);
 });
 
-/**
- * End-to-end, route-level confirmation that the M9.1 CTE fix (graph/named-queries.ts's
- * `transitiveReverseClosure` — see its doc comment for the approach) actually resolved the
- * pathological case this guardrail was originally built to merely survive: the exact
- * fan-in^depth topology that used to run unbounded (this test used to assert a 408 here) now
- * returns a normal 200, with the correct closure, comfortably inside a tight timeout — not just
- * "doesn't hang", but "computes the right answer fast". The generic guardrail mechanism itself
- * (statement_timeout translating to a clean 408 on a genuinely slow statement) is still covered
- * above by the pg_sleep-based tests, and remains in place as belt-and-braces — see
- * `query-timeout.ts`'s module doc.
- */
+/** End-to-end, route-level confirmation that the M9.1 CTE fix. See docs/graph.md §156. */
 describe("GET /api/v1/graph/query/impact-of — high fan-in no longer blows up (M9.1 CTE fix)", () => {
   let server: TestServer;
   let pool: ReturnType<typeof createPool>;
@@ -279,27 +217,12 @@ describe("GET /api/v1/graph/query/impact-of — high fan-in no longer blows up (
 
     const org = await createTestOrg(server, "graph-timeout-guardrail");
 
-    // A small, cheap-to-insert, but (pre-M9.1) COMBINATORIALLY EXPLOSIVE fan-in DAG (bulk INSERT,
-    // bypassing the API — same technique load-test/graph-scale.ts uses for scale, at a tiny
-    // fraction of its size): LAYERS layers of WIDTH nodes each, EVERY node in layer i depends_on
-    // EVERY node in layer i+1 (a complete bipartite join per layer). Walking `impact-of` BACKWARD
-    // from a single last-layer node used to explore WIDTH^(LAYERS-1) distinct PATHS
-    // (named-queries.ts's old "no intermediate node-dedup" root cause — see this suite's module
-    // doc) — with WIDTH=12, LAYERS=9 that's 12^8 ≈ 4.3*10^8 paths, genuinely unbounded pre-fix,
-    // while costing only ~1,260 rows to set up. Post-M9.1, node-level dedup means this same
-    // topology costs only ~WIDTH*(LAYERS-1) closure rows (every node sits at exactly one distance
-    // from the target in this uniform layered DAG), hence the assertions below.
+    // A small but combinatorially explosive fan-in graph. See docs/graph.md §157.
     const WIDTH = 12;
     const LAYERS = 9;
     const raw = await RawScpAppClient.connect();
     const originDomainId = randomUUID();
-    // RBAC (authz/resolve.ts's scope_expand) walks `domain_id` from the queried object up to the
-    // scope a role binding actually covers — bulk-inserting with `domain_id: NULL` (as
-    // load-test/graph-scale.ts does, since that script calls runNamedQuery directly and never
-    // goes through authorize()) would make every synthetic object its OWN unreachable scope
-    // island, and the admin's org-root role binding would never match. Point every synthetic
-    // object's domain_id at the REAL org root object (one hop to the admin's actual scope) so
-    // this test exercises normal RBAC, not a bypass of it.
+    // The permission walk climbs `domain_id` to the bound scope. See docs/graph.md §158.
     const orgRootObjectId = await withTenantTx(db, org.orgId, (tx) =>
       getOrgRootObjectId(tx, org.orgId)
     );

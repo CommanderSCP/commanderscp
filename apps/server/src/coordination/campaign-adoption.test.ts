@@ -3,21 +3,7 @@ import type { CampaignRecipe } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { evaluateCampaignAdoption, positionAgainstFloor } from "./campaign-adoption.js";
 
-/**
- * The parts of M25.5's adoption predicate that need no database:
- *
- *  1. `positionAgainstFloor` — the one place that decides whether a declared version satisfies a
- *     recipe's floor, and the one place a false `adopted` can be manufactured out of a string.
- *  2. INERTNESS — that a recipe declaring no `adoption` costs ZERO queries. Proven rather than
- *     asserted: the transaction handed in is a Proxy that throws on ANY property access, so a
- *     future edit that adds a read to that path fails here with a named error instead of quietly
- *     costing one query per campaign target per tick.
- *
- * Every verdict of every EVIDENCE KIND is exercised against real PostgreSQL in
- * `campaign-adoption.integration.test.ts` — the repo's rule is that a DB-reading predicate is tested
- * against a real database and never a mocked one, and the risky half of each kind (the coordinate
- * join, the "zero rows" test, "latest run wins") is precisely the half a stub would define away.
- */
+/** The parts of the adoption predicate that need no database. See docs/coordination.md §61. */
 
 /** A `TenantTx` that cannot be used. Touching it at all is the failure this proves cannot happen. */
 const FORBIDDEN_TX = new Proxy({} as object, {
@@ -45,12 +31,7 @@ describe("positionAgainstFloor — where one declaration sits relative to a reci
     expect(positionAgainstFloor("2.7-slim", "3.0-slim")).toBe("below");
   });
 
-  /**
-   * THE MOTIVATING CASE. A real fleet writes `FROM python:3.12-slim`, `3.11-alpine` and `3.12` in a
-   * mix, and `minVersion` is authored once. `compareVersions` REFUSES a differing-suffix pair (it
-   * answers "is A an upgrade of B", for which a variant change is not an upgrade path) — so a bare
-   * delegation would answer `unknown` for nearly every row in the estate this kind exists to serve.
-   */
+  /** THE MOTIVATING CASE. See docs/coordination.md §62. */
   it("compares the numeric CORE when both suffixes are variant-shaped (`-slim`, `-alpine`, `+build`)", () => {
     expect(positionAgainstFloor("3.12-slim", "3.0")).toBe("at_or_above");
     expect(positionAgainstFloor("3.11-alpine", "3.0")).toBe("at_or_above");
@@ -58,13 +39,7 @@ describe("positionAgainstFloor — where one declaration sits relative to a reci
     expect(positionAgainstFloor("3.0.0+build.5", "3.0.0")).toBe("at_or_above");
   });
 
-  /**
-   * THE FALSE-`adopted` GENERATOR THIS GUARDS. `parseComparableVersion`'s own doc records that
-   * roughly six git shas in ten begin with a digit and that `1a2b3c4d` parses as major 1 with suffix
-   * `a2b3c4d`. A numeric-core comparison that ignored suffix shape would rank `3f2a1b9c` at or above
-   * a floor of `3.0` and report a sha-pinned base image as MIGRATED — silence as a pass, wearing a
-   * version number. A LETTER-introduced suffix means the numeric core is not reliably a version.
-   */
+  /** THE FALSE-`adopted` GENERATOR THIS GUARDS. See docs/coordination.md §63. */
   it("refuses a LETTER-introduced suffix — a git sha is never evidence of adoption", () => {
     expect(positionAgainstFloor("3f2a1b9c", "3.0")).toBe("incomparable");
     expect(positionAgainstFloor("3f2a1b9c", "3.0")).not.toBe("at_or_above");
@@ -74,11 +49,7 @@ describe("positionAgainstFloor — where one declaration sits relative to a reci
     expect(positionAgainstFloor("2rc1", "3.0")).toBe("incomparable");
   });
 
-  /**
-   * NULL means "the manifest pins no concrete version" (an open range), never "we did not look" —
-   * `componentDependencies.resolvedVersion`'s own column doc is emphatic about that. It is a real
-   * observation and it still cannot satisfy a floor: a range's floor is not what will be installed.
-   */
+  /** NULL means "the manifest pins no concrete version". See docs/coordination.md §64. */
   it("reports a NULL resolved_version as `unpinned` — which never satisfies a floor", () => {
     expect(positionAgainstFloor(null, "3.0")).toBe("unpinned");
     expect(positionAgainstFloor(null, "3.0")).not.toBe("at_or_above");

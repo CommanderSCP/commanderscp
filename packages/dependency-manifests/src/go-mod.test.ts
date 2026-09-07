@@ -2,11 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ManifestParseError } from "./types.js";
 import { parseGoMod } from "./go-mod.js";
 
-/**
- * A real-shaped `go.mod`: two `require` blocks (the direct/indirect split `go mod tidy` emits), a
- * single-line `require`, a `replace` BLOCK whose contents are line-shaped exactly like a require
- * block, plus `exclude`, `retract` and `toolchain`.
- */
+/** A real-shaped `go.mod`. See docs/dependency-manifests.md §16. */
 const ARGO_SHAPED_GO_MOD = `module github.com/CommanderSCP/outpost-agent
 
 go 1.22.5
@@ -128,15 +124,7 @@ describe("parseGoMod", () => {
   });
 });
 
-/**
- * The fixture above has replace/exclude/retract blocks, but EVERY line in them is independently
- * rejected by `parseRequireLine`'s two-token rule — so the block-directive tracking and the token
- * rule were each other's alibi and neither was pinned. Replacing `block === "require"` with
- * `block !== undefined`, or deleting the `tokens.length > 2` check, left the whole suite green.
- *
- * These fixtures separate them: two-token lines inside non-`require` blocks (which the token rule
- * cannot catch) and an over-long line inside a `require` block (which the block tracking cannot).
- */
+/** Those blocks are rejected line by line anyway. See docs/dependency-manifests.md §17. */
 describe("parseGoMod — the two safety nets, pinned independently", () => {
   it("does not mint a requirement from a TWO-TOKEN line inside an exclude block", () => {
     // `go mod edit -exclude github.com/broken/thing@v1.2.3` writes exactly this. Two tokens — the

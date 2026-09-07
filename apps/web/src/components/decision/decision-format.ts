@@ -1,10 +1,6 @@
 import { ScpApiError, type Decision } from "@scp/sdk";
 
-/**
- * Decision formatting shared by every surface that renders a Decision timeline (design spec §2.13):
- * change detail, change pipeline, and (after its own migration) campaign detail. Structural inputs
- * only — nothing here imports a campaign type, so adopting it needs no changes to this module.
- */
+/** Decision formatting shared by every timeline surface. See docs/web.md §36. */
 
 /** The one-line human summary of a Decision — the `reasonTree.summary` when the server wrote one,
  *  else the raw tree so the record is never silently blank (charter principle 6). */

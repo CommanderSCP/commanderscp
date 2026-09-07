@@ -13,23 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M22.8 — `GET /components/{idOrUrn}/scan-requirements`, THE READ SURFACE (ADR-0033 §11).
- *
- * WHAT THIS FILE IS FOR. The pure algebra is already pinned in `scan-requirements.test.ts` and the
- * pure application in `packages/schemas/src/supply-chain.test.ts`. Neither can tell you whether the
- * ROUTE exists, whether it is wired to the same resolution the gate uses, or whether it keeps its
- * one promise — that it writes NOTHING. So every test below goes through the HTTP surface via the
- * generated SDK. Nothing here calls `readComponentScanRequirements` directly.
- *
- * THE PROMISE THAT MAKES THIS SURFACE WORTH HAVING is R3: zero Decision rows. `POST /policy-evaluate`
- * runs the real orchestrator and writes one Decision per call with no write suppression, so a UI
- * polling it recreates — per viewer, per interval — the amplification ADR-0024 §D0 exists over. R3
- * asserts both halves against the same database in the same test, because "this one writes nothing"
- * is only meaningful next to "and that one does".
- *
- * MUTATIONS RUN against this file are recorded in the increment report, not predicted here.
- */
+/** The scan-requirements read surface, end to end. See docs/governance.md §358. */
 
 const OPERATOR_TOKEN = "m22-8-operator-token-fixture";
 
@@ -126,14 +110,7 @@ describe("M22.8 component scan-requirements read surface", () => {
     });
   }
 
-  /**
-   * THE PRODUCTION WRITE DOOR (M22.9). This used to `INSERT INTO scan_exclusion_admissions` over the
-   * admin pool, which made the suite green while the two instance rungs every clause requires — and
-   * that NO policy can ever contribute — had no writer outside these tests. It now goes through
-   * `PUT /api/v1/instance/scan-exclusion-admissions/{tier}` with the deployment operator token, so
-   * this read surface is tested against admissions an operator could actually have authored. The
-   * PUT is a whole-set REPLACE, so this unions with what is already admitted.
-   */
+  /** THE PRODUCTION WRITE DOOR. See docs/governance.md §359. */
   async function admitAtInstance(tiers: Array<"platform" | "trust_domain">, cls: string) {
     for (const tier of tiers) {
       const current = await operator.instanceScanExclusionAdmissions.list();

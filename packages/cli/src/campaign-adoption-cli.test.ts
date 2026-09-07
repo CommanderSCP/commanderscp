@@ -5,12 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { Command } from "commander";
 import type { CampaignAdoptionResponse } from "@scp/schemas";
 
-/**
- * M25.5 — THE CLI HALF of the campaign adoption read surface, `scp campaign adoption <id>`
- * ("has each of this campaign's components migrated yet?"). The route (`GET
- * /campaigns/{id}/adoption`) already existed; only the `ScpClient` wrapper and this CLI command
- * were missing. Same wiring-not-wording shape as `relay-builds-cli.test.ts`.
- */
+/** The CLI half of the campaign adoption read surface. See docs/cli.md §2. */
 
 const CAMPAIGN_ID = "77777777-7777-4777-8777-777777777777";
 

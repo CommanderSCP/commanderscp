@@ -23,73 +23,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * THE IaC RUNG OF THE PRODUCER DECLARATION (charter principle 3: API -> SDK -> CLI -> IaC -> UI).
- *
- * ============================================================================================
- * THE ONE RULE THAT MAKES THIS COLLECTION DIFFERENT, AND WHY THE FIRST TEST IS THE ONE IT IS
- * ============================================================================================
- * `sourceMappings`, `executorBindings` and `placements` treat an ABSENT collection and an EMPTY one
- * as the same thing, and both PRUNE. `plan-diff.ts` is emphatic about it and records that changing
- * it broke three `plans.integration` tests.
- *
- * `producers` DIVERGES, by owner ruling (2026-08-17): AN ABSENT KEY MEANS UNMANAGED AND PRUNES
- * NOTHING. Pruning a mapping costs a route an operator notices the same day; pruning a producer
- * declaration hands a coordinate the org PUBLISHES back to a public index on a daily poll timer, and
- * the symptom is an ABSENCE of dependency updates — dependency confusion (ADR-0032 §7b clause 1)
- * re-armed by a stack that merely forgot a key. So the first case here is the NEGATIVE one: a stack
- * with a standing declaration, whose manifest omits the key, must produce NO producer diff entries
- * at all and leave the declaration alone.
- *
- * The positive rule is in the same file because the two are only correct TOGETHER: a present
- * collection IS authoritative over its own members, or "unmanaged on absent" would mean IaC could
- * add a declaration and never remove one.
- *
- * ============================================================================================
- * WHAT EACH GATE REFUSES TO BE SATISFIED BY
- * ============================================================================================
- *  1. **THE RULING.** Not "the plan summary is zero" — that would pass if the entries existed and
- *     happened to be noops. The assertion is that `diff.producers` is ABSENT, and that the row is
- *     still there after an apply of that plan.
- *  2. **WIRING.** `executePlanDiff` must actually write the row. Named so the mutation is obvious:
- *     delete the producer block from `executePlanDiff` and "(2) WIRING" goes red while everything
- *     that only reads the DIFF stays green. That asymmetry is the whole point — a plan that SHOWS a
- *     create and an apply that PERFORMS one are two different claims, and this repo has shipped the
- *     first without the second before.
- *  3. **THE WHOLE ACT, NOT THE ROW.** A declaration clears every covered line's observed head,
- *     records a Decision and appends an audit event. A second door that writes only the row arms the
- *     exact failures the verb exists to prevent (a poisoned public head surviving the declaration
- *     meant to undo it) and makes `routes/dependency-producers.ts`'s claim that
- *     `GET /decisions?kind=dependency_line_producer` lists every declaration FALSE.
- *  4. **THE MEMBER QUESTION**, settled behaviourally: removing B from `[A, B]` prunes B and leaves A.
- *  5. **THE TRANSFER**, which is this collection's own hazard: identity is the COORDINATE and the
- *     table upserts, so a declaration changes hands with NO row deleted. Owning the destination
- *     component is not enough.
- *  7. **THE PLAN/APPLY WINDOW.** Every refusal in (5) is derived from the STORED diff —
- *     deliberately, so a plan written by an older build is re-checked — and that is exactly what
- *     makes the diff's account of WHO HOLDS the coordinate un-recheckable once the world moves.
- *     Three shapes, three different wrong outcomes, all silent; the `delete` one RETRACTS SOMEBODY
- *     ELSE'S declaration.
- *  8. **THE AUTHORITY**, which was present and held by NOTHING — see (8)'s own header.
- *  9. **A HOLDER THAT CANNOT BE NAMED IS STILL A HOLDER.** A tombstoned producer component leaves
- *     its declaration standing, and the snapshot's null-drop made the diff report `create` about a
- *     coordinate that is declared.
- *
- * ============================================================================================
- * MUTATION LOG — each applied, watched fail, reverted, watched pass
- * ============================================================================================
- * | Mutation | Measured |
- * |---|---|
- * | "fix the inconsistency" in FULL — absent maps to `[]` AND the prune pool is read unconditionally | 1 fails: "(1) an ABSENT producers key…", on the SUBSTANTIVE assertion — `expected undefined to be '<producer id>'`, i.e. the standing declaration was pruned. This is the catastrophic direction and it is the one the message names |
- * | the WEAKER half alone — absent maps to `[]`, prune pool still gated | the same 1 fails, now on the shape: `expected [] to be undefined`. Recorded separately because a half-edit that prunes nothing today is what the next edit completes |
- * | delete both producer loops from `executePlanDiff` | 7 of 11 fail, "(2) WIRING" among them. The 4 that stay green are exactly the plan-time refusals — "(5) cannot declare on a component it does not manage", "(5) SERVICE-valued", and both "(6)" cases — which is the asymmetry the wiring gate exists to expose |
- * | `declareProducerWithEffects` -> a bare `declareDependencyLineProducer` in the apply path | exactly 2 fail: "(3) …CLEARS a poisoned public head" (`expected '2.99.0' to be null`) and "(3) …records its own Decision…". "(2) WIRING" STAYS GREEN — which is precisely why a row-exists gate is not sufficient on its own |
- * | drop the `displacedProducerUrn` guard from `invalidProducerDeclarations` | 1 fails: "(5) a stack cannot TAKE a coordinate…" — the plan is accepted instead of rejected. `plan-diff.test.ts`'s unit case fails alongside it |
- * | drop the commander-only block from `routes/plans.ts`'s apply | 1 fails: "(6) …is refused on a deployment that is not a declared commander" — the apply resolves with a 200 |
- * | drop both `assertPlannedProducerHolder` calls from `executePlanDiff` | exactly 3 fail, one per shape, each on the SUBSTANTIVE assertion rather than on the refusal: CREATE and UPDATE read `expected '<the stack's component>' to be '<the interloper>'` — the coordinate was taken from the component that claimed it in the window — and DELETE reads `expected undefined to be '<the interloper>'`, the silent retraction. "(7) …a plan whose world did NOT move still applies" stays green, so the guard is proven to be about DISAGREEMENT and not about refusing to re-apply |
- * | delete `checks.push(dependencyProducerScopeCheck(orgId))` from `prepareApplyChecks` | exactly 1 fails: "(8)(b) …the SAME Operator is REFUSED a plan that declares one" — `promise resolved … instead of rejecting`, the plan applies with `creates: 4` and the declaration is written by a principal holding `policy:write` nowhere. "(8)(a)" stays green, which is what makes the 403 a statement about the collection rather than about Operators and plans |
- * | restore the shared null-drop — `toExisting = toManaged`, both pools filtered | exactly 1 fails: "(9) a coordinate whose producer component was deleted…" — `POST /plans` resolves instead of rejecting, and the diff it returns reads `"action":"create"` with the reason `no producer is declared for … it is polled as third-party today` about a coordinate that IS declared. Measured on the same run: the apply is then stopped by (7)'s guard with `409 … it was computed when the coordinate was declared by nobody, and it is now declared by 'urn:scp:…:component:lib'` — the two layers are independent, and only this one keeps the reviewed plan honest |
- */
+/** THE IaC RUNG OF THE PRODUCER DECLARATION. See docs/iac.md §18. */
 describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -164,11 +98,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
         "an absent producers key manages nothing — the standing declaration must survive"
       ).toBe(declaredProducerId);
 
-      // And the shape, which catches the same edit one step earlier and catches a WEAKER version of
-      // it (emit `[]`, prune nothing) that the assertion above cannot see. NOT
-      // "summary.deletes === 0" and NOT "no delete entries": the key is ABSENT, because an empty
-      // array means "this stack manages producers and has nothing to change" — a different, and
-      // here wrong, statement.
+      // The shape, which catches that edit one step earlier. See docs/iac.md §19.
       expect(plan.diff.producers).toBeUndefined();
       expect(plan.diff.summary.deletes).toBe(0);
     });
@@ -527,19 +457,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
 
   // (7) THE WINDOW BETWEEN PLAN AND APPLY — the stored diff is a CLAIM about who holds a coordinate
 
-  /**
-   * `dependency_line_producers` is keyed on the COORDINATE and upserted, so it can change hands with
-   * no row deleted, nothing to stale-mark the plan, and no trace in either stack's prune pool. Every
-   * guard section (5) proves is derived from the STORED diff — deliberately, so a plan written by an
-   * older build is re-checked — and that same property is what makes the diff's own account of the
-   * world un-recheckable once the world moves. `executePlanDiff` therefore re-reads the live holder
-   * for every non-noop entry.
-   *
-   * THE WINDOW IS DRIVEN AT THE REPO SEAM, the precedent
-   * `version-poll.integration.test.ts`'s race replays set: `declareDependencyLineProducer` is
-   * verbatim what the verb writes, called between `POST /plans` and `POST /plans/{id}/apply`, which
-   * are two separate HTTP requests in production and therefore a real wall-clock gap.
-   */
+  /** That table is keyed on the coordinate and upserted. See docs/iac.md §20. */
   describe("(7) a plan is re-checked against the LIVE holder at apply time", () => {
     /** A component outside every stack here — the party that takes the coordinate in the window. */
     let interloper: string;
@@ -550,13 +468,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       ).id;
     });
 
-    /**
-     * The apply, DRIVEN TO COMPLETION whichever way it goes, so each case can assert the state of
-     * the coordinate FIRST. That ordering is deliberate and is the file's own discipline from (1):
-     * with `rejects.toMatchObject` first, removing the guard fails on "promise resolved instead of
-     * rejecting" and the damage it did is never read. Here the substantive assertion goes first, so
-     * the measured failure names the wrong OUTCOME — whose declaration was overwritten or retracted.
-     */
+    /** The apply, driven to completion whichever way it goes. See docs/iac.md §21. */
     const applyOutcome = (planId: string): Promise<unknown> =>
       admin.plans.apply(planId).then(
         () => null,
@@ -706,24 +618,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
   //     does not use the per-object `object:write` every other one does
   // -------------------------------------------------------------------------------------------
 
-  /**
-   * THE GUARD THIS PINS WAS HELD BY NOTHING. Deleting
-   * `checks.push(dependencyProducerScopeCheck(orgId))` from `prepareApplyChecks` left 46 tests green
-   * — a security check that is present and uninstalled, which is the exact class this whole
-   * increment exists to close. A guard nobody exercises is one the next refactor removes without a
-   * symptom.
-   *
-   * `Operator` IS THE RIGHT PRINCIPAL, and the two cases below are one pair on purpose. Operator
-   * carries `object:write` and NOT `policy:write` (the `0002` seed; `0010` adds `policy:write` to
-   * Administrator and Owner only), so at the ORG ROOT it holds authority over every object in the
-   * org and still holds none over a producer declaration. Case (a) is what makes case (b) mean
-   * something: without it, a 403 would be satisfied by an Operator who simply cannot apply plans.
-   *
-   * MUTATION — applied, watched fail, reverted, watched pass:
-   * | Mutation | Measured |
-   * |---|---|
-   * | delete `checks.push(dependencyProducerScopeCheck(orgId))` from `prepareApplyChecks` | "(8) … a plan that DECLARES one is REFUSED" fails: the apply resolves 200 and the declaration is written by a principal holding no `policy:write` anywhere. "(a)" stays green |
-   */
+  /** THE GUARD THIS PINS WAS HELD BY NOTHING. See docs/iac.md §22. */
   describe("(8) a producer declaration needs policy:write AT THE ORG ROOT", () => {
     let operator: ScpClient;
 
@@ -767,22 +662,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
 
   // (9) A HOLDER THAT CANNOT BE NAMED IS STILL A HOLDER
 
-  /**
-   * A tombstoned producer component leaves its declaration STANDING — `deleteObject` is a soft
-   * delete and `dependency_line_producers` has no `deleted_at` — while every object read in
-   * `plans-repo.ts` filters `deleted_at IS NULL`, so the holder resolves to no URN.
-   *
-   * The snapshot used to DROP such a row from both producer pools and call that "conservative in the
-   * safe direction". For the prune pool it is. For the EXISTENCE pool it is the opposite: the diff
-   * then emits `create`, whose reason sentence reads "no producer is declared for this coordinate —
-   * it is polled as third-party today" about a coordinate that IS declared, and the apply upserts
-   * straight over the standing row. The reviewed plan is false about the one fact that separates a
-   * first declaration from a transfer.
-   *
-   * THE STRANDING IS PRODUCED BY THE PRODUCT'S OWN RULES, not by a hand-written row: rule (1) — an
-   * absent `producers` key manages nothing — is exactly how a stack deletes a component without
-   * retracting what it produced.
-   */
+  /** A tombstoned producer component leaves its declaration STANDING. See docs/iac.md §23. */
   describe("(9) a declaration behind a TOMBSTONED producer still blocks a create", () => {
     it("a coordinate whose producer component was deleted is an UPDATE naming the unresolvable holder, and the plan is refused", async () => {
       const firstStack = `stack-${randomUUID().slice(0, 8)}`;

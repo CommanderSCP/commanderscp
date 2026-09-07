@@ -4,16 +4,7 @@ import { ScpResponseValidationError } from "@scp/sdk";
 import { render } from "../test-support/render-dom";
 import { ErrorBoundary } from "./error-boundary";
 
-/**
- * ADR-0023's CONTAINMENT HALF. Response validation makes a contract failure loud and single; a
- * boundary makes it contained. `apps/web` shipped the first without the second, so any throw during
- * render unmounted the whole tree and left a literally blank page — MEASURED as
- * `container.innerHTML.length === 0` in `routes/federation-status-crash.test.tsx`'s original form.
- *
- * These cases pin the boundary's BEHAVIOUR (what an operator can read off the screen), and the last
- * one pins that it is actually MOUNTED around the router outlet — a boundary that exists but wraps
- * nothing is the wording-not-behaviour failure this repo keeps re-learning.
- */
+/** ADR-0023's CONTAINMENT HALF. See docs/web.md §48. */
 
 /** React logs every caught error to `console.error`; silence it so a passing run is readable, and
  *  restore it afterwards so a real unexpected log is never swallowed for other files. */

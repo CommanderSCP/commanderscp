@@ -1,8 +1,4 @@
-/**
- * Shared types for the air-gap bundle builder/verifier (DESIGN.md §16 "Air-gapped bundle",
- * BUILD_AND_TEST.md §8 M8). Kept dependency-free so it can be imported from both the CLI
- * entrypoints and the pure-logic modules under test.
- */
+/** Shared types for the air-gap bundle builder/verifier. See docs/airgap.md §58. */
 
 /** One image the bundle carries, in OCI layout, alongside its pinned content digest. */
 export interface BundleImage {

@@ -7,21 +7,7 @@ import type {
   ComponentPipelineUnplacedStage
 } from "@scp/sdk";
 
-/**
- * A1 + B2 (docs/proposals/outpost-ui.md §3/§4) — the two writes this file adds to what was, before
- * this round, a read-only view: source-mapping create/delete, and placement create/delete. Same
- * harness as `component-pipeline-continuous.test.tsx` (plain `renderToStaticMarkup`, no jsdom) and
- * the same `Link` stub — none of the components pinned here use it, but the module-level import in
- * `component-pipeline.tsx` still resolves through this mock when the file loads.
- *
- * Radix's `SelectContent`/`DialogContent` both portal their children, which render nothing under
- * `renderToStaticMarkup` (domain-local.test.tsx's precedent, reconfirmed by
- * `registry-list-nested-domains.test.tsx`'s G2 parent-domain picker). So this file pins two
- * different things depending on what a component actually claims:
- *   - a Select/Dialog TRIGGER's presence, label, and testid — genuinely static, safe to assert;
- *   - the VALUE that reaches a request body — via the pure payload-builder functions, never by
- *     trying to read a portaled option list back out of static HTML.
- */
+/** A1 + B2 (docs/proposals/outpost-ui.md §3/§4). See docs/web.md §248. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>

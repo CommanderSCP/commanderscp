@@ -3,12 +3,7 @@ import type { SourceMapping } from "@scp/schemas";
 import { parseScopeFlag, sourceMappingRow } from "./cli.js";
 import { tableLines } from "./output.js";
 
-/**
- * `scp change-source list-mappings` carries a SCOPE column (§10.6, migration 0066) — `global` |
- * `domain`, BLANK when not declared. Blank and not a guess: the CLI, like the pipeline tile, never
- * infers a scope from the site it is talking to. `?` is reserved for an OLDER server whose response
- * predates the field — absence of the key is not "undeclared".
- */
+/** `scp change-source list-mappings` carries a SCOPE column. See docs/cli.md §143. */
 describe("sourceMappingRow: the SCOPE column", () => {
   const base: SourceMapping = {
     id: "019f0000-0000-7000-8000-000000000001",

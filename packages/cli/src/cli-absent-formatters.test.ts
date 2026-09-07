@@ -22,29 +22,7 @@ import {
   scanDbStatusRow
 } from "./cli.js";
 
-/**
- * THE PINS FOR THE CLI HALF OF THE `isAbsent` CENSUS (review round 4, Y2).
- *
- * WHY THIS FILE EXISTS AT ALL. Round 3 replaced `=== null` with `isAbsent(...)` at eleven CLI sites,
- * and the PR body reported all of them as mutation-proven. A lens reverted them ONE AT A TIME and
- * found TEN SURVIVORS: only `formatReconcileResultLines` (already exported, already tested) went
- * red. The other ten lived either in a module-private function (`printFederationStatus`,
- * `campaignDetailRow`) or inline in a Commander `.action()` closure (the scan-floor and scan-db
- * mappers), so NO test could reach them — the guards were correct and completely unheld.
- *
- * The fix was structural: those mappers are now exported functions rather than closures, and this
- * file calls each one with the key ABSENT. Each assertion below has been mutation-proven by
- * reverting its `isAbsent(...)` to `=== null` and watching this file go red.
- *
- * WHAT "ABSENT" MEANS, and why `=== null` is not enough (see `isAbsent`'s own doc in `cli.ts`): an
- * omitted key arrives as `undefined` whatever `.nullable()` says. For an `.optional()` field that is
- * CONTRACT-LEGAL and ADR-0023's response validation passes it through untouched, so these guards are
- * the only thing; for a required field the SDK now rejects the body at the boundary instead and they
- * are defence in depth. Either way the formatters are called DIRECTLY here, which is the only level
- * at which the guard itself — as opposed to the boundary in front of it — can be pinned. Every
- * fixture below therefore DELETES the key rather than setting it to `null` — `null` is the case that
- * already worked.
- */
+/** THE PINS FOR THE CLI HALF OF THE `isAbsent` CENSUS. See docs/cli.md §3. */
 
 /** Delete one key from an otherwise-valid value: what an older/newer server actually puts on the
  *  wire, which no type in this repo can rule out at runtime. */
@@ -272,11 +250,7 @@ describe("federationStatusRow: a trust tier is an assertion, and its provenance 
   });
 
   it(":302 A HAND-TYPED TIER IS NEVER PRINTED BARE — the `unknownFields` clause is load-bearing", () => {
-    // THE MOST CONSEQUENTIAL MUTANT IN THIS FILE. `trustTierProvenance` is itself a field an older
-    // server omits, so provenance-only detection is not enough: the server ALSO declares the tier in
-    // `unknownFields`, and dropping the `|| (p.unknownFields ?? []).includes("trustTier")` OR makes
-    // `scp federation status` print a hand-typed `il5` as though the commander had asserted it —
-    // the exact fabrication the web `TrustTierCell` exists to prevent, reproduced on the CLI.
+    // THE MOST CONSEQUENTIAL MUTANT IN THIS FILE. See docs/cli.md §4.
     const row = federationStatusRow(
       basePeerStatus({
         trustTier: "il5",
@@ -341,13 +315,7 @@ describe("instanceScanFloorRow: an unset ceiling is `-`, and `-` is not 0", () =
   });
 });
 
-// -------------------------------------------------------------------------------------
-// instanceScanExclusionAdmissionRow — M22.9's twin of the block above, and it shipped with NO test
-// at all. A filterless `grep -rna 'instanceScanExclusionAdmissionRow'` over `--include='*.ts'`
-// found the formatter referenced ONLY by `cli.ts` itself, while its sibling `instanceScanFloorRow`
-// three lines up was covered here — the round-4 finding recurring on the next feature: the lift-out
-// happened, the pin did not, so deleting the whole M22.9 command block left this package green.
-// -------------------------------------------------------------------------------------
+// The twin of the block above, which shipped with no test. See docs/cli.md §5.
 describe("instanceScanExclusionAdmissionRow: an absent audit column must not read as authored", () => {
   it("an OMITTED note renders empty, never the literal `undefined`", () => {
     // The severe direction is specific: `note` is the operator's stated REASON for opening a
@@ -394,15 +362,7 @@ describe("scanDbStatusRow: an unknown DB age must not kill the command", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------
-// ROUND 5 (Z2/Z3/Z4) — THE CLI TWINS OF GUARDS THE WEB SIDE ALREADY TOOK.
-//
-// Each of the three below is the SAME required-not-optional field, off the SAME endpoint, as a
-// web-side site fixed in an earlier round; each was left bare on the CLI half, and each lived in a
-// MODULE-PRIVATE function so no test could have caught it. `peerRow` and `outpostConfigRow` are now
-// exported for that reason — round 4's Y2 finding restated: a guard no test can invoke is a guard
-// nothing holds in place.
-// -------------------------------------------------------------------------------------
+// ROUND 5 (Z2/Z3/Z4) — THE CLI TWINS OF GUARDS THE WEB SIDE ALREADY TOOK. See docs/cli.md §6.
 
 function basePeer(overrides: Partial<FederationPeer> = {}): FederationPeer {
   return {
@@ -453,11 +413,7 @@ function baseReconcile(
 
 describe("peerRow: a peer whose response omits `syncScope` must not kill `scp federation peers`", () => {
   it("prints `?` instead of throwing on `.mode`", () => {
-    // THE MUTANT: `p.syncScope.mode` throws `TypeError: Cannot read properties of undefined
-    // (reading 'mode')` while building the FIRST row, so the command prints NO table at all — not a
-    // degraded one. `syncScope` is required-not-optional on `FederationPeerSchema` and the generated
-    // BEFORE ADR-0023 the SDK validated no response; this is the same field `outpost-settings.tsx`
-    // guards on the web. These cases drive the FORMATTER directly, which is where the guard lives.
+    // THE MUTANT: `p.syncScope.mode` throws. See docs/cli.md §7.
     const peer: Partial<FederationPeer> = basePeer();
     delete peer.syncScope;
     expect(() => peerRow(peer as FederationPeer)).not.toThrow();

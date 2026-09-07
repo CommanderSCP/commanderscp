@@ -10,52 +10,7 @@ import {
   type ExecutorBindingRow
 } from "./executor-bindings-repo.js";
 
-/**
- * PLACEMENT-AWARE executor-binding resolution (ADR-0026, amending ADR-0006's resolution path).
- *
- * ============================================================================================
- * WHY THIS EXISTS — THE MIGRATION ORDERING HAZARD IT REMOVES
- * ============================================================================================
- * `getExecutorBinding` is a flat lookup on `(org_id, target_object_id, type)`. Wave targets are
- * COMPONENTS under legacy compilation and PLACEMENTS under stage-shaped compilation, and the estate
- * migration has to move bindings from the former to the latter. Doing that while compilation is
- * still legacy leaves each component with ZERO bindings — and `reconcile.ts`'s ADR-0006 case (a)
- * reads zero bindings as INTENDED-FAKE, so every wave target would fake-succeed. Green reports,
- * nothing deployed: exactly the masking failure #66 closed.
- *
- * The dependency is circular as the migration was written: bindings cannot move until compilation is
- * stage-shaped, compilation cannot go stage-shaped until a topology is attached, and attaching one
- * fails loudly for anything unplaced. This resolver breaks the cycle by making each step
- * independently safe — a component whose binding has already moved to its placement still resolves.
- *
- * ============================================================================================
- * THE THREE OUTCOMES, AND WHY THE AMBIGUOUS ONE IS THE POINT
- * ============================================================================================
- *   `direct`        — the target itself carries a binding of this type. Unchanged behaviour, and the
- *                     first thing checked, so nothing about today's resolution slows down or moves.
- *   `via_placement` — the target is a component with no binding of its own, and EXACTLY ONE of its
- *                     placements has one. Safe by construction: one placement means the pair is not
- *                     actually ambiguous, which is true of all 61 placements on the estate today.
- *   `ambiguous`     — TWO OR MORE placements carry a binding of this type. **Fail closed. Do not
- *                     pick.** This is the entire reason the placement type exists: "which Argo CD"
- *                     is a function of WHERE, and a component alone cannot answer it. Choosing
- *                     arbitrarily would reintroduce the cross-product bug ADR-0026 was written to
- *                     kill, in a new place and with no error to find it by.
- *
- * That state is REACHABLE, not theoretical: merging an env-suffixed pair gives the survivor two
- * placements, which is precisely the moment stage-shaped compilation must take over so wave targets
- * become placements and resolution is direct again. Failing closed is what makes that ordering
- * enforced rather than merely documented.
- *
- * ============================================================================================
- * WHAT THIS DELIBERATELY DOES NOT DO
- * ============================================================================================
- * It does not touch `getExecutorBinding`. That function is also the existence check for
- * `putExecutorBinding` and both halves of `setExecutorBindingType`'s relabel — WRITE paths, where a
- * fallback would be actively wrong: an upsert that "found" a placement's binding would update the
- * wrong row, and a relabel would report a clash against a binding on a different object. Those three
- * call sites keep the literal lookup, and say so at each site. Only READ/RESOLVE sites use this.
- */
+/** PLACEMENT-AWARE executor-binding resolution. See docs/coordination.md §32. */
 
 export type BindingResolution =
   | { outcome: "direct"; binding: ExecutorBindingRow; viaPlacementObjectId: null }
@@ -80,32 +35,13 @@ export type BindingResolution =
       binding: ExecutorBindingRow;
       viaPlacementObjectId: null;
       viaServiceObjectId: string;
-      /** The `object_types.id` the ancestor ACTUALLY carries — `service`, `assembly`,
-       *  `organization`, or whatever a later level is called.
-       *
-       *  Here because the alternative is inferring the level from the branch name, and this branch
-       *  covers three different levels. A Decision built that way says "resolved via service" over an
-       *  assembly's id — a false statement in an audit record, which principle 6 does not allow —
-       *  and it was ALREADY false for the org rung before `assembly` existed. Read the level from the
-       *  object; never name it after the code path that found it. */
+      /** The `object_types.id` the ancestor ACTUALLY carries. See docs/coordination.md §33. */
       viaObjectTypeId: string;
       hops: number;
     }
   | { outcome: "none"; binding: null; viaPlacementObjectId: null };
 
-/**
- * The PROVENANCE of an indirect resolution, as a Decision records it — or `null` for a direct/failed
- * one, which writes no Decision.
- *
- * Here rather than inline at the call site because the label must be READ FROM THE RESOLVED OBJECT
- * and never inferred from the branch that found it. `via_service` covers three levels (service,
- * assembly, org root), so a label named after the branch is a false statement in an audit record for
- * two of them — and it was false for the org rung from the day that rung shipped, before `assembly`
- * existed. Principle 6: a Decision that misnames its own provenance reads as an answer, which makes
- * it worse than no Decision at all.
- *
- * Exported so the mapping is testable without driving a whole wave through reconcile.
- */
+/** The provenance of an indirect resolution, or null. See docs/coordination.md §34. */
 export function resolutionProvenance(
   resolution: BindingResolution
 ): { via: string; viaObjectId: string; hops: number | null } | null {
@@ -145,35 +81,12 @@ async function placementsOfComponent(
   return rows.map((r) => r.id);
 }
 
-/**
- * The owning SERVICE of a wave target (ADR-0027 D3/D4), or null.
- *
- * Accepts either shape a wave target takes: a COMPONENT under legacy compilation, or a PLACEMENT
- * under stage-shaped compilation — the case the estate actually runs, which a component-only rung
- * would have missed entirely.
- *
- * The service is the inbound `contains` edge, at most one by `contains`'s `one_to_many` plus
- * migration 0022's partial unique index — the same invariant `pipeline-resolution.ts` relies on, so
- * a binding and a pipeline can never disagree about which service owns a component.
- */
+/** The owning SERVICE of a wave target. See docs/coordination.md §35. */
 /** ADR-0029 D3 — `intermediate-grouping.md` D2's cap, in hops of `contains`. Bounded so the walk's
  *  cost is provable and a mis-declared containment cycle cannot spin. */
 const MAX_ANCESTOR_HOPS = 3;
 
-/**
- * The component a wave target is about, whichever shape the target takes: a COMPONENT under legacy
- * compilation, or a PLACEMENT under stage-shaped compilation — the shape the estate actually runs.
- *
- * LIVE-FILTERED, like every other hop on this walk and like its exact twin. `containsParentOf` just
- * below filters both the edge and the parent; `governance/gate-orchestrator.ts`'s `governanceSubjectOf`
- * performs the IDENTICAL placement->component hop with `isNull(deleted_at)` on it. This one did not,
- * and the asymmetry meant a tombstoned wave target still yielded a component and the whole
- * service/assembly/org binding ladder was walked from it — a dead object resolving a live executor.
- * The drive path now refuses such a target before it ever gets here (`reconcile.ts`'s liveness gate),
- * so this is defence in depth rather than the load-bearing fix; it is here because the PROPERTY was
- * "a resolver that turns a wave target into something drivable without asserting the object is live",
- * and one instance of a property is not the property.
- */
+/** The component a wave target is about, whichever shape. See docs/coordination.md §36. */
 async function componentOfTarget(
   tx: TenantTx,
   orgId: string,
@@ -216,28 +129,7 @@ async function containsParentOf(
   return parent ? { id: parent.id, typeId: parent.typeId } : null;
 }
 
-/**
- * The `contains` ancestors of a wave target, NEAREST FIRST, capped at {@link MAX_ANCESTOR_HOPS}.
- *
- * ============================================================================================
- * WHY THIS WALKS `contains` ONLY, AND NOT `containmentChain` — READ BEFORE "SIMPLIFYING" IT
- * ============================================================================================
- * `containmentChain` walks TWO axes per hop (the `contains` edge AND `domain_id`), and its own
- * docblock records that when a component's `domain_id` differs from its service's, the domain and the
- * service are each exactly ONE hop away and **TIE** — "no ordering of these two routes is obviously
- * correct". It then says explicitly that this "WOULD become a real precedence bug the moment any code
- * compares depth across differently-named [ancestors] to pick a single most-specific winner — if you
- * are about to write that, fix this first."
- *
- * A nearest-wins binding ladder IS that code. Walking the single `contains` axis is what makes
- * "nearest" unambiguous, and it leaves `containmentChain` untouched — the same reasoning
- * `pipeline-resolution.ts` gives for walking named rungs rather than reusing it. The consequence is
- * deliberate and worth stating: **a binding on a containment `domain` does not resolve** (ADR-0029 D2).
- *
- * The walk is TYPE-AGNOSTIC (ADR-0029 D4): it does not care whether a parent is a `service`, an
- * `assembly`, or something that does not exist yet — only whether it carries a binding of this Type.
- * A `seen` set makes a mis-declared cycle terminate even inside the cap.
- */
+/** The `contains` ancestors, nearest first and capped. See docs/coordination.md §37. */
 async function containsAncestors(
   tx: TenantTx,
   orgId: string,
@@ -259,15 +151,7 @@ async function containsAncestors(
   return ancestors;
 }
 
-/**
- * RUNG 3 (ADR-0027) — the owning service's binding, else `none`.
- *
- * In its own function because it is reached from TWO places: a target with no placements at all (a
- * placement, under stage-shaped compilation) and a component whose placements carry nothing of this
- * type. Those are separate exits from the walk, and a rung written inline at one of them would
- * silently not apply at the other — the failure mode being that the case the estate actually runs
- * is the one left out.
- */
+/** Rung three: the owning service's binding, else none. See docs/coordination.md §38. */
 async function serviceRung(
   tx: TenantTx,
   orgId: string,
@@ -314,19 +198,7 @@ async function serviceRung(
   return { outcome: "none", binding: null, viaPlacementObjectId: null };
 }
 
-/**
- * Resolves the binding driving one pipeline of one wave target, falling back through the target's
- * placements and then its owning SERVICE when the target itself has none of that type.
- *
- * Order is deliberate and MOST-SPECIFIC-WINS (ADR-0027 D1): direct, then placement, then service. A
- * target that carries its own binding never consults the others, so each rung is a pure extension —
- * no resolution that succeeds today can change answer, and the only behaviour that moves is
- * `none` → `via_service`, i.e. a target that was BLOCKED may now resolve.
- *
- * `ambiguous` is terminal and does NOT fall through to the service (ADR-0027 D2): two placements
- * bound for one Type is a refusal, not an absence, and answering it from the service would suppress
- * exactly the refusal ADR-0026 exists to make.
- */
+/** Resolves the binding driving one pipeline of one target. See docs/coordination.md §39. */
 export async function resolveBindingForTarget(
   tx: TenantTx,
   orgId: string,
@@ -371,18 +243,7 @@ export async function resolveBindingForTarget(
   };
 }
 
-/**
- * Every binding VISIBLE for a target — its own plus those of its placements.
- *
- * This is what keeps ADR-0006's case (a)/(b) split meaning what it always meant. Case (a) is
- * "intended-fake: nothing anywhere", and once a binding can live on a placement, "anywhere" has to
- * include placements — otherwise a component whose `configuration` binding had moved to its
- * placement, receiving an `image` release, would read as zero-bindings and FAKE-SUCCEED. That is
- * case (b) wearing case (a)'s clothes, and it is the masking gap #66 closed.
- *
- * Soft-delete filtering is inherited from `listExecutorBindingsForTarget`, which applies the
- * live-target EXISTS check; `placementsOfComponent` filters tombstoned placements itself.
- */
+/** Every binding VISIBLE for a target. See docs/coordination.md §40. */
 export async function listVisibleBindingsForTarget(
   tx: TenantTx,
   orgId: string,

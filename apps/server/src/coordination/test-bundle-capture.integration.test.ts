@@ -17,91 +17,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * D23 — THE TEST-BUNDLE PATH, END TO END: a build REPORTS a bundle, a hook run CAPTURES it, a
- * terminal run WRITES EVIDENCE, and a gate that was blocking is SATISFIED.
- *
- * ============================================================================================
- * WHAT WAS BROKEN, PRECISELY, AND WHY IT NEEDED A TEST RATHER THAN A COMMENT
- * ============================================================================================
- * Increment 8 merged the gate machinery: hooks are declared, runs are claimed, polls terminalize,
- * evidence satisfies a wave boundary. Every piece was correct and the whole thing was UNSATISFIABLE
- * in production, because `pipeline_hook_runs.captured_workflow` was NULL for every run that could
- * ever exist — nothing told SCP the test bundle's repository or digest — and a terminal run with no
- * pin records its status and writes NOTHING (`EvidenceSkipReason.no_captured_workflow`). A gate
- * declared, rendered by `scp iac render`, and structurally incapable of ever passing.
- *
- * That is this repo's dominant defect (a component built, tested green against itself, and installed
- * nowhere) in its worst-behaved form: nothing errors, nothing logs at trigger time, and the only
- * symptom is a wave that waits forever. So the property under test is not "the field can hold a
- * value" — it is "a build's report reaches a gate verdict". Case 3 drives exactly that, all the way
- * through, with no fixture standing in for a step.
- *
- * ============================================================================================
- * WHAT EACH CASE IS PROVED **WITH**
- * ============================================================================================
- *   - THE REFERENCE (cases 1a/1b/2) goes through the REAL typed ingress — the generated SDK's
- *     `changeSources.report(...)`, a real PAT-authed HTTP call, the real route, the real processor —
- *     because the whole reason `testBundle` had to be DECLARED on `ChangeReportRequestSchema` rather
- *     than merely read by the generic hint extractor is that the schema is a `strictObject` and an
- *     undeclared key is REFUSED at that route. A unit test on the processor would pass on a build
- *     where every real reporter got a 400.
- *
- *   - THE CLOSE (case 3) never fabricates the middle. The bundle arrives on a report; the pin is
- *     derived from the persisted change; the run is polled to terminal BY THE RECONCILE LOOP, which
- *     is the only version of that code path that exists in production and is a live competitor for
- *     exactly this work (an inline `pollNonTerminalHookRuns` beside a running loop is a silent
- *     no-op under `FOR UPDATE SKIP LOCKED`, and would pass while proving nothing).
- *
- *   - THE UNCHANGED BEHAVIOUR (case 4) asserts three things together, because any one alone is
- *     satisfiable by a broken build: `captured_workflow` IS NULL, NO evidence row exists, and the
- *     NAMED REASON reaches the operator. The reason is asserted off `console.error` — the actual
- *     channel `pollNonTerminalHookRuns` uses — rather than off a return value nothing in production
- *     reads.
- *
- * ============================================================================================
- * MUTATIONS RUN against these two D23 files (2026-08-26) — the MEASURED result of each, applied
- * ALONE against a passing suite and reverted by an exact inverse edit. Baseline: 8 passed
- * (6 here + 2 in `federation/test-bundle-promotion.integration.test.ts`). Nothing below is a
- * prediction.
- * ============================================================================================
- *   M-a  `pipeline-hook-runs.ts`: fabricate `{repository: "acme/tests", digest: sha256:0…}` when the
- *        change reported no bundle, instead of returning `null`
- *          -> 2 failed HERE: case 4 (the run captured a pin and WROTE EVIDENCE for a bundle nobody
- *             reported) and the derivation case. The promotion file is untouched by this one — it
- *             never derives a pin — which is why case 4 exists rather than being folded into case 3.
- *   M-b  `packages/schemas/src/executors.ts`: delete `testBundle` from `ChangeReportRequestSchema`
- *        (+ `pnpm --filter @scp/schemas build`, without which the server keeps resolving the OLD
- *        compiled schema from `dist/` and the mutation is not applied at all)
- *          -> 2 failed HERE: case 1 and case 3, both with a 400 at the report — the `strictObject`
- *             refusing the key, which is precisely why declaring it was necessary rather than
- *             merely reading it in the processor.
- *   M-c  `webhook-processor.ts`: `mintArtifactObjects(...)` for the reported bundle beside
- *        `proposeChange`, i.e. mint from the BUILD REPORT (the site ADR-0045 D2 forbids)
- *          -> 1 failed HERE: case 1's "reporting mints nothing" assertion, naming the bundle digest.
- *             THE PROMOTION FILE SURVIVED THIS, and the reason is stated rather than glossed: it
- *             drives `proposeChange` directly and never touches the report ingress, so its own
- *             "no artifact object exists BEFORE the export" assertion cannot witness a mint site
- *             added at a door it does not use. The single-mint-site claim is therefore carried by
- *             the two files TOGETHER — this one owns the report door, that one owns the propose
- *             door and the export itself.
- *
- * ============================================================================================
- * THE FIXTURE SEPARATION THAT LOOKS ARBITRARY AND IS NOT
- * ============================================================================================
- * The reconcile loop is LIVE here, so a change created by a report is really coordinated: it reaches
- * `executing` and `advanceExecutingChanges` triggers its wave targets through THEIR executor
- * bindings. The in-tree fake executor keeps ONE run per `targetRef`, so an engine deploy sharing a
- * binding with a hook run SUPERSEDES that run's external id — and `status()` for a superseded ref
- * answers `pending` forever rather than throwing. The result is a hook run that never terminalizes
- * with no error anywhere, which cost `pipeline-hook-runs.integration.test.ts` a debugging round.
- *
- * So the hook's SUBJECT here is a dedicated object that the change never deploys to. It is a
- * `deployment-target`, which `resolveHookSubjects` resolves as its own component — the documented
- * "a target that is not a placement is its own component" reading — so hooks, evidence and the run
- * all key on that one id and the engine's own deploys stay off its binding. Nothing here compensates
- * for a defect in the driver: a real executor tracks runs by id, not one-per-target.
- */
+/** D23 — THE TEST-BUNDLE PATH, END TO END. See docs/coordination.md §985. */
 describe("D23 test bundle: report -> capture -> evidence -> gate", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -297,12 +213,7 @@ describe("D23 test bundle: report -> capture -> evidence -> gate", () => {
       expect((value as string).length).toBeLessThan(512);
     }
 
-    // ADR-0045 D2 — REPORTING MINTS NOTHING. An `artifact` object means SCP attested this digest,
-    // and the attestation happens at promotion export/import. This is asserted at the report door
-    // because that is where a "build-time artifact record" would be a natural-looking addition, and
-    // it is exactly the one D2 defers (it has no answer to the GC question D2 avoids by
-    // construction). The export-side counterpart is
-    // `test-bundle-promotion.integration.test.ts`.
+    // ADR-0045 D2 — REPORTING MINTS NOTHING. See docs/coordination.md §986.
     const artifacts = await admin.object("artifact").list();
     expect(artifacts.items.map((a) => (a.properties as { digest?: string }).digest)).not.toContain(
       BUNDLE_DIGEST

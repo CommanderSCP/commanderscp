@@ -5,18 +5,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OutpostConfig } from "@scp/schemas";
 
-/**
- * WHAT THIS FILE PINS THAT THE SURFACE TEST CANNOT: that `scp federation outpost reconcile`
- * ACTUALLY SENDS the `?ifClaimant=` precondition, derived from a listing it took itself.
- *
- * The surface test can only read the command's OPTIONS — so a build in which the flag exists, the
- * help text is perfect, and the action quietly issues the bare call passes it completely. That
- * "wording, not behaviour" shape is this project's second-most-common recurring bug, so the wire
- * argument is asserted here against a stubbed SDK, and the stub is what a mutation flips.
- *
- * `@scp/sdk` is mocked wholesale (the `login-base-url.test.ts` pattern): the CLI consumes only the
- * SDK, so intercepting it is the honest seam for "what did the command ask the API to do".
- */
+/** WHAT THIS FILE PINS THAT THE SURFACE TEST CANNOT. See docs/cli.md §130. */
 
 interface ReconcileCall {
   peerDomainId: string;
@@ -115,20 +104,7 @@ async function runReconcile(args: string[]): Promise<void> {
   await buildProgram().parseAsync(["node", "scp", "federation", "outpost", "reconcile", ...args]);
 }
 
-/**
- * Warm the dynamic import ONCE, in a hook, so the first `it` does not pay it.
- *
- * `runReconcile` imports `./cli.js` lazily (it must: the SDK mock above has to be installed before
- * the CLI module graph is evaluated). Dynamic imports are cached, so the FIRST test in this file
- * silently absorbed the cost of transforming and evaluating the entire CLI module graph — ~0.3s on a
- * warm dev machine, but 5.4s on a cold CI runner, which blew vitest's 5000ms default test timeout
- * and failed a test whose own work takes milliseconds. (Its three siblings ran in 30-180ms, all on
- * the cached module — the tell that the cost is one-time setup, not the behaviour under test.)
- *
- * A bigger `testTimeout` would have hidden it behind a number nobody could interpret. Charging the
- * cost to a hook is both honest and more robust: hooks get vitest's separate `hookTimeout` (10s),
- * and a genuine 5s regression in the COMMAND is still caught by the per-test budget.
- */
+/** Warm the dynamic import in a hook, not in the first test. See docs/cli.md §131. */
 beforeAll(async () => {
   await import("./cli.js");
 }, 30_000);

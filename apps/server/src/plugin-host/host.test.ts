@@ -4,27 +4,13 @@ import http from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SubprocessPluginHost } from "./host.js";
 
-// Wraps the REAL `child_process.spawn` (calls through — this must still spawn genuine children,
-// not a stub) so the env-leak test below can inspect exactly what `host.ts` passed it. `vi.mock`
-// factories are hoisted above imports by Vitest, and ESM named exports can't be `vi.spyOn`'d
-// directly ("Module namespace is not configurable") — re-exporting a `vi.fn(actual.spawn)` wrapper
-// is the supported pattern.
+// Wraps the REAL `child_process.spawn`. See docs/plugin-host.md §45.
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
 
-/**
- * Unit-layer tests for the subprocess plugin host's PROCESS boundary (no Postgres — these spawn
- * real child `node` processes but never touch the DB, so they belong under `pnpm test`, not the
- * Testcontainers integration suite). Two PR #7 adversarial-review findings against `host.ts`:
- *
- *  - CRITICAL #3: the child inherited the full parent `process.env` (admin `DATABASE_URL`,
- *    cookie/OIDC secrets) — a plugin could connect to Postgres as the admin/superuser role and
- *    bypass RLS entirely.
- *  - CRITICAL #4: the readline framing of the child's stdout had no line-length cap, so a plugin
- *    that streams bytes without ever emitting `\n` grows the PARENT process's memory unboundedly.
- */
+/** Unit tests for the subprocess host's process boundary. See docs/plugin-host.md §46. */
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -134,16 +120,7 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
   });
 });
 
-/**
- * M7 SSRF mitigation (subprocess-entry.ts's `scopedFetchHttpClient` + egress-guard.ts) — enforced
- * over the REAL subprocess boundary. The loopback/private allowance is gated on MODULE IDENTITY,
- * NOT `allowedHosts` (MAJOR #6 follow-up: tenant bindings default to empty `allowedHosts`, so an
- * emptiness heuristic reopened the hole). This drives BOTH plugin kinds at the SAME loopback server:
- * a TENANT plugin (`webhook-notify`) is refused (server never hit), while the OPERATOR-PLANE escape
- * hatch (`webhook-control`) reaches it. If the module gate were removed, webhook-notify would reach
- * the server and this test would fail — the regression guard. (The full allow/block IP matrix is
- * exhaustively unit-tested in egress-guard.test.ts with IP literals.)
- */
+/** M7 SSRF mitigation. See docs/plugin-host.md §47. */
 describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", () => {
   it("blocks a TENANT plugin from a loopback target (even allowlisted) but PERMITS the operator-plane escape hatch — same server, module-identity gated", async () => {
     let notifyHits = 0;
@@ -219,13 +196,7 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
   });
 
   it("PERMITS a tenant-module instance to reach a loopback/private target ONLY when allowInternalEgress is set (execution-system operator grant) — over the real subprocess boundary", async () => {
-    // Simulates a Mode-A in-cluster executor: `webhook-notify` is a TENANT module (never in
-    // OPERATOR_PLANE_MODULES), so under default rules loopback/private is blocked. The ONLY thing
-    // that flips it is `allowInternalEgress` — which host.ts threads from a persisted
-    // execution-system object's property, NOT tenant config. This drives BOTH the granted and the
-    // ungranted instance at the SAME loopback server: exactly one reaches it. If the env-var path
-    // (host.ts → subprocess-entry.ts's `allowInternalPrivate` OR) regressed, either the grant would
-    // stop working (hits 0) or the default would leak (hits 2).
+    // Simulates a Mode-A in-cluster executor. See docs/plugin-host.md §48.
     let hits = 0;
     const server = http.createServer((_req, res) => {
       hits += 1;
@@ -326,12 +297,7 @@ describe("SubprocessPluginHost: unbounded stdout line guard (CRITICAL #4)", () =
 
     const baselineRss = process.memoryUsage().rss;
 
-    // The fixture floods stdout with 64KB, newline-free writes forever, as fast as it can. If the
-    // guard is broken (mutated away), readline just keeps concatenating those chunks into one
-    // ever-growing in-memory line and this line-guard message never appears — the host would
-    // instead eventually time out or OOM. With the guard in place, it should trip (and the child
-    // get killed + respawned, which floods again and trips again) multiple times within a few
-    // seconds.
+    // The fixture floods standard output as fast as it can. See docs/plugin-host.md §49.
     await vi.waitFor(
       () => {
         const trips = stderrChunks.filter((c) => c.includes("exceeded max line size")).length;

@@ -17,29 +17,7 @@ import {
 import { proposeChange } from "./changes-repo.js";
 import { buildServiceBoard } from "./service-board.js";
 
-/**
- * THE FOURTH FORM OF THE SAME DEFECT, and the one the SCOPE-DERIVED treatment structurally cannot
- * see: the two peers' sync scopes DISAGREE, and the narrow side is the SENDER.
- *
- * `service-board-scope-blindness.integration.test.ts` narrows the OUTPOST's own peer row and leaves
- * the commander at `full`. That is the case where the receiver's own scope is decisive, so a caveat
- * derived from `peer.syncScope` is sound — and it is the case the previous fix covered.
- *
- * THIS is the other one, and it is the more likely field misconfiguration: the COMMANDER operator
- * narrows what the commander SENDS (its peer row for the outpost says `status_only` — change status
- * without the change objects), while the OUTPOST operator's own peer row says `changes_only`. Both
- * settings are individually reasonable. `federation_peers.sync_scope` is purely LOCAL config — it is
- * never carried on the wire and the two sides are never reconciled — so the outpost's
- * `scopeCarriesChangeObjects` predicate answers TRUE ("I can see change objects") while no change
- * object is ever shipped to it. Every board row then falls through to a confident `stable` with an
- * EMPTY `unknownFields`: the fabricated all-clear, restored in full.
- *
- * WHAT THIS PINS: the caveat is now EVIDENCE-derived as well as scope-derived. `import-repo.ts`
- * records the dropped `change_status` entry in `federation_unattached_change_status` (drizzle/0040)
- * — positive evidence, downstream of BOTH peers' scopes — and the board ORs that in. The test
- * asserts the scope arm is genuinely SILENT here (`scopeCarriesChangeObjects(outpost's own scope)`
- * is true), so a green result cannot be credited to the mechanism the previous fix installed.
- */
+/** The fourth form, which the scope treatment cannot reach. See docs/coordination.md §869. */
 describe("service board scope MISMATCH: a sender narrower than this receiver is still not a `stable` component (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
@@ -133,13 +111,7 @@ describe("service board scope MISMATCH: a sender narrower than this receiver is 
     componentId = seeded.componentId;
     await syncToOutpost();
 
-    // THE MISMATCH. Two operators, two independent decisions, neither of them wrong on its own:
-    //
-    //  * the COMMANDER narrows what it SENDS this outpost to `status_only` — change status crosses
-    //    the boundary, the change objects themselves do not;
-    //  * the OUTPOST leaves its own row at `changes_only`, which DOES carry change objects. Its
-    //    `scopeCarriesChangeObjects` predicate therefore says "I can see them" — and is wrong,
-    //    because nothing on the wire ever told it what the other side chose to withhold.
+    // The mismatch: two decisions, neither wrong on its own. See docs/coordination.md §870.
     await withTenantTx(commander.db, commander.orgId, (tx) =>
       pairPeer(tx, {
         orgId: commander.orgId,
@@ -272,14 +244,7 @@ describe("service board scope MISMATCH: a sender narrower than this receiver is 
     expect(commanderBoard.summary.releasing).toBe(1);
     expect(commanderBoard.summary.stable).toBe(0);
 
-    // BUT the commander's BOARD-LEVEL caveat DOES fire here, and that is correct rather than
-    // collateral damage — worth pinning, because it is the one behaviour of this topology that
-    // surprises. `federation_peers.sync_scope` is ONE column serving BOTH directions: it filters
-    // what this side EXPORTS to that peer (export-repo.ts) and what it will APPLY from that peer
-    // (import-repo.ts's defense-in-depth). So a commander operator who narrows the row to
-    // `status_only` in order to withhold graph content from the outpost has, in the same stroke,
-    // declared that it will not accept change objects the OUTPOST authors — and its board says so.
-    // Only `summary.stable` is retracted; the driven-here row above keeps its full reading.
+    // The board-level caveat does fire, and that is correct. See docs/coordination.md §871.
     expect(commanderBoard.unknownFields).toContain("summary.stable");
   });
 

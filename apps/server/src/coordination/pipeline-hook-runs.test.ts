@@ -10,12 +10,7 @@ import {
   type PipelineHookRunRow
 } from "./pipeline-hook-runs.js";
 
-/**
- * Pure decision-logic tests for the identity/status/outcome vocabulary this module owns without a
- * `TenantTx`. `claimHookRun`, `ensureHookRunTriggered`, `applyHookRunObservation` and
- * `pollNonTerminalHookRuns` are DB and executor seams and stay with
- * `pipeline-hook-runs.integration.test.ts`.
- */
+/** Pure tests for the identity and status vocabulary. See docs/coordination.md §615. */
 
 describe("isTerminalHookRunStatus", () => {
   it("is terminal for succeeded, failed and aborted", () => {

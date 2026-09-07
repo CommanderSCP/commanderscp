@@ -2,66 +2,9 @@ import { and, eq } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
 
-/**
- * IS THE OBJECT THIS WAVE TARGET NAMES STILL LIVE? — the one question the coordination engine drove
- * an executor without ever asking.
- *
- * ## The property
- *
- * A plan is compiled on the `evaluated -> coordinated` edge and its `change_wave_targets` rows are a
- * SNAPSHOT of that instant, deliberately (`plan-service.ts` says so of the topology document beside
- * them). Every reader downstream — the trigger claim, the binding resolution, the executor dispatch,
- * the campaign fan-out — worked from that snapshot, and NOT ONE of them re-read `objects`. So a
- * `DELETE /components/{id}` taken by a perfectly authorized operator at any point after compilation
- * left the plan untouched and the next tick dispatched a real deploy at an object that, for every
- * SCOPE question the platform asks, no longer exists.
- *
- * That pairing is the reason this is a security defect and not a tidiness one. Tombstoning is already
- * an invisible governance lever: every containment route joins `parent.deleted_at IS NULL`, so
- * deleting a CONTAINER silently detaches everything beneath it from the policies that governed it
- * (PR #249, the third governance-reach door). This was its execution-side twin — one tombstone made
- * the object ungoverned AND left it deploying. Absence of the object was read, everywhere it
- * mattered, as permission to proceed.
- *
- * ## Both shapes of wave target (ADR-0026), because the interesting one is not the obvious one
- *
- * Under LEGACY compilation a wave target's `target_object_id` is the change's own target — a
- * component or a service. Under STAGE-SHAPED compilation it is a `placement`
- * (`plan-service.ts`'s `resolveStagePlacements`). Checking only the row named by the wave target
- * covers the first shape and MISSES the second, for a reason that is easy to read past:
- *
- *   `deleteObject` cascades to `relationships` and to nothing else. A placement holds its pair in
- *   `properties.componentId` / `properties.deploymentTargetId` — soft references the cascade cannot
- *   see, and which `placements-repo.ts` calls the SOURCE OF TRUTH for the pair. So deleting the
- *   COMPONENT leaves its placements with `deleted_at IS NULL` forever, and a stage-shaped plan would
- *   have gone on deploying a dead component at a live place with its own row looking perfectly
- *   healthy.
- *
- * Hence the second hop below. It is scoped to the two objects a placement IS — not to a general
- * ancestor walk. Deleting a component's SERVICE does not delete the component, and treating that as
- * an execution refusal would be inventing a containment rule here rather than in the containment
- * layer that owns it.
- *
- * ## The fail direction, in BOTH senses
- *
- * ABSENCE IS NOT PERMISSION. A row that is not there at all is refused exactly like a tombstoned one
- * — reported as {@link TargetLiveness} `"missing"` rather than folded into `"deleted"`, so the
- * Decision an operator reads says which of the two happened instead of guessing.
- *
- * AND A TRANSIENT READ FAILURE IS NOT A DELETION. This function has NO try/catch and returns no
- * "unknown" verdict on purpose: a failed query THROWS, out through `triggerWaveTarget`, into
- * reconcile's per-target catch, and the target is retried on the next tick having terminalized
- * nothing and dispatched nothing. Swallowing the error into a `false` would convert every blip of
- * database trouble into a fleet-wide wave of permanently-parked changes, which is a worse outage than
- * the one this file prevents. If anyone ever "simplifies" this into a `Promise<boolean>` that catches
- * its own errors, `wave-target-tombstoned.integration.test.ts`'s last arm is what fails.
- */
+/** IS THE OBJECT THIS WAVE TARGET NAMES STILL LIVE? See docs/coordination.md §982. */
 
-/** The status a wave target is terminalized on when the object it names is gone. DISTINCT from
- *  `no_executor` deliberately: that one means "bound, but not for this pipeline" (ADR-0006) and
- *  `scp change explain` must not report a deleted target as a binding gap. The column is plain
- *  `text` with no pg ENUM/CHECK and `ChangeWaveTargetSchema.status` is `z.string()`, so this value is
- *  additive with neither a migration nor an OpenAPI change (see `db/schema.ts`). */
+/** The status used when the named object is gone. See docs/coordination.md §983. */
 export const WAVE_TARGET_TOMBSTONED_STATUS = "target_deleted";
 
 /** The hash-chained audit action for that refusal, sibling of `change.wave_target.no_executor`. */
@@ -118,13 +61,7 @@ async function readObjectRow(
   return row;
 }
 
-/**
- * Resolve one wave target's liveness. Shared verbatim by the change reconciler and the campaign
- * reconciler so the two can never drift into meaning different things by "still there" — the same
- * discipline `loadDependsOnEdges` is exported under.
- *
- * Throws whatever the database throws. That is the contract, not an oversight; see the module doc.
- */
+/** Resolve one wave target's liveness. See docs/coordination.md §984. */
 export async function readTargetLiveness(
   tx: TenantTx,
   orgId: string,

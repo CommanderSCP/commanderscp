@@ -14,17 +14,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { changeWaves } from "../db/schema.js";
 import { compileAndPersistPlan } from "../coordination/plan-service.js";
 
-/**
- * Phase 2 coordination UI: the Service release board projection (GET /services/:idOrUrn/board,
- * docs/proposals/coordination-ui-views.md § "Service release board"). Pins the contract of the ONE
- * net-new server capability — "the latest change that targeted this component" — plus the Layer-A
- * projection around it: per-component latest-change waves, the releasing/blocked/stable summary, the
- * emergency + blocked attention signals (with the block Decision's id), and authz.
- *
- * Plans are compiled directly via the engine (`compileAndPersistPlan`), the same shortcut
- * coordination.integration.test.ts uses — a freshly-proposed change has no wave-target rows yet, and
- * the board's join keys off exactly those rows, so the test must materialize a plan to exercise it.
- */
+/** Phase 2 coordination UI: the Service release board projection. See docs/routes.md §409. */
 describe("services: release board (Phase 2, Layer A)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -135,23 +125,7 @@ describe("services: release board (Phase 2, Layer A)", () => {
     expect(board.summary.releasing).toBe(0);
   });
 
-  /**
-   * REGRESSION (single-domain org — no federation anywhere in this test). An observed `blocked` must
-   * never be displaced by a newer change this domain knows less about.
-   *
-   * THE DEFECT this pins: the board's two lookups — the wave-target join (a REAL local observation:
-   * compiled plan, rolled waves, failed target) and the change-object `properties.targets` fallback
-   * (which knows only that a change exists) — were merged by "whichever `created_at` is greater",
-   * across two DIFFERENT timestamps (`changes.created_at` vs `objects.created_at`) that share no
-   * clock. So proposing ANY newer change against the same component — with no plan compiled, nothing
-   * executed, nothing observed — silently replaced the failed one, and `summary.blocked` fell to 0.
-   * Every field the operator needs (waves, the failed count, the block signal) vanished with it, on
-   * the commander's OWN board, for a release it is itself driving.
-   *
-   * The fix is a strict fallback: the planned arm is authoritative for any component it covers, and
-   * the declared arm is consulted only for components it does not. There is no cross-clock
-   * comparison left to get wrong.
-   */
+  /** A regression in a single-domain org, with no federation. See docs/routes.md §410. */
   it("REGRESSION: a newer unplanned change does NOT displace an older change's observed `blocked`", async () => {
     const suffix = randomUUID().slice(0, 8);
     const svc = await admin.services.create({ name: `svc-${suffix}` });

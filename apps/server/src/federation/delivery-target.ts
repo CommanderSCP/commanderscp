@@ -1,69 +1,4 @@
-/**
- * M13.2a — the DeliveryTarget substrate (docs/proposals/airgap-cds-validate-promote.md §13.2).
- *
- * WHERE a signed channel artifact gets dropped for — or picked up from — one peer's CDS crossing:
- * the exact hole ADR-0019's Consequences deferred ("drop-directory vs. diode transfer varies per
- * CDS product; the relay's contract ends at 'signed tarball out / signed tarball in'"), and
- * nothing more. Everything past the drop (diode transfer, content inspection, the CDS product's
- * review queue) is the org's CDS — out of scope (charter principle 1).
- *
- * ## Resolution (the M15.6 `buildRegionalExecutorView` discipline — validated view, per-gap
- * `problems`, never a silent misdeploy)
- *
- * `resolveDeliveryTarget(peer, config)` produces the EFFECTIVE target for one peer:
- *
- *   1. The peer's own `deliveryTarget` (per-direction) wins when configured.
- *   2. NO per-peer value for a direction → the instance env (`SCP_RELAY_OUT_DIR` /
- *      `SCP_RELAY_IN_DIR`, PR #112's `RelayConfig`) — TODAY'S behavior, byte-identical, so
- *      existing setups need no migration.
- *   3. BOTH absent → that direction resolves to a named, per-gap `problem` — FAIL-CLOSED at use
- *      (`requireOutboundDir`/`requireInboundDir` refuse with the problem text); never a silent
- *      default path.
- *
- * A stored per-peer directory is RE-validated here (absolute, traversal-free — the same predicate
- * `DeliveryDirSchema` enforces at config time): a hostile value that somehow reached the DB is a
- * fail-closed problem for its direction, and deliberately does NOT fall back to the env — falling
- * back would silently mask the misconfiguration.
- *
- * ## Operator-root bounding (`SCP_DELIVERY_ROOTS` — the #108→#110 pattern, symmetric with ADR-0019 §4)
- *
- * On a MULTI-TENANT instance, an org admin with `federation:write` supplies the per-peer dirs. An
- * absolute + traversal-free path is NOT enough: any server-writable absolute path (another org's
- * `SCP_RELAY_IN_DIR`, any server-user-writable location) would otherwise be a legal drop target,
- * and `dropDeliveryFile` does `mkdir -p` + overwriting `writeFile` there as the server user — a
- * cross-tenant / arbitrary-path write. So a per-peer directory is honored ONLY when it sits at or
- * under one of the OPERATOR-declared roots in `SCP_DELIVERY_ROOTS` — the same shape as
- * `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` (#110): a data-supplied filesystem endpoint gated by an
- * operator allowlist, enforced in BOTH places — refused at pair time (never stored) and re-checked
- * fail-closed at resolution (a stored out-of-root dir is a named per-gap problem, never a silent
- * env fallback, never used).
- *
- * DEFAULT — the honest multi-tenant default: `SCP_DELIVERY_ROOTS` UNSET + any per-peer dir set/used
- * ⇒ FAIL-CLOSED (refuse). The operator must declare the roots before any per-peer dir is honored.
- * The ENV-FALLBACK path (`SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` — operator-owned by definition)
- * stays EXEMPT: no per-peer dir, no roots requirement, so single-org deploys keep working with zero
- * new config.
- *
- * ## The read-side surface (for the §13.1a inbox loop, stacked next)
- *
- * `listInbox(peer)` returns file NAMES within the resolved inbound directory — names only, never
- * paths: each name is round-tripped through the PR #112 `resolveUnderDir` traversal guard before
- * it is returned, so the guard SURVIVES automation (inbox contents are untrusted data — file
- * names are data, not commands). Consumers hand a name back to the existing import paths, which
- * re-run `resolveUnderDir` themselves.
- *
- * ## Providers (13.2b — `s3-compatible` added)
- *
- * `filesystem` (default) and `s3-compatible` (proposal §13.2, owner decision D3: AWS SDK v3) both
- * ride the SAME put/list/get seams (`dropDeliveryFile`/`listInbox`/`getDeliveryFile`), PROVIDER-
- * DISPATCHED on the resolved target's `provider`: the filesystem path is byte-identical to M13.2a,
- * the s3 path put/list/gets via `delivery-s3.ts`. The s3 provider is OPERATOR-ALLOWLISTED exactly
- * as directories are — the `SCP_DELIVERY_S3_ENDPOINTS` endpoint/bucket allowlist is the ADR-0019 §4
- * symmetry of `SCP_DELIVERY_ROOTS`, enforced at pair-time AND fail-closed at resolution (a tenant
- * must never steer delivery to an arbitrary S3 endpoint). Its credentials live in the vault under
- * `delivery/<peer>/<direction>` (ADR-0019 §3), resolved at use and passed to the s3 seams — never in
- * config, never logged.
- */
+/** M13.2a — the DeliveryTarget substrate. See docs/federation.md §83. */
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { DeliveryTarget, S3DeliveryTarget, TrustDomainId } from "@scp/schemas";
@@ -85,14 +20,7 @@ export interface DeliveryEnvDirs {
   inDir?: string;
 }
 
-/**
- * `SCP_DELIVERY_ROOTS` — comma/colon-separated ABSOLUTE roots a per-peer delivery directory must
- * sit at or under to be honored (the #110 `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` pattern for a
- * filesystem endpoint). Entries are trimmed, non-absolute ones dropped, and each normalized with
- * `path.resolve` so a root written as `/data/roots/../escape` collapses to its real location.
- * UNSET (or all-empty) ⇒ `[]` ⇒ every per-peer dir fails closed (see the module doc's DEFAULT).
- * Accepts the raw env string or an already-split array (tests pass an array directly).
- */
+/** The absolute roots a delivery directory may sit under. See docs/federation.md §84. */
 export function parseDeliveryRoots(raw: string | readonly string[] | undefined): string[] {
   const entries = typeof raw === "string" ? raw.split(/[,:]/) : (raw ?? []);
   return entries
@@ -105,26 +33,13 @@ export function deliveryRootsFromEnv(): string[] {
   return parseDeliveryRoots(process.env.SCP_DELIVERY_ROOTS);
 }
 
-/**
- * Is `dir` at or under one of `roots`? The check is on RESOLVED path SEGMENTS, never a raw string
- * prefix — so a sibling like `/root-evil` never matches the root `/root` (string-prefix would),
- * and `/roots/../escape` is normalized before comparison. `roots` are already resolved by
- * {@link parseDeliveryRoots}; `dir` is resolved here. Mirrors `resolveUnderDir`'s boundary test.
- */
+/** Is `dir` at or under one of `roots`? See docs/federation.md §85. */
 export function isUnderDeliveryRoot(dir: string, roots: readonly string[]): boolean {
   const resolved = path.resolve(dir);
   return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
 }
 
-// -------------------------------------------------------------------------------------------------
-// S3 endpoint/bucket allowlist (`SCP_DELIVERY_S3_ENDPOINTS`) — the ADR-0019 §4 symmetry of
-// SCP_DELIVERY_ROOTS, but ENDPOINT+BUCKET shaped, NOT path shaped (isUnderDeliveryRoot is a filesystem
-// prefix test and MUST NOT be reused here). An s3 `endpoint`/`bucket` is a data-supplied EGRESS
-// target set by an org admin; without an operator allowlist a tenant could steer the unattended
-// boundary drop to an arbitrary S3 endpoint (data-supplied egress). So — exactly as directories are
-// bounded — an s3 target is honored ONLY when its endpoint (and bucket, when the entry pins one) is
-// operator-allowlisted, enforced at pair-time (never stored) AND fail-closed at resolution.
-// -------------------------------------------------------------------------------------------------
+// S3 endpoint/bucket allowlist (`SCP_DELIVERY_S3_ENDPOINTS`). See docs/federation.md §86.
 
 /** One parsed allowlist entry: an endpoint ORIGIN (scheme+host+port, normalized) and an OPTIONAL
  *  bucket. `bucket === null` ⇒ the entry allows ANY bucket at that endpoint; a bucket pins the entry
@@ -148,15 +63,7 @@ export function normalizeS3Origin(endpoint: string): string | null {
   return url.origin.toLowerCase();
 }
 
-/**
- * Parse `SCP_DELIVERY_S3_ENDPOINTS` — a COMMA/newline-separated list of allowed `endpoint` or
- * `endpoint+bucket` entries (e.g. `https://minio.a:9000, https://minio.b:9000+bundles`). Unlike
- * {@link parseDeliveryRoots}, entries are NOT colon-split: an S3 endpoint URL legitimately contains
- * colons (`https://host:9000`), so a colon can never be an entry separator here; the endpoint↔bucket
- * separator is `+` (per the proposal's `endpoint[+bucket]` notation). Each endpoint is normalized to
- * its origin; unparseable entries are dropped. UNSET/all-empty ⇒ `[]` ⇒ every s3 target fails closed.
- * Accepts the raw env string or an already-split array (tests pass an array directly).
- */
+/** Parses the allowed object-store endpoints. See docs/federation.md §87. */
 export function parseDeliveryS3Endpoints(
   raw: string | readonly string[] | undefined
 ): DeliveryS3AllowEntry[] {
@@ -180,13 +87,7 @@ export function deliveryS3EndpointsFromEnv(): DeliveryS3AllowEntry[] {
   return parseDeliveryS3Endpoints(process.env.SCP_DELIVERY_S3_ENDPOINTS);
 }
 
-/**
- * Is `endpoint`+`bucket` allowed by `allow`? Match requires the normalized ORIGINS to be EQUAL (never
- * a string-prefix compare — so `https://minio.evil:9000` never matches an allowlisted
- * `https://minio.ev:9000`, and a path suffix on the configured endpoint can't sneak past) AND the
- * entry's bucket to be either unpinned (any bucket) or exactly `bucket`. An unparseable `endpoint`,
- * or an empty allowlist, is never allowed (fail-closed).
- */
+/** Is `endpoint`+`bucket` allowed by `allow`? See docs/federation.md §88. */
 export function isDeliveryS3EndpointAllowed(
   endpoint: string,
   bucket: string,
@@ -207,11 +108,7 @@ export interface ResolvedS3Location {
   prefix: string;
 }
 
-/** One direction of the resolved view. `dir` is the resolved FILESYSTEM directory (or `null`); the
- *  s3 location, when the provider is `s3-compatible`, lives on the parent's `outboundS3`/`inboundS3`
- *  — this shape is DELIBERATELY unchanged from M13.2a (the filesystem suite asserts it exactly).
- *  A resolved direction has `problem === null`; an unresolved one has `dir === null` + a `problem`
- *  (the text the `require*` helpers refuse with). */
+/** One direction of the resolved view. See docs/federation.md §89. */
 export interface ResolvedDeliveryDirection {
   dir: string | null;
   /** Where the effective location came from: the peer's own config or the instance env. */
@@ -330,12 +227,7 @@ function resolveDirection(
   };
 }
 
-/** S3 direction resolution (13.2b). The endpoint/bucket is the SAME for both directions (the target
- *  carries one `endpoint`+`bucket`); only the per-direction prefix differs. The allowlist gap is
- *  therefore shared: an out-of-allowlist endpoint/bucket makes BOTH directions a fail-closed problem.
- *  There is NO env fallback for an s3 target — the whole target is s3 (the env dirs are filesystem).
- *  Returns the (dir-shaped) direction PLUS the resolved `s3` location (`null` on a gap) — the
- *  direction shape stays byte-identical to filesystem so consumers keyed on it are unchanged. */
+/** S3 direction resolution. See docs/federation.md §90. */
 function resolveS3Direction(
   direction: "outbound" | "inbound",
   peerName: string | null,
@@ -384,13 +276,7 @@ function resolveS3Direction(
   };
 }
 
-/**
- * The effective DeliveryTarget for `peer` (or the env-only target when `peer` is null), with
- * per-gap `problems` — never throws; the `require*` helpers turn a gap into a fail-closed refusal at
- * the point of use. Dispatches on the peer target's provider: an `s3-compatible` target resolves via
- * the endpoint/bucket allowlist (`s3Allow`), everything else (a filesystem target or the env
- * fallback) via the directory logic. `config` defaults to the live env (`relayConfigFromEnv()`).
- */
+/** The effective DeliveryTarget for `peer`. See docs/federation.md §91. */
 export function resolveDeliveryTarget(
   peer: DeliveryTargetPeerRef | null,
   config?: DeliveryEnvDirs,
@@ -478,33 +364,13 @@ export interface OnwardDeliveryPeerRef extends DeliveryTargetPeerRef {
   id: TrustDomainId;
 }
 
-/**
- * THE ONWARD DROP a store-and-forward hop writes into: the single peer-configured OUTBOUND
- * filesystem `deliveryTarget` if exactly one peer carries one, else the instance env
- * (`SCP_RELAY_OUT_DIR`). Shared by the M13.1a inbox loop's validate-and-forward and the M13.1b
- * auto-relay, which must resolve it identically — the two halves of the same hop.
- *
- * FAIL-CLOSED, NEVER A SILENT DEFAULT. Every gap returns a NAMED `problem` the caller surfaces and
- * defers on, rather than falling through to some other directory:
- *   - AMBIGUITY (several peers configure an outbound dir) is a config gap, not a coin toss —
- *     dropping bytes at the wrong boundary peer is exactly the mistake this refuses to guess at.
- *   - An `s3-compatible` peer resolves with `outbound.dir === null` (its location is `outbound.s3`)
- *     and is correctly skipped rather than mistaken for an unresolved filesystem dir: relaying a
- *     multi-GB tarball straight to s3 is the documented 13.2b follow-on (see the relay route's
- *     scope note), so an s3-only instance falls through to the env fallback or a named problem.
- *   - A per-peer dir outside `SCP_DELIVERY_ROOTS` never resolves at all (`resolveDeliveryTarget`
- *     refuses it fail-closed), so it cannot become an onward target here either.
- */
+/** THE ONWARD DROP a store-and-forward hop writes into. See docs/federation.md §92. */
 export function resolveOnwardDeliveryDir(
   peers: readonly OnwardDeliveryPeerRef[],
   config?: DeliveryEnvDirs,
   roots?: readonly string[],
   options?: {
-    /** M13.1b — for AUTOMATED callers: refuse (named problem) rather than fall through to the
-     *  instance env when a peer IS configured for delivery but with a provider this hop cannot
-     *  write to. Without it the automated path would perform an action the operator-invoked route
-     *  explicitly 400s on (`requireOutboundDir` refuses an s3 target), mark the build done, and put
-     *  the bytes in a directory the s3-expecting CDS never watches. */
+    /** M13.1b — for AUTOMATED callers. See docs/federation.md §93. */
     strict?: boolean;
   }
 ): { dir: string; peerDomainId?: TrustDomainId } | { problem: string } {
@@ -513,23 +379,7 @@ export function resolveOnwardDeliveryDir(
     resolved: resolveDeliveryTarget(peer, config, roots)
   }));
   if (options?.strict) {
-    // ONLY peers that configured an OUTBOUND target this hop cannot write to. Both narrowings are
-    // load-bearing, and each was a live bug before it was added:
-    //
-    //   - a peer with NO deliveryTarget at all is not a misconfiguration, it simply is not the
-    //     boundary peer. Flagging it would refuse the whole hop on account of, typically, the
-    //     upstream commander — in the normal two-peer retrans topology, where the DOWNSTREAM peer
-    //     carries the only outDir and `SCP_RELAY_OUT_DIR` is legitimately unset.
-    //   - a peer whose target configures only `inDir` is the DOCUMENTED M13.1a upstream shape (the
-    //     schema makes `outDir` optional precisely so a peer can be an inbox and nothing more).
-    //     Keying on the resolved `outbound.dir` alone would flag it for lacking an outbound dir it
-    //     was never meant to have, with the same effect: every build deferred forever, no attempt,
-    //     no Decision, nothing to see.
-    //
-    // What is left is the case strictness exists for: a peer that DID declare where its outbound
-    // bytes go, in a form this hop cannot write (s3 — the documented 13.2b follow-on) or that
-    // resolution refused (traversal, outside `SCP_DELIVERY_ROOTS`). Falling through to the
-    // instance-wide dir there would perform an action the manual route explicitly 400s on.
+    // Only peers with an outbound target this hop cannot write. See docs/federation.md §94.
     const undeliverable = resolvedPeers.filter(({ peer, resolved }) => {
       if (peer.deliveryTarget == null) return false;
       if (resolved.provider === "s3-compatible") return true;
@@ -596,12 +446,7 @@ function requireInboundS3(resolved: ResolvedDeliveryTarget): ResolvedS3Location 
   return resolved.inboundS3;
 }
 
-/**
- * PROVIDER-AGNOSTIC outbound assertion (for route pre-checks): a delivery with NO resolvable outbound
- * location refuses fail-closed with its named per-gap problem, BEFORE any export work is done —
- * whether the target is filesystem (no dir) or s3 (no allowlisted endpoint). Never returns a path;
- * use `dropDeliveryFile` to actually write.
- */
+/** PROVIDER-AGNOSTIC outbound assertion (for route pre-checks). See docs/federation.md §95. */
 export function assertOutboundDeliverable(resolved: ResolvedDeliveryTarget): void {
   if (resolved.provider === "s3-compatible") {
     requireOutboundS3(resolved);
@@ -624,12 +469,7 @@ function deliveryObjectKey(prefix: string, fileName: string): string {
   return prefix + fileName;
 }
 
-/** WRITE SEAM — PROVIDER-DISPATCHED: drop `contents` as `fileName` into the peer's resolved outbound
- *  location. `filesystem` = exactly the PR #112 write (mkdir -p + write, byte-identical), `fileName`
- *  riding the `resolveUnderDir` traversal guard. `s3-compatible` = a managed multipart put via
- *  `delivery-s3.ts`, `fileName` riding {@link deliveryObjectKey}; `s3Credentials` (vault-resolved by
- *  the caller) is REQUIRED for the s3 path — its absence is a fail-closed 400. Returns the absolute
- *  filesystem path OR the `s3://bucket/key` URI written. */
+/** WRITE SEAM — PROVIDER-DISPATCHED. See docs/federation.md §96. */
 export async function dropDeliveryFile(
   resolved: ResolvedDeliveryTarget,
   fileName: string,
@@ -655,24 +495,7 @@ export async function dropDeliveryFile(
   return filePath;
 }
 
-/**
- * READ SEAM (the §13.1a inbox surface) — PROVIDER-DISPATCHED: the file NAMES currently sitting in the
- * peer's resolved inbound location — names only, no paths/keys, no traversal.
- *
- * `filesystem` (unchanged from M13.2a):
- *   - an unresolvable inbound direction refuses fail-closed with its named problem;
- *   - only regular files are listed (subdirectories/other are ignored — the two channel artifacts
- *     are always plain files);
- *   - every returned name round-trips the `resolveUnderDir` guard (belt-and-braces);
- *   - a not-yet-created inbox lists as empty (an empty and an absent inbox are the same "nothing
- *     arrived" answer for a polling loop).
- *
- * `s3-compatible` (13.2b): lists object BASENAMES under the inbound prefix via `delivery-s3.ts`
- *   (`s3Credentials` REQUIRED — its absence is a fail-closed 400); nested keys are skipped, exactly
- *   as the filesystem path skips subdirectories.
- *
- * Sorted for deterministic consumption order.
- */
+/** READ SEAM (the §13.1a inbox surface). See docs/federation.md §97. */
 export async function listInbox(
   peer: DeliveryTargetPeerRef | null,
   config?: DeliveryEnvDirs,
@@ -733,20 +556,7 @@ export async function getDeliveryFile(
   return readFile(resolveUnderDir(inDir, fileName));
 }
 
-/**
- * CONFIG-TIME gate (the pair route): refuse a `deliveryTarget` whose data-supplied ENDPOINT falls
- * outside the operator allowlist BEFORE it is ever stored — the pairing half of the #110 allowlist
- * (`SCP_ARTIFACT_OCI_REGISTRY_HOSTS`) pattern. Throws a fail-closed 400 `badRequest`; returns
- * cleanly when there is nothing to bound. Provider-dispatched:
- *
- *   - `null`/`undefined` target — the tri-state CLEAR/PRESERVE cases: env fallback, nothing to bound;
- *   - `filesystem` — each per-direction dir must sit under a `SCP_DELIVERY_ROOTS` root (schema has
- *     already proven it absolute + traversal-free), else refuse; UNSET roots + any dir ⇒ refuse;
- *   - `s3-compatible` (13.2b) — the endpoint[+bucket] must be in the `SCP_DELIVERY_S3_ENDPOINTS`
- *     allowlist, else refuse; UNSET allowlist + s3 target ⇒ refuse (the honest fail-closed default).
- *
- * `roots`/`s3Allow` default to the live `SCP_DELIVERY_ROOTS` / `SCP_DELIVERY_S3_ENDPOINTS`.
- */
+/** CONFIG-TIME gate (the pair route). See docs/federation.md §98. */
 export function assertDeliveryTargetRooted(
   target: DeliveryTarget | null | undefined,
   roots?: readonly string[],

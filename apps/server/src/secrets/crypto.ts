@@ -1,20 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
-/**
- * AES-256-GCM envelope for the `secrets` table (db/schema.ts's M7 section doc comment). This is
- * the encryption-at-rest layer `instance_keys` (M4/M6) explicitly opted out of — org-supplied
- * plugin credentials (GitHub App private key, ArgoCD token, managed-IaC infra credentials) are a
- * different trust tier: many tenants, arbitrary third-party secrets, injected into subprocess
- * plugins, not just one federation-domain signing keypair `scp_app` alone ever touches.
- *
- * Key management (honest, v1 scope — no KMS/vault integration, same "no external PKI" posture
- * DESIGN §10.2 takes for attestation signing): the root key is a single 32-byte AES-256 key
- * supplied by the operator via `SCP_SECRETS_MASTER_KEY` (base64), loaded once at boot
- * (config.ts). `keyVersion` on every row is reserved for a future key-rotation scheme (re-encrypt
- * under a new master key, bump the version, keep decrypting old rows under whichever version they
- * were written with) — v1 always writes/reads version 1 and only ever has one active key in
- * memory, but the column exists now so rotation is additive later, not a migration.
- */
+/** AES-256-GCM envelope for the `secrets` table. See docs/secrets.md §1. */
 
 const ALGORITHM = "aes-256-gcm";
 const KEY_BYTES = 32;

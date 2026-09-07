@@ -13,52 +13,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changes, changeWaveTargets, decisions } from "../db/schema.js";
 
-/**
- * THE M15.6 REGION GATE'S MATCH KEY IS NO LONGER WRITABLE BY ITS OWN SUBJECT.
- *
- * `coordination/region-membership-guard.ts` has the full write-up; this file is the proof that the
- * guard RUNS, at real doors, against a real subject — the distinction a unit test cannot make and
- * that this project's dominant defect (a component built, unit-tested green, never installed) turns
- * on. Every refusal below is driven by `owner`, a user holding the built-in Operator role bound AT
- * THE TARGET OBJECT ONLY — `object:write` on the target it owns, and no binding at the org root.
- *
- * MEASURED BEFORE THE FIX (the same three doors, same harness, guard absent):
- *
- *   control: declared `{environment, region}`, unbound  -> `no_executor`, parked, 1 block Decision
- *   V1: PATCH `properties: {environment}`               -> `triggered` on `fake-executor`, 0 blocks
- *   V2: PATCH `properties: {}`                          -> `triggered` on `fake-executor`, 0 blocks
- *   V3: DELETE the target after the change is proposed  -> `triggered` on `fake-executor`, 0 blocks
- *
- * MUTATION LOG — each applied ALONE against a green suite, the run recorded, then reverted:
- *
- *   | # | mutation                                                        | cases that died                 |
- *   |---|-----------------------------------------------------------------|---------------------------------|
- *   | 1 | delete `assertMayUndeclareRegionMembership` from `updateObject`  | V1, V2, TYPED-PUT               |
- *   | 2 | delete it from `deleteObject`                                    | V3                              |
- *   | 3 | swap `before`/`after` at the `updateObject` call site            | V1, V2, TYPED-PUT, DECLARE-IS-FREE |
- *   | 4 | delete the `typeId !== "deployment-target"` early return         | SCOPE-GUARD (non-target)        |
- *
- * Two of these are the point rather than bookkeeping. **#1 does not kill V3 and #2 does** — the
- * measured proof that `deleteObject` runs the refusal for itself rather than inheriting a choke
- * point it never passes through; removing the ROW withdraws the target just as surely as blanking
- * the property, and it is a different function. **#3 kills DECLARE-IS-FREE**, which is the control
- * that the asymmetry is real: a delta read backwards makes ADDING a region declaration the
- * privileged act and leaves REMOVING one free — the defect, inverted, and V3 stays green throughout
- * so the suite would still look 10/11 healthy.
- *
- * RE-VERIFIED AFTER THE REBASE ONTO #249, which installs a containment-reach recorder in the SAME
- * two functions. Two things now share `deleteObject`, so "my case is green" stopped being evidence
- * that MY hook is the reason — and the two mutations below say which is which, each run alone on
- * the rebased tree:
- *
- *   | mutation                                     | died                          | stayed green        |
- *   |----------------------------------------------|-------------------------------|---------------------|
- *   | remove THIS guard from `deleteObject`        | V3, and V3 alone              | #249's 9 CASEs      |
- *   | neuter #249's route-3 reach capture          | #249's CASE 4, and it alone   | all 11 cases here   |
- *
- * Neither guard is carrying the other. The refusal is ordered FIRST in `deleteObject` so a rejected
- * un-declaration pays no containment walk; see the call site for why that ordering is free to make.
- */
+/** The gate's match key is no longer writable by its subject. See docs/coordination.md §841. */
 describe("M15.6: un-declaring a region is an authority act, not a field edit", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

@@ -18,22 +18,7 @@ import { ensureFederationSelf } from "./self-repo.js";
 import { FEDERATION_SYNC_DECISION_KIND, pullFromCommanderPeer } from "./federation-sync.js";
 import { listAuditEvents } from "../audit/audit-repo.js";
 
-/**
- * U4 of the unbounded-Decision-write class (see
- * `coordination/decision-write-amplification.integration.test.ts` for the production measurement,
- * `coordination/decisions-repo.ts`'s `insertDecisionIfChanged` for the shape).
- *
- * `recordSyncBlock` fires for a STANDING condition — an mTLS-required peer with no usable
- * client-cert material, or a dialer that refuses that peer — and NOTHING marks the peer
- * already-refused. The sweep re-attempts it on the default 60 s cadence, so one misconfigured peer
- * appended 1,440 identical Decisions AND 1,440 identical hash-chained audit events per day,
- * indefinitely. (This deployment carries 0 of these rows only because its federation sync loop is
- * off — `SCP_FEDERATION_SYNC_LOOP` unset.)
- *
- * The refusal asserted here is the FAIL-CLOSED pre-flight one, which happens before any network I/O
- * — so this needs no HTTPS listener and no PKI, unlike `federation-sync.integration.test.ts`'s
- * two-domain suite that proves the refusal's semantics. This file only pins its WRITE volume.
- */
+/** U4 of the unbounded-Decision-write class. See docs/federation.md §154. */
 describe("federation sync refusals persist ON CHANGE (U4)", () => {
   let server: TestServer;
   let org: TestOrg;

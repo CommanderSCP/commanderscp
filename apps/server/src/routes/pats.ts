@@ -26,14 +26,7 @@ function serializePat(pat: PatMetadata) {
   };
 }
 
-/**
- * Personal Access Tokens (M2 step 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — create/list/revoke
- * for the CALLING user's own tokens only; used as a bearer token via `auth/require-auth.ts`.
- *
- * PATs are auth-substrate (no RLS — see db/schema.ts, matching orgs/users/sessions), so their own
- * reads/writes go straight through `deps.db`. The audit log IS RLS-protected, so only the audit
- * append runs inside a `withTenantTx` — the one write here that actually needs it.
- */
+/** Personal Access Tokens. See docs/routes.md §300. */
 export function registerPatRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 

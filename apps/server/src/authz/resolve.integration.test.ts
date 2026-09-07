@@ -14,16 +14,7 @@ import {
 } from "../test-support/harness.js";
 import { asContainmentDomainId } from "@scp/schemas";
 
-/**
- * PR #4 security review, CRITICAL 2 / BUILD_AND_TEST.md §9 ("RBAC inheritance + deny-override
- * matrix"): direct integration coverage of the permission evaluator (authz/resolve.ts) against
- * real Postgres — containment inheritance, scope non-leakage, deny-override (direct and via
- * groups), member_of expansion (flat and nested, user and service-account subjects), default
- * deny, and unknown permissions failing closed.
- *
- * Fixture containment: orgRoot ─▶ domain D ─▶ service S (plus sibling domain D2 for
- * non-leakage checks). Subjects are created per-case so bindings never interfere.
- */
+/** PR #4 security review, CRITICAL 2 / BUILD_AND_TEST.md §9. See docs/authz.md §49. */
 describe("RBAC evaluator: inheritance + deny-override matrix", () => {
   let server: TestServer;
   let org: TestOrg;

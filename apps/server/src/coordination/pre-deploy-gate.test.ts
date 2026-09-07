@@ -1,14 +1,4 @@
-/**
- * Unit wiring of the M17.4(b) pre-deploy gate's TLS scoping: `runPreDeployArtifactGate` passes
- * `verifyAuthorizedArtifactSet` a PER-HOST `allowInsecureRegistry` predicate derived from
- * `SCP_ARTIFACT_INSECURE_HOSTS` — never the historical blanket `true`. The @scp verify seam is
- * mocked (this proves the WIRING; live cosign behavior rides the integration suites), and the
- * NEGATIVE case lives here deliberately: it cannot be observed live against a Testcontainers
- * loopback registry, because cosign's go-containerregistry auto-downgrades loopback registry
- * hosts to HTTP with or without the flag — see artifact-verify.test.ts, whose companion tests
- * prove a `false` predicate verdict reaches cosign as `allowInsecureRegistry: false` (TLS-ON
- * verification attempted).
- */
+/** Unit wiring of the M17.4(b) pre-deploy gate's TLS scoping. See docs/coordination.md §717. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db/tenant-tx.js", () => ({

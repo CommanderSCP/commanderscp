@@ -12,31 +12,7 @@ import {
 } from "@scp/runner-launcher";
 import { createManagedIacExecutorPlugin } from "./index.js";
 
-/**
- * HIGH (M23.0 verification pass 7) — THE DIAGNOSIS MUST SURVIVE ALL THE WAY TO `status().detail`,
- * AND THE DURABLE LEDGER MUST NOT GROW WITHOUT BOUND. This is the END-TO-END half of the fix; the
- * mechanism itself is pinned in `@scp/runner-launcher`'s `failure-detail-bound.test.ts`.
- *
- * WHAT WAS MEASURED BEFORE THE FIX, through this exact path with 200 KB of runner stderr:
- *
- *     stderr written : 200068      ledger file on disk : 211985
- *     status().detail length : 4000
- *     detail contains the tail marker : false
- *     detail contains the REAL CAUSE  : false
- *     last 90 chars of detail : "line, repeated\nnoise line, repeated\nnoise line, repeated\n..."
- *
- * Two defects in one measurement and they had to be fixed together. (1) The port appended the
- * runner's last 2000 characters AFTER an UNCAPPED `err.message`, so this plugin's `.slice(0, 4000)`
- * on READ returned 4000 characters of the noise the tool printed on its way to the error. (2) The
- * ledger — a durable, replicated JSON file keyed by `idempotencyKey`, in a `Record` that is never
- * pruned — was written UNSLICED; the 4000 was applied on read only. This repository has a
- * production incident in exactly that family (unbounded `Decision` growth at 1.44 GB/day), so
- * per-key growth of an on-disk ledger is treated as the same class.
- *
- * THE SUCCESS PATH WAS WORSE AND THE ORIGINAL MEASUREMENT DID NOT REACH IT: `runnerOutcomeDetail`
- * returned a successful run's `stdout` verbatim, up to the 16 MiB `maxBuffer`, and that too went to
- * disk per key, forever, to serve 4000 characters. Its arm is below.
- */
+/** HIGH (M23.0 verification pass 7). See docs/plugins.md §406. */
 
 const REAL_CAUSE =
   "Error: creating EC2 Instance: InvalidAMIID.NotFound: The image id does not exist";
@@ -110,12 +86,7 @@ async function runAndRead(launcher: RunnerLauncher, key: string) {
 }
 
 describe("HIGH: the REAL CAUSE survives to status().detail, and the ledger stays bounded", () => {
-  /**
-   * THE ARM THE SURVIVING MUTATION MUST REDDEN. `output.slice(-FAILURE_OUTPUT_TAIL_CHARS)` ->
-   * `output.slice(0, ...)` in `@scp/runner-launcher` survived 1542 tests; measured through this
-   * plugin it means an operator reading a failed `tofu apply` is shown the noise the tool printed
-   * FIRST and never the error it ended on.
-   */
+  /** THE ARM THE SURVIVING MUTATION MUST REDDEN. See docs/plugins.md §407. */
   it.each([1_500, 5_000, 50_000])(
     "an operator reading a failed apply sees the cause, not the noise, at %i characters of stderr",
     async (noiseChars) => {
@@ -169,16 +140,7 @@ describe("HIGH: the REAL CAUSE survives to status().detail, and the ledger stays
   });
 
   it("A DETAIL THAT ARRIVES UNBOUNDED IS BOUNDED BEFORE IT REACHES THE LEDGER", async () => {
-    // THE PLUGIN'S OWN BOUND, and it exists for a reason that is not belt-and-braces: this plugin
-    // applies a SECOND, independent redaction over `failure.detail` (its own knowledge of which
-    // values are secret, which it may not assume the adapter already stripped), and redaction is
-    // NOT LENGTH-PRESERVING — a secret value shorter than `***` makes the string grow. So the
-    // re-bind after redacting is load-bearing, and `RunnerFailure.detail`'s branded type is what
-    // makes the compiler insist on it.
-    //
-    // WHAT THIS ARM MEASURES is that the plugin does not depend on its input already being bounded:
-    // an injected launcher hands it a 200 KB `detail` that the port's return type forbids (hence
-    // the cast), and the durable, never-pruned JSON file still receives a bounded string.
+    // The plugin's own bound, and why it is not belt-and-braces. See docs/plugins.md §408.
     const huge = `${"x".repeat(200_000)}${REAL_CAUSE}`;
     const unbounded: RunnerLauncher = {
       async run() {
@@ -206,20 +168,7 @@ describe("HIGH: the REAL CAUSE survives to status().detail, and the ledger stays
   });
 });
 
-/**
- * MEDIUM (M23.0 verification pass 7, finding M1) — BOUNDING ONE ENTRY DID NOT BOUND THE LEDGER, AND
- * THIS PLUGIN IS THE ONE WHERE THAT COSTS CPU AS WELL AS DISK.
- *
- * `state.keys` is a `Record` keyed by `idempotencyKey` and nothing pruned it, ever. Measured at 500
- * keys: `bytes=2074290  bytesPerKey=4149` — the per-entry bound the previous round added working
- * exactly as designed while the map grew without limit, because the map is a different quantity.
- * And `loadState` `JSON.parse`s the WHOLE file on every `status()` poll while `saveState` rewrites
- * it whole on every `trigger()`, so the ledger's size is O(total history ever) of parsing on a loop
- * that ticks once a second — the 1.44 GB/day family properly stated.
- *
- * THE ASSERTION IS ON THE FILE, not on the plugin's in-memory view, for the same reason the arm
- * above is: the defect the previous round fixed was precisely the two disagreeing.
- */
+/** MEDIUM (M23.0 verification pass 7, finding M1). See docs/plugins.md §409. */
 describe("MEDIUM: the durable ledger is bounded by ENTRY COUNT, not only by entry size", () => {
   it("250 runs leave exactly RUN_OUTCOME_CACHE_MAX_DURABLE keys, the newest ones", async () => {
     const plugin = createManagedIacExecutorPlugin(() => failingLauncher(500));

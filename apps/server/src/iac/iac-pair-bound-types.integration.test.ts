@@ -13,47 +13,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { objects, relationships } from "../db/schema.js";
 
-/**
- * IaC APPLY MUST REFUSE A PAIR-BOUND OBJECT TYPE, EXACTLY AS THE GENERIC ROUTE DOES.
- *
- * ============================================================================================
- * THE HOLE
- * ============================================================================================
- * `routes/objects-generic.ts` refuses three classes of type on every write verb:
- * governance-managed (`policy`/`control`), peer-bound (`outpost`), and PAIR-BOUND (`placement`).
- * Its reasoning for the last is explicit — a placement's identity IS a pair of other objects, so a
- * door taking free-form `properties` would "store two UUIDs without resolving them, without checking
- * they name a `component` and a `deployment-target`, and — decisively — without writing the two
- * derived edges that make the pair traversable, leaving an island invisible to every impact query".
- *
- * `iac/plans-repo.ts` is a SECOND write door: apply calls `createObject` directly, not through that
- * route. It special-cases `policy`, `campaign` and peer-bound types — two of the three classes — and
- * says nothing about pair-bound ones. So a manifest declaring `typeId: "placement"` reached
- * `createObject` with every guarantee of `/api/v1/placements` skipped.
- *
- * That is the incomplete-call-site pattern BUILD_AND_TEST.md §4.4 exists for: the concept "types the
- * generic door must refuse" had two call sites and was applied to one.
- *
- * ============================================================================================
- * WHAT THE TEST ASSERTS
- * ============================================================================================
- * Not the error message — that a placement is NOT CREATED, and that no untraversable island is left
- * behind. A refusal that still wrote the row would satisfy a message assertion.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | remove the pair-bound guard from `plans-repo.ts` (the hole) | this test FAILS — apply creates a placement with NO derived edges |
- * | guard only `create` and not `update`/`delete` | the update case FAILS |
- *
- * TWO doors WHEN THIS WAS WRITTEN, one now. The IaC hole was found first; censusing every
- * `createObject` caller for the guard turned up `POST /discovery/accept` as well — user-facing,
- * since it took its proposal from the request body, while `pair-bound-types.ts` had classed it with
- * internal journal replay. ADR-0047 removed that door, so the census that found it now returns one
- * user-facing caller: IaC apply, which is what remains under test here.
- */
+/** An apply must refuse a pair-bound type, as the route does. See docs/iac.md §29. */
 describe("IaC apply refuses pair-bound object types", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -115,14 +75,7 @@ describe("IaC apply refuses pair-bound object types", () => {
     expect(after.length, "no placement may be written").toBe(before);
   });
 
-  // THE `accept` CASE IS GONE WITH ITS DOOR (ADR-0047). It proved that a hand-written proposal
-  // declaring `typeId: "placement"` was refused — accept was different in kind from the other
-  // import paths `pair-bound-types.ts` leaves permissive, because it took its proposal FROM THE
-  // REQUEST rather than from a signed journal, so a caller could hand-write one.
-  //
-  // No door of that kind remains: discovery proposes and a human commits IaC, and the manifest path
-  // is covered by the case above ("refuses a manifest that declares a placement as a raw object"),
-  // which is the door a hand-written declaration reaches now.
+  // THE `accept` CASE IS GONE WITH ITS DOOR. See docs/iac.md §30.
 
   it("leaves no untraversable island — the reason the generic route refuses at all", async () => {
     // The decisive property. A placement created without its derived edges is invisible to blast

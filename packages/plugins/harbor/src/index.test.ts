@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { harborWebhookSource, mapHarborWebhookEventToHint } from "./index.js";
 
-/**
- * `@scp/plugin-harbor` unit suite (M15.3c). Pure-function tests over Harbor's DOCUMENTED
- * `PUSH_ARTIFACT` webhook payload shape — no DB, no Docker, no network (CLAUDE.md: "Tests never
- * touch the internet"). Proves the one thing this webhook-source package owns: a Harbor image push
- * becomes a `{ repo, artifactDigest }` correlation hint, and every other event type is ignored
- * cleanly (null, never a throw, never a mis-map).
- */
+/** `@scp/plugin-harbor` unit suite. See docs/plugins.md §241. */
 
 const digest = "sha256:" + "ab".repeat(32);
 

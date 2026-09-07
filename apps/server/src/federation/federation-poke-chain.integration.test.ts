@@ -36,25 +36,7 @@ import {
   type TestCa
 } from "./test-support/mtls-pki.js";
 
-/**
- * M14.4 (test i) — THE THREE-HOP POKE CHAIN, end to end over real mTLS listeners and three genuinely
- * separate Postgres databases: **commander → retrans → outpost** (ADR-0009 §38's hop-by-hop
- * propagation, minus the CDS byte transport itself).
- *
- * WHAT THIS PINS, and why it is the interesting case:
- *
- *   * **The onward poke is OUTBOX-DERIVED, not a poke-in→poke-out relay.** The retrans does not
- *     forward the poke it received. It IMPORTS, the import writes outbox rows in the same
- *     transaction as the applied change, and the sender hangs off the outbox relay — so the second
- *     hop is CAUSALLY GATED on the retrans having actually applied something new.
- *   * **That is what makes the chain loop-safe WITHOUT a TTL.** A replayed, byte-identical import
- *     applies zero entries, writes zero outbox rows, and therefore produces NO onward poke: the
- *     chain terminates by construction. A hop counter / TTL would have put a BYTE inside a signal
- *     that is contentless by definition (ADR-0009 §1) — this design needs neither.
- *
- * Each hop's wake is observed through a recording pg-boss injected into that instance's deps, and
- * each receiver's `last_poke_received_at` stamp (D2) is asserted from its own database.
- */
+/** The three-hop poke chain, over real mTLS listeners. See docs/federation.md §138. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.resolve(__dirname, "../../drizzle");

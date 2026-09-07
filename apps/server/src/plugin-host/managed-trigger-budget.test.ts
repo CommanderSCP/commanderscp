@@ -4,32 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SubprocessPluginHost } from "./host.js";
 
-/**
- * M23.1c — THE ONE TEST SHAPE THAT DID NOT EXIST AT ANY LEVEL, and the reason a ten-second SIGKILL
- * through every managed run shipped and stayed shipped.
- *
- * WHAT WAS ALREADY COVERED, AND WHY IT COVERED NOTHING. `managed-iac.integration.test.ts`'s own
- * header says it plainly: "it calls the plugin, not the server" — the real managed executor is
- * driven DIRECTLY, with no plugin host anywhere in the picture. And every test in the repository
- * that does construct a `SubprocessPluginHost` (four files, twenty-one constructions) passes an
- * explicit `callTimeoutMs` of 5–20s AND drives `fake-executor`, which answers instantly. So the
- * product's real configuration — `host-bootstrap.ts`'s `new SubprocessPluginHost()` with NO
- * options, i.e. the 10s default, in front of a plugin that runs a container for minutes — was the
- * one combination nothing exercised. Component correct, wiring untested, suite green: CLAUDE.md's
- * dominant defect class, and this file is the standing gate against it.
- *
- * THE HOST IS THEREFORE DEFAULT-CONSTRUCTED HERE. `new SubprocessPluginHost()`, no options, on
- * purpose — passing `callTimeoutMs` would reproduce exactly the blind spot being closed. If a
- * future edit adds an option to these constructions to "make the test faster", it has deleted the
- * test.
- *
- * NO REAL DOCKER, AND THAT IS NOT A COMPROMISE. What is under test is the RPC BUDGET, not the
- * runner: the seam is `config.dockerBinary` — the server-injected, tenant-refused field the plugin
- * `execFile`s — pointed at a stub `sh` script that sleeps past the old budget and keeps a
- * directory of "containers" that `create` adds to and `rm -f` removes from. That directory is what
- * makes "no container is left behind" an assertion with teeth rather than a hope, and the second
- * test below proves it has them by showing the stub DOES report an orphan under the old budget.
- */
+/** The test shape that did not exist at any level. See docs/plugin-host.md §67. */
 
 const oldBudgetMs = 10_000;
 /** Comfortably past the 10s default, short enough to keep the suite tolerable. */
@@ -47,12 +22,7 @@ interface FakeDocker {
 const tempDirs: string[] = [];
 let host: SubprocessPluginHost | undefined;
 
-/**
- * A stub `docker` that models the ONE property this test asserts about the daemon: a container
- * exists between `create` and `rm -f`. Absolute paths are baked into the script text rather than
- * passed as env, because `host.ts` allowlists the child's environment (CRITICAL #3) and nothing
- * this file sets would survive to the plugin subprocess, let alone to its own grandchild.
- */
+/** A stub that models the one property this asserts. See docs/plugin-host.md §68. */
 async function makeFakeDocker(sleepSeconds: number): Promise<FakeDocker> {
   const dir = await mkdtemp(join(tmpdir(), "scp-fake-docker-"));
   tempDirs.push(dir);
@@ -125,18 +95,7 @@ afterEach(async () => {
   await host?.stop();
   host = undefined;
   for (const dir of tempDirs.splice(0)) {
-    // ENOTEMPTY IS A RACE WITH A PROCESS THIS FILE DELIBERATELY ORPHANS, NOT A TIDINESS PROBLEM.
-    // The stub `docker` recreates its state directory (`mkdir -p "$STATE"`) at the top of EVERY
-    // invocation, and the cases here SIGKILL a plugin subprocess mid-run precisely so a grandchild
-    // outlives it. A `rm -r` that walks, empties and then `rmdir`s loses to an invocation that
-    // lands between the walk and the rmdir: measured once in ~15 full `pnpm -w test` runs as
-    // `Error: ENOTEMPTY: directory not empty, rmdir '/tmp/scp-fake-docker-…'`, failing a test whose
-    // own assertions had already passed.
-    //
-    // `maxRetries` IS THE DOCUMENTED ANSWER, not a sleep in disguise: `fs.rm` retries exactly this
-    // error set (EBUSY, EMFILE, ENFILE, ENOTEMPTY, EPERM) with linear backoff. Both files that
-    // orphan a grandchild carry it — the property is "a temp-dir cleanup racing a process the test
-    // deliberately left running", and it is two files wide.
+    // That error is a race with a process this file orphans. See docs/plugin-host.md §69.
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
@@ -200,21 +159,7 @@ describe("managed executor trigger through a DEFAULT-CONSTRUCTED plugin host (M2
     expect(argv).toContain("rm -f scp-runner-budget-probe-1");
   }, 60_000);
 
-  /**
-   * THE OTHER HALF OF DECISION (a), and a second guard against a vacuous first test.
-   *
-   * A managed `trigger` no longer gets the host's transparent crash-retry. `host.call()` normally
-   * re-issues a request once per crash while budget remains — correct for an idempotent read, and
-   * actively dangerous here now that the budget is minutes rather than seconds: the retry re-enters
-   * a `trigger()` whose ledger entry is by construction not yet written, and its container name
-   * (derived from the same `idempotencyKey`) collides with the first run's, whose unconditional
-   * teardown then `rm -f`s the container that legitimately holds it.
-   *
-   * `killInstanceForTest` is the SAME `child.kill("SIGKILL")` the old uniform timeout performed, so
-   * this also records what that timeout actually did to a run in flight — the container orphans and
-   * the ledger stays empty — which is what makes the first test's assertions measurements rather
-   * than hopes.
-   */
+  /** THE OTHER HALF OF DECISION. See docs/plugin-host.md §70. */
   it("a crash mid-trigger is NOT transparently retried, and records the orphan the old SIGKILL left", async () => {
     const fake = await makeFakeDocker(6);
     const config = await managedIacConfig(fake, 120_000);

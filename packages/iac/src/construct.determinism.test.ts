@@ -12,22 +12,9 @@ import {
 } from "./index.js";
 import { canonicalJson } from "./canonical.js";
 
-/**
- * The load-bearing determinism property (goal statement, Part A): `app.synth()`/`stack.synth()`
- * is a PURE function of the construct tree. This test asserts two things fast-check-style:
- *
- *  1. Re-synthesizing the SAME tree object twice gives identical output.
- *  2. Two INDEPENDENTLY-BUILT trees with the same logical content — same resources, same
- *     relationships — synthesize to byte-identical canonical JSON even when constructed in a
- *     DIFFERENT order, because identity is URN-keyed and both the objects/relationships arrays
- *     are sorted before being returned (construct.ts's `Stack.synth()`).
- */
+/** The load-bearing determinism property (goal statement, Part A). See docs/iac.md §179. */
 
-// Only the uniform `defineResourceConstruct` types belong here — they share the
-// `(scope, id, ResourceProps)` signature this generic loop relies on. `Component` is deliberately
-// EXCLUDED: like the campaign/topology constructs (see the note below), it is bespoke and
-// needs its own typed props (`service`, to emit its `contains` edge), so it can't be built via the
-// uniform `new Ctor(stack, id, props)` call. Its own synth is pinned in `construct.test.ts`.
+// Only the uniform `defineResourceConstruct` types belong here. See docs/iac.md §180.
 const RESOURCE_CTORS = [Service, Domain, Team] as const;
 
 interface ResourceSpec {
@@ -148,15 +135,7 @@ describe("@scp/iac: synth determinism (fast-check)", () => {
   });
 });
 
-/**
- * Same determinism property as above (re-synthesizing the same tree twice is byte-identical;
- * two independently-built-but-equivalent trees synthesize identically regardless of construction
- * order), applied to the M5 constructs (`Campaign`/`ReleaseTopology`). These can't
- * join `RESOURCE_CTORS` above — each needs its own typed props (`waves`, `targets`, `topology`)
- * rather than plain `ResourceProps` — so this is a small dedicated tree builder instead, varying
- * both the random content (names, wave mode/fan-in, descriptions) and, within real dependency
- * constraints (a Campaign's targets must exist before the Campaign does), the construction order.
- */
+/** Same determinism property as above. See docs/iac.md §181. */
 interface CampaignTreeSpec {
   stackName: string;
   serviceAName: string;

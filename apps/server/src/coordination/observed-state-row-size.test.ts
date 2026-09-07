@@ -9,58 +9,7 @@ import {
 } from "@scp/runner-launcher";
 import { observedStateFrom } from "./wave-targets-repo.js";
 
-/**
- * ================================================================================================
- * THE ROW IS NOT THE BOUND'S OUTPUT — M23.0 verification pass 11, the coupling nothing named.
- * ================================================================================================
- * `boundPersistedJson`'s guarantee is about ITS OWN RETURN VALUE:
- * `JSON.stringify(boundPersistedJson(v)).length <= PERSISTED_JSON_MAX_CHARS`. Every assertion in
- * `packages/runner-launcher/src/persisted-json-bound.test.ts` — 55 of them — measures exactly that.
- *
- * WHAT REACHES POSTGRES IS SOMETHING ELSE. `updateWaveTargetObserved` writes
- *
- *     { ...boundPluginJson(observedState), observedAt: now.toISOString() }
- *
- * and stamps `observedAt` AFTER the bound, deliberately: the timestamp is the server's, and a
- * chatty plugin must not be able to spend the budget that carries it. Correct — and it means the
- * ROW is up to 40 characters wider than anything the bound's own suite ever measures. The policy
- * "an `observed_state` row is at most `PERSISTED_JSON_MAX_CHARS`" is therefore true only because a
- * SECOND number in a DIFFERENT package happens to be larger than the stamp:
- *
- *     widest walk output   PERSISTED_JSON_MAX_CHARS - PERSISTED_JSON_MIN_LEAF   =  7 904
- *     the stamp            `,"observedAt":"2026-08-19T17:44:33.123Z"`           =     40
- *     the widest row                                                              7 944  (of 8 000)
- *
- * i.e. 56 characters of headroom, held by `PERSISTED_JSON_MIN_LEAF`, which is a private constant
- * whose documented job is "enough for a short marker" and has nothing to do with timestamps. Set it
- * to 32 — a plausible retune, since it is three times what the marker actually needs — and the
- * widest row becomes 8 008. Measured: `{revision, images, rollout}` reaches 8 008 of 8 000.
- *
- * ================================================================================================
- * AND THE SECOND THING STAMPED AFTER THE BOUND — M23.1g, and it is PAID FOR RATHER THAN TOLERATED.
- * ================================================================================================
- * `truncation` (what the bound removed, per field) is stamped beside `observedAt`. That is a second
- * escapee of exactly the shape this file was written to catch, so it is NOT allowed to escape:
- * `updateWaveTargetObserved` hands the bound `OBSERVED_STATE_VALUE_MAX_CHARS`, which is
- * `PERSISTED_JSON_MAX_CHARS` minus a reserve the report is then measured against. The row policy
- * does not move; the value's share of it does.
- *
- *     widest walk output   OBSERVED_STATE_VALUE_MAX_CHARS - PERSISTED_JSON_MIN_LEAF   =  7 584
- *     the report           PERSISTED_JSON_TRUNCATION_MAX_CHARS + `,"truncation":`     =    302
- *     the stamp            `,"observedAt":"…"`                                        =     40
- *     the widest row                                                                     7 926
- *
- * The arms below are unchanged in what they assert — the ROW, against `PERSISTED_JSON_MAX_CHARS` —
- * and that is the point: a reserve that was NOT taken out of the value's budget would show up here
- * as a row over the policy, on exactly the saturating shapes that now carry a report.
- *
- * The runner-launcher suite DOES redden on that mutation today, but for an unrelated reason: five
- * of its arms pin the literal `budget - 96`. Someone retuning the constant on purpose updates those
- * five and ships — the numbers move together and say nothing about a timestamp. This file is the
- * one assertion that would still be red, stated in the unit that matters: THE ROW.
- *
- * NOT A DEFECT TODAY. The headroom is real and positive; this is the gate that keeps it so.
- */
+/** THE ROW IS NOT THE BOUND'S OUTPUT. See docs/coordination.md §586. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "wave-targets-repo.ts");
@@ -178,12 +127,7 @@ describe("observed_state: the ROW, not the bound's return value, is what must fi
   });
 
   it("WHY EVERY ARM ABOVE CARRIES A LIST: no single-string reading can saturate the budget", () => {
-    // `RUNNER_DETAIL_MAX_CHARS` caps EVERY string at 4 000 before the whole-value budget is
-    // consulted, so a 50 000-character revision alone renders to about 4 055 with the stamp — half
-    // the column. Stated here rather than left as a surprise, because it is the same fact that
-    // makes `observed-state-gate-critical-leaf.integration.test.ts` say "a long revision does NOT
-    // reach the threshold — an array is the only route in", and a future arm written without it
-    // would be silently vacuous, exactly the way this file's first draft was.
+    // Every string is capped before the whole-value budget. See docs/coordination.md §587.
     const at = new Date("2026-08-19T17:44:33.123Z");
     const row = persistedRow({ stateRef: "r".repeat(50_000) }, at);
     // Measured 4 055: 4 000 characters of revision, its quotes and key, and the stamp.

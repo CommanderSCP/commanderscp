@@ -10,14 +10,7 @@ import {
 } from "../test-support/harness.js";
 import pg from "pg";
 
-/**
- * BUILD_AND_TEST.md §8 M1 DoD (a): "adversarial RLS cross-org probes: cross-org reads/writes
- * with wrong or unset app.current_org_id fail closed on every tenant table". Everything here
- * goes through `RawScpAppClient` — a raw `pg.Client` running as the same least-privileged
- * `scp_app` role a real request uses, but issuing hand-written SQL directly (no application
- * code, no `withTenantTx`) — so these probes exercise the database's own defenses, independent
- * of whether the app layer remembers to filter by org.
- */
+/** BUILD_AND_TEST.md §8 M1 DoD (a). See docs/graph.md §181. */
 describe("RLS: adversarial cross-org probes", () => {
   let server: TestServer;
   let orgAId: string;
@@ -308,11 +301,7 @@ describe("RLS: adversarial cross-org probes", () => {
   });
 
   it("scp_app does NOT inherit scp_relay's permissive outbox policy (INHERIT FALSE membership)", async () => {
-    // Regression guard for the subtle leak the role split itself introduced in review: RLS
-    // policies naming a role also apply to members that INHERIT from it, so a plain
-    // `GRANT scp_relay TO scp_app` would have silently given every ordinary scp_app query
-    // cross-org outbox visibility. Membership is INHERIT FALSE — relay powers exist only
-    // inside an explicit SET LOCAL ROLE scp_relay transaction (previous test).
+    // The leak the role split itself introduced in review. See docs/graph.md §182.
     const raw = await RawScpAppClient.connect();
     await raw.setOrgContext(orgBId);
     const crossOrg = await raw.query("SELECT * FROM outbox WHERE org_id = $1", [orgAId]);
@@ -407,24 +396,12 @@ describe("RLS: adversarial cross-org probes", () => {
     await raw.close();
   });
 
-  // -------------------------------------------------------------------------------------------
-  // M8 security pass (drizzle/0016_instance_keys_rls.sql): `instance_keys` became org-scoped in
-  // M6 (one Ed25519 PRIVATE SIGNING KEY per org) but was never given an `org_isolation` policy —
-  // its "no RLS" reasoning predated M6 and was written for a single global row. Regression
-  // coverage for that fix, same adversarial-probe shape as every other tenant table above:
-  // wrong/unset org context must fail closed, and a cross-org INSERT must be rejected.
-  // -------------------------------------------------------------------------------------------
+  // M8 security pass (drizzle/0016_instance_keys_rls.sql). See docs/graph.md §183.
 
   it("instance_keys: cross-org SELECT sees zero rows — one org's private signing key is invisible under another org's context", async () => {
     const raw = await RawScpAppClient.connect();
     await raw.setOrgContext(orgAId);
-    // `scp_app` only ever has SELECT+INSERT on this table (drizzle/0010_governance.sql —
-    // never UPDATE/DELETE), so `ON CONFLICT ... DO NOTHING` (not DO UPDATE) is required — and a
-    // row for `orgAId` may already exist (e.g. `governance/attestation.ts`'s `ensureInstanceKey`
-    // lazily provisioning one via some earlier test/setup path in this suite; unique index on
-    // org_id means at most one row per org either way). This test only cares that SOME row is
-    // visible from orgA's own context and that exact row is invisible from orgB's — not which
-    // attempt actually won the insert.
+    // `scp_app` only ever has SELECT+INSERT on this table. See docs/graph.md §184.
     await raw.query(
       `INSERT INTO instance_keys (id, org_id, public_key, private_key) VALUES ($1, $2, 'pub-a', 'PRIVATE-KEY-SECRET-A')
        ON CONFLICT (org_id) DO NOTHING`,

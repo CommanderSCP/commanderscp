@@ -1,12 +1,4 @@
-/**
- * Wires `@scp/plugin-gitea` into `@scp/plugin-testkit`'s generic `ExecutorPlugin` conformance suite
- * (BUILD_AND_TEST.md §4.2: "every shipped plugin runs the relevant plugin-testkit suite"). Same
- * thin-fixture shape as `github.conformance.test.ts`: this plugin makes REAL outbound HTTP calls
- * (`ctx.http` is not a stub), so `gitea-test-support.ts`'s `createRealHttpClient()` + `nock`
- * fixtures stand in for a Gitea instance. Fixtures are `persist()`ed (the suite calls each verb an
- * unpredictable number of times) and this file deliberately does NOT assert `nock.isDone()` — that
- * precise single-call proof lives in `index.test.ts`.
- */
+/** Wires this plugin into the generic executor conformance suite. See docs/plugins.md §132. */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";

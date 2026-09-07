@@ -22,57 +22,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * THE DOWNWARD HALF OF RBAC — `authz/readable-scope.ts` (role-model.md §8.2, increment 2.5b)
- * ================================================================================================
- *
- * `scopeExpandCte` expands UPWARD, which answers "may this subject read THIS object?" and cannot
- * answer "which objects may it list?". This file is the behavioural gate for the downward walk that
- * does, and for the four silent-failure hazards §8.3 names. Each hazard ships a working-looking bug
- * if missed, so each gets its own named case rather than being implied by a broader one:
- *
- *   1. UPWARD AND DOWNWARD ARE EXACT INVERSES — "the two walks agree object by object" below is the
- *      drift detector for the whole increment. An object `authorize()` admits at its own id but the
- *      list omits reads as a cache bug, not an authz bug, and would be debugged as one.
- *   2. A MALFORMED `role_bindings.effect` — "a malformed effect grants NOTHING". drizzle/0096
- *      now refuses one at the DB, but a row predating that constraint still has to fail closed.
- *   3. DENY IS A SUBTRACTION, NOT AN ABSENCE — "a deny below an allow subtracts its subtree".
- *   4. DOWNWARD TRUNCATION IS SILENT — "the bound is the same constant" pins the boundary case that
- *      makes the two directions inverses *including* their bound.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied alone against `src/authz/`, measured, then reverted
- * ------------------------------------------------------------------------------------------------
- *
- * | Mutation | Measured result (2026-08-26) |
- * |---|---|
- * | `readableObjectFilterSql`: drop the deny descend and the `EXCEPT`, returning the allow descend alone | **2 fail.** "a deny below an allow subtracts its subtree": `expected Set{ …(7) } to deeply equal Set{ …(2) }` — the denied service and its whole subtree are readable again. "the two walks agree object by object": `subject 'denied' — upward and downward disagree: expected [ …(5) ] to deeply equal []`. Deny goes INERT on lists while still working on get-by-id: a deny that fails OPEN. |
- * | `partitionReadableRoots`: `effect === "allow"` → `effect !== "deny"` | **3 fail.** "a malformed effect ('ALLOW') grants NOTHING": `expected [ …(5) ] to deeply equal []`. "the two walks agree object by object": `subject 'malformed' — upward and downward disagree`. "`readableRootsFor` returns the raw effect…": `expected Set{ …(3) } to deeply equal Set{ …(2) }`. A row that grants nothing through `hasPermission` would grant a whole subtree through every list door. |
- * | `containmentChildrenSql`: delete arm 2 (the `contains` inverse) | **6 fail**, incl. "a binding at a SERVICE reaches its assemblies and components" (`expected Set{ 1 id } to deeply equal Set{ …(5) }`), the inverse test, and the drizzle-composition case (`expected Set{} to deeply equal Set{ …(2) }`). The drift the exported fragment exists to make impossible. |
- * | `readableObjectFilterSql`: return `null` instead of `MATCHES_NOTHING` for an empty allow set | **4 fail.** "no allow binding at all matches NOTHING": `an empty allow set must NOT be the no-filter answer: expected null not to be null`; the inverse test reports 33 disagreements for `subject 'malformed'`. The two `null`s mean opposite things, and collapsing them lets a subject with no grant read the entire org. |
- * | `insertMalformedEffectRoleBinding`: skip its `INSERT` (the FIXTURE, not the code under test) | **4 fail**, every one with `insertMalformedEffectRoleBinding did not land … Every assertion resting on this row would have passed VACUOUSLY.` Then the SAME mutation with that read-back guard ALSO removed: **1 fail** here (only "`readableRootsFor` returns the raw effect…", which reads the row directly — `expected undefined to be 'ALLOW'`) and **0 fail, 15 passed, in `inverse-walk-drift.integration.test.ts`**. Both "a malformed effect grants NOTHING" cases go GREEN with no binding in the table at all. Since drizzle/0096 this fixture has to drop a CHECK to do its job, which is exactly what makes a silent no-op possible — hence the guard, and hence this row. |
- *
- * ------------------------------------------------------------------------------------------------
- * FIXTURE — every one of the four containment routes, exercised in both directions
- * ------------------------------------------------------------------------------------------------
- *
- *   orgRoot
- *   ├── domainA                       (route 1)
- *   │   ├── serviceA                  (route 1)
- *   │   │   ├── assemblyA             (route 2 — `contains`)
- *   │   │   │   └── compA1            (route 2)
- *   │   │   ├── compA2                (route 2)
- *   │   │   └── compDoomed            (route 2, then soft-deleted)
- *   │   └── serviceC                  (route 1 — the sibling that survives the deny on serviceA)
- *   ├── domainB ── serviceB ── compB1 (the non-leakage arm)
- *   ├── targetT                       (a deployment-target, `domain_id` = org root)
- *   └── placementP                    (compA1 @ targetT — routes 3 AND 4)
- *
- * Built through the real API (the SDK against a listening server), never by direct row writes. The
- * ONE exception is the malformed-`effect` binding, which exists precisely because no API can write
- * it — that is the hazard.
- */
+/** THE DOWNWARD HALF OF RBAC. See docs/authz.md §38. */
 describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -99,16 +49,7 @@ describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2
 
   const uniq = (p: string) => `${p}-${randomUUID().slice(0, 8)}`;
 
-  /** A role binding written with an ARBITRARY `effect` string — the only thing here not built
-   *  through the API, because no door will ever write anything but 'allow'/'deny'.
-   *
-   *  Since drizzle/0096 the DATABASE refuses anything else too (`role_bindings_effect_check`), so a
-   *  malformed value is routed to `insertMalformedEffectRoleBinding` — which builds the row THE ONLY
-   *  WAY IT CAN STILL EXIST (a privileged path with the CHECK momentarily dropped, i.e. what a
-   *  pre-0096 `pg_dump` restores or a DBA does) rather than pretending the shape went away. See that
-   *  helper's doc for why the constraint does not retire these cases: it stops the row being
-   *  written, not the row being READ, and the resolver's exact-string classification is the inner
-   *  layer that keeps it harmless. Legal effects still take the ordinary path, unchanged. */
+  /** A role binding written with an ARBITRARY `effect` string. See docs/authz.md §39. */
   async function bindRaw(
     subjectId: string,
     roleName: string,
@@ -350,12 +291,7 @@ describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2
     expect(await readableIds(subject)).toEqual([]);
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // 3. §8.3 hazard: A `role_bindings.effect` THAT IS NEITHER 'allow' NOR 'deny'.
-  //    `role_bindings_effect_check` (drizzle/0096) refuses one at the database now; these rows are
-  //    built through `insertMalformedEffectRoleBinding`, which reproduces the only way one can
-  //    still exist — pre-dating the constraint, in a restored dump. See `bindRaw` above.
-  // ---------------------------------------------------------------------------------------------
+  // A binding effect that is neither allow nor deny. See docs/authz.md §40.
 
   it("a malformed effect ('ALLOW') grants NOTHING — exactly as hasPermission treats it", async () => {
     const user = await createTestUser(server, org, []);
@@ -426,11 +362,7 @@ describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2
     expect(await can(viaEdge, ids.compDoomed)).toBe(false);
     expect(await readableIds(viaEdge)).not.toContain(ids.compDoomed);
 
-    // Route 1 (`domain_id`) is the case where they genuinely differ, and it is the ONE deliberate
-    // divergence: no cascade rewrites `domain_id`, so upward the raw SEED row still walks up to the
-    // live parent and `hasPermission` says TRUE, while downward every CHILD is filtered live and
-    // the row is absent. Inert by construction — list doors filter `deleted_at IS NULL` themselves
-    // unless `includeDeleted`, so no door can serve a row this omits.
+    // The `domain_id` route is the one deliberate divergence. See docs/authz.md §41.
     const domainD = (await admin.object("domain").create({ name: uniq("tombstone-domain") })).id;
     const serviceD = (
       await admin.object("service").create({ name: uniq("tombstone-service"), domainId: domainD })
@@ -456,12 +388,7 @@ describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2
 
   it("an org-root allow WITH a deny below it still short-circuits — the door-level inverse", async () => {
     const subject = await viewerAt({ scope: ids.orgRoot }, { scope: ids.serviceA, effect: "deny" });
-    // Deliberate, and it keeps the DOORS in agreement rather than breaking them:
-    // `checkAtOrgRootOrScopes` tries the org-root arm FIRST and never consults a deny bound below
-    // the org root, so get-by-id admits serviceA for this subject. A filter here would remove from
-    // the list exactly what get-by-id still serves — a narrowing nobody decided, and the mismatch
-    // §8.3's first hazard is about. (`hasPermission` at serviceA in ISOLATION does return false,
-    // which is why this case is pinned separately from the object-by-object sample above.)
+    // The org-root arm runs first and ignores a deny below it. See docs/authz.md §42.
     expect(await readableIds(subject)).toBeNull();
     expect(await can(subject, ids.serviceA)).toBe(false);
     expect(await can(subject, ids.orgRoot)).toBe(true);

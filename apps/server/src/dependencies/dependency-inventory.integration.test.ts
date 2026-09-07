@@ -34,41 +34,7 @@ import {
   upsertDependencyLine
 } from "./dependency-inventory-repo.js";
 
-/**
- * M21.2 — the dependency inventory substrate (ADR-0032 §3/§4/§5/§7, migration 0060).
- *
- * Five properties are load-bearing and each is pinned here rather than left to the migration's
- * comments, because a comment naming a hazard is a signal to sweep, not evidence it was handled
- * (CLAUDE.md, "census by property"):
- *
- *   1. The tables ROUND-TRIP, and both hot queries are the single-hop lookups ADR-0032 §4 promises.
- *   2. RLS ISOLATES TWO ORGS. A dependency inventory is a map of an org's entire software estate;
- *      this is the one that leaks something if it is wrong, so it is probed with a RAW `scp_app`
- *      connection (no application code, no `withTenantTx`) exactly as `graph/rls.integration.test.ts`
- *      does — the database's own defenses, independent of whether the repo layer remembers to filter.
- *   3. `@acme/lib` and `acme-lib` are DIFFERENT LINES. This is the URN-collision case that is the
- *      whole reason the inventory is tabular, and the test asserts the collision is REAL by running
- *      the coordinates through `slugify` itself rather than asserting against a remembered claim.
- *   4. NO `depends_on` EDGE, and no relationship at all, is minted by any of it (ADR-0032 §5).
- *   5. THE THREE INGRESSES DO NOT CLOBBER EACH OTHER. Manifest ingestion, operator declaration and
- *      registry observation write disjoint column sets of one `dependency_lines` row, and the ONLY
- *      thing enforcing that is the literal SET list of each write (ADR-0032 §7 is why the verbs are
- *      separate at all). No constraint, no trigger and no type catches a widened SET list.
- *
- *      Asserting that field-by-field is necessary but NOT sufficient, and the earlier draft of this
- *      header claimed the field-by-field assertions settled it. They do not: a clobber is only
- *      observable if no LATER write restores the field, so each pair of ingresses has to be
- *      exercised in the order that puts the suspect verb LAST. Both tests here that combined
- *      declaration with observation declared first, which made a `latest_*` clobber inside
- *      `declareDependencyLineProducer` invisible to all of them. The three pairs are now covered in
- *      the orders that can see a clobber: ingestion last ("manifest re-ingestion cannot clobber..."),
- *      observation last ("records an observed line head..."), declaration last ("declaring a
- *      producer AFTER the head was observed..."), each with a negative control proving the suspect
- *      write did land on the row.
- *
- * Every absence assertion below carries a NEGATIVE CONTROL in the same test — a test proving nothing
- * happened is vacuous unless it also proves the thing that SHOULD happen did.
- */
+/** M21.2 — the dependency inventory substrate. See docs/dependencies.md §187. */
 describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   let server: ListeningTestServer;
   let orgA: TestOrg;
@@ -273,17 +239,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     );
     expect(onlyGoMod.map((d) => d.lineId)).toEqual([go.id]);
 
-    // A declaration row is a SNAPSHOT OF ONE MANIFEST READ, not an accumulator. The update branch
-    // writes `resolvedVersion`/`resolvedDigest`/`observedRef` as `input ?? null`
-    // (dependency-inventory-repo.ts:298-304), so a re-read that resolves nothing CLEARS what the
-    // last read resolved — the same instinct as `recordDependencyLineHead`'s digest rule (a digest
-    // always belongs to the version stored beside it) applied to the row that carries it: these
-    // three are only what THIS manifest said THIS time, and a stale digest beside a fresh
-    // `declaredVersion` would claim bytes nobody resolved.
-    //
-    // Pinned because nothing else did: deleting all three keys from that SET list left every other
-    // test in this file green. If M21.3 ever wants preserve-on-omit here, this assertion is the
-    // conversation — change both halves together, not one.
+    // A declaration row is a snapshot, not an accumulator. See docs/dependencies.md §188.
     const reread = await inA((tx) =>
       upsertComponentDependency(tx, orgA.orgId, {
         componentObjectId: componentId,
@@ -301,19 +257,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   });
 
   it("a prune is scoped to ONE component — another component's identical declaration survives", async () => {
-    // The prune's WHERE has three predicates and the test above exercised only one component, so
-    // `manifest_path` alone reproduced every assertion it made: dropping
-    // `eq(componentDependencies.componentObjectId, input.componentObjectId)` from `scope`
-    // (dependency-inventory-repo.ts:378-382) left all 23 tests green. Two components declaring the
-    // same line from a file with the same NAME is not an exotic case — `package.json` is the path
-    // for every npm component in the org — so under that mutation one component's re-ingestion
-    // deletes every OTHER component's declarations read from any file also called `package.json`,
-    // emptying the org's npm inventory one ingestion at a time while the function returns a rowCount
-    // the caller reads as a successful prune.
-    //
-    // The `keepLineIds` list is non-empty here for a second reason: the only other prune test passes
-    // `[]`, which takes the short-circuit branch, so the `notInArray` half of that ternary
-    // (repo:386-388) — the branch real re-ingestion always takes — had no coverage at all.
+    // The prune's condition has three predicates, not one. See docs/dependencies.md §189.
     const mine = await componentIn(clientA, "prune-scope-mine");
     const theirs = await componentIn(clientA, "prune-scope-theirs");
     const dropped = await inA((tx) =>
@@ -381,11 +325,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   });
 
   it("re-observing a declaration preserves createdAt and advances observedAt", async () => {
-    // Two timestamps with opposite rules, and the difference between them is one key's presence in
-    // an ON CONFLICT SET list — nothing structural. `createdAt` answers "how long has this component
-    // been on this line?", which a poll that reset it every few hours would make permanently read
-    // "minutes"; `observedAt` answers "when did we last look?", which a poll that failed to move it
-    // would make a stale inventory indistinguishable from a fresh one.
+    // Two timestamps with opposite rules, and what separates. See docs/dependencies.md §190.
     const componentId = await componentIn(clientA, "timestamps");
     const line = await inA((tx) =>
       upsertDependencyLine(tx, orgA.orgId, {
@@ -569,11 +509,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(observed.line.coordinate).toBe("registry.internal/base/node");
     expect(observed.line.major).toBe("22");
     expect(observed.line.tagPattern).toBe("-alpine");
-    // ...and so is the producer declaration. Registry observation and operator declaration are
-    // different ingresses (ADR-0032 §7), and since drizzle/0068 they are different TABLES — which
-    // is a stronger separation than the old disjoint SET list, because widening `latest_*`'s writer
-    // by one key can no longer reach the declaration at all. Asserted rather than assumed: the two
-    // could still be conflated by a future verb that wrote both.
+    // ...and so is the producer declaration. See docs/dependencies.md §191.
     const stillDeclared = await inA((tx) =>
       getDependencyLineProducer(tx, orgA.orgId, {
         ecosystem: "oci",
@@ -586,20 +522,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   });
 
   it("declaring a producer AFTER the head was observed cannot clobber the observation", async () => {
-    // The MIRROR of the test above, and the ORDER is the entire content of it. Every test in this
-    // file that combined these two verbs declared the producer FIRST and observed SECOND, so a
-    // `latest_*` clobber by `declareDependencyLineProducer` was always overwritten by the later
-    // observation and could not be seen by any assertion: adding
-    // `latestVersion: null, latestDigest: null, latestObservedAt: null` to that function's SET list
-    // (dependency-inventory-repo.ts:207-212) left all 23 tests green. A disjointness test only pins
-    // the writer that runs LAST — each pair of ingresses has to be asserted in the order that puts
-    // the SUSPECT verb after the field it must not touch.
-    //
-    // What the widened SET list would cost: an operator marking a line internal wipes M21.4's
-    // observed head, and the line then reads NULL — which 0061:215-217 defines as "NOT YET
-    // OBSERVED", not "no newer version exists" (absent never means zero). A dependency subscription
-    // resolving against that line is silently starved of exactly the bump it exists to fire, with
-    // nothing erroring and nothing to distinguish it from a line the poll has not reached yet.
+    // The mirror of the test above, and the order is the point. See docs/dependencies.md §192.
     const producer = await componentIn(clientA, "declare-after-observe");
     const digest = "sha256:" + "e".repeat(64);
     const line = await inA((tx) =>
@@ -652,13 +575,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(afterDeclare?.latestDigest).toBe(digest);
     expect(afterDeclare?.latestObservedAt).toBe(observed.latestObservedAt);
 
-    // AND THIS IS WHERE THE PROPERTY CHANGED SHAPE RATHER THAN WEAKENING (ADR-0032 §7e).
-    // Declaring a producer DOES clear the head — that is deliberate, because a poisoned public head
-    // would otherwise survive the declaration that exists to undo it. But the clearing is a
-    // SEPARATE, NAMED writer (`resetLineHead`) that the two verbs in `routes/dependency-producers.ts`
-    // call explicitly. The repo verb above still writes only the declaration, so the "one writer of
-    // the latest_* trio" property is intact with exactly one documented exception rather than
-    // dissolved into whichever function happened to need it.
+    // Where the property changed shape rather than weakening. See docs/dependencies.md §193.
     const reset = await inA((tx) => resetLineHead(tx, orgA.orgId, line.id));
     expect(reset.cleared).toBe(true);
     expect(reset.before.latestVersion).toBe("22.7.0");
@@ -680,13 +597,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   // | `latestDigest: input.latestDigest ?? before.latestDigest` on an advance (the pre-fix inherit) | "the digest always belongs to the version stored beside it" FAILS |
   // | `evaluateHeadMovement` never returns `behind_head` | "the write door REFUSES a version that would move the head backwards" FAILS |
   it("the digest always belongs to the version stored beside it — never a previous version's", async () => {
-    // For `oci`, the digest is what a version claim MEANS (ADR-0032 §7) — "we are on 3.20" is a
-    // statement about bytes. The defect this pins is what an OPTIONAL digest allowed: a writer that
-    // moved `latest_version` and omitted the digest left the PREVIOUS version's digest standing
-    // beside the new tag, so the row asserted a (tag, digest) pair that never existed in any
-    // registry. The field is required now, and this asserts the rule that makes it coherent: the
-    // pair moves TOGETHER on an advance, and a restatement of the SAME version may fill a digest in
-    // but a null does not throw away one already resolved for that same version.
+    // For `oci`, the digest is what a version claim MEANS. See docs/dependencies.md §194.
     const digest = "sha256:" + "d".repeat(64);
     const line = await inA((tx) =>
       upsertDependencyLine(tx, orgA.orgId, {
@@ -850,12 +761,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   });
 
   it("manifest re-ingestion cannot clobber a declared producer or an observed head", async () => {
-    // The three ingresses of one `dependency_lines` row — manifest ingestion (this test's
-    // re-upsert), operator declaration and registry observation — write disjoint column sets, and
-    // separate verbs are the whole reason ADR-0032 §7 splits them. Nothing but the literal
-    // ON CONFLICT SET list in `upsertDependencyLine` enforces the disjointness: widening it to
-    // `latest_*` or `produced_by_*` type-checks, and every round-trip test in this file still
-    // passes. This is the test that does not.
+    // The three ingresses of one `dependency_lines` row. See docs/dependencies.md §195.
     const producer = await componentIn(clientA, "reingest-producer");
     const key = {
       ecosystem: "oci",
@@ -915,14 +821,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(reingested.latestDigest).toBe(observed.latestDigest);
     expect(reingested.latestObservedAt).toBe(observed.latestObservedAt);
 
-    // The OTHER half of that one permitted column, which had nothing holding it: an ingestion that
-    // OMITS the pattern must not erase one. `coalesce(excluded.tag_pattern, existing)`
-    // (dependency-inventory-repo.ts:132-134) is the whole mechanism — replacing it with a plain
-    // `excluded.tag_pattern` left all 25 tests green, and omission is the COMMON case, not the
-    // exotic one: a Dockerfile parser has no notion of a tag pattern, so every sweep would clear
-    // the one an operator set and M21.4 would be left following a line with no shape to follow.
-    // The negative control is the assertion two lines up — the same branch, given a pattern, wrote
-    // it — so this is not "the upsert cannot write tag_pattern at all".
+    // The other half of that permitted column, unheld before. See docs/dependencies.md §196.
     const withoutPattern = await inA((tx) =>
       upsertDependencyLine(tx, orgA.orgId, {
         ecosystem: key.ecosystem,
@@ -1005,14 +904,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     );
     expect(new Set([one.id, two.id, otherEcosystem.id]).size).toBe(3);
 
-    // Three DISTINCT ROWS is the unique index's doing. Retrieving each one BY ITS OWN KEY is a
-    // different property with a different mechanism — `getDependencyLineByKey`'s own four-predicate
-    // WHERE (dependency-inventory-repo.ts:153-160) — and two of those four had nothing pinning
-    // them: dropping `eq(ecosystem)` or `eq(major)` from it left all 25 tests green, because every
-    // other lookup in this file uses coordinates unique within the org. With `.limit(1)` and no
-    // ORDER BY, the caller then silently gets an ARBITRARY sibling: an M21.3 ingestion resolving
-    // `major: "2"` would hang its declarations off the `major: "1"` row, and a subscription on one
-    // major would fire on the other's head.
+    // Three DISTINCT ROWS is the unique index's doing. See docs/dependencies.md §197.
     const byKey = (k: { ecosystem: "python" | "npm"; coordinate: string; major: string }) =>
       inA((tx) => getDependencyLineByKey(tx, orgA.orgId, k));
     expect((await byKey({ ecosystem: "python", coordinate: "shared-name", major: "1" }))?.id).toBe(
@@ -1152,11 +1044,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     });
 
     it("a declaration cannot reference ANOTHER org's line even under its own org's context", async () => {
-      // Barrier 2 (0060 header): the composite `(org_id, line_id)` foreign key. RLS's WITH CHECK
-      // only pins the row's OWN org_id, so without this key org B could stamp a row with its own
-      // org_id pointing at org A's line — a dangling cross-tenant reference that no read would
-      // reveal. The failure here is an FK violation, NOT an RLS one, which is what proves the second
-      // barrier is the thing doing the work.
+      // Barrier 2 (0060 header). See docs/dependencies.md §198.
       const componentB = await componentIn(clientB, "rls-b");
       const raw = await RawScpAppClient.connect();
       await raw.setOrgContext(orgB.orgId);
@@ -1191,16 +1079,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     });
 
     it("RECORDS THE RESIDUAL: a cross-org OBJECT reference is not structurally prevented", async () => {
-      // Barrier 2 (the composite key) covers `line_id` AND NOTHING ELSE. `component_object_id`,
-      // `produced_by_object_id` and `produced_by_declared_by_object_id` are plain, ORG-UNBOUND
-      // `REFERENCES objects(id)` — `objects` has no `(org_id, id)` unique constraint to hang a
-      // composite key on. Referential-integrity triggers are not subject to RLS, so the FK check
-      // reads org A's row and passes.
-      //
-      // This test asserts the CURRENT behaviour rather than the desired one, because 0060's header
-      // claimed "two structural barriers keep a cross-org reference impossible" without saying WHICH
-      // reference, and an unasserted scope is how that claim stayed unexamined. A future migration
-      // that binds `objects` by `(org_id, id)` SHOULD break this test — that is the point of it.
+      // The composite key covers the line and nothing else. See docs/dependencies.md §199.
       const strayComponentA = await componentIn(clientA, "cross-org-residual");
       const ownLine = await inB((tx) =>
         upsertDependencyLine(tx, orgB.orgId, {
@@ -1221,11 +1100,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       );
       expect(accepted.rowCount).toBe(1);
 
-      // ...and THAT is the disclosure: an id naming nothing is rejected, so success-versus-FK-failure
-      // is an existence oracle over another tenant's object ids for anything already holding a raw
-      // `scp_app` connection. Not reachable through the API today (M21.2 has no route); the
-      // mitigation an M21.3 route owes is to resolve caller-supplied object ids under the CALLER's
-      // own org before they reach this table.
+      // ...and THAT is the disclosure. See docs/dependencies.md §200.
       await expect(
         raw.query(
           `INSERT INTO component_dependencies
@@ -1340,12 +1215,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   });
 
   it("no source file in src/dependencies declares a recursive CTE (ADR-0032 §3's boundary)", () => {
-    // The boundary that justifies the whole tabular representation is a DISCIPLINE, and ADR-0032
-    // says in as many words that it "must be enforced by test, not by intention".
-    //
-    // The census reads the WHOLE DIRECTORY, not one named file. M21.3 (ingestion) and M21.4
-    // (detection) land siblings here, and a census that names its one file is exactly where the
-    // next instance hides — census with no filters (CLAUDE.md).
+    // The boundary justifying the tabular form is a discipline. See docs/dependencies.md §201.
     const dir = fileURLToPath(new URL(".", import.meta.url));
     const sources = readdirSync(dir).filter((f) => f.endsWith(".ts"));
     // ...and the census must have material, or an empty directory listing is a green empty loop.
@@ -1376,26 +1246,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   });
 });
 
-/**
- * ================================================================================================
- * THE LIVE DATABASE'S OWN DESCRIPTION OF THE TABLE AGREES WITH §7d (M21.7 follow-up, LOW 6)
- * ================================================================================================
- * `drizzle/0061` ended `dependency_lines`'s COMMENT with "Does NOT federate; each domain derives its
- * own." ADR-0032 §7d (2026-08-17) reverses the second half: all dependency automation is
- * commander-only, so no domain but the commander derives anything here and an EMPTY inventory on an
- * outpost is the correct state.
- *
- * WHY A TEST AND NOT JUST A MIGRATION. This is the exact artefact CLAUDE.md's census rule warns
- * about — a well-written comment that talks the next reader into deleting a guard. An operator
- * running `\d+ dependency_lines` on an outpost, or an engineer reading the catalog while wondering
- * why the ingestion loop refuses there, meets ONE authoritative-looking sentence, and it used to say
- * the guard was wrong. 0061 is merged and cannot be edited in place, so `drizzle/0066` restates it —
- * and this asserts the RESTATEMENT REACHED THE DATABASE rather than only the file, which is the
- * difference between a migration that is written and a migration that is journalled and applied.
- *
- * Read over the RAW `scp_app` connection: the catalog is what an operator sees, not what the ORM
- * believes.
- */
+/** The live database's own description of the table agrees. See docs/dependencies.md §202. */
 describe("dependency_lines' COMMENT (drizzle/0066 — the §7d restatement is APPLIED, not just written)", () => {
   it("carries the §7d reversal, with 0061's clause quoted and MARKED rather than left standing", async () => {
     const raw = await RawScpAppClient.connect();
@@ -1409,13 +1260,7 @@ describe("dependency_lines' COMMENT (drizzle/0066 — the §7d restatement is AP
       expect(comment.length).toBeGreaterThan(200);
       expect(comment).toContain("ADR-0032");
 
-      // THE REVERSED CLAUSE APPEARS EXACTLY ONCE AND ONLY IN ITS MARKED FORM. It is quoted rather
-      // than deleted, per the ADR-0026 D4 convention this milestone's docs follow — an original
-      // clause is preserved verbatim beside what overturned it, never silently rewritten, because a
-      // reader who remembers the old rule has to be able to find out what happened to it. But a
-      // `\d+` reader sees one paragraph with no section headings, so the quote MUST NOT be able to
-      // drift away from its marker: this asserts the two as one string, which is the only form in
-      // which the sentence is safe to leave in the catalog.
+      // The reversed clause appears once, and only marked. See docs/dependencies.md §203.
       const marked = '0061 said "each domain derives its own" and that half is REVERSED';
       expect(comment).toContain(marked);
       expect(comment.split("each domain derives its own").length - 1).toBe(1);

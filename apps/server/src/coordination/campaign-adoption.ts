@@ -25,64 +25,9 @@ import {
 import { getCampaign } from "./campaign-repo.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
 
-/**
- * ================================================================================================
- * M25.5 — THE ONE RESOLUTION CORE for "has component X migrated yet?"
- * ================================================================================================
- *
- * `docs/proposals/campaigns-rework.md` §3.4 is the design of record. Its first sentence is the one
- * that shapes every line below:
- *
- *   > **SCP cannot know in general whether a component has been migrated.**
- *
- * There is no per-component standing state store. `observed_state` is per-wave-target,
- * `control_runs` is per-change, and neither answers "what is true of this component right now".
- * So a recipe must NAME its own evidence source (`AdoptionEvidenceSchema`), and where it names none
- * — or where the named source is SILENT — the verdict is `unknown` and **never `adopted`**. That is
- * `boundary-segment.ts`'s honesty rule R3 ("silence is never a pass") applied unchanged.
- *
- * THAT RULE IS THE ENTIRE SAFETY PROPERTY, because of who reads this function. M25.6's deadline lock
- * calls this and nothing else — one resolution core, no second opinion — so an `adopted` conjured
- * out of an absent fact does not merely mis-render a page: it produces a Decision plus a
- * hash-chained audit event asserting that a component met a migration deadline that nobody observed
- * it meeting. An `unknown` costs a component staying in a campaign it may already have left. Those
- * two errors are not symmetric and this module never treats them as if they were.
- *
- * -----------------------------------------------------------------------------------------------
- * WHAT THIS MODULE IS NOT
- * -----------------------------------------------------------------------------------------------
- *  - **Not a stored status.** Nothing here writes an adoption column and nothing schedules a sweep.
- *    Every verdict is re-derived from the named source at read time, which is what makes a late
- *    migration, a re-ingested manifest or a re-run control clear it with NO "mark adopted" verb.
- *    Campaign status is derived, never stored, and adoption is a campaign fact.
- *  - **Not memoised.** Deliberately, and the omission is the design. M22.0a exists because a control
- *    run computed during `validating` silently authorised a wave three weeks later off a cache key
- *    that omitted gate identity. The natural call pattern here needs no cache at all: the reconciler
- *    evaluates each `(campaign, target)` exactly once per tick and the route evaluates each once per
- *    request. Should a future caller ever want one, its key must be
- *    `(campaignObjectId, targetObjectId, evidence-identity)` — anything coarser is M22.0a again.
- *  - **Not a writer.** It takes a `TenantTx` and only ever reads. The Decision, the audit event and
- *    the terminalisation all belong to the CONSUMER (`campaign-reconcile.ts`), which is what lets
- *    the read surface answer the same question with no side effects at all.
- *
- * -----------------------------------------------------------------------------------------------
- * INERTNESS IS A REQUIREMENT, NOT A NICETY
- * -----------------------------------------------------------------------------------------------
- * A recipe declaring no `adoption` — which is every campaign authored before this milestone and
- * every campaign that simply does not want the feature — must cost **zero queries**. The early
- * return below happens before `tx` is touched, and `campaign-reconcile.ts` additionally skips the
- * call entirely. Both, because "the guard at the call site" is exactly the kind of protection that
- * survives until the second call site.
- */
+/** The one resolution core for has this component migrated. See docs/coordination.md §65. */
 
-/** `decisions.kind` for the reconciler's adoption record. `kind` is unconstrained `text` and the
- *  read schemas are `z.string()`, so this new value costs no migration (the proposal's data-model
- *  table records it alongside `freeze_admission` and `campaign_deadline`).
- *
- *  A DEDICATED KIND, not a reuse of `gate` or `wave_target`. `insertDecisionIfChanged` dedupes
- *  against the LATEST row of a `(subject_id, kind)` pair, so sharing a kind with the campaign wave
- *  gate would make the two writers' rows alternate under one another and suppression would never
- *  fire — the exact reasoning `recordCampaignFreezeAdmissionHold` records for `freeze_admission`. */
+/** `decisions.kind` for the reconciler's adoption record. See docs/coordination.md §66. */
 export const CAMPAIGN_ADOPTION_DECISION_KIND = "campaign_adoption";
 
 /** The hash-chained audit action for "this campaign target was already migrated, so no member
@@ -91,11 +36,7 @@ export const CAMPAIGN_ADOPTION_DECISION_KIND = "campaign_adoption";
  *  must not happen off the record. */
 export const CAMPAIGN_ADOPTION_AUDIT_ACTION = "campaign.wave_target.adopted";
 
-/** How many observation lines reach a permanent Decision row, and how long each may be. Bounded at
- *  the PRODUCER for the reason `describeRecipeIssues` states: a cap applied at the Decision would
- *  leave the audit event and the API response unbounded, and a reviewer checking any one writer
- *  would find it guarded. A component with 400 declarations of one coordinate is not a shape any
- *  operator reads; it is a shape that writes 400 lines into every row of the permanent record. */
+/** How many observation lines reach a Decision, and how long. See docs/coordination.md §67. */
 const OBSERVATION_LIMIT = 25;
 const OBSERVATION_MAX_CHARS = 300;
 
@@ -105,21 +46,7 @@ export interface CampaignAdoptionResult {
   verdict: CampaignAdoptionVerdict;
   /** The recipe's declared evidence source, echoed back verbatim — `null` when it declared none. */
   evidence: AdoptionEvidence | null;
-  /**
-   * WHAT THE DECISION RECORDS. Evidence and only evidence: the declared/resolved version pair, the
-   * control run id, the wave target status.
-   *
-   * **BANNED FROM THIS OBJECT, permanently and by name:** `now`, `evaluatedAt`, any timestamp of
-   * evaluation, any attempt counter, any remaining-TTL. The reconciler calls this on every 1 s tick,
-   * and `insertDecisionIfChanged` suppresses a restatement by comparing CONTENT — so a single
-   * clock-shaped key makes every tick's context differ from the last, defeats the guard completely,
-   * and reproduces the measured 1.44 GB/day production incident (ADR-0024) through a new door.
-   *
-   * `observations` is SORTED for the same reason with a subtler cause: `restatesDecision`
-   * canonicalizes object KEYS but deliberately preserves array ORDER, and Postgres returns rows in
-   * no guaranteed order. An unsorted array would make an unchanged situation look new on whichever
-   * ticks the planner felt differently.
-   */
+  /** WHAT THE DECISION RECORDS. See docs/coordination.md §68. */
   inputContext: Record<string, unknown>;
   /** One sentence, suitable for `reasonTree.summary` and for the API response. Derived from the same
    *  observations, so the record and the page can never disagree about what was seen. */
@@ -130,17 +57,7 @@ export interface CampaignAdoptionResult {
   observations: string[];
 }
 
-/**
- * Where one declared version sits relative to a floor.
- *
- *  - `at_or_above` — satisfies the evidence.
- *  - `below`       — POSITIVE evidence of non-adoption. The component is observably a laggard.
- *  - `unpinned`    — `resolved_version` is NULL. See {@link positionAgainstFloor}.
- *  - `incomparable`— the pair cannot be ordered by anything this repository knows.
- *
- * Only the first satisfies. The last two are absences dressed differently, and neither may ever be
- * read as a pass.
- */
+/** Where one declared version sits relative to a floor. See docs/coordination.md §69. */
 export type AdoptionFloorPosition = "at_or_above" | "below" | "unpinned" | "incomparable";
 
 /** The same version with its suffix removed, so the shared comparator orders the numeric cores. */
@@ -160,55 +77,7 @@ function isVariantSuffix(suffix: string | undefined): boolean {
   return suffix === undefined || suffix === "" || /^[-+_.]/.test(suffix);
 }
 
-/**
- * WHERE ONE `component_dependencies` ROW SITS RELATIVE TO A RECIPE'S FLOOR — the only place in this
- * module that decides whether a declaration satisfies `minVersion`.
- *
- * -----------------------------------------------------------------------------------------------
- * NULL `resolved_version` IS `unpinned`, AND `unpinned` NEVER SATISFIES
- * -----------------------------------------------------------------------------------------------
- * `componentDependencies.resolvedVersion` is NULL exactly when the manifest pins no concrete
- * version — an open range like `>=3.23.8 <4` or `~=1.4`. Its own column doc is emphatic about what
- * that means: *"the manifest does not pin one", never "we did not look"*. So this is a real
- * observation, not a gap in ingestion — and it still cannot count as satisfying a floor, because a
- * range's floor is not what will be installed. It resolves to `unpinned`, which propagates to
- * `unknown` rather than to `adopted`. An author whose estate declares open ranges cannot get an
- * `adopted` out of this kind, and that refusal is correct: nothing in the manifest says which
- * version is running.
- *
- * -----------------------------------------------------------------------------------------------
- * SUFFIXES: WHY THIS IS NOT A BARE `compareVersions` CALL, AND WHY IT IS NOT A SECOND COMPARATOR
- * -----------------------------------------------------------------------------------------------
- * `@scp/dependency-manifests`'s `compareVersions` REFUSES any pair whose suffixes differ, and it is
- * right to: it answers *"is A an upgrade of B?"*, and `3.19-alpine` -> `3.19-slim` is a variant
- * change, not an upgrade path. This function asks a DIFFERENT question — *"does this declaration sit
- * at or above a floor?"* — for which `python:2.7-slim` is python 2.7 whatever the base image
- * variant is. Applying the upgrade rule to the floor question makes the motivating campaign useless:
- * a real fleet writes `FROM python:3.12-slim`, `3.11-alpine` and `3.12` in a mix, so a
- * `minVersion: "3"` would decline against nearly every row and the kind that is supposed to be *the
- * one that actually works for python2 -> python3* would answer `unknown` for the whole estate.
- *
- * BUT IGNORING SUFFIXES WHOLESALE IS A FALSE-`adopted` GENERATOR, which is the error that matters.
- * `parseComparableVersion`'s own doc names the shape: roughly six git shas in ten begin with a
- * digit, and `3f2a1b9c` parses as major 3 with suffix `f2a1b9c`. A bare numeric-core comparison
- * would rank that at or above a floor of `3.0` and report a sha-pinned base image as MIGRATED. That
- * is silence-as-a-pass wearing a version number.
- *
- * THE RULE, therefore, in the order it is applied:
- *   1. Identical suffixes (including both absent) — delegate to `compareVersions` unchanged. This is
- *      the ordinary case and it uses the repo's single comparator with no reinterpretation at all.
- *   2. Differing suffixes, both of them VARIANT-SHAPED (absent, or introduced by `-`/`+`/`_`/`.`) —
- *      compare the numeric cores, still through `compareVersions`, by handing it suffix-stripped
- *      copies. There is deliberately no second ordering implementation in this file: strip, then
- *      call the one comparator. `3.12-slim` vs `3.0` resolves here.
- *   3. Anything else — `incomparable`. A LETTER-introduced suffix (`3f2a1b9c`, PEP 440's `2rc1`)
- *      means the numeric core is not reliably a version, so the pair is declined. This is the clause
- *      that keeps a git sha out of `adopted`.
- *
- * The residual generosity of clause 2 is that `3.0.0-rc1` satisfies a floor of `3.0.0`. A release
- * candidate of 3.0.0 IS python 3, so for a migration floor that is the right answer; an author who
- * needs the stricter reading writes the floor with the same suffix and gets clause 1.
- */
+/** Where a dependency row sits against the recipe floor. See docs/coordination.md §70. */
 export function positionAgainstFloor(
   resolvedVersion: string | null,
   minVersion: string
@@ -248,13 +117,7 @@ function finalizeObservations(lines: string[]): string[] {
   return kept;
 }
 
-/** This campaign's own wave target row for one component, from its LATEST plan.
- *
- *  The plan ordering is `(created_at, id)` DESC — byte-for-byte the tuple `getLatestCampaignPlan`
- *  uses, and matched deliberately rather than by coincidence: `created_at` defaults to `now()`,
- *  which in Postgres is TRANSACTION time, so two plans written in one transaction are genuinely
- *  ambiguous without the UUIDv7 `id` tiebreak. Two readers of "the latest plan" that disagree under
- *  a tie would let this function answer about a plan the reconciler is not driving. */
+/** This campaign's own wave target, from its latest plan. See docs/coordination.md §71. */
 async function readCampaignWaveTarget(
   tx: TenantTx,
   orgId: string,
@@ -291,15 +154,11 @@ async function readCampaignWaveTarget(
 }
 
 /**
- * THE PREDICATE. Read-time, side-effect free, and the single core every consumer shares — the
- * campaign reconciler's actuator, `GET /campaigns/{id}/adoption`, and (from M25.6) the deadline
- * lock. A second implementation of this question is how two surfaces come to disagree about whether
- * a component is compliant, so there is exactly one.
- *
+ * The predicate: read-time, side-effect free, one core. See docs/coordination.md §72.
  * @param recipe the campaign's parsed recipe, or `null`/`undefined` when it carries none. Passed in
- *   rather than re-read here so the reconciler's once-per-campaign-per-tick parse is not repeated
- *   once per target, and so a caller that already refused a MALFORMED recipe (`resolveChangeRecipe`
- *   reports that distinctly from "none") does not silently get the absent-recipe answer for it.
+ * rather than re-read here so the reconciler's once-per-campaign-per-tick parse is not repeated
+ * once per target, and so a caller that already refused a MALFORMED recipe (`resolveChangeRecipe`
+ * reports that distinctly from "none") does not silently get the absent-recipe answer for it.
  */
 export async function evaluateCampaignAdoption(
   tx: TenantTx,
@@ -310,13 +169,7 @@ export async function evaluateCampaignAdoption(
 ): Promise<CampaignAdoptionResult> {
   const evidence = recipe?.adoption;
 
-  // ===========================================================================================
-  // INERTNESS — BEFORE ANY READ. `tx` is untouched on this path.
-  // ===========================================================================================
-  // A campaign that names no evidence source gets `unknown`, which is the honest answer and not a
-  // degraded one: nothing was asked, so nothing was observed. It is emphatically NOT `adopted`, and
-  // there is deliberately no default source — inferring `delivered` from a recipe that named nothing
-  // would be the platform answering a question it was never given the means to answer.
+  // INERTNESS — BEFORE ANY READ. See docs/coordination.md §73.
   if (!evidence) {
     return {
       verdict: "unknown",
@@ -339,15 +192,7 @@ export async function evaluateCampaignAdoption(
   }
 }
 
-/**
- * `delivered` — this campaign's own wave target for the component is `succeeded`.
- *
- * NO ROW IS `unknown`, NOT `not_adopted`. A component with no wave target in this campaign's latest
- * plan is one the campaign has never had an opinion about (no plan compiled yet, a re-plan that
- * dropped it, a target added to `properties` after compilation). There is no observation to report,
- * so R3 applies. A `pending` or `change_proposed` row, by contrast, IS an observation — the campaign
- * has reached this component and has not delivered — and that is `not_adopted`.
- */
+/** `delivered` means this campaign's own target succeeded. See docs/coordination.md §74. */
 async function evaluateDelivered(
   tx: TenantTx,
   orgId: string,
@@ -380,39 +225,7 @@ async function evaluateDelivered(
   };
 }
 
-/**
- * `dependency` — the component's own dependency inventory, joined to `dependency_lines` for
- * `(ecosystem, coordinate)`.
- *
- * ONE QUERY FOR BOTH FACTS, and that is not merely an optimisation. The verdict needs "does this
- * component have ANY inventory at all" and "what does it declare for this coordinate", and two
- * queries could observe those across a concurrent ingestion pass — reporting zero rows for the
- * coordinate against a non-zero total that arrived a millisecond later, i.e. `adopted` from a half
- * -written inventory. One read, one snapshot, one answer.
- *
- * THE VERDICT MATRIX, cheapest disqualifier first:
- *
- *   | what the inventory says                              | verdict       |
- *   |------------------------------------------------------|---------------|
- *   | the component has ZERO rows for ANY coordinate        | `unknown`     |
- *   | some row for this coordinate resolves BELOW the floor | `not_adopted` |
- *   | some row is `unpinned` or `incomparable`              | `unknown`     |
- *   | every row for this coordinate is at or above          | `adopted`     |
- *   | ingested, but NO row for this coordinate              | `adopted`     |
- *
- * THE FIRST ROW IS THE ONE THAT MATTERS AND IT IS THE PROPOSAL'S OWN WORDING: *"`unknown` iff the
- * component has zero inventory rows (never ingested != nothing declared)"*. A component whose
- * manifests have never been read declares nothing SO FAR AS SCP KNOWS, which is a statement about
- * SCP and not about the component. Reading it as "declares no python2, therefore migrated" is the
- * silence-as-a-pass failure exactly, and it would be handed out to every component in an estate that
- * has not wired inventory ingestion — i.e. it would fail open at precisely the largest scale.
- *
- * THE LAST ROW IS DELIBERATE TOO, and it is the difference the first row buys. The component HAS
- * been ingested and its manifests name this coordinate nowhere: a Dockerfile that moved from
- * `FROM python:2.7` to a base with no python declaration at all is a real migration outcome, and the
- * evidence for it is "we read the manifests and the laggard declaration is gone". That is an
- * observation, not a silence — which is exactly why the two cases must not be collapsed.
- */
+/** `dependency` reads the component's own inventory. See docs/coordination.md §75. */
 async function evaluateDependency(
   tx: TenantTx,
   orgId: string,
@@ -534,34 +347,7 @@ async function evaluateDependency(
   };
 }
 
-/**
- * `control` — the latest `control_runs` row for `(this campaign's member change for the target,
- * controlObjectId)` is `pass`.
- *
- * `plugin_module` IS READ OFF THE RUN ROW AND THE BINDING IS NEVER RE-RESOLVED. That column exists
- * (drizzle/0063) for exactly this reason, stated in its own doc: a binding is mutable, so
- * re-pointing a control at a different checker would retroactively relabel every historical run of
- * it. A provenance label computed from "which binding matches now" is false the moment the binding
- * moves; this one is read from the resolved row, which is the only version of that label that stays
- * true. It is reported in the observations rather than acted on — an operator asking "which checker
- * actually passed this component" gets the answer that was true when it ran.
- *
- * NO MEMBER CHANGE AND NO RUN ARE BOTH `unknown`. `control_runs` is per-CHANGE, so with no member
- * change there is no row that could exist; with a member change and no run, the control simply has
- * not executed for it. Neither is evidence about the component, and R3 refuses both as passes. A run
- * that exists and is `fail`/`warning`/`skipped`/`timed_out`/`expired` IS an observation, and that is
- * `not_adopted`.
- *
- * GATE IDENTITY IS DELIBERATELY NOT PART OF THE KEY HERE, and that is worth stating because
- * `controls-repo.ts` carries a long warning that it must be — for a DIFFERENT question.
- * `latestControlRunForGate` exists because a run made during `validating` was answering "may this
- * crossing proceed", and one such row silently authorised every later crossing including a
- * production wave three weeks on (M22.0a / ADR-0033 §10). This function asks "did this control
- * observe this component pass", which is a property of the run and not of a crossing, and the
- * proposal's §3.4 states the key as `(member change, controlObjectId)`. **If this predicate is ever
- * wired into a gate — as an authorisation rather than as evidence — it must switch to
- * `latestControlRunForGate` in the same commit**, or M22.0a returns wearing this feature's clothes.
- */
+/** `control` reads the latest control run for the target. See docs/coordination.md §76. */
 async function evaluateControl(
   tx: TenantTx,
   orgId: string,
@@ -645,24 +431,7 @@ async function evaluateControl(
  *  than an empty result — which would take out the whole request for one un-normalised target. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * `GET /campaigns/{id}/adoption` — every target's verdict, derived live.
- *
- * WHERE THE TARGET LIST COMES FROM, and why it is not simply `campaign.properties.targets`. Once a
- * plan exists the plan IS the campaign's reality: it holds resolved object ids, it is what the
- * reconciler drives, and a re-plan can legitimately differ from the declared list. Before a plan
- * exists there is nothing else to read, so the declared list is used — and an entry of it that does
- * not resolve to a live object is NAMED in `unresolvedTargets` rather than dropped. An IaC-authored
- * campaign declares URN-shaped targets until the reconciler's first pass normalises them
- * (`campaign-reconcile.ts` does that write), and a target deleted after authoring never resolves at
- * all. Returning an empty `targets` array for either would be this feature's own failure mode in
- * miniature: an absence rendered as a clean result.
- *
- * N+1 BY CONSTRUCTION AND DELIBERATELY SO. This is an explain-shaped endpoint — one call, one
- * campaign, an operator waiting — and it runs the identical predicate the reconciler runs so the
- * page and the engine can never disagree. It is NOT reachable from `listCampaigns`'s per-campaign
- * loop, which is where an unguarded per-target read would actually hurt.
- */
+/** Every target's verdict, derived live at read time. See docs/coordination.md §77. */
 export async function buildCampaignAdoptionReport(
   tx: TenantTx,
   orgId: string,

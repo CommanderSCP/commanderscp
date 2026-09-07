@@ -19,15 +19,7 @@ import {
   upsertObjectHealth
 } from "../graph/object-health-repo.js";
 
-/**
- * Object-health push + read (observe-enrichment signal 4; ADR-0008 decision 4).
- *
- * INVARIANT (coordinate-not-execute, charter principle 1): SCP never probes/polls/computes health.
- * The ONLY write path is the owner PUSH (`PUT …/health`); there is no active health-checking verb
- * anywhere. The stored value is an object-referencing PROJECTION row (DESIGN §4.1), not a new
- * top-level concept table (charter principle 2 — graph-native). The read paths surface the latest
- * pushed value; objects with no push are absent (rendered grey/unknown, never fabricated).
- */
+/** Object-health push + read. See docs/routes.md §250. */
 export function registerHealthRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 

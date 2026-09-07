@@ -1,27 +1,4 @@
-/**
- * THE THROW/NO-THROW CONTRACT OF THE PACKAGE'S PUBLIC ENTRY POINT.
- *
- * M21.2 changed `parseGoMod` and `parseDockerfile` from returning `[]` to throwing
- * {@link ManifestParseError} on unreadable content, and the empty string went with them. Nothing
- * consumes this package yet, so nothing broke — which is exactly why it needed pinning now: M21.3's
- * ingestion caller is the first consumer, it is being written by a different agent from a different
- * context, and the only thing standing between it and an unhandled rejection on a 404 body is that
- * this contract is (a) documented where a caller reading `index.ts` cannot miss it and (b) asserted
- * somewhere that goes red if it drifts.
- *
- * Two properties are asserted here that the per-parser suites structurally cannot:
- *
- * 1. **Imported from `./index.js`, not from the modules.** The per-parser tests import
- *    `./go-mod.js` directly, so they would stay green if an export were dropped from the entry
- *    point. The contract belongs to what a consumer can actually reach.
- * 2. **Same input across all six.** Each parser's own suite proves its own throw with its own
- *    fixture; none of them proves the six agree on a SHARED input. `""` is that input, and it is
- *    the one an ingestion caller hits first (an empty file, an empty 200 body, a deleted path).
- *
- * NEGATIVE CONTROL is `parseRequirementsTxt`, which must NOT throw. Without it every assertion here
- * is satisfied by a package that throws on everything — the vacuous-test shape where an assertion of
- * a behaviour is met for the wrong reason.
- */
+/** The throw or no-throw contract of the entry point. See docs/dependency-manifests.md §61. */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -46,11 +23,7 @@ const THROWING: ReadonlyArray<readonly [string, (content: string) => unknown, st
   ],
   ["parsePyprojectToml", parsePyprojectToml, "<!doctype html><title>404</title>"],
   ["parsePomXml", parsePomXml, "<!doctype html><title>404</title>"],
-  // M21.7 — AND THIS IS THE INTERESTING MEMBER OF THE TABLE. The others throw on the 404 body
-  // because it is not their grammar. It IS valid YAML — a plain scalar — so `parseKubernetesImages`
-  // throws only because it was written to require a mapping at some document root. Without that
-  // rule it would report "zero images" for an error page, and one values file can be the sole
-  // declaration site for a dozen images, all of which the next pass would prune.
+  // The interesting member: a 404 body is valid YAML. See docs/dependency-manifests.md §62.
   ["parseKubernetesImages", parseKubernetesImages, "<!doctype html><title>404</title>"]
 ];
 

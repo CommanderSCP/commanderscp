@@ -6,23 +6,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * THE RETRANS INIT DOOR (owner decision 2026-08-24) — `POST /federation/init` refuses `retrans`
- * unless the DEPLOYMENT declares it
- * ================================================================================================
- * An org whose `federation_self.role` is `retrans` activates relay machinery and flips that org's
- * dependencyManagement to `managedHere: false`. Correct at a CDS boundary; a stray config anywhere
- * else. The deployment is the arbiter: `SCP_FEDERATION_ROLE=retrans` is the same install-time axis
- * that withholds the SPA (`retrans-no-spa.integration.test.ts`), so the door keys on
- * `config.federationRole`, not on anything a tenant can write.
- *
- * BOTH ARMS ON PURPOSE (vacuous-test discipline): the refusal arm asserts the door's OWN sentence
- * (an outcome only this check produces — a 400 from schema validation would read differently), and
- * the acceptance arm proves the door keys on the deployment profile rather than refusing retrans
- * everywhere. MUTATION-PROVEN (reported in the PR body): with the guard in `routes/federation.ts`
- * deleted, the refusal arm goes RED (200 where 400 was pinned).
- */
+/** THE RETRANS INIT DOOR. See docs/federation.md §291. */
 describe("POST /federation/init: the retrans role door", () => {
   describe("on a non-retrans deployment (default commander profile)", () => {
     let server: TestServer;

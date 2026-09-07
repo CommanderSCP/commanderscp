@@ -11,12 +11,7 @@ import type {
   UpsertObjectRequest
 } from "@scp/schemas";
 
-/**
- * The 8 typed registries (BUILD_AND_TEST.md §8 M2 item 1, routes/typed-registries.ts) — one
- * config entry drives the generic list/detail/create routes and nav instead of 8 hand-copies,
- * mirroring how the server and SDK already factor this (typed-registries.ts, ownership.ts,
- * ScpClient.typedResource/ownerMethods/edgeMethods in packages/sdk/src/client.ts).
- */
+/** The 8 typed registries. See docs/web.md §127. */
 export type RegistryClientKey =
   | "domains"
   | "services"
@@ -67,11 +62,7 @@ export const REGISTRIES: RegistryConfig[] = [
     edges: true
   },
   {
-    // The OPTIONAL level between a service and its components (migration 0055,
-    // `intermediate-grouping.md` D5). Ownable like a service; `edges: false` because
-    // `consumes`/`depends_on` describe things that call each other and an assembly does not make a
-    // request — the same ruling migration 0055's census recorded, kept consistent here so the UI
-    // cannot offer an edge the server would refuse.
+    // The OPTIONAL level between a service and its components. See docs/web.md §128.
     basePath: "assemblies",
     label: "Assemblies",
     clientKey: "assemblies",

@@ -129,19 +129,7 @@ import {
 import { promptLine } from "./prompt.js";
 import { printResult, type OutputFormat } from "./output.js";
 
-/**
- * ABSENT — `null` OR `undefined`, never one of the two.
- *
- * A key an older or newer server OMITS arrives as `undefined` whatever the TypeScript type says.
- * SINCE ADR-0023 the SDK validates every 2xx JSON body of every spec'd operation, so for a field
- * that is `.nullable()` WITHOUT `.optional()` an omitted key now REJECTS at the boundary and this
- * guard is defence in depth. For a field that IS `.optional()` nothing changed: an omitted key is
- * contract-legal, passes validation untouched, and this guard is the only thing left. A strict
- * `=== null` therefore guards ONE of two legal absences and lets the other through to a printer, where it
- * becomes the literal string `undefined`, a crash on `.toFixed(…)`, or — worst — the CONFIDENT
- * branch of a ternary whose other branch was the honest one. `apps/web/src/lib/absent.ts` is the
- * same rule for the browser half; this is the CLI's copy, because the two share no runtime.
- */
+/** ABSENT — `null` OR `undefined`, never one of the two. See docs/cli.md §8. */
 function isAbsent(value: unknown): value is null | undefined {
   return value === null || value === undefined;
 }
@@ -188,19 +176,7 @@ function parseRequiresFlag(value: string | undefined): { key: string; at: string
   });
 }
 
-/** ADR-0028 — parse `--stage-depends-on` / `--stage-depends-at` into `stageDependencies` (the SAME
- *  pair of flags on `scp change propose` and `scp change-source report`).
- *
- *  `--stage-depends-on` is comma-separated `componentIdOrUrn` or `componentIdOrUrn@minWeight`; the
- *  '@' split is the LAST one, so a URN (which contains ':' but never '@') survives, exactly as
- *  `parseRequiresFlag` does. A present-but-unparseable weight is an error, not a silent drop to "no
- *  qualifier": the two mean different things and coercing one into the other would quietly widen the
- *  hold the author asked for.
- *
- *  `--stage-depends-at` scopes EVERY entry to the same deployment targets. The wire shape carries
- *  `atTargets` PER dependency, which is strictly more expressive; a release needing two dependencies
- *  scoped to different places must use the API/SDK. Said plainly here rather than pretending the
- *  flags are complete. */
+/** Parse the stage-dependency flags into their request shape. See docs/cli.md §9. */
 export function parseStageDependenciesFlags(
   dependsOn: string | undefined,
   atTargets: string | undefined
@@ -331,11 +307,7 @@ function decisionRow(d: Decision): Record<string, string> {
   };
 }
 
-// -------------------------------------------------------------------------------------
-// M5 Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — row formatters.
-// Campaign `status` is a pure derived field (no accept/cancel verbs), so it's surfaced
-// prominently in both the compact and detail rows.
-// -------------------------------------------------------------------------------------
+// M5 Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5). See docs/cli.md §10.
 
 function campaignRow(c: Campaign): Record<string, string> {
   return {
@@ -366,11 +338,7 @@ export function campaignDetailRow(c: Campaign): Record<string, string> {
     // campaign withholds nothing or whether their client is older than the field.
     deadline: isAbsent(c.deadline) ? "" : c.deadline.at,
     adoptionSignal: isAbsent(c.deadline) ? "" : (c.deadline.adoptionSignal ?? ""),
-    // M25.6b — WHICH targets are excused, so `scp campaign deadline-override` has a signal beside
-    // its lever. Ids only: the stored waiver's `reason`, `actorId` and `at` are on the hash chain
-    // (`campaign.deadline.override`), and a table cell is the wrong place to render prose an
-    // operator would then be tempted to treat as the record. BLANK when there are none, never the
-    // word `undefined` — the same rule the two rows above it follow.
+    // Which targets a deadline override excuses, by id only. See docs/cli.md §11.
     deadlineOverrides: isAbsent(c.deadline)
       ? ""
       : (c.deadline.overrides ?? []).map((o) => o.targetObjectId).join(", "),
@@ -381,26 +349,7 @@ export function campaignDetailRow(c: Campaign): Record<string, string> {
 
 // M6 Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN.md §13) — row formatters.
 
-/**
- * One paired peer as a `scp federation peers` table row.
- *
- * EXPORTED, like `federationStatusRow` beside it and for the same reason (round 4, Y2): a guard no
- * test can invoke is a guard nothing holds in place. This function was module-private, so the
- * `?.mode ?? "?"` below could be reverted without a single test noticing.
- *
- * `syncScope` is required-not-optional on `FederationPeerSchema`, and BEFORE ADR-0023 the generated
- * SDK validated NO response at runtime, so `p.syncScope.mode` was a bare dereference of a promise
- * about the server (since ADR-0023 such a body rejects at the SDK boundary and `bin.ts` prints the
- * operation and the field; this stays for every other source of a peer, and this function is what a
- * test can actually invoke) —
- * the EXACT field `outpost-settings.tsx`'s `peerSyncScopeMode` guards on the web side (its doc
- * comment states the rule). MEASURED here: `TypeError: Cannot read properties of undefined (reading
- * 'mode')`, thrown while building the FIRST row, so `scp federation peers` printed no table at all.
- *
- * `"?"` RATHER THAN `"full"`, deliberately, and matching `transport` below: substituting a default
- * would tell the operator this peer exports everything on no evidence whatsoever. An unknown scope
- * is unknown.
- */
+/** One paired peer as a `scp federation peers` table row. See docs/cli.md §12. */
 export function peerRow(p: FederationPeer): Record<string, string> {
   return {
     id: p.id,
@@ -421,17 +370,7 @@ export function peerRow(p: FederationPeer): Record<string, string> {
   };
 }
 
-/**
- * `scp federation status` in table form. EXPORTED for the reason given on `peerRow`.
- *
- * `peers` is required-not-optional on `FederationStatusResponseSchema` and BEFORE ADR-0023 the SDK
- * validated no response — the LAST unguarded consumer of that field (Z5). Since ADR-0023 a body
- * without the key rejects at the boundary rather than reaching this printer. `outposts.tsx` reads it as
- * `statusQuery.data?.peers ?? []` and `outpost-detail.tsx` passes `data?.peers` into a function that
- * accepts `undefined`; this and `federation-status.tsx` were the two that did not. "No paired peers."
- * is the honest degradation: it says this side has no peer rows to show, which is exactly what an
- * absent list means here.
- */
+/** `scp federation status` in table form. See docs/cli.md §13. */
 export function printFederationStatus(
   status: FederationStatusResponse,
   output: OutputFormat
@@ -472,18 +411,7 @@ export function printFederationStatus(
   }
 }
 
-/**
- * ONE peer's row in `scp federation status` — EXTRACTED FROM the `printResult` callback inside
- * `printFederationStatus` (itself module-private), and exported, so that every honest-unknown rule
- * below is reachable by a test.
- *
- * WHY THE EXTRACTION IS THE POINT (Y2). Every `isAbsent` guard here was added to stop a fabrication,
- * and every one of them could be reverted with the CLI suite still GREEN, because nothing could
- * invoke the closure they lived in. `cli-absent-formatters.test.ts` now reverts each of them and
- * watches a named assertion go red. The most consequential is `trustTier`: without the
- * `unknownFields` clause a HAND-TYPED (shadow) tier prints BARE, with no `(unverified)` suffix —
- * the CLI reproduction of exactly the fabrication the web `TrustTierCell` exists to prevent.
- */
+/** ONE peer's row in `scp federation status`. See docs/cli.md §14. */
 export function federationStatusRow(
   p: FederationStatusResponse["peers"][number]
 ): Record<string, string> {
@@ -506,11 +434,7 @@ export function federationStatusRow(
           ? "poke*"
           : "poll",
     lastPull: p.lastPullSuccessAt ?? p.lastPullAttemptAt ?? "never",
-    // M16.2 phase A (E3) — PENDING-EXPORT, never pending-apply. "N pending" counts THIS domain's own
-    // journal entries not yet carried in any bundle addressed to the peer; it says NOTHING about what
-    // the peer applied (this side cannot observe that — see the schema's note and `unknownFields`).
-    // `?` is printed whenever the field is declared unknown, so a null never reads as "nothing
-    // pending"/"synced".
+    // M16.2 phase A (E3) — PENDING-EXPORT, never pending-apply. See docs/cli.md §15.
     pendingExport: isAbsent(p.pendingExportEntryCount)
       ? "?"
       : `${p.pendingExportEntryCount} pending`,
@@ -532,33 +456,11 @@ export function federationStatusRow(
   };
 }
 
-/**
- * M16.2 phase A (E1) — one `outpost` config object as a table row. `trustTier` prints "?" when the
- * operator has never asserted one; `origin` distinguishes a commander's own authored object from the
- * read-only REPLICA an outpost holds of it.
- *
- * EXPORTED for the reason given on `peerRow`: this was module-private, so the `?? []` below was
- * unreachable by any test.
- *
- * `unknownFields` is required-not-optional (`packages/schemas/src/federation.ts` `OutpostConfigSchema`)
- * and BEFORE ADR-0023 the SDK validated no response, so `o.unknownFields.join(", ")` was bare
- * (since ADR-0023 that body rejects at the boundary). MEASURED: `TypeError:
- * Cannot read properties of undefined (reading 'join')`. Its web twin at `outpost-configuration.tsx`
- * took the `?? []` last round and IS pinned; this half was not fixed even though the PR body claimed
- * the field "closed as a class". Blast radius is SIX commands (`cli.ts` ~2963/2993/3005/3017/3044/3050).
- *
- * `?? []` collapses to the same `"-"` an EMPTY `unknownFields` prints — and that is the honest
- * reading either way: this side has nothing to report as not-observable. It is NOT a claim that every
- * field is observable, which is why the column is headed "notObservable" and not "observable".
- */
+/** M16.2 phase A (E1) — one `outpost` config object as a table row. See docs/cli.md §16. */
 export function outpostConfigRow(o: OutpostConfig): Record<string, string> {
   return {
     peerDomainId: o.peerDomainId,
-    // §10.5 — WHAT `peerDomainId` NAMES (GLOSSARY / ADR-0021 D7 vocabulary): `hq` = THIS
-    // instance's own trust domain — the HQ outpost (formerly "co-located"), which has no peer row;
-    // `field` = a paired peer in another trust domain — a field outpost, whatever its
-    // connectivity. `peerIsSelf` is optional on the wire (additive): an older server that does not
-    // resolve it prints `?`, never "field" — absence is not a statement.
+    // §10.5 — WHAT `peerDomainId` NAMES. See docs/cli.md §17.
     binding: o.peerIsSelf === true ? "hq" : o.peerIsSelf === false ? "field" : "?",
     name: o.name,
     trustTier: o.trustTier ?? "?",
@@ -569,19 +471,7 @@ export function outpostConfigRow(o: OutpostConfig): Record<string, string> {
   };
 }
 
-/**
- * One auto-relay build ledger row as a table row (`scp federation relay-builds`, M13.1b operator
- * read surface) — exported for the same reason as `peerRow`/`outpostConfigRow`: a guard no test can
- * invoke is a guard nothing holds in place.
- *
- * `sourceChangeObjectId`, `claimedUntil`, `lastReason` and `lastDecisionId` are ALL genuinely
- * nullable on the wire (relay-builds-repo.ts's `RelayBuildLedgerRow` doc: no source id was
- * recorded / unclaimed / no verdict yet / no verdict Decision yet) — `null` there is a real fact,
- * not an omission an older server would produce, but `isAbsent` still guards it the same way every
- * other nullable column in this file does, so an older/newer server that omits the key outright
- * prints `-` instead of the literal `undefined`. `attempts`/`failedAttempts` are printed EXACTLY AS
- * THE RESPONSE STATES — it carries no verdict cap, so this row never computes or implies one.
- */
+/** One auto-relay build ledger row as a table row. See docs/cli.md §18. */
 export function relayBuildRow(row: RelayBuild): Record<string, string> {
   return {
     change: row.changeObjectId,
@@ -596,12 +486,7 @@ export function relayBuildRow(row: RelayBuild): Record<string, string> {
   };
 }
 
-/**
- * One federation audit-witness row as a table row (`scp audit witnesses --origin <domainId>`) —
- * the post-failover peers-witness comparison's read surface (resilience runbook §7.2 step 5,
- * multi-region-instance-resilience.md §7.2.7). Exported for the same reason as `relayBuildRow`: a
- * guard no test can invoke is a guard nothing holds in place.
- */
+/** One federation audit-witness row as a table row. See docs/cli.md §19. */
 export function auditWitnessRow(row: AuditWitness): Record<string, string> {
   return {
     origin: row.originDomainId,
@@ -612,15 +497,7 @@ export function auditWitnessRow(row: AuditWitness): Record<string, string> {
   };
 }
 
-/**
- * One instance-scoped scan-requirement floor as a table row (`scp scan-floors list`) — LIFTED OUT of
- * the action closure it was written inside, and exported, for the reason given on
- * `federationStatusRow`: a guard no test can invoke is a guard nothing holds in place.
- *
- * THE FABRICATION EACH `isAbsent` STOPS is specific and severe here. `null` on a ceiling means
- * UNBOUNDED — no limit was authored — and it is NOT `0`. An unguarded `String(undefined)` prints the
- * literal `undefined` in a security ceiling column; the honest rendering is `-`.
- */
+/** One instance-scoped scan-requirement floor as a table row. See docs/cli.md §20. */
 export function instanceScanFloorRow(item: InstanceScanFloor): Record<string, string> {
   return {
     tier: item.tier,
@@ -633,14 +510,7 @@ export function instanceScanFloorRow(item: InstanceScanFloor): Record<string, st
   };
 }
 
-/**
- * One instance-scoped exclusion admission as a table row (`scp scan-exclusion-admissions list`) —
- * same lift, same reason as `instanceScanFloorRow`.
- *
- * THE FABRICATION `isAbsent` STOPS HERE is the reverse of the floor's: an admission row's mere
- * EXISTENCE is the grant, so there is no value to print `undefined` in — but `note` is nullable and
- * a literal `null` in an operator's audit column reads as a value somebody authored.
- */
+/** One instance-scoped exclusion admission as a table row. See docs/cli.md §21. */
 export function instanceScanExclusionAdmissionRow(
   item: InstanceScanExclusionAdmission
 ): Record<string, string> {
@@ -653,14 +523,7 @@ export function instanceScanExclusionAdmissionRow(
   };
 }
 
-/**
- * The managed-scan DB status row (`scp scan-db status`) — same lift, same reason.
- *
- * `ageHours` is the one where absence is not merely dishonest but FATAL: `.toFixed(1)` on
- * `undefined` throws, so the whole command dies rather than printing a status. "(unknown)" is the
- * honest reading — and it must not read as "fresh", because an unknown age is precisely the state a
- * staleness gate cannot clear.
- */
+/** The managed-scan DB status row (`scp scan-db status`). See docs/cli.md §22. */
 export function scanDbStatusRow(s: ScanDbStatus): Record<string, string> {
   return {
     present: String(s.present),
@@ -674,20 +537,7 @@ export function scanDbStatusRow(s: ScanDbStatus): Record<string, string> {
   };
 }
 
-/**
- * `scp scan-db refresh` / `scp scan-db load` outcome as a table row — LIFTED OUT of the two
- * `.action()` closures it was duplicated inside, and exported, for the reason given on
- * `scanDbStatusRow`.
- *
- * THE TWIN ONE COMMAND OVER (Z5). `scanDbStatusRow` guards `ageHours` because absence there is both
- * dishonest and FATAL; the identical read in these two closures was `String(r.status.ageHours)`,
- * left bare — so an omitted key printed the literal `undefined` in the age column of a SECURITY
- * cache, and an omitted `status` object threw over the report of a load that had already happened.
- * Same shape as Z4: the verb ran, and only the telling of it died.
- *
- * `"(unknown)"`, not `0` and not blank: an unknown age is precisely the state a staleness gate
- * cannot clear.
- */
+/** `scp scan-db refresh` / `scp scan-db load` outcome as a table row. See docs/cli.md §23. */
 export function scanDbOutcomeRow(
   outcome: RefreshScanDbResponse | LoadScanDbResponse
 ): Record<string, string> {
@@ -703,14 +553,7 @@ export function scanDbOutcomeRow(
   return row;
 }
 
-/**
- * The instance dependency-subscription unlock as a table row (`scp dependency-subscriptions unlock`)
- * — exported, and written outside the action closure, for the reason given on `instanceScanFloorRow`.
- *
- * `updatedAt` distinguishes NEVER SET (no row — the locked default) from DELIBERATELY RE-LOCKED
- * (a timestamp beside `unlocked: false`), which is exactly the distinction an operator needs and
- * exactly the one a bare boolean loses. `"(never set)"`, not blank and not "now".
- */
+/** The instance dependency-subscription unlock as a table row. See docs/cli.md §24. */
 export function dependencySubscriptionUnlockRow(
   unlock: DependencySubscriptionUnlock
 ): Record<string, string> {
@@ -722,24 +565,7 @@ export function dependencySubscriptionUnlockRow(
   };
 }
 
-/**
- * The verdict line of `scp dependency-subscriptions resolve`. The `contributions` are printed as
- * their own table beside it (below) — they are the answer to "WHICH level turned this off", and
- * folding them into one cell would make the explainability surface unreadable at the exact moment
- * it is being consulted.
- *
- * `granularity`/`delivery` are guarded even though the server always sends them: a key an older or
- * newer server omits arrives as `undefined` whatever the type says, and printing the literal
- * `undefined` in a DELIVERY column — where the two values are "open a PR" and "merge it
- * automatically" — is a fabrication with teeth.
- *
- * `managedHere`/`managedReason` carry the server's `dependencyManagement` envelope (ADR-0032 §7d),
- * printed BESIDE the verdict because they QUALIFY it: on a deployment that is not an explicitly
- * declared commander, `enabled: true` is arithmetically correct and NOTHING THERE WILL EVER ACT ON
- * IT. Guarded like the pair above, and for a sharper reason — a server that omits the key must
- * render `-`, never a fabricated `true`, because inventing "yes, managed here" is the exact false
- * reassurance the envelope exists to remove.
- */
+/** The verdict line of `scp dependency-subscriptions resolve`. See docs/cli.md §25. */
 export function dependencySubscriptionResolutionRow(
   response: DependencySubscriptionResolutionResponse
 ): Record<string, string> {
@@ -762,25 +588,7 @@ export function dependencySubscriptionResolutionRow(
   };
 }
 
-/**
- * …AND THE SAME THING IN WORDS, when nothing on this deployment will act on the verdict (ADR-0032
- * §7d). `undefined` means print nothing.
- *
- * A `false` in a column is easy to read past, and the whole point of the envelope is that an
- * operator reading `enabled: true` on a field outpost is being told something true and misleading at
- * once. Printed ONLY for the refusals: a declared commander needs no caveat, and a caveat on every
- * invocation is one nobody reads.
- *
- * EXPORTED, AND OUTSIDE THE `.action()` CLOSURE, FOR THE REASON THE FORMATTERS ABOVE RECORD. This
- * lived inline in the resolve command's Commander closure, where no test can reach it: inverting the
- * condition — so the note prints on a healthy commander and is SILENT on the deployment it exists to
- * warn, the one inversion that matters — left the entire suite green. `dependency-subscription-cli.
- * test.ts` now pins BOTH directions, which is the only shape in which a conditional caveat is held.
- *
- * ABSENT IS NOT A REFUSAL. A server that omits the envelope gets no note (`=== false`, never
- * falsy): the row already renders `-` there rather than fabricating a posture, and asserting a
- * refusal the server never claimed would be the same fabrication with a louder voice.
- */
+/** Says in words when nothing here will act on the verdict. See docs/cli.md §26. */
 export function dependencyManagementNote(
   managed: DependencySubscriptionResolutionResponse["dependencyManagement"] | undefined
 ): string | undefined {
@@ -820,14 +628,7 @@ export function dependencySubscriptionContributionRow(
   };
 }
 
-/**
- * One component's row from `scp dependency-subscriptions backfill-inventory` (M21.2, ADR-0032 §4).
- *
- * `skipped` is a first-class column, not a footnote: a dependency manifest that could not be READ is
- * deliberately left alone rather than treated as declaring nothing (unreadable is not empty), so a
- * nonzero count means part of this component's inventory is STALE rather than wrong — and that is
- * invisible unless it is printed.
- */
+/** One backfill row, where `skipped` is a first-class column. See docs/cli.md §27. */
 export function dependencyInventoryBackfillRow(
   c: DependencyInventoryBackfillComponent
 ): Record<string, string> {
@@ -849,12 +650,7 @@ export function dependencyInventoryBackfillRow(
   };
 }
 
-/**
- * ONE governance:move rung as a table row — `scp governance move-enforcement rungs`, and the
- * per-object chain a `status`/`enable`/`disable` response carries. `depth` is present only on the
- * per-object explain read (0 = org root, increasing toward the object); the org-wide `rungs` list
- * walks no chain, so it prints `-` there rather than fabricating a position.
- */
+/** ONE governance:move rung as a table row. See docs/cli.md §28. */
 export function governanceMoveRungRow(rung: GovernanceMoveRung): Record<string, string> {
   return {
     tier: rung.tier,
@@ -866,12 +662,7 @@ export function governanceMoveRungRow(rung: GovernanceMoveRung): Record<string, 
   };
 }
 
-/**
- * The verdict line of `scp governance move-enforcement status` — `enforced` is an OR across the
- * instance rung and every rung on the queried object's OWN containment chain. It answers about ONE
- * end of a move; the rungs table printed beside it (`governanceMoveRungRow`) is where "which rung"
- * lives, because the verdict alone cannot say that.
- */
+/** The verdict line of `scp governance move-enforcement status`. See docs/cli.md §29. */
 export function governanceMoveEnforcementRow(
   enforcement: GovernanceMoveEnforcement
 ): Record<string, string> {
@@ -882,11 +673,7 @@ export function governanceMoveEnforcementRow(
   };
 }
 
-/**
- * The instance (commander) rung as a table row (`scp governance move-enforcement instance get|set`)
- * — mirrors `dependencySubscriptionUnlockRow`'s "never set" distinction: `updatedAt: null` is the
- * shipped default (never configured), not "disabled just now".
- */
+/** The instance rung as a row, never blank when unset. See docs/cli.md §30. */
 export function governanceMoveInstanceRow(
   instance: GovernanceMoveInstanceRung
 ): Record<string, string> {
@@ -896,13 +683,7 @@ export function governanceMoveInstanceRow(
   };
 }
 
-/**
- * The response to a rung write (`enable`/`disable`) — the subject, the tier it was recorded at, the
- * resulting enabled state, and the Decision id every governance write carries (charter principle
- * 6). `enforcement` (the resolved state AT THE SUBJECT after the write) is available on the response
- * but not printed here — the caller already knows what it just did; `status` is where the full
- * chain belongs.
- */
+/** The response to a rung write (`enable`/`disable`). See docs/cli.md §31. */
 export function governanceMoveRungWriteRow(
   response: GovernanceMoveRungWriteResponse
 ): Record<string, string> {
@@ -914,16 +695,7 @@ export function governanceMoveRungWriteRow(
   };
 }
 
-/**
- * The one line BOTH read verbs print when the answering deployment does not manage dependencies
- * (`dependencyManagement.managedHere === false`, ADR-0032 §7d) — and then print NOTHING ELSE of the
- * envelope: on such a deployment an empty inventory is "nothing here ever ingested a manifest", not
- * "declares nothing", and an empty bump list is "nothing is ever dispatched here", not "up to date",
- * so a table there is a table of a fact that does not exist. `undefined` when dependencies ARE
- * managed here — and ALSO when the server omitted the envelope (`=== false`, never falsy): an older
- * server claims no posture and this must not invent one. Exported and pure so both directions are
- * pinned (`dependency-subscription-cli.test.ts`, `dependency-read-verbs-wire.test.ts`).
- */
+/** The line both read verbs print when nothing is managed here. See docs/cli.md §32. */
 export function dependencyReadNotManagedLine(
   managed: { managedHere: boolean; reason: string } | undefined
 ): string | undefined {
@@ -931,26 +703,7 @@ export function dependencyReadNotManagedLine(
   return `dependencies are not managed on this instance (${managed.reason}) — ask the commander; nothing below would be a statement about this component`;
 }
 
-/**
- * The header lines of `scp dependency-subscriptions inventory` (M21.6) — the envelope BEFORE the
- * rows: which component, the ingestion STAMP (M21.7), the newest ingestion Decision, and the
- * component-level ingestion gate. Exported and pure for the reason `cli-absent-formatters.test.ts`
- * records. The caller has ALREADY handled `managedHere: false` (see
- * {@link dependencyReadNotManagedLine}); these lines describe a deployment that manages dependencies.
- *
- * THE STAMP IS THE TRICHOTOMY, PRINTED AS ONE (`ingestion-stamp-repo.ts`): a null stamp is NEVER
- * ATTEMPTED (there is no row, and only a pass writes one); `ok` with 0 rows written is "read fine —
- * no dependencies declared" (the sentence an empty inventory could not earn before the stamp);
- * `partial` / `unreadable` list every manifest with its per-file verdict, because the operator's
- * next action is a file, not a component; `not_enabled` is "the gate was closed; nothing fetched".
- * None of these is inferred from `rows` — the printer reads the stamp and says what it says. A null
- * `lastIngestionDecision` is "no ingestion Decision exists" (never ingested, OR refused as
- * not-enabled / not-addressable / superseded, none of which write one).
- *
- * `componentGate.reason` is a THIRD vocabulary (`enabled | instance_locked |
- * no_enabling_contribution`), distinct from a row's `subscription.reason`; it is printed under its
- * own label so the two are never read as one.
- */
+/** The header lines of `scp dependency-subscriptions inventory`. See docs/cli.md §33. */
 export function dependencyInventoryHeaderLines(
   response: ComponentDependencyInventoryResponse
 ): string[] {
@@ -977,15 +730,7 @@ export function dependencyInventoryHeaderLines(
   return lines;
 }
 
-/** The ingestion stamp as one line — see {@link dependencyInventoryHeaderLines} for the four
- *  readings. `manifests[]` is listed as `repo:path=outcome (detail)`; on `ok` the list is the
- *  receipt of what was read, on `partial`/`unreadable` it is the work list.
- *
- *  `lastIngestionDecision` is consulted ONLY when the stamp is absent: the stamp table (migration
- *  0065) was created without a backfill from the `dependency_inventory_ingestion` Decisions, so a
- *  component ingested before it has a Decision and no stamp — "never attempted" would contradict
- *  the Decision line printed right under it. That case is stated as NOT STAMPED and defers to the
- *  Decision; "never attempted" is printed only when NEITHER is on record. */
+/** The ingestion stamp as one line. See docs/cli.md §34. */
 export function dependencyIngestionStampLine(
   stamp: ComponentDependencyInventoryResponse["ingestion"],
   lastIngestionDecision?: ComponentDependencyInventoryResponse["lastIngestionDecision"]
@@ -1026,18 +771,7 @@ export function dependencyIngestionStampLine(
   }
 }
 
-/**
- * ONE ROW of `scp dependency-subscriptions inventory` (M21.6): one (major line × dependency
- * manifest) declaration with the line's observed head and its resolved dependency subscription.
- *
- * The coordinate is printed VERBATIM (`@acme/lib` is not `acme-lib`; case and punctuation decide
- * which package an opt-out named). `resolvedVersion: null` is "the manifest pins none" and
- * `head.latestVersion: null` is "not observed" — never "nothing newer" — both print `-`, the CLI's
- * absent-value convention. `granularity`/`delivery` are meaningful ONLY when the subscription is
- * enabled, so they are shown only then; an `ignored` contribution (a malformed or unevaluable
- * opt-out that admitted to NEITHER side — it fails OPEN) is surfaced in the REASON column rather
- * than dropped, because hiding it hides exactly the opt-out that silently did not apply.
- */
+/** ONE ROW of `scp dependency-subscriptions inventory` (M21.6). See docs/cli.md §35. */
 export function dependencyInventoryRow(
   row: ComponentDependencyInventoryRow
 ): Record<string, string> {
@@ -1065,18 +799,7 @@ export function dependencyInventoryRow(
   };
 }
 
-/**
- * ONE ROW of `scp dependency-subscriptions bumps` (M21.6): a bump SCP authored for the component.
- *
- * Progress is `pullRequestNumber` (opened), `mergedAt` (the provider confirmed the merge) and the
- * merge Decision's verdict — never the change's `state`, which sits at `proposed` for a bump's
- * whole life. The PR column is `pullRequestUrl` when the server stored one, else `#<number>`; a
- * URL is NEVER composed from `repo` + number (the provider is not known here, and a guessed link is
- * a fabricated record).
- * `mergedAt: null` prints `-`, not "open": the provider has not confirmed a merge, which is all
- * that is known. `delivery` is what the dispatch RESOLVED TO — the first look is always
- * `pull_request` — and `-` when no dispatch Decision is on record.
- */
+/** ONE ROW of `scp dependency-subscriptions bumps` (M21.6). See docs/cli.md §36. */
 export function dependencyBumpRow(bump: ComponentDependencyBump): Record<string, string> {
   // THE URL WHEN THE SERVER STORED ONE, ELSE THE NUMBER, ELSE `-`. The URL is the provider's own
   // (`pull_request_url`, M21.7) and is never composed here; a stored URL is the better address of the
@@ -1098,14 +821,7 @@ export function dependencyBumpRow(bump: ComponentDependencyBump): Record<string,
   };
 }
 
-/**
- * One ROW of `scp dependency-producers list` — the declaration NAMED (server-side view, ADR-0032 §7e,
- * dependency-subscription-ui.md §12.6 Q1): the producing component and the declaring principal by
- * name, with the ids beside them so a name is never the only handle. `""` (an id that named no row
- * in the org — see `namesForObjectIds`) prints as the id, never as a blank cell.
- *
- * Exported and unit-tested DIRECTLY, for the reason `cli-absent-formatters.test.ts` records.
- */
+/** One ROW of `scp dependency-producers list`. See docs/cli.md §37. */
 export function dependencyProducerListRow(p: DependencyLineProducerView): Record<string, string> {
   return {
     ecosystem: p.ecosystem,
@@ -1117,24 +833,7 @@ export function dependencyProducerListRow(p: DependencyLineProducerView): Record
   };
 }
 
-/**
- * One LINE of a producer declaration's blast radius (`scp dependency-producers declare|retract`,
- * ADR-0032 §7e).
- *
- * THE THREE COLUMNS THAT ARE NOT DECORATION:
- *
- *  - `subscribers` is the number of components whose repositories this act reaches. It is the whole
- *    reason declaring is a VERB with a report rather than a field write: the operator names one
- *    coordinate and affects a set of repositories the request never mentions.
- *  - `headWas` is what the observed head WAS. Both verbs clear it, and an operator needs to see the
- *    value that was discarded rather than only that something was — a wrong declaration is undone
- *    by re-observing, and knowing `2.7.0` was thrown away is how you know what to look for.
- *  - `headCleared` distinguishes "there was a head and it is gone" from "there was nothing to
- *    clear". Printing only `headWas` would render both as a blank.
- *
- * Exported and unit-tested DIRECTLY, for the reason `cli-absent-formatters.test.ts` records: a
- * mapper written inline in a Commander `.action()` closure is unreachable by any test.
- */
+/** One LINE of a producer declaration's blast radius. See docs/cli.md §38. */
 export function dependencyProducerLineRow(
   line: DependencyProducerLineImpact
 ): Record<string, string> {
@@ -1150,26 +849,13 @@ export function dependencyProducerLineRow(
     headWas: head.latestVersion ?? "-",
     headCleared: String(line.headCleared === true),
     subscribers: String(line.subscribedComponentObjectIds?.length ?? 0),
-    // WHO, by name — the same set as `subscribers` counts, named server-side (one batched read,
-    // dependency-subscription-ui.md §12.6 Q1). Names, not ids: the operator reading this table is
-    // about to affect these teams' repositories, and an id is not a name they can act on. `-`
-    // when the server sent no names (an older server, or an empty radius) — never a fabricated
-    // list, and never a count that disagrees with `subscribers`.
+    // WHO, by name. See docs/cli.md §39.
     subscribedNames: line.subscribedComponents?.map((c) => c.name || c.objectId).join(", ") || "-",
     lineId: line.lineId
   };
 }
 
-/**
- * One OPEN bump at the moment of a retraction — a pull request SCP already opened in someone else's
- * repository.
- *
- * IT IS PRINTED BECAUSE SCP WILL NOT CLOSE IT. Retraction stops future triggers only; a dispatched
- * bump has left SCP, and closing it from here would make SCP assert it closed a PR it did not
- * close. This table is the operator's only list of what to go and close by hand, so the URL column
- * prints `-` rather than composing one: `repo` + number is a github.com convention and the row does
- * not record which provider authored the bump.
- */
+/** One OPEN bump at the moment of a retraction. See docs/cli.md §40. */
 export function dependencyProducerOpenBumpRow(
   bump: DependencyProducerOpenBump
 ): Record<string, string> {
@@ -1182,16 +868,7 @@ export function dependencyProducerOpenBumpRow(
   };
 }
 
-/**
- * The sentence a caller must read before believing an empty producer list, and after a write.
- *
- * BOTH ARMS ARE LOAD-BEARING AND BOTH ARE TESTED. On a field outpost `dependency_line_producers` is
- * empty BY DESIGN (declarations live at the commander, ADR-0032 §7d), so an unqualified empty table
- * reads as "nothing is declared" when the truth is "you asked the wrong deployment". On a declared
- * commander the note must be SILENT — a caveat printed on every invocation is one nobody reads,
- * which is how the M21.7 inversion (`dependencyManagementNote`) went green while warning the wrong
- * deployment.
- */
+/** Read this before believing an empty producer list. See docs/cli.md §41. */
 export function dependencyProducerManagementNote(
   managed: { managedHere: boolean; reason: string } | undefined
 ): string | undefined {
@@ -1204,15 +881,7 @@ export function dependencyProducerManagementNote(
   );
 }
 
-/**
- * The whole receipt of a declare or a retract — the table, the note, and the in-flight bumps.
- *
- * IT IS A FUNCTION, NOT INLINE IN TWO `.action()` CLOSURES, for two reasons. The tested one: a
- * printer written inside a Commander action is unreachable by any test, and this one carries the
- * `dryRun` banner and the open-bump table, both of which are conditional and therefore both of
- * which have a silent-wrong arm. The other: declare and retract must print the SAME receipt, and
- * two copies of a receipt are two receipts that drift.
- */
+/** The whole receipt of a declare or a retract. See docs/cli.md §42. */
 export function printProducerVerbResult(
   response: DependencyLineProducerVerbResponse,
   output: string | undefined
@@ -1262,28 +931,7 @@ export function printProducerVerbResult(
   }
 }
 
-/**
- * `scp federation outpost reconcile`'s "what this WOULD do" lines — one per live claimant, printed
- * BEFORE the call from the very listing the `?ifClaimant=` token is derived from.
- *
- * WHY THE CLI NEEDS ITS OWN PREVIEW. This verb exists to un-wedge a peer, and the operator who
- * needs it is precisely the one who cannot use the UI (the wedged peer is what the UI fails to
- * render). Without these lines the command went straight to the write with NO read at all: the
- * largest unguarded window of any surface, and no preview whatsoever of a call that can adopt an
- * entered config, discard it, or delete a row this domain authored and JOURNAL that delete
- * downstream.
- *
- * BE HONEST ABOUT WHAT THE TOKEN BUYS HERE. Between this listing and the call is a ~millisecond
- * window, so for the CLI `?ifClaimant=` is a TOCTOU guard — NOT evidence that a human read
- * anything. The informed-consent claim belongs to the UI, where an operator actually reads the
- * preview and confirms. Both are worth having; this one must not be described as consent.
- *
- * THE RANKING IS MIRRORED, NOT AUTHORITATIVE. The server's `byAuthority` is the only thing that
- * decides the outcome; this reproduces its three classes (local-origin > verified replica >
- * unverified shadow, ties in listing order) from the fields the API already publishes
- * (`originIsSelf`, `provenance`). A drifted mirror would mis-PREDICT — which is exactly why the
- * token exists to make a divergence a refusal instead of a surprise.
- */
+/** `scp federation outpost reconcile`'s "what this WOULD do" lines. See docs/cli.md §43. */
 export function formatReconcilePreviewLines(
   claimants: readonly OutpostConfig[],
   keepObjectId?: string
@@ -1324,11 +972,7 @@ export function formatReconcilePreviewLines(
     }
     keeper = named;
   } else {
-    // WITH NO `--keep`, THE SURVIVOR IS ONLY PREDICTABLE WHEN ONE ROW HOLDS THE TOP RANK ALONE. The
-    // server breaks a tie inside one authority class by `(created_at, id)`; reconstructing that here
-    // and printing it as a prediction is exactly the guess the panel refuses to make
-    // (`reconcile-default-indeterminate`), and a preview that MIGHT be wrong is worse than no
-    // preview — the whole value of these lines is that they say what WILL happen.
+    // Without `--keep` the survivor is predictable only at a sole top. See docs/cli.md §44.
     const top = ordered.filter((c) => rank(c) === rank(ordered[0]!));
     if (top.length > 1) {
       return [
@@ -1372,28 +1016,7 @@ export function formatReconcilePreviewLines(
   return lines;
 }
 
-/** `scp federation outpost reconcile`'s "what happened" lines (review round 6, M1). The two removal
- *  buckets on `OutpostConfigReconcileResult` are reported with DELIBERATELY DIFFERENT WORDING, and must
- *  stay that way: `removedShadowObjectIds` is a silent local tidy-up of a hand-typed copy this domain
- *  never authored (invisible to the outpost), while `removedLocalObjectIds` is THIS DOMAIN'S OWN declared
- *  config being permanently deleted — an ordinary journaled tombstone that PROPAGATES DOWNSTREAM to the
- *  outpost. Collapsing the two into one "unverified shadow(s)" sentence (the N9-era bug this fixes) told
- *  an operator who had just deleted their own config, and pushed that delete to the outpost, that they
- *  had merely cleaned up a stray copy. Exported so the CLI surface test can pin the wording gap directly
- *  rather than only via the command's `--keep` help text.
- *
- *  `?? []` ON BOTH BUCKETS (Z4). Both are required-not-optional on `OutpostConfigReconcileResultSchema`
- *  and BEFORE ADR-0023 the SDK validated no response, so both were bare `.length`/`.join` reads
- *  (since ADR-0023 that body rejects at the boundary). MEASURED: `TypeError:
- *  Cannot read properties of undefined (reading 'length')`. This is the WORST place in the CLI for it —
- *  the operator has just run a DESTRUCTIVE, DOWNSTREAM-PROPAGATING verb and the throw kills the entire
- *  report of what it did, so they are told NOTHING about deletes that already happened and already
- *  journaled. The web twin (`outpost-configuration.tsx`) took this guard last round for exactly that
- *  reason; the CLI half was left bare.
- *
- *  Absence degrades to "Removed: nothing (no surplus rows)" only when BOTH are empty-or-absent, which is
- *  the same line an all-empty result already printed. That is a reporting gap, not a fabrication: it says
- *  nothing about what the server did, and the server's own JSON is one `--output json` away. */
+/** `scp federation outpost reconcile`'s "what happened" lines. See docs/cli.md §45. */
 export function formatReconcileResultLines(result: OutpostConfigReconcileResult): string[] {
   const removedShadowObjectIds = result.removedShadowObjectIds ?? [];
   const removedLocalObjectIds = result.removedLocalObjectIds ?? [];
@@ -1464,31 +1087,7 @@ function freezeRow(f: Freeze): Record<string, string> {
     // that renders identically to a live one is a list an operator cannot act on. Empty means
     // still standing.
     liftedAt: f.liftedAt ?? "",
-    // ==========================================================================================
-    // M25.7 — `federates`, AND THE HEADER IS THE ONLY QUESTION `objectId` CAN ANSWER
-    // ==========================================================================================
-    // On the DEFAULT row for the same reason `liftedAt` is: `scp freeze list` on an outpost now
-    // mixes freezes that stop at this instance with freezes that ride the journal, and two rows
-    // rendering identically leave an operator to discover the difference from a 409.
-    //
-    // THIS COLUMN WAS CALLED `federated` AND THE NAME WAS A LIE, which is the whole reason for this
-    // paragraph. It was introduced to tell an operator whether a listed freeze is one they can
-    // lift — i.e. whether it came from ANOTHER domain — and `objectId` cannot answer that. It is
-    // non-null on a commander's own federating freeze and on an outpost's replica of it alike; the
-    // fact that separates them is the OBJECT's `origin_domain_id`, which is not on this wire shape
-    // at all. A column whose header asks one question and whose value answers a different one is
-    // worse than no column: it reads as an answer.
-    //
-    // `federates` is exactly what a non-null `objectId` supports: this freeze has a graph object,
-    // so it rides `object_upsert` to this org's peers and blocks there too. Read from the field,
-    // never inferred from role or from the presence of a peer.
-    //
-    // TO ANSWER "CAN I LIFT THIS?", resolve the object: `--output json` carries `objectId`, and
-    // `scp object get freeze <objectId> --output json` reports `originDomainId` — a replica's is
-    // not this instance's, and `DELETE`/`PATCH` answer 409 naming that domain. Surfacing origin on the
-    // freeze row itself needs `originDomainId` on the wire (a required-nullable response field plus
-    // a join in `listFreezes`); it is deliberately NOT invented here from data that cannot support
-    // it.
+    // `federates` on the default row, and why the header carries it. See docs/cli.md §46.
     federates: f.objectId === null ? "" : "yes"
   };
 }
@@ -1506,11 +1105,7 @@ function printPolicyEvaluateResult(result: PolicyEvaluateResponse, output: Outpu
   console.log(summary);
 }
 
-// -------------------------------------------------------------------------------------
-// `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4) — `scp plan` computes a diff
-// (dry run); `scp apply` does plan + apply in one shot, since that's the natural CLI UX and
-// what "`scp apply` twice = no-op the second time" means end to end, not two manual steps.
-// -------------------------------------------------------------------------------------
+// `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4). See docs/cli.md §47.
 
 async function readManifestFile(manifestPath: string): Promise<DesiredStateManifest> {
   const raw = await readFile(manifestPath, "utf8");
@@ -1525,18 +1120,7 @@ async function readManifestFile(manifestPath: string): Promise<DesiredStateManif
   return DesiredStateManifestSchema.parse(parsed);
 }
 
-/**
- * One `source_mappings` row as a table row (`scp change-source list-mappings`), lifted out of the
- * action closure and exported for the reason `federationStatusRow` gives. Column order is the order an
- * operator reads a rule in: what routes where, then the labels on it. `scope` (§10.6, migration 0066)
- * prints BLANK when not declared — the printer's absent-field convention, and the honest one: no
- * label was set, and nothing here guesses one from the site's role. `?` when the key is ABSENT
- * (absence is not "undeclared") — DEFENSIVE ONLY: `scope` is required-nullable on the wire and the
- * generated SDK validates every response body (ADR-0023), so a pre-0066 server's body is a contract
- * error at the SDK boundary and never reaches this printer; what an operator actually sees against
- * such a server is that error, not `?`. The widening stays so a hand-built row cannot crash the table
- * (the `outpostConfigRow` lesson above), not because the `?` is reachable through the SDK.
- */
+/** One `source_mappings` row as a table row. See docs/cli.md §48. */
 export function sourceMappingRow(m: SourceMapping): Record<string, string> {
   // Widened on purpose (defensive, see above): the SDK type AND its response validator say `scope`
   // is required, so through the SDK it is never absent — read it as possibly-absent anyway so a row
@@ -1570,13 +1154,7 @@ export function parseScopeFlag(value: string): SourceMappingScope | null {
   return parsed.data;
 }
 
-/**
- * EVERY collection `computePlanDiff` can emit, and the union is the point: a collection that is
- * computed, counted in `summary`, but missing here is a change the operator approves without ever
- * being shown it. `printPlanResult` spreads all of them, and the `never` arm below is what makes
- * "add a collection, forget the table" a TYPE ERROR rather than a silent omission — which is how
- * `placements`, `producers` and `governanceMoveRungs` each went unprinted for a while.
- */
+/** Every collection the plan diff can emit, as a closed union. See docs/cli.md §49. */
 type PlanDiffEntry =
   | PlanObjectDiffEntry
   | PlanRelationshipDiffEntry
@@ -1680,17 +1258,7 @@ export function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
   };
 }
 
-/**
- * EVERY collection the diff can carry, flattened into the rows `scp plan` prints. Exported so the
- * "nothing computed is invisible" property is testable without capturing stdout.
- *
- * All but the first two are optional on the wire (a plan stored before the collection existed has
- * no key; for `producers` and `governanceMoveRungs` an absent key additionally means "this stack
- * manages none") — but every one that IS present must be PRINTED, or a plan whose only content is
- * bindings, placements, producers or rungs shows an EMPTY table under a NON-ZERO summary, and an
- * operator approves a diff they were never shown. Sharpest for a rung `delete`: it turns off a
- * governance bar whose only symptom is an absence of refusals, so no later signal catches it.
- */
+/** Every collection flattened into the rows `scp plan` prints. See docs/cli.md §50. */
 export function planDiffEntries(diff: PlanDiff): PlanDiffEntry[] {
   return [
     ...diff.objects,
@@ -1719,11 +1287,7 @@ function printPlanResult(plan: Plan, output: OutputFormat): void {
   );
 }
 
-/**
- * Prints an apply summary — `--output json` gives a flat, machine-parseable
- * `{creates,updates,deletes,noops}` shape (not just prose), which is what makes DoD (b)'s
- * "`scp apply` twice = no-op" assertable from a test (plans.cli.integration.test.ts).
- */
+/** Prints an apply summary. See docs/cli.md §51. */
 function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFormat): void {
   if (output === "json") {
     console.log(
@@ -1746,12 +1310,7 @@ function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFo
   console.log(`Applied plan ${plan.id} (${plan.stackName}): ${summaryLine(summary)}`);
 }
 
-/**
- * `scp iac render`'s `--output json` shape — one entry per `RenderedPipeline` plus the SAME honesty
- * disclaimer the text picture always carries (D21(d)): JSON output is not exempt from "the picture
- * must be the truth" any more than the table/comment-block form is, so it is echoed here too rather
- * than dropped as prose only the human-readable path bothers with.
- */
+/** `scp iac render`'s `--output json` shape. See docs/cli.md §52. */
 function renderCliJson(pipelines: readonly RenderedPipeline[]): unknown {
   return {
     pipelines: pipelines.map((p) => ({
@@ -1764,13 +1323,7 @@ function renderCliJson(pipelines: readonly RenderedPipeline[]): unknown {
   };
 }
 
-/**
- * Renders a Change's coupled-pipeline wait status (M12 P4B) — the shared body of `scp change
- * explain` (embedded, alongside plan/Decisions) and `scp change wait-status` (standalone). `null`
- * means the change declared no `requires`; a `wait-status` caller wants an explicit line for that
- * case (there is nothing else on the screen to say so), `explain` silently omits the section
- * instead (unchanged since Phase 4's `explain` support landed) — hence the `standalone` flag.
- */
+/** Renders a Change's coupled-pipeline wait status (M12 P4B). See docs/cli.md §53. */
 function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: boolean): void {
   if (!waitStatus) {
     if (standalone)
@@ -1778,12 +1331,7 @@ function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: bo
     return;
   }
   const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
-  // Derived from `outstanding`, not `waitStatus.waiting` alone: `waiting` reflects the change's
-  // STATE (`state === "waiting"`), which is false for a change read before it ever parked (still
-  // `coordinated`/`proposed`) or after it released (`executing`/`validating`/`accepted`) — either
-  // of which can still have an outstanding row (a not-yet-evaluated requirement, or a provider
-  // that was cancelled after release). Heading off `waiting` alone would print "all satisfied"
-  // over a row printing OUTSTANDING.
+  // Derived from `outstanding`, not `waitStatus.waiting` alone. See docs/cli.md §54.
   const header =
     outstanding > 0
       ? `Waiting on ${outstanding} of ${waitStatus.requirements.length} prerequisite(s):`
@@ -1805,38 +1353,12 @@ function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: bo
   }
 }
 
-/**
- * ADR-0028 increment 4 — a Change's STAGE-DEPENDENCY status, the second and deliberately separate
- * section of `scp change explain` and `scp change wait-status`.
- *
- * WHY A SIBLING SECTION AND NOT A WIDENING OF `printWaitStatusBody`. The two couplings answer
- * different questions and are keyed differently: `requires` is `{key, at}` and parks the WHOLE change
- * in `waiting`, whereas a stage dependency is (component x deployment-target) and withholds ONE wave
- * target's trigger while the change stays `executing`. A change can be in either, both or neither.
- * The server made the same call one layer up — `stageDependencyStatus` is a sibling field on
- * `explain`, not a widening of `waitStatus`, whose `requirements[]` shape two consumers already read.
- *
- * EXPORTED, AND RETURNING LINES INSTEAD OF PRINTING THEM, for the reason `cli-absent-formatters.test.ts`
- * sets out at length: a renderer that is module-private — or worse, inline in a Commander `.action()`
- * closure — is unreachable by any test, and every one of the ten guards that survived last round's
- * mutation sweep lived in exactly that position. This is the surface an operator reads at 2am; it is
- * pinned directly.
- *
- * EVERY FIELD HERE IS LIVE. The server re-runs reconcile's own predicate per request rather than
- * reading back the pinned `stage_dependency` Decision — which is never cleared when a hold releases,
- * and whose kind ALSO carries a promotion-import `allow`. So "HELD" below means held right now, and
- * stops saying so the moment the dependency lands, with no clearing row to wait for.
- */
+/** A change's stage-dependency status, kept a separate section. See docs/cli.md §55. */
 export function formatStageDependencyLines(
   status: ChangeStageDependencyStatus | null | undefined,
   standalone: boolean
 ): string[] {
-  // THE TWO ABSENCES ARE DIFFERENT CLAIMS AND ARE NOT COLLAPSED (which is why this does not reach for
-  // `isAbsent`, whose job is the opposite — to stop the two being told apart *by accident*). `null`
-  // is the server saying "this change coupled nothing"; an omitted key is the server saying nothing
-  // at all, which is contract-legal for an `.optional()` field and is exactly what a pre-increment-4
-  // server puts on the wire. Printing "coupled nothing" for the second would be a fabricated
-  // observation about a change that may well be held.
+  // THE TWO ABSENCES ARE DIFFERENT CLAIMS AND ARE NOT COLLAPSED. See docs/cli.md §56.
   if (status === undefined) {
     return standalone
       ? ["(no stage-dependency status reported — this server predates ADR-0028 increment 4)"]
@@ -1911,11 +1433,7 @@ function stageDependencyMark(dependency: ChangeStageDependencyVerdict): string {
   return dependency.branch === "unscopeable" ? "NOT ENFORCED" : "satisfied";
 }
 
-/** The printing half of `formatStageDependencyLines` — shared by `explain` (embedded) and
- *  `wait-status` (standalone). The blank separator is unconditional because this section is never
- *  first on the screen: `explain` has printed the change line above it, and `wait-status` has printed
- *  the `requires` section, which always emits at least its "(no coupled-pipeline prerequisites)"
- *  line. `standalone` therefore governs only whether an ABSENT status is worth a line of its own. */
+/** The printing half of `formatStageDependencyLines`. See docs/cli.md §57. */
 function printStageDependencyBody(
   status: ChangeStageDependencyStatus | null | undefined,
   standalone: boolean
@@ -1926,13 +1444,7 @@ function printStageDependencyBody(
   for (const line of lines) console.log(line);
 }
 
-/**
- * Prints a Change's compiled plan (waves/targets) and every Decision made about it, in order —
- * the CLI's window into the coordination engine's reasoning (BUILD_AND_TEST.md §8 M3 DoD:
- * "`scp change explain` renders" the Decision record). Deviates from `printResult`/`printTable`
- * (which assume flat rows), same as `printPlanResult`/`printApplyResult` above and for the same
- * reason — this shape (a change, an optional plan tree, an ordered decision list) isn't a table.
- */
+/** Prints a Change's compiled plan. See docs/cli.md §58. */
 function printExplainResult(result: ChangeExplainResponse, output: OutputFormat): void {
   if (output === "json") {
     console.log(JSON.stringify(result, null, 2));
@@ -1989,11 +1501,7 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
   }
 }
 
-/**
- * Prints a Campaign's compiled plan (waves/targets, each resolved to its member Change) and every
- * Decision made about it — the campaign-scoped analogue of `printExplainResult` above (M5,
- * DESIGN.md §9.5). Same shape deviation from `printResult`/`printTable` and for the same reason.
- */
+/** Prints a Campaign's compiled plan. See docs/cli.md §59. */
 function printCampaignExplainResult(result: CampaignExplainResponse, output: OutputFormat): void {
   if (output === "json") {
     console.log(JSON.stringify(result, null, 2));
@@ -2029,12 +1537,7 @@ function printCampaignExplainResult(result: CampaignExplainResponse, output: Out
   }
 }
 
-/**
- * Prints a Campaign's per-target adoption verdicts (M25.5, `scp campaign adoption <id>`) — the
- * campaign-scoped answer to "has each of this campaign's components migrated yet?", derived live
- * at read time. Same shape deviation from `printResult`/`printTable` as `printCampaignExplainResult`
- * above, and for the same reason: this is one object with array fields, not a list of rows.
- */
+/** Prints a Campaign's per-target adoption verdicts. See docs/cli.md §60. */
 function printCampaignAdoptionResult(result: CampaignAdoptionResponse, output: OutputFormat): void {
   if (output === "json") {
     console.log(JSON.stringify(result, null, 2));
@@ -2063,13 +1566,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Drives the CLI side of the device authorization flow (BUILD_AND_TEST.md §8 M2 item 3): starts
- * the request, prints the code+URL for the human to open in a browser, then polls at the
- * server-suggested interval until a token, a denial, or expiry — capping total wait at the
- * request's own `expiresIn`. `authorization_pending` is expected/normal while the human hasn't
- * approved yet; every other device-flow error code is terminal.
- */
+/** Drives the CLI side of the device authorization flow. See docs/cli.md §61. */
 async function deviceLogin(
   client: ScpClient
 ): Promise<{ token: string; expiresAt: string; org: string }> {
@@ -2098,15 +1595,7 @@ async function deviceLogin(
   throw new Error("device authorization timed out waiting for approval");
 }
 
-// -------------------------------------------------------------------------------------------
-// M2 typed registries (BUILD_AND_TEST.md §8 M2 item 1). All 8 resources — domain/service/
-// component/deployment-target/team/group/user/service-account — expose the exact same
-// create/list/get/update/delete/upsertByUrn shape (ScpClient.typedResource), and the 4
-// `owns`-eligible + 2 `consumes`/`depends_on`-eligible resources add ownership/edge methods on
-// top. These three factories build the `register`/`list`/`get`/`update`/`delete`/`upsert` and
-// `add-owner`/`add-consumes`/`add-depends-on` command families once, instead of hand-copying
-// them per resource — mirroring routes/typed-registries.ts and routes/ownership.ts server-side.
-// -------------------------------------------------------------------------------------------
+// M2 typed registries (BUILD_AND_TEST.md §8 M2 item 1). All 8 resources. See docs/cli.md §62.
 
 interface TypedResourceOps {
   create(req: CreateObjectRequest, opts?: { idempotencyKey?: string }): Promise<GraphObject>;
@@ -2149,11 +1638,7 @@ interface BaseCliOpts {
   output: OutputFormat;
 }
 
-/**
- * Registers `scp <name> register|list|get|update|delete|upsert`, options mirroring `object
- * create`/`object list`/etc. exactly. Returns the resource's top-level `Command` so callers can
- * attach `add-owner`/`add-consumes`/`add-depends-on` families on top where applicable.
- */
+/** Registers the register/list/get/update/delete verb family. See docs/cli.md §63. */
 function registerTypedResourceCrud(
   program: Command,
   name: string,
@@ -2355,11 +1840,7 @@ function registerTypedResourceCrud(
     .option("--output <format>", "json|table", "table")
     .action(async (idOrUrn: string, cmdOpts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(cmdOpts);
-      // Routed through the GENERIC object resource rather than the typed one, because `name` here
-      // IS the type id ("service", "deployment-target", …) and publish has exactly one endpoint —
-      // `POST /objects/{type}/{idOrUrn}/publish`. The typed SDK namespaces wrap per-type routes that
-      // have no publish counterpart, so adding a method there would mean six call sites threading a
-      // type string to reach the same generic operation this reaches directly.
+      // Routed through the generic object resource, since name is type. See docs/cli.md §64.
       const result = await client.object(name).publish(idOrUrn);
       if (cmdOpts.output === "json") {
         printResult(result, "json", () => ({}));
@@ -2565,13 +2046,7 @@ export function buildProgram(): Command {
       printResult(revoked, opts.output, (item) => patRow(item as Pat));
     });
 
-  // -------------------------------------------------------------------------------------
-  // RBAC — roles, bindings, effective permissions (role-model.md §5 steps 5, 6, 10)
-  //
-  // Until this existed the whole roles milestone was reachable only by hand-written HTTP: granting
-  // a role, authoring a custom one, mapping a group to an IdP claim. Charter principle 3 is
-  // API -> SDK -> CLI -> IaC -> UI and this is the CLI rung.
-  // -------------------------------------------------------------------------------------
+  // RBAC — roles, bindings, effective permissions. See docs/cli.md §65.
   const roleCmd = program.command("role").description("Inspect and author roles");
 
   roleCmd
@@ -2804,13 +2279,7 @@ export function buildProgram(): Command {
       );
     });
 
-  // -------------------------------------------------------------------------------------
-  // Instance-tier operator credentials (role-model.md §5 step 9)
-  //
-  // Named, hashed, individually revocable replacements for the single shared SCP_OPERATOR_TOKEN.
-  // All three verbs carry `x-scp-operator-token` — including the LISTING, which discloses how many
-  // credentials exist and when each was last used.
-  // -------------------------------------------------------------------------------------
+  // Instance-tier operator credentials. See docs/cli.md §66.
   const operatorCredCmd = program
     .command("operator-credential")
     .description("Mint, list and revoke instance-tier operator credentials");
@@ -2885,14 +2354,7 @@ export function buildProgram(): Command {
       console.log(`Operator credential '${id}' revoked.`);
     });
 
-  // -------------------------------------------------------------------------------------
-  // IdP group mapping (SSO groups) — the one surface that was a RAW PROPERTIES WRITE
-  //
-  // Tagging a group with `externalIdentity.claimValue` is a `PATCH /groups/{id}` carrying a nested
-  // object. That is not something to ask an administrator to hand-write, and getting the property
-  // name wrong fails silently — an unmapped group is simply never synced. These commands own the
-  // shape so the operator names only the group and the claim.
-  // -------------------------------------------------------------------------------------
+  // IdP group mapping (SSO groups). See docs/cli.md §67.
   const idpCmd = program.command("idp").description("Map identity-provider claims to SCP groups");
 
   idpCmd
@@ -3307,20 +2769,7 @@ export function buildProgram(): Command {
       printResult(updated, opts.output, (item) => objectRow(item as GraphObject));
     });
 
-  // `scp component scan-requirements <idOrUrn>` — M22.8, charter principle 3 (API -> SDK -> CLI).
-  //
-  // WHICH SCAN RULES ARE IN FORCE for this component: the resolved six-tier severity ceiling with
-  // every tier that contributed to it, and which exclusion classes are admitted and where a clause
-  // of each would take effect.
-  //
-  // THIS IS THE POLLABLE ONE. `scp policy evaluate` runs the real orchestrator and writes a Decision
-  // row per invocation with no write suppression; a watch loop on it recreates the amplification
-  // ADR-0024 §D0 exists over. This command reads and writes nothing.
-  //
-  // The table view answers the one question that has no other answer today — "will the exclusion I
-  // am about to author do anything?" — by printing each class's `effectiveAtTiers`. An EMPTY column
-  // there is the shipped default (admission is empty at every tier) and is the state that was
-  // previously invisible from every surface.
+  // `scp component scan-requirements <idOrUrn>`. See docs/cli.md §68.
   componentCmd
     .command("scan-requirements <idOrUrn>")
     .description(
@@ -3572,14 +3021,7 @@ export function buildProgram(): Command {
         return;
       }
 
-      // REPAIR ONLY WHAT THIS COMMAND CAN ACTUALLY DELETE THROUGH AN AUDITED DOOR.
-      //
-      // Relationships have one (`DELETE /relationships/{id}`), and it works even when an endpoint is
-      // dead. The projection rows do NOT have an id-addressed door — `deleteMapping` matches on the
-      // identity TUPLE and the binding door addresses its target object — so repairing them from
-      // this report's `id` alone is not possible today. Rather than reach past the API into SQL,
-      // this command repairs the edges and NAMES the rest, with the count, so the output can never
-      // read as "all clean" when it is not.
+      // Repair only what this command can delete through an audited door. See docs/cli.md §69.
       const repairable = report.danglingRelationships.filter((r) => r.repairable);
       const skippedReplicas = report.danglingRelationships.length - repairable.length;
       let deleted = 0;
@@ -3638,14 +3080,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // -------------------------------------------------------------------------------------
-  // doctor — read-only operational self-checks (`GET /doctor`).
-  //
-  // Sibling of `scp graph integrity` in spirit: a report, never a repair. The distinction from
-  // `pnpm doctor` (scripts/doctor.mjs) is deliberate and worth keeping straight — that one checks
-  // the TOOLCHAIN on a developer's machine and never opens a database; this one checks a running
-  // INSTANCE's state, over the public API like everything else in this CLI.
-  // -------------------------------------------------------------------------------------
+  // doctor — read-only operational self-checks. See docs/cli.md §70.
 
   program
     .command("doctor")
@@ -3720,12 +3155,7 @@ export function buildProgram(): Command {
       if (report.checks.some((c) => c.status !== "ok")) process.exitCode = 1;
     });
 
-  // -------------------------------------------------------------------------------------
-  // plan / apply (`@scp/iac` server-side plan/apply — BUILD_AND_TEST.md §8 M2 item 4). A
-  // manifest file is what `@scp/iac`'s `synthToFile` writes (or any hand-authored/CI-generated
-  // JSON matching `DesiredStateManifestSchema`) — the CLI never imports/executes a user's IaC
-  // TypeScript program directly, only the synthesized manifest (DESIGN.md §15).
-  // -------------------------------------------------------------------------------------
+  // plan / apply. See docs/cli.md §71.
 
   program
     .command("plan")
@@ -3767,14 +3197,7 @@ export function buildProgram(): Command {
       printPlanResult(plan, opts.output);
     });
 
-  // -------------------------------------------------------------------------------------
-  // `scp iac render` (team-pipeline-iac.md D21(d), §12) — regenerates the human-readable pipeline
-  // picture from a SYNTHESIZED manifest. Deliberately OFFLINE (no `clientFromStoredCredentials`,
-  // no `--base-url`): D21(d)'s own honesty requirement is that render states plainly what it CANNOT
-  // know from a manifest alone (`@scp/iac`'s `render.ts` module doc), which is only true if it never
-  // reaches for a network call to paper over that gap. `--write` is committed, drift-checkable
-  // codegen — the same convention `scp gen`'s SDK output and `products.ts`'s D20 module both follow.
-  // -------------------------------------------------------------------------------------
+  // `scp iac render` (team-pipeline-iac.md D21(d), §12). See docs/cli.md §72.
   const iacCmd = program.command("iac").description("Local, offline tools for @scp/iac manifests");
 
   iacCmd
@@ -3810,14 +3233,7 @@ export function buildProgram(): Command {
       console.log(section);
     });
 
-  // -------------------------------------------------------------------------------------
-  // `scp iac export` (team-pipeline-iac.md §9/D5) — reverse-generates `@scp/iac` construct code (or
-  // the synthesized manifest) from a service's LIVE subtree, over the already-generated SDK's own
-  // read verbs (`services.get`, `relationships.list`, `components.get`, `placements.list`,
-  // `deploymentTargets.get`, `changeSources.listMappings`, the generic `object(type).get`) — the
-  // onboarding path for the homelab's ~50 imported components and 61 placements, and for any org
-  // bringing an existing estate in (D5). ONLINE (reads the live graph); `--format` picks the shape.
-  // -------------------------------------------------------------------------------------
+  // `scp iac export` (team-pipeline-iac.md §9/D5). See docs/cli.md §73.
 
   iacCmd
     .command("export")
@@ -3882,15 +3298,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // -------------------------------------------------------------------------------------
-  // `scp iac scaffold` (team-pipeline-iac.md §7/D1, ADR-0047) — runs the existing `discovery/run`
-  // (unchanged; only `discovery/accept` is retired, and not by this increment) and renders the
-  // proposal as construct code, GROUPED into services BY FLAG (ADR-0047: "the grouping decision...
-  // requires a human, and accept is the one point in the flow where no human is present" — this
-  // command is where that human acts instead). `--repo-pr` (opening a PR against the config repo) is
-  // OUT OF SCOPE here — it needs a git-provider WRITE path, a different capability class; this command
-  // only ever writes local files or stdout.
-  // -------------------------------------------------------------------------------------
+  // `scp iac scaffold` (team-pipeline-iac.md §7/D1, ADR-0047). See docs/cli.md §74.
 
   iacCmd
     .command("scaffold")
@@ -3968,16 +3376,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // -------------------------------------------------------------------------------------
-  // change / decision (M3 Change Coordination Engine — DESIGN.md §9, §10.4, BUILD_AND_TEST.md
-  // §8 M3). `scp change propose` submits a Change against >=1 target object (usually
-  // components/services/deployment-targets); the engine compiles a wave plan from their
-  // `depends_on` edges (or an explicit `--topology`), gates each state transition behind policy
-  // Decisions, and executes waves via executor plugins. `scp change explain` is the CLI's window
-  // into that reasoning — the compiled plan's waves/targets plus every Decision made about the
-  // change, in order. `decision get/list` are read-only: Decisions are written by the
-  // coordination engine itself (policy/guard verdicts), never created directly via the CLI.
-  // -------------------------------------------------------------------------------------
+  // The change and decision command family. See docs/cli.md §75.
   const changeCmd = program
     .command("change")
     .description("Manage Changes (DESIGN.md §9 lifecycle)");
@@ -4124,12 +3523,7 @@ export function buildProgram(): Command {
       // sections instead of the full plan/Decisions/control-runs picture `explain` prints.
       const result = await client.changes.explain(id);
       if (opts.output === "json") {
-        // BOTH KEYS. This branch printed `result.waitStatus` alone until increment 4, so a change
-        // held by a stage dependency that declared no `requires` — the common ADR-0028 shape, since
-        // the two couplings are independent — printed the literal `null`. The scripted path would
-        // have gone on reporting "nothing is holding this" while the table path said HELD.
-        // `stageDependencyStatus` is passed through UNNORMALISED: `JSON.stringify` drops an omitted
-        // key, so an older server's silence stays silence here rather than being dressed as `null`.
+        // Both keys: one alone hid a change held with no requires. See docs/cli.md §76.
         console.log(
           JSON.stringify(
             { waitStatus: result.waitStatus, stageDependencyStatus: result.stageDependencyStatus },
@@ -4254,11 +3648,7 @@ export function buildProgram(): Command {
       process.exitCode = 1;
     });
 
-  // Federation audit witness (multi-region-instance-resilience.md §7.2.7) — the post-failover
-  // runbook's peers-witness comparison (resilience.md §7.2 step 5): `scp audit verify` alone
-  // cannot see a truncated chain (any prefix of a valid hash chain still verifies), so this reads
-  // what THIS domain earlier witnessed of an origin peer's audit-chain head, for comparison
-  // against that origin's restored `scp audit verify` head after a failover.
+  // Federation audit witness (multi-region-instance-resilience.md §7.2.7). See docs/cli.md §77.
   auditCmd
     .command("witnesses")
     .description(
@@ -4273,11 +3663,7 @@ export function buildProgram(): Command {
       printResult(rows, opts.output, (raw) => auditWitnessRow(raw as AuditWitness));
     });
 
-  // -------------------------------------------------------------------------------------
-  // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, DESIGN.md §10): policy/control documents
-  // (typed-registry resources — same CRUD family as domains/services/etc.), approvals (N-of-M
-  // quorum), freezes, and `scp policy evaluate`'s dry-run gate check.
-  // -------------------------------------------------------------------------------------
+  // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, DESIGN.md §10). See docs/cli.md §78.
   registerTypedResourceCrud(program, "policy", (c) => c.policies);
   const controlCmd = registerTypedResourceCrud(program, "control", (c) => c.controls);
 
@@ -4443,24 +3829,8 @@ export function buildProgram(): Command {
       printResult(found, opts.output, (item) => freezeRow(item as Freeze));
     });
 
-  // M25.1 — THE EXITS. `scp freeze` was create/list/get, so an operator could declare a freeze and
-  // had no way to take it back: the only escapes were `scp change cancel` / `scp change rollback`,
-  // which throw the RELEASE away rather than lifting the FREEZE. Since M25.2's per-target
-  // admission that is worse than waiting — a mistyped `--ends-at` year now holds a SUBSET of a
-  // wave's targets while the siblings have already shipped.
-  /**
-   * WHAT LIFTING COSTS (M25.9 / owner ruling D1(a-ii), 2026-08-25):
-   *  * YOUR OWN freeze — `freeze:write` at the freeze's own scope, the same permission that declared
-   *    it. Your own mistake stays yours to undo, or `scp freeze create` would be an entrance with no
-   *    exit for the very role that uses it.
-   *  * A freeze ANOTHER ACTOR declared — that PLUS the Owner-only `freeze:override`, at the freeze's
-   *    own scope. Retracting someone else's protection for everyone it covers costs the same
-   *    permission that admits one change past it (`scp change accept --override-freeze`). Expect a
-   *    403 naming `freeze:override` if you hold only the first.
-   *
-   * Scope expands UPWARD only: `freeze:override` bound at a service lifts that service's freezes and
-   * never the org-root freeze that covers everyone.
-   */
+  // M25.1 — THE EXITS. See docs/cli.md §79.
+  /** WHAT LIFTING COSTS. See docs/cli.md §80. */
   freezeCmd
     .command("lift <id>")
     .description(
@@ -4480,20 +3850,7 @@ export function buildProgram(): Command {
       printResult(lifted, opts.output, (item) => freezeRow(item as Freeze));
     });
 
-  /**
-   * WHAT EACH DIRECTION COSTS (M25.9 / owner ruling D1(a-ii), 2026-08-25) — the two are NOT the same
-   * price, and the server decides from the direction it computes under the row lock:
-   *  * SHORTENING — it ends the protection early for everyone the freeze covers, which is `lift`
-   *    with a different record, so on ANOTHER ACTOR'S freeze it takes the Owner-only
-   *    `freeze:override` on top of `freeze:write`, at the freeze's own scope. Gating `lift` alone
-   *    would have left the retraction one `update` away. On your own freeze it stays `freeze:write`.
-   *  * EXTENDING — it ADDS protection and takes nothing from anyone the freeze covers, so it stays
-   *    `freeze:write` whoever declared the freeze. So does re-sending the `endsAt` it already has.
-   *
-   * (A FEDERATING freeze is the one case where extending is the sharper direction, because it grows
-   * a block inside another security domain — that is a separate `federation:write` bar, and both
-   * apply.)
-   */
+  /** WHAT EACH DIRECTION COSTS. See docs/cli.md §81. */
   freezeCmd
     .command("update <id>")
     .description(
@@ -4530,12 +3887,7 @@ export function buildProgram(): Command {
       if (result.verdict === "block") process.exitCode = 1;
     });
 
-  // -------------------------------------------------------------------------------------
-  // campaign (M5 Campaigns — DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5).
-  // A Campaign coordinates many Changes across targets, wave by wave, over the SAME plan compiler
-  // a Change uses; unlike Change, it has no accept/cancel verbs — `status` is always a pure
-  // derived field, so `campaign status <id>` (its `get`) IS the CLI's window into that field.
-  // -------------------------------------------------------------------------------------
+  // campaign (M5 Campaigns — DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). See docs/cli.md §82.
   const campaignCmd = program
     .command("campaign")
     .description(
@@ -4637,24 +3989,7 @@ export function buildProgram(): Command {
       printCampaignAdoptionResult(result, opts.output);
     });
 
-  /**
-   * M25.6a (owner decision D4) — SET, MOVE or CLEAR the deadline. `--clear` is THE BLUNT EXIT: it
-   * releases every target the deadline was withholding this campaign's fan-out from, on the next
-   * tick, with no unlock verb. `scp campaign deadline-override` (M25.6b) is the per-target one:
-   * narrower radius, same permission on the widening acts, and it leaves the deadline standing.
-   *
-   * WHAT EACH ACT COSTS (owner ruling 2026-08-25, D1 b-i):
-   *  * `--at <iso>` SETTING a first deadline, or SHORTENING an existing one — plain `object:write`
-   *    at the campaign. Both withhold this campaign's changes from strictly MORE targets, so
-   *    neither can launder a waiver, and routine campaign hygiene must not need an Owner.
-   *  * `--clear`, or `--at <iso>` naming an instant LATER than the one stored — `object:write` PLUS
-   *    the Owner-only `campaign:deadline-override`. Both release targets that were being withheld,
-   *    and clearing is a strict superset of waiving one target, so it cannot cost less than
-   *    `deadline-override` does. Expect a 403 naming that permission if you hold only the first.
-   *
-   * `--reason` is required on ALL THREE acts, clear included: it is the operator's own words on the
-   * hash chain, beside a Decision carrying the previous instant.
-   */
+  /** M25.6a (owner decision D4) — SET, MOVE or CLEAR the deadline. See docs/cli.md §83. */
   campaignCmd
     .command("deadline <id>")
     .description(
@@ -4710,19 +4045,7 @@ export function buildProgram(): Command {
       }
     );
 
-  /**
-   * M25.6b (§4.5) — WAIVE the deadline for NAMED targets: excuse one laggard without clearing the
-   * deadline for everybody, which is all `deadline --clear` can do.
-   *
-   * Takes `campaign:deadline-override` (Owner-only) AT THE CAMPAIGN plus `object:write` at each
-   * named target. `--target` is REPEATABLE; omitting it waives every target the campaign declares,
-   * which is still not the same act as clearing — the deadline stands, each waiver is audited
-   * separately, and `--until` expires them one by one.
-   *
-   * `--until` is a BOUNDARY with READ-TIME expiry: past it the deadline applies again on the next
-   * tick with no job to run. An instant already in the past is accepted, stored and audited, and is
-   * simply not effective — which is the honest outcome rather than a special case.
-   */
+  /** M25.6b (§4.5) — WAIVE the deadline for NAMED targets. See docs/cli.md §84. */
   campaignCmd
     .command("deadline-override <id>")
     .description(
@@ -4789,20 +4112,7 @@ export function buildProgram(): Command {
       );
     });
 
-  // -------------------------------------------------------------------------------------
-  // -------------------------------------------------------------------------------------
-  // instance scan-floors (M17.5 — ADR-0016). The two ABOVE-org tiers of the six-tier,
-  // most-restrictive-wins scan-requirement chain:
-  //   platform -> trust domain (partition) -> org -> containment domain -> service -> component
-  // These are INSTANCE-scoped: they bind EVERY org on the deployment, so authoring one is an
-  // OPERATOR action gated by the deployment's SCP_OPERATOR_TOKEN — never a tenant role, however
-  // privileged inside its own org. Reading is an ordinary authenticated call, because a gate you
-  // cannot inspect is not explainable.
-  //
-  // `trust-domain` is the AMBIENT FEDERATION boundary (a partition) above org — NOT the intra-org
-  // containment `domain` object type below org (`scp domain ...`). Different concepts; the stored
-  // tier literal is `trust_domain`, never bare `domain`.
-  // -------------------------------------------------------------------------------------
+  // instance scan-floors (M17.5 — ADR-0016). See docs/cli.md §85.
   const scanFloorsCmd = program
     .command("scan-floors")
     .description(
@@ -4890,22 +4200,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // -------------------------------------------------------------------------------------
-  // instance scan-exclusion-admissions (M22.9 — ADR-0033 §1, §7a). The two ABOVE-org rungs of the
-  // exclusion dimension's monotone AND: a clause authored at any tier has effect only if EVERY
-  // represented tier strictly above it admits that clause's CLASS, and `platform` + `trust_domain`
-  // are ALWAYS represented. No policy can contribute those two — a policy anchors at a graph object
-  // and the containment chain is org-rooted — so with this table empty (the shipped default) every
-  // exclusion clause on the deployment is inert. This command is how an operator changes that.
-  //
-  // The five org-and-below rungs are NOT here and need nothing: they admit through the ordinary
-  // `scanExclusion` policy effect (`scp policy create ... {"scanExclusion":{"admit":[...]}}`).
-  //
-  // `set` REPLACES the admitted set for the tier, so withdrawing everything is `--revoke-all` rather
-  // than simply omitting `--class` — omitting it is refused, because an empty set at an instance rung
-  // makes every exclusion clause on the deployment inert and that is not something to reach by
-  // forgetting a flag.
-  // -------------------------------------------------------------------------------------
+  // instance scan-exclusion-admissions (M22.9 — ADR-0033 §1, §7a). See docs/cli.md §86.
   const scanAdmissionsCmd = program
     .command("scan-exclusion-admissions")
     .description(
@@ -4976,17 +4271,7 @@ export function buildProgram(): Command {
           "declared_fact",
           "approved_override"
         ] as const;
-        // THE DESTRUCTIVE DEFAULT, MADE EXPLICIT (owner decision, 2026-08-18).
-        //
-        // `set` is a whole-set REPLACE, and that is the right server contract: an additive verb would
-        // make withdrawal the harder operation on a LOOSENING, which is the wrong way round. But it
-        // means `--class` omitted sends `classes: []`, and an empty admitted set at an instance rung
-        // makes EVERY exclusion clause on the deployment inert — every org, every tier beneath it —
-        // because the monotone AND fails at the top. That is a bigger blast radius than any other
-        // single CLI call in this tool, and it was reachable by forgetting a flag.
-        //
-        // The server contract is unchanged; this refusal is CLI-side only. `--revoke-all` is the
-        // withdrawal path and it says what it does.
+        // THE DESTRUCTIVE DEFAULT, MADE EXPLICIT. See docs/cli.md §87.
         const classes = opts.class ?? [];
         if (classes.length === 0 && !opts.revokeAll) {
           throw new Error(
@@ -5025,15 +4310,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // -------------------------------------------------------------------------------------
-  // instance scanner-assignments (M13.3a — ADR-0020 §2). The executor Type -> managed scan
-  // method(s) registry the commander's promotion scan step selects scanners from. Keyed on the
-  // EXISTING ExecutorType taxonomy (image|rpm|deb|npm|maven|python|go|chart|vm-image|infrastructure|configuration). Like scan
-  // floors these are INSTANCE-scoped: they bind EVERY org on the deployment, so authoring one is an
-  // OPERATOR action gated by SCP_OPERATOR_TOKEN — never a tenant role. Reading is an ordinary
-  // authenticated call. An empty methods set CLEARS the assignment (that Type produces no managed
-  // evidence — fail-closed: E6 refuses unless org-pipeline evidence covers the digest).
-  // -------------------------------------------------------------------------------------
+  // instance scanner-assignments (M13.3a — ADR-0020 §2). See docs/cli.md §88.
   const scannerAssignmentsCmd = program
     .command("scanner-assignments")
     .description(
@@ -5132,11 +4409,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // scan-db (M13.3b-ii — ADR-0020, proposal §13.3b). The commander's managed-scan vulnerability DB:
-  // `status` + `staleness-policy get` are ordinary reads (a promotion blocked for a stale DB must be
-  // explainable); `staleness-policy set`, `refresh` (connected skopeo-pull), and `load` (air-gap
-  // cosign-signed blob) bind every org and are OPERATOR actions gated by SCP_OPERATOR_TOKEN.
-  // -------------------------------------------------------------------------------------
+  // scan-db (M13.3b-ii — ADR-0020, proposal §13.3b). See docs/cli.md §89.
   const scanDbCmd = program
     .command("scan-db")
     .description(
@@ -5292,23 +4565,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // -------------------------------------------------------------------------------------
-  // dependency-subscriptions (M21.3 — ADR-0032 §3a, §6). Enablement is a monotone AND:
-  //
-  //     effective_enabled(component, line) =
-  //         instance_unlocked  AND  component_enabled  AND  NOT line_opted_out
-  //
-  // `unlock` is an ordinary read (a team whose subscription is inert because the DEPLOYMENT never
-  // opened the feature must be able to see that — charter principle 6); `set-unlock` binds every org
-  // and is an OPERATOR action gated by SCP_OPERATOR_TOKEN, never a tenant role. `resolve` is the
-  // explainability surface: it prints the verdict AND the per-tier contributions that produced it.
-  //
-  // THERE IS NO `subscribe` VERB, AND ONE MUST NOT BE ADDED. A dependency subscription IS a
-  // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a), so it is authored
-  // with `scp policy register` — the same command, versioning and federation path every other policy
-  // uses. `scp dependency-subscriptions --help` says so out loud, because the first thing someone
-  // will look for here is the verb that does not exist.
-  // -------------------------------------------------------------------------------------
+  // dependency-subscriptions (M21.3 — ADR-0032 §3a, §6). See docs/cli.md §90.
   const depSubsCmd = program
     .command("dependency-subscriptions")
     .description(
@@ -5426,18 +4683,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // M21.2 (ADR-0032 §4) — the inventory backfill.
-  //
-  // Ingestion is event-driven: an accepted, correlated change re-reads its component's dependency
-  // manifests. That covers components that RELEASE and nothing else, so an existing estate — and any
-  // component that has not pushed since it was enabled — needs this once. Idempotent, so running it
-  // twice is a no-op, and it reports every skip rather than a bare count.
-  //
-  // POINT IT AT THE COMMANDER. All dependency automation is commander-only (ADR-0032 §7d), so an
-  // instance whose `SCP_FEDERATION_ROLE` is not an explicitly declared `commander` answers 409 with
-  // a detail naming why — including the fail-closed case where the role was never declared at all.
-  // It is said in the description because that 409 is a mistake an operator makes when choosing
-  // `--base-url`, not a mistake in the request, and the flag is right here.
+  // M21.2 (ADR-0032 §4) — the inventory backfill. See docs/cli.md §91.
   depSubsCmd
     .command("backfill-inventory")
     .description(
@@ -5603,23 +4849,7 @@ export function buildProgram(): Command {
       }
     });
 
-  // -------------------------------------------------------------------------------------
-  // governance move-enforcement (governance-reach-on-containment-move.md §9.2, owner ruling
-  // 2026-08-18) — the `governance:move` LATTICE: a top-down monotone OR of enabled RUNGS (the
-  // instance, or one container object — org root, containment domain, service, assembly) that
-  // decides whether a containment move ALSO requires `governance:move`, at-or-above BOTH the moved
-  // object and the destination. Nothing is enforced until a rung is enabled — every deployment
-  // ships with none, and `status`/`rungs` say so honestly.
-  //
-  // AN UPPER RUNG CANNOT BE UNDONE BELOW IT. `disable` answers 409 while an ancestor's rung (or the
-  // instance rung) is still enabled, naming it — see `governanceMoveRungWriteRow`'s note on why a
-  // "successful" disable that left the subtree enforced anyway would be worse than refusing.
-  //
-  // THE INSTANCE RUNG IS OPERATOR-ONLY (SCP_OPERATOR_TOKEN) — never a tenant role — because it
-  // ACTIVATES enforcement for every org on the deployment (owner ruling Q1-A; contrast the
-  // dependency-subscription unlock, which only PERMITS). `rungs`/`status`/`instance get` are
-  // ordinary tenant reads; `enable`/`disable` need `policy:write` at-or-above the subject.
-  // -------------------------------------------------------------------------------------
+  // The `governance:move` lattice, top-down and monotone. See docs/cli.md §92.
   const governanceCmd = program
     .command("governance")
     .description(
@@ -5761,28 +4991,7 @@ export function buildProgram(): Command {
       );
     });
 
-  // -------------------------------------------------------------------------------------
-  // dependency-producers (ADR-0032 §7e) — WHICH COORDINATES THIS ORG PUBLISHES.
-  //
-  // This is the switch between two entirely different head ingresses. A DECLARED coordinate's
-  // versions come from the org's own production releases; an undeclared one's are fetched from a
-  // public index. Getting it wrong fails in both directions and both are silent:
-  //
-  //   - declare a coordinate you do NOT publish -> it leaves the third-party poll permanently, and
-  //     every subscriber stops receiving upstream versions INCLUDING SECURITY RELEASES. There is no
-  //     error, because the failure is an absence.
-  //   - fail to declare one you DO publish -> the coordinate is polled against a public index, and
-  //     a stranger's package answering `9.9.9` bumps every subscriber onto it, on a daily timer.
-  //
-  // SO `--dry-run` IS ON BOTH WRITE VERBS AND IS THE FIRST THING TO REACH FOR. It prints the same
-  // blast radius and writes nothing.
-  //
-  // THERE IS NO `--producer none`. Retraction is its own subcommand: a flag that switches a verb
-  // between declaring and undeclaring is how an omitted value becomes a destructive default.
-  //
-  // POINT IT AT THE COMMANDER. The writes are commander-only (ADR-0032 §7d) and answer 409
-  // elsewhere; the read works anywhere but is empty by design on a field outpost.
-  // -------------------------------------------------------------------------------------
+  // dependency-producers (ADR-0032 §7e). See docs/cli.md §93.
   const depProducersCmd = program
     .command("dependency-producers")
     .description(
@@ -5887,18 +5096,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // federation (M6 Federation Basics — DESIGN.md §13, BUILD_AND_TEST.md §8 M6). `export`/`import`
-  // work on `.scpbundle` files on disk (the built-in file transport — "the air gap is the design
-  // center", §13) so they're the ones CI's two-domain E2E drives via a real file-copy across an
-  // isolated compose network. `promote` is the Promotion Bundle's own export verb — kept distinct
-  // from `export` (which only ever produces sync bundles) so the CLI surface mirrors the two
-  // distinct bundle kinds `packages/schemas/src/federation.ts` defines.
-  //
-  // `scp federation promote` KEEPS its name (ADR-0021 D1/D2/D5 scope note): it is a genuine
-  // promotion — an already-built artifact advancing to the next step. The change-lifecycle
-  // approval gate that used to share the word is now `scp change accept` (D5). The two verbs are
-  // deliberately different words for deliberately different things; do not unify them.
-  // -------------------------------------------------------------------------------------
+  // The federation command family, over bundle files on disk. See docs/cli.md §94.
   const federationCmd = program
     .command("federation")
     .description(
@@ -6089,15 +5287,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // -----------------------------------------------------------------------------------------
-  // M16.2 phase A (E4) — `scp federation peer-update`: the NARROW, TRANSPORT-ONLY peer edit.
-  //
-  // DELIBERATELY A SEPARATE COMMAND FROM `pair`, not a flag on it. `pair` is a re-pair: it REQUIRES
-  // `--public-key`, and a different value there is a KEY ROTATION that supersedes the peer's current
-  // key window and hard-revokes the old key. This command takes no key flag at all, so "I just want to
-  // fix the base URL" can never become a trust-anchor rotation. Rotating a key remains an explicit
-  // `scp federation pair --public-key <new>`.
-  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E4) — `scp federation peer-update`. See docs/cli.md §95.
   federationCmd
     .command("peer-update")
     .description(
@@ -6232,24 +5422,14 @@ export function buildProgram(): Command {
       });
     });
 
-  // -----------------------------------------------------------------------------------------
-  // M16.2 phase A (E1) — `outpost` config objects: the commander-authored declared config that SYNCS
-  // DOWN (a peer ROW never can — the journal has no peer-shaped entry kind). Commander-side commands;
-  // on an outpost these read the local read-only replica, and a write there is refused with 409.
-  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E1) — `outpost` config objects. See docs/cli.md §96.
   const outpostCmd = federationCmd
     .command("outpost")
     .description(
       "Commander-origin outpost config objects (trust tier) that sync down to the outpost"
     );
 
-  // THE HELP TEXT IS DERIVED FROM THE SCHEMA, NOT RETYPED (review round 5, N1). The first cut of the
-  // tier enum was `commercial|fedramp-high|il5`; ADR-0022 widened it to the glossary's five members,
-  // and every OTHER site was corrected while these two option descriptions kept listing the old
-  // three — the only place an operator ever reads the list. An operator enrolling a GovCloud outpost
-  // was told no value existed for it, and pushed to either leave the tier unknown or assert
-  // `commercial`: the INVENTED POSTURE this milestone exists to prevent. Joining the enum's own
-  // members here makes that drift structurally impossible; `outpost-cli-surface.test.ts` pins it.
+  // THE HELP TEXT IS DERIVED FROM THE SCHEMA, NOT RETYPED. See docs/cli.md §97.
   const TRUST_TIER_CHOICES = OutpostTrustTierSchema.options.join("|");
 
   outpostCmd
@@ -6333,11 +5513,7 @@ export function buildProgram(): Command {
       printResult(config, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
     });
 
-  // THE RECOVERY VERB, ON THE ONLY SURFACE ITS OPERATOR CAN REACH (review round 5, N2). Charter
-  // principle 3 is API -> SDK -> CLI -> IaC -> UI, and this verb exists precisely so somebody can
-  // UN-WEDGE a peer whose database holds duplicate `outpost` objects. That operator is the one person
-  // who cannot use the UI for it — the wedged peer is exactly what the UI fails to render — so of all
-  // the verbs this milestone added, `reconcile` is the one that most needs a command line.
+  // THE RECOVERY VERB, ON THE ONLY SURFACE ITS OPERATOR CAN REACH. See docs/cli.md §98.
   outpostCmd
     .command("reconcile")
     .description(
@@ -6542,11 +5718,7 @@ export function buildProgram(): Command {
       printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
-  // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2). `relay` runs on the RETRANS-role
-  // instance: pull + validate the imported promotion's authorized artifact bytes and build the
-  // signed byte tarball in the server's SCP_RELAY_OUT_DIR drop directory. The tarball crosses the
-  // CDS out-of-band (a file walk, exactly like `.scpbundle`); `relay-import` runs on the
-  // DESTINATION outpost to verify it and push the bytes into the local registry by digest.
+  // M15.5(c) — the retrans validate-then-relay. See docs/cli.md §99.
   federationCmd
     .command("relay")
     .description(
@@ -6622,13 +5794,7 @@ export function buildProgram(): Command {
       );
     });
 
-  // M13.1b — the auto-relay build ledger's OPERATOR READ SURFACE (owner ask): see queue depth and
-  // exhausted rows without DB surgery. ROLE-AGNOSTIC BY CONSTRUCTION (relay-builds-repo.ts's
-  // `listRelayBuilds` doc): rows exist only on a `role: retrans` instance, seeded at promotion
-  // import there; on any other role the table is honestly empty, so this never 409s on role — an
-  // empty table is the truth, matching every other read surface in this codebase. Mirrors
-  // docs/runbooks/retrans-relay.md's "Seeing queue depth and exhausted rows without database
-  // surgery" section, including its exit from `exhausted`.
+  // M13.1b — the auto-relay build ledger's OPERATOR READ SURFACE. See docs/cli.md §100.
   federationCmd
     .command("relay-builds")
     .description(
@@ -6727,11 +5893,7 @@ export function buildProgram(): Command {
       console.log(JSON.stringify(view.merged, null, 2));
     });
 
-  // -----------------------------------------------------------------------------------------
-  // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12) — secrets, executor/
-  // notification bindings, plugin manifests, discovery run/accept, webhook signing secrets, and
-  // `scp change report` (Terraform Mode 1's `--plan-json` CLI step).
-  // -----------------------------------------------------------------------------------------
+  // M7: Real Executor Integrations. See docs/cli.md §101.
 
   const secretCmd = program
     .command("secret")
@@ -6774,12 +5936,7 @@ export function buildProgram(): Command {
       console.log(`Deleted secret '${key}'`);
     });
 
-  // -----------------------------------------------------------------------------------------
-  // `scp connect` (M12 P4) — one command to register an execution system SCP will coordinate
-  // (Mode A / BYO): stores the token, creates the `execution-system` object, and best-effort
-  // validates connectivity. Wraps `secret put` + `object create` so an operator doesn't hand-craft
-  // the properties JSON. After this, `scp discovery run --module argocd-discovery` imports the apps.
-  // -----------------------------------------------------------------------------------------
+  // `scp connect` (M12 P4). See docs/cli.md §102.
   const connectCmd = program
     .command("connect")
     .description("Register an existing execution system for SCP to coordinate (Mode A)");
@@ -6857,19 +6014,7 @@ export function buildProgram(): Command {
         console.log(
           `Registered execution-system '${opts.name}' (${created.id}). Token stored as secret '${tokenKey}'.`
         );
-        // CREDENTIAL LOCALITY. `connect` is the moment the operator chooses where this system's
-        // credential lives, and nothing used to say so — you found out by reading the secrets table.
-        //
-        // A single commander coordinating several places is a legitimate topology, and the RIGHT
-        // default (charter principle 7 orders Simplicity above Federation; a second instance means a
-        // second database and a small PKI). But it has one consequence worth stating out loud: this
-        // token now lives HERE, so anyone with access to this instance can reach that system. That is
-        // fine when this instance is at least as protected as the system it controls, and is exactly
-        // the case where an outpost earns its cost when it is not.
-        //
-        // Printed as a NOTE, not a warning: it is unconditionally true rather than a problem, and
-        // dressing a fact as an alarm is how operators learn to skim output. `federation.self()` is
-        // best-effort — a connect must not fail because we could not decorate its success.
+        // Credential locality: `connect` chooses where it lives. See docs/cli.md §103.
         try {
           const self = await client.federation.self();
           console.log(
@@ -7198,12 +6343,7 @@ export function buildProgram(): Command {
   // is `scp iac scaffold`, which turns the same proposal into IaC code a human commits; the graph
   // write then goes through `scp apply` with strict create and ordinary authorization.
 
-  // `scp discovery backfill-mappings` IS GONE with the route it called. It repaired the ~50 argocd
-  // components imported through `discovery/accept` before discovery emitted source mappings. That
-  // population is CLOSED — accept is gone (ADR-0047), so no door can create a mapping-less component
-  // any more — and the repair path for one that predates the change is now to adopt it into a stack
-  // (`scp iac export` carries existing mappings) and declare the source in the manifest, which the
-  // ordinary `sourceMappings` collection reconciles on apply.
+  // `scp discovery backfill-mappings` IS GONE with the route it called. See docs/cli.md §104.
 
   const changeSourceCmd = program
     .command("change-source")

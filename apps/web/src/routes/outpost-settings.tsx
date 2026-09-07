@@ -16,43 +16,14 @@ import { Input } from "../components/ui/input";
 import { Alert } from "../components/ui/alert";
 import { SectionLabel } from "../components/ui/section-label";
 
-/**
- * M16.2 phase B (B2) — PER-OUTPOST SETTINGS: the `federation_peers` ROW half of the authority split
- * (ADR-0022 clause 1). Identity, mTLS/transport, reachability. Local to this side, never journaled.
- *
- * THE ONE THING THIS FILE EXISTS TO GET RIGHT: it writes through
- * `PATCH /v1/federation/peers/{id}` — the structurally KEYLESS door — and never through
- * `POST /federation/peers`. A re-pair REQUIRES `publicKey`, and a DIFFERENT value there is a KEY
- * ROTATION that supersedes the current key window and hard-revokes the old key at the
- * applied-sequence anchor. A settings form built on the pair route rotates a peer's trust anchor the
- * first time it drops or mangles the key — silently, with a 200. Phase A built the keyless PATCH for
- * exactly this form; using it is not an optimisation, it is the requirement.
- *
- * WHAT IS DELIBERATELY NOT EDITABLE HERE:
- *   * `role` — an identity-level assertion made at pairing (the PATCH body has no `role` at all;
- *     `peer-patch.integration.test.ts` measures a smuggled `role` being ignored).
- *   * key material — see above. Rotation stays a deliberate CLI re-pair.
- *   * `pokeMode` — it IS a peer-row field and the same PATCH carries it, but it is CONSENT-shaped and
- *     belongs with the other per-outpost configuration (B3, `outpost-configuration.tsx`), where it can
- *     be labelled "this side only" next to the unilateral-sparse warning. Two forms writing one field
- *     from two places is how a UI ends up disagreeing with itself.
- *   * an `s3-compatible` delivery target — its endpoint/bucket are operator-allowlisted
- *     (`SCP_DELIVERY_S3_ENDPOINTS`) and its credentials live in the vault; this form would have to
- *     round-trip a shape it cannot fully render, and a partial round-trip REPLACES the stored target.
- *     It is shown read-only with a pointer to the CLI, and the patch OMITS the field so the server
- *     preserves it.
- */
+/** M16.2 phase B (B2) — PER-OUTPOST SETTINGS. See docs/web.md §398. */
 
 /** The transport keys this form may ever send. Deliberately a runtime value, not a comment: the test
  *  asserts it is a SUBSET of `UpdateFederationPeerRequestSchema`'s own keys, so if the request body
  *  ever grows something key-shaped this list cannot silently start carrying it. */
 export const PEER_SETTINGS_PATCH_KEYS = ["name", "baseUrl", "syncScope", "deliveryTarget"] as const;
 
-/** The four sync-scope modes this form can SET. `custom` is absent on purpose: it carries a
- *  `labelSelector` this form has no editor for, and offering it would mean writing `{mode:'custom'}`
- *  with an empty selector — a silent narrowing of what the peer receives. A peer already on `custom`
- *  keeps it (the mode select shows it, and an unchanged mode OMITS `syncScope` entirely, which the
- *  server reads as preserve). */
+/** The four sync-scope modes this form can SET. See docs/web.md §399. */
 export const SETTABLE_SYNC_SCOPE_MODES = [
   "full",
   "policies_only",
@@ -60,33 +31,7 @@ export const SETTABLE_SYNC_SCOPE_MODES = [
   "status_only"
 ] as const;
 
-/**
- * THE PEER'S CURRENT SYNC-SCOPE MODE, or `undefined` when the server did not send `syncScope` (Y4).
- *
- * `syncScope` is required-not-optional on `FederationPeer`, and BEFORE ADR-0023 the generated SDK
- * validated NO response, so `peer.syncScope.mode` was a bare dereference of a field nothing
- * enforced at runtime — the SAME read that white-screened the outposts pages, and here it would
- * kill the Settings form (and with it the only door an operator has to fix the peer).
- *
- * WHAT ADR-0023 CHANGED, AND WHAT IT DID NOT — the canonical statement of the rule, since this
- * comment is the one the ADR cites. The SDK now runs a generated zod schema over every 2xx JSON
- * body of every SPEC'D operation, so a body missing `syncScope` no longer RESOLVES a query: it
- * REJECTS it, once, naming the operation and the field. Three consequences, all live:
- *   1. A required field arriving through the SDK is now enforced at runtime, so a guard like this
- *      one is defence in depth rather than the only thing standing between a page and a TypeError.
- *   2. The failure moved, it did not vanish. Every page that reads through the SDK must render its
- *      `isError` state, or the diagnosis dies in the query cache and the operator sees a blank
- *      card — the regression this round fixed (`../components/query-error.tsx`).
- *   3. THE BOUND IS THE SPEC'D OPERATIONS — which, since the SSE API-parity work, is every byte the
- *      SPA parses off the network. `GET /events/stream` was the one exception (absent from
- *      `openapi.v1.json`, so `lib/use-event-stream.ts` cast raw JSON); it is declared now, and each
- *      frame is validated by the same generated validator as any 2xx body.
- *
- * `undefined` RATHER THAN A DEFAULT, deliberately. Substituting `"full"` would be the fabrication
- * class this whole branch exists to remove: it would tell the operator the peer exports everything,
- * and — because the patch builder omits an UNCHANGED mode — a form left alone would silently keep
- * whatever the real scope is while displaying a different one. An unknown mode is unknown.
- */
+/** The peer's current sync-scope mode, or undefined. See docs/web.md §400. */
 export function peerSyncScopeMode(peer: FederationPeer): SyncScope["mode"] | undefined {
   return (peer.syncScope as SyncScope | undefined)?.mode;
 }
@@ -128,17 +73,7 @@ export function draftFromPeer(peer: FederationPeer): PeerSettingsDraft {
   };
 }
 
-/**
- * THE PATCH BODY, built from the draft — ABSENT MEANS PRESERVE, everywhere.
- *
- * Every unchanged field is OMITTED rather than echoed back. That is not tidiness: echoing
- * `syncScope` back would flatten a `custom` scope's `labelSelector` (this form cannot render one),
- * and re-declaring a scope of `full` fires the G8 cursor-re-anchor permit for a save that changed
- * only the peer's display name.
- *
- * The returned object is typed `UpdateFederationPeerRequest`, which HAS NO KEY FIELDS — so this
- * function is incapable of expressing a rotation even if it wanted to.
- */
+/** THE PATCH BODY, built from the draft. See docs/web.md §401. */
 export function peerSettingsPatch(
   peer: FederationPeer,
   draft: PeerSettingsDraft
@@ -195,13 +130,7 @@ export interface PeerTransportDoors {
   updatePeer(id: string, req: UpdateFederationPeerRequest): Promise<FederationPeer>;
 }
 
-/**
- * The ONE function the Save button runs: build the body, then send it through the keyless PATCH.
- *
- * Build and send live together on purpose. Testing them apart would leave the join — "the form sends
- * what the builder built, through the door the builder was written for" — unpinned, which is exactly
- * where a re-pair could slip back in.
- */
+/** The ONE function the Save button runs. See docs/web.md §402. */
 export async function savePeerSettings(
   doors: PeerTransportDoors,
   peer: FederationPeer,
@@ -244,13 +173,7 @@ const selectClass = cn(
   focusRing
 );
 
-/**
- * The Settings form. EXPORTED for `outpost-settings.test.tsx`, which renders it directly — the
- * "no key material, no role" property is a rendering property as much as a request-body one.
- *
- * `onSave` is injected so the test can drive the real submit path against a double; the page below
- * passes the real SDK.
- */
+/** The Settings form. See docs/web.md §403. */
 export function PeerSettingsCard({
   peer,
   saveError,

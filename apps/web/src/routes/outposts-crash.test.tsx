@@ -6,32 +6,7 @@ import { ScpClient } from "@scp/sdk";
 import type { FederationPeerStatus } from "@scp/schemas";
 import { render } from "../test-support/render-dom";
 
-/**
- * `/outposts` MUST REPORT A CONTRACT FAILURE, NOT AN EMPTY TABLE (ADR-0023).
- *
- * WHY THIS FILE EXISTS. `outposts-honesty.test.tsx` owns the RENDERING contract of one row and
- * drives the components directly with `renderToStaticMarkup`. Nothing drove the PAGE. So the
- * `statusQuery.isError` branch in `outposts.tsx` — the branch that decides whether a
- * response-validation failure ever reaches a human on this page — had no test at all, and the
- * failure mode it prevents is precisely the one the SPA is worst at showing: `peers` defaults to
- * `[]` on a rejected query, `outposts.length === 0`, and the card would otherwise render
- * "No outpost or retrans peers are paired yet" — a confident, false statement of federation state
- * produced by a failure the SDK had already diagnosed in full.
- *
- * WHY IT DRIVES THE REAL SDK. The behaviour spans two packages: `@scp/sdk` turns a malformed 2xx
- * body into an `ScpResponseValidationError`, react-query turns the rejected `queryFn` into
- * `isError`, and this page must RENDER that. Mocking `client` would stub out the first half — the
- * half that decides whether the second half is reachable at all — which is exactly how a guard test
- * becomes a wording test. So a REAL `ScpClient` runs over a stubbed `fetch`: everything from the
- * wire bytes up is production code.
- *
- * REVERT TESTS:
- *   * delete the `statusQuery.isError` branch in `outposts.tsx` → the first two cases fail on the
- *     missing `outposts-error` node, and the first also fails on the fabricated "No outpost or
- *     retrans peers are paired yet";
- *   * replace `<QueryErrorNotice error={statusQuery.error} …/>` with a fixed string → the second
- *     case fails on the missing operation and field name.
- */
+/** `/outposts` MUST REPORT A CONTRACT FAILURE, NOT AN EMPTY TABLE. See docs/web.md §405. */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
@@ -196,11 +171,7 @@ describe("/outposts: a well-formed response is unaffected", () => {
     const rendered = await renderPage();
     const html = rendered.html();
 
-    // Asserted on the EMPTY-STATE ELEMENT, not on its sentence. This previously pinned the literal
-    // copy and broke when the wording changed to say "no OTHER outposts" (the self-domain panel now
-    // sits above it, so the old sentence had become untrue). The premise this case exists to
-    // establish — that the empty branch is reachable, so its absence in the cases above is the error
-    // branch winning — is about which branch rendered, and a testid says that without pinning prose.
+    // Asserted on the EMPTY-STATE ELEMENT, not on its sentence. See docs/web.md §406.
     expect(html).toContain('data-testid="outposts-empty"');
     expect(html).not.toContain("outposts-error");
 

@@ -17,13 +17,7 @@ import {
   type CosignKeyGenerator
 } from "./cosign-keys.js";
 
-/**
- * M17.3 E4 — SCP's cosign MANIFEST-SIGNING keypair management (KEY MANAGEMENT ONLY; no signing of
- * any promotion manifest, no export/gate change — those are E6). Proves the owner-decided posture:
- * the private key lives in a DEDICATED org-scoped RLS table (`instance_cosign_keys`), generated
- * lazily + race-safe, STRUCTURALLY unreachable by `resolveSecretRefs` (so it can never be pulled
- * into a plugin subprocess), never returned over any API, and a real keypair that actually works.
- */
+/** M17.3 E4 — SCP's cosign MANIFEST-SIGNING keypair management. See docs/governance.md §57. */
 describe("M17.3 E4: cosign signing-keypair management", () => {
   let server: TestServer;
   let orgAId: string;

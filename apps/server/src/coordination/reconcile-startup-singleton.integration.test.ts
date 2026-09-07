@@ -10,27 +10,7 @@ import {
 } from "../federation/test-support/isolated-domain.js";
 import { RECONCILE_QUEUE, startReconcileLoop, type ReconcileLoopHandle } from "./reconcile.js";
 
-/**
- * §4-A4 / §7.1 item 4, AFTER TWO CORRECTIONS: `startReconcileLoop`'s startup kick is sent UNKEYED,
- * and the property that matters is LIVENESS — it must always insert.
- *
- * A4 shipped wanting the opposite (N replicas booting together collapse to ONE startup tick) and
- * every implementation of that goal turned out to be fatal, because pg-boss's only applicable index
- * (`job_i4`, see events/pgboss.ts) counts COMPLETED jobs as holding the singleton slot:
- *   1. sharing the chain's `"tick"` key killed the 60s loops after a single sweep, on ~58 of every
- *      60 boots, in production as well as CI;
- *   2. its own key + a 10s window then killed CRASH RESUMPTION — a worker that died mid-tick (so the
- *      chain never rescheduled) and restarted inside the window had its kick swallowed by its OWN
- *      previous boot and came back dead.
- * A dead loop has no error, no log and no failing health check, which is the same shape as the
- * starvation bug that stopped production coordination for 13 days. Redundant startup sweeps, the
- * thing A4 was avoiding, are merely wasteful — every sweep claims its rows with FOR UPDATE SKIP
- * LOCKED. `coordination/loop-startup-singleton.test.ts` is the census that keeps every loop honest.
- *
- * This never fires against `reconcileOrgTick` itself (an empty isolated domain has no changes to
- * advance, so the stub `PluginHost` below is never called) — it proves the pg-boss WIRING, which is
- * exactly the layer the bug lived at.
- */
+/** §4-A4 / §7.1 item 4, AFTER TWO CORRECTIONS. See docs/coordination.md §739. */
 describe("§4-A4 startReconcileLoop: the startup kick always inserts", () => {
   let domain: IsolatedDomain;
   let boss1: PgBoss;

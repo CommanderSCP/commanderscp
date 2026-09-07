@@ -14,11 +14,7 @@ import {
   readDependencyIndexFeed
 } from "./version-index-feed.js";
 
-/**
- * The air-gap feed's job is to be REFUSABLE. Every test here is about a way the feed can be wrong,
- * and the assertion is always the same shape: the wrong feed produces an explicit refusal, never a
- * quiet "this coordinate has no newer version".
- */
+/** The air-gap feed's job is to be REFUSABLE. See docs/dependencies.md §401. */
 
 let scratch: string;
 beforeAll(() => {
@@ -248,24 +244,7 @@ describe("loadDependencyIndexFeedBlob — verify, then install; never the other 
   });
 });
 
-/**
- * HIGH CLASS, LOW BLAST RADIUS (M23.0 verification pass 7's census of "slice a string at a code-unit
- * offset, then persist it"; fixed pass 8).
- *
- * WHERE THIS MESSAGE GOES, which is the whole reason it is not a log-line concern:
- *
- *   parseDependencyIndexFeed throws
- *     -> readDependencyIndexFeed catches   -> FeedRead.detail
- *     -> version-index.ts                  -> unavailableOutcome(...).detail
- *     -> version-poll.ts `decisionFor`     -> reasonTree.detail
- *     -> insertDecision                    -> a `Decision`'s JSONB
- *
- * `JSON.stringify` escapes lone surrogates and U+0000 to ASCII, so the ONLY way an ill-formed string
- * gets out of `.slice(0, 120)` is a WELL-FORMED astral pair straddling the cut — and that is
- * reachable, not theoretical: measured, an 86-character `coordinate` followed by an emoji does it.
- * `jsonb` then refuses the row, so a malformed feed entry would take the poll's own Decision with it
- * and the operator would be told nothing at all.
- */
+/** HIGH CLASS, LOW BLAST RADIUS. See docs/dependencies.md §402. */
 describe("HIGH class: the malformed-entry preview is cut at a CODE POINT, not a code unit", () => {
   /** The exact shape measured to break the old slice: the emoji's two code units straddle 120. */
   const straddlingEntry = {

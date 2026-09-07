@@ -3,15 +3,7 @@ import type { HealthRecord } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objectHealth } from "../db/schema.js";
 
-/**
- * Latest-object-health projection repo (observe-enrichment signal 4; ADR-0008 decision 4).
- *
- * INVARIANT (coordinate-not-execute, charter principle 1): SCP never probes/polls/computes health.
- * Every write here is a PUSH-IN (owner PUT today; a future opt-in health-source binding writes the
- * SAME row via `source`). Upsert-in-place — one latest row per (org, object), no delete path —
- * mirroring `executor_observe_cursors`. The row references an EXISTING graph object by
- * `objects(id)` (DESIGN §4.1 projection pattern); it is not a new top-level concept.
- */
+/** Latest-object-health projection repo. See docs/graph.md §73. */
 
 function toHealthRecord(row: typeof objectHealth.$inferSelect): HealthRecord {
   return {

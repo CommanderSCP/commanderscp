@@ -4,25 +4,7 @@ import { ChangeStageDependencyStatusSchema } from "@scp/schemas";
 import type { ChangeStageDependencyStatus, ChangeStageDependencyVerdict } from "@scp/schemas";
 import { buildProgram, formatStageDependencyLines } from "./cli.js";
 
-/**
- * ADR-0028 increment 4 — the CLI half of the hold's operator surfaces.
- *
- * WHAT THIS FILE IS FOR. Until increment 4 a held wave target reached the CLI as exactly one line in
- * `explain`'s flat Decision list, indistinguishable from a gate or a transition, and `scp change
- * wait-status` reported on the OTHER coupling entirely (`requires`) — so the operator best placed to
- * act had to already know to go read a Decision's `inputContext`. These pin the rendering that fixes
- * that: the dependency by name, the stage it is scoped to, and WHICH BRANCH held it, because ADR-0028
- * decision 4 made the branches distinguishable precisely so the remedies could differ.
- *
- * EVERY FIXTURE IS VALIDATED AGAINST `ChangeStageDependencyStatusSchema` ITSELF (`held()` below)
- * rather than hand-typed to match the renderer. A retyped literal is the fixture-that-never-applied
- * failure this repo keeps meeting: it would let a server-side shape change leave this file green
- * while the renderer read a field that no longer arrives.
- *
- * THE ASSERTIONS ARE ON WHAT IS SAID, NOT ON HOW. They check that a name, a place, a branch or a
- * fail-open APPEARS — never that a whole sentence matches, which would pin wording and pass for the
- * wrong reason the moment the sentence was reworded without the field being read at all.
- */
+/** ADR-0028 increment 4 — the CLI half of the hold's operator surfaces. See docs/cli.md §145. */
 
 const TARGET_ID = "019f0000-0000-4000-8000-000000000001";
 const COMPONENT_ID = "019f0000-0000-4000-8000-000000000002";
@@ -109,17 +91,7 @@ describe("formatStageDependencyLines (ADR-0028 increment 4)", () => {
   });
 
   it("marks an `unscopeable` verdict NOT ENFORCED, never 'satisfied' — it carries satisfied: true", () => {
-    // THE FAIL-OPEN. `unscopeable` means the wave target names a component rather than a placement,
-    // so there was no stage to scope by and the declared coupling was NOT APPLIED. It is satisfied on
-    // the wire because the release proceeds; rendering that word would tell an operator their
-    // coupling held when nothing was ever checked. ADR-0028 gave it its own branch so it would be
-    // findable — this is the CLI honouring that rather than flattening it back into "satisfied".
-    //
-    // THE FIXTURE CARRIES THE SERVER'S REAL SENTENCE, which itself says "is satisfied here" (that is
-    // `describeBranch`'s default arm). A blanket "the line must not contain 'satisfied'" would
-    // therefore be a fixture that only passed because it was written unrealistically — so the
-    // assertion is on the MARK this renderer chooses, with the server's sentence still printed
-    // verbatim beside it.
+    // The fail-open: `unscopeable` means there was no stage to scope. See docs/cli.md §146.
     const status = held([unscopeableVerdict()]);
     const line = dependencyLines(status)[0]!;
     expect(line).toMatch(/^\s+- NOT ENFORCED \[unscopeable\]/);
@@ -195,11 +167,7 @@ describe("formatStageDependencyLines (ADR-0028 increment 4)", () => {
   });
 
   it("distinguishes 'this change coupled nothing' from 'this server said nothing at all'", () => {
-    // THE TWO ABSENCES ARE DIFFERENT CLAIMS. `null` is the server reporting no coupling; an omitted
-    // key is a pre-increment-4 server, which is contract-legal for an `.optional()` field and passes
-    // ADR-0023's response validation untouched. Printing "coupled nothing" for the second would be a
-    // fabricated observation about a change that may well be held — the exact class
-    // `cli-absent-formatters.test.ts` exists for, arriving here through the SAME door.
+    // THE TWO ABSENCES ARE DIFFERENT CLAIMS. See docs/cli.md §147.
     const coupledNothing = formatStageDependencyLines(null, true).join("\n");
     const serverSilent = formatStageDependencyLines(undefined, true).join("\n");
     expect(coupledNothing).not.toEqual(serverSilent);
@@ -248,11 +216,7 @@ describe("`scp change wait-status` covers BOTH couplings (ADR-0028 increment 4)"
   }
 
   it("its help text describes the stage-dependency coupling too, not `requires` alone", () => {
-    // THE WORDING TRAP, pinned deliberately. The description was hard-coded to "M12 P4B: print ONLY a
-    // Change's coupled-pipeline wait status — which `requires` prerequisites…". Teaching the command
-    // a second coupling while leaving that sentence would make the help text FALSE, and it is the
-    // only documentation an operator gets at the terminal. This is an assertion about coverage (both
-    // couplings are named), not about phrasing.
+    // THE WORDING TRAP, pinned deliberately. See docs/cli.md §148.
     const command = findCommand(buildProgram(), ["change", "wait-status"]);
     expect(command).toBeDefined();
     const description = command!.description();

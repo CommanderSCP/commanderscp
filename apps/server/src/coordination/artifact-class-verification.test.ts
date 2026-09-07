@@ -5,12 +5,7 @@ import {
   verifyArtifactClass
 } from "./artifact-class-verification.js";
 
-/**
- * D13 (increment 8) — the pure verdict. The integration counterpart
- * (`artifact-class-verification.integration.test.ts`) proves the refusal reaches the ingress and
- * writes a Decision; this file pins the decision table itself, including the two states that must
- * NOT be collapsed into each other.
- */
+/** D13 (increment 8) — the pure verdict. See docs/coordination.md §6. */
 describe("verifyArtifactClass", () => {
   it("agreeing declaration and observation is a match, naming the evidence that answered", () => {
     expect(verifyArtifactClass("image", "image")).toEqual({

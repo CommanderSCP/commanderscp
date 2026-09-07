@@ -7,32 +7,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SectionLabel } from "../ui/section-label";
 
-/**
- * THE SCAFFOLDER — what `/connect` does now that `POST /discovery/accept` is gone (ADR-0047;
- * team-pipeline-iac D1, section 7).
- *
- * ============================================================================================
- * WHAT CHANGED, AND WHY THE GROUPING INPUT IS THE WHOLE POINT
- * ============================================================================================
- * The wizard used to end by WRITING the proposal into the graph. That path bypassed strict create,
- * and the homelab's ~50 imported components landed as RBAC orphans through it — a component with no
- * owning service, invisible to every scope-based permission and every service-shaped read.
- *
- * ADR-0047's fix is not a validation: it is moving the decision to where a human is. So this panel
- * asks the ONE question the old flow never did — which service does each component belong to? — and
- * then emits code rather than rows. Nothing here writes to the graph; the operator commits the
- * output and a normal `scp apply` lands it, through the same strict doors as any other IaC.
- *
- * UNGROUPED COMPONENTS ARE SHOWN, NEVER DEFAULTED. The server returns them separately and they are
- * never in the emitted code — a `Component` cannot be constructed without a service. Defaulting them
- * to some invented service name is exactly the silent orphan-making this replaced.
- *
- * THE EMITTER RUNS SERVER-SIDE, and that is an architectural rule rather than a preference:
- * `apps/web/src` may import only `@scp/sdk` and `@scp/schemas` — never `@scp/iac`, `@scp/cli` or the
- * server (eslint `no-restricted-imports`). The UI reaches everything through the public API, so it
- * asks `POST /discovery/scaffold` and renders the answer. One emitter, behind the API, shared with
- * `scp iac scaffold` — so the wizard and the CLI cannot produce different code from one proposal.
- */
+/** The scaffolder: what connect does now that accept is gone. See docs/web.md §104. */
 
 export interface ScaffoldPanelProps {
   readonly proposal: DiscoveryProposal;

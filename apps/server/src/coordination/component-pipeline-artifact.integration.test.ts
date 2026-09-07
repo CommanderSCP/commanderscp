@@ -18,61 +18,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * pipeline-substrate-registry-scan.md §9.3 — the `artifact` field of a component's pipeline, through
- * the real HTTP route against real Postgres.
- *
- * WHAT EACH TEST PINS, AND WHY IT IS NOT VACUOUS
- *   - the PICK: a digest-carrying change is found through the component's `properties.targets`
- *     (the fallback arm) AND a change the stages already show (a compiled plan's wave target) is
- *     preferred over a NEWER digest-carrying change the stages do not show — so "newest of the
- *     component at all" alone fails.
- *   - digests + SBOM read VERBATIM off `sourceRef` (`artifactDigest`, the report's key), the SBOM's
- *     origin `signatureRef` surfaced under `signing.originSignatureRefs` — and NOTHING under
- *     `promotionExports` until an export stamps one (this org never exports).
- *   - scan REDUCTION: three `control_runs` rows over one digest — an older org-pipeline `fail`, a
- *     newer org-pipeline `pass` (same scanner ⇒ same key ⇒ only the newest survives), and a MANAGED
- *     `openscap` pass (the synthetic control id) — reduce to TWO rows, one flagged `managed`, and E6's
- *     own predicate reads `pass`. Returning every row (3) or misreading `managed` both fail.
- *   - E6 read-only: a change whose only scan row is digest-UNBOUND reads `fail` (evidence exists,
- *     covers nothing); no rows at all reads `not_run`.
- *   - `artifact: null` for a component whose changes carry no digest, and for one with no change.
- *   - an UNPARSEABLE `sbom` reads null + `unknownFields: ["sbom:unparseable"]`, digests intact.
- *   - a stored `promotionExports[]` entry that does not parse is COUNTED under `unknownFields`,
- *     the parseable one beside it still rendered with `peerName: null` (no peer row here).
- *   - the reduction keeps the NEWEST row per key even when it is a fail over an older pass (a
- *     "prefer pass" sort would lie), and E6 reads `fail` too: the newer fail is the CURRENT answer of
- *     its control, and every control that has ever answered about the digest must currently pass
- *     (`scan-evidence.ts` property 2 — an older pass never outvotes a newer fail).
- *   - a row from an UNADMITTED producer (`webhook-control` echoing a scan-shaped payload) shows in
- *     `scans[]` (it is a row the change holds) but counts for NOTHING at the gate: `fail`, not `pass`
- *     (property 1 — a scan outcome is identified by its producer, never by the shape of its evidence).
- *   - `managed` is the synthetic control id ALONE: a gateRef claiming `promotionScanStep` on a
- *     random control id reads `managed: false`; the managed id with an empty gateRef reads `true`
- *     with `method` falling back to the scanner.
- *   - a TWO-digest change: a passing digest-bound row for one digest reads `fail` (E6 needs one per
- *     substantive artifact); covering the second flips it to `pass`.
- *   - the INSTANCE FLOOR: an admitted `pass` whose counts breach an operator-authored trust_domain
- *     floor reads `fail` (the export refuses it `below_instance_floor`; the tile is E6's own
- *     predicate, floor included); the floor reset to all-NULL (inert) flips the SAME row to `pass`.
- *   - `POST /changes` 400s a sourceRef planting `promotionExports`/`boundaryBundleChecksums`.
- *
- * MUTATION LOG (each applied ALONE, then reverted)
- * | Mutation | Result |
- * |---|---|
- * | drop the `preferredChangeIds` arm (fallback only) | the pick-preference test FAILS (newer non-current change picked) |
- * | drop the `seen` dedupe in `scanRunsForChange` | the reduction test FAILS (3 scans, and a `fail` row beside the pass) |
- * | `managed: false` always | the reduction test FAILS on the openscap row |
- * | `exportGate` = `runs.length > 0 ? "pass" : "not_run"` | the digest-unbound test FAILS (`pass` where `fail`) |
- * | `exportGate` over `runs.filter(r => ScanEvidenceSchema parses)` ignoring the producer | the webhook-control test FAILS (`pass` where `fail`) |
- * | `exportGate` reads ANY passing digest-bound row (the pre-#245 rule) | the newer-fail test FAILS (`pass` where `fail`) |
- * | skip the `sbom:unparseable` push | the unparseable-sbom test FAILS |
- * | sort rows `pass` first before the reduction | the newer-fail test FAILS (older pass survives) |
- * | `managed: gateRef?.promotionScanStep === true` | the managed-flag test FAILS (impostor reads managed) |
- * | `exportGate = any pass+digestMatch row ? pass : fail` | the two-digest test FAILS (`pass` where `fail`) |
- * | drop the reserved-key check in `routes/changes.ts` | the planted-stamp test FAILS (201) |
- * | `evaluateScanCoverage({ …, instanceFloor: {} })` (compute the floor, pass an empty one) | the instance-floor test FAILS (`pass` where `fail`) |
- */
+/** The `artifact` field of a component's pipeline. See docs/coordination.md §287. */
 describe("component pipeline: the artifact and its change-scoped facts (§9.3)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -649,14 +595,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     expect(notAList.unknownFields).toEqual(["promotionExports:unparseable"]);
   });
 
-  // §10.4 — the IMPORTER's stamps. `promotion-repo.ts`'s import writes, on the imported change's
-  // sourceRef, `promotedFromDomain`, `sourceChangeObjectId`, `artifactDigests[]` (the FLAT list —
-  // `artifacts.map(a => a.digest)`, so it names the SBOM blob's digest too), `artifacts[]` (the
-  // TYPED set, when non-empty), `promotionManifest`, `manifestSignature` (+
-  // `boundaryBundleChecksums`). These tests write the SAME shape by a bare UPDATE (the stamps are
-  // server-owned; `POST /changes` cannot plant them) and pin what the projection READS off it. The
-  // real A→B round trip lives in `federation.integration.test.ts` ("§10.4 ROUND TRIP"), where
-  // `exporterName` resolves to a real peer row; here there is no peer.
+  // §10.4 — the IMPORTER's stamps. See docs/coordination.md §288.
   const importedStamp = (digest: string, exporterDomainId: string) => ({
     manifestVersion: "scp-promotion-manifest/v1",
     createdAt: "2026-08-16T00:00:00.000Z",

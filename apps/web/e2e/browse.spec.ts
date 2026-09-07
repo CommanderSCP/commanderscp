@@ -3,11 +3,7 @@ import { expect, test } from "@playwright/test";
 import { ScpClient } from "@scp/sdk";
 import { adminCredentials, apiBaseUrl, baseUrl, loginAsAdmin } from "./fixtures.js";
 
-/**
- * Smoke test 2 (BUILD_AND_TEST.md §8 M2 item 2 TESTS section): navigate to `/services`, assert
- * the list renders without error; create a service directly against the API (via `@scp/sdk`,
- * same real HTTP path `scp service register` uses), reload the page, assert it now appears.
- */
+/** Smoke test 2 (BUILD_AND_TEST.md §8 M2 item 2 TESTS section). See docs/web.md §1. */
 test("browse: /services list renders, and a service created via the API appears after reload", async ({
   page
 }) => {

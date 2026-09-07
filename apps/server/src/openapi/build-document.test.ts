@@ -7,16 +7,7 @@ import { ProblemSchema, RelayedEventSchema } from "@scp/schemas";
 import { buildOpenApiDocument } from "./build-document.js";
 import type { CollectedRoute } from "./registry.js";
 
-/**
- * The SSE contract declaration (ADR-0025), guarded where it is actually load-bearing.
- *
- * `text/event-stream` is not decoration: it is the exact key `@hey-api/openapi-ts` keys off
- * (`hasOperationSse`) to emit a streaming operation instead of a request/response one. If the
- * emitter ever fell back to `application/json` for this route the spec would still look plausible,
- * `pnpm gen` would still succeed, and the SDK would silently regress to a one-shot GET that never
- * yields an event — so the media type is asserted directly, in both the synthetic and the real
- * committed document.
- */
+/** The SSE contract declaration. See docs/openapi.md §1. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

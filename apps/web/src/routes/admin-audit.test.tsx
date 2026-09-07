@@ -11,23 +11,7 @@ import type {
 } from "@scp/schemas";
 import { render } from "../test-support/render-dom";
 
-/**
- * ADMIN › AUDIT — the wired-up page against a stubbed SDK (owner-approved 2026-08-23).
- *
- * What is pinned, and the mutation each pin exists to catch:
- *   - the empty state renders ONLY after a successful zero-row read; mutation: paint it during
- *     pending → RED;
- *   - pending never paints empty (separate case: an unresolved promise leaves both the table and
- *     the empty state absent);
- *   - `audit:read` 403 renders the server's sentence VERBATIM via `QueryErrorNotice` — never a
- *     generic "could not load" with the detail swallowed, never an empty table;
- *   - "Load more" fetches the SERVER's `nextCursor` and appends, never re-fetching page 1;
- *     mutation: fire the fetch twice per click → the exactly-one-more-read count assertion goes RED;
- *   - a null `subjectId`/`decisionId`/`reason` renders "—", never a fabricated link or blank Why;
- *   - the WhyLink-equivalent on `decisionId` fetches `client.decisions.get` by THAT id and opens
- *     `DecisionDetailDialog` — mutation: hardcode the first row's id regardless of which was
- *     clicked → the "second row's own decision" assertion goes RED.
- */
+/** ADMIN › AUDIT. See docs/web.md §165. */
 
 function auditEventFixture(overrides: Partial<AuditEvent> = {}): AuditEvent {
   return {

@@ -6,17 +6,7 @@ import {
   validatePluginConfig
 } from "./plugin-manifests.js";
 
-/**
- * M21.4 pins a DELIBERATE ASYMMETRY that reads like an oversight, so it is pinned rather than only
- * commented: the five `dependency-index` manifests are in `MANIFEST_BY_MODULE` and NOT in
- * `BUNDLED_PLUGIN_MANIFESTS`.
- *
- * Without this file the next reader "tidies" it one way or the other:
- *  - adding them to the published list widens `GET /api/v1/plugins/manifests`' response enum, i.e.
- *    changes the public v1 contract, in a milestone that ships no route for them; and
- *  - dropping them from the module map removes the `validatePluginConfig` gate that keeps the OCI
- *    index's SERVER-GOVERNED `skopeoBinary`/`allowedRegistryHosts` unsettable by a binding.
- */
+/** A deliberate asymmetry that reads like an oversight. See docs/plugin-host.md §78. */
 describe("the dependency-index manifests are module-map-only, on purpose", () => {
   const MODULES = [
     "dependency-index-go",

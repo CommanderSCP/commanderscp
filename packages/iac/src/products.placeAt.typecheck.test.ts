@@ -3,33 +3,7 @@ import { Component, DeploymentTarget, Service, Stack } from "./construct.js";
 import type { ICluster, IDatabase, IInstanceGroup } from "./infra.js";
 import { ImagePipeline, RpmPipeline } from "./pipeline.js";
 
-/**
- * D20's whole point, proved the way this repo already proves a `placeAt` compile-time guard
- * (`pipeline.placeAt.typecheck.test.ts`'s own doc explains the pattern in full): `// @ts-expect-
- * error` lines that fail the BUILD — `tsc --noEmit`, this package's `typecheck` script,
- * `tsconfig.json`'s `include: ["src"]` sweeps this file in — the moment the error they name stops
- * occurring. The runtime `it()` block exists only so this stays a normal green vitest module too.
- *
- * WHY A HAND-WRITTEN `products` CONST HERE, NOT A GENERATED ONE. TypeScript typechecks this
- * FILE'S source; it cannot typecheck a string `productsModuleSource(...)` returns at runtime in the
- * same pass (that string only becomes real, checkable TypeScript once it lands in a consuming
- * repo's own `.ts` file — D20/D10's whole publish step). So the object below is written by hand to
- * be BYTE-FOR-BYTE THE SAME SHAPE `renderProductsModule` emits — an explicit type annotation naming
- * each field's `I<Kind>` interface, values carrying exactly `{urn, typeId, kind}` — and
- * `products.test.ts`'s content-assertion tests are what pin that `renderProductsModule` really does
- * emit this shape. Together the two files close the loop: "the generator emits X" (products.test.ts)
- * and "X makes a wrong `placeAt` a compile error" (this file) — neither on its own proves the whole
- * chain, but both together do.
- *
- * MUTATION-PROVED (restored before commit): commenting out any ONE `@ts-expect-error` line below and
- * running `pnpm --filter @scp/iac typecheck` makes tsc report "Unused '@ts-expect-error' directive"
- * for that line — RED — confirming it is load-bearing. Also proved the OTHER direction the way D20
- * actually breaks in practice: temporarily typing `paymentsDb` below as `ICluster` instead of
- * `IDatabase` (simulating a broken `INFRA_KIND_INTERFACE_NAME` row in `products.ts`) makes
- * `image.placeAt(products.paymentsDb)` STOP being a type error — the `@ts-expect-error` above it
- * then reports "Unused directive", RED — which is exactly the failure this test exists to catch.
- * Both mutations were reverted before commit.
- */
+/** The whole point, proved as a compile-time guarantee. See docs/iac.md §295. */
 describe("@scp/iac: a D20 products module's interface typing makes a wrong placeAt a compile error", () => {
   it("the legal pairing type-checks and runs at runtime", () => {
     const stack = new Stack("products-typecheck");

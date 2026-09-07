@@ -10,50 +10,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 
-/**
- * `governance:move` — THE OPT-IN SECOND BAR ON A CONTAINMENT MOVE, THROUGH THE REAL DOORS.
- * (docs/proposals/governance-reach-on-containment-move.md §9.2/§9.5; owner ruling 2026-08-18.)
- *
- * Every case goes through HTTP (`server.app.inject`), never a repo function, for the reason
- * `routes/containment-move-authz.integration.test.ts` states: the failure mode this feature exists
- * to prevent is a DOOR that forgot the check, and a repo-level test cannot see a door.
- *
- * ============================================================================================
- * MUTATION LOG — each mutation applied ALONE, run, reverted, restoration verified with `cmp`
- * ============================================================================================
- *  m1  remove the `assertGovernanceMoveAdmits` call in `graph/containment-parent-authz.ts`
- *      → RED: "PATCH /services/{id} …", "PATCH /objects/service/{id} …", "the org root as a
- *        DESTINATION is NOT exempt …", "the INSTANCE rung activates …" (all four reach that door)
- *  m2  remove ONLY the twin in `iac/plans-repo.ts::prepareApplyChecks`
- *      → RED: "POST /plans/{id}/apply …" ALONE — the M24 lesson (a door-only fix ships inert on IaC)
- *  m2b remove ONLY the `contains` call in `prepareApplyChecks`' RELATIONSHIP loop (route 2)
- *      → RED: "POST /plans/{id}/apply — a `contains` RELATIONSHIP entry …" ALONE. Added after
- *        review found the first round had twinned route 1 (`domainId`) and not route 2, leaving an
- *        Operator able to make through apply the move `POST /relationships` refuses them.
- *  m3  remove the call in `graph/components-repo.ts::setComponentService`
- *      → RED: "PUT /components/{idOrUrn}/service …" alone
- *  m4  remove the two `contains` calls in `routes/relationships.ts`
- *      → RED: "POST /relationships (contains) …" and "DELETE /relationships/{id} (contains) …"
- *  m5  make the org root exempt (skip when the destination is `orgId`)
- *      → RED: "the org root as a DESTINATION is NOT exempt …" AND "POST /relationships (contains) …"
- *        — recorded rather than tidied, because the second RED is the point: a `contains` DELETE's
- *        destination IS the org root, so the exemption would silently un-govern the whole
- *        take-it-out-of-the-container verb, not just the explicit move-to-root
- *  m6  drop the instance-rung OR in `resolveGovernanceMoveEnforcement` (`enforced: rungs.length > 0`)
- *      → RED: "the INSTANCE rung activates …" alone
- *  m9  remove the `contains` call in `routes/executors.ts`'s `POST /discovery/accept` loop
- *      → RED: "POST /discovery/accept (contains onto a PRE-EXISTING child) …" alone
- *  m9b drop the `!createdInThisBatch.has(toId)` carve-out at that same door
- *      → RED: the SUCCESS half of that case (a fresh child contained in its own batch) — the case
- *        that keeps "governed" from quietly meaning "discovery is off"
- *
- * ============================================================================================
- * THE INSTANCE RUNG IS AN INSTANCE-GLOBAL FIXTURE
- * ============================================================================================
- * `governance_move_instance_rung` has no `org_id` and the integration suite runs `singleFork`
- * against ONE shared Postgres, so the row is deleted in a `finally` AND at teardown no matter how
- * this file exits — a rung left enabled would enforce `governance:move` for every later file.
- */
+/** The opt-in second bar on a move, through the real path. See docs/governance.md §248. */
 describe("governance:move enforcement (proposal §9.2)", () => {
   const OPERATOR_TOKEN = "governance-move-operator-token";
 
@@ -151,12 +108,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     });
     expect(component.status, component.body).toBe(201);
 
-    // A component with NO `contains` edge — the only shape a `POST /relationships` of `contains`
-    // can succeed against (the 0022 partial unique index permits exactly one live parent). The
-    // generic `/objects/component` route REFUSES an orphan by design (create-strict), and since
-    // increment 6 removed `POST /discovery/accept` there is NO HTTP door that produces one. It is
-    // therefore made the way the harness's `createOrphanComponent` now makes one: straight through
-    // `graph/objects-repo.ts`, which is the same function every import path calls.
+    // A component with NO `contains` edge. See docs/governance.md §249.
     const orphanComponent = await createOrphanComponent(server, org, `${label}-orphan`);
     const orphanComponentId = orphanComponent.id;
     const orphanRead = await call("GET", admin, `/api/v1/objects/component/${orphanComponentId}`);
@@ -332,11 +284,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
   });
 
   it("POST /plans/{id}/apply — a `contains` RELATIONSHIP entry is the same move, both directions (m2b)", async () => {
-    // THE SECOND IaC HOLE, found in review after the first round shipped: the twin had been added
-    // to the object loop (route 1, `domainId`) and not to the relationship loop (route 2,
-    // `contains`) — so an Operator could perform through apply the exact move `POST /relationships`
-    // refuses them, and a manifest's `component.service` change compiles to precisely this pair of
-    // entries. Remove ONLY the relationship-loop call and only this case goes red.
+    // The second IaC hole, found after the first round shipped. See docs/governance.md §250.
     const f = await makeFixture("gm-iac-rel");
     expect((await enableRung(f, f.domainId)).status).toBe(200);
     const stackName = `gm-iac-rel-${f.serviceId.slice(0, 8)}`;
@@ -395,14 +343,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     expect(prunedOk.status, prunedOk.body).toBe(200);
   });
 
-  // THE m9 CASE IS GONE WITH ITS DOOR. `POST /discovery/accept` was the third caller-supplied-
-  // `typeId` relationship door and this case proved a `contains` through it was refused as a move.
-  // Increment 6 removed the route (ADR-0047), so there is nothing left to drive: the guard it
-  // exercised (`assertGovernanceMoveAdmits` on a `contains` write) is still proven by the
-  // `POST /relationships` and IaC-apply cases above, which are the doors that remain.
-  //
-  // Recorded rather than deleted silently, because the mutation log at the top of this file names
-  // m9 and a reader finding no such case should learn why, not wonder.
+  // THE m9 CASE IS GONE WITH ITS DOOR. See docs/governance.md §251.
 
   it("PUT /components/{idOrUrn}/service refuses an Operator under an enabled rung (m3)", async () => {
     const f = await makeFixture("gm-set-service");
@@ -465,11 +406,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
   });
 
   it("the org root as a DESTINATION is NOT exempt — unlike #244's object:write pair (m5)", async () => {
-    // The one place this check deliberately disagrees with `containment-parent-authz.ts`'s two
-    // exemptions. Those are proved from CUSTODY (the root's holders already hold every rooted row);
-    // `governance:move` is about governance REACH, and moving a row out of a governed subtree up to
-    // the org root is exactly the reach reduction it gates. Make the root exempt and only this case
-    // goes red.
+    // The one place this check deliberately disagrees. See docs/governance.md §252.
     const f = await makeFixture("gm-root-dest");
     expect((await enableRung(f, f.domainId)).status).toBe(200);
 

@@ -11,46 +11,7 @@ import {
 import { evaluateHeadMovement } from "./line-head.js";
 import { recordDependencyLineHead, upsertDependencyLine } from "./dependency-inventory-repo.js";
 
-/**
- * ============================================================================================
- * STOP. `latest_observed_at` MEANS "WHEN WE LAST LOOKED", NOT "WHEN THE HEAD LAST MOVED".
- * ============================================================================================
- *
- * If you are here because you changed `evaluateHeadMovement` or `recordDependencyLineHead` — most
- * likely to make the daily poll cheaper by writing only when the head actually advances — READ THIS
- * BEFORE YOU CHANGE THE ASSERTION. The optimisation is reasonable-looking, it passes every other
- * dependency test in this tree, and it breaks a SECURITY GATE two packages away.
- *
- * WHO DEPENDS ON IT: `governance/scan-vendor-latest.ts` — the M22.4 vendor rule (ADR-0033, owner
- * decision D1). A scan finding is excluded before it is counted when the component is on the LATEST
- * VERSION OF THAT MAJOR LINE, and "latest" is only usable as evidence if it was observed RECENTLY:
- * `vendorLatestStalenessBoundMs` refuses any head whose `latest_observed_at` is older than three
- * poll cycles, because a stale observation is a claim about a world that has since moved.
- *
- * SO THE FAILURE MODE IS INVERTED FROM WHAT YOU WOULD EXPECT. If a no-op restatement stops
- * refreshing the timestamp, then a dependency that is genuinely current — its head has simply not
- * moved for a month, which is the NORMAL state of a mature package — starts looking STALE, and the
- * gate stops granting vendor-passes it should grant. Nobody notices, because the symptom is a scan
- * that fails "correctly". The inverse mistake (making the write door refresh nothing at all) is
- * worse: findings would be excluded on the strength of an observation from an arbitrarily long time
- * ago.
- *
- * THE TWO HALVES ARE PINNED SEPARATELY because they can regress independently:
- *   1. `evaluateHeadMovement` must report an identical re-observation as `moves: true` with movement
- *      `restated`. Flipping it to `moves: false` is the natural shape of "only write when it moves".
- *   2. `recordDependencyLineHead` must actually ADVANCE `latest_observed_at` on that restatement.
- *      Moving `latestObservedAt` out of the SET list, or gating the UPDATE on `advanced`, is the
- *      other natural shape.
- *
- * WHAT YOU MAY CHANGE FREELY, so this pin is not read as more than it is: the `advanced`-only
- * OUTBOX EVENT is deliberately not restated and this file asserts nothing about it. Suppressing a
- * bump job per dependency per day is exactly right. The TIMESTAMP is the part with an outside
- * consumer.
- *
- * If the poll genuinely must stop writing on a restatement, the vendor rule needs a different
- * freshness source (a per-line "last polled" column, or the poll's own Decision row) BEFORE this
- * test is deleted — not after.
- */
+/** That timestamp means when we last looked, not moved. See docs/dependencies.md §320. */
 
 const SCAN_GATE =
   "M22.4 vendor-latest scan exclusions (governance/scan-vendor-latest.ts) read " +

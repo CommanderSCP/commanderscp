@@ -8,16 +8,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * GET /services/:idOrUrn/board — the service release board projection
- * (docs/proposals/coordination-ui-views.md § "Service release board", Phase 2, Layer A).
- *
- * The board is a Layer-A projection: it aggregates a service's contained components and each
- * component's LATEST change's per-wave summary. This suite pins the honest-empty baseline —
- * a service whose components have never been a change target must project real rows with NULL
- * latest-change and EMPTY waves (never a fabricated version/status) — plus auth/404 behaviour. The
- * with-a-change wave projection rides the broader coordination suites that already seed plans/waves.
- */
+/** The service release board projection, end to end. See docs/routes.md §408. */
 describe("service board: GET /services/:idOrUrn/board (Phase 2, Layer A)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;

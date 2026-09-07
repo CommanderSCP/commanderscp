@@ -7,34 +7,7 @@ import type {
   ChangeStageDependencyStatus
 } from "@scp/sdk";
 
-/**
- * A HELD WAVE TARGET MUST NOT RENDER AS A BARE `pending` — the CHANGE-pipeline page (ADR-0028
- * increment 4).
- *
- * ## The defect this pins, and why it survived the increment
- *
- * A target whose trigger is being withheld by a stage dependency is left at
- * `change_wave_targets.status = 'pending'`: the hold `continue`s in `reconcile.ts` BEFORE
- * `triggerWaveTarget`, so nothing ever writes a different status. `pending` is also what a target
- * shows when its wave has simply not reached it. Those are opposite facts — "waiting on something
- * NAMED, and it will clear itself" versus "nothing is happening here" — and they were the same
- * pixels.
- *
- * The component-pipeline view was fixed for this. THIS page was not, while the ADR and the proposal
- * were flipped to say every surface had shipped. The data was already on the wire and on this very
- * page's `explain` response: `change-pipeline.tsx` destructured the response and left
- * `stageDependencyStatus` behind. So the failure mode was not a missing feature but a discarded
- * value, which is invisible to every test that asserts on the server's response.
- *
- * ## Why at the PAGE and not at `PipelineWaveCard`
- *
- * `holdFor` is optional on the card, deliberately: a caller that has not loaded the status must not
- * thereby assert nothing is held. That makes a card-level test unable to catch the actual bug —
- * the card was always capable of rendering a hold once handed one, and the page was the thing not
- * handing it over. `renderToStaticMarkup(<ChangePipelinePage/>)` is the only altitude at which
- * "the page passes the status down" is a claim. Same seam and same mocking as
- * `change-pipeline-boundary-always-shown.test.tsx`, for the reasons its header sets out.
- */
+/** A HELD WAVE TARGET MUST NOT RENDER AS A BARE `pending`. See docs/web.md §202. */
 
 const CHANGE_ID = "3f1a2b3c-4d5e-4f60-9a1b-2c3d4e5f6a7b";
 const TARGET_ID = "5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f";

@@ -1,50 +1,15 @@
-/**
- * THE single place that answers "which skopeo binary do we run, and is it the one we pinned?".
- *
- * M15.5 c1 vendors a digest-pinned skopeo into the SCP runtime image (Dockerfile's `skopeo`
- * stage; provenance in `tools/skopeo/README.md`; pin values in `tools/skopeo/pin.env`), the
- * exact shape M17.3 E1 established for cosign — see `cosign-bin.ts`, whose module comment
- * explains the pinned-vs-operator split this mirrors:
- *
- *   PINNED   — the vendored wrapper at {@link VENDORED_SKOPEO_PATH} (or an explicit
- *              `SCP_SKOPEO_BIN` override). We built the image, we know the exact release, so we
- *              FAIL CLOSED if `skopeo --version` doesn't report the pinned version. A skopeo that
- *              isn't the skopeo we vetted is not a skopeo the relay moves bytes with.
- *   UNPINNED — `skopeo` resolved from PATH, i.e. an operator-supplied build. The release/bundle
- *              path (deploy/airgap's build-bundle.ts and install.sh) legitimately uses the
- *              operator's own skopeo and stays exactly as it was: probing, never
- *              version-asserted. Nothing on that path calls this module.
- *
- * This module lives in @scp/cosign beside resolveCosign() deliberately (shared exec helpers, one
- * pin-vs-probe pattern in one package); the M15.5 c2 relay — the first real consumer — imports
- * both from here. Like cosign-bin.ts, this module holds NO product behavior: nothing here copies
- * images or decides policy. It is resolution + provenance assertion only.
- */
+/** Which skopeo binary runs, and is it the one we pinned. See docs/cosign.md §21. */
 import { existsSync } from "node:fs";
 import { run, which } from "./exec.js";
 
-/**
- * The pinned skopeo release. MUST match `SKOPEO_PINNED_VERSION` in `tools/skopeo/pin.env`
- * (and therefore the digest below) — `skopeo-bin.test.ts` fails if they drift. Note upstream
- * reports the version WITHOUT a leading `v` (`skopeo version 1.22.2 commit: …`).
- */
+/** The pinned skopeo release. See docs/cosign.md §22. */
 export const PINNED_SKOPEO_VERSION = "1.22.2";
 
-/**
- * The exact upstream image the binary (and its library closure — see the Dockerfile's skopeo
- * COPY block) is taken from: the official skopeo image's **linux/amd64 platform manifest**
- * digest. Recorded here so a running system can report its own provenance without shelling out
- * to a registry.
- */
+/** The exact upstream image the binary. See docs/cosign.md §23. */
 export const PINNED_SKOPEO_IMAGE =
   "quay.io/skopeo/stable@sha256:0e392474a4383b733038b85eff26ade929d2ff10e8deead25a6add3ed79fb362";
 
-/**
- * Where the Dockerfile puts the vendored entry point inside the SCP runtime image — a wrapper
- * script that runs the real binary against its vendored loader + libraries (the upstream binary
- * is dynamically linked, unlike cosign's). Deliberately NOT /usr/local/bin, so this check can
- * never pick up an operator-installed skopeo and mislabel it as "pinned".
- */
+/** The vendored entry point, deliberately not in /usr/local/bin. See docs/cosign.md §24. */
 export const VENDORED_SKOPEO_PATH = "/opt/scp/bin/skopeo";
 
 /** Environment variable that points at a pinned skopeo living somewhere else (CI, dev machines). */
@@ -67,13 +32,7 @@ export interface ResolvedSkopeo {
   source: SkopeoSource;
 }
 
-/**
- * Resolve the skopeo to use, preferring the pinned binary.
- *
- * Order: `SCP_SKOPEO_BIN` → the vendored image path → PATH. Identical shape to
- * {@link resolveCosign} in cosign-bin.ts, and for the same reason: `pinned` must be true ONLY
- * for a binary this repo vetted, never for whatever a Homebrew/apt install put on PATH.
- */
+/** Resolve the skopeo to use, preferring the pinned binary. Order. See docs/cosign.md §25. */
 export function resolveSkopeo(): ResolvedSkopeo {
   const override = process.env[SKOPEO_BIN_ENV];
   if (override) return { bin: override, pinned: true, source: "override" };
@@ -95,13 +54,7 @@ export function skopeoReportedVersion(bin: string): string | null {
   }
 }
 
-/**
- * FAIL CLOSED: throw unless `bin` really is the pinned release.
- *
- * Same supply-chain failure mode as {@link assertPinnedCosignVersion}: an image rebuilt against
- * a moved tag, an `SCP_SKOPEO_BIN` pointed at some other build. The only safe response to "the
- * binary isn't the one we vetted" is to refuse, never to shrug and use it anyway.
- */
+/** FAIL CLOSED: throw unless `bin` really is the pinned release. See docs/cosign.md §26. */
 export function assertPinnedSkopeoVersion(resolved: ResolvedSkopeo): void {
   if (!resolved.pinned) return;
   const reported = skopeoReportedVersion(resolved.bin);

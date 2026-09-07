@@ -31,77 +31,7 @@ import {
   assertOverrideTierStanding
 } from "../governance/scan-override-standing.js";
 
-/**
- * M22.6 (ADR-0033 §6a; owner decisions D3, D4) — THE OVERRIDE REQUEST'S API SURFACE.
- *
- * ===========================================================================================
- * THE SHAPE THIS COPIES, AND THE ONE IT REFUSES TO
- * ===========================================================================================
- * `freeze.override` (DESIGN §10.3, `coordination/transition.ts`) is the model: a MANDATORY non-empty
- * reason, and a HIGH-SEVERITY hash-chained audit event written in the SAME transaction as the act,
- * linked to a Decision. Every route below does both.
- *
- * The APPROVALS path is explicitly NOT the model, and ADR-0033 names this as a gap that must not be
- * inherited: casting an approval vote writes a row and NO audit event. A surface whose entire purpose
- * is to tolerate a known vulnerability cannot ship with that hole — an approved override is exactly
- * the act an auditor comes looking for, and "it is in the votes table" is not a hash-chained record.
- *
- * ===========================================================================================
- * TWO PERMISSIONS, DELIBERATELY DIFFERENT (D3)
- * ===========================================================================================
- *   RAISE    — `object:write` at the COMPONENT. The component owner already holds this; raising a
- *              request grants nothing (the grant is inert until approved), so gating it harder would
- *              only mean the people who know about the finding cannot report it.
- *   APPROVE  — `policy:write` AND `scan:override`, both at the OBJECT NAMING THE TIER THAT SET THE
- *              RULE. `authz/resolve.ts`'s `scopeExpandCte` walks UPWARD from the named object, so a
- *              binding at that tier or above satisfies the check and a binding BELOW it never does.
- *   DENY /
- *   REVOKE   — the same two permissions at the same object. The authority to grant and the
- *              authority to take back must be the same one, or a waiver becomes harder to remove
- *              than to make.
- *
- * `scan:override` was ADDED beside `policy:write` by role-model.md §5 step 3 (drizzle/0099) rather
- * than replacing it, because authoring a scan ceiling and waiving it were otherwise the same
- * permission string at the same scope — see the second `authorize()` in `decide` for the full
- * argument, including why the addition is a behavioural no-op on every deployment that exists today.
- *
- * THE PERMISSION CHECK IS NOT THE WHOLE OF D3, AND THE FIRST VERSION OF THIS FILE ASSUMED IT WAS.
- * `scopeExpandCte` expanding upward cuts both ways: naming a LOWER object strictly WIDENS the set of
- * principals whose bindings satisfy the approve check. `tierObjectId` came from the REQUESTER and was
- * compared to nothing, so the party seeking a waiver picked the authority that would grant it — name
- * your own service, approve at your own service, and a platform-set `maxCritical: 0` is waived. The
- * tier is now DERIVED at three points, none of which trusts the claim:
- *   - RAISE   — `assertOverrideTierStanding`: the named object must be on the component's own
- *               containment chain.
- *   - APPROVE — the same check re-derived (a grant can reach the row through IaC or federation
- *               without ever having passed the raise route), plus a refusal while an INSTANCE floor
- *               outranks the derived tier, plus SEPARATION OF DUTIES: the subject who raised the
- *               request may not be the one who approves it (approve only — deny and revoke stay
- *               open, because withdrawing a waiver must never be harder than granting one).
- *   - THE GATE — `applyOverrideAuthorityBar`, the decisive one: the grant's tier is re-derived from
- *               the target's chain and compared against the most senior tier that contributed to the
- *               effective ceiling (`EffectiveScanThreshold.contributors`).
- *
- * WHAT DOES *NOT* DECIDE WHO MAY RAISE: `owners-of`. It walks `domain_id` ONLY and never joins
- * `contains`, so it does not see a component's service or assembly — using it here would silently
- * exclude every component whose owner is attached one rung up, which is the common shape.
- *
- * ===========================================================================================
- * WHY THESE ROUTES EXIST AT ALL RATHER THAN `POST /objects/scan_override_grant`
- * ===========================================================================================
- * `scan_override_grant` is in `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`, so the generic object endpoint
- * refuses it outright and the IaC plan/apply path demands `policy:write`.
- *
- * THAT MAPPING WAS NEVER THE DEFENCE, and this docblock used to claim it was ("without that, a
- * holder of plain `object:write` could write `{status: "approved", …}` directly"). `policy:write` at
- * a containment domain is an ordinary scoped policy-author binding, and the IaC plan/apply path
- * demands exactly that at the target domain — so the manifest went through, minting an approved grant
- * with no tier check, no Decision, no audit event and no future-expiry validation. The real defence
- * is `governance/scan-override-grant-authoring-guard.ts`, installed at the `graph/objects-repo.ts`
- * choke point every local write door funnels through: the five DECISION properties are writable only
- * by `decide` below, which sets the internal flag that lets them past. Raising a `requested` grant
- * stays open through every door, because it authorizes nothing.
- */
+/** The override request's API surface. See docs/routes.md §401. */
 export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
   const base = "/api/v1/scan-override-grants";
@@ -144,11 +74,7 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
           auth.orgId,
           request.body.tierObjectId
         );
-        // ...AND IT MUST BE AN ANCESTOR. Resolving proves the row exists and nothing else. Because
-        // `scopeExpandCte` expands UPWARD, a requester naming any object they happen to hold
-        // `policy:write` at would be choosing the authority that approves their own waiver — D3's
-        // escalation guard, self-selected. The named object must be on THIS component's containment
-        // chain, and the gate re-derives its tier from that same chain (D3).
+        // ...AND IT MUST BE AN ANCESTOR. See docs/routes.md §402.
         await assertOverrideTierStanding(tx, {
           orgId: auth.orgId,
           componentObjectId: component.id,
@@ -271,11 +197,7 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
       const row = await findScanOverrideGrant(tx, auth.orgId, input.id);
       if (!row) throw notFound(`scan override grant '${input.id}' not found`);
       const current = projectScanOverrideGrant(row);
-      // D3 — APPROVER STANDING IS THE TIER THAT SET THE RULE, and the tier is DERIVED here rather
-      // than taken from the stored `tierObjectId` on trust. The chain check is re-run at decide time
-      // (not merely inherited from create) because a grant can reach this row through a door that
-      // never ran it: an IaC manifest or a federated peer can write a `requested` grant naming any
-      // object at all, and a `contains` edge can be removed after the request was raised.
+      // Approver standing is the tier that set the rule. See docs/routes.md §403.
       const derivedTier = await assertOverrideTierStanding(tx, {
         orgId: auth.orgId,
         componentObjectId: current.componentId,
@@ -289,36 +211,7 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
         permission: "policy:write",
         scopeObjectId: current.tierObjectId
       });
-      // `scan:override` — ADDED, NEVER SUBSTITUTED (role-model.md §1.3e, drizzle/0099). Both bars
-      // are demanded, at the same derived tier object, so nothing that could decide a waiver before
-      // this permission existed can decide one without it.
-      //
-      // THE DEFECT IT CLOSES. Authoring the scan rule and waiving it were the SAME permission
-      // string at the SAME scope: `policy:write` at the tier authors the ceiling
-      // (`routes/typed-registries.ts`), and `policy:write` at the tier used to be the whole of the
-      // authority to excuse a finding from it. The docblock above already concedes the
-      // consequence — the raiser≠approver check "survives intact the moment any SECOND principal
-      // holds the same scoped `policy:write`" — which is exactly a separation of duty that is not
-      // one.
-      //
-      // A BEHAVIOURAL NO-OP ON EVERY LIVE DEPLOYMENT, which is why it is safe to ADD to a door that
-      // is already in use: drizzle/0010 grants `policy:write` to Administrator and Owner alone, and
-      // drizzle/0099 grants `scan:override` to exactly those two (plus the new SecurityOfficer), so
-      // the set of principals who can sign a waiver is identical before and after.
-      //
-      // WHAT IT BUYS IS THAT IT CAN BE WITHHELD SEPARATELY. The new OrgAdmin holds `policy:write`
-      // and NOT `scan:override`: an org can seat an estate administrator who authors org policy and
-      // a security officer who owns the waiver, and neither is the other (owner ruling D3).
-      //
-      // ON THE DERIVED TIER, not `auth.orgId`, and not the stored `tierObjectId` on trust — the
-      // same object the `policy:write` bar above uses, for the same reason: naming a LOWER object
-      // widens the set of principals whose bindings satisfy an upward walk, so both bars have to
-      // sit on the value `assertOverrideTierStanding` just re-derived from the component's chain.
-      //
-      // RAISING A REQUEST IS UNCHANGED and stays `object:write` at the COMPONENT (see the RAISE
-      // door). A `requested` grant authorizes nothing until it is signed here, so gating the report
-      // of a finding harder than the waiver of one would only stop the people who know about it
-      // from saying so.
+      // `scan:override` — ADDED, NEVER SUBSTITUTED. See docs/routes.md §404.
       await authorize(tx, {
         orgId: auth.orgId,
         subjectObjectId: auth.subjectObjectId,
@@ -336,22 +229,7 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
           `only a 'requested' grant can be approved — '${input.id}' is '${current.status}'`
         );
       }
-      // SEPARATION OF DUTIES — the raiser may not be the approver (owner decision, 2026-08-18).
-      //
-      // APPROVE ONLY, deliberately, and for the same reason the instance-floor check above is
-      // approve-only: taking a waiver back must never be harder than making one. Denying or revoking
-      // your own request is ordinary withdrawal and stays free.
-      //
-      // WHAT THIS IS AND IS NOT. It is defence in depth for the D3 authority bar, not a replacement
-      // for it: the escalation the bar exists to stop survives this check intact the moment any
-      // SECOND principal holds the same scoped `policy:write`. It closes only the one-actor shape —
-      // raise at a tier you hold, then immediately sign your own waiver — which is also the cheapest
-      // shape to reach and the only one that leaves a single name on both halves of the record.
-      //
-      // IT CANNOT BIND A FEDERATED GRANT, and that is correct rather than a gap. A grant arriving
-      // over the journal was decided at its AUTHORING instance, where this check ran; re-deciding it
-      // here is not a thing this door does. `requestedByActorId` from a peer also names a subject in
-      // that domain's `objects`, so comparing it to a local subject id would be meaningless.
+      // SEPARATION OF DUTIES. See docs/routes.md §405.
       if (input.to === "approved" && current.requestedByActorId === auth.subjectObjectId) {
         throw badRequest(
           `a scan override grant cannot be approved by the subject who raised it — '${input.id}' ` +
@@ -390,12 +268,7 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
         requestId: request.id,
         idOrUrn: input.id,
         properties: nextProperties,
-        // THE ONE CALLER THAT MAY WRITE A DECISION. `graph/objects-repo.ts` refuses `status`,
-        // `expiresAt`, `decidedByActorId`, `decidedAt` and `decisionReason` at every other local
-        // door; this is the path that earns them, having just run the derived-tier authority check
-        // above and about to write the Decision and the hash-chained audit event below, in this same
-        // transaction. The flag is a TypeScript-only field on the repo input — no request body
-        // reaches it, and `grep -rna scanOverrideGrantDecision` finds exactly this one setter.
+        // THE ONE CALLER THAT MAY WRITE A DECISION. See docs/routes.md §406.
         scanOverrideGrantDecision: true
       });
       const decision = await insertDecision(tx, {

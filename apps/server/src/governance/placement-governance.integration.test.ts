@@ -16,62 +16,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * GOVERNANCE OVER A PLACEMENT WAVE TARGET (ADR-0026).
- *
- * ============================================================================================
- * THE PROPERTY, AND WHY THESE ARE THE TESTS
- * ============================================================================================
- * Under stage-shaped compilation a `change_wave_targets.target_object_id` is a PLACEMENT, not a
- * component. Every wave-boundary governance decision is derived from that id — policy matching and
- * freeze scoping walk its containment chain, and the CEL context reads the object itself.
- *
- * A placement's chain used to be `[org root, placement]` and nothing more: its `domain_id` is the
- * org root and it has no incoming `contains` edge. So the day a wave target became a placement,
- * every component- and service-scoped policy stopped matching at the wave boundary and every
- * service-scoped freeze failed OPEN — silently, because a policy that stops matching produces the
- * same `allow` verdict as a policy that was never meant to match. On the live estate that is 11
- * `required` component-scoped prod-gate policies.
- *
- * Each test below therefore asserts a VERDICT (or a permission answer), never a message or a count:
- * the question is whether governance still fires over the new shape, and the only honest evidence
- * of that is the decision it produces. Every one is written so that removing the fix flips the
- * verdict from `block` to `allow` — the direction that matters, since `allow` is what a silently
- * dead gate looks like.
- *
- * ONE EXCEPTION, ADDED BY M25.2 (2026-08-23), and it is an exception on purpose. The two FREEZE
- * cases assert the per-target RESOLVER (`GateOutcome.frozenTargets`) as well as the verdict,
- * because M25.2 relocated freeze enforcement onto a per-target seam in `coordination/reconcile.ts`
- * — so a partially frozen wave now correctly ALLOWS, and the verdict alone stopped being a
- * faithful measure of "did route 3/route 4 reach this placement?". Re-expecting those two to
- * whatever the new verdict happens to be would have kept the file green while deleting the only
- * live evidence that either route still works on the freeze path. Both halves are asserted
- * instead; see the comment on the service-scoped case.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | `containment.ts`: drop route 3 (the placement -> component branch of the LATERAL union) | the component-scoped policy, service-scoped policy, service-scoped freeze and approval-scope tests all FAIL (verdict flips to `allow` / scope resolves to null) |
- * | `containment.ts`: make route 3 read `deploymentTargetId` instead of `componentId` | the same four FAIL — the route must reach the right endpoint, not just any endpoint |
- * | `gate-orchestrator.ts`: `governanceSubjectOf` returns `targetObjectId` unconditionally | the CEL-subject test FAILS (`subject.typeId` is `placement`, the condition goes false, the required policy stops firing, verdict flips to `allow`) |
- * | `authz/resolve.ts`: drop the shared fragment from `scopeExpandCte` | the component-role-reaches-its-placement test FAILS |
- * | `containment.ts`: drop the CASE guard, cast `componentId` bare | the malformed-`componentId` test FAILS with a Postgres cast error instead of an answer |
- *
- * ROUTE 4 (the deployment-target as a containing scope, owner-approved 2026-08-02):
- *
- * | Mutation | Result |
- * |---|---|
- * | `containment.ts`: drop route 4 from `placementParentsSql` | the target-scoped policy, target-scoped freeze and target-bound role tests all FAIL. The malformed-`deploymentTargetId` test correctly still PASSES — it asserts the COMPONENT route survives a bad place, so it is not a test of route 4's presence |
- * | `containment.ts`: point route 4 at `componentId` instead | the same three FAIL — reaching *an* endpoint is not the same as reaching the right one |
- * | `containment.ts`: drop the CASE guard (shared by both endpoints) | BOTH malformed tests FAIL with `invalid input syntax for type uuid`, which is how the guard is shown to cover the endpoint route 4 added and not just the original |
- *
- * One mutation REFUTED a claim rather than confirming it, and the claim was corrected: swapping
- * `service-board.ts` to the pair fragment leaves its tests green, because arm 1's `IN (componentIds)`
- * filter discards the deployment-target row. See `placementComponentParentSql`'s comment — the
- * fragments stay separate on narrower, true grounds.
- */
+/** GOVERNANCE OVER A PLACEMENT WAVE TARGET. See docs/governance.md §263. */
 describe("governance over a placement wave target (ADR-0026)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -113,11 +58,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     return { component, service, placement };
   }
 
-  /**
-   * A `required` policy whose single effect is an approval nobody has cast. If it MATCHES and FIRES,
-   * the gate blocks; if it fails to match, the gate allows. That asymmetry is the whole measurement:
-   * `allow` is exactly what a silently dead gate returns.
-   */
+  /** A required policy whose one effect is an uncast approval. See docs/governance.md §264. */
   const gatingPolicy = (name: string, objectRef: string, condition?: string) =>
     admin.policies.create({
       name,
@@ -199,28 +140,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
   });
 
   it("a SERVICE-scoped freeze COVERS a placement wave target instead of failing open — and M25.2 relocated where that coverage is enforced", async () => {
-    // ==========================================================================================
-    // REWRITTEN FOR M25.2, NOT RE-EXPECTED. Read this before touching the assertions.
-    // ==========================================================================================
-    // This case and its route-4 twin below are the only live coverage of containment routes 3 and
-    // 4 ON THE FREEZE PATH. M25.2 moved freeze ENFORCEMENT off the whole-wave verdict and onto a
-    // per-target seam in `coordination/reconcile.ts`'s trigger loop, which means the verdict alone
-    // is no longer a faithful measure of "did the freeze reach this placement?" — a partially
-    // frozen wave now correctly ALLOWS.
-    //
-    // Flipping these two tests' expectations to match whatever the new verdict happens to be would
-    // be the vacuous-test failure in its purest form: the suite would stay green while the only
-    // assertion that route 3 still reaches a placement's SERVICE quietly stopped being made. So
-    // both halves are asserted instead —
-    //
-    //   (a) THE RESOLVER still reports the service as covering this placement (`frozenTargets`,
-    //       which is `governance/freeze-scope.ts`'s per-target answer, and the input BOTH the gate
-    //       and the reconcile-loop actuator consume); and
-    //   (b) THE VERDICT is still `block` when EVERY target is covered, which is the case M25.2
-    //       deliberately kept whole-wave, and `allow` the moment an uncovered sibling joins the
-    //       wave — with (a) still true of the covered one.
-    //
-    // Drop route 3 and (a) goes empty in both shapes, which no verdict assertion could have caught.
+    // REWRITTEN FOR M25.2, NOT RE-EXPECTED. See docs/governance.md §265.
     const { service, placement } = await placedComponent("svc-freeze", { service: true });
     const change = await admin.changes.propose({ name: "freeze-change", targets: [placement.id] });
 
@@ -354,12 +274,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     ).toBe("allow");
   });
 
-  // ==============================================================================================
-  // ROUTE 4 — the deployment-target as a containing scope. Unlike route 3 these do not restore lost
-  // gating; they make gating START, which is why the route was an owner decision (2026-08-02) rather
-  // than part of the fix. The live estate's twelfth `required` prod-gate policy is scoped exactly
-  // this way and had never once matched.
-  // ==============================================================================================
+  // ROUTE 4 — the deployment-target as a containing scope. See docs/governance.md §266.
 
   it("a policy scoped at a DEPLOYMENT-TARGET gates every placement there — and nothing anywhere else", async () => {
     const gated = await admin.deploymentTargets.create({ name: "route4-gated-target" });

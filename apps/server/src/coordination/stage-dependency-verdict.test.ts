@@ -1,30 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { OBSERVED_WEIGHT_FRESHNESS_MS, stageDependencyVerdict } from "./stage-dependency-hold.js";
 
-/**
- * ADR-0028 increment 3 — the branch matrix of decision 4, against a synthesised wave-target row.
- *
- * This is the half of the hold that decides; the integration suite pins which rows are read and what
- * is persisted. The case worth stating outright is the one this file exists for: an UNREADABLE weight
- * must never satisfy and must never be treated as a weight of zero either. Both mistakes produce a
- * plausible-looking verdict from the outside — one deploys ahead of a dependency the author named,
- * the other holds a release that a correct `minWeight` of 1 should have let through.
- *
- * `now` is injected rather than mocked, so the freshness boundary can be asserted from both sides
- * without a timer and without the test asserting that the machine is never busy.
- */
+/** The branch matrix, against a synthesised wave-target row. See docs/coordination.md §976. */
 
 const NOW = Date.UTC(2026, 7, 5, 12, 0, 0);
 const at = (msAgo: number) => new Date(NOW - msAgo);
 
-/**
- * A dependency's most recent wave target at the place under test.
- *
- * `lastObservedAt` is ALWAYS FRESH here, and that is the point rather than a convenience: it dates
- * the POLL, and a poll that reports nothing storable still refreshes it while leaving the reading
- * untouched. Anything about age therefore has to be said with `observedAt`, which dates the READING.
- * A helper that let the two move together would make the freshness tests pass for the wrong reason.
- */
+/** A dependency's most recent target at the place under test. See docs/coordination.md §977. */
 function row(overrides: {
   status: string;
   weight?: number | string | null;
@@ -161,14 +143,7 @@ describe("stageDependencyVerdict — an unreadable weight degrades, it never sat
   });
 
   it("THE FRESHNESS BOUND DATES THE READING, NOT THE POLL — a vanished Application still goes stale", () => {
-    // THE SHAPE THAT MADE THIS A FINDING. `updateWaveTargetObserved` refreshes `last_observed_at`
-    // on EVERY poll but rewrites `observed_state` only when the poll carried something storable,
-    // and `observedStateFrom` returns `undefined` for a status with no stateRef, no images and no
-    // rollout — precisely the argocd plugin's 404 shape (`{phase:'pending', detail:"application
-    // '<name>' not found (yet)"}`). So an Application deleted or renamed mid-canary leaves its last
-    // weight frozen while every subsequent tick moves the poll timestamp: dated by the poll, this
-    // row looks a second old forever, `stale` never fires, and the hold keeps RELEASING dependants
-    // against a world that no longer exists.
+    // THE SHAPE THAT MADE THIS A FINDING. See docs/coordination.md §978.
     const polledOneSecondAgo = new Date(NOW - 1_000);
     const readTakenAnHourAgo = {
       status: "observing",
@@ -237,11 +212,7 @@ describe("stageDependencyVerdict — an unreadable weight degrades, it never sat
 });
 
 describe("stageDependencyVerdict — a declaration may not WEAKEN the pair's edge (ADR-0028 decision 6)", () => {
-  // The two sources compose asymmetrically: the EDGE asserts the universal `succeeded` test, and a
-  // declaration's `minWeight` is a RELAXATION of it. For a pair carrying both, the strictest
-  // applicable constraint is the edge's — otherwise the party being ordered could neutralise an
-  // ordering somebody else wrote (an operator, a seed, an earlier change) for free, by adding
-  // `minWeight: 1` to its own declaration.
+  // The two sources compose asymmetrically. See docs/coordination.md §979.
 
   it("drops the qualifier when the pair is also edge-asserted — a weight above the minimum does NOT satisfy", () => {
     const dep = { dependsOn: "B", minWeight: 1 };

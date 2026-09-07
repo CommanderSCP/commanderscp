@@ -13,24 +13,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { federationPeerKeys, federationPeers, objects, syncJournal } from "../db/schema.js";
 import { initFederationSelf } from "./self-repo.js";
 
-/**
- * M16.2 phase A (E1) — THE `outpost` GRAPH OBJECT AND THE AUTHORITY-SPLIT RULE, end to end through
- * the GENERATED SDK against real Postgres.
- *
- * Read `federation/outpost-binding.ts` for the rule this file checks. In one line: the
- * `federation_peers` ROW owns transport identity/reachability, the `outpost` GRAPH OBJECT owns
- * commander-declared config (`trustTier`) plus the `peerDomainId` binding, and NEITHER can express
- * the other's fields. The two direction tests below are the reviewer's handle on it:
- *
- *   * a CONFIG write appends exactly one `object_upsert` journal row and leaves `federation_peers` +
- *     `federation_peer_keys` byte-identical;
- *   * a TRANSPORT write (the E4 PATCH) appends NO journal row at all and leaves the object's
- *     `version`/`revision` untouched.
- *
- * Every write here goes through `ScpClient` (charter principle 3 — the UI/CLI consume only the
- * generated SDK). Raw DB reads are used ONLY for assertions the API deliberately does not expose
- * (journal rows, key windows), never to set up state a route could set up.
- */
+/** The outpost graph object and the authority-split rule. See docs/federation.md §324. */
 describe("M16.2 E1: the `outpost` builtin object type + the authority split (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -38,12 +21,7 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
   /** A paired peer holding role `outpost` — the anchor a config object must bind to. */
   let outpostPeerId: string;
 
-  /**
-   * Asserts an SDK call fails with a specific HTTP status AND a `detail` matching `detail` — the
-   * SDK's `Error.message` is only the problem TITLE ("Bad Request"), so asserting on the message
-   * alone would pass for any 400 and pin nothing. The status pins the CLASS of refusal; the detail
-   * pins WHICH guard fired.
-   */
+  /** Asserts an SDK call fails with a status and a detail. See docs/federation.md §325. */
   async function expectApiError(
     call: Promise<unknown>,
     status: number,
@@ -166,14 +144,7 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
 
     const after = await journalRows();
     const added = after.slice(before.length);
-    // EXACTLY ONE `object_upsert` — this is the whole point of the owner's graph-object decision:
-    // outpost config rides the entry kind the importer already applies for any registered type. No
-    // new entry kind, no change to `JournalEntryKindSchema` (9 kinds, none peer-shaped), and no
-    // peer-row write pretending it will travel.
-    //
-    // The accompanying `audit_segment` is the ordinary audit piggyback EVERY audited mutation gets
-    // (`audit/audit-repo.ts` appends one on the single call site all mutations funnel through), so
-    // the honest assertion is this exact pair, appended in this order — not "one row total".
+    // EXACTLY ONE `object_upsert`. See docs/federation.md §326.
     expect(added.map((row) => row.entryKind)).toEqual(["audit_segment", "object_upsert"]);
     expect(added.filter((row) => row.entryKind === "object_upsert")).toHaveLength(1);
     const upsert = added.find((row) => row.entryKind === "object_upsert");
@@ -217,21 +188,7 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
     expect(await outpostObjectRows()).toHaveLength(before.length);
   });
 
-  // ==========================================================================================
-  // pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST (owner, 2026-08-16). The
-  // second accepted binding shape: `peerDomainId` = THIS instance's own trust domain. Everything
-  // else stays fail-closed (the two 400s above still hold — measured in this same file), the 1:1
-  // rule applies to self exactly as to a peer (409), and every read surface states "this instance"
-  // rather than joining to a peer row that does not exist.
-  //
-  // MUTATION LOG (each applied ALONE, then reverted)
-  // | Mutation | Result |
-  // |---|---|
-  // | `const isSelf = false` in outpost-binding.ts | the create below FAILS 400 ("neither a paired federation peer nor…") |
-  // | drop the clash scan for self (`if (!isSelf && blocking[0])`) | the second-object case FAILS (201, not 409) |
-  // | `peerIsSelf: originIsSelf` in toOutpostConfig | passes here (both true on the commander) — pinned as DIFFERENT by outpost-config-sync's replica, where origin is foreign and peer is self |
-  // | omit `selfOutpost` from status-repo | the status case FAILS (undefined) |
-  // ==========================================================================================
+  // pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST. See docs/federation.md §327.
   it("§10.5: `peerDomainId` = THIS instance's own domain is ACCEPTED (201) — the HQ outpost — named after self by default, `peerIsSelf: true`, resolvable by GET, listed, and on `federation.status().selfOutpost`", async () => {
     const self = await admin.federation.self();
     const before = await outpostObjectRows();
@@ -319,18 +276,7 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
     expect(patched.unknownFields).toEqual([]);
   });
 
-  // ==========================================================================================
-  // N6 (review round 5) — 'THE REQUEST BODIES ADMIT ONLY THE KNOWN FIELDS' IS A REFUSAL, NOT A STRIP.
-  //
-  // Measured before the fix: `POST /api/v1/federation/outposts` with an extra `somePhaseBProperty`
-  // answered 201 and stored `{trustTier, peerDomainId}` — zod's default object parse dropped the key.
-  // Nothing false was stored, so the honesty claim survived; but drizzle/0043, ADR-0022 and
-  // `outpost-binding.ts` all described a REFUSAL an operator never saw, and a NEWER CLIENT writing a
-  // phase-B property to an OLDER commander got a success and lost its field with no signal. That is a
-  // real hazard for a product whose premise is version skew across domains. Both bodies are now
-  // `z.strictObject`. The asymmetry with the JOURNAL is deliberate and is pinned by
-  // `outpost-config-sync.integration.test.ts`: strict at the operator's door, OPEN on the wire.
-  // ==========================================================================================
+  // Admitting only the known fields is a refusal, not a hope. See docs/federation.md §328.
 
   it("N6: an unknown property on CREATE is REFUSED (400), not silently stripped, and writes nothing", async () => {
     const peer = await pairPeerViaApi("outpost");

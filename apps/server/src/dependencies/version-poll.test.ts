@@ -11,20 +11,7 @@ import {
 } from "./version-poll.js";
 import type { HeadRefusalReason } from "./line-head.js";
 
-/**
- * THE ROLE GUARD (ADR-0032 §7, BUILD_AND_TEST.md M21.4).
- *
- * The hazard is specific and is not hypothetical: there is no trustworthy RUNTIME
- * commander/outpost predicate — `self_domain.role` is per-ORG, set lazily post-install through the
- * federation API, and advisory — so a background job with no explicit guard runs on AIR-GAPPED
- * OUTPOSTS too, dialling package registries that are unreachable by design and writing a Decision
- * per dependency about it, every day, forever.
- *
- * Both directions are pinned here. A test that only asserted the refusals would pass just as well
- * against a guard that refuses EVERYTHING, i.e. against a feature that never runs at all — so the
- * negative control (a commander worker DOES run it, and really creates the queue) is the half that
- * makes the rest mean something.
- */
+/** THE ROLE GUARD. See docs/dependencies.md §429. */
 
 const ROLES = ["all", "api", "worker"] as const;
 const FEDERATION_ROLES = ["commander", "outpost", "retrans"] as const;
@@ -52,12 +39,7 @@ describe("dependencyVersionPollRoleGuard", () => {
         ...DECLARED
       });
       expect(verdict.allowed, role).toBe(false);
-      // The air-gap sentence is THIS capability's own reason for the FEDERATION axis, so it belongs
-      // to the federation branch and only to it. On an `api` process the guard refuses on the
-      // PROCESS axis first (M21.7 follow-up, LOW 5 — all three hand-written copies now test the
-      // axes in one order, so a given misconfiguration sends an operator to ONE setting rather than
-      // to whichever one the job that complained happened to check first); telling that operator
-      // about air-gaps would be naming the wrong remedy.
+      // The air-gap sentence is this capability's own reason. See docs/dependencies.md §430.
       if (role === "api") {
         expect(verdict.reason, role).toMatch(/SCP_ROLE/);
       } else {
@@ -96,22 +78,7 @@ describe("dependencyVersionPollRoleGuard", () => {
   });
 });
 
-/**
- * THE GUARD WAS FAIL-OPEN, AND THAT IS A THIRD AXIS, NOT A SHADE OF THE FIRST (M21.4 MINOR D).
- *
- * `config.federationRole` DEFAULTS to `commander` when `SCP_FEDERATION_ROLE` is unset (config.ts),
- * because that default is right for the question it was introduced to answer — "may this process
- * serve the SPA?" — where it preserves every pre-M16.3 deployment byte-for-byte. It is the WRONG
- * default for "may this process dial package registries on a daily timer?": an outpost installed
- * before that env var existed, or from a chart that omits it, is indistinguishable from a declared
- * commander. The deployments most likely to be air-gapped are exactly the ones most likely to be
- * undeclared, so the pre-fix guard let precisely the wrong population through — silently, since
- * "allowed" also logged nothing.
- *
- * These pin the safe default and its remedy. Note the FIRST test would pass against the old guard
- * too — it is the second one that is the fix, and the third is the negative control that stops the
- * fix from degenerating into "never poll".
- */
+/** The guard was fail-open, and that is a third axis. See docs/dependencies.md §431. */
 describe("dependencyVersionPollRoleGuard — an UNDECLARED federation role (MINOR D)", () => {
   it("still refuses an explicitly-declared outpost (the pre-existing axis is untouched)", () => {
     expect(
@@ -200,34 +167,12 @@ describe("startDependencyVersionPollLoop", () => {
     await handle.stop();
     expect(boss.createQueue).toHaveBeenCalledWith(DEPENDENCY_VERSION_POLL_QUEUE);
     expect(boss.work).toHaveBeenCalledTimes(1);
-    // §4-A4/M26.1, CORRECTED TWICE: the startup kick is sent UNKEYED, with no singleton options at
-    // all, because it must ALWAYS insert. Keying it to the chain's `"tick"` killed the loops (a
-    // completed job holds pg-boss's singleton slot); moving it to its own key + window then broke
-    // crash resumption (a worker restarting inside the window had its kick swallowed by its own
-    // previous boot). A4's replica-dedupe was an efficiency win and is deliberately given up —
-    // redundant sweeps are safe, a dead loop is not. See events/pgboss.ts's
-    // LOOP_STARTUP_SEND_IS_UNKEYED and the census in coordination/loop-startup-singleton.test.ts.
+    // §4-A4/M26.1, CORRECTED TWICE. See docs/dependencies.md §432.
     expect(boss.send).toHaveBeenCalledWith(DEPENDENCY_VERSION_POLL_QUEUE, {});
   });
 });
 
-/**
- * THE DECISION'S PLAIN-ENGLISH EXPLANATION MUST NAME THE RULE THAT ACTUALLY REFUSED (principle 6).
- *
- * The defect this pins was one fixed sentence — "a head never moves backwards and never leaves the
- * line it names" — appended to EVERY `not_recorded` verdict. It is true of the version rules and it
- * is not the rule that fires for an OWNERSHIP refusal: `line_is_internal` says the coordinate has a
- * declared producer, which is not a statement about the version at all, and the index's answer may
- * have been perfectly ahead of the standing head. An operator reading that Decision goes looking for
- * a version-ordering problem on a line whose actual problem is a declaration — a Decision that
- * explains the wrong rule is worse than one that says nothing.
- *
- * MUTATION LOG — applied, watched fail, reverted, watched pass:
- * | Mutation | Result |
- * |---|---|
- * | restore the single fixed sentence for every reason (the pre-fix state) | TWO failures — the ownership case, and "`behind_head` and `different_major_line` do not share one sentence either". The second is the collapse one step smaller, and it falls out of the same mutation |
- * | give the ownership reasons the version wording and vice versa | TWO failures, one per grouped case: the mapping is pinned in BOTH directions, so "the strings merely differ" does not satisfy it |
- */
+/** The explanation must name the rule that actually refused. See docs/dependencies.md §433. */
 describe("norecordFor — the refusal's explanation follows the refusal", () => {
   /** Every reason the door can return, spelled out. A literal list, not `Object.keys` of anything:
    *  the point is that a NEW reason has to be added here by hand and then explained. */
@@ -268,11 +213,7 @@ describe("norecordFor — the refusal's explanation follows the refusal", () => 
   });
 
   it("every reason cites the rule it is applying", () => {
-    // WHAT THIS DOES NOT DO, stated so nobody reads it as the exhaustiveness gate: the two lists
-    // above are hand-maintained, so a NEW `HeadRefusalReason` is not covered here at all. What
-    // covers it is the compiler — `norecordFor`'s switch has no `default:` arm and the package sets
-    // `noImplicitReturns`, so an unexplained reason fails to build. That gate lives in the source,
-    // not in this file, and adding a `default:` arm would silently remove it.
+    // What this does not do, so it is not read as the gate. See docs/dependencies.md §434.
     for (const reason of [...OWNERSHIP, ...VERSION]) {
       expect(norecordFor(reason), reason).toMatch(/ADR-0032 §7/);
     }

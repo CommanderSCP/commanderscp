@@ -4,20 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempTrackedForFileSync } from "@scp/test-tmpdir";
 
-/**
- * Test-only throwaway-CA/leaf-cert/CRL generation via the `openssl` CLI (`execFileSync`) — used by
- * `mtls.integration.test.ts` (the M9.3 in-app federation mTLS attack matrix) and
- * `crl-parse.test.ts`. Deliberately NOT a runtime dependency (CLAUDE.md principle 5 — air-gap/
- * self-hosting; no `node-forge` or similar added to `package.json`'s `dependencies`): every CI
- * runner and dev machine already has `openssl` as a system tool, and this module is only ever
- * imported from `*.test.ts` files.
- *
- * Generates FRESH material per test run (never checked-in fixtures) specifically so a SAN URI can
- * encode a domain id the test only learns at runtime (e.g. a freshly-paired peer's real
- * `federation_self.domainId`), and so the CRL/expiry tests can construct exact past/future
- * `nextUpdate` timestamps deterministically (`openssl ca -gencrl -crl_nextupdate <date>`) rather
- * than racing the wall clock.
- */
+/** Test-only throwaway certificate and revocation generation. See docs/federation.md §556. */
 
 export function opensslAvailable(): boolean {
   try {
@@ -39,20 +26,7 @@ export interface TestCa {
   caCrtPem: Buffer;
 }
 
-/**
- * Creates a fresh temp dir with a throwaway self-signed CA plus the `openssl ca` database files
- * (`index.txt`/`serial`/`crlnumber`/a minimal `ca.cnf`) needed to later revoke certs and mint a
- * CRL from the SAME CA.
- *
- * NOT counted by the original mkdtemp census (CLAUDE.md's own "incomplete call-site census" failure
- * mode: the census only greped `*.test.ts` files for a direct `mkdtemp(` call, and every one of
- * this function's 7 CALLERS is clean by that measure — the leak was IN THE HELPER, one level down).
- * 501 leaked `scp-mtls-pki-*` directories were sitting on the author's machine when this was found
- * — more than any single test-file leak in the census. `mkdtempTrackedForFileSync` (afterAll, not
- * afterEach): callers use this in both a per-`it()` pattern (mtls.integration.test.ts, often
- * several CAs in one test) and a `beforeAll`-shared pattern (federation-sync.integration.test.ts)
- * — afterAll is the one lifetime that is correct under both without inspecting all 7 call sites.
- */
+/** Creates a throwaway authority plus its database files. See docs/federation.md §557. */
 export function createTestCa(): TestCa {
   const dir = mkdtempTrackedForFileSync(join(tmpdir(), "scp-mtls-pki-"));
   const caKeyFile = join(dir, "ca.key");
@@ -168,12 +142,7 @@ export function revokeLeafCert(ca: TestCa, leaf: TestLeafCert): void {
   ]);
 }
 
-/**
- * Generates a CRL from `ca`'s database (i.e. reflecting every `revokeLeafCert` call so far).
- * `nextUpdate`, if given, is an explicit ASN.1 time string (`YYYYMMDDHHMMSSZ`) — used by the
- * expired-CRL tests to construct a deterministic PAST `nextUpdate` rather than racing the wall
- * clock with a tiny `-crldays`.
- */
+/** Generates a CRL from `ca`'s database. See docs/federation.md §558. */
 export function generateCrl(ca: TestCa, opts: { nextUpdate?: string } = {}): Buffer {
   const crlFile = join(ca.dir, `${Date.now()}-${Math.random().toString(36).slice(2)}.crl`);
   const args = [

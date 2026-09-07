@@ -1,26 +1,4 @@
-/**
- * @scp/plugin-fake-executor — the in-repo `ExecutorPlugin` with controllable, deterministic
- * outcomes (BUILD_AND_TEST.md §4.2: "a fake-executor plugin (in-repo, controllable outcomes)
- * used for full coordination-loop tests without any external system"; §8 M3 item 7). Never
- * shipped to a real org — its only job is letting the reconciliation loop, the subprocess plugin
- * host, and their integration tests drive a realistic multi-wave rollout AND a rollback,
- * deterministically, with no network or external system involved.
- *
- * State-persistence design (documented per the M3 build brief, since it's the thing that makes
- * the plugin-host isolation DoD scenario — "kill the fake-executor SUBPROCESS mid-wave... the
- * wave resumes" — actually true): state is keyed by `TriggerIntent.targetRef` and, when
- * `ctx.config.statePath` is set, persisted to that JSON file after every mutation (write-to-temp
- * + rename, so a concurrent reader never observes a half-written file). A subprocess plugin host
- * (apps/server/src/plugin-host/host.ts) passes a stable `statePath` per instance, so when it
- * kills and respawns the child mid-wave, the NEW process's `FakeExecutorPlugin` re-reads exactly
- * the state the old one left behind and `status()` keeps answering correctly for in-flight refs —
- * this mirrors how a REAL executor's state lives external to the plugin process (GitHub/ArgoCD
- * don't forget a workflow run because SCP's plugin subprocess restarted).
- *
- * When `statePath` is unset (typical for fast in-process unit tests), state lives in a plain
- * in-memory `Map` scoped to the `FakeExecutorPlugin` instance — a "restart" in that mode really
- * would lose state, which is why the subprocess-host path always sets `statePath`.
- */
+/** The in-repo executor with controllable, deterministic outcomes. See docs/plugins.md §62. */
 import { randomUUID } from "node:crypto";
 import { createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
@@ -93,27 +71,10 @@ interface FakeExecutorConfig {
     string,
     { phase?: string; step?: number; weight?: number; message?: string }
   >;
-  /**
-   * Per-target deterministic `status().detail`. Mirrors `forcePhase`, and exists for one reason
-   * `imagesByTarget` and `rolloutByTarget` do not cover: `ExecutionStatus.detail` is free-form
-   * `string` from ANY executor plugin, and `reconcile.ts` writes it into a `Decision`'s
-   * `inputContext` — permanent governed state, one row per failing poll. Proving that write is
-   * BOUNDED needs a plugin that returns an unbounded detail, and no in-repo plugin does: the three
-   * managed ones bound their own at composition (`@scp/runner-launcher`'s `boundDetail`, enforced
-   * by their stores' types), which is exactly why they cannot be the witness. A THIRD-PARTY plugin
-   * is the case the bound is for, and this is the only stand-in for one.
-   */
+  /** Per-target deterministic `status().detail`. See docs/plugins.md §63. */
   detailByTarget?: Record<string, string>;
 
-  /**
-   * A GENERATED per-target `detail`, for values too large to cross a spawn argv.
-   *
-   * `detailByTarget` carries its string literally, and the plugin host passes plugin config on the
-   * subprocess ARGV (`host.ts` `spawnInstance`). Linux caps a single argument at MAX_ARG_STRLEN
-   * (128 KiB) and answers `spawn E2BIG` past it; macOS does not, so a 432 KB literal passed locally
-   * and failed only on CI. The bound belongs to the transport, not to this plugin — so a test that
-   * needs a large detail sends the RECIPE and the plugin expands it here, in-process.
-   */
+  /** A generated per-target detail, too large to cross argv. See docs/plugins.md §64. */
   detailRepeatByTarget?: Record<
     string,
     { head: string; unit: string; times: number; tail: string }
@@ -125,51 +86,9 @@ interface FakeExecutorConfig {
     string,
     { head: string; unit: string; times: number; count: number }
   >;
-  /**
-   * Per-target deterministic `status().stateRef` — the synced revision. Mirrors `imagesByTarget`
-   * and `rolloutByTarget`, and exists because of what their SHAPES could not reach.
-   *
-   * THE HARNESS HAD NO STRING SEAM INTO `observed_state`, and four consecutive verification rounds
-   * shipped a regression behind that gap (M23.0 pass 10). `observedStateFrom` builds
-   * `{revision, images, rollout}`: `revision` comes from `status().stateRef`, which this plugin
-   * HARDCODED to `v${target.version}`, and `detail` never enters `observed_state` at all. So the
-   * only free-form field an integration test could vary in that column was `imagesByTarget` — an
-   * ARRAY. `@scp/runner-launcher`'s persisted-JSON bound treats arrays and strings by different
-   * rules (an array is cut by dropping ENTRIES, a string by the per-string width bound), and every
-   * string-shaped defect in that allocator was therefore unreachable end to end BY CONSTRUCTION:
-   * a per-string bound that discarded half of every share was invisible to a green integration
-   * suite for three rounds.
-   *
-   * The DEFAULT is unchanged — absent this key, `status()` still reports `v${target.version}` and
-   * `coercePriorStateRef` still round-trips it — so this adds a seam without moving any existing
-   * assertion.
-   */
+  /** Per-target deterministic `status().stateRef`. See docs/plugins.md §65. */
   stateRefByTarget?: Record<string, unknown>;
-  /**
-   * Per-target extra fields the returned {@link ExternalRunRef} carries ALONGSIDE `externalId`,
-   * emitted BEFORE it — the seam `executor_ref` had none of (M23.0 verification pass 12).
-   *
-   * WHY THE COLUMN NEEDED ONE. `trigger()`'s whole return value is written to
-   * `change_wave_targets.executor_ref` by `markWaveTargetTriggered`, through the same
-   * `boundPluginJson` as `observed_state` — and EVERY end-to-end fixture in this repository drives
-   * `observed_state`. `PluginHost.executor()` types the JSON-RPC response with a BARE CAST, so at
-   * runtime the ref is whatever the plugin serialised: a real executor returns its own vendor
-   * fields beside the two this interface names, and their ORDER is whatever its serialiser chose.
-   * This plugin returned exactly `{externalId, url}`, both short, so no test could reach the
-   * branch that decides whether `externalId` survives the bound.
-   *
-   * WHY `externalId` IS THE WORST LEAF IN THE PRODUCT (pass 9's census, "Instance 3"). All nine
-   * executor plugins read it out of the persisted ref to address the run: `status()` here does
-   * `parseTargetRef(ref.externalId)` and compares `target.externalId !== ref.externalId`. A ref the
-   * executor can no longer interpret is not an error anywhere — this plugin answers `pending`, Argo
-   * CD answers 404 — so reconcile writes `observing` and POLLS THE TARGET AS AN UNKNOWN RUN
-   * FOREVER, behind a green health check.
-   *
-   * EMITTED FIRST, DELIBERATELY. The bound seats an object's keys in insertion order, so a ref
-   * whose vendor fields come first is the shape in which `externalId` is the one that does not fit.
-   * `externalId` and `url` are spread AFTER these, so a config that names either cannot break the
-   * plugin's own contract with itself.
-   */
+  /** Per-target extra fields the returned run ref carries. See docs/plugins.md §66. */
   runRefExtrasByTarget?: Record<string, Record<string, unknown>>;
 }
 
@@ -187,21 +106,7 @@ function parseTargetRef(externalId: string): string {
   return idx === -1 ? externalId : externalId.slice(0, idx);
 }
 
-/**
- * Parses a prior `status()` call's `stateRef` (e.g. `"v2"`) back into a version number for a
- * `rollback` trigger; defensively falls back to 0 for anything else (unset, malformed,
- * uninterpretable — `priorStateRef` is typed `unknown` on the wire).
- *
- * A STRUCTURED PRIOR STATE IS READ TOO, and that is not a convenience — it is what makes
- * `change_wave_targets.prior_state_ref` drivable end to end (M23.0 verification pass 12).
- * `ExecutionStatus.stateRef` is `unknown` precisely so an executor whose state is not one string
- * can return an object (a Terraform state serial and lineage, an Argo CD revision per source), and
- * that is the shape whose LOAD-BEARING LEAF the persisted-JSON bound can drop while leaving the
- * column populated and plausible. With only the string form here, the harness could put nothing in
- * that column that a wrong answer would be visible in: `String({...})` is `"[object Object]"`, so
- * a damaged object and an intact one coerce identically to 0 and a rollback restores version 0
- * either way — indistinguishable from a rollback that worked on a never-triggered target.
- */
+/** Parses a prior `status()` call's `stateRef`. See docs/plugins.md §67. */
 function coercePriorStateRef(priorStateRef: unknown): number {
   const direct = /^v(\d+)$/.exec(String(priorStateRef ?? ""));
   if (direct) return Number(direct[1]);
@@ -259,13 +164,7 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     const state = await this.loadState(ctx.config);
     const existing = state.targets[targetRef];
 
-    // Idempotency dedup (PR #7 review, CRITICAL #2): the engine re-calls trigger() with the SAME
-    // idempotencyKey when it can't tell whether a prior attempt's call actually reached us before
-    // the caller crashed/retried. Recognizing a repeat is what makes that safe to do — no second
-    // real run, no version bump, just the same answer as last time. Only engages when the caller
-    // actually sent a key (falsy `intent.idempotencyKey` never matches `undefined ===
-    // undefined`... it would, so the truthiness check below is required — an intent that never
-    // sets idempotencyKey must always mint a fresh run, exactly like before this field existed).
+    // Idempotency dedup (PR #7 review, CRITICAL #2). See docs/plugins.md §68.
     if (intent.idempotencyKey && existing?.lastIdempotencyKey === intent.idempotencyKey) {
       ctx.logger.info("fake-executor: trigger deduped by idempotencyKey", {
         targetRef,
@@ -312,11 +211,7 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     const target = state.targets[targetRef];
 
     if (!target || target.externalId !== ref.externalId) {
-      // Unknown / superseded ref — e.g. an in-memory (no statePath) instance that lost state
-      // across a restart, or a stale ref from before a later trigger on the same target.
-      // Reporting "pending" rather than throwing is what keeps a killed-and-respawned subprocess
-      // (which, with a shared statePath, would NOT hit this branch — see module doc) from ever
-      // looking like a hard failure to the reconciliation loop.
+      // Unknown / superseded ref. See docs/plugins.md §69.
       return {
         phase: "pending",
         detail: "fake-executor: unknown run (fresh state or superseded ref)"
@@ -379,20 +274,7 @@ export function createFakeExecutorPlugin(): ExecutorPlugin {
   return new FakeExecutorPlugin();
 }
 
-/**
- * Manifest — added because "never shipped to a real org" (module doc, above) is a statement about
- * INTENT, not about reach: `fake-executor` is on `executor-bindings-repo.ts`'s
- * `KNOWN_EXECUTOR_MODULES` **and** is `DEFAULT_EXECUTOR_MODULE`, so a tenant `PUT /executors/{id}/
- * binding` naming it is accepted on any deployment. While this package had no manifest,
- * `validatePluginConfig` had no schema to gate on and returned early — every key of that binding's
- * config was stored unread.
- *
- * `additionalProperties: false` with `statePath` DELIBERATELY ABSENT, the `managed-iac` shape: the
- * server injects `statePath` itself for every executor instance (`resolveExecutorPluginInstance`,
- * spread LAST), so it is server-governed here exactly as `runnerImage` is there — a binding that
- * sets it is refused rather than silently overridden. The remaining keys are this plugin's
- * deterministic test hooks, which ARE the tenant-facing surface.
- */
+/** Manifest — added because "never shipped to a real org". See docs/plugins.md §70. */
 export const manifest: PluginManifest = {
   id: "fake-executor",
   kind: "executor",

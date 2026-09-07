@@ -14,64 +14,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { withOperatorDb } from "./operator-db.js";
 import { requireInstanceOperator } from "../auth/operator-auth.js";
 
-/**
- * M22.9 — THE INSTANCE-SCOPED EXCLUSION ADMISSIONS' API SURFACE (ADR-0033 §1, §7a), API-first per
- * charter principle 3 (API -> SDK -> CLI).
- *
- * WHY THIS ROUTE IS NOT A CONVENIENCE. ADR-0033 §1's admission algebra is a monotone AND *down the
- * tier chain*, and `buildScanExclusionTargetInputs` seeds every target's `representedTiers` with
- * `platform` and `trust_domain` UNCONDITIONALLY. `tierForObjectType` structurally cannot return
- * either rung (it maps graph object types, and `containmentChain` is org-rooted), so NO policy at
- * any tier can contribute those two admissions. Their only source is `scan_exclusion_admissions`
- * (drizzle/0074). Until this route existed that table had no writer outside the integration suite's
- * admin pool — so on a real deployment every clause an operator authored failed the AND at the top
- * rung and M22.2 through M22.7 were inert, invisibly, with a green suite. The feature's mandatory
- * precondition was reachable only by hand-written SQL against the database.
- *
- * THE FIVE ORG-AND-BELOW RUNGS GET NOTHING HERE, and that is the correct answer rather than a gap.
- * `org`, `containment_domain`, `service`, `assembly` and `component` admit a class through the
- * ALREADY-SHIPPED `scanExclusion` policy effect — `{"scanExclusion": {"admit": ["vendor_latest"]}}`
- * on an ordinary policy document, written over the ordinary policy door, validated by 0074's
- * `property_schema` and gathered per target by `buildScanExclusionTargetInputs`'s policy loop.
- * That surface is live and covered. A second admission surface for those tiers would be a second
- * construction of one rule (charter principle 2: new concepts arrive as policy data).
- *
- * THE DELIBERATE TWIN OF `routes/instance-scan-floors.ts` — same instance scope, same DESIGN §4.2
- * `org_id` exception, same two audiences and two credentials:
- *
- *  - **READ is tenant-facing.** Any authenticated tenant principal may see which classes this
- *    deployment admits, because a loosening they cannot author and cannot inspect is not
- *    explainable (charter principle 6) — and the shipped default (nothing admitted, every clause
- *    inert) is exactly the state that is invisible without a read. The read runs inside the
- *    ordinary tenant transaction under the table's tenant-read RLS policy, the same path
- *    `readInstanceScanExclusionAdmissions` takes at the gate, so no request path needs the
- *    privileged connection to evaluate a gate (ADR-0016 §3). It leaks nothing across tenants
- *    because the table holds NO per-tenant rows at all.
- *
- *  - **WRITE is operator-only, and deliberately NOT an RBAC permission.** An admission opens a
- *    loosening for EVERY org on the deployment; a tenant admin — however privileged inside their
- *    own org — must never author one, and D3's whole authority argument collapses if they can. So
- *    no role can grant it: the write requires the deployment-level `SCP_OPERATOR_TOKEN`
- *    (config.operatorToken) presented as `x-scp-operator-token`, and executes over the
- *    `scp_operator` connection (`withOperatorDb`) because `scp_app` holds no write grant on the
- *    table and no write RLS policy existed for it at all (drizzle/0074 — two independent barriers;
- *    0076 adds the operator role as the one principal both barriers admit). Unset token => the
- *    surface is CLOSED (403), never a fallback to a tenant credential.
- *
- *    THIS PARAGRAPH USED TO SAY "executes over the ADMIN connection", AND THAT WAS FALSE ON THE
- *    DEPLOYMENT SHAPE IT MATTERED ON. api/worker pods hold no admin connection (the chart gives
- *    `DATABASE_URL` to the migrations Job alone), so `config.databaseUrl` resolved to the
- *    `localhost:5432` fallback and the write dialed 127.0.0.1 inside its own pod. And the admin
- *    connection would not have sufficed anyway on a non-superuser admin: 0074 grants no write to
- *    anyone. `routes/operator-db.ts` carries the full account.
- *
- * THE PUT IS A WHOLE-SET REPLACE for one `(tier, origin)`, not an add. An additive verb makes
- * WITHDRAWAL the harder operation, and this is a loosening: an operator who believes they have
- * narrowed the admitted set, but whose request only ever added, would leave the loosening in force
- * with no error anywhere. `{"classes": []}` is therefore the revocation, which is why there is no
- * DELETE verb — a second verb meaning "replace with nothing" would be a second way to say one
- * thing.
- */
+/** M22.9 — THE INSTANCE-SCOPED EXCLUSION ADMISSIONS' API SURFACE. See docs/routes.md §255. */
 
 interface AdmissionRow extends Record<string, unknown> {
   tier: string;

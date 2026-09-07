@@ -14,40 +14,14 @@ import {
 } from "./outposts-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
-/**
- * M16.2 phase A (E2) — PROVE THE OWNER'S GRAPH-OBJECT DECISION ACTUALLY DELIVERS THE M16.2 DoD
- * CLAUSE "editing an outpost's config writes commander-origin data the federation journal/bundle
- * carries down".
- *
- * The decision rests on a fact the journal makes unavoidable (`JournalEntryKindSchema` admits 9 entry
- * kinds, none peer-shaped, and `peers-repo.ts` never appends one): a `federation_peers` ROW cannot
- * travel, so commander-authored outpost config had to become a GRAPH OBJECT to ride `object_upsert`.
- * That argument is only worth anything if the object genuinely arrives at the outpost AND is genuinely
- * read-only there. This file proves exactly that, on the real two-domain harness (two SEPARATE
- * Postgres databases — see `test-support/isolated-domain.ts` for why orgs-in-one-database would be
- * the wrong model), through the real export → verify → import path:
- *
- *   1. a commander-authored `outpost` object ARRIVES at the outpost carrying the COMMANDER's trust
- *      domain as `originDomainId`;
- *   2. the outpost's own write to it is REFUSED by the EXISTING read-only-replica guard
- *      (`graph/objects-repo.ts`) — no second mechanism was built for this;
- *   3. the commander remains the SINGLE WRITER: its edits keep flowing down and the outpost's
- *      replica converges, while the outpost never authors a revision of its own.
- *
- * Test-only increment: it adds no production code, it verifies that the production code already
- * composed for this works.
- */
+/** Prove the owner's graph-object decision actually delivers. See docs/federation.md §313. */
 describe("M16.2 E2: commander-origin outpost config syncs down as a read-only replica (Testcontainers)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
   let commanderSelf: FederationSelf;
   let outpostSelf: FederationSelf;
 
-  /**
-   * Asserts a repo call fails with a specific HTTP status AND a `detail` matching `detail`.
-   * `ProblemError.message` is only the TITLE ("Conflict"), so `rejects.toThrow(/read-only replica/)`
-   * would never match the text that actually names the guard — it lives in `.detail`.
-   */
+  /** Asserts a repo call fails with a status and a detail. See docs/federation.md §314. */
   async function expectProblem(
     call: Promise<unknown>,
     status: number,
@@ -121,16 +95,7 @@ describe("M16.2 E2: commander-origin outpost config syncs down as a read-only re
     await outpost?.close();
   });
 
-  /**
-   * §10.5 (review fix) — THE OUTPOST CANNOT AUTHOR THE CO-LOCATED RECORD FOR ITS OWN DOMAIN. The
-   * self shape (`peerDomainId` = this instance's own domain) is accepted ONLY when this instance's
-   * `federation_self.role` is `commander`. Runs FIRST, before any replica exists: with the guard
-   * gone, this create returns 201 and a local-origin `commercial` row exists that the commander's
-   * later replica lands BESIDE (imports skip the guard; the urns differ by org prefix) — and
-   * `byAuthority` (local-origin first) then makes the outpost's own declaration win
-   * `findOutpostConfigByPeer`, `selfOutpost` and every pipeline tile forever, while the commander's
-   * tier never converges. The second half of this pin lives after the replica arrives (below).
-   */
+  /** The outpost cannot author the record for its own domain. See docs/federation.md §315. */
   it("§10.5: the OUTPOST cannot author its OWN co-located record BEFORE the commander's arrives (400 — role is 'outpost', not 'commander')", async () => {
     await expectProblem(
       withTenantTx(outpost.db, outpost.orgId, (tx) =>
@@ -334,23 +299,7 @@ describe("M16.2 E2: commander-origin outpost config syncs down as a read-only re
     expect(view?.originIsSelf).toBe(false);
   });
 
-  /**
-   * REVIEW ROUND 4 (H7) — FORWARD-TOLERANCE OF THE JOURNALED TYPE, decided before the second property
-   * lands rather than after.
-   *
-   * `outpost` is validated with Ajv against the REGISTERED type on the RECEIVING side, and the
-   * `object_upsert` import branch has no try/catch — so a rejected entry aborts THE WHOLE SYNC BUNDLE,
-   * not just that entry. With the first cut's `additionalProperties: false` (and a closed `trustTier`
-   * enum) that made every future addition a fail-closed version-skew hazard: the moment phase B added a
-   * second declared-config property, every outpost still on the older migration set would have wedged
-   * federation for that peer until upgraded.
-   *
-   * This test IS the decision, in executable form. The commander writes an `outpost` object carrying
-   * BOTH an unknown property and a tier this build has never heard of — exactly what a newer commander
-   * produces — and the outpost imports the bundle WHOLE. The property-level strictness that matters is
-   * unaffected: the API request bodies still admit only the known fields and known tiers (proved in
-   * `outpost-object.integration.test.ts`), so no operator can write either of these through a route.
-   */
+  /** Forward-tolerance of the journalled type, decided early. See docs/federation.md §316. */
   it("H7: an outpost entry carrying an UNKNOWN property and an UNKNOWN tier imports WITHOUT aborting the bundle", async () => {
     const replica = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       findOutpostConfigByPeer(tx, outpost.orgId, outpostSelf.domainId)

@@ -10,11 +10,7 @@ import {
   type EgressResolver
 } from "./egress-guard.js";
 
-/**
- * Unit tests for the SSRF egress guard (MAJOR #6). All cases use IP LITERALS so `assertEgressAllowed`
- * short-circuits DNS resolution (`isIP` !== 0) and never touches the network — the guard's blocking
- * logic is fully exercised without a real DNS lookup or HTTP server.
- */
+/** Unit tests for the SSRF egress guard. See docs/plugin-host.md §26. */
 describe("classifyIp", () => {
   const cases: Array<[string, ReturnType<typeof classifyIp>]> = [
     ["127.0.0.1", "loopback"],
@@ -115,14 +111,7 @@ describe("assertEgressAllowed", () => {
   });
 });
 
-/**
- * DNS-rebinding pinning (`createEgressPinRegistry`). These run REAL undici requests through the
- * exact Agent shape `subprocess-entry.ts`'s `scopedFetchHttpClient` builds — `connect.lookup` set
- * to the registry — because the defect being closed lives entirely in what the SOCKET does, not in
- * what the guard returns. The only server involved is a loopback one this file starts; the
- * hostnames used are `.invalid`, which by RFC 6761 no real resolver can answer, so a request that
- * ARRIVES proves the pin (and nothing else) chose the address.
- */
+/** DNS-rebinding pinning (`createEgressPinRegistry`). See docs/plugin-host.md §27. */
 describe("createEgressPinRegistry", () => {
   let server: Server;
   let port: number;

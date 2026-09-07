@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { claimValuesFrom, externalIdentityOf } from "./identity-sync.js";
 
-/**
- * The two PURE halves of IdP group sync. The reconciliation itself needs a database and lives in
- * `identity-sync.integration.test.ts`; these are the parts a unit test can pin, and one of them is
- * the most safety-critical line in the feature.
- */
+/** The two PURE halves of IdP group sync. See docs/auth.md §9. */
 describe("claimValuesFrom", () => {
   it("reads a multi-valued claim", () => {
     expect(claimValuesFrom({ roles: ["SCP.OrgAdmin", "SCP.Viewer"] }, "roles")).toEqual([

@@ -31,18 +31,7 @@ import {
 } from "./test-support/mtls-pki.js";
 import { asTrustDomainId } from "@scp/schemas";
 
-/**
- * M14.2 (ADR-0009, docs/proposals/outpost-poke.md) — the INBOUND CONTENTLESS POKE endpoint, driven
- * end-to-end against real Postgres + a REAL mTLS listener. The receiver is an outpost/retrans that
- * has opted into pokes from an enrolled commander; the caller is that commander, presenting its
- * enrolled `urn:scp:domain:<callerDomainId>` client cert exactly as M14.3's sender will.
- *
- * `fastify.inject()` fakes the socket, so (like `mtls.integration.test.ts`) every case boots a real
- * listener and drives it with `node:https`, presenting/withholding a client cert. The wake itself is
- * asserted by injecting a recording pg-boss into `deps.boss`: an accepted poke enqueues exactly one
- * immediate `FEDERATION_SYNC_QUEUE` tick (the pull runs on the loop's worker, never inline), and a
- * burst coalesces to at most one. Skipped wholesale when `openssl` is unavailable.
- */
+/** M14.2 (ADR-0009, docs/proposals/outpost-poke.md). See docs/federation.md §139. */
 
 interface Recorded {
   queue: string;
@@ -315,11 +304,7 @@ describe.skipIf(!opensslAvailable())(
   }
 );
 
-/**
- * The FAIL-CLOSED TRANSPORT IDENTITY case needs a SEPARATE receiver with federation-server-mTLS
- * UNSET (plain HTTP, `enforceFederationMtls` no-ops). A bearer-only poke must be REFUSED (401) — a
- * bearer does not prove the caller is the enrolled commander. Not gated on openssl (no certs here).
- */
+/** The fail-closed transport identity needs its own receiver. See docs/federation.md §140. */
 describe("M14.2 inbound federation poke — fail-closed transport identity (mTLS unset)", () => {
   it("REFUSED: a bearer-only poke with federation-server-mTLS unset -> 401 (never honored on bearer alone)", async () => {
     const config = loadConfig({
@@ -366,16 +351,7 @@ describe("M14.2 inbound federation poke — fail-closed transport identity (mTLS
   });
 });
 
-/**
- * M14.4 (S6, test j) — THE AIR-GAP LEG. ADR-0009 §38 makes the high-side-retrans→outpost poke INSIDE
- * the air gap REQUIRED, not optional. But an air-gapped outpost has NO `role: commander` peer with a
- * baseUrl to dial — its content arrives as a FILE that the INBOX loop ingests. So a poke that woke
- * only the federation-sync sweep resolved to ZERO peers and did nothing at all.
- *
- * This receiver models exactly that: its only enrolled peer is the high-side RETRANS (role
- * `retrans`, poke-mode), so the sync sweep has nothing to pull from — the tick returns an EMPTY
- * outcome list — and the inbox tick is the only thing that can move the chain forward.
- */
+/** M14.4 (S6, test j) — THE AIR-GAP LEG. See docs/federation.md §141. */
 describe.skipIf(!opensslAvailable())(
   "M14.4 air-gap poke leg — the poke wakes the INBOX loop",
   () => {
@@ -546,12 +522,7 @@ describe.skipIf(!opensslAvailable())(
       expect(queues).toContain(FEDERATION_SYNC_QUEUE);
     });
 
-    /**
-     * N3 — THE TWO INDEPENDENT TRY/CATCHES, ACTUALLY EXERCISED. Every other test here injects a
-     * recording boss whose `send` always succeeds, so the isolation between the two wakes was only
-     * correct BY INSPECTION. A real split topology is precisely the case where one queue does not
-     * exist on the process serving the request, and a `boss.send` for it THROWS.
-     */
+    /** N3 — THE TWO INDEPENDENT TRY/CATCHES, ACTUALLY EXERCISED. See docs/federation.md §142. */
     it("N3: when the SYNC queue's send throws, the poke is still accepted and the AIR-GAP (inbox) leg still fires", async () => {
       failQueue = FEDERATION_SYNC_QUEUE;
       const res = await poke();
@@ -585,17 +556,7 @@ describe.skipIf(!opensslAvailable())(
       });
     });
 
-    /**
-     * M13.1b — THE BYTE LEG. Legs 1 and 2 move METADATA: a poke landing on a retrans woke the import
-     * of the arriving `.scpbundle` and then waited for a human to run the byte hop (M14.4's
-     * honest-scope note, owner decision D3). This third leg is what makes the ADR-0009 chain move
-     * BYTES, and "a poke triggers an immediate cycle" is half of M13.1b's own DoD — so it is asserted
-     * here rather than left correct-by-inspection, exactly as the inbox leg was.
-     *
-     * Asserted on the QUEUE the wake actually landed on, not on the response alone: `wokenRelay` is a
-     * boolean the handler sets, so a regression that dropped the `boss.send` while leaving the flag
-     * would keep the response green and move nothing.
-     */
+    /** M13.1b — THE BYTE LEG. Legs 1 and 2 move METADATA. See docs/federation.md §143. */
     it("M13.1b: a poke wakes the AUTO-RELAY queue too — the leg that makes the chain move bytes, not just metadata", async () => {
       const res = await poke();
 
@@ -629,12 +590,7 @@ describe.skipIf(!opensslAvailable())(
       });
     });
 
-    /**
-     * The gate on the byte leg, proven the same way the inbox leg's is: an instance that never opted
-     * into unattended byte egress must not even have its queue poked. `startAutoRelayLoop` never
-     * creates that queue when the flag is unset, so a send would be pure noise — but more to the
-     * point, "a poke can reach it" is exactly the property the default-off consent denies.
-     */
+    /** The gate on the byte leg, proven as the inbox leg's is. See docs/federation.md §144. */
     it("M13.1b: with SCP_RETRANS_AUTO_RELAY unset, a poke does NOT touch the auto-relay queue", async () => {
       const previous = process.env.SCP_RETRANS_AUTO_RELAY;
       delete process.env.SCP_RETRANS_AUTO_RELAY;

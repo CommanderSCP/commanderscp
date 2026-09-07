@@ -1,17 +1,4 @@
-/**
- * Pure logic for reading and self-verifying an OCI-layout directory (the format `skopeo copy
- * ... oci:<dir>:<tag>` produces — see skopeo.ts for the invocation). No shelling out here: OCI
- * layout is just files on disk (`index.json` + `blobs/<alg>/<hex>`), and its own filenames are
- * content digests by construction, which gives us a strong, cheap, offline integrity check that
- * doesn't need skopeo or cosign at all — re-hash every blob and confirm the filename matches.
- *
- * Layered with cosign.ts's signature check (see verify-bundle.ts): this module proves the OCI
- * layout directory is INTERNALLY CONSISTENT (no bit-flip, no swapped blob); the cosign signature
- * proves WE produced the specific manifest digest it's internally consistent with. Either check
- * alone is incomplete — a corrupted-but-unsigned-claim directory passes this check trivially by
- * just being self-consistent garbage; a validly-signed digest string next to a tampered blob
- * directory fails only THIS check. Both must pass.
- */
+/** Pure logic for reading and self-verifying an OCI-layout directory. See docs/airgap.md §46. */
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { sha256File } from "./checksums.js";
@@ -58,15 +45,7 @@ export interface OciLayoutMismatch {
   detail: string;
 }
 
-/**
- * Self-verify an OCI-layout directory: (1) every blob under blobs/<alg>/<hex> re-hashes to its
- * own filename, and (2) index.json's recorded manifest digest matches the manifest blob's
- * ACTUAL content digest (catches an index.json that was hand-edited to point at a different,
- * possibly-untampered-looking, blob than what's really there). Returns an empty array on
- * success; never throws on a tampered layout — tampering is reported as findings, not
- * exceptions, so callers (verify-bundle.ts, install.sh's Node-free bash equivalent) can print
- * every problem found rather than stopping at the first one.
- */
+/** Self-verify an OCI-layout directory. See docs/airgap.md §47. */
 export async function verifyOciLayoutIntegrity(ociDir: string): Promise<OciLayoutMismatch[]> {
   const mismatches: OciLayoutMismatch[] = [];
 
@@ -122,11 +101,7 @@ export async function verifyOciLayoutIntegrity(ociDir: string): Promise<OciLayou
         detail: `index.json points at manifest ${claimedDigest} but blobs/sha256/${hex} does not exist`
       });
     } else if (`sha256:${actual}` !== claimedDigest) {
-      // Structurally unreachable given the per-blob loop above already checks this file, but
-      // kept as an explicit, named assertion — this is the specific property
-      // ("index.json's claimed digest is the manifest's real digest") the milestone brief cares
-      // about, and a reader should be able to find it checked by name, not inferred from the
-      // generic blob loop above.
+      // Structurally unreachable, kept as a named assertion. See docs/airgap.md §48.
       mismatches.push({
         relativePath: "index.json",
         reason: "manifest-digest-mismatch",

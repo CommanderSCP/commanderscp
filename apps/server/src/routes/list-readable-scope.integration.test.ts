@@ -17,73 +17,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * ================================================================================================
- * LIST DOORS, ROW-SCOPED — the behavioural gate for role-model.md §8.2 steps 4 + 5 (increment 2.5b)
- * ================================================================================================
- *
- * Before this increment every list door ran ONE check pinned at the org root and then returned
- * every row in the org. `scopeExpandCte` expands UPWARD only and expanding from the org root
- * produces a single row, so that check is satisfiable by an org-root binding AND BY NOTHING ELSE: a
- * ServiceAdmin holding `object:read` over their own service could not list components at all. Not a
- * short list — a 403.
- *
- * `graph/objects-repo.ts`'s `listObjects` now takes a row filter and pushes it into `conditions`,
- * and its FOUR callers thread it from `authz/list-scope.ts`'s two-arm gate. Four call sites, but
- * ~23 wire routes, because one of them is the typed-registry factory. **This file exercises all
- * four through the real HTTP API**, because "built and tested but wired nowhere" is this repo's
- * dominant failure mode and a repo-level test would not have caught a caller left un-threaded:
- *
- *   | door | file | how this file reaches it |
- *   |---|---|---|
- *   | `GET /api/v1/components`      | `routes/components.ts`       | `client.components.list()` |
- *   | `GET /api/v1/objects/{type}`  | `routes/objects-generic.ts`  | `client.object("component").list()` |
- *   | `GET /api/v1/services` (+ ~9 more registries) | `routes/typed-registries.ts` | `client.services.list()` |
- *   | `GET /api/v1/objects/service` | `services/objects-service.ts` | `client.objects.service.list()` |
- *
- * The last one is the door a `routes/*.ts` string census cannot see at all (§8.1): `routes/objects.ts`
- * has zero `authorize(` calls, and Fastify prefers its literal `/objects/service` over the
- * parametric `/objects/:type`, so it is the ONLY handler that ever runs for that path.
- *
- * ------------------------------------------------------------------------------------------------
- * WHY THE PAGINATION CASE IS THE POINT, NOT AN EXTRA
- * ------------------------------------------------------------------------------------------------
- * §8.2 disqualified per-row post-filtering on pagination, not on cost. Every list repo is
- * keyset-paginated with `.limit(query.limit + 1)` and derives `nextCursor` from the last row it
- * SELECTED, so a filter applied to the returned page is applied after the LIMIT. Measured on a
- * 20,910-object estate: an assembly-bound principal's 5 readable components sit at cursor ranks
- * 97/140/254/339/440 of 18,500 — one readable row on page 1, and ZERO on pages 6 through 185, each
- * carrying a valid `nextCursor` — while 27 of 30 `apps/web` list call sites fetch exactly one page.
- *
- * So "the subject sees only their subtree" is NOT sufficient evidence: a post-filter passes that
- * assertion on a single small page and fails in production. `readable rows paginate exactly` below
- * is the case that separates the two — 25 readable components interleaved with 5 unreadable ones at
- * `limit=10`, asserting every page is FULL, that no page is empty-with-a-cursor, and that the walk
- * terminates having seen each readable row exactly once.
- *
- * ------------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied alone, measured, reverted
- * ------------------------------------------------------------------------------------------------
- * (filled in below the fixture, beside the test each one kills)
- *
- * ------------------------------------------------------------------------------------------------
- * FIXTURE
- * ------------------------------------------------------------------------------------------------
- *   orgRoot
- *   ├── domainA
- *   │   ├── serviceMine    ← the scoped principal's ONLY binding
- *   │   │   └── mine-00 … mine-24        (25 readable components)
- *   │   └── serviceNext
- *   │       └── next-00 … next-04        (5 components, interleaved in creation order)
- *   └── domainB
- *       └── serviceFar
- *           └── far-00                   (1 component, the non-leakage arm)
- *
- * Built through the real API. The components are created round-robin so the readable and
- * unreadable rows INTERLEAVE in `created_at` order — the keyset order the cursor walks. A test that
- * created all 25 readable rows first would page correctly even with a post-filter, which is exactly
- * the vacuous-test shape (CLAUDE.md: mutation-prove every guard).
- */
+/** LIST DOORS, ROW-SCOPED. See docs/routes.md §258. */
 describe("list doors: rows are scoped to the caller's authority (role-model.md §8.2)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -217,16 +151,7 @@ describe("list doors: rows are scoped to the caller's authority (role-model.md �
   // 1. THE CAPABILITY: a scoped principal can list, and sees exactly their subtree.
   // ---------------------------------------------------------------------------------------------
 
-  /**
-   * MUTATION-PROVEN. Deleting the `conditions.push` in `graph/objects-repo.ts`'s `listObjects`
-   * (i.e. accepting `readableFilter` and ignoring it — the "built, never installed" shape) fails
-   * this test with:
-   *
-   *   AssertionError: expected [ …(31) ] to deeply equal [ …(25) ]
-   *
-   * — the scoped Viewer receives all 31 components, including `serviceFar`'s in a domain they hold
-   * nothing in.
-   */
+  /** Mutation-proven: deleting that condition fails this. See docs/routes.md §259. */
   it("a service-bound principal lists ONLY its own subtree (GET /components)", async () => {
     const page = await scoped.components.list({ limit: 100 });
     expect(page.items.map((i) => i.id).sort()).toEqual([...mineComponents].sort());
@@ -235,16 +160,7 @@ describe("list doors: rows are scoped to the caller's authority (role-model.md �
     }
   });
 
-  /**
-   * THE CASE §8.2's measurement is about. 25 readable rows interleaved with 6 unreadable ones at
-   * `limit=10`: a correct query-side filter returns 10 + 10 + 5 and stops; a post-filter returns
-   * short pages that still carry a cursor.
-   *
-   * MUTATION-PROVEN twice over. With the `conditions.push` deleted this fails on the ROW SET (31
-   * ids, not 25). Simulating the disqualified design instead — leaving the filter out of the query
-   * and filtering `page.items` in the handler — fails on the CONTRACT assertion inside
-   * `walkAllPages`: `page 1 returned 8 of 10 rows but still carries a nextCursor`.
-   */
+  /** THE CASE §8.2's measurement is about. See docs/routes.md §260. */
   it("readable rows paginate exactly: full pages, honest cursor, every row once", async () => {
     const seen = await walkAllPages("GET /components (scoped, limit=10)", 10, (cursor) =>
       scoped.components.list({ limit: 10, ...(cursor ? { cursor } : {}) })
@@ -298,23 +214,7 @@ describe("list doors: rows are scoped to the caller's authority (role-model.md �
     );
   });
 
-  /**
-   * "The org-root principal's query is byte-identical to today's" is a claim about the STATEMENT,
-   * so it is measured on the statement rather than inferred from the rows (CLAUDE.md: a claim about
-   * a tool cannot be verified with that tool; a claim about SQL should not be verified only through
-   * its result set, which would still pass if a redundant always-true condition were added).
-   *
-   * Two measurements:
-   *   1. the gate hands back exactly `null` for an org-root holder — the value `listObjects`
-   *      documents as "add nothing at all";
-   *   2. the SQL drizzle actually emits for `readableFilter = null` carries no extra predicate and
-   *      no extra bound parameter, and the SQL emitted for a real filter provably differs — so the
-   *      first measurement is not vacuous.
-   *
-   * The logging drizzle instance is built here over its own pool rather than by changing
-   * `db/client.ts`: the production factory takes no logger, and adding one for a test would change
-   * the thing being measured.
-   */
+  /** That claim is about the code, so it is checked as code. See docs/routes.md §261. */
   it("an org-root principal's statement is today's — the gate returns null and the SQL gains nothing", async () => {
     const captured: { sql: string; params: unknown[] }[] = [];
     const pool = createPool(testRuntimeDatabaseUrl());
@@ -388,12 +288,7 @@ describe("list doors: rows are scoped to the caller's authority (role-model.md �
   // 3. THE REFUSALS. A widening that stops refusing is not a widening.
   // ---------------------------------------------------------------------------------------------
 
-  /**
-   * MUTATION-PROVEN. Replacing `authz/list-scope.ts`'s `if (allowRoots.length === 0) return
-   * refuseAsToday(...)` with a fall-through fails this with a 200 and an empty page: the subject
-   * lands on `readableObjectFilterSql`'s match-nothing set instead of a 403, which reads to an
-   * operator as "you have no components" rather than "you have no access".
-   */
+  /** Mutation-proven: replacing that branch fails this. See docs/routes.md §262. */
   it("a principal with NO binding still gets 403 — not an empty 200 — on all four doors", async () => {
     await expect(unbound.components.list({ limit: 10 })).rejects.toThrow(/forbidden/i);
     await expect(unbound.object("component").list({ limit: 10 })).rejects.toThrow(/forbidden/i);
@@ -401,33 +296,13 @@ describe("list doors: rows are scoped to the caller's authority (role-model.md �
     await expect(unbound.objects.service.list({ limit: 10 })).rejects.toThrow(/forbidden/i);
   });
 
-  /**
-   * THE SHORT-CIRCUIT TRAP, and the reason arm 2 refuses a `null` instead of returning it.
-   *
-   * `readableObjectFilterSql` returns `null` — NO FILTER — whenever the allow roots contain the org
-   * id. This subject HAS an org-root allow, so that short-circuit fires; they also have an org-root
-   * deny, which is the only thing that can make the org-root arm refuse. Handing the short-circuit
-   * back would list the entire org to precisely the subject the org root denies.
-   *
-   * MUTATION-PROVEN. Replacing `if (filter === null) return refuseAsToday(...)` with
-   * `if (filter === null) return filter` fails this with:
-   *
-   *   AssertionError: promise resolved "{ items: [ …(31) ], … }" instead of rejecting
-   *
-   * — a deny that fails OPEN across every list door in the tree.
-   */
+  /** The short-circuit trap, and why the arm refuses a null. See docs/routes.md §263. */
   it("an org-root allow cancelled by an org-root deny is still a 403, not the whole org", async () => {
     await expect(rootDenied.components.list({ limit: 100 })).rejects.toThrow(/forbidden/i);
     await expect(rootDenied.services.list({ limit: 100 })).rejects.toThrow(/forbidden/i);
   });
 
-  /**
-   * The scoped principal's reach must not include the objects ABOVE their binding: `contains` is
-   * registered service -> component and the walk follows it backwards, so a binding at a service
-   * reaches its components and never its domain. Asserted on a door rather than on the walk,
-   * because `authz/readable-scope.integration.test.ts` already pins the walk and this pins that the
-   * DOOR uses it.
-   */
+  /** The scoped principal's reach excludes objects above them. See docs/routes.md §264. */
   it("a service-bound principal cannot list the services above it", async () => {
     const page = await scoped.services.list({ limit: 100 });
     expect(page.items.map((i) => i.id)).toEqual([serviceMine]);

@@ -9,21 +9,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/**
- * M22.8 — A SCAN RULE THAT REQUIRES NO SCAN IS REFUSED AT AUTHORING TIME
- * (`governance/scan-rule-authoring-guard.ts`).
- *
- * The refusal is only worth having if it is installed at the CHOKE POINT rather than at one route.
- * ADR-0032 §6a's sibling shipped at the typed `/policies` route and a filterless census then found
- * three more doors reaching `createObject` with a free-form `typeId` and free-form `properties`.
- * G2 below plants the identical refused document through IaC apply, which is one of those three, and
- * would go green against a route-only install — which is exactly why it exists.
- *
- * WHAT THE REFUSAL DOES *NOT* CLAIM matters as much as what it does, and G5/G6 pin both edges:
- * an unbound control is NOT proof that a policy is inert (bindings are a separate call and a
- * refusal there would make authoring order-dependent), and an `admit`-only `scanExclusion` is an
- * ADMISSION rather than a rule about a finding and is exempt.
- */
+/** A scan rule requiring no scan is refused at authoring. See docs/governance.md §390. */
 
 describe("M22.8 scan-rule authoring guard", () => {
   let server: ListeningTestServer;

@@ -2,21 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ProblemError } from "../errors.js";
 import { __setArgon2LimiterForTest, withArgon2Slot } from "./argon2-limiter.js";
 
-/**
- * The argon2 gate is the libuv-threadpool-saturation defense for login + prefixed-token verify
- * (argon2-limiter.ts). Its guarantees, mutation-proven here against controllable tasks (never real
- * argon2 — the point is deterministic concurrency, not hashing). `__setArgon2LimiterForTest` sets
- * the caps and clears gate state per case.
- *
- * ============================================================================================
- * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
- * ============================================================================================
- * | Mutation | Result |
- * |---|---|
- * | remove the `active < maxConcurrent` cap (run everything at once) | the concurrency test FAILS — peak in-flight exceeds the cap |
- * | drop the `waiters.length >= maxQueue` 429 (queue unboundedly) | the overflow test FAILS — the over-cap call resolves instead of throwing 429 |
- * | make `release()` not wake a waiter | the drain test FAILS — a queued task never runs |
- */
+/** The argon2 gate's guarantees, mutation-proven with fake tasks. See docs/auth.md §1. */
 
 function controllable() {
   let resolve!: () => void;

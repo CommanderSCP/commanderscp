@@ -11,85 +11,12 @@ import { componentDependencies, dependencyLines } from "../db/schema.js";
 import { lineAcceptsVersion } from "../dependencies/line-head.js";
 import { dependencyVersionPollIntervalSeconds } from "../dependencies/version-poll.js";
 
-/**
- * M22.4 (ADR-0033, owner decision D1) — "ARE WE ON THE LATEST OF THIS MAJOR LINE?", resolved once
- * against the ADR-0032 dependency inventory and handed to the pure matcher as data.
- *
- * ===========================================================================================
- * THE RULE
- * ===========================================================================================
- * The owner's headline rule is that a vendor dependency is accepted only if the component is on the
- * LATEST VERSION OF A MAJOR VERSION — no exceptions unless an override is created and approved
- * (M22.6). "Latest of a major version" is not a new concept that needs a new store: it is exactly
- * `dependency_lines`' identity `(org_id, ecosystem, coordinate, major)` plus its observed head, so
- * this file is a READ over the existing inventory and adds no storage of its own.
- *
- * ===========================================================================================
- * WHY THIS FILE IS IN `governance/` AND NOT IN `dependencies/`
- * ===========================================================================================
- * `dependencies/` owns the inventory: what a manifest declared, what an index answered, when a head
- * moved and which write door may move it. This file OWNS NOTHING THERE. It reads two of that
- * module's tables and reuses two of its pure functions (`lineAcceptsVersion` for "is this string a
- * version on this line", `dependencyVersionPollIntervalSeconds` for the freshness bound) and writes
- * nothing anywhere. It is a governance question asked of dependency data, so it lives beside the
- * gate that asks it.
- *
- * ===========================================================================================
- * EVERY ABSENCE FAILS CLOSED, AND THAT LIST IS THE FEATURE
- * ===========================================================================================
- * A vendor-pass is a LOOSENING: it removes a finding before it is counted. So the interesting cases
- * are not the ones where it applies but the ones where it must not, and each is a distinct,
- * named {@link VendorLineRefusal} rather than a fall-through:
- *
- *  1. NO INVENTORY ROW — the component declares nothing, or nothing on this line. Nothing to be at
- *     the head of. Handled by absence: the query returns no row and no key is emitted.
- *  2. NULL `latest_version` — "not yet observed" is NEVER "no newer version exists" (migration 0061
- *     says so on the column, and `scan_requirement_floors` established the same reading for its
- *     nullable ceilings). `head_not_observed`.
- *  3. A STALE HEAD — see {@link vendorLatestStalenessBoundMs}. An observation from before the bound
- *     is a claim about a world that has since moved. `head_stale`.
- *  4. AN OUTPOST — `dependencyVersionPollRoleGuard` (ADR-0032 §7c) refuses to poll on anything that
- *     has not explicitly declared `SCP_FEDERATION_ROLE=commander`, and `dependency_lines` is a
- *     per-domain projection that does not federate. So on an outpost the head was never observed
- *     LOCALLY and the columns are NULL — case 2, reached by data rather than by a role check here.
- *     That is deliberate: a second role predicate in this file would be a predicate to forget, and
- *     the poll's own module doc makes the same argument about its work-list.
- *  5. AN `unresolved` OR `unpinned` `FROM` — `dockerfile.ts` records an ARG-interpolated reference as
- *     `unresolved` and a bare `FROM alpine` as `unpinned`, and neither carries a comparable version,
- *     so `placeDeclarationOnLine` refuses to mint a line for it at all. Case 1 again, by
- *     construction: there is no row to be at the head of.
- *  6. A DIGEST-ONLY `FROM alpine@sha256:…` — pinned, but with no version string, so likewise no
- *     line. Case 1.
- *  7. NO DEPENDENCY AUTOMATION AT ALL (owner decision D7) — no ingested manifests and no polled
- *     head, so no vendor-pass and the component upgrades manually. THE GATE IS DECOUPLED FROM
- *     AUTOMATION; THE DATA IS NOT. Nothing here widens ingestion or polling coverage to make the
- *     rule universally evaluable — that was considered at length and explicitly declined
- *     (ADR-0033 "Alternatives considered").
- */
+/** Are we on the latest of this major line. See docs/governance.md §403. */
 
-/**
- * How many POLL CYCLES an observation may be old before it stops counting as evidence.
- *
- * Three, not a wall-clock duration, and the difference is the whole point: the bound is DERIVED from
- * `SCP_DEPENDENCY_VERSION_POLL_INTERVAL_SECONDS`, so an operator who slows the poll to weekly does
- * not silently acquire a gate that refuses every vendor-pass, and one who speeds it to hourly gets a
- * correspondingly tighter freshness requirement for free. A hardcoded "7 days" here would be a
- * second, invisible configuration of the same thing — and the two would disagree the first time
- * anybody changed either.
- *
- * Three cycles tolerates one missed tick plus the run that noticed, without tolerating a poll that
- * has been dead for a week.
- */
+/** How many poll cycles an observation may be old. See docs/governance.md §404. */
 export const VENDOR_LATEST_STALENESS_POLL_CYCLES = 3;
 
-/**
- * The freshness bound, in milliseconds, read from the LIVE env on every resolution — the rule M14.4
- * established for every value that a re-scheduling loop can have changed underneath it.
- *
- * NOT HARDCODED, BY REQUIREMENT. `dependencyVersionPollIntervalSeconds` is the single definition of
- * how often a head can move, floor included; this is a multiple of it and has no number of its own
- * except the cycle count above.
- */
+/** The freshness bound, read from the live environment. See docs/governance.md §405. */
 export function vendorLatestStalenessBoundMs(env: NodeJS.ProcessEnv = process.env): number {
   return dependencyVersionPollIntervalSeconds(env) * 1000 * VENDOR_LATEST_STALENESS_POLL_CYCLES;
 }
@@ -153,27 +80,7 @@ function headIsFresh(observedAt: Date | null, now: Date, boundMs: number): boole
   return now.getTime() - observedAt.getTime() <= boundMs;
 }
 
-/**
- * PURE — is this declaration at its line's head?
- *
- * The two arms are genuinely different questions and are kept apart rather than unified behind a
- * "compare the versions" helper:
- *
- *  - `oci` COMPARES `latest_digest`, NEVER THE TAG. An OCI index reports TAGS, and a tag is mutable:
- *    `3.19` names one set of bytes today and another next week, so two references agreeing on a tag
- *    is not evidence they are the same image. `dependency_lines.latest_digest` exists precisely
- *    because "a mutable tag is not an identity" (ADR-0032 §7), and it is recorded in the SAME
- *    observation as the version so the pair cannot be one that never existed. Comparing
- *    `resolved_version` to `latest_version` here would be comparing tags with extra steps and would
- *    pass a component sitting on a stale `3.19` that the registry has since repointed.
- *  - the four LANGUAGE ecosystems have immutable published versions, so the version IS the identity
- *    and the comparison is an ordering — through `lineAcceptsVersion`, the same door both inventory
- *    ingresses use, so "is `2.1.0` on the `2` line" means one thing in this tree.
- *
- * A declaration AHEAD of the recorded head is accepted (`compareVersions` > 0): the component is not
- * behind, and the poll simply has not caught up. Refusing there would fail a component for its own
- * currency.
- */
+/** PURE — is this declaration at its line's head? See docs/governance.md §406. */
 export function evaluateVendorLineAtHead(
   line: VendorLineFacts,
   declaration: VendorDeclarationFacts,
@@ -214,38 +121,7 @@ export interface VendorInventoryRow extends VendorLineFacts, VendorDeclarationFa
   lineId: string;
 }
 
-/**
- * PURE — fold one target's inventory rows into the facts the matcher consumes.
- *
- * TWO "ALL, NOT ANY" RULES, both fail-closed and both load-bearing:
- *
- *  1. THE BASE IMAGE. A multi-stage build declares several `oci` lines, and an `os-pkgs` finding
- *     names no image — Trivy reports the package, not which `FROM` it arrived on. There is no
- *     material to attribute it to one of them, so the pass requires EVERY declared base-image line
- *     to be at its head, and requires at least one to exist. "Any" would let a component with a
- *     current builder stage and a stale runtime stage excuse every OS finding in the runtime.
- *  2. A LINE DECLARED FROM TWO MANIFESTS. `component_dependencies` is keyed by manifest path on
- *     purpose (one component can legitimately declare `lodash` from a root and a workspace
- *     `package.json`), so one line can have several rows at different versions. A key is emitted
- *     only if EVERY row for that line is at the head — one stale declaration is a real exposure and
- *     must not be voted away by a current sibling.
- *
- * RULE 2 SAID THAT AND WAS FALSE ACROSS MAJORS UNTIL 2026-08-18, which is why the key now carries a
- * version. "A line" is `(ecosystem, coordinate, MAJOR)`, and the emitted key carried no major and no
- * version — so a component declaring `lodash@4.17.21` (at head of the `4` line) and `lodash@3.10.1`
- * (behind head of the `3` line) emitted one `npm|lodash` from the current line, which then excused
- * the stale one's findings. A current sibling voting away a stale declaration is exactly what the
- * rule forbids; it was only ever enforced WITHIN one major. {@link vendorLatestPackageKey} now takes
- * the version, so each at-head row contributes a key naming the version it is at, and a finding is
- * excused only if the artifact SHIPS that version.
- *
- * EVERY AT-HEAD ROW ON A LINE CONTRIBUTES ITS OWN KEY, not just the first one seen. Two rows on one
- * line can both be at head at DIFFERENT versions — `evaluateVendorLineAtHead` accepts a declaration
- * AHEAD of the recorded head, so `4.17.21` (== head) and `4.17.22` (poll not caught up) both pass.
- * Keeping only the first row's key would make the emitted set depend on the order the join returned
- * rows, which has no `ORDER BY`: a loosening decided by row order, and a Decision `inputContext` that
- * differs between two identical evaluations (defeating `insertDecisionIfChanged`).
- */
+/** Pure: folds one target's rows into the matcher's facts. See docs/governance.md §407. */
 export function foldVendorLatestFacts(
   rows: readonly VendorInventoryRow[],
   options: { now: Date; stalenessBoundMs: number }
@@ -301,15 +177,7 @@ export function foldVendorLatestFacts(
   };
 }
 
-/**
- * Read ONE target's declared inventory, joined to its lines.
- *
- * One index descent on `component_dependencies`' primary-key prefix `(org_id, component_object_id)`
- * plus the composite-key join — the same forward lookup `listComponentDependencies` takes. A target
- * that is not a component (a service, an assembly) simply declares nothing and yields no rows, which
- * is the correct answer rather than an error: `component_dependencies` is keyed by the COMPONENT's
- * graph object id and nothing else has declarations.
- */
+/** Read ONE target's declared inventory, joined to its lines. See docs/governance.md §408. */
 export async function readVendorInventoryRows(
   tx: TenantTx,
   orgId: string,
@@ -342,11 +210,7 @@ export async function readVendorInventoryRows(
         eq(componentDependencies.componentObjectId, targetObjectId)
       )
     );
-  // AN UNRECOGNISED ECOSYSTEM IS DROPPED, not coerced. The column is plain `text` with no CHECK, so
-  // a sixth ecosystem written by a future ingress (or by raw SQL) would otherwise arrive here as a
-  // string this file has no rule for. Dropping it means no key and no base-image credit — the
-  // fail-closed direction, and the same reading `readInstanceScanExclusionAdmissions` gives an
-  // unrecognised tier label.
+  // AN UNRECOGNISED ECOSYSTEM IS DROPPED, not coerced. See docs/governance.md §409.
   const out: VendorInventoryRow[] = [];
   for (const row of rows) {
     const ecosystem = DependencyEcosystemSchema.safeParse(row.ecosystem);
@@ -356,18 +220,7 @@ export async function readVendorInventoryRows(
   return out;
 }
 
-/**
- * Resolve one target's vendor facts.
- *
- * `now` IS REQUIRED, and the optional `now?: Date` it replaces is the reason. The caller
- * (`scan-requirements.ts`) forwarded it only when defined, so on every PRODUCTION path this function
- * fell back to a `new Date()` of its own — once PER TARGET, with the override-expiry window taking
- * yet another instant. Only the TEST path passed one, so the shared-instant claim in the caller's
- * docblock was true exactly where nothing depended on it and false everywhere it mattered: the
- * vacuous-test shape (a fixture that silently never applied) this repo tracks as a recurring source.
- * A required parameter makes the single instant a compile-time property rather than a convention,
- * and it is contained — one production call site.
- */
+/** Resolve one target's vendor facts. See docs/governance.md §410. */
 export async function resolveVendorLatestFactsForTarget(
   tx: TenantTx,
   orgId: string,
@@ -381,19 +234,7 @@ export async function resolveVendorLatestFactsForTarget(
   });
 }
 
-/**
- * PURE — compose several targets' facts into the ONE set that describes the change.
- *
- * AN INTERSECTION, NEVER A UNION, for exactly the reason ADR-0033 §3 forbids unioning CLAUSES: one
- * verdict is produced for one artifact across a change's whole target set, and a fact admitted for
- * one target that leaked onto a sibling would excuse findings on a component nobody said was
- * current. `baseImageAtLatest` is therefore an AND and `packageKeys` a set intersection. A
- * single-target change — the overwhelmingly common shape — is unaffected.
- *
- * NO TARGETS yields `undefined`, not "everything": an intersection over an empty family is
- * conventionally the universe, which here would be a vendor-pass for a change with nothing to be
- * current about.
- */
+/** Pure: composes several targets' facts into one set. See docs/governance.md §411. */
 export function intersectVendorLatestFacts(
   perTarget: readonly ScanVendorLatestFacts[]
 ): ScanVendorLatestFacts | undefined {

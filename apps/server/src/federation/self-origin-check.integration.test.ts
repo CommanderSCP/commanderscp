@@ -19,27 +19,7 @@ import {
   warnOnFederationSelfOriginDivergence
 } from "./self-origin-check.js";
 
-/**
- * THE SILENT-STOP DETECTOR (federation/self-origin-check.ts).
- *
- * PR #221 made every reconcile candidate query filter on `objects.origin_domain_id =
- * federation_self.domain_id`. That closes a real single-writer hole, but it introduces an exposure
- * the un-filtered loops did not have: if the identity ever stops matching the origins already
- * stamped on an org's objects, every batch returns zero rows and ALL coordination for that org stops
- * with no error and no log line. Indistinguishable from "nothing to do" — the exact shape of the
- * 13-day outage in `coordination/executing-batch-starvation.integration.test.ts`.
- *
- * WHAT MAKES THIS SUITE NON-VACUOUS. Three of the four fixtures below are HEALTHY, and two of them
- * (the single-domain org and the replica-holding federated org) exist specifically to fail if the
- * predicate is widened from "none of this org's objects are mine" to "some of this org's objects are
- * not mine". A partial mismatch IS the normal steady state of a federated estate; a check that warns
- * on it is an alarm operators mute, which is worse than no alarm at all. The divergent fixture alone
- * would go green under a check that simply warned about everything.
- *
- * The assertions on the message deliberately pin the IDS IT MUST CARRY (org, identity, the origins
- * actually present) rather than its prose: an operator who cannot get both sides of the mismatch out
- * of the log line has to reverse-engineer the cause at 2am, and that is a behaviour, not wording.
- */
+/** THE SILENT-STOP DETECTOR. See docs/federation.md §527. */
 describe("federation identity divergence: an org orphaned from its own domain id", () => {
   let server: TestServer;
 

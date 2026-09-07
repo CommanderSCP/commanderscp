@@ -29,13 +29,7 @@ import { CommanderStar, OutpostFort, RetransMast } from "../icons/federation-rol
 import { useQuery } from "@tanstack/react-query";
 import { federationSelfKey } from "../../lib/query-client";
 
-// §3.2 link treatment + the shared focus ring (§2.10). Active gets the army-olive accent — its second
-// sanctioned home — and repaints the entry's icon via the descendant selector, since TanStack's
-// `activeProps` only reaches the anchor itself.
-// DARK-OLIVE SIDEBAR (owner, 2026-08-11 second theme round — "more green undertones in the bars").
-// The sidebar is the one chrome surface that can carry the army identity at full strength without
-// costing data readability: content cards stay white, the rail goes army-900. Contrast checked:
-// army-100 text on army-900 ≈ 9:1; the army-300 section labels ≈ 6:1.
+// §3.2 link treatment + the shared focus ring. See docs/web.md §59.
 const navLinkClass = cn(
   "flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-army-100/90 transition-colors hover:bg-army-800 hover:text-white",
   focusRing
@@ -50,25 +44,7 @@ function NavIcon({ icon: Icon }: { icon: LucideIcon }): React.JSX.Element {
   return <Icon className={navIconClass} strokeWidth={2} aria-hidden="true" />;
 }
 
-/**
- * The CATALOG rung of the nav — what this org runs.
- *
- * Derived from `REGISTRIES` by an ALLOW-LIST rather than by filtering the ones we don't want, so a
- * registry added later (a third container level, say) is absent until someone decides where it
- * belongs, instead of silently appearing in the sidebar. The four identity registries live behind
- * `/identity`; `deployment-target` is surfaced inside the pipeline views, where a target is
- * already a wave target. `components` is BOTH a drill-down (from a service or assembly) and a
- * top-level registry — owner decision 2026-08-10, after the first cut demoted it to drill-down
- * only and that lost the flat "every component in the org" list.
- *
- * `domains` is out of the nav (owner decision 2026-08-10). The CONTAINMENT domain still exists and
- * is still the rung policy resolution, RBAC scope expansion, freeze scoping and the scan-requirement
- * tier chain all walk — only its registry page left the sidebar. `/domains` stays routed, so
- * creating one or attaching an owner is still reachable by URL; nothing in the UI linked to it but
- * this nav entry. (It is NOT covered by the Outposts page: federation tables carry no foreign key
- * into `objects`, so an outpost's `peerDomainId` and a containment-domain row are different
- * identifier spaces — see docs/GLOSSARY.md, which separates the six live senses of "domain".)
- */
+/** The CATALOG rung of the nav. See docs/web.md §60. */
 const CATALOG_BASE_PATHS = ["services", "assemblies", "components"] as const;
 const CATALOG_REGISTRIES = CATALOG_BASE_PATHS.map((basePath) => {
   const registry = REGISTRIES.find((r) => r.basePath === basePath);
@@ -76,26 +52,7 @@ const CATALOG_REGISTRIES = CATALOG_BASE_PATHS.map((basePath) => {
   return registry;
 });
 
-/**
- * TWO SITES, ONE BUNDLE (outpost-ui.md §9, owner correction 2026-08-14).
- *
- * The nav is DATA selected by the serving instance's install-time role (`/auth/me`'s
- * `instanceRole`, from `SCP_FEDERATION_ROLE`) — the commander site and the smaller outpost site
- * are two tables rendered by one component, so `app-shell-nav.test.tsx` can pin BOTH shapes and a
- * change to either is a visible diff to a table, not a conditional buried in JSX.
- *
- * What the outpost site does NOT carry, and why (owner decisions):
- *  - Campaigns, Graph — org-wide coordination is the commander's job.
- *  - Outposts, Federation status — managing OTHER outposts is commander-only; the outpost's own
- *    sync status lives under Admin instead.
- * What it keeps: a smaller Dashboard as home (the targets this outpost controls, at the component
- * level), the Catalog (domain-local objects live there), Setup, and Admin.
- *
- * This decides nav + route table ONLY. It authorizes nothing and gates no rendering inside a
- * page — M16.3's offer-the-write rule and ADR-0031's data-keyed domain-local rendering are
- * unchanged. Two sites having different page sets is a deployment fact; a role check inside a
- * shared page would still be the lie those precedents forbid.
- */
+/** TWO SITES, ONE BUNDLE. See docs/web.md §61. */
 export type NavEntry = { to: string; label: string; icon: LucideIcon; exact?: boolean };
 export type NavSection = { label: string | null; entries: NavEntry[] };
 
@@ -299,15 +256,7 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
   );
 }
 
-/**
- * The instance's declared federation role, worn under the wordmark (owner follow-up 2026-08-11:
- * role-aware branding). POST-AUTH ONLY, by decision: the login page must not learn the role —
- * telling an unauthenticated visitor "this box is the commander" is topology disclosure a
- * CDS-adjacent deployment should not make, and it would need a new unauthenticated API field.
- * Here the viewer is already inside; `federationSelfKey` shares its cache with the federation
- * pages, so this costs one fetch per session. `unset` renders nothing — an undesignated role has
- * no insignia (same rule as roleBadge).
- */
+/** The instance's declared federation role, worn under the wordmark. See docs/web.md §62. */
 function InstanceRoleChip(): React.JSX.Element | null {
   const selfQuery = useQuery({
     queryKey: federationSelfKey(),

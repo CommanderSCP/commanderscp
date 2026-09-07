@@ -14,26 +14,7 @@ import { objects, syncJournal } from "../db/schema.js";
 import { initFederationSelf, ensureFederationSelf } from "./self-repo.js";
 import { upsertObjectByUrn } from "../graph/objects-repo.js";
 
-/**
- * M16.2 phase A, REVIEW ROUND 4 (H1) — THE FIFTH LOCAL WRITE DOOR, AND RECOVERY FROM THE WEDGE IT
- * COULD CREATE.
- *
- * `POST /v1/federation/hand-fill` sets `federationImport`, which made the peer-binding choke point in
- * `graph/objects-repo.ts` SKIP — so it bypassed all three clause-(4) refusals. Measured before the fix,
- * all HTTP 201: an UNPAIRED `peerDomainId`; a `commander`-role peer (whose tier `GET /federation/status`
- * then reported, the exact outcome the role check exists to prevent); and a SECOND live `outpost` object
- * for a peer that already had a legitimate one — after which the commander's own
- * `PATCH /v1/federation/outposts/{peer}` returned 409 FOREVER with no delete door anywhere in the API.
- *
- * This file pins BOTH halves, because closing a door is only half the job when the state it could reach
- * is unrecoverable:
- *   (A) the door — `assertHandFillableType` (handfill-repo.ts) restricts a hand-filled peer-bound object
- *       to this instance's OWN `federation_self.domainId`, the only shape a real replica has;
- *   (B) THE RECOVERY — `POST /v1/federation/outposts/{peer}/reconcile` fixes a database that is ALREADY
- *       wedged. Both recovery tests build the wedge at the REPO layer on purpose: the API can no longer
- *       produce it, and a test that only proves prevention would leave every already-wedged install
- *       needing SQL. `it("RECOVERY …")` is where that is proven.
- */
+/** The fifth local write door, and recovery from the wedge. See docs/federation.md §317. */
 describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -94,12 +75,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     );
   }
 
-  /**
-   * Plants the wedge the API can no longer produce: a live, FOREIGN-ORIGIN, `provenance:'manual'`
-   * `outpost` object bound to `peerDomainId`. This is byte-for-byte the row `handFillObject` used to
-   * write (same `federationImport` shape, `revision: 0`), created here through the repo because the route
-   * now refuses it — which is precisely the state an install upgraded from an older build can hold.
-   */
+  /** Plants the wedge the API can no longer produce. See docs/federation.md §318. */
   async function plantShadow(peerDomainId: string, trustTier: string, urnSuffix: string) {
     return withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const { object } = await upsertObjectByUrn(tx, {
@@ -262,20 +238,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     expect(patched.trustTier).toBe("govcloud");
   });
 
-  /**
-   * N7 (review round 5) — AN ORDER-INDEPENDENT WITNESS FOR THE STATUS RANKING.
-   *
-   * The previous version of this test built ONE arrangement (shadow created LATER) and so pinned the
-   * ORDER, not the ranking: the lens showed it stayed GREEN with `status-repo.ts`'s `tierRank`
-   * collapsed to a constant AND `current.rank <= rank` flipped to `<`. Round 2 had already hardened
-   * the sibling RESOLUTION test after the same catch.
-   *
-   * Backdating alone does NOT fix it, and that is worth stating: with all ranks equal, `<=` is
-   * first-wins and `<` is last-wins, so ANY SINGLE arrangement is beaten by one of the two
-   * degradations. Only building BOTH arrangements makes the assertion order-independent —
-   * `il5` must win whether the shadow is the FIRST row or the LAST one in `(created_at, id)` order,
-   * which no tie-break rule can deliver and only a real local-origin-first preference can.
-   */
+  /** An order-independent witness for the status ranking. See docs/federation.md §319. */
   it("a manual shadow can NEVER override the commander's own asserted tier on /federation/status, whichever row comes first (was last-write-wins)", async () => {
     // (a) shadow LAST in `(created_at, id)` order — the original wedge shape.
     const later = await pairPeerViaApi("outpost");
@@ -457,19 +420,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     expect(await outpostRowsForPeer(peer)).toHaveLength(2);
   });
 
-  /**
-   * N9 (review round 5) — CLOSING THE VERIFIED-DUPLICATE CLASS WHILE THE SURFACE IS UNSHIPPED.
-   *
-   * A VERIFIED foreign-origin duplicate bound to one peer had NO public-API recovery: `PATCH` 409s
-   * (the binding scan's `blocking` filter exempts only `provenance='manual'`), the default reconcile
-   * refuses by design, `DELETE /api/v1/objects/outpost/{id}` is 403 by this milestone's own refusal,
-   * and IaC prune only touches stack-managed objects. NOT reachable today — in canonical hub-and-spoke
-   * no bundle a commander imports carries an `outpost` row bound to one of ITS peers — but reachable
-   * the moment two authoring domains describe one outpost (a sub-commander, or a dual-homed outpost).
-   * `?keep=` closes the class the only way that is safe: THIS DOMAIN DELETES THE ROW IT AUTHORED,
-   * which is an ordinary journaled tombstone and re-declarable. The refusal to delete a
-   * signature-verified replica is unchanged — the second test below is what keeps that half honest.
-   */
+  /** Closing the verified-duplicate class while unshipped. See docs/federation.md §320. */
   it("N9 RECOVERY (verified duplicate): ?keep=<verified> drops the row THIS domain authored and restores the 1:1 binding", async () => {
     const peer = await pairPeerViaApi("outpost");
     const local = await admin.federation.createOutpost({ peerDomainId: peer, trustTier: "il5" });
@@ -576,18 +527,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     await expectApiError(admin.federation.getOutpost(peer), 404, /has no outpost config object/i);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (D) THE OPTIMISTIC-CONCURRENCY PRECONDITION — `?ifClaimant=<objectId>:<version>`.
-  //
-  // Reconcile's outcome is derived from the claimant set INSIDE the write transaction, while the
-  // caller decided from a set it read earlier. Both arms of the divergence are silent 200s:
-  //   * the BARE call re-derives the survivor with `byAuthority`, so a locally-authored row that
-  //     appeared since the preview outranks the shadow and the operator's ENTERED VALUE IS DROPPED;
-  //   * `?keep=<shadow>` instead makes that concurrent locally-authored row surplus and soft-deletes
-  //     it — a JOURNALED TOMBSTONE that PROPAGATES DOWNSTREAM to the outpost.
-  // Both are pinned below as the state the precondition refuses, and the refusal is proven to write
-  // NOTHING: no removal, no adoption, no journal entry.
-  // -----------------------------------------------------------------------------------------
+  // (D) THE OPTIMISTIC-CONCURRENCY PRECONDITION. See docs/federation.md §321.
 
   /** The token set for one peer, derived from exactly the array a client's preview renders from. */
   async function previewTokens(peerDomainId: string): Promise<string[]> {
@@ -601,15 +541,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     return rows.length;
   }
 
-  /**
-   * A SECOND LOCALLY-AUTHORED claimant for a peer that already has one — the concurrent row whose
-   * appearance is the defect. Planted through the repo for the same reason `plantShadow` is: the
-   * create door refuses it TODAY (clause (4)'s clash scan is strict on CREATE, exempting only an
-   * unverified shadow on UPDATE), so an API-built version of this state is impossible — while the
-   * state itself is reachable from an install upgraded past the older hand-fill door, and from the
-   * second-authoring-domain case `?keep=` exists to serve. What matters to the precondition is only
-   * that the row is LIVE, bound to the peer, and NOT in the token the caller previewed.
-   */
+  /** A second locally-authored claimant for the same peer. See docs/federation.md §322. */
   async function plantLocalAuthored(peerDomainId: string, urnSuffix: string) {
     return withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const { object } = await upsertObjectByUrn(tx, {

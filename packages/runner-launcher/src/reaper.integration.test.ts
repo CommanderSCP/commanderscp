@@ -16,45 +16,7 @@ import {
   whenReapSettled
 } from "./index.js";
 
-/**
- * ================================================================================================
- * REAL-DOCKER PROOF OF THE REAPER (M23.1 phase 4) — WHAT THE MOCK SEAM STRUCTURALLY CANNOT SHOW
- * ================================================================================================
- * `docker-adapter.test.ts` settles argv shape and the predicate's LOGIC against a hand-written
- * `execFile`. It cannot prove any of the three things that actually matter here, because a mock
- * has no daemon behind it to be wrong about:
- *   1. that a process SIGKILLed mid-`run()` really does leave a container behind, `state=running`;
- *   2. that the two labels `create` stamped on it really do survive that kill, on disk, in the
- *      daemon's own store — not just in an in-memory recorder;
- *   3. that a REAL `docker ps -a --filter label=...` really does find it, and that a REAL `docker
- *      rm -f` really does remove it — Docker's own filter/label semantics, not this package's
- *      idea of them.
- * This file drives all three against a live daemon. Needs Docker — excluded from `pnpm test`
- * (`vitest.config.ts`), run via `pnpm test:integration` in the CI integration-shard job
- * (GitHub-hosted `ubuntu-latest`, native Docker daemon), or locally.
- *
- * THE IMAGE: `alpine:3.20`, chosen because it is one of the images `tools/ci-mirror/images.list`
- * pre-mirrors into every CI runner under this EXACT literal tag — the integration-shard job's
- * "deny the mirrored upstream registries for the rest of the job" step (`ci.yml`) would otherwise
- * block a fresh pull of anything else. Locally it is whatever is already pulled or gets pulled
- * once.
- *
- * WHY A PAST DEADLINE IS CRAFTED DIRECTLY RATHER THAN WAITED FOR. `RUNNER_REAP_GRACE_MS` is sized
- * in real minutes (see its own doc in `index.ts`) precisely so a legitimate peer's container is
- * never touched early — which is exactly why this suite cannot afford to wait for one to elapse.
- * The two containers that need a PAST deadline are therefore created with `docker create --label`
- * directly (bypassing the port, not `reap()` — `reap()` itself is real code, driven exactly as
- * production drives it), the same "fabricate an already-expired record" technique any TTL sweep is
- * tested with. The one container that needs to be REAL end-to-end (killed process, daemon-assigned
- * state, adapter-computed deadline) is built the other way — see the first test below — and its
- * naturally-future deadline is what makes it double as the FUTURE-deadline negative case.
- *
- * A REAL, PRE-EXISTING ORPHAN ALREADY LIVES ON THIS MACHINE (`scp-runner-scan:m13-3b-integration-
- * test`, `state=created`, no `scp.launcher.*` labels — left in place deliberately as evidence, per
- * this milestone's own instructions). It carries none of this package's labels, so it is excluded
- * at `reap()`'s own `docker ps -a --filter label=scp.launcher.owner` — before a single byte of its
- * state reaches this process — on EVERY test below, not only the one that checks it explicitly.
- */
+/** REAL-DOCKER PROOF OF THE REAPER. See docs/runner-launcher.md §396. */
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -211,12 +173,7 @@ describe.runIf(await dockerAvailable())(
           // than needing a fourth container to prove the same thing.
           expect(Date.parse(deadline!)).toBeGreaterThan(Date.now());
 
-          // THE PARENT calls reap() — a DIFFERENT process from the one that created this
-          // container (the child minted its own `LAUNCHER_OWNER_ID` at its own module load), so
-          // this container is FOREIGN from the parent's point of view. Its deadline is minutes in
-          // the future (the child only just created it), so reap() must spare it. If "foreign" and
-          // "future" were not both being evaluated for real — if, say, the predicate only checked
-          // one of them, or a stale identity happened to collide — this is where that would show.
+          // THE PARENT calls reap(). See docs/runner-launcher.md §397.
           await createDockerRunnerLauncher().reap();
           expect(
             await containerState(containerName),
@@ -237,11 +194,7 @@ describe.runIf(await dockerAvailable())(
       const spareMeFuture = `scp-runner-${uniqueRunId("future-foreign")}`;
       const spareMeNoLabel = `scp-runner-${uniqueRunId("no-label")}`;
 
-      // THE TWO NEGATIVE ARMS ARE RACE-FREE, so they are crafted ONCE, up front, and left standing
-      // across every attempt below: a FUTURE deadline is spared by every reaper that exists (this
-      // process's or any other's), and a container carrying no `scp.launcher.owner` label at all is
-      // excluded by `reap()`'s own `--filter` before a predicate runs. Only the POSITIVE arm is
-      // something another process is entitled to take, so only it is crafted inside the loop.
+      // The two negative arms are race-free, so crafted once. See docs/runner-launcher.md §398.
       await craftLabelledContainer({
         name: spareMeFuture,
         ownerLabel: foreignOwner,
@@ -254,40 +207,7 @@ describe.runIf(await dockerAvailable())(
         extraLabels: { "scp.test": "no-label" }
       });
 
-      /**
-       * TWO RACES CAN HAND THIS CASE AN EMPTY `removed`, AND ONLY THE FIRST IS IN THIS PROCESS.
-       *
-       * (1) IN-PROCESS, closed by `whenReapSettled()` (PR #266). `reap()` is single-flighted per
-       *     binary (`reapInFlight`): a caller arriving while a pass is running is handed THAT pass's
-       *     promise, and that pass's `docker ps` can predate the fixture. Awaiting `whenReapSettled`
-       *     drains the slot (its `.finally` deletes the entry before the promise resolves), so the
-       *     `reap()` below always starts a FRESH enumeration.
-       *
-       * (2) CROSS-PROCESS, which nothing in this process can see — and this is what STILL red'd the
-       *     assertion with #266's fix in tree (`main` run 32668830570, and PR #267/#268 runs).
-       *     `reap()` is a shared-daemon janitor and ownership is per-PROCESS: the fixture below is
-       *     FOREIGN to everyone (its owner label is a fresh random UUID) and 60s past its deadline,
-       *     which is precisely what EVERY process running this package is entitled to collect. CI's
-       *     `pnpm test:integration` is `turbo run test:integration`, which runs
-       *     `@scp/plugin-managed-{iac,scan,dep}` in parallel with this package, in their own Node
-       *     processes, against the SAME daemon — and each `plugin.trigger()` there reaches
-       *     `RunnerLauncher.run()`, whose first act is `void reap()`. If one of those passes lands in
-       *     the window between the `docker create` below and this pass's `docker ps`, the fixture is
-       *     ALREADY GONE, this pass correctly reports `[]`, and the container-state assertions below
-       *     would all still have passed. (#266's own commit message records `scp-managed-scan-plugin-
-       *     it-*` containers leaking in the very CI run it was diagnosing — that suite was live on
-       *     that daemon at that moment.) MEASURED HERE, deterministically: a second Node process's
-       *     `reap()` returned `["e121f6511911"]` and this process's next pass then returned `[]`,
-       *     with the container gone — the reported failure, exactly.
-       *
-       * SO: SHRINK THE WINDOW, THEN RE-RUN THE EXPERIMENT WHEN IT IS STOLEN — AND ONLY THEN. Drain
-       * first and craft the stealable fixture LAST (window: one `create`+`start`, ~220ms measured,
-       * against ~660ms when all three were crafted before the drain). A pass that reports none of
-       * OUR ids has exactly two possible causes, and the container itself tells them apart: still
-       * running = the predicate under test failed, and that fails HERE, by name, on attempt 1;
-       * already gone = a peer's pass took it, which is the library working as designed and is worth
-       * another attempt rather than a red main.
-       */
+      /** Two races can hand this case an empty result. See docs/runner-launcher.md §399. */
       const REAP_RACE_ATTEMPTS = 5;
       let removeMe = "";
       let removed: string[] = [];
@@ -403,15 +323,7 @@ describe.runIf(await dockerAvailable())(
         const foreignOwner = randomUUID();
         const past = new Date(Date.now() - 60_000).toISOString();
 
-        // CRAFT A STEALABLE ORPHAN AND OBSERVE IT STANDING — recraft on a peer's steal, bounded.
-        // The orphan is a legitimate reap candidate for EVERY process on this daemon from the
-        // instant `docker create` returns (foreign owner, past deadline), so a concurrent
-        // `@scp/plugin-managed-*` suite's pass can take it before this case's precondition looks
-        // at it: mid-`rm` reads `removing`, a completed steal reads undefined, and a steal inside
-        // the builder itself makes its `docker start` throw. All three are the library working as
-        // designed in ANOTHER process — recraft and try again; only a bounded run of steals is a
-        // failure, and it names the cause. (Observed for real: PR #272 run 32755551605 red exactly
-        // here with `expected 'removing' to be 'running'`.)
+        // CRAFT A STEALABLE ORPHAN AND OBSERVE IT STANDING. See docs/runner-launcher.md §400.
         const WIRING_CRAFT_ATTEMPTS = 5;
         let orphan = "";
         let orphanStanding = false;
@@ -464,23 +376,7 @@ describe.runIf(await dockerAvailable())(
           timeoutMs: 10_000,
           maxBuffer: 1024
         });
-        // THE SWEEP IS NOT AWAITED BY `run()` SINCE M23.1e — that is the fix for HIGH-3 (a reap that
-        // spends the run's budget can stop `create` being issued at all), so this test has to await
-        // it explicitly instead of racing it. THE GATE KEEPS ITS TEETH: with the scheduling deleted
-        // there is no pass in flight, `whenReapSettled()` resolves immediately, and the orphan is
-        // still there below.
-        //
-        // THE SAME CROSS-PROCESS PROPERTY THE PREDICATE CASE ABOVE LOOPS OVER APPLIES HERE, in two
-        // windows with opposite consequences. BEFORE the precondition, a peer's steal CAN red this
-        // case — that window is what the craft loop above absorbs (it did red, once: see the loop's
-        // comment). AFTER the precondition, a steal landing inside this one run() can only mask a
-        // genuinely deleted wiring for that narrow window — provided the final assertion reads the
-        // container's state as the TRI-STATE it is (running / mid-`rm` 'removing' / gone), which is
-        // why it asserts not-"running" rather than gone: a peer's rm still in flight at read time is
-        // a collected orphan, not a standing one. Left as an assertion on the container rather than
-        // on `whenReapSettled()`'s id list deliberately: keying the gate on THIS process's report
-        // would trade that rare vacuous pass for a rare flaky red on the one test whose whole job
-        // is to go red when the wiring is gone.
+        // THE SWEEP IS NOT AWAITED BY `run()` SINCE M23.1e. See docs/runner-launcher.md §401.
         await whenReapSettled();
 
         const orphanFinalState = await containerState(orphan);
@@ -498,18 +394,7 @@ describe.runIf(await dockerAvailable())(
   }
 );
 
-// ====================================================================================================
-// MEDIUM-4 — A REAL SIGKILL MID-`create` GENUINELY LEAVES THE `--env-file`, AND `reap()` SWEEPS IT.
-// ====================================================================================================
-// Deliberately its own top-level `describe`, NOT nested inside `describe.runIf(dockerAvailable())`
-// above: what is under test is `@scp/runner-launcher`'s OWN file lifecycle (write, then unlink in a
-// `finally`), not Docker's, so a real daemon buys nothing here and would only make the suite
-// Docker-dependent for no reason. The `dockerBinary` this block hands the adapter is a stub shell
-// script that sleeps on `create` — the same "give the parent a wide, deterministic window instead of
-// racing a real sub-hundred-millisecond call" technique `apps/server/src/plugin-host/managed-trigger-
-// budget.test.ts` already uses for a different budget-shaped hazard. See
-// `secret-env-leak-integration-child.ts` for what the killed process actually runs.
-// ====================================================================================================
+// A real kill mid-create genuinely leaves the env file. See docs/runner-launcher.md §402.
 
 describe("MEDIUM-4: a real SIGKILL mid-`create` leaks the `--env-file`, and reap() sweeps it", () => {
   const tempDirs: string[] = [];
@@ -545,17 +430,7 @@ describe("MEDIUM-4: a real SIGKILL mid-`create` leaks the `--env-file`, and reap
     return binary;
   }
 
-  /** Polls `dir` for a file carrying `prefix` WHOSE CONTENT equals `expected` — the same "observe
-   *  the real adapter's real state" technique `reaper.integration.test.ts`'s own `waitUntil` uses
-   *  for a container's `docker inspect` state, applied to a file instead.
-   *
-   *  NAME-VISIBILITY IS NOT CONTENT-VISIBILITY. `writeSecretEnvFile` writes with a single
-   *  `writeFile(path, …, { flag: "wx" })` — open, then write, then close, three separate syscalls —
-   *  so the name is in `readdir` before the bytes are in the file. A waiter that returns on the
-   *  name and reads once caught the gap on a loaded CI runner (2026-08-24, PR #271 shard 1:
-   *  `expected '' to be 'AWS_SECRET_ACCESS_KEY=…'` — an EMPTY read, not ENOENT, which is this
-   *  race's exact signature and rules out anything sweeping the file). Waiting for the CONTENT
-   *  collapses both causes of emptiness (mid-write vs never-written) into one loud timeout. */
+  /** Polls for a file whose content equals the expected. See docs/runner-launcher.md §403. */
   async function waitForFileContent(
     dir: string,
     prefix: string,

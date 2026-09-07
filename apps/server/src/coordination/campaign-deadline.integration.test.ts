@@ -31,32 +31,7 @@ import {
 } from "./campaign-deadline-lock.js";
 import type { CampaignDeadline, CampaignRecipe } from "@scp/schemas";
 
-/**
- * ================================================================================================
- * M25.6a — THE DEADLINE-TRIGGERED CAMPAIGN LOCK, END TO END AGAINST REAL POSTGRES
- * ================================================================================================
- *
- * THE GUARANTEE UNDER TEST, in one sentence: *past its deadline, a campaign proposes no further
- * change for a target it cannot observe as migrated — and NOTHING ELSE about that component
- * changes.* Owner decision D4's radius is this campaign's own targets; unrelated releases,
- * including security fixes, keep flowing, which is the property that distinguishes this from a
- * freeze and is why it is not implemented as one.
- *
- * DRIVES `reconcileCampaignsOrgTick` DIRECTLY — never `withReconcileLoop`. A live loop is a
- * COMPETING CONSUMER of the very rows these cases read back (`SKIP LOCKED` makes an inline call a
- * silent no-op), and "one tick" must mean exactly one tick for "no member change was minted" to be
- * an assertion rather than a race.
- *
- * NO FIXED SLEEPS, AND NONE ARE POSSIBLE HERE. Every wait is a tick count, and the clock itself is
- * INJECTED (`opts.now`, resolved once per tick for the whole batch). Without that seam the only way
- * to test a boundary would be to wait for it, which would confine the whole feature's coverage to
- * deadlines seconds away — never to the year-out deadline a migration campaign actually carries.
- * `test-support/integration-sleep-census.test.ts` is the CI gate that keeps this true.
- *
- * A FRESH ORG PER CASE. `reconcileCampaignsOrgTick` serves `ORDER BY updated_at ASC LIMIT 25` over
- * every campaign in the org, and several cases assert org-wide counts ("exactly one Change exists"),
- * which only mean what they say when the org holds one campaign.
- */
+/** The deadline-triggered campaign lock, end to end. See docs/coordination.md §123. */
 
 const PY_COORDINATE = "docker.io/library/python";
 
@@ -130,12 +105,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     return { org, componentIds };
   }
 
-  /**
-   * `opts.now` IS THREADED THROUGH EVERY TICK IN THIS FILE. Deleting that thread from
-   * `reconcileCampaignsOrgTick` — replacing `opts.now ?? new Date()` with `new Date()` — makes every
-   * deadline in this suite (all of which are a year out, deliberately) read as NOT DUE, so every
-   * locked target fans out and the "exactly one Change" assertions fail.
-   */
+  /** `opts.now` IS THREADED THROUGH EVERY TICK IN THIS FILE. See docs/coordination.md §124. */
   async function tick(org: TestOrg, times: number, now: Date): Promise<void> {
     const selfDomainId = (
       await withTenantTx(server.deps.db, org.orgId, (tx) => ensureFederationSelf(tx, org.orgId))
@@ -234,30 +204,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
 
   // W — THE ACTUATOR (proposal §4.3, actuator-table row 12). THE MUTATION TARGET.
 
-  /**
-   * TWO TARGETS, A PAST DEADLINE, ONE OF THEM ADOPTED — and the shape of the fixture is dictated by
-   * a fact about the shipped code that is worth writing down rather than working around.
-   *
-   * M25.5's adoption seam sits directly ABOVE this one and terminalizes every `adopted` target
-   * `succeeded` WITHOUT minting a member change. So a target that is both `pending` and `adopted`
-   * never reaches the deadline seam at all, and "B is adopted AND B has a member change" is only
-   * satisfiable by a B the campaign already delivered to — i.e. by a campaign whose deadline passed
-   * PART WAY THROUGH it. That is also the honest scenario: a deadline exists to catch the laggards a
-   * long-running campaign has not reached yet, and this fixture is exactly that campaign.
-   *
-   *   * wave 0 = B, fanned out and delivered while the deadline was still weeks away;
-   *   * wave 1 = A, reached only after it passed.
-   *
-   * The two waves come from a real `depends_on` edge (A depends on B), which is how
-   * `compileAndPersistCampaignPlan` auto-sequences a campaign with no release topology.
-   *
-   * MUTATION-PROVEN, TWO WAYS, both landing on the same named assertion:
-   *   * delete the `if (locked) { ...; continue; }` refusal from `campaign-reconcile.ts`;
-   *   * or delete the clock thread (`opts.now ?? new Date()` -> `new Date()`), which makes a
-   *     year-out deadline read as not due.
-   * Either way A fans out and this fails with
-   *   `AssertionError: the locked target must have NO member Change minted for it: expected 2 to be 1`.
-   */
+  /** TWO TARGETS, A PAST DEADLINE, ONE OF THEM ADOPTED. See docs/coordination.md §125. */
   it("W: past the deadline, the unmigrated target gets NO member Change while its delivered sibling keeps its own", async () => {
     const { org, componentIds } = await fixture("deadline-w", 2);
     const [b, a] = componentIds as [string, string];
@@ -358,12 +305,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     expect(audits[0]!.reason).toContain(a);
   });
 
-  /**
-   * THE RADIUS, ASSERTED DIRECTLY (owner decision D4). The lock withholds THIS CAMPAIGN'S change and
-   * nothing else: an ordinary release proposed against the same component, past the same deadline,
-   * is created and is completely unaffected. This is the assertion that would fail if the lock were
-   * ever re-implemented through `checkFreeze`.
-   */
+  /** THE RADIUS, ASSERTED DIRECTLY. See docs/coordination.md §126. */
   it("W-radius: a locked component still accepts an UNRELATED change — including a security fix", async () => {
     const { org, componentIds } = await fixture("deadline-radius");
     const [component] = componentIds as [string];
@@ -404,11 +346,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
 
   // THE PREDICATE OVER THE **REAL** RESOLUTION CORE — all three verdicts, real PostgreSQL
 
-  /**
-   * `campaign-deadline-lock.test.ts` stubs `evaluateCampaignAdoption` to exercise the predicate's
-   * branch logic without a database. THIS is what stops that stub hiding anything: the same
-   * predicate, over the real core, against the three real evidence states.
-   */
+  /** The unit test stubs adoption; this one does not. See docs/coordination.md §127. */
   it("P: `adopted` is the only exit — a component at 3.12 is not locked; 2.7 and never-ingested are", async () => {
     const { org, componentIds } = await fixture("deadline-predicate", 3);
     const [migrated, laggard, uningested] = componentIds as [string, string, string];
@@ -455,16 +393,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
 
   // FAIL OPEN, LOUDLY (§4.2)
 
-  /**
-   * A MALFORMED BAG LOCKS NOTHING AND SAYS SO. The departure from `stage-dependency-hold.ts`'s
-   * fail-CLOSED `undeclarable` branch is deliberate: that guards a SAFETY coupling, this is a
-   * COERCION mechanism, and failing closed on an unreadable one parks an entire campaign on a typo
-   * behind a document that by definition cannot explain itself.
-   *
-   * The bag is planted through `updateObject` rather than through the typed route, because that is
-   * the only way it can actually arise: `campaign.properties` validates against an OPEN registry
-   * schema, so IaC apply and federation import reach it without passing the strict Zod door.
-   */
+  /** A MALFORMED BAG LOCKS NOTHING AND SAYS SO. See docs/coordination.md §128. */
   it("M: an unreadable deadline withholds NOTHING and records ONE `warn` — deduped across ticks", async () => {
     const { org, componentIds } = await fixture("deadline-malformed");
     const [component] = componentIds as [string];
@@ -523,24 +452,8 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
 
   // THE ESCAPE HATCH — `POST /campaigns/{id}/deadline`, set / move / CLEAR
 
-  /**
-   * CLEARING THE DEADLINE UNLOCKS EVERY TARGET, on the next tick, with no unlock verb. This is what
-   * made M25.6a not an entrance with no exit before §4.5's per-target `deadline-override` existed;
-   * M25.6b has since added that finer exit beside it (`campaign-deadline-override.integration.test.ts`),
-   * and this blunt one remains — `object:write` at the campaign, all targets at once.
-   */
-  /**
-   * THE DEADLINE HERE IS IN THE REAL PAST, deliberately, and the reason is worth recording because
-   * it is a genuine property of the design rather than a test convenience.
-   *
-   * The lock is re-derived at READ time as well as at tick time — `getCampaignStatus` runs the same
-   * predicate so the page and the engine can never disagree — but an HTTP read has no tick and
-   * therefore no injected clock: it reads the real one. So the two agree exactly when production's
-   * condition holds (both on the real clock), and the `opts.now` seam exists for the ENGINE, whose
-   * batch must be internally consistent. A case that pushed only the tick's clock forward would
-   * therefore see a `blocked` engine and an `active` page — which is why every other case in this
-   * file asserts the engine and this one asserts both.
-   */
+  /** Clearing the deadline unlocks every target, no verb. See docs/coordination.md §129. */
+  /** The deadline here is in the real past, deliberately. See docs/coordination.md §130. */
   it("E: clearing the deadline releases a locked target on the next tick — the exit, with no unlock verb", async () => {
     const { org, componentIds } = await fixture("deadline-clear");
     const [component] = componentIds as [string];
@@ -615,11 +528,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     expect(audits[0]!.reason).toContain("re-plan");
   });
 
-  /**
-   * "THE DEADLINE SLIPPED FOUR TIMES" MUST BE RECONSTRUCTIBLE. `audit_events` has no payload column,
-   * so each MOVE's Decision is the only place the previous instant survives; without it the chain
-   * records four writes that each say only where the deadline landed.
-   */
+  /** Four slips must be reconstructible from Decisions. See docs/coordination.md §131. */
   it("E2: every MOVE records the PREVIOUS instant, so a slipping deadline is reconstructible", async () => {
     const { org, componentIds } = await fixture("deadline-slip");
     const [component] = componentIds as [string];
@@ -719,31 +628,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
 
   // THE WIDENING GATE — owner ruling 2026-08-25 (decision D1, option b-i)
 
-  /**
-   * THE BYPASS THIS CLOSES, stated as the test's premise rather than left in a commit message.
-   *
-   * `POST /campaigns/{id}/deadline` shipped at plain `object:write` for all three of its acts, while
-   * the NARROWER per-target waiver one route down (`:deadline-override`) demands the Owner-only
-   * `campaign:deadline-override`. Clearing is a STRICT SUPERSET of waiving — every target rather than
-   * named ones, permanently rather than bounded by `until`, with no per-target `object:write` and no
-   * record naming who was excused — so an Operator refused a one-target waiver could simply clear the
-   * whole deadline instead, at a LOWER price. The widening acts therefore now demand that permission
-   * TOO; the tightenings do not.
-   *
-   * ONE SUBJECT, BOTH DIRECTIONS, and the 200s are what make the two 403s mean something: the same
-   * Operator, at the same campaign, in the same test, is admitted for the tightenings and refused for
-   * the widenings. So what it lacks is this permission, not authority over the campaign — the
-   * distinction a Viewer-based case (E4) cannot draw.
-   *
-   * MUTATION-PROVEN: delete the `if (widening) { await authorize(...) }` block from
-   * `routes/campaigns.ts` and this fails at the MOVE — the first of the two widenings it reaches —
-   * with
-   *   `AssertionError: moving the deadline later releases exactly the targets a clear would:
-   *    expected 200 to be 403`.
-   * The CLEAR half of the same mutation is caught in the sibling file, where `A1` is not shadowed by
-   * an earlier assertion: `expected 200 to be 403`, on
-   * `clearing excuses every target permanently — it cannot cost less than waiving one`.
-   */
+  /** The bypass this closes, stated as the premise. See docs/coordination.md §132. */
   it("E5: an Operator may SET and SHORTEN a deadline, but CLEARING it or MOVING IT LATER takes `campaign:deadline-override`", async () => {
     const { org, componentIds } = await fixture("deadline-widening");
     const [component] = componentIds as [string];
@@ -828,13 +713,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     expect(shortenedAgain.statusCode, shortenedAgain.body).toBe(200);
   });
 
-  /**
-   * THE OTHER HALF OF E5, and the reason the gate is an ADDITION rather than a substitution: an Owner
-   * still does all four acts, in one sequence, through the one verb. If the widening check were ever
-   * mis-scoped — checked at a target, say, or at some object the org-root binding does not reach —
-   * this is what would fail, and the failure would be "the exit is welded shut", which is the M25.1
-   * gap the deadline feature shipped its exit to avoid re-opening.
-   */
+  /** The gate is an addition, never a substitution. See docs/coordination.md §133. */
   it("E6: an Owner does all four — set, shorten, move LATER and clear — through the same verb", async () => {
     const { org, componentIds } = await fixture("deadline-widening-owner");
     const [component] = componentIds as [string];

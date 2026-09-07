@@ -1,16 +1,4 @@
-/**
- * @scp/cosign — the single keyful/offline cosign wrapper for CommanderSCP.
- *
- * Lifted verbatim from `deploy/airgap` (M17.3 E2) so one implementation of the air-gap-critical
- * flag set and the E1 pinned-vs-probe binary resolver can be shared by BOTH the release/bundle
- * path (`@scp/airgap`, which re-exports this) and — later, in E6 — the server. This increment is a
- * pure lift: no signing behavior changed. See cosign.ts's module doc for the flag rationale and
- * cosign-bin.ts's for the pinned-vs-operator resolution.
- *
- * Air-gap invariants preserved here verbatim: `--tlog-upload=false` /
- * `--new-bundle-format=false` (sign) and `--insecure-ignore-tlog=true` (verify) are the flags
- * that keep signing off the public Rekor log; Fulcio/Rekor are NEVER contacted.
- */
+/** The one keyful, offline cosign wrapper, shared by both paths. See docs/cosign.md §19. */
 
 // Thin child_process wrapper (argv-array execFileSync, no shell) shared by cosign.ts/skopeo-bin.ts
 // and, since this consolidation, `deploy/airgap`'s skopeo/build-bundle/verify-bundle callers too.

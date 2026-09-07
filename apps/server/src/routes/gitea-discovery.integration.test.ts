@@ -14,24 +14,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents, relationships } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 
-/**
- * M15.3a end-to-end — the Gitea `DiscoveryPlugin` (gitea-discovery) proves the FULL import loop for a
- * bring-your-own Gitea, not just the plugin's own nock unit test:
- *   POST /discovery/run (module gitea-discovery, backed by an execution-system kind=gitea) →
- *   a real subprocess plugin-host scan of a live (in-process) Gitea contents API →
- *   proposal carrying a Component whose sourceMapping.sourceKind is 'gitea' →
- *   the proposal's component + source_mapping are landed (through the typed doors since ADR-0047 removed accept) →
- *   the imported component SELF-REPORTS: a gitea observed event on its repo/path correlates to a
- *   Change. sourceKind='gitea' is the load-bearing link — it matches the gitea EXECUTOR's
- *   source_kind, so pulled gitea events correlate against the imported component (before this,
- *   nothing produced a gitea-kinded source_mapping, so gitea events correlated against nothing).
- *
- * The Gitea instance is a real loopback (127.0.0.1) HTTP server: the plugin-host subprocess makes
- * genuine undici calls to it (nock can't reach across the subprocess boundary). Reaching loopback is
- * gated by BOTH the operator allowlist (SCP_INTERNAL_EGRESS_HOSTS, set here) AND the execution-
- * system's `allowInternalEgress` intent (ADR-0003 two-layer) — exactly the path a self-hosted /
- * air-gapped Gitea outpost uses, so this also exercises that egress grant end to end.
- */
+/** M15.3a end-to-end — the Gitea `DiscoveryPlugin`. See docs/routes.md §212. */
 describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → land → self-report)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -102,17 +85,7 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → land �
     // withReconcileLoop wires a real SubprocessPluginHost onto deps.pluginHost — /discovery/run
     // fail-closes without one (the API-only-role guard). This is the SCP_ROLE=all equivalent.
     server = await listenTestServer({
-      // `withPluginHost`, NOT `withReconcileLoop` — and that is load-bearing. This suite calls
-      // `processChangeSourceEvents` INLINE and then reads `resulting_change_object_id` back
-      // synchronously. A live reconcile loop is a competing consumer of exactly those rows: the
-      // processor claims with `FOR UPDATE SKIP LOCKED`, so a tick that claims the row first makes
-      // the inline call a silent no-op and the follow-up read returns the tick's uncommitted
-      // pre-image — NULL. Measured at ~0.7% per event under CPU load, 0/300 with the loop off, and
-      // it never reproduces on an idle machine. It failed once in CI on PR #217 and passed on re-run.
-      //
-      // The loop would also race the `state === "proposed"` assertion below, since
-      // `advanceProposedChanges` moves it to `evaluated`. Only the plugin host is actually needed
-      // here: `POST /discovery/run` fail-closes on `deps.pluginHost` alone.
+      // `withPluginHost`, NOT `withReconcileLoop`. See docs/routes.md §213.
       withPluginHost: true
     });
     org = await createTestOrg(server, "m15-gitea-discovery");
@@ -165,12 +138,7 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → land �
       }
     });
 
-    // 1) RUN — a real subprocess plugin-host scan. `executionSystemId` names the system whose
-    //    (server-governed) serverUrl/token/egress the run uses. NOTE (M15.3b): the config carries NO
-    //    `baseUrl` — the gitea adapter now resolves its REST base from the injected `serverUrl` (the
-    //    execution-system's own serverUrl, injected server-side and pinned to the egress-allowed
-    //    host), which is exactly what makes importing an EXISTING (Mode A) Gitea reach it. Only
-    //    owner/repo are the adapter's own per-run config fields.
+    // 1) RUN — a real subprocess plugin-host scan. See docs/routes.md §214.
     const proposal = await admin.discovery.run({
       pluginModule: "gitea-discovery",
       pluginInstanceId: `gitea-disc-${randomUUID().slice(0, 8)}`,
@@ -202,33 +170,10 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → land �
       }
     ]);
 
-    // 2) ACCEPT — the only path that writes. Carry the proposal's objects AND ITS RELATIONSHIPS
-    //    through, and turn the component's carried sourceMapping into a `sourceMappings[]` entry (the
-    //    shape accept persists) so the import self-reports. This is exactly the transform a UI/CLI
-    //    review does.
-    //
-    //    THIS STEP USED TO SEND `relationships: []`, and that one token is why the discovery
-    //    relationship channel could be dead in every deployment with this file green. It asserted
-    //    one screen up that the proposal CONTAINS an edge, then imported a proposal containing none
-    //    — so the step between those two facts, the only one that writes, was never crossed here.
-    //    Both `part_of` (unregistered) and the unresolvable endpoint URNs sat in that gap.
-    //    See `routes/discovery-relationship-import.integration.test.ts` for the dedicated census.
-    //
-    //    The RENAME is kept deliberately, and now proves something: both objects are renamed at
-    //    review time (as a real reviewer does, and as this file must, to stay unique across runs),
-    //    while `relationships` is passed VERBATIM. That only works because an endpoint names the
-    //    object's proposal-local `urn` ALIAS rather than anything derived from its name.
+    // 2) ACCEPT — the only path that writes. See docs/routes.md §215.
     const uniqueName = `${component.name}-${randomUUID().slice(0, 8)}`;
     const uniqueServiceName = `${services[0]!.name}-${randomUUID().slice(0, 8)}`;
-    // LANDED THROUGH THE ORDINARY DOORS, not `discovery/accept` — that route was removed in
-    // increment 6 (ADR-0047), and with it the one-call import this section used to make.
-    //
-    // What the section is ABOUT is unchanged and is the reason it survives rather than being
-    // deleted: a `gitea`-kinded `source_mapping` on a real component is what makes a pulled
-    // `gitea` event correlate to a Change. Before that mapping existed, nothing produced a
-    // `gitea`-kinded mapping and every such event correlated against nothing. The import mechanism
-    // moved to IaC; the correlation property did not move at all, so it is still proven here,
-    // against a component created the way a scaffolded manifest creates one.
+    // LANDED THROUGH THE ORDINARY DOORS, not `discovery/accept`. See docs/routes.md §216.
     const importedService = await admin.services.create({ name: uniqueServiceName });
     const imported = await admin.components.create({
       name: uniqueName,

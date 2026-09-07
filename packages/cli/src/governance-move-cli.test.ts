@@ -14,22 +14,7 @@ import {
   governanceMoveRungWriteRow
 } from "./cli.js";
 
-/**
- * `scp governance move-enforcement …` — THE CLI HALF OF THE `governance:move` LATTICE
- * (governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18; SDK facade
- * `client.governanceMove` in `packages/sdk/src/client.ts`).
- *
- * What this file pins, and why it is not readable from `governance-move-cli-wire.test.ts` alone:
- *
- *  1. **A closed verb list**, both at `move-enforcement` and at `instance` — mirrors
- *     `dependency-subscription-cli.test.ts`'s reasoning: a verb silently added or dropped from the
- *     command tree is invisible to every other test in the package.
- *  2. **`instance set` takes `--enabled <bool>`, mandatory** — an omitted flag must be a CLI-level
- *     error before any SDK call, not a defaulted `false` that silently disables enforcement.
- *  3. **The formatters are honest about absent values**, called DIRECTLY here (never through a
- *     Commander `.action()` closure, which no test can reach — `cli-absent-formatters.test.ts`'s
- *     standing reason).
- */
+/** `scp governance move-enforcement …`. See docs/cli.md §115. */
 
 function findCommand(root: Command, path: string[]): Command | undefined {
   let current: Command | undefined = root;

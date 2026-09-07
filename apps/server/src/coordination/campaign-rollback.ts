@@ -8,38 +8,7 @@ import { insertDecision } from "./decisions-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { authoritativeCampaignMembers } from "./campaign-repo.js";
 
-/**
- * Campaign-scoped rollback (DESIGN.md §9.4/§9.5, BUILD_AND_TEST.md §8 M5) — "rolling back a
- * campaign reverts its accepted member targets through the same wave/rollback machinery, each
- * producing a Decision." Deliberately does NOT introduce a campaign-level rollback lifecycle: it
- * finds every member Change currently eligible for rollback (`executing`/`validating`/`accepted` —
- * the exact same eligibility `coordination/rollback.ts`'s `triggerRollback` itself enforces) and
- * calls that SAME, completely unmodified function once per member — never a new rollback code path.
- * Available regardless of the campaign's own overall (derived) status: DESIGN §9.4 rollback is
- * "always available", and the flagship scenario is rolling back a campaign that is ITSELF still
- * `blocked` on a later wave (its earlier, accepted wave(s) are exactly what this reverts).
- *
- * SECURITY (M5 CRITICAL, adversarial review — the headline campaign coordinates-authz invariant):
- * membership is sourced from the AUTHORITATIVE plan-compiled `campaign_wave_targets`
- * (`campaign-repo.ts`'s `authoritativeCampaignMembers`), NOT from raw `coordinates` graph edges.
- * The original implementation enumerated `coordinates` edges where `fromId = campaign.id` — but a
- * `coordinates` edge, before it was made system-managed, could be injected by any actor holding
- * org-scoped `relationship:write` via the generic `POST /relationships` endpoint (or an IaC
- * manifest), sweeping an arbitrary Change into a victim campaign's rollback and bypassing
- * `proposeCampaign`'s per-target authority check entirely. Two independent defenses now hold:
- *  1. `coordinates` is system-managed (`graph/system-managed-relationships.ts`) — the injection
- *     VECTOR is closed on both the generic endpoint and the IaC apply path.
- *  2. Even so, this function trusts ONLY the plan tables, so a stray/legacy/future-bug `coordinates`
- *     edge can never inject a rollback target.
- * PLUS belt-and-suspenders: the ACTING actor's `object:write` authority over each reverted target's
- * own scope is re-verified here (like a standalone `POST /changes/{id}/rollback`, which authorizes
- * `object:write` before reverting) — a member whose target the rolling-back actor lacks authority
- * over is skipped with a reason, never reverted.
- *
- * One member's rollback failing (never accepted, rollback already in flight, or now unauthorized)
- * never aborts the rest of the batch — mirrors every other per-item loop in this milestone's
- * reconciler and M3's own `coordination/reconcile.ts`.
- */
+/** Campaign-scoped rollback across member changes. See docs/coordination.md §214. */
 export interface TriggerCampaignRollbackInput {
   orgId: string;
   campaignObjectId: string;
@@ -95,13 +64,7 @@ export async function triggerCampaignRollback(
       continue;
     }
 
-    // Belt-and-suspenders per-target authority re-check: the ACTOR initiating the campaign
-    // rollback must hold `object:write` over THIS target's own scope, exactly as a standalone
-    // `POST /changes/{id}/rollback` requires `object:write` before reverting. A campaign the actor
-    // could legitimately create only ever coordinates targets they were authorized against
-    // (`proposeCampaign`), so this normally always passes — but it hard-stops any path (a
-    // pre-existing/migrated campaign, a future authority revocation) where the rolling-back actor
-    // no longer holds authority over a member's target.
+    // Belt-and-suspenders per-target authority re-check. See docs/coordination.md §215.
     const authorized = await hasPermission(tx, {
       orgId: input.orgId,
       subjectObjectId: input.actorObjectId,
@@ -140,15 +103,7 @@ export async function triggerCampaignRollback(
         rollbackChange: outcome.rollbackChange
       });
     } catch (err) {
-      // `describeError`, not `err.message`: every refusal `triggerRollback` raises is a
-      // `ProblemError` — `badRequest` for a member in a non-rollbackable state or with no recorded
-      // targets, `notFound` from `getChangeRow` — whose `message` is the bare HTTP title. This
-      // `reason` is persisted verbatim in the `rollback_trigger` Decision's `input_context` below
-      // and is the only account of why a member was NOT reverted; "Bad Request" against three
-      // skipped members tells an operator nothing and makes three different faults identical.
-      //
-      // PINNED BY `campaign-decision-write-amplification.integration.test.ts`'s U5 (the returned
-      // result AND the persisted `input_context.skipped`), mutation-proven.
+      // `describeError`, not `err.message`. See docs/coordination.md §216.
       result.skipped.push({
         originalChangeObjectId: memberChangeObjectId,
         reason: describeError(err)

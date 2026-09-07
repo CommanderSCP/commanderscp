@@ -11,25 +11,7 @@ import {
 } from "../ui/dialog";
 import { decisionSummary } from "./decision-format";
 
-/**
- * The shared FULL-RECORD view of one Decision (charter principle 6) — opened from a Why-style
- * affordance on `/admin/decisions` and `/admin/audit`. Every gate/policy engine writes a Decision
- * with its `verdict`, `reasonTree` and `inputContext`; this is the one place all three render,
- * so a future adopter reuses it rather than re-implementing reason formatting.
- *
- * NOT `WhyLink`/`ReasonDialog`: `WhyLink` anchors within a change's OWN Decisions timeline (or
- * navigates to one) — it has nothing to scroll to on a standalone Decisions/Audit list, which shows
- * every subject's Decisions in one table, not one change's. `ReasonDialog` is the REASON-INPUT
- * dialog behind cancel/rollback, a different concept entirely (it collects a reason, it does not
- * render one). This dialog is the missing third piece: a stand-alone viewer, keyed by id, reusing
- * `decisionSummary` (`decision-format.ts`) for the one-line summary exactly as the change/campaign
- * timelines do — "one renderer for reasons, everywhere" holds at the FORMATTING layer even though
- * the container is new.
- *
- * `decision === null` covers the fetch-in-flight and fetch-failed states (`error` is rendered
- * verbatim by the caller, never invented here) so this component never shows a stale record under a
- * new id.
- */
+/** The shared FULL-RECORD view of one Decision (charter principle 6). See docs/web.md §33. */
 
 /** `allow` is the only verdict every gate agrees reads as "unblocked" — `verdict` is a free string
  *  (packages/schemas/src/changes.ts), not a bounded enum, so anything else renders as `danger`

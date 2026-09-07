@@ -18,21 +18,7 @@ import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import { createFreeze } from "../governance/freezes-repo.js";
 import * as freezeHoldModule from "./freeze-hold.js";
 
-/**
- * M25.UI — THE WAVE-TARGET FREEZE-HOLD PROJECTION, end to end against `GET /changes/{id}/explain`.
- *
- * `ChangeWaveTargetSchema.hold` (packages/schemas/src/changes.ts) and `ChangeWaveSchema.
- * heldTargetCount` are new, additive, read-time-composed fields — see those schemas' doc comments
- * for the four properties campaigns-rework.md's closing section fixes for `hold`. This file pins
- * the read side: `evaluateFreezeHolds` (the SAME predicate `reconcile.ts`'s engine loop consults)
- * re-evaluated fresh on every `explain`, never sourced from the `freeze_admission` Decision (which
- * has no clearing counterpart and would therefore say "held" forever — the exact permanent-marker
- * trap `stage-dependency-status.ts`'s own module doc names at length).
- *
- * ENTERS AT THE HTTP LAYER, via `ScpClient` against a real `listenTestServer()` — the same idiom
- * every sibling freeze/stage-dependency integration file in this directory uses; `admin.changes.
- * explain(id)` is a genuine `fetch()` over the wire, not a repo-direct call.
- */
+/** The wave-target freeze-hold projection, end to end. See docs/coordination.md §1037. */
 describe("wave-target hold projection: ChangeWaveTargetSchema.hold / ChangeWaveSchema.heldTargetCount", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -115,11 +101,7 @@ describe("wave-target hold projection: ChangeWaveTargetSchema.hold / ChangeWaveS
     });
 
   it("emits heldTargetCount ONLY for the active wave — a future wave under a standing freeze reads ABSENT, never a fabricated zero", async () => {
-    // Two waves: amer first, apac second. The freeze covers APAC — the FUTURE wave's target.
-    // The evaluation only ever looks at the active wave (activeWaveOf), so wave 2 was never
-    // evaluated: a `0` there would claim "evaluated, nothing held" about a target this very
-    // freeze WILL hold when its turn comes. Absent is the only honest value (schema doc's
-    // absent-vs-zero rule; M25.UI review minor finding 4).
+    // Two waves: amer first, apac second. The freeze covers APAC. See docs/coordination.md §1038.
     const twoWaveTopology = await admin.object("release-topology").create({
       name: `staged-${randomUUID().slice(0, 8)}`,
       properties: {
@@ -254,12 +236,7 @@ describe("wave-target hold projection: ChangeWaveTargetSchema.hold / ChangeWaveS
   }, 60_000);
 
   it("an `atomic` freeze covering only an already-succeeded sibling still surfaces on the pending target (M25.UI review finding 2 — atomic drift)", async () => {
-    // `reconcile.ts`'s admission asks `evaluateFreezeHolds` about EVERY active-wave target
-    // (`activeWave.targets.map((t) => t.targetObjectId)`, `loadFreezeHolds`) — succeeded siblings
-    // included — because an `atomic` freeze's union only sees the ids it was asked about. This
-    // pins that the READ side (`resolveWaveTargetFreezeHolds`) asks the identical question rather
-    // than a narrower one over only the pending subset, which would never even query the succeeded
-    // sibling and so could never see the freeze that covers it.
+    // The admission asks about every active-wave target. See docs/coordination.md §1039.
     const fastHost = createInMemoryFakeHost({ autoSucceedAfterMs: 30 });
     const fastTick = async (times = 1) => {
       for (let i = 0; i < times; i++) {
@@ -323,16 +300,7 @@ describe("wave-target hold projection: ChangeWaveTargetSchema.hold / ChangeWaveS
   }, 60_000);
 
   it("evaluates the freeze hold exactly ONCE per tick for one executing change (M25.UI review finding 4 — the laziness invariant)", async () => {
-    // `reconcile.ts`'s own doc (`loadFreezeHolds`) claims the freeze hold is resolved LAZILY,
-    // inside the trigger branch, so a change with a pending target pays for exactly one
-    // evaluation per tick. `advanceExecutingChanges` calls `getLatestPlanForChange`
-    // UNCONDITIONALLY before that branch even runs; without `withFreezeHolds: false` there, that
-    // call performed a SECOND, full evaluation whose `ChangePlan.hold` shape was thrown away
-    // unread — falsifying the very invariant the doc states. Pinned by counting calls to the
-    // shared predicate both call sites route through, rather than by reasoning about it.
-    // A MIXED (partially-frozen) wave — `amer` frozen, `apac` not — so the wave GATE admits it to
-    // `running` (only an ALL-frozen wave is blocked at the gate) and reconcile's per-target trigger
-    // branch, and therefore `loadFreezeHolds`, genuinely runs every tick from here on.
+    // `reconcile.ts`'s own doc. See docs/coordination.md §1040.
     const app = await componentAt("hot-path", [amer, apac]);
     const change = await release("hot-path", [app.id]);
     await freezeAt(amer.id, "amer-hot-path-freeze");

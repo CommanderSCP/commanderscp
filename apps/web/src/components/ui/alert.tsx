@@ -2,11 +2,7 @@ import * as React from "react";
 import { CircleAlert, Info, TriangleAlert, type LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 
-/**
- * The one callout treatment (design spec §2.3) — every hand-rolled `border-red-300 bg-red-50 …`
- * block converges here, starting with `error-boundary.tsx` and `query-error.tsx`. Tints follow
- * §1.5 with the §2.3 `text-*-800` text weight.
- */
+/** The one callout treatment (design spec §2.3). See docs/web.md §105. */
 export type AlertTone = "info" | "warning" | "danger" | "neutral";
 
 const TONE_CLASSES: Record<AlertTone, string> = {

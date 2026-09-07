@@ -1,23 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { describeHeldTargets, type FreezeHoldVerdict } from "./freeze-hold.js";
 
-/**
- * THE `held` PROJECTION — pure, and unit-tested because the integration fixture CANNOT reach the
- * property it defends.
- *
- * `freeze-admission.integration.test.ts` drives real waves, and a wave's placements are created
- * monotonically: uuidv7 ids ascend in creation order, and the order reconcile's per-target loop
- * pushes held targets in coincides with it. So an integration case can assert the output IS sorted
- * and stay green with the sort deleted — which is exactly what happened (the mutation "delete both
- * Decision sorts" survived a passing suite while three docblocks claimed it was covered). The
- * freeze-order sort IS reachable there, because an `atomic` freeze covering a sibling is appended
- * after a target's own; the TARGET-order sort is not.
- *
- * Hence this file: hand the projection an order no fixture can produce and assert it comes back
- * sorted. What is at stake is not tidiness — `restatesDecision` canonicalizes object keys only, so
- * a reordered `held` array is a "different" Decision, written again on the next 1 s tick, for the
- * length of the freeze window. That is ADR-0024's measured 1.44 GB/day.
- */
+/** THE `held` PROJECTION. See docs/coordination.md §517. */
 const verdict = (targetObjectId: string, freezeIds: string[]): FreezeHoldVerdict => ({
   targetObjectId,
   stage: null,

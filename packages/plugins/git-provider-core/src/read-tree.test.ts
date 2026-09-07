@@ -1,9 +1,4 @@
-/**
- * `read-tree.ts` unit tests — the provider-neutral half of `readFilesAtRef` (team-pipeline-iac
- * proposal §12: bounded multi-file/tree reads). Pure functions and accumulators only: no HTTP, no
- * nock, no provider — each adapter's wire shapes (tree-listing endpoint, pagination) are proven in
- * that package's own nock suite; what is proven HERE is the bound machinery all three share.
- */
+/** `read-tree.ts` unit tests. See docs/plugins.md §120. */
 import { describe, expect, it } from "vitest";
 import {
   assertNonEmptyGlobs,

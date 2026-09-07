@@ -1,19 +1,4 @@
-/**
- * Purpose-written operator-facing doc, bundled as `docs/OFFLINE_INSTALL.md`.
- *
- * Deliberate choice over just copying BUILD_AND_TEST.md/DESIGN.md verbatim (which this package
- * ALSO copies in, unmodified, as background reference material — see build-bundle.ts): those two
- * docs are written for CONTRIBUTORS building CommanderSCP from source, full of pnpm/turbo/CI
- * detail an air-gapped OPERATOR installing a pre-built bundle neither has nor needs. This file is
- * the thing an operator actually reads: what's in the tarball, how to verify it, how to run
- * install.sh, what "the same bundle is the upgrade package" means in practice.
- *
- * The `images/` listing is GENERATED from `bundle-images.ts` rather than written out here. It used
- * to be prose, and prose drifted: it still named three images long after the bundle had grown to
- * nine, and it never named `scp-runner-scan`/`scp-runner-dep` because the bundle never carried
- * them (M21.7 item 1). An operator's inventory of what crossed the air gap is exactly the wrong
- * thing to maintain by hand in a second place.
- */
+/** A purpose-written operator doc, not a copied design file. See docs/airgap.md §49. */
 import { BUNDLE_IMAGE_SPECS } from "./bundle-images.js";
 
 /** The `images/` subtree of the contents listing, one entry per canonically-bundled image. */

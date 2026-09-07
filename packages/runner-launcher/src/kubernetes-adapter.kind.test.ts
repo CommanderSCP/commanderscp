@@ -19,56 +19,7 @@ import type { KubernetesRunnerIo, RunnerSpec } from "./index.js";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * ================================================================================================
- * M23.2 — THE KUBERNETES ADAPTER AGAINST A REAL API SERVER (owner decision 3)
- * ================================================================================================
- *
- * "A fake Kubernetes client only proves the adapter agrees with itself" — owner decision 3,
- * BUILD_AND_TEST.md M23. `kubernetes-adapter.test.ts` drives every branch of the failure mapping
- * cheaply and cannot answer a single question about whether any of it is TRUE of Kubernetes. This
- * file answers those, and only those:
- *
- *   1. The API server ACCEPTS the Job manifest `jobManifest()` builds. A fake accepts anything;
- *      a 422 on a mistyped field is invisible until production.
- *   2. `suspend: true` then PATCH `false` really is create-then-start against a live Job controller
- *      — the decision the whole create/copy-in/start ordering rests on.
- *   3. The `subPath` layout puts the copied bytes where the runner looks for them AND brings what it
- *      wrote back out. That is the entirety of owner decision 5's byte-movement story, and nothing
- *      short of a running pod can check it.
- *   4. A duplicate `metadata.name` really is `409 AlreadyExists`, so `isKubernetesAlreadyExists`
- *      matches something real rather than a shape invented in a fixture.
- *   5. An RFC3339 deadline really is rejected as a label VALUE and accepted as an annotation. That
- *      measurement is the reason `RUNNER_LAUNCHER_DEADLINE_ANNOTATION` exists; re-measuring it in CI
- *      is what keeps it a fact rather than a remembered one.
- *   6. THE CHART'S OWN RBAC IS SUFFICIENT. `scripts/kind-runner-harness.sh` binds this token to the
- *      Role rendered by `helm template` from `deploy/helm/templates/runner-iac.yaml` — not to a
- *      hand-written copy — so every request below is authorised by exactly what a `helm install`
- *      grants. A verb the adapter needs and the chart does not grant is a 403 here.
- *
- * WHAT IT STILL DOES NOT PROVE, said plainly:
- *   - Network containment. kind's kindnet does not enforce NetworkPolicy (re-measured with a
- *     known-positive control), so this cluster cannot speak to owner decision 1 at all. That stays
- *     with `scripts/airgap-drill.sh`, which installs Calico.
- *   - The in-cluster credential path. The adapter reads a PROJECTED service-account token from
- *     `/var/run/secrets/...` and trusts the cluster CA through `NODE_EXTRA_CA_CERTS`; this test
- *     process is outside the cluster, so it supplies the token from `kubectl create token` and the
- *     CA through a `fetchImpl`. The SHIPPED `createFetchKubernetesIo` is what runs — its header
- *     construction, its `AbortSignal.timeout`, its body serialisation and its status/text handling —
- *     and only the TLS trust anchor arrives by a different route than in a pod.
- *   - RWX. A single-node cluster has no RWX class; the workspace is a host directory kind mounts
- *     into the node. That proves the subPath layout and the byte movement, not that any particular
- *     storage class is ReadWriteMany.
- *   - The real runner images. `alpine:3.20` stands in — it is already in
- *     `tools/ci-mirror/images.list` and it has a shell, which is all three classes' observable
- *     behaviour reduced to one image. `managed-iac.integration.test.ts` still owns real-runner
- *     coverage on the Docker path.
- *
- * NO SKIP PATH, DELIBERATELY. A `describe.skipIf(noCluster)` is how a gate becomes decorative: the
- * job goes green having run nothing, which is the "checks that pass without running" class CLAUDE.md
- * records. This file is run ONLY by `pnpm --filter @scp/runner-launcher test:kind`, from a CI job
- * that stands the cluster up first, and it FAILS with a readable message when the harness is absent.
- */
+/** The Kubernetes adapter against a real API server. See docs/runner-launcher.md §176. */
 
 interface Harness {
   /** The kind cluster's name — needed to `kind load` an image into it. */
@@ -96,17 +47,7 @@ interface Harness {
 let harness: Harness;
 let ca: Buffer;
 
-/**
- * A `fetch`-shaped shim over `node:https` that trusts the cluster CA.
- *
- * IT EXISTS FOR ONE REASON AND CARRIES NO LOGIC. Node's global `fetch` cannot be given a custom CA
- * without an undici Agent, which is why the two shipped in-cluster callers
- * (`bundled-argocd-autowire-bin.ts`, `bundled-gitea-autowire-bin.ts`) rely on `NODE_EXTRA_CA_CERTS`
- * being set in their Job spec — an environment variable Node reads at PROCESS START, which a test
- * inside an already-running vitest worker cannot set. Everything else about the transport —
- * authorization header, accept, content-type, timeout, JSON body, status and text — is the shipped
- * `createFetchKubernetesIo`, which is the code that must be exercised.
- */
+/** A fetch-shaped shim that trusts the cluster authority. See docs/runner-launcher.md §177. */
 const caFetch = ((url: string, init: RequestInit): Promise<Response> =>
   new Promise((resolve, reject) => {
     const target = new URL(url);
@@ -169,12 +110,7 @@ function launcher(
     pod?: Parameters<typeof createKubernetesRunnerLauncher>[0]["pod"];
   } = {}
 ) {
-  // EVERY CASE RUNS UNDER RBAC THE CHART RENDERED, NEVER UNDER A PERMISSION THE HARNESS HANDED
-  // ITSELF — that is the whole reason owner decision 3 required a real cluster ("a fake authorises
-  // everything"). The default namespace carries the chart's DEFAULT render, which since M23.4 means
-  // the per-run Secret grant is present; `perRunSecrets: false` switches to the namespace rendered
-  // at that value, and to that namespace's own token, so an opt-out case is exercised under exactly
-  // the grant a `helm install --set managedRunners.kubernetes.perRunSecrets=false` makes.
+  // Every case runs under the RBAC the chart rendered. See docs/runner-launcher.md §178.
   const optedOut = over.perRunSecrets === false;
   const namespace = over.quota
     ? harness.quotaNamespace
@@ -243,39 +179,7 @@ const CREDENTIAL = "an-actual-looking-credential";
 
 let scratch: string;
 
-/**
- * ==================================================================================================
- * THE SELF-HEAL — M23.5 verification pass 20, LOW-13 and LOW-14, WHICH ARE ONE DEFECT
- * ==================================================================================================
- *
- * WHAT HAPPENS WHEN THIS SUITE IS INTERRUPTED. A run stopped by a SIGTERM — Ctrl-C while iterating,
- * a CI cancellation, a killed fork — leaves two things behind, and neither of the cleanups that
- * exist is reached, because both of them run at the END of a process that no longer exists:
- *
- *   1. A Job in the cluster. MEASURED: `scp-runner-quota-refused` survived, and the next run's
- *      `create` POST got the typed 409 the adapter is right to refuse on ("tearing down nothing:
- *      the Job behind this name belongs to that run" — that rule is load-bearing and stays). Four
- *      CONSECUTIVE red runs, then self-recovery, because `reap()` is SCHEDULED, NOT AWAITED (see
- *      `run()`) and therefore races the very `create` it would have unblocked. Re-measured here by
- *      seeding one leftover: ROUTE 1 red, and the leftover gone by the time the run finished — a
- *      gate red for a reason with nothing to do with the change under test, exactly while someone
- *      is iterating on it. Fresh CI clusters never see it, which is why it survived.
- *   2. A scratch directory in `os.tmpdir()`. Ten were present at the last cleanup, several
- *      non-empty, spanning two sessions — despite LOW-12's `afterAll`, which is not bypassed by
- *      anything IN this file: it is bypassed by the process ending without running it.
- *
- * SO THE CLEANUP MOVES TO THE FRONT. An `afterAll` is a promise about how this process will end; a
- * `beforeAll` sweep is a statement about the state the suite starts from, and only the second
- * survives the way the suite actually dies. The `afterAll` STAYS — it keeps the machine tidy on the
- * normal path and it is what makes the leak rare — but nothing depends on it any more.
- *
- * WHY THE SWEEP MAY DELETE WHAT `reap()` MUST NOT. `reap()` is production code against a shared
- * cluster: it is fail-closed on the deadline stamp, because deleting a foreign Job whose deadline
- * has not passed would destroy somebody's live `tofu apply`. These three namespaces belong to this
- * suite and to nothing else, the config is `singleFork` and the harness script stands them up, so
- * any launcher-labelled object here at `beforeAll` is debris from a process that is gone. That is
- * the whole difference, and it is why the fix is HERE and not in the 409 path or in `reap`.
- */
+/** The self-heal: two findings that are one defect. See docs/runner-launcher.md §179. */
 async function sweepLeftoverRunnerObjects(): Promise<void> {
   for (const ns of [harness.namespace, harness.noSecretsNamespace, harness.quotaNamespace]) {
     // WAITED, NOT `--wait=false`. The whole defect is a teardown that raced a `create`; a sweep that
@@ -339,16 +243,7 @@ beforeAll(async () => {
   await sweepLeftoverRunnerObjects();
 }, 120_000);
 
-// LOW-12 — `beforeAll` mkdtemp's ONCE per file and nothing removed it: 50 accumulated across repeat
-// local runs of this suite. Each plugin's `runner-launcher-selection.test.ts` pairs its `mkdtemp`
-// with a cleanup at the matching cardinality (`beforeEach`/`afterEach` there; `beforeAll`/`afterAll`
-// here, since this file creates exactly one scratch dir for the whole suite, not one per test).
-//
-// AND IT IS NO LONGER THE GUARANTEE — LOW-14, pass 20. Ten dirs were present at the next cleanup
-// anyway, several non-empty, spanning two sessions: nothing in this file bypasses this hook, the
-// PROCESS ENDING WITHOUT RUNNING IT does, which is every Ctrl-C and every cancelled CI job. What
-// makes the leak self-healing is `sweepStaleScratchDirs` in `beforeAll`; this stays because it keeps
-// the normal path clean and makes the leak rare, not because anything now depends on it.
+// The hook made a directory once and nothing removed it. See docs/runner-launcher.md §180.
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true });
 });
@@ -414,13 +309,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 120_000);
 
   it("A JOB CREATED SUSPENDED HAS NO POD UNTIL PATCHED — the live-controller semantics create/start rests on (LOW-11)", async () => {
-    // "A WHOLE RUN" above proves the adapter's OWN two-step call sequence produces a successful run
-    // end to end — which a single-step, always-unsuspended adapter would ALSO pass. It never queries
-    // the API server between `create` and `start`, so nothing in this suite actually watched the
-    // suspended Job have no pod. This test does, directly against the controller and without racing
-    // the adapter's own internal timing: it builds the SAME manifest `jobManifest()` produces,
-    // applies it with `kubectl` (deterministic, not a hope of catching a window `run()` closes in
-    // milliseconds), and checks the controller's real behaviour at each half.
+    // A whole run proves the adapter's own call sequence. See docs/runner-launcher.md §181.
     const runId = "suspend-then-start";
     const jobName = runnerJobName(runId);
     const manifestPath = join(scratch, `${jobName}.json`);
@@ -489,28 +378,12 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         `the chart's runner Role does not grant ${verb} on ${resource}`
       ).toBe("yes");
     }
-    /**
-     * `pods/log` IS A SUBRESOURCE AND `can-i get pods/log` DOES NOT ASK ABOUT ONE — a false positive
-     * this test carried until M23.6, found by narrowing the Role. `kubectl auth can-i` reads
-     * `resource/name` as "this verb on the OBJECT NAMED name" (its own usage string says
-     * "verb resource or verb resource/resourceName"), so `get pods/log` was asking whether the
-     * ServiceAccount may GET a pod called "log". The Role at the time granted `get` on `pods`, so it
-     * answered "yes" — for a reason that had nothing to do with reading a log. Splitting `pods` down
-     * to `list` turned that "yes" into a "no" and exposed it. `--subresource=log` is the question
-     * that was meant, and it answers "yes" against the same Role.
-     */
+    /** A subresource is not what the plain question asks. See docs/runner-launcher.md §182. */
     expect(
       await canI("get", "pods", sa, "log"),
       "the chart's runner Role does not grant `get` on the pods/log SUBRESOURCE, so every run's diagnosis is a 403"
     ).toBe("yes");
-    // AND THE OTHER DIRECTION, AGAINST THE REAL AUTHORIZER (M23.6 clause 5). Every check above is
-    // "the answer was yes", and a Role granting `*` on everything answers yes to all of them. These
-    // are the verbs the chart USED to grant and the adapter has never issued: `watch` on both
-    // resources (this adapter POLLS — see `KUBERNETES_POLL_INTERVAL_MS`'s doc — and there is no
-    // `watch=` query anywhere in it), and the two halves of the `pods`/`pods/log` collapse, which
-    // gave each resource the other's verbs. `tools/helm-verify` diffs the rendered rules against
-    // `kubernetesRunnerRbac()` as a set; this is the same claim asked of a real API server, which is
-    // the only thing that can say what the Role MEANS rather than what it says.
+    // AND THE OTHER DIRECTION, AGAINST THE REAL AUTHORIZER. See docs/runner-launcher.md §183.
     const narrowness: [string, string, string?][] = [
       ["watch", "jobs.batch"],
       ["update", "jobs.batch"],
@@ -529,17 +402,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         `the chart's runner Role grants ${verb} on ${what}, which this adapter never issues`
       ).toBe("no");
     }
-    /**
-     * AND THE CLUSTER-SCOPED QUESTION NOTHING HERE HAD EVER ASKED (M23.6, second pass). Every
-     * narrowness assertion above is about `batch/jobs` and `pods` — the resources the Role names.
-     * The M23.6 verification pass pointed a real authorizer at this identity and asked
-     * `delete nodes`, which no assertion in this repository covered, because "the chart grants
-     * exactly what the adapter calls" had only ever been checked against ONE Role's `rules` array.
-     * `tools/helm-verify` now refuses a ClusterRole or ClusterRoleBinding in every render AND in
-     * every template; this is the same claim asked of a real API server, which is the only thing
-     * that can say what the whole cluster's RBAC adds up to for this ServiceAccount rather than what
-     * one manifest says.
-     */
+    /** The cluster-scoped question nothing here had asked. See docs/runner-launcher.md §184. */
     const clusterScoped: [string, string][] = [
       ["delete", "nodes"],
       ["get", "nodes"],
@@ -565,11 +428,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         `the chart's DEFAULT render does not grant ${verb} on secrets — managed-iac cannot run on Kubernetes without it, which is the state the owner's 2026-08-20 grant exists to end`
       ).toBe("yes");
     }
-    // AND THE TWO VERBS IT DID NOT. These are narrowness assertions AND the negative controls in one:
-    // every assertion above is "the answer was yes", which is also what a broken `canI` that always
-    // returned "yes" would produce, and what a `--as` that silently fell back to the cluster-admin
-    // kubeconfig would produce too. A cluster-admin fallback answers "yes" to `list secrets`; the
-    // real Role does not, so these "no"s are what make the yeses mean something.
+    // AND THE TWO VERBS IT DID NOT. See docs/runner-launcher.md §185.
     for (const verb of ["list", "get"]) {
       expect(
         await canI(verb, "secrets", sa),
@@ -613,12 +472,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 120_000);
 
   it("`runAsNonRoot: true` AGAINST A ROOT IMAGE IS `spawn-failed` — the reference shape's own value", async () => {
-    // `deploy/helm/templates/runner-iac.yaml`'s reference Job shape asserts `runAsNonRoot: true`, and
-    // a filterless read of apps/runner-{iac,scan,dep}/Dockerfile finds no `USER` line in any of them.
-    // This is that combination, executed: the kubelet refuses the container before the entrypoint,
-    // and the adapter must call it `spawn-failed` ("nothing ran, so nothing was mutated") rather than
-    // polling to the deadline and reporting `budget-exhausted` — which for managed-iac would mean
-    // "a tofu apply was SIGTERMed mid-flight, so the real infrastructure state is unknown".
+    // The chart's reference Job shape, asserted here too. See docs/runner-launcher.md §186.
     const result = await launcher({ runAsNonRoot: true }).run(
       spec({ runId: "nonroot", labels: { "scp.run-id": "nonroot" }, timeoutMs: 60_000 })
     );
@@ -691,21 +545,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     }
   }, 120_000);
 
-  // ================================================================================================
-  // M23.4 — THE IN-CLUSTER CREDENTIAL PATH, WHICH M23.2 SAID IT COULD NOT PROVE
-  // ================================================================================================
-  //
-  // M23.2 shipped `secretEnv` as a declared, DISABLED capability and listed the in-cluster credential
-  // path as one of the two things it could not prove: the grant did not exist, so the code could only
-  // be exercised in a namespace the harness had opted into, and nothing showed what a real credential
-  // does on the way through. With the owner's grant (2026-08-20) it is provable, so these cases prove
-  // it — a real value, delivered through a per-run Secret, reaching the runner's environment, and
-  // appearing in NO argv, NO log, NO API object a reader can list, and nothing left behind.
-  //
-  // EVERY SWEEP HERE HAS A NON-VACUITY CONTROL, and the last case in this block IS that control: the
-  // same probe, run against a credential deliberately delivered the WRONG way (`env[].value`), must
-  // FIND it. A sweep that cannot fail is a sweep that proves nothing, and this suite has already been
-  // bitten by tests that were green for the wrong reason.
+  // The in-cluster credential path the earlier pass could not. See docs/runner-launcher.md §187.
 
   /** Everything a reader with `get`/`list` on this namespace can see, as one string to sweep. */
   async function readableSurface(ns: string): Promise<string> {
@@ -763,11 +603,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     const surface = await readableSurface(ns);
     expect(surface).toContain("scp-runner-secretenv");
 
-    // (1) NOT IN ANY API OBJECT A READER CAN LIST. The Job carries the container's `args` (this
-    //     adapter's argv), its `env`, its labels and its annotations; the pod carries the resolved
-    //     spec; events carry the kubelet's own messages. The credential is in exactly one object —
-    //     the Secret — and a `get secrets -o name` proves the sweep saw that namespace at all
-    //     without reading a single body.
+    // (1) NOT IN ANY API OBJECT A READER CAN LIST. See docs/runner-launcher.md §188.
     expect(surface).not.toContain(CREDENTIAL);
     expect(surface).not.toContain(Buffer.from(CREDENTIAL, "utf8").toString("base64"));
 
@@ -837,26 +673,10 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 180_000);
 
   it("THE LAUNCHER DYING MID-RUN: the API SERVER deletes the Secret, with no `finally` involved", async () => {
-    // THE ONE THAT MATTERS, AND THE WHOLE REASON FOR THE ORDERING CHANGE. M23.1d's lesson is that no
-    // `finally` survives a SIGKILL: the plugin host's hang detector kills a subprocess mid-`trigger()`
-    // and nothing in that process runs again. Docker had no analogue for `ownerReferences`, so the
-    // answer there had to be a sweep. Here the deletion is the cluster's obligation, and this case
-    // proves it the only way that means anything — by taking the launcher out of the picture and
-    // watching the Secret go anyway.
-    //
-    // THE JOB IS DELETED FROM OUTSIDE, which is what `ttlSecondsAfterFinished`, an operator's
-    // `kubectl delete job`, and a SUCCESSOR process's `reap()` all reduce to. The launcher's own
-    // teardown never runs against this object — its subsequent DELETE 404s, which is why the run's
-    // rejection is caught and discarded.
+    // The one that matters, and the reason for the reordering. See docs/runner-launcher.md §189.
     const ns = harness.namespace;
     await kubectlIn(ns, "delete", "secret", "scp-runner-sigkill-env", "--ignore-not-found");
-    //
-    // AND THE VACUITY THIS CASE HAS TO CLOSE: the launcher's OWN teardown would eventually delete
-    // this Secret too, when the run ends. If the observation window overlapped that, the case would
-    // pass whether or not the ownerReference existed. So the run is given a 30-SECOND budget, the
-    // moment of the Job deletion is timed, and the collection must be observed in the FIRST HALF of
-    // that budget — a window in which the launcher is provably still parked in its `start` poll and
-    // has issued no DELETE at all. `settled` is the second half of the same guard.
+    // AND THE VACUITY THIS CASE HAS TO CLOSE. See docs/runner-launcher.md §190.
     const RUN_BUDGET_MS = 30_000;
     let settled = false;
     const abandoned = launcher()
@@ -911,11 +731,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 180_000);
 
   it("THE NON-VACUITY CONTROL: the same sweep FINDS a credential delivered the wrong way", async () => {
-    // WITHOUT THIS CASE EVERY "not.toContain(CREDENTIAL)" ABOVE IS UNFALSIFIABLE. A typo in the
-    // constant, a `kubectlIn` that silently returned "", a namespace with nothing in it — all three
-    // produce a clean sweep. So: deliver the SAME value the way the port exists to prevent
-    // (`env[].value`, which is what a fallback would do), run the identical probe, and require it to
-    // HIT. If this case ever goes green-by-passing, the sweep is broken and the cases above are lies.
+    // Without this, every absence assertion is unfalsifiable. See docs/runner-launcher.md §191.
     const ns = harness.namespace;
     const leaky = launcher().run(
       spec({
@@ -978,18 +794,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   // M23.5 — THE POD SPEC, AND THE THREE VERDICTS A FAKE CANNOT PRODUCE
 
   it("PASS 20: THE SUITE HEALS THE DEBRIS A SIGTERM LEAVES — which `reap()` may not touch", async () => {
-    /**
-     * THE GATE FOR THE `beforeAll` SWEEP, and without it the sweep is a mechanism nothing pins:
-     * every case in this file passes whether or not it runs, because a clean cluster has nothing to
-     * sweep. So the debris is SEEDED, in the exact shape a killed run leaves it, and the two halves
-     * are asserted separately.
-     *
-     * THE DEADLINE IS IN THE FUTURE, DELIBERATELY. `reap()` is fail-closed on the stamp — it must
-     * be, because on a shared cluster a foreign Job inside its deadline is somebody's live `tofu
-     * apply` — so `reap()` will never take this object, at any point, on any later run. That is the
-     * arm that proves the sweep is doing work `reap()` cannot, rather than duplicating it: the
-     * seeded Job is exactly what a SIGTERM at second 3 of a 120s run leaves behind.
-     */
+    /** The gate for the sweep, or it pins nothing. See docs/runner-launcher.md §192. */
     const runId = "sigterm-debris";
     const jobName = runnerJobName(runId);
     const ns = harness.quotaNamespace;
@@ -1041,12 +846,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
       ).not.toContain(jobName);
       expect(await readdir(harness.workspaceHost)).not.toContain(jobName);
 
-      // 3. AND THE PROOF THAT IT IS THE 409 THAT WAS HEALED: the name is usable again. This is the
-      //    assertion the four measured red runs were failing.
-      //    THE QUOTA NAMESPACE'S FULL CONVENTION SET, which is ROUTE 1b's verbatim — `limits.cpu`
-      //    AND `limits.memory`. Measured the hard way: with `limits.memory` alone the admission
-      //    refusal is "must specify limits.cpu", the Job creates no pod, and this arm polls its
-      //    whole budget before failing for a reason that has nothing to do with the sweep.
+      // 3. AND THE PROOF THAT IT IS THE 409 THAT WAS HEALED. See docs/runner-launcher.md §193.
       const result = await launcher({
         quota: true,
         pod: {
@@ -1079,14 +879,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 180_000);
 
   it("M23.5 HIGH-3: an UNSET imagePullPolicy is `Always` for `:latest` — the air-gap break, measured", async () => {
-    // THE MEASUREMENT THAT STARTED THIS. The image is ALREADY ON THE NODE (the harness `kind load`s
-    // it) and this cluster has no registry credentials and, for a `:latest` tag, no reason to
-    // believe the local copy. Kubernetes defaults an unset `imagePullPolicy` to `Always` for
-    // `:latest`, so the kubelet reaches for docker.io and the run dies before its entrypoint —
-    // charter principle 5, broken in production, by an omission in a manifest builder.
-    //
-    // NOTHING ABOUT THIS IS VISIBLE TO A FAKE: it needs a kubelet, a node with an image on it, and a
-    // registry it cannot reach.
+    // THE MEASUREMENT THAT STARTED THIS. See docs/runner-launcher.md §194.
     const latest = "scp-probe-runner:latest";
     await execFileAsync("docker", ["tag", harness.runnerImage, latest], {
       env: { ...process.env }
@@ -1177,13 +970,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 180_000);
 
   it("M23.5 HIGH-4 ROUTE 1: a ResourceQuota rejects the pod CREATE — `spawn-failed`, with the quota's own words", async () => {
-    // THE ROUTE NO FAKE CAN PRODUCE AND THE WHOLE REASON THE THIRD NAMESPACE EXISTS. The Job is
-    // ACCEPTED and unsuspended; the Job CONTROLLER then tries to create a pod and admission refuses
-    // it, so no pod is ever created. `kubernetesTermination` reads `pod.status.containerStatuses`
-    // and nothing else, so before M23.5 the adapter polled to the whole-run deadline and reported
-    // `budget-exhausted` — "a `tofu apply` was SIGTERMed mid-flight, so the real infrastructure
-    // state is unknown" — for a run in which NOTHING RAN. The refusal's only record is the
-    // controller's `FailedCreate` Event, and teardown deletes the Job.
+    // The route no fake can produce, and the third namespace. See docs/runner-launcher.md §195.
     const result = await launcher({ quota: true }).run(
       spec({ runId: "quota-refused", labels: { "scp.run-id": "quota-refused" }, timeoutMs: 20_000 })
     );
@@ -1192,11 +979,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
       result.failure!.kind,
       `the quota-rejected run was classified ${result.failure!.kind}: ${result.failure!.detail}`
     ).toBe("spawn-failed");
-    // AND THE BOUND IS REPORTED AS IT WAS — M23.5 verification pass 20. This run really did poll to
-    // its 20s deadline, so `true` is the fact; `spawn-failed` is what the producer DECLARED about
-    // the runner, and `classifyRunnerFailure` now reads that declaration ahead of the flag instead
-    // of relying on the flag being suppressed. The assertion here was `false` while the run's own
-    // message named the budget, which is the contradiction pass 20 removed.
+    // AND THE BOUND IS REPORTED AS IT WAS. See docs/runner-launcher.md §196.
     expect(result.failure!.deadlineExceeded).toBe(true);
     // THE API SERVER'S OWN SENTENCE, read off the Job's events before teardown deleted them.
     expect(result.failure!.detail).toMatch(/quota/i);
@@ -1256,11 +1039,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 180_000);
 
   it("M23.5 HIGH-4 ROUTE 3: the pod deleted mid-run is `signalled`, and it says it was not our budget", async () => {
-    // THE ONE ROUTE WHERE SOMETHING DID RUN — a node drain, an eviction — and the reason the
-    // `everStarted` flag exists rather than being re-derived from whatever is left. Reporting this
-    // as `spawn-failed` would claim nothing was mutated, which is the OPPOSITE lie to the one being
-    // fixed. Measured rather than assumed: with `backoffLimit: 0` a deleted pod really does make the
-    // Job report `Failed`/`BackoffLimitExceeded` rather than creating a replacement.
+    // THE ONE ROUTE WHERE SOMETHING DID RUN. See docs/runner-launcher.md §197.
     const runId = "drained";
     const running = launcher().run(
       spec({
@@ -1298,24 +1077,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 240_000);
 
   it("M23.5 PASS 18: NEVER OBSERVED — a REAL container runs and mutates while the launcher is blind", async () => {
-    /**
-     * THE PROBE THAT FOUND THE DEFECT, KEPT AS A GATE — and only a real cluster can run it, because
-     * the whole point is that the Job, the pod, the kubelet and the volume are real while the
-     * LAUNCHER'S VIEW of them is not.
-     *
-     * WHAT IS FAKED IS EXACTLY ONE THING: the pod reads never land. That is an API-server stall or a
-     * partition, and it is the shape measured in the field. Everything else is real — the unsuspend
-     * PATCH reaches the real API server and succeeds, the real Job controller creates a real pod,
-     * the real kubelet pulls and runs the real container, and the container writes a REAL FILE to
-     * the REAL shared volume, which this test reads off the disk as ground truth.
-     *
-     * WHAT THE LAUNCHER USED TO RECORD FOR THIS RUN:
-     *   kind=spawn-failed code=RunnerContainerNeverStarted deadlineExceeded=false
-     *   spawn-failed: the container CLI could not be executed at all — nothing ran … so NOTHING RAN
-     *   and nothing was mutated — the Job had not yet been observed
-     * with `marker.txt` on the volume saying `THE-RUNNER-RAN-AND-MUTATED`. The clause that disproves
-     * the sentence is inside the sentence.
-     */
+    /** THE PROBE THAT FOUND THE DEFECT, KEPT AS A GATE. See docs/runner-launcher.md §198. */
     const runId = "never-observed";
     const slotDir = join(harness.workspaceHost, runnerJobName(runId), "m0");
     const markerOnVolume = join(slotDir, "marker.txt");
@@ -1411,20 +1173,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   }, 180_000);
 
   it("PASS 19: OBSERVED ONCE, THEN BLIND — one useless read still says NOTHING RAN", async () => {
-    /**
-     * THE SAME DEFECT, THROUGH THE ARM PASS 18 LEFT STANDING. Pass 18 split `!everStarted` into
-     * "never observed" (arm 6, `outcome-unknown`) and "observed, nothing had started" (arm 7,
-     * `spawn-failed`, "NOTHING RAN and nothing was mutated"). It moved the boundary to WHETHER a
-     * read landed and not to WHEN it landed or WHAT it said.
-     *
-     * So: let exactly ONE `GET pods` through — the one the adapter issues immediately after the
-     * unsuspend, before the Job controller has created a pod — and stall every read after it. The
-     * observation is real, it is 25 seconds stale by the deadline, and it says only "not yet".
-     * `kubernetesStartVerdict` reaches arm 7 and the record says the run never started.
-     *
-     * ONLY A REAL CLUSTER CAN JUDGE IT, for the same reason as the case above: the Job, the pod, the
-     * kubelet, the container and the file are real; only the launcher's view of them is not.
-     */
+    /** The same defect, through the arm left standing. See docs/runner-launcher.md §199. */
     const runId = "observed-once";
     const slotDir = join(harness.workspaceHost, runnerJobName(runId), "m0");
     const markerOnVolume = join(slotDir, "marker.txt");

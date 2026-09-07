@@ -43,23 +43,7 @@ import {
 } from "./test-support/mtls-pki.js";
 import { TrustDomainId } from "@scp/schemas";
 
-/**
- * M14.0 — the OUTPOST LIVE-PULL SCHEDULER over mTLS, end-to-end against real Postgres + a real
- * HTTPS listener (docs/proposals/outpost-poke.md, ADR-0009; owner full-scope decision 2026-07-24).
- *
- * A commander+outpost TWO-DOMAIN round trip: the OUTPOST's `federationSyncOrgTick` dials the
- * COMMANDER's real `POST /federation/exports` over mTLS (this instance presenting its enrolled
- * per-domain client cert — `urn:scp:domain:<outpostDomainId>` SAN URI — which the commander's
- * `enforceFederationMtls` accepts), pulls the signed `.scpbundle`, and imports it through the
- * UNCHANGED verify path (Ed25519 at the sequence-anchored key window + hash chain). Then the
- * FAIL-CLOSED proof: an mTLS-required peer with NO client cert → the dial is REFUSED with a block
- * Decision, never a plain-HTTP fallback.
- *
- * Each "domain" is a GENUINELY SEPARATE Postgres database booted as a REAL Fastify instance (the
- * commander with a real HTTPS mTLS listener) — the two-domain topology from
- * `federation.integration.test.ts` + the real-listener technique from `mtls.integration.test.ts`.
- * Skipped wholesale when `openssl` is unavailable (mirrors `mtls.integration.test.ts`).
- */
+/** The outpost live-pull scheduler over mTLS, end to end. See docs/federation.md §158. */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.resolve(__dirname, "../../drizzle");
@@ -305,12 +289,7 @@ describe.skipIf(!opensslAvailable())("M14.0 outpost live-pull over mTLS (two-dom
   });
 });
 
-/**
- * M14.4 — SCHEDULER MODE (ADR-0009; owner decisions D1–D4, 2026-07-24). The same real two-domain
- * mTLS harness as above, driven with a DETERMINISTIC CLOCK so a 15-minute sparse window is a
- * millisecond of test time. Every case asserts on how many peers the tick actually PULLED
- * (`outcomes.length`) — a peer the due-gate skipped produces no outcome at all.
- */
+/** M14.4 — SCHEDULER MODE. See docs/federation.md §159. */
 describe.skipIf(!opensslAvailable())("M14.4 scheduler mode — poke vs poll cadence", () => {
   let ca: TestCa;
   let commander: Domain;
@@ -546,12 +525,7 @@ describe.skipIf(!opensslAvailable())("M14.4 scheduler mode — poke vs poll cade
     // successful pull — the baseline the next assertion is measured against.
     expect(await tickAt(0)).toHaveLength(0);
 
-    // Now the D4 case that was UNREACHABLE: the operator's paths are still set but the mounted
-    // secret was rotated away / unmounted, so `resolveFederationClientMtls` throws ENOENT. Called
-    // unguarded, that throw escaped into `runFederationSyncSweep`'s per-org catch and NO peer was
-    // pulled at ANY cadence — `last_pull_attempt_at` never advanced again, which is strictly worse
-    // than the decided behaviour (D4: "both halves of poke-mode fail the same way" — the sender
-    // goes inert, so the scheduler must degrade, not die).
+    // Now the D4 case that was UNREACHABLE. See docs/federation.md §160.
     resetFederationCertWarningDedupe();
     const outcomes = await federationSyncOrgTick(outpost.db, outpost.orgId, {
       env: {
@@ -577,15 +551,7 @@ describe.skipIf(!opensslAvailable())("M14.4 scheduler mode — poke vs poll cade
   });
 });
 
-/**
- * M14.4 (l) — MIGRATION 0038 applies cleanly ON TOP OF a database already seeded at 0037, and every
- * PRE-EXISTING peer row reads NULL for all three new columns, which the due-gate treats as DUE NOW.
- * That NULL-is-due property is the whole reason the migration needs no backfill: an upgraded
- * instance's very next tick pulls exactly as it did before.
- *
- * Driven by migrating a scratch database with a TRUNCATED copy of the drizzle folder (journal
- * entries <= 0037), writing a peer row against that older schema, then running the REAL folder.
- */
+/** The migration applies cleanly on an already-seeded database. See docs/federation.md §161. */
 describe("M14.4 migration 0038 — additive on a DB seeded at 0037", () => {
   it("applies onto 0037 and leaves pre-existing peers with NULL due-state (= due now)", async () => {
     const dbName = `fedsync_mig38_${Date.now()}`.toLowerCase().replace(/[^a-z0-9_]/g, "_");

@@ -20,58 +20,7 @@ import {
   type BakeGateVerdict
 } from "./pipeline-hook-verdicts.js";
 
-/**
- * THE DECLARED-HOOK CONTRIBUTION TO THE WAVE-BOUNDARY GATE (team-pipeline-iac increment 8, D21).
- *
- * ============================================================================================
- * WHY A WAVE GATE, AND WHY THIS FILE ONLY READS
- * ============================================================================================
- * `packages/schemas/src/pipeline-behaviors.ts`'s module header is the specification, and its
- * mechanism table is not a suggestion: `postDeploy` and `bakeAlarms` are WAVE-BOUNDARY GATES,
- * `continuous` is a PER-TARGET HOLD (`./continuous-hold.ts`), and the choice per hook is a
- * statement about what should happen to the SIBLINGS. A failing integration suite must stop the
- * whole widening; a stale canary probe on one target must not.
- *
- * "Gating promotion OUT of wave N" IS "gating entry INTO wave N+1", so this hangs off
- * `evaluateWaveGate` — which `gate-orchestrator.ts` already documents as re-evaluated EVERY TICK
- * while a wave stays `pending`, with only the transition firing once. That property is what makes
- * `awaiting` safe to block on (below) and it is why nothing here needs a scheduler, a status flip,
- * or a second re-evaluation path.
- *
- * This module is a PREDICATE — the same split `./freeze-hold.ts` and `./stage-dependency-hold.ts`
- * state for themselves. It reads hooks and evidence and returns verdicts; `coordination/gates.ts`
- * is the seam that folds the answer into a verdict, and `reconcile.ts` is the seam that refuses.
- * It calls the mutation-proven verdict functions in `./pipeline-hook-verdicts.ts` and reimplements
- * none of their rules: a second copy of "does this bake window cover" is a second place to regress.
- *
- * ============================================================================================
- * A THIRD CONTRIBUTOR, NOT A REPLACEMENT
- * ============================================================================================
- * `evaluateWaveGate` already has two: the literal `gate_bindings` rows an operator bound to the
- * boundary, and the policy engine's `requireControls`. This is added BESIDE them and is ANDed with
- * them — a wave is admitted when all three allow. Neither existing contributor is weakened, and a
- * component that declares no hooks contributes nothing in either direction.
- *
- * ============================================================================================
- * `continuous` MUST NEVER REACH HERE
- * ============================================================================================
- * A `continuous` verdict at a wave gate would block a whole wave because ONE target's prober went
- * quiet, which is a lie about what is known and the exact failure the per-target hold exists to
- * avoid. `WaveGateKindSchema` already refuses to let a wave document ask for it. This module
- * enforces the same thing twice, on purpose: `WAVE_GATE_HOOK_KINDS` filters the declared set, and
- * `assertWaveGateHookKind` throws if one ever arrives anyway. The throw is loud rather than silent
- * — `advanceExecutingChanges` catches per change and logs, so a bug here fails one change visibly
- * instead of quietly widening a rollout past a hold.
- *
- * ============================================================================================
- * NO CLOCK REACHES THE RECORD
- * ============================================================================================
- * Every field of `PipelineHookGateEntry` is an id, a declared number, or an instant read straight
- * off a stored row. `now` is passed INTO the verdict functions (they take it explicitly and never
- * read it themselves) and never comes back out. That is ADR-0024's persist-on-change contract —
- * `insertDecisionIfChanged` compares the candidate against the standing row, and a clock in the
- * record makes every tick look new, which is the measured 1.44 GB/day incident rebuilt from parts.
- */
+/** THE DECLARED-HOOK CONTRIBUTION TO THE WAVE-BOUNDARY GATE. See docs/coordination.md §605. */
 
 /** The three kinds that can gate a wave boundary. `continuous` is deliberately absent — see the
  *  module doc, and `WaveGateKindSchema`, which makes the same exclusion on the wire. */
@@ -104,13 +53,7 @@ export interface PipelineHookGateContext {
    *  applicable kind is actually declared: an org that declares nothing must not pay a change read
    *  per pending wave per tick for a binding nobody will use. */
   changeObjectId: string;
-  /**
-   * The wave whose EXIT this admission is — the previous wave, with the stage it ran at and the
-   * targets that actually deployed there. `null` when the wave being admitted is the FIRST wave
-   * with targets, which has no previous wave to have exited: that case gates on `postMerge`
-   * instead (`ManifestPostMergeHookSchema` — "this hook gates the first thing SCP genuinely
-   * controls: the change entering its first wave").
-   */
+  /** The wave whose exit this admission is: the previous one. See docs/coordination.md §606. */
   previousWave: {
     waveIndex: number;
     /** The wave's stage name. `change_waves.name` IS the stage: `plan-compiler.ts` copies the
@@ -136,13 +79,7 @@ export interface PipelineHookGateEntry {
   hookId: string;
   componentObjectId: string;
   targetObjectId: string;
-  /** The stage the hook was NARROWED to, or `null` when it gates every wave.
-   *
-   *  READ THE DIRECTION CAREFULLY, because the intuitive reading is backwards and D21(a) says so
-   *  explicitly: ABSENT `stage` is the DEFAULT and gates EVERY wave; adding a `stage` REMOVES
-   *  gates, it does not add one. The strict end is the default on purpose — a team that declares
-   *  an integration suite and forgets to say where it applies gets it applied everywhere, which is
-   *  the safe direction to be wrong in. */
+  /** The stage the hook was narrowed to, or null for all. See docs/coordination.md §607. */
   stage: string | null;
   /** The wave whose exit this gates. `null` for `postMerge`, which belongs to no wave. */
   gatedWaveIndex: number | null;
@@ -163,28 +100,7 @@ export interface PipelineHookGateEntry {
   window?: { start: string; end: string };
 }
 
-/**
- * ONE TUPLE THE GATE FOUND `awaiting` AND WHICH HAS NO RUN YET — everything
- * `ensureHookRunTriggered` needs, assembled where the decision was made.
- *
- * WHY THE GATE EMITS THESE RATHER THAN A SWEEP DERIVING THEM. "Which hook needs a run" and "which
- * hook is awaiting" are the same question, and answering it twice is how the two drift: a sweep
- * with a subtly different notion of applicability would leave the gate blocking on a tuple it
- * never triggers, and the wave would hold forever with a correct-looking reason. The gate already
- * resolved the subjects, filtered by stage, read the hook rows and resolved the evidence bindings;
- * this carries that work out rather than recomputing it.
- *
- * NOT DISPATCHED HERE. This function is pure and runs inside the caller's transaction — an
- * external trigger call inside an open transaction is the thing the whole trigger path is built to
- * avoid. The caller dispatches after its transaction commits.
- *
- * SAFE TO EMIT ON EVERY TICK. `awaiting` covers both "no run yet" and "a run is in flight", and
- * this deliberately does not distinguish them: `claimHookRun` is `onConflictDoNothing` on
- * `(orgId, changeObjectId, hookId, waveIndex)` and `ensureHookRunTriggered` early-returns when it
- * does not win the claim, so re-emitting for an in-flight run is a no-op claim rather than a
- * second dispatch. Adding an existence check here would be a second source of truth for a fact the
- * unique constraint already holds.
- */
+/** One tuple found awaiting, with no run yet. See docs/coordination.md §608. */
 export interface HookTriggerRequest {
   hook: {
     componentObjectId: string;
@@ -220,14 +136,7 @@ const ALLOW_NOTHING_DECLARED: PipelineHookGateContribution = {
   pendingTriggers: []
 };
 
-/**
- * Resolves every declared wave-boundary hook that applies to this admission and returns its verdict.
- *
- * INERT WHEN NOTHING IS DECLARED, structurally: `orgDeclaresHookKind` is one indexed existence read
- * and this returns before resolving a single placement when it comes back false for both kinds. An
- * org that declares no hooks — nearly every org, nearly all the time — pays two reads per pending
- * wave per tick and nothing else, and a wave that is already `running` never calls this at all.
- */
+/** Resolves every declared hook applying to this admission. See docs/coordination.md §609. */
 export async function evaluatePipelineHookGate(
   tx: TenantTx,
   ctx: PipelineHookGateContext
@@ -270,20 +179,7 @@ export async function evaluatePipelineHookGate(
   });
 }
 
-/**
- * THE EVIDENCE BINDINGS, read once off the change's `source_ref`.
- *
- * `postMerge` binds to the COMMIT (it runs before any artifact exists) and the other kinds bind to
- * the artifact DIGEST — `pipeline_evidence`'s column doc states exactly that split. Both come from
- * the SAME two readers `gate-orchestrator.ts` uses to bind a control's context, imported rather
- * than re-derived: a gate asking about different bytes than the control beside it is a defect that
- * would never show up as an error, only as a wave admitted on the wrong evidence.
- *
- * `undefined` means DO NOT FILTER on that axis, which is `latestTestRunEvidence`'s documented
- * asymmetry and the honest reading for a change that tracks no digest at all: the latest word about
- * this target, since there are no other bytes to confuse it with. Best-effort, never a throw — a
- * missing change row must not turn a gate into an error.
- */
+/** The evidence bindings, read once off the source ref. See docs/coordination.md §610. */
 interface HookEvidenceBindings {
   artifactDigest: string | undefined;
   commitSha: string | undefined;
@@ -395,15 +291,7 @@ async function evaluateForTargets(
   return { allowed: entries.every((e) => e.satisfied), entries, pendingTriggers };
 }
 
-/**
- * `postMerge` and `postDeploy` — the same question ("did the declared suite run, and did it pass"),
- * so the same verdict function answers both.
- *
- * `evaluatePostDeployGate` IS REUSED rather than copied for `postMerge`: the two hooks differ in
- * WHEN they are consulted and WHAT the evidence is bound to (commit vs digest), not in how a
- * concluded run is read. A second implementation would be a second place for `awaiting` to get
- * mapped to `fail`, which that function's doc calls out as the one thing that must never happen.
- */
+/** `postMerge` and `postDeploy`. See docs/coordination.md §611. */
 async function testRunEntry(
   tx: TenantTx,
   ctx: PipelineHookGateContext,

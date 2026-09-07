@@ -3,38 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * THE MIGRATION JOURNAL'S ORDERING INVARIANTS — a guard against a merge that fails SILENTLY, and
- * specifically against the way EVERY OTHER CHECK IN THIS REPO IS BLIND TO IT.
- *
- * `drizzle-orm/pg-core/dialect.cjs` gates each migration like this:
- *
- *     const lastDbMigration = dbMigrations[0];              // newest already applied
- *     for await (const migration of migrations) {
- *       if (!lastDbMigration || Number(lastDbMigration.created_at) < migration.folderMillis) { ... }
- *
- * Two consequences, and the second is the trap:
- *
- *  1. `idx` IS NEVER CONSULTED FOR GATING. It orders the array; it does not decide what runs. A
- *     journal with perfect contiguous idx values can still skip a migration.
- *  2. `lastDbMigration` is read ONCE, BEFORE the loop. So on a FRESH database it is undefined and
- *     every migration applies regardless of `when` — which is exactly what every integration suite
- *     in this repo does (Testcontainers hands out a new database per file). On an EXISTING database
- *     a migration whose `when` is BELOW the newest applied one is skipped, permanently, with no
- *     error. CI is structurally incapable of catching that: green here, broken on upgrade.
- *
- * That is not hypothetical. On 2026-08-10 three branches landed migrations the same day; the
- * `reconcile_cursor` journal entry was authored while main was at 0055 and carried
- * `when: 1787940000000`, but `0057_source_mapping_ref_pattern` merged first with
- * `when: 1788006400000`. Any instance that had applied 0057 would have skipped 0058 forever — the
- * `reconcile_cursor_at` column would simply never exist, and every candidate query would fail
- * against a column the schema swore was there. Every test still passed, because they all migrate
- * from empty.
- *
- * So this asserts the property the merge conflict CANNOT: not "did we resolve the array", but "does
- * the resolved array actually apply". Resolving a `_journal.json` conflict with `--ours`/`--theirs`,
- * or appending an entry authored against an older main, breaks it — and nothing else here notices.
- */
+/** THE MIGRATION JOURNAL'S ORDERING INVARIANTS. See docs/db.md §3. */
 describe("drizzle migration journal", () => {
   const journalPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),

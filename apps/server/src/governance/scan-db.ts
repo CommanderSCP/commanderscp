@@ -21,23 +21,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * M13.3b-ii — OFFLINE SCANNER-DB PRE-LOAD + REFRESH (ADR-0020, proposal §13.3b). The single home for
- * the commander's server-maintained Trivy-DB cache: reading its on-disk `metadata.json`, classifying
- * its staleness against the operator's INSTANCE-SCOPED policy (owner decision 2026-07-24: "a company
- * applies their own rules"), asserting its schema is one the PINNED Trivy binary can read, and
- * populating it two ways — a connected operator-invoked skopeo refresh, and an air-gap operator-load
- * of a cosign-signed DB blob carried across the CDS.
- *
- * WHY A SERVER-MAINTAINED OPERATIONAL CACHE IS NEW (and does NOT violate "SCP has no blob storage
- * for promotion artifacts"): the trivy-db is the scan's INPUT (operational data), not a promotion
- * artifact SCP is caching for someone else. It is exactly the objectStorage-PVC precedent
- * (values.yaml) applied to operational scanner data.
- *
- * FAIL-CLOSED THROUGHOUT (proposal §13.3b, owner 2026-07-24): a configured-but-missing/corrupt/
- * unreadable-schema/hard-stale DB yields NO scan → NO evidence → E6 refuses. Only a fresh (or
- * soft-stale WARN) DB scans; a warn is surfaced in the ScanEvidence + Decision, never silently.
- */
+/** M13.3b-ii — OFFLINE SCANNER-DB PRE-LOAD + REFRESH. See docs/governance.md §283. */
 
 /** The trivy-db schema version the PINNED Trivy binary (tools/trivy/pin.env TRIVY_DB_SCHEMA_VERSION)
  *  can read. A DB built for a different schema is UNREADABLE by that binary, so the refresh/load
@@ -374,13 +358,7 @@ export async function readScanDbStatus(
 
 // Populating the cache — the atomic swap shared by refresh + operator-load
 
-/**
- * Build a fresh DB directory in staging, VALIDATE it (trivy.db present + readable metadata + a
- * schema the pinned binary accepts), then ATOMICALLY swap it into `<cacheDir>/db` — no torn read
- * during a concurrent scan (a scan `docker cp`s a point-in-time snapshot of the dir; `rename` keeps
- * any already-opened inode intact). Refuses (throws, no cache write) a DB the pinned Trivy can't
- * read. Staging is created UNDER `cacheDir` so the rename is same-filesystem (hence atomic).
- */
+/** Build a database in staging, validate it, then swap. See docs/governance.md §284. */
 export async function atomicInstallDb(
   cacheDir: string,
   source: ScanDbSource,
@@ -477,12 +455,7 @@ function ociHostOf(ref: string): string | null {
   return null;
 }
 
-/**
- * Connected refresh: skopeo-copy the upstream OCI trivy-db (allowlist-guarded, ADR-0019 §4) into a
- * `dir:` layout, extract its layer(s), and atomically install the resulting DB into the cache with
- * the schema-compat assertion. Operator-invoked; the ONE place this reaches the network, exactly the
- * vendored-skopeo channel #111 established. Returns the installed metadata.
- */
+/** Connected refresh: skopeo-copy the upstream OCI trivy-db. See docs/governance.md §285. */
 export async function refreshScanDbConnected(cacheDir: string): Promise<TrivyDbMetadata> {
   const ref = trivyDbOciRef();
   const host = ociHostOf(ref);
@@ -538,14 +511,7 @@ export interface LoadScanDbBlobInput {
   expectedDigest?: string;
 }
 
-/**
- * Air-gap operator-load: VERIFY a cosign-signed DB blob (detached signature against the operator's
- * public key, plus an optional digest cross-check) BEFORE accepting the bytes into the cache. No
- * federation message/flow — the operator produced the signed blob at the connected side (skopeo-pull
- * + repackage + cosign sign-blob) and walked it across the CDS. The blob is the SAME `type:'blob'`
- * shape as the connected repackage: a (gzipped) tar carrying trivy.db + metadata.json. A tampered
- * blob / wrong key / digest mismatch is REFUSED with NO cache write.
- */
+/** Air-gap operator-load: VERIFY a cosign-signed DB blob. See docs/governance.md §286. */
 export async function loadScanDbBlob(input: LoadScanDbBlobInput): Promise<TrivyDbMetadata> {
   if (!existsSync(input.blobPath))
     throw new Error(`scan-db load: blob '${input.blobPath}' not found`);

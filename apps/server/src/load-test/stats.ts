@@ -1,9 +1,4 @@
-/**
- * Tiny latency-percentile helper shared by the M8 informational load-test scripts
- * (graph-scale.ts, event-path.ts — BUILD_AND_TEST.md §8 M8 "informational load tests... no
- * benchmark gate — review decision"). Deliberately dependency-free (no stats library) — this is
- * reporting tooling, not product code, and the percentile math is a handful of lines.
- */
+/** Dependency-free latency percentiles for the load-test scripts. See docs/load-test.md §7. */
 
 export interface LatencySummary {
   count: number;

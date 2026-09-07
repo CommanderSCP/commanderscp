@@ -4,35 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readStripped } from "./ts.js";
 
-/**
- * ================================================================================================
- * MEDIUM-5 — THE GOLDEN COUNT IN PROSE, MADE A GATE INSTEAD OF A THING RESTATED BY HAND
- * ================================================================================================
- * `docs/BUILD_AND_TEST.md`'s M23.0 bullet has stated the number of `launch-argv.golden.test.ts`
- * cases across the three managed-executor plugins THREE times, and been wrong on at least two of
- * them:
- *   - it said "Fourteen" when the true count (at the time) was fifteen (corrected by commit
- *     e72e629e, itself the ONLY one of the three corrections that actually re-measured);
- *   - it then said "Fifteen (4 iac + 6 scan + 5 dep)" for a full round afterward, including through
- *     a Phase 5 verification pass that reported the line as checked, while commit 39b387d2 had
- *     already added a sixth-then-fifth iac case and a later M23.1e round (bf608300) added a sixth —
- *     the true count by then was seventeen (6 iac + 6 scan + 5 dep).
- *
- * A number in prose that three separate rounds each restated wrongly is a number that must stop
- * living in prose. This file reads BOTH sides — the documented count and the actual `it(` count in
- * the three golden files — and fails the moment they diverge, naming the exact mismatch rather than
- * requiring a fourth human recount.
- *
- * WHY `^\s*it\(`, MIRRORING THE MEASUREMENT THAT FOUND THE DEFECT. Counting top-level `it(` calls is
- * the same method MEDIUM-5's own measurement used ("Counting `^\s*it(` in the three golden files").
- * `readStripped` (not a bare `readFileSync`) is used so a commented-out or described-but-deleted
- * `it(` cannot inflate the count — see `@scp/source-census`'s own module doc for why that distinction
- * is load-bearing rather than decorative.
- *
- * PROVEN BY ADDING A CASE AND WATCHING IT REDDEN — that is this file's own DoD, not merely a claim
- * about it: add a fixture `it(` to any of the three files below (or bump the documented count without
- * touching a file) and this suite fails, naming the file and the two numbers that disagree.
- */
+/** The golden count in prose, made a gate not a restatement. See docs/source-census.md §7. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../..");
@@ -89,12 +61,7 @@ interface DocumentedCount {
   dep: number;
 }
 
-/**
- * Parses the M23.0 bullet's own count out of `docs/BUILD_AND_TEST.md` — `<word> tests (<n> iac +
- * <n> scan + <n> dep)` — rather than assuming its position. A doc restructure that drops or renames
- * the bullet fails this HERE, naming what could not be found, instead of the count silently going
- * unchecked.
- */
+/** Parses the bullet's own count, not its position. See docs/source-census.md §8. */
 function parseDocumentedCount(docText: string): DocumentedCount {
   const anchor = docText.indexOf("M23.0 The golden Docker argv");
   expect(

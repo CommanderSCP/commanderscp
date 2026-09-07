@@ -22,20 +22,7 @@ import { deriveUrn } from "../graph/urn.js";
 import { findPeerByDomainId } from "./peers-repo.js";
 import { ensureFederationSelf } from "./self-repo.js";
 
-/**
- * M16.2 phase A (E1) — the commander-side write/read surface for `outpost` GRAPH OBJECTS: the
- * commander-authored, owner-ENTERED config about one enrolled outpost, which syncs down to that
- * outpost as a read-only replica because it is an ordinary graph object.
- *
- * READ `federation/outpost-binding.ts` FIRST — it states the authority split between this object and
- * the `federation_peers` row, and it holds the enforcement of the 1:1 peer binding (applied inside
- * `graph/objects-repo.ts`, so EVERY local write door gets it, not just this module).
- *
- * This module deliberately owns no invariant of its own beyond URN derivation: it composes
- * `createObject`/`updateObject` so the object is journaled, audited, content-hashed and
- * single-writer-guarded by exactly the same machinery as every other graph object (charter principle
- * 2 — no parallel mechanism).
- */
+/** The commander-side write and read surface for outposts. See docs/federation.md §330. */
 
 export const OUTPOST_OBJECT_TYPE_ID = "outpost";
 
@@ -69,15 +56,7 @@ function readTrustTier(properties: Record<string, unknown>): OutpostTrustTier | 
     : null;
 }
 
-/**
- * Projects the underlying graph object into the API's read view, carrying the honest-unknown
- * declaration (`unknownFields`) the rest of this codebase already uses.
- *
- * `selfDomainId` is REQUIRED (review round 4): without origin-vs-self and `provenance` on the wire, a
- * consumer cannot tell a commander's own asserted config from an unverified hand-filled shadow claiming
- * a foreign origin, and would render the latter as the former. `originDomainId` alone does not answer
- * it — a reader would have to know this instance's own domain id to compare against.
- */
+/** Projects the graph object into the API's read view. See docs/federation.md §331. */
 export function toOutpostConfig(object: GraphObject, selfDomainId: string): OutpostConfig {
   const properties = object.properties;
   const trustTier = readTrustTier(properties);
@@ -120,19 +99,7 @@ export interface CreateOutpostConfigInput {
   trustTier?: OutpostTrustTier;
 }
 
-/**
- * Declares the config object for an already-paired outpost peer — or, with `peerDomainId` = this
- * instance's own trust domain, the HQ outpost (§10.5; accepted only when this instance's
- * `federation_self.role` is `commander` — on an outpost that record is the commander's replica). The
- * peer-binding guard (`assertOutpostPeerBinding`, reached through `createObject`) refuses an unbound
- * `peerDomainId` (400), a peer whose role is not `outpost` (400), the self shape on a non-commander
- * instance (400), and a second object for the same domain (409).
- *
- * The peer lookup here is NON-throwing (`findPeerByDomainId`) and is used ONLY to default the display
- * name. Validating the binding is the guard's job at the choke point — so an unpaired peer produces
- * the guard's own precise 400 ("neither a paired federation peer nor…") rather than a 404 from a name lookup,
- * and a caller that bypasses this module gets the identical refusal.
- */
+/** Declares the config object for an already-paired peer. See docs/federation.md §332. */
 export async function createOutpostConfig(
   tx: TenantTx,
   input: CreateOutpostConfigInput
@@ -182,24 +149,7 @@ export async function listOutpostConfigs(tx: TenantTx, orgId: string): Promise<O
   return rows.map((row) => toOutpostConfig(toGraphObject(row), self.domainId));
 }
 
-/**
- * EVERY LIVE `outpost` object, RESOLVED TO ONE PER PEER — the batched read a lane-level projection
- * wants (pipeline-substrate-registry-scan.md §10.2: "one query over live `outpost` objects"), keyed
- * on the object's own `properties.peerDomainId` (string-guarded; an object with no string binding is
- * skipped — it names no peer, so no target's origin can match it).
- *
- * WHEN TWO ROWS CLAIM ONE PEER, this picks by `byAuthority` — the SAME rule `findOutpostConfigByPeer`
- * applies for `GET/PATCH /v1/federation/outposts/{peer}`. It does NOT state "ambiguous": the binding
- * is enforced 1:1 on every LOCAL create (`assertOutpostPeerBinding`, clause 4), and the duplicates a
- * database can still hold (an unverified hand-filled shadow beside the authoritative row; a replica
- * beside a local row) are exactly what `byAuthority` was written to rank — local origin, then
- * verified replica, then `provenance:'manual'` shadow. A projection that said "ambiguous" where the
- * outposts API itself resolves to one row would contradict the page the link on that projection
- * opens; the recovery for a real duplicate is `reconcileOutpostConfig`, not a fifth state.
- *
- * `trustTier` reads through `readTrustTier` — an unrecognised or absent tier is null, never
- * defaulted (see that function).
- */
+/** EVERY LIVE `outpost` object, RESOLVED TO ONE PER PEER. See docs/federation.md §333. */
 export async function resolveOutpostObjectsByPeer(
   tx: TenantTx,
   orgId: string
@@ -241,16 +191,7 @@ export async function resolveOutpostObjectsByPeer(
   return resolved;
 }
 
-/**
- * Every LIVE `outpost` object bound to `peerDomainId`, in a TOTALLY DETERMINISTIC order.
- *
- * The binding is meant to be 1:1 and `assertOutpostPeerBinding` keeps it that way going forward, but a
- * database can still HOLD a duplicate — one left behind by the hand-fill door before it was narrowed
- * (review round 4), or by any future write door. `(created_at, id)` makes the order total: `created_at`
- * alone is not unique inside one transaction, and an ORDER-BY-less `LIMIT 1` (what this used to be) made
- * `GET`/`PATCH /v1/federation/outposts/{peer}` resolve NONDETERMINISTICALLY and land on whichever copy
- * Postgres happened to return — including a foreign-origin one, which then 409'd as a "read-only replica".
- */
+/** Every live outpost bound to a peer, in a fixed order. See docs/federation.md §334. */
 async function listOutpostObjectsForPeer(
   tx: TenantTx,
   orgId: string,
@@ -271,16 +212,7 @@ async function listOutpostObjectsForPeer(
   return rows.map(toGraphObject);
 }
 
-/**
- * Which of several rows bound to one peer is the AUTHORITY, most-authoritative first:
- *   1. LOCAL-ORIGIN — this instance authored it. On a commander that is the operator's own declaration,
- *      and it must win over anything else: the commander is the single writer for outpost config in its
- *      own domain, so a foreign or hand-typed copy can never outrank it.
- *   2. A VERIFIED REPLICA (foreign origin, `provenance` NULL) — signature/chain-checked on import. This
- *      is the authoritative row on an OUTPOST, where the commander is the author.
- *   3. An UNVERIFIED SHADOW (`provenance = 'manual'`) — hand-typed, confirmed by nothing. Last.
- * Ties inside a class keep the caller's deterministic `(created_at, id)` order.
- */
+/** Which of several rows bound to one peer is the authority. See docs/federation.md §335. */
 function byAuthority(rows: GraphObject[], selfDomainId: string): GraphObject[] {
   const rank = (o: GraphObject): number =>
     o.originDomainId === selfDomainId ? 0 : o.provenance === "manual" ? 2 : 1;
@@ -319,48 +251,7 @@ export async function getOutpostConfigByPeer(
   return found;
 }
 
-/**
- * THE OPTIMISTIC-CONCURRENCY PRECONDITION on the recovery door — `?ifClaimant=<objectId>:<version>`,
- * one per live claimant the caller PREVIEWED, compared as an ORDER-INSENSITIVE SET against the rows
- * read inside this transaction.
- *
- * THE DEFECT IT CLOSES. Reconcile derives its outcome — which row survives, which are removed,
- * whether the operator's hand-entered shadow is ADOPTED or DISCARDED — from the claimant set as it
- * is at write time. A caller decides to press the button from a set it read EARLIER. When those
- * disagree, the caller's stated intent and the server's action silently diverge, and the divergence
- * is not visible in the 200 that comes back:
- *   * a LOCALLY-AUTHORED row that appeared since the preview outranks the shadow in `byAuthority`,
- *     so a bare "adopt this shadow" call keeps that row instead and the operator's entered value is
- *     DROPPED with no preview and no mention;
- *   * naming the shadow with `?keep=` in that same situation is not a fix, it is the OTHER failure:
- *     the concurrent locally-authored row becomes surplus and is soft-deleted, which for a row THIS
- *     domain authored is an ordinary JOURNALED TOMBSTONE that PROPAGATES DOWNSTREAM to the outpost.
- * One arm discards the operator's input, the other propagates a delete they never saw. Neither is a
- * refusal, so neither can be reviewed. The precondition converts both into a 412 the caller can act
- * on, and the refusal carries the FRESH claimant list so the re-preview costs no extra round trip
- * and opens no second window.
- *
- * NOTHING IS WRITTEN ON A MISMATCH — this runs before every `deleteObject`/`updateObject` on the
- * path, so a refusal removes nothing, adopts nothing and journals nothing.
- *
- * "READ INSIDE THIS TRANSACTION" IS NOT A LOCK (R4, PR #156 residual, honesty owed by ADR-0022).
- * `listOutpostObjectsForPeer`'s read is a plain, non-locking `SELECT` under this connection's
- * default `READ COMMITTED` isolation — not `SELECT ... FOR UPDATE`. A claimant row inserted and
- * COMMITTED by a concurrent transaction after this read runs is genuinely invisible to the compare
- * below; "inside the write transaction" means "as fresh as this transaction's snapshot allows", not
- * "serialized against every concurrent writer". That gap does not reopen the silent-divergence
- * defect this precondition exists to close, because both write branches below are self-checking on
- * exactly that row: the adopt-shadow path re-scans it through `outpost-binding.ts`'s single-writer
- * guard and 409s before writing anything, and the non-adopting `?keep=` path never touches a row it
- * did not itself read. The outcome is a correctly-refused write or a no-op either way — not a
- * silent divergence — which is why this is a documentation fix, not a `FOR UPDATE`.
- *
- * AN OMITTED TOKEN PROCEEDS UNCHECKED — exactly today's behaviour. That is forced by API additivity
- * (`/v1` is additive-only; a required precondition would break every existing caller) and it is the
- * right PROTOCOL default. It is NOT a licence for a client to omit it: both first-party surfaces
- * (the UI panel and `scp federation outpost reconcile`) always send one unless the operator
- * explicitly asks them not to.
- */
+/** THE OPTIMISTIC-CONCURRENCY PRECONDITION on the recovery door. See docs/federation.md §336. */
 function assertClaimantsUnchanged(
   peerDomainId: string,
   live: readonly GraphObject[],
@@ -413,48 +304,7 @@ function assertClaimantsUnchanged(
   );
 }
 
-/**
- * THE RECOVERY DOOR (review round 4) — `POST /v1/federation/outposts/{peerDomainId}/reconcile`.
- *
- * WHY IT EXISTS. Before the hand-fill narrowing, `POST /v1/federation/hand-fill` could plant a second
- * live `outpost` object for a peer that already had a legitimate one. That left the peer UNRECOVERABLE
- * THROUGH THE API: the commander's own `PATCH /v1/federation/outposts/{peer}` 409'd forever
- * ("already has an outpost config object" / "read-only replica"), `DELETE /api/v1/objects/outpost/{id}`
- * is 403 by this milestone's own refusal, and no delete verb for the config existed. An unrecoverable
- * state reachable by a supported action is the one-way-ratchet failure class this project has already
- * paid for (PR #149), so the door is closed AND the existing wedge is made fixable — a database wedged
- * by an older build must be repairable without SQL.
- *
- * WHAT IT DOES, and nothing more:
- *   * keeps the single most authoritative row for the peer (`byAuthority`);
- *   * when NO authoritative row exists but an UNVERIFIED shadow does, ADOPTS the first shadow as this
- *     domain's own object (`unverifiedShadowOverride` — origin re-stamped, `provenance` cleared, and it
- *     journals from then on like any local object), so the operator's entered config is not thrown away;
- *   * SOFT-DELETES every remaining unverified shadow for that peer, restoring the 1:1 binding — a silent
- *     local cleanup, reported as `removedShadowObjectIds`;
- *   * with `?keep=` naming a row THIS domain authored as the survivor (N9 below), also soft-deletes any
- *     OTHER locally-authored surplus row for that peer — an ordinary JOURNALED TOMBSTONE that propagates
- *     downstream, reported SEPARATELY as `removedLocalObjectIds` so the caller cannot describe it as a
- *     shadow tidy-up (review round 6, M1 — the two cases produce different output on every surface).
- *
- * WHAT IT REFUSES. A VERIFIED foreign-origin replica is never adopted and never DELETED: deleting one
- * would make the next real import a single-writer violation and wedge that peer's sync — trading one
- * unrecoverable state for a worse one. Two verified rows for one peer therefore stay a 409 and are
- * reported as such, which is an honest authority conflict rather than a silent pick.
- *
- * `keepObjectId` — THE VERIFIED-DUPLICATE ESCAPE (review round 5, N9). Without it, a VERIFIED
- * foreign-origin duplicate bound to one peer had NO public-API recovery AT ALL: `PATCH` 409s (the
- * binding scan's `blocking` filter exempts only `provenance='manual'`), the default reconcile refuses
- * by design, `DELETE /objects/outpost/{id}` is 403, and IaC prune only touches stack-managed objects —
- * and the refusal message named an action the API did not offer. That state is NOT reachable today (in
- * canonical hub-and-spoke, no bundle a commander imports carries an `outpost` row bound to one of ITS
- * peers) but becomes reachable the moment two authoring domains describe one outpost — hierarchical
- * sub-commanders, or a dual-homed outpost. Naming the row to KEEP lets the operator resolve the
- * authority conflict the only way that is actually safe: this domain DELETES THE ROW IT AUTHORED
- * ITSELF, which is an ordinary local tombstone that journals normally and can be re-declared at any
- * time. The refusal to delete a signature-verified replica is unchanged and unconditional — that half
- * is what stops this from trading the wedge for a sync wedge.
- */
+/** THE RECOVERY DOOR. See docs/federation.md §337. */
 export async function reconcileOutpostConfig(
   tx: TenantTx,
   input: {
@@ -474,11 +324,7 @@ export async function reconcileOutpostConfig(
 ): Promise<OutpostConfigReconcileResult> {
   const self = await ensureFederationSelf(tx, input.orgId);
   const live = await listOutpostObjectsForPeer(tx, input.orgId, input.peerDomainId);
-  // FIRST — before the 404, before the `keep` 400, and before anything is written. A world that
-  // changed under the caller is a 412 on EVERY branch, including "they all vanished": answering 404
-  // there would tell the operator to declare a fresh config when what actually happened is that the
-  // rows they were looking at are gone. 404 stays the answer for the unchecked call, which is the
-  // only branch where the resource is genuinely, and uncontroversially, absent.
+  // First, before the 404 and before anything is written. See docs/federation.md §338.
   if (input.ifClaimants !== undefined) {
     assertClaimantsUnchanged(input.peerDomainId, live, input.ifClaimants, self.domainId);
   }
@@ -510,16 +356,7 @@ export async function reconcileOutpostConfig(
   const surplus = rows.filter((o) => o.id !== keeper.id);
   const unremovable = surplus.filter((o) => !isShadow(o) && !isLocallyAuthored(o));
   if (unremovable.length > 0) {
-    // 409, NOT 404 (review round 5, N3). This branch fires when the peer DEMONSTRABLY HAS config —
-    // `GET /v1/federation/outposts/{peer}` answers 200 for the very same peer at the same instant —
-    // so answering 404 told a status-keyed consumer "no outpost config" and HID the authority
-    // conflict on the one door that exists to recover from it. The route's own response map already
-    // declared 409 and the schema comment already called this a "409-shaped notFound"; the code is
-    // now the shape it always described. 404 stays for the genuinely-no-rows branch above, which is
-    // the only branch where the resource really is absent.
-    // THE MESSAGE NAMES AN ACTION THE API ACTUALLY OFFERS (review round 5, N9). It previously said
-    // "resolve the authority conflict at its source" — advice, not a verb, on a door whose whole
-    // purpose is to be the verb.
+    // 409, not 404: the peer demonstrably has configuration. See docs/federation.md §339.
     throw conflict(
       `peer '${input.peerDomainId}' has ${rows.length} live outpost config objects and ${unremovable.length} of ` +
         `them are signature-verified replicas this domain did not author (${unremovable
@@ -533,12 +370,7 @@ export async function reconcileOutpostConfig(
     );
   }
 
-  /** Surplus removal. `unverifiedShadowOverride` is passed only for a foreign shadow, which is the
-   *  only row it applies to: for a LOCALLY AUTHORED row `deleteObject`'s replica check never fires,
-   *  so the removal is an ordinary local tombstone that JOURNALS normally (a shadow's does not — this
-   *  domain never authored it, so claiming authorship of its deletion would push a delete for a row
-   *  the real authority still owns). Passing the flag for a local row would be a claim we do not
-   *  need to make. */
+  /** Surplus removal, and when the override is passed. See docs/federation.md §340. */
   const removeSurplus = async (): Promise<void> => {
     for (const o of surplus) {
       await deleteObject(tx, {
@@ -603,16 +435,7 @@ export interface UpdateOutpostConfigInput {
   expectedVersion?: number;
 }
 
-/**
- * Edits the commander-origin config. ABSENT MEANS PRESERVE for every field — an omitted `trustTier`
- * never clears an asserted one, and (phase A) there is no clear-to-unknown verb at all: un-asserting
- * a tier is a distinct, deliberate operation, and inventing it as a side effect of an omitted field
- * is exactly how a UI silently erases an operator's assertion.
- *
- * ON AN OUTPOST THIS CALL FAILS, and that is the point: the object there is a read-only replica, so
- * `updateObject`'s existing single-writer guard raises 409 before any of this module's logic runs
- * (proved by `outpost-config-sync.integration.test.ts`). No second mechanism was added for it.
- */
+/** Edits the commander-origin config. See docs/federation.md §341. */
 export async function updateOutpostConfig(
   tx: TenantTx,
   input: UpdateOutpostConfigInput

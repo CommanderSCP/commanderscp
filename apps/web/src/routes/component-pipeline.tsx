@@ -31,11 +31,7 @@ import type {
   ComponentPipelineUnplacedStage,
   CreateSourceMappingRequest
 } from "@scp/sdk";
-// A1/B2 (docs/proposals/outpost-ui.md §3/§4): `@scp/sdk`'s index only re-exports the M3-era
-// change-sources types (`CreateSourceMappingRequest`); the delete-tuple and placement-create
-// shapes never got an SDK re-export block. `@scp/schemas` directly is within eslint's own
-// restricted-imports allowance ("apps/web/src may import only @scp/sdk and @scp/schemas"),
-// matching `registry-detail.tsx`'s `ExecutorTypeSchema` import.
+// A1/B2 (docs/proposals/outpost-ui.md §3/§4). See docs/web.md §249.
 import {
   ExecutorTypeSchema,
   PipelineClassificationSchema,
@@ -89,43 +85,9 @@ import {
 import { QueryErrorNotice } from "../components/query-error";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
 
-/**
- * THE COMPONENT PIPELINE — the default view of a component (coordination-ui-views.md §2, corrected
- * 2026-08-03).
- *
- * A pipeline is a durable property of a component; artifacts move THROUGH it. Two corrections got it
- * here, and this file must keep BOTH:
- *
- *   1. The surface this replaces was keyed on a CHANGE, so a component with nothing in flight had no
- *      pipeline to open at all. Nothing here may be gated on `stage.current`.
- *   2. The first version of the replacement drew one card per PLACEMENT, so a stage the component is
- *      NOT placed at rendered nowhere — on the live estate, a two-wave topology showed one card and
- *      prod was simply absent. The journey is the topology's WAVES, and a stage with no placement is
- *      drawn greyed and explicitly "not placed" rather than omitted.
- *
- * "Not placed" and "placed, nothing released yet" are deliberately different pictures. The second is
- * ordinary (a new placement); the first says this component's releases never reach that stage, which
- * is usually the most important thing on the page.
- *
- * Waves stack VERTICALLY with a `PromotionArrow` between them — the same shape `change-pipeline.tsx`
- * uses, and the one that component was drawn for (its arrow points down). Targets inside one wave sit
- * side by side, because that is what a parallel wave means.
- */
+/** THE COMPONENT PIPELINE. See docs/web.md §250. */
 
-/**
- * WHICH OF THIS STAGE'S PIPELINES THE HOLD IS ABOUT (ADR-0028 increment 4).
- *
- * `stages[].hold` is keyed on the PLACEMENT — the coupling is evaluated per wave target and a wave
- * target's `target_object_id` is the placement — so it says "a release is being withheld here"
- * without saying which lane. That distinction matters: a change can hold this place's
- * `configuration` target while the infrastructure pipeline here is simply idle, and painting the
- * infra lane "held" would claim a pipeline is waiting when nothing of it is running at all.
- *
- * The join is the one the response already carries: the hold names its `changeId`, and each lane's
- * `current` names the change whose release is in that lane. The status check is what keeps it exact
- * — a target already handed to an executor is past the hold, whatever another target of the same
- * change at the same place is doing.
- */
+/** WHICH OF THIS STAGE'S PIPELINES THE HOLD IS ABOUT. See docs/web.md §251. */
 function holdFor(
   stage: ComponentPipelineStage,
   lane: Lane
@@ -138,15 +100,7 @@ function holdFor(
   return hold;
 }
 
-/** A stage's promotion state, from what the SERVER could observe — never invented.
- *
- *  `pending` (grey) is the honest default: it means "nothing has released here", which is a real and
- *  common state for a placement, NOT a failure. Only an actually-failed target goes red.
- *
- *  `held` sits between the two and is the reason this function grew a second argument. A held wave
- *  target's status is and stays `pending` — the server's hold `continue`s before it is ever handed
- *  to an executor — so without the hold it painted identically to "the wave has not reached here
- *  yet". Those are opposite facts: one is waiting on something NAMED, the other on nothing. */
+/** A stage's promotion state, from what the SERVER could observe. See docs/web.md §252. */
 function stateOf(
   current: ComponentPipelineStage["current"],
   hold: ComponentPipelineStage["hold"] = null
@@ -163,23 +117,7 @@ function stateOf(
   return "pending";
 }
 
-/**
- * THE LANES — a component runs SEVERAL pipelines, and they are not stages of one another.
- *
- * The software pipeline builds an artifact and syncs config; the infrastructure pipeline stands up
- * the substrate underneath it. They have their own executors, their own source repos and their own
- * release histories, and drawing them as one list of stages says a component has a single pipeline
- * when it has two (owner, 2026-08-10: "Each component needs 2 pipelines: infra & software").
- *
- * Lane membership is by ADR-0007 CATEGORY, which the server derives from the routing Type and sends
- * on the wire — so this file holds no copy of the Type→Category map. `build` and `configuration`
- * share the software lane because that is what `coordination-ui-views.md` §2's "App release" lane
- * is: `Build & test` → `Image registry` → `Config bump` → the deploy stages.
- *
- * BOTH LANES ALWAYS RENDER. A component with no infrastructure pipeline says so in words; leaving
- * the lane out would make "no infra pipeline is declared" indistinguishable from "this view does not
- * show infra", which is the distinction the whole page is built around.
- */
+/** The lanes: a component runs several pipelines at once. See docs/web.md §253. */
 interface Lane {
   key: string;
   label: string;
@@ -235,14 +173,7 @@ export function showsCorrelatedInfra(lane: Lane): boolean {
  *  itself a value the server always emits once it knows the field). */
 type ComponentPipelineRegistry = NonNullable<ComponentPipelineResponse["registry"]>;
 
-/**
- * THE ARTIFACT and its change-scoped facts (§9.3) — optional on the wire for the same reason as
- * `registry`. Three readings, and this file keeps them apart everywhere it renders one:
- *   `undefined` — an OLDER SERVER; nothing is known either way (the pre-§9.3 "not observed" copy);
- *   `null`      — the server SAYS no change of this component carries an artifact digest ("no
- *                 artifact yet" — a stated absence);
- *   an object   — the pick, stated (`changeId`/`changeName`), and every fact read from it.
- */
+/** THE ARTIFACT and its change-scoped facts (§9.3). See docs/web.md §254. */
 type ComponentPipelineArtifact = NonNullable<ComponentPipelineResponse["artifact"]>;
 type ArtifactOnWire = ComponentPipelineArtifact | null | undefined;
 type PromotionExport = ComponentPipelineArtifact["signing"]["promotionExports"][number];
@@ -253,11 +184,7 @@ type SbomRef = NonNullable<ComponentPipelineArtifact["sbom"]>;
 type ComponentPipelineObservedRun = NonNullable<ComponentPipelineResponse["observedRun"]>;
 type ObservedRunOnWire = ComponentPipelineObservedRun | null | undefined;
 
-/** THE CORRELATED-INFRASTRUCTURE LANE (owner decision, 2026-08-24) — `undefined` = an OLDER
- *  SERVER, which never evaluated correlation and renders no section at all; an object (`changes`
- *  possibly empty) = evaluated. Unlike `artifact`/`observedRun`, the server never sends `null` here
- *  — evaluated-and-empty is spelled `{ changes: [] }`, not `null` — but the wire type still allows
- *  it (the same additive idiom `registry`/`artifact` use), so this reading keeps both apart. */
+/** THE CORRELATED-INFRASTRUCTURE LANE. See docs/web.md §255. */
 type ComponentPipelineCorrelatedInfra = NonNullable<ComponentPipelineResponse["correlatedInfra"]>;
 type CorrelatedInfraOnWire = ComponentPipelineCorrelatedInfra | null | undefined;
 type CorrelatedInfraChange = ComponentPipelineCorrelatedInfra["changes"][number];
@@ -268,20 +195,7 @@ type DeploymentTargetFacet = Pick<
   "substrate" | "account" | "region" | "cluster"
 >;
 
-/**
- * THE SUBSTRATE FACET VALUES that are actually DECLARED on a target, in the fixed order
- * substrate · account · region · cluster — e.g. `["aws", "210987654321", "us-east-1", "prod-eks"]`.
- *
- * Only PRESENT values are kept: null is an absence of a declaration, not an unknown observation, so
- * it earns neither a `—` nor a badge (`ComponentPipelineStageSchema.deploymentTarget.substrate`).
- * An empty string is treated the same way — there is nothing to show, and ` · aws` would draw a
- * separator for a value that has no width.
- * `name` is deliberately not in the input type: fixture names like `us-east-1-prod (k8s)` look
- * parseable and are exactly the trap — every rendered value here is READ from the target's own
- * declared properties, never derived from what it is called.
- *
- * Exported for `component-pipeline-continuous.test.tsx`.
- */
+/** The substrate facet values actually declared on a target. See docs/web.md §256. */
 export function targetFacetValues(target: DeploymentTargetFacet): string[] {
   return [target.substrate, target.account, target.region, target.cluster].filter(
     (value): value is string => typeof value === "string" && value.length > 0
@@ -304,44 +218,7 @@ function TargetFacet({ target }: { target: DeploymentTargetFacet }): React.JSX.E
 /** The wire's per-target outpost resolution — the same shape on both stage arrays (§10.2). */
 type TargetOutpost = ComponentPipelineStage["outpost"];
 
-/**
- * WHICH OUTPOST THIS PLACE IS PART OF (pipeline-substrate-registry-scan.md §10.2, §10.5) — one quiet
- * line in the compact part of every target tile, rendered from the server's STATED `outpost.state`,
- * never from the target's name or its containment domain (GLOSSARY: containment has nothing to do
- * with deployment topology). Five states, five sentences:
- *
- *   - `outpost`               → `outpost <name> · <trustTier>` — a Link to that outpost's page on the
- *                               COMMANDER site only: the outpost pages are commander-managed — reachable
- *                               only from the commander's nav (AppShell gates the Federation › Outposts
- *                               entry on `instanceRole`; router.tsx registers the route everywhere) and
- *                               their writes are the commander's; plain text anywhere else. The tier is
- *                               appended only when the server read one (`null` = none declared, not
- *                               "commercial"). Since §10.5 (object-first resolution) this is ALSO what a
- *                               self-origin target reads once the HQ outpost (formerly "co-located";
- *                               GLOSSARY, ADR-0021 D7) is registered —
- *                               `peerDomainId` is then this instance's own domain, and the link opens
- *                               that record on the Outposts page (it renders the self-bound record).
- *   - `self`                  → `this instance's domain — no outpost registered` — the STATED ABSENCE
- *                               of an HQ outpost (quiet; on the COMMANDER the title says how
- *                               to declare one: Federation › Outposts, `peerDomainId` = this
- *                               instance's domain; on any other `instanceRole` it says the record is
- *                               commander-declared and arrives replicated — the server 400s the self
- *                               shape from a non-commander, so no declare hint is offered there).
- *   - `peer-without-outpost`  → `peer <name> — no outpost record`, quiet, with the way to fix it in
- *                               `title` (an outpost object is declared under Federation › Outposts).
- *                               The server states this ONLY for an `outpost`-role peer — the one kind
- *                               that door accepts.
- *   - `peer-not-outpost`      → `commander <name>` / `relay <name>` (from the wire's `peerRole`; any
- *                               other role reads `peer <name> (<role>)`) — a paired peer that is NOT an
- *                               outpost, so there is no "missing record" and NO declare hint: the API
- *                               refuses an outpost record for it. On an outpost site this is every
- *                               commander-authored target.
- *   - `unknown-domain`        → `origin domain not known here` — never "ours".
- *
- * `instanceRole` is a PARAMETER (read by the page off `useAuth()`, threaded down like `laneNodes`'s)
- * rather than a hook call here, so the test renderers stay provider-free. Undefined reads as "not
- * known to be the commander" → plain text.
- */
+/** Which outpost this place is part of. See docs/web.md §257. */
 function TargetOutpostLine({
   outpost,
   instanceRole
@@ -381,11 +258,7 @@ function TargetOutpostLine({
               `This target was authored by this instance's own trust domain` +
               (outpost.name ? ` (${outpost.name})` : "") +
               `, and no outpost record names that domain. ` +
-              // The declare hint is offered ONLY on the commander: the server's self-shape door
-              // takes the write only from a commander-role instance (an outpost's own record is
-              // commander-declared and arrives replicated — `outpost-binding.ts`, measured in
-              // `outpost-config-sync.integration.test.ts`), so pointing an outpost operator at
-              // Federation › Outposts would guide them into a 400.
+              // The declare hint is offered ONLY on the commander. See docs/web.md §258.
               (instanceRole === "commander"
                 ? `The HQ outpost (the outpost in this instance's own trust domain) can be declared under Federation › Outposts (peerDomainId = this instance's domain).`
                 : `This instance's own outpost record is commander-declared and arrives replicated from the commander — declare it there.`)
@@ -466,24 +339,7 @@ interface JourneyWave {
   entries: JourneyEntry[];
 }
 
-/**
- * SITE SCOPE (owner rule, 2026-08-17): "the global pipeline should have all things global; the
- * outpost pipeline should only have things managed by that outpost — exceptions being
- * domain-specific sources, along with the other source being the commander."
- *
- * So on any NON-commander site the journey keeps only the stages whose target is part of THIS
- * instance's own outpost — read off the wire's `stage.outpost` (the trust-domain rule, §10.2/§10.5:
- * the outpost object naming the target's origin domain), matched against this instance's own
- * trust domain (`GET /federation/self`.domainId): the target's `outpost.peerDomainId` equals it,
- * or `outpost.state === "self"` when no record is declared for it yet. Commander-domain targets
- * (their tile already reads `Outpost hq-outpost`) drop out here. Sources are untouched: the
- * server already gives an outpost only its own mappings plus the opaque commander input, which
- * are exactly the two exceptions the owner named. The COMMANDER site is never scoped — it shows
- * every target it coordinates promotion to, each labelled with its outpost.
- *
- * `instanceRole` and `selfDomainId` are PARAMETERS (read by the page off `useAuth()` and the self
- * query) so the function stays pure and testable; nothing is inferred from names.
- */
+/** SITE SCOPE (owner rule, 2026-08-17). See docs/web.md §259. */
 export function scopePipelineToSite<
   T extends { stages: ComponentPipelineStage[]; unplacedStages: ComponentPipelineUnplacedStage[] }
 >(data: T, instanceRole: InstanceRole | undefined, selfDomainId: string | null): T {
@@ -497,16 +353,7 @@ export function scopePipelineToSite<
   };
 }
 
-/**
- * Rebuilds the single ordered pipeline from the response's two arrays.
- *
- * `stages` and `unplacedStages` are disjoint and `order` is contiguous across their union, so this
- * is a concatenate-and-sort with no inference — see `ComponentPipelineResponseSchema.unplacedStages`
- * for why the wire splits them (widening `placement` to nullable is an oasdiff ERR).
- *
- * Exported for `component-pipeline-continuous.test.tsx`: the rejoin is the one piece of real logic
- * on this page, so it is tested directly rather than through the DOM.
- */
+/** Rebuilds the single ordered pipeline from the response's two arrays. See docs/web.md §260. */
 export function buildJourney(data: {
   stages: ComponentPipelineStage[];
   unplacedStages: ComponentPipelineUnplacedStage[];
@@ -556,14 +403,7 @@ function currentFor(stage: ComponentPipelineStage, lane: Lane): ComponentPipelin
   return stage.currents.find((c) => lane.stageCategories.includes(c.category)) ?? null;
 }
 
-/** Exported ONLY for `component-pipeline-continuous.test.tsx`, which renders it directly: the
- *  presentational contract (unknown-vs-blank, unbound-is-loud) is what that test owns, and rendering
- *  the whole page would drag in the query client for no added coverage. `pipelineKey` is optional
- *  and defaults to absent, same reason: a caller that never passes it (every pre-B2 test) gets
- *  the exact pre-B2 markup back, with no query client required — the remove-placement affordance
- *  (B2) only mounts, and only then needs `useMutation`'s context, once a caller opts in.
- *  `detailsExpanded` (§10.3) renders the tile with its Details disclosure OPEN (`true`) or shut
- *  (`false`); omitted, the tile follows the page default (collapsed) exactly as production does. */
+/** Exported only for the test that renders it directly. See docs/web.md §261. */
 export function StageCardForTest({
   stage,
   lane = LANES[0]!,
@@ -694,18 +534,7 @@ export function SourceOpenCloseDialogForTest(props: {
  *
  *  Deliberately says "never deployed" rather than rendering nothing: an empty header would read as
  *  "fine", and a place a release has never reached is the fact the whole view exists to surface. */
-/**
- * WHO MAINTAINS THIS PLACE — shown on every stage, placed or not.
- *
- * The commander gives the go-ahead; the OUTPOST still runs and maintains its own targets (owner,
- * 2026-08-04) — ADR-0017 §2 devolves execution to the originating outpost and leaves the commander
- * owning only the cross-boundary gate, and ADR-0011 has the receiving outpost validate every deploy
- * inside its own domain. A stage drawn with no domain on it invites the reading that the commander
- * deploys it, which is the one thing charter principle 1 says it does not do.
- *
- * An UNKNOWN domain renders as unknown rather than as ours: on a replica whose peer row has not
- * arrived, claiming a place is maintained here would be the exact misreading this exists to stop.
- */
+/** WHO MAINTAINS THIS PLACE. See docs/web.md §262. */
 function MaintainerLine({
   maintainedBy
 }: {
@@ -738,12 +567,7 @@ function StatusPill({
   hold?: ComponentPipelineStage["hold"];
 }): React.JSX.Element {
   const status = current?.targetStatus ?? null;
-  // Deployment outcome -> §1.5 tone, with the ADR-0028 hold override (#226): a held target's raw
-  // status IS `pending`, and saying so is the bug — here "pending" would mean not "the wave has
-  // not reached this stage" but "the wave IS here and something named is withholding it". The hold
-  // takes the headline (`held`, info tone — waiting, not wrong); the raw column stays on the wire
-  // and in the Deployment row below. Otherwise: in-flight/unrecognised is `warning`, and "never
-  // deployed" is `neutral` — a real and ordinary state, not an alarm.
+  // Deployment outcome -> §1.5 tone, with the ADR-0028 hold override. See docs/web.md §263.
   const tone = hold
     ? "info"
     : status === "succeeded"
@@ -765,22 +589,7 @@ function StatusPill({
   );
 }
 
-/**
- * WHAT IS WITHHOLDING THIS STAGE'S RELEASE — a subnode of the stage, beside its entry gate.
- *
- * A subnode rather than a node of the pipeline, for exactly the reason the gate is one: this is a
- * condition on entering ONE place, not a step the release passes through on its way somewhere.
- *
- * IT NAMES THE DEPENDENCY, which is the entire point of the increment. A badge saying only "held"
- * would move the operator from "why is this pending?" to "why is this held?" and no further, and
- * the answer is not discoverable from anywhere else on this page. Each line is the server's own
- * `describeStageDependencyHold` sentence — the same one the hold Decision's `reasonTree` carries —
- * so the page and the audit record cannot describe the same verdict differently.
- *
- * The dependency renders by NAME with the id only as a tooltip, and falls back to the id when the
- * server sent no name (a deleted component, or an `undeclarable` entry whose raw JSON never had an
- * id to resolve). It is never an id dressed up as a name.
- */
+/** WHAT IS WITHHOLDING THIS STAGE'S RELEASE. See docs/web.md §264. */
 function HoldSubnode({
   hold
 }: {
@@ -820,13 +629,7 @@ function HoldSubnode({
   );
 }
 
-/**
- * THE REMOVE-PLACEMENT CONFIRM'S COPY (B2) — exported for the same portal reason as
- * `DeleteMappingConfirmBody`. Names the actual consequence rather than a euphemism: the component
- * loses this stage (no release reaches it until placed again), and states the coordination/
- * execution boundary explicitly (charter principle 1) — removing the placement withdraws SCP's
- * OWN coordination record, it does not touch whatever is already running at the target.
- */
+/** THE REMOVE-PLACEMENT CONFIRM'S COPY. See docs/web.md §265. */
 export function RemovePlacementConfirmBody({
   stageName
 }: {
@@ -946,12 +749,7 @@ function StageCard({
             <span className="flex items-center gap-1.5">
               <StatusPill current={current} hold={hold} />
               {stage.bindings.length === 0 && (
-                // An unbound placement FAKE-SUCCEEDS under stage-shaped compilation (ADR-0006 case (a)).
-                // It must be loud, not absent. Gated on the WHOLE stage, not on this lane: a stage with a
-                // software pipeline and no infra one is ordinary (its substrate is managed elsewhere),
-                // while a stage bound to NOTHING is the alarm. Also never gated on `binding`, which is
-                // merely `bindings[0]` — reading it would be the same mistake this file just stopped
-                // making.
+                // An unbound placement fake-succeeds under compilation. See docs/web.md §266.
                 <Badge variant="danger" data-testid="stage-unbound">
                   No executor
                 </Badge>
@@ -1021,14 +819,7 @@ function StageCard({
           <div data-testid="stage-deployment">
             <span className="text-slate-400">Deployment</span>{" "}
             {current ? (
-              // `change_wave_targets.status` IS the deployment outcome at this place. The arrow into
-              // the stage already uses it for colour; showing it in words is what makes "deployed and
-              // succeeded" distinguishable from "deployed and failed" without reading a colour.
-              //
-              // The RAW value is kept even when held — this row is the one place the column is
-              // reported verbatim, and a held target really is `pending` — with the reason appended
-              // rather than substituted, so the two facts stay separable. Reading `pending` here and
-              // nothing else was the whole defect.
+              // The wave target's status is the outcome at this place. See docs/web.md §267.
               <span
                 className={
                   current.targetStatus === "failed" || current.targetStatus === "blocked"
@@ -1076,18 +867,7 @@ function StageCard({
   );
 }
 
-/**
- * PLACE AT TARGET (B2, docs/proposals/outpost-ui.md §4) — the affordance that replaces the
- * formerly-inert "Declare a placement…" prose. Two call sites, two shapes of the same picker:
- *
- *   - `UnplacedStageCard` already knows its own `deploymentTarget` (that IS the stage), so it
- *     pre-selects it — the picker still lists every target, because an operator opening it here
- *     may want a DIFFERENT one, but the common case is one click.
- *   - The whole-page empty state (`pipeline-empty`) knows no target at all, so it opens blank.
- *
- * Closed by default (just the button) — the list of deployment targets is fetched lazily
- * (`enabled: open`) so a page with several unplaced stages does not fire the query once per card.
- */
+/** PLACE AT TARGET. See docs/web.md §268. */
 export function PlaceAtTargetPicker({
   componentId,
   pipelineKey,
@@ -1177,15 +957,7 @@ export function PlaceAtTargetPicker({
   );
 }
 
-/**
- * A DECLARED STAGE THIS COMPONENT NEVER REACHES.
- *
- * Greyed and dashed so it reads as an outline of a stage rather than a stage, and it says "not
- * placed" in words — the colour alone would be indistinguishable from "quiet". It deliberately shows
- * NO executor row, NO version row and NO last-release row: those are keyed on a placement that does
- * not exist, and an empty "Executes" line here would read as the ADR-0006 case (a) alarm ("bound to
- * nothing, would fake-succeed") over what is only an absence of a placement.
- */
+/** A DECLARED STAGE THIS COMPONENT NEVER REACHES. See docs/web.md §269. */
 function UnplacedStageCard({
   stage,
   componentId,
@@ -1244,12 +1016,7 @@ function UnplacedStageCard({
   );
 }
 
-/**
- * The arrow INTO a wave, coloured by what that wave can honestly claim.
- *
- * Exported for `component-pipeline-continuous.test.tsx`: the precedence ladder is a contract, and a
- * new state has to be PLACED in it deliberately rather than fall through to whatever is left.
- */
+/** The arrow into a wave, coloured by what it can claim. See docs/web.md §270. */
 export function arrowInto(
   wave: JourneyWave,
   lane: Lane
@@ -1290,41 +1057,7 @@ export function arrowInto(
   return { state: "pending", label: "nothing released yet" };
 }
 
-/**
- * THE NODES OF ONE PIPELINE, in the order the GLOSSARY defines them.
- *
- * > **pipeline.** The ordered path a release travels for one executor Type — **build → registry →
- * > config → gamma → prod** for a software pipeline; **plan → gate → apply** for an infrastructure
- * > pipeline. (docs/GLOSSARY.md)
- *
- * So a pipeline is a CHAIN OF NODES, not a list of deploy stages with some metadata attached: the
- * source repo is a node, the registry is a node, each deploy stage is a node. Rendering the repos as
- * a sidebar of one card said they were context for the pipeline rather than the first step of it.
- *
- * Two nodes are deliberately CONDITIONAL, because drawing them unconditionally would draw steps that
- * nothing runs:
- *
- *   - **build** appears only when this component actually has a build pipeline (a `build`-Category
- *     binding or source rule). All 148 source mappings on the live estate are `configuration`, so
- *     for most components today the software pipeline genuinely starts at a config change, and a
- *     permanently-empty "Build" box would be decoration.
- *   - **registry** appears when the component builds here OR when a registry is DECLARED here
- *     (`data.registry.state !== "none"` — pipeline-substrate-registry-scan.md §9.2): an outpost
- *     builds nothing, but its registry still receives the promoted image, and leaving the node out
- *     there would say the image lands nowhere. The node carries the per-site `registry` fact so
- *     `RegistryNode` can NAME it; its body is the latest artifact digest when §9.3 projected one,
- *     else the explicit "no artifact digest recorded yet" — the same unknown/absence-not-blank rule
- *     the version cell follows.
- *   - **scan-sign** (§9.3, owner §7.2) appears ONLY on the COMMANDER — the scan at source is what
- *     authorises a cross-boundary transfer (ADR-0013), and the commander alone signs a promotion
- *     manifest; an outpost neither scans at source nor signs, so drawing the node there would claim
- *     a step this site never performs. It sits after Registry and before Config, and is drawn where
- *     a registry node is (something produces or receives an artifact here) or where an artifact is
- *     already projected — a software lane that starts at a config change and holds no artifact
- *     would otherwise carry a permanently-"no artifact yet" box, the same decoration argument that
- *     keeps Build conditional. `instanceRole` is a PARAMETER (read by the page off `useAuth()`, the
- *     way `router.tsx`/`AppShell.tsx` do) so this stays a pure function the tests can drive.
- */
+/** THE NODES OF ONE PIPELINE, in the order the GLOSSARY defines them. See docs/web.md §271. */
 type LaneNode =
   | { kind: "source"; key: string; label: string; sources: ComponentPipelineResponse["sources"] }
   | {
@@ -1343,13 +1076,7 @@ type LaneNode =
   | { kind: "scan-sign"; key: string; artifact: ArtifactOnWire }
   | { kind: "wave"; key: string; wave: JourneyWave };
 
-/**
- * Builds one lane's node chain. Exported for `component-pipeline-continuous.test.tsx` — which nodes
- * appear, and in what order, is the contract this view now IS. `registry` and `artifact` are
- * optional on the wire (older servers), so a caller may omit them: the pre-§9.2 chain then comes
- * back unchanged. `instanceRole` omitted/undefined reads as "not known to be the commander" — the
- * Scan & sign node is never drawn on a guess.
- */
+/** Builds one lane's node chain. See docs/web.md §272. */
 export function laneNodes(
   data: Pick<
     ComponentPipelineResponse,
@@ -1418,14 +1145,7 @@ export function laneNodes(
   return nodes;
 }
 
-/**
- * Whether the lane renderer's SHARED connector before `nodes[i]` should draw. A "source" node now
- * fans in: each of its tiles carries its own `PromotionArrow` beneath it (owner, 2026-08-14), so the
- * shared connector immediately after it would be an EXTRA arrow, not the transition's only one —
- * suppressed here so a source's transition is drawn exactly once, at the tile(s). Every other
- * adjacent pair is untouched: `i > 0` is still the whole rule. Exported so the suppression itself is
- * assertable without standing up the fetching page around it.
- */
+/** Whether the lane's shared connector before a node draws. See docs/web.md §273. */
 export function sharedConnectorVisible(
   nodes: readonly Pick<LaneNode, "kind">[],
   i: number
@@ -1433,22 +1153,8 @@ export function sharedConnectorVisible(
   return i > 0 && nodes[i - 1]?.kind !== "source";
 }
 
-/**
- * THE HEAD OF A LANE — the repos a push to which releases this component through this pipeline.
- *
- * This is the durable RULE (`source_mappings`), not release history, so it answers "does a change
- * there affect this?" for a component that has never released — the same property the stages have.
- */
-/**
- * A node's link OUT of CommanderSCP — to the repo, the Argo CD application, the Actions tab.
- *
- * `href` is null whenever the server could not KNOW the address (see `console-urls.ts`), and the
- * label then renders as plain text. That is the whole contract: a node is clickable exactly when
- * there is somewhere real to go, so a link never has to be tried to find out.
- *
- * `rel="noreferrer"` because these are operator-configured URLs pointing at systems outside this
- * app; `target="_blank"` because losing the pipeline view to navigate to Argo CD is a bad trade.
- */
+/** THE HEAD OF A LANE. See docs/web.md §274. */
+/** A node's link OUT of CommanderSCP. See docs/web.md §275. */
 function ConsoleLink({
   href,
   children,
@@ -1478,15 +1184,7 @@ function ConsoleLink({
   );
 }
 
-/**
- * PIPELINE NODE ICONS — one distinct glyph per node KIND, from the lucide vocabulary (design spec
- * §1.6/§4C's kinds map; the hand-rolled inline SVG set this replaces is gone — one icon system).
- *
- * Every node previously rendered as an identical white rectangle, so the chain read as a stack of
- * boxes and the KIND of each step was carried only by its title text. The glyph is what makes
- * "repo, build, registry, deploy" legible at a glance (owner, 2026-08-10). The `data-node-icon`
- * attribute is the distinctness contract `component-pipeline-continuous.test.tsx` pins.
- */
+/** PIPELINE NODE ICONS. See docs/web.md §276. */
 type NodeKind = "source" | "config" | "build" | "registry" | "scan-sign" | "stage" | "unplaced";
 
 const NODE_ICON: Record<NodeKind, { icon: LucideIcon; tint: string }> = {
@@ -1548,25 +1246,7 @@ function NodeHeading({
   );
 }
 
-/* ------------------------------------------------------------------------------------------------
- * TILE DENSITY (§10.3, owner) — every pipeline tile is a COMPACT part plus a Details disclosure.
- *
- * The compact part is identity + state (what the tile IS, and the one-line verdict of where it
- * stands); everything else the tile knows moves UNDER "Details", collapsed by default. Nothing that
- * rendered before this became unreachable — it moved. Two controls drive the state:
- *
- *   - the page-level Expand all / Collapse all (`TileDetailsScope`, near the lane header): each
- *     flip publishes `{ expandedAll, version }` through `TileDetailsContext`, and every tile follows;
- *   - each tile's own chevron (`TileDetails`): a LOCAL override, remembered with the `version` it
- *     was made under, so it wins until the next page-level flip bumps the version — at which point
- *     the page-level state wins again. Local to the page: nothing is persisted (no localStorage).
- *
- * The disclosure is a native `<button>` (Enter/Space toggle for free) with `aria-expanded` and
- * `aria-controls` naming the region; the region mounts its children ONLY while open, so a
- * collapsed tile's markup genuinely holds the compact set and nothing else — the property the
- * static-markup tests assert. A tile with nothing to put under Details renders NO toggle at all
- * (`NodeShell` draws it only when `details` is given).
- * ---------------------------------------------------------------------------------------------- */
+// TILE DENSITY (§10.3, owner). See docs/web.md §277.
 
 interface TileDetailsScopeState {
   /** The page-level ask: `true` = all open, `false` = all shut, `null` = nothing asked yet
@@ -1579,11 +1259,7 @@ interface TileDetailsScopeState {
 
 const TileDetailsContext = createContext<TileDetailsScopeState>({ expandedAll: null, version: 0 });
 
-/**
- * The page-level control plus the context it drives. Exported for the tests, which render tiles
- * under it and click the control — the same component the page mounts, so what the test flips is
- * what the operator flips.
- */
+/** The page-level control plus the context it drives. See docs/web.md §278. */
 export function TileDetailsScope({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [state, setState] = useState<TileDetailsScopeState>({ expandedAll: null, version: 0 });
   const allOpen = state.expandedAll === true;
@@ -1676,13 +1352,7 @@ function TileDetails({
   );
 }
 
-/**
- * A node's REVIEW affordance (§9.3, owner §7.2: "clickable only once the fact exists"). When
- * `review` is given the tile IS a click target — a `Review` button in its header carrying the
- * `aria-label` the tests pin, and the card body opens the same dialog on click (links and other
- * buttons inside keep their own behaviour). When it is omitted there is NO affordance at all: no
- * button, no pointer, no hover — a tile with nothing to review must not look like one that has.
- */
+/** A node's REVIEW affordance. See docs/web.md §279. */
 interface NodeReview {
   ariaLabel: string;
   onOpen: () => void;
@@ -1764,24 +1434,11 @@ function NodeShell({
   );
 }
 
-/**
- * THE CHANGE-SOURCE KINDS THIS PAGE OFFERS (A1, docs/proposals/outpost-ui.md §3). `sourceKind` is
- * an open string on the wire (`ChangeSourceEventParamSchema` is `z.string().min(1)`) — but only
- * these three carry a signature verifier in the webhook-adapter registry
- * (`apps/server/src/coordination/webhook-adapters.ts`'s `ADAPTERS`), so offering a fourth here
- * would create a mapping whose deliveries can never authenticate (falls back to the generic HMAC
- * scheme, which is a real but DIFFERENT configuration step, not "this kind works out of the box").
- */
+/** THE CHANGE-SOURCE KINDS THIS PAGE OFFERS. See docs/web.md §280. */
 const SOURCE_KINDS = ["github", "gitea", "gitlab"] as const;
 type SourceKind = (typeof SOURCE_KINDS)[number];
 
-/**
- * Shapes the `POST /change-sources/{sourceKind}/mappings` body — pure so the omit-blanks rule is
- * testable without a live mutation. Optional patterns are OMITTED, never sent as `""`: the schema
- * distinguishes "no filter" (omitted) from an actual empty-string pattern, and a blank input means
- * the operator left the field alone, not that they declared an empty rule. `type` is always sent,
- * deliberately — the whole point of A1/A2 is that "which pipeline" stops being a silent default.
- */
+/** Shapes the `POST /change-sources/{sourceKind}/mappings` body. See docs/web.md §281. */
 export function buildCreateMappingPayload(form: {
   repoPattern: string;
   pathPattern: string;
@@ -1811,12 +1468,7 @@ export function buildCreateMappingPayload(form: {
   };
 }
 
-/**
- * ADD SOURCE MAPPING (A1) — offers exactly `CreateSourceMappingRequestSchema`'s fields, minus
- * `component`: this page already IS the component, so asking for it again would be asking the
- * operator to re-type something the URL already answers. `sourceKind` is a path segment on the
- * wire, not free text — see `SOURCE_KINDS`.
- */
+/** ADD SOURCE MAPPING. See docs/web.md §282. */
 export function SourceMappingForm({
   componentId,
   pipelineKey,
@@ -2042,12 +1694,7 @@ export function SourceMappingForm({
   );
 }
 
-/**
- * Shapes the `DELETE /change-sources/{sourceKind}/mappings` body — the full IDENTITY TUPLE
- * (`DeleteSourceMappingRequestSchema`'s own doc: the table has no unique constraint, so a by-id
- * delete would leave a byte-identical survivor still correlating). Pure, so the tuple-not-id claim
- * is testable without a live mutation.
- */
+/** Shapes the `DELETE /change-sources/{sourceKind}/mappings` body. See docs/web.md §283. */
 export function buildDeleteMappingPayload(
   source: Pick<
     ComponentPipelineResponse["sources"][number],
@@ -2067,13 +1714,7 @@ export function buildDeleteMappingPayload(
   };
 }
 
-/**
- * THE DELETE CONFIRM'S COPY — exported so the honesty claim is assertable directly (Radix's
- * `DialogContent` portals its children, which render nothing under `renderToStaticMarkup`; see
- * `domain-local.test.tsx`'s precedent). States the server's actual behavior rather than a
- * comfortable simplification: EVERY row matching this tuple goes, including duplicates
- * `discovery accept` can leave behind, and there is no edit — only delete and recreate.
- */
+/** THE DELETE CONFIRM'S COPY. See docs/web.md §284. */
 export function DeleteMappingConfirmBody({
   source
 }: {
@@ -2162,11 +1803,7 @@ function DeleteMappingButton({
   );
 }
 
-/** A disabled mapping is a DECLARED rule the correlation matcher skips, not a deleted one (owner,
- *  2026-08-14: "a toggle is theatre" unless something downstream honours it — migration 0063's
- *  `matchComponentForSource` is that something). Reads `!== false` rather than a bare `!source.enabled`
- *  so a value this component genuinely never received (an older cached response, a hand-built test
- *  fixture) still reads as enabled rather than silently muting every tile on the page. */
+/** A disabled mapping is a declared rule, not a deletion. See docs/web.md §285. */
 function isMappingEnabled(
   source: Pick<ComponentPipelineResponse["sources"][number], "enabled" | "effectivelyEnabled">
 ): boolean {
@@ -2195,25 +1832,9 @@ function SourceNode({
   domainLocal: boolean;
 }): React.JSX.Element {
   const [adding, setAdding] = useState(false);
-  // §9.3a (owner, 2026-08-14) — ONE pipeline, mixed-provenance inputs. When another domain
-  // maintains this component (on an outpost: the commander), the commander is an OPAQUE PEER
-  // INPUT to this pipeline: its shared repos (ASGs, instance types, …) are known only there — this
-  // domain never learns them and must not pretend to. Alongside it, this domain's own mappings
-  // are its DOMAIN-SPECIFIC inputs (network config, CIDR bands that stay in-domain), tracked only
-  // here. Domain-local component: no commander input at all — its repos are the whole source. A
-  // domain-local component cannot have a commander input by construction (it never journaled),
-  // so the data and the rule agree; the UI states the shape rather than deciding it.
+  // §9.3a (owner, 2026-08-14) — ONE pipeline, mixed-provenance inputs. See docs/web.md §286.
   const hasCommanderInput = !upstream.isSelf && upstream.domainId !== null && !domainLocal;
-  // ONE TILE PER SOURCE (owner rule, 2026-08-14: "each source and target must be in its own tile
-  // — commander and outposts alike"). This mirrors what the wave side already does — one
-  // StageCard per target, side by side under a wave label — so a lane reads as a chain of tiles
-  // at BOTH ends: N source tiles → build → registry → M target tiles per wave. Grouped by declared
-  // provenance (mirror-of-shared before domain-specific), each tile carrying its own provenance
-  // eyebrow, so three kinds of input read as three tiles rather than one list.
-  // §10.6 (owner, 2026-08-16): the eyebrow is READ off each mapping's own `scope`/`mirrorOfShared`
-  // and renders on EVERY site — the commander's included (it used to hide unless a commander input
-  // or a domain-local component was present, which left the commander's own global sources
-  // unlabelled). No site-role inference: an undeclared scope renders NO eyebrow anywhere.
+  // ONE TILE PER SOURCE. See docs/web.md §287.
   const mirrors = sources.filter((s) => s.mirrorOfShared);
   const domainSpecific = sources.filter((s) => !s.mirrorOfShared);
   const tileCount = (hasCommanderInput ? 1 : 0) + sources.length;
@@ -2229,11 +1850,7 @@ function SourceNode({
         </span>
       </SectionLabel>
       {tileCount === 0 ? (
-        // The source-side twin of an unplaced stage: no push to any repo can start this pipeline,
-        // so it only ever runs if someone raises a change by hand. Still carries its own downward
-        // arrow (fan-in of one, drawn even when the "one" is empty) so the chain never reads as
-        // having stopped here — a domain-local component with zero mappings (rare, ADR-0031) omits
-        // the card itself but keeps the connector, since it has no "no repo mapped" claim to make.
+        // The source-side twin of an unplaced stage. See docs/web.md §288.
         <div className="flex flex-col items-center gap-1">
           {!domainLocal && (
             <Card
@@ -2256,12 +1873,7 @@ function SourceNode({
           data-testid="pipeline-source-row"
         >
           {hasCommanderInput && (
-            // THE COMMANDER AS AN OPAQUE INPUT — its own tile, named from maintainedBy (name null
-            // = origin matches no known peer; say the id rather than guess). Deliberately NO repo,
-            // host, path or ref: this domain does not know them, and a tile that showed any would
-            // be an invention. Its own fan-in arrow too (owner, 2026-08-14: "each source should
-            // have its own arrow") — plain `pending`, since there is no per-mapping enable/disable
-            // concept for an input this domain does not own.
+            // THE COMMANDER AS AN OPAQUE INPUT. See docs/web.md §289.
             <div className="flex min-w-[14rem] flex-1 basis-[14rem] flex-col items-center gap-1">
               <Card
                 className="w-full"
@@ -2342,21 +1954,7 @@ function SourceNode({
   );
 }
 
-/**
- * The declared provenance of ONE mapping, READ off its own fields (§10.6, outpost-ui.md §9.3a) —
- * never off the site's role or the component's upstream:
- *   "mirror" — `mirrorOfShared`: a local copy of a commander-shared repo (wins over `scope`, since a
- *              `domain`-scope mapping may mirror a global one and the mirror is the more specific fact);
- *   "global" — `scope: "global"`: shared across domains, tracked at the commander;
- *   "domain" — `scope: "domain"`: tracked only in this domain;
- *   null     — scope NOT DECLARED and not a mirror: NO eyebrow, nothing inferred (the tile's title
- *              says how to declare it). `scope` is read as possibly-absent DEFENSIVELY: through the
- *              SDK it never is (`ComponentPipelineSourceMappingSchema.scope` is required-nullable and
- *              the generated client validates every response body, ADR-0023 — a pre-0066 server's
- *              body is a contract error at the boundary, not a tile), so the widening only keeps a
- *              hand-built source from throwing here.
- * Exported for the test file only.
- */
+/** The declared provenance of ONE mapping, READ off its own fields. See docs/web.md §290. */
 export function sourceProvenance(source: {
   mirrorOfShared: boolean;
   scope?: "global" | "domain" | null;
@@ -2367,15 +1965,7 @@ export function sourceProvenance(source: {
   return null;
 }
 
-/**
- * ONE SOURCE TILE — one repo rule, its own card, sitting beside its siblings in the source row, and
- * (owner, 2026-08-14) its own downward arrow beneath it: `tile, then arrow` in one column, so N
- * tiles read as N converging fan-in lines rather than one shared connector for the whole row.
- * `provenance` is the declared kind — see `sourceProvenance` above (§10.6): "mirror" | "global" |
- * "domain" | null (undeclared — no eyebrow, and the card's title says how to declare one). The row
- * body below is the pre-existing per-mapping rendering, unchanged — every testid it carried still
- * carries.
- */
+/** ONE SOURCE TILE. See docs/web.md §291. */
 function SourceTile({
   source,
   provenance,
@@ -2387,15 +1977,7 @@ function SourceTile({
   componentId: string;
   pipelineKey: unknown[];
 }): React.JSX.Element {
-  // THE ARROW IS THE SWITCH (owner, 2026-08-14). The mapping's own fan-in arrow carries its
-  // enable/disable: click flips it, colour states it — green = open (a push matching this rule
-  // starts a release), shut slate = closed (declared, routes nothing). The mutation lives here so
-  // the arrow stays a dumb renderer; a server refusal renders as an Alert after the click, never
-  // as a pre-disabled control (M16.3's rule).
-  // NOT one click (owner, 2026-08-14: "it shouldn't be one-click to enable/disable"). The arrow
-  // OPENS A DIALOG. Closing offers a choice — for a period, or until re-opened by hand — and
-  // confirms; opening confirms too. Enabled is the default; a routing rule is not something to flip
-  // by a mis-click. The dialog owns the mutation; the arrow stays a dumb renderer.
+  // THE ARROW IS THE SWITCH. See docs/web.md §292.
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const toggleMutation = useMutation({
@@ -2583,15 +2165,7 @@ const CLOSE_DURATIONS: { key: string; label: string; ms: number | null }[] = [
   { key: "manual", label: "Until I re-open it", ms: null }
 ];
 
-/**
- * THE OPEN/CLOSE DIALOG (owner, 2026-08-14) — the confirmation every flip goes through.
- *
- * CLOSING asks two things: for how long (a period, after which the rule opens again automatically
- * — evaluated at read time like a freeze window, no timer job — or until re-opened by hand), and
- * then a confirm that names the consequence: while closed, a push matching this rule starts no
- * release. OPENING is one confirm, naming what re-opens. Both are one deliberate click past the
- * arrow, never zero. Server refusals render inside the dialog, at the point of action.
- */
+/** THE OPEN/CLOSE DIALOG. See docs/web.md §293. */
 function SourceOpenCloseDialog({
   open,
   onOpenChange,
@@ -2628,11 +2202,7 @@ function SourceOpenCloseDialog({
   );
 }
 
-/**
- * The dialog's CONTENT, portal-free — exported for the test (Radix portals nothing under
- * renderToStaticMarkup, even when open; same reason domain-local.tsx exports PublishConfirmBody).
- * Owns the duration choice; the confirm is the ONLY thing that fires the mutation.
- */
+/** The dialog's CONTENT, portal-free. See docs/web.md §294. */
 export function SourceOpenCloseBody({
   source,
   currentlyOpen,
@@ -2811,16 +2381,7 @@ function peerLabel(entry: PromotionExport): string {
   return entry.peerName ?? entry.peerDomainId;
 }
 
-/**
- * The projection's STATED unknowns (§9.6 — `artifact.unknownFields`): a stored value that does NOT
- * parse is neither a present fact nor a stated absence, and the tiles must never render an absence
- * ("no SBOM reported", "not signed yet") over an unreadable presence. Two flags exist today
- * (`artifact-facts.ts`): `sbom:unparseable` — `sourceRef.sbom` is set but is not an `SbomRef`;
- * `promotionExports:unparseable` — at least one stamped export record does not parse. First-party
- * ingress cannot write either (a malformed report ref is quarantined), so what reaches here is a
- * sourceRef written by a different version or imported through federation — exactly what the flag
- * is on the wire for.
- */
+/** The projection's STATED unknowns. See docs/web.md §295. */
 export function sbomUnparseable(artifact: ComponentPipelineArtifact): boolean {
   return artifact.sbom === null && artifact.unknownFields.includes("sbom:unparseable");
 }
@@ -2828,11 +2389,7 @@ export function exportsUnparseable(artifact: ComponentPipelineArtifact): boolean
   return artifact.unknownFields.includes("promotionExports:unparseable");
 }
 
-/**
- * §10.4 — the IMPORTED promotion manifest, or null. `signing.importedManifest` is OPTIONAL on the
- * wire (an older server omits it) — undefined and null both read "none here", so a pre-§10.4 server
- * states the same absence a post-§10.4 outpost that imported nothing does.
- */
+/** §10.4 — the IMPORTED promotion manifest, or null. See docs/web.md §296. */
 export function importedManifestOf(
   artifact: ArtifactOnWire
 ): NonNullable<ComponentPipelineArtifact["signing"]["importedManifest"]> | null {
@@ -2919,22 +2476,7 @@ function ArtifactFieldList({
   );
 }
 
-/**
- * A BUILD NODE — what turns the source into an artifact. Hoisted out of the deploy stages: a build
- * happens once per release, not once per place, whatever scope its binding happens to hang off.
- *
- * §9.3 (owner §7.2), narrowed by §10.1: ONE artifact fact hangs under the executor line — the SBOM,
- * a BUILD-TIME fact: the reference the first-party change report carried (`sourceRef.sbom`; SCP
- * never generates one and stores no bytes), or "no SBOM reported for this artifact" — or, when the
- * projection STATES `sbom:unparseable`, "recorded but unreadable" (never an absence over an
- * unreadable presence; `sbomUnparseable`).
- *
- * THE PROMOTION MANIFEST IS NOT HERE (§10.1, owner). The code's export order is scan step → E6 gate
- * → build manifest → sign manifest (promotion-repo.ts phases 1.5–3): the PM is created AFTER the
- * scan and BEFORE the signature, so it is a Scan & sign fact and lives on that tile
- * (`ScanSignCompact`, between the E6 line and the signed line). The tile is clickable ONLY when an SBOM
- * exists (`buildHasReview`); the review dialog renders the SBOM alone.
- */
+/** A BUILD NODE. See docs/web.md §297. */
 function BuildNode({
   bindings,
   artifact,
@@ -2942,11 +2484,7 @@ function BuildNode({
 }: {
   bindings: ComponentPipelineStage["bindings"];
   artifact: ArtifactOnWire;
-  /** §3 Segment 2's "upstream build" marker (component-journey-view.md) — omit the prop entirely
-   *  (as `BuildNodeForTest`'s callers that predate it do) to mean "older server", the same
-   *  undefined-vs-null-vs-object reading every other §9.3 field on this tile follows. Rendered ONLY
-   *  in the upstream case (`bindings.length === 0`) — a coordinated build already names its own
-   *  executor line above, so drawing this too would be two answers to "where does the build run?" */
+  /** §3 Segment 2's "upstream build" marker. See docs/web.md §298. */
   observedRun?: ObservedRunOnWire;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
@@ -3057,15 +2595,7 @@ const OBSERVED_RUN_PROVIDER_LABELS: Record<string, string> = {
   gitlab: "GitLab CI"
 };
 
-/**
- * component-journey-view.md §3 Segment 2's "upstream build" marker — "GitHub Actions · CI · run
- * 30858160395 ↗", never "build: unknown". Every word left of the dots is server-composed and
- * rendered VERBATIM; the dots themselves are the only invented copy. Linked to `observedRun.url`
- * when the server named one; plain text (no affordance invented) when it did not — the `object_
- * attributes` GitLab webhook shape names a run with no citable url (see `observed-run-facts.ts`).
- * The title tooltip carries `observedAt` in the viewer's LOCAL clock (the `toLocaleString()` idiom
- * this file already uses for every other timestamp it surfaces to a person).
- */
+/** component-journey-view.md §3 Segment 2's "upstream build" marker. See docs/web.md §299. */
 function ObservedRunLine({
   observedRun
 }: {
@@ -3120,12 +2650,7 @@ function BuildReviewDialog({
   );
 }
 
-/**
- * The Build review dialog's CONTENT, portal-free — exported for the test (Radix portals nothing
- * under renderToStaticMarkup; same reason `SourceOpenCloseBody` is exported). Every field is the
- * stored value VERBATIM: the SBOM reference as reported. The promotion manifest is reviewed on the
- * Scan & sign tile (§10.1, `ScanSignReviewBody`), not here.
- */
+/** The Build review dialog's CONTENT, portal-free. See docs/web.md §300. */
 export function BuildReviewBody({
   artifact
 }: {
@@ -3196,48 +2721,13 @@ export function BuildNodeForTest(props: {
   );
 }
 
-/**
- * A REGISTRY NODE — where the built artifact lands, and what promotion advances by digest.
- *
- * The HEADER names the registry this component publishes to AT THIS SITE, read off the response's
- * `registry` (pipeline-substrate-registry-scan.md §9.2 — the component's `publishes_to` edge to a
- * domain-local execution-system, never the `image` executor binding, whose Type says what BUILDS
- * the artifact rather than where it lands). Three states, each STATED rather than chosen:
- *
- *   - `declared`  — `name (kind) · repository`, the name a console link to the registry's base URL
- *                   when the server knew one (base only: no registry deep-link shape is known here,
- *                   and a guessed path is a lie);
- *   - `ambiguous` — more than one `publishes_to` edge. The server does not pick, so neither does
- *                   this node: it says how many, in the design system's amber "operator should
- *                   notice" tone, and the tooltip says what to do about it;
- *   - `none`      — "no registry declared for this component here". An absence, not an unknown —
- *                   the node only appears in this state because the component BUILDS here.
- *
- * A null/absent `registry` is an older server; the header then falls back to the pre-§9.2 sentence.
- *
- * The BODY is the latest artifact digest (§9.3): the last digest the picked change's `sourceRef`
- * lists, folded with the full value in `title`, and WHICH change it came from. Absent, it says so —
- * "no artifact digest recorded yet" when the server projected `artifact` and found none (a stated
- * absence), or the pre-§9.3 "not observed" when the field is not on the wire at all (an unknown).
- */
+/** A REGISTRY NODE. See docs/web.md §301. */
 const REGISTRY_UNKNOWN_WHY =
   "This server does not project the artifact on the component pipeline, so nothing is known here either way.";
 const REGISTRY_NONE_WHY =
   "No change of this component carries an artifact digest in its sourceRef — the first-party change report is the sole way one arrives.";
 
-/**
- * §10.4 — the IMPORTED promotion manifest lives HERE, on the Registry tile of a non-commander site:
- * the registry is where the promoted artifact lands, and the manifest is what it arrived under. The
- * wire carries `artifact.signing.importedManifest` (the importer's stamped `sourceRef.promotionManifest`
- * + `manifestSignature`, verified AT IMPORT by construction — import refuses an unverified bundle),
- * so present it is a compact line — `arrived under a manifest signed by <exporterName ?? exporterDomainId>
- * · N artifacts · verified at import` — and the tile becomes REVIEWABLE (header Review → the manifest
- * fields verbatim). Absent it is a stated absence under Details, and only off the commander: the
- * commander imports nothing (its OWN manifest is on Scan & sign), so it says nothing about imported
- * ones. A STATED unknown on the wire (`importedManifest:unsigned` / `:unparseable`) is neither —
- * it renders as "manifest recorded but unsigned/unreadable" wherever the wire says it, because an
- * unreadable presence must never read as an absence.
- */
+/** The imported promotion manifest lives on the registry tile. See docs/web.md §302. */
 const IMPORTED_MANIFEST_ABSENT_TEXT =
   "no imported manifest yet — one arrives with a promotion from the commander";
 const IMPORTED_MANIFEST_ABSENT_TITLE =
@@ -3391,16 +2881,7 @@ function RegistryReviewDialog({
   );
 }
 
-/**
- * The Registry review dialog's CONTENT, portal-free — exported for the test (Radix portals nothing
- * under renderToStaticMarkup). Every field is the stored value VERBATIM: the imported manifest as
- * the importer stamped it (§10.4 — manifestVersion, createdAt, exporterDomainId + the peer's name,
- * peerDomainId, changeUrn, importedFromDomain, artifacts[] type/digest/signatureRef), the signature's
- * presence, and — should the wire state one — the `importedManifest:*` unknown as a note. Nothing
- * is re-verified here; the "verified at import" claim is the importer's (it refuses otherwise) and
- * is made ONLY of a present signature — the wire type admits an empty string (today's server turns
- * one into null + `importedManifest:unsigned`), and an absent signature must never read verified.
- */
+/** The Registry review dialog's CONTENT, portal-free. See docs/web.md §303. */
 export function RegistryReviewBody({
   artifact
 }: {
@@ -3517,34 +2998,7 @@ function exportGateLabel(gate: ComponentPipelineArtifact["exportGate"]): string 
   return gate === "not_run" ? "not run" : gate;
 }
 
-/**
- * THE SCAN & SIGN NODE (§9.3, owner §7.2) — the commander's scan AT SOURCE, which is what authorises
- * a cross-boundary transfer (ADR-0013), and the promotion manifest it SIGNS at export (§9.4). Two
- * independent "not yet" facts, each stated on its own line, never merged into one status.
- *
- * States, top to bottom:
- *   - artifact `null`  → "no artifact yet — nothing to scan";
- *   - no scan rows     → "not run — no scan result recorded for <digest>";
- *   - rows             → one per (scanner, digest): `scanner version · digest · status · C H M L ·
- *                        when`, the commander's own managed step marked "managed" (the wire's ONE
- *                        discriminator; never inferred from the scanner);
- *   then "export gate (E6): pass|fail|not run" (E6's own predicate, applied read-only), then the
- *   PM line (§10.1 — the manifest is BUILT after the gate and BEFORE the signature, promotion-repo.ts
- *   phases 1.5–3, so it reads in that order): "PM created for <peer> · <when> · N artifacts" from
- *   the NEWEST export, or "PM not created — created at export to a peer", or the unreadable-stamp
- *   wording; then the sign lines — one per export "manifest signed for <peer> <when> (key <fp>)", or
- *   "not signed yet — the promotion manifest is signed at export to a peer" — and the
- *   origin-signature line, "not recorded" unless a `signatureRef` exists (SCP never signs an origin
- *   artifact, ADR-0015).
- * Clickable ONLY when a scan row or an export exists (`scanSignHasReview`); the review dialog holds
- * the full tables and a link to the change for the raw evidence. No CVE rows anywhere: none are
- * stored (§8 "Scan").
- *
- * §10.3 splits the above into the COMPACT part (`ScanSignCompact`: `scan: <verdict>` folding the
- * rows, the E6 line, the PM line, `signed: …`) and the Details (`ScanSignDetails`: the scan rows or
- * the not-run line, the per-export sign lines or the stated absence, the origin-signature line).
- * With no artifact there is one stated line and no Details.
- */
+/** THE SCAN & SIGN NODE (§9.3, owner §7.2). See docs/web.md §304. */
 function ScanSignNode({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const reviewable = scanSignHasReview(artifact);
@@ -3572,13 +3026,7 @@ function ScanSignNode({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Ele
   );
 }
 
-/**
- * The scan rows folded to ONE verdict word for the compact line (§10.3): `not run` with no rows,
- * `pass (N runs)` when every row passed, `fail (…)` when any row failed or timed out, else the
- * rows' own statuses counted (`warning (1 with warnings · 1 passed)`). A summary of the ROWS, read
- * from each row's `status` verbatim — never of E6, whose verdict is the wire's own and has its own
- * line. Exported so the folding is assertable on its own.
- */
+/** The scan rows folded to ONE verdict word for the compact line. See docs/web.md §305. */
 export function scanSummary(scans: ComponentPipelineArtifact["scans"]): {
   verdict: "not-run" | "pass" | "fail" | "warning" | "mixed";
   text: string;
@@ -3602,12 +3050,7 @@ export function scanSummary(scans: ComponentPipelineArtifact["scans"]): {
   return { verdict: "mixed", text: `${detail} (${runs})` };
 }
 
-/**
- * The COMPACT part of the Scan & sign tile (§10.3) — with an artifact, FOUR one-liners in the
- * export order: `scan: …` (the rows folded, `scanSummary`), `export gate (E6): …` (the wire's
- * verdict), `PM …` (§10.1, the newest export), `signed: …` (the newest export's signature, or the
- * stated absence). Without one, the single stated line and nothing else — and no Details.
- */
+/** The COMPACT part of the Scan & sign tile (§10.3). See docs/web.md §306. */
 function ScanSignCompact({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
   if (artifact === undefined) {
     return (
@@ -3717,11 +3160,7 @@ function ScanSignCompact({ artifact }: { artifact: ArtifactOnWire }): React.JSX.
   );
 }
 
-/**
- * The DETAILS of the Scan & sign tile (§10.3): the scan rows (or the "not run" line naming the
- * digest), the per-export sign lines (or the stated absence), and the origin-signature line —
- * everything the compact lines fold, in the same scan → sign order.
- */
+/** The DETAILS of the Scan & sign tile (§10.3). See docs/web.md §307. */
 function ScanSignDetails({ artifact }: { artifact: ComponentPipelineArtifact }): React.JSX.Element {
   const digest = latestDigest(artifact);
   const exports = artifact.signing.promotionExports;
@@ -3869,15 +3308,7 @@ function ScanSignReviewDialog({
   );
 }
 
-/**
- * The Scan & sign review dialog's CONTENT, portal-free — exported for the test. A scan table with
- * every `ScanRunSummary` field (threshold as its JSON when present, digest match, managed), then the
- * PROMOTION MANIFEST(S) verbatim (§10.1 — manifestVersion, createdAt, exporterDomainId, peer,
- * changeUrn, artifacts[] type/digest/signatureRef, per export), then an exports table (what was
- * signed: checksum, key fingerprint, signature presence), and a link to the change's detail page,
- * which renders every control run's raw evidence JSON (`change-detail.tsx`) — the one place the
- * underlying rows live.
- */
+/** The Scan & sign review dialog's CONTENT, portal-free. See docs/web.md §308. */
 export function ScanSignReviewBody({
   artifact
 }: {
@@ -4147,50 +3578,9 @@ function RegistryHeadline({
   );
 }
 
-/**
- * THE GATE INTO A STAGE — what must pass before a release may move here.
- *
- * A REQUIREMENT, not a verdict: it is resolved from durable `policy` objects, so it renders for a
- * component with nothing in flight. A verdict belongs to a change and carries a `decision_id`; the
- * change-scoped pipeline view owns that.
- *
- * "No automated checks" is stated OUT LOUD rather than left blank. Measured 2026-08-10, every live
- * policy has an empty `requireControls` and the estate holds 0 control bindings and 0 control runs
- * — so a silent gate node would be indistinguishable from a view that cannot see checks, when the
- * truth is that none are configured.
- */
-/**
- * THE ENTRY GATE OF ONE STAGE — a SUBNODE of the stage, not a node of the pipeline.
- *
- * A gate is not a step a release passes through on its way somewhere; it is a condition on ENTERING
- * one place. Drawn as its own full-width node it doubled the length of every pipeline and implied
- * the release stops somewhere between two stages, which is not where it stops — it stops at the
- * door of the next one (owner, 2026-08-10). Attached to the stage it governs, it also stops needing
- * to merge several placements' policies into one wave-level gate: each target keeps its own.
- *
- * Resolved from the `policy` objects matching this placement (DESIGN §10.1) — the SAME resolution
- * the wave-boundary gate runs, so this view cannot disagree with the engine about what is required.
- * It is a REQUIREMENT, not a verdict: a verdict belongs to a change in flight and carries a
- * `decision_id`.
- *
- * "No automated check" is stated rather than left blank. Measured 2026-08-10: every live policy has
- * an empty `requireControls`, and the estate holds 0 control bindings and 0 control runs — so a
- * silent gate would be indistinguishable from a view that cannot see checks, when the truth is that
- * none are configured.
- */
-/**
- * A CHECK'S STATE, as a mark PLUS a word — never a mark alone.
- *
- * The two absences are what a naive rendering loses, and they are the whole point: `not_started`
- * means nothing is at this gate for the check to run against; `pending` means a release IS here and
- * the check has not reported. One is idle, the other is the thing you are waiting on. A single grey
- * dot for both is exactly the confusion this view exists to remove.
- *
- * WHY NOT A PROGRESS BAR: there is no progress to draw. `control_runs.status` is terminal (pass |
- * fail | warning | skipped | timed_out | expired) and a control that has not reported has no row at
- * all — no start time, no percentage, no expected duration. A bar filling up would be an animation
- * over a number SCP does not have.
- */
+/** THE GATE INTO A STAGE. See docs/web.md §309. */
+/** THE ENTRY GATE OF ONE STAGE. See docs/web.md §310. */
+/** A CHECK'S STATE, as a mark PLUS a word. See docs/web.md §311. */
 const CHECK_LABEL: Record<string, string> = {
   not_started: "not started — nothing is at this gate",
   pending: "in progress — no outcome reported yet",
@@ -4252,18 +3642,7 @@ const CHECK_SUMMARY_ORDER = [
   "not_started"
 ] as const;
 
-/**
- * THE ENTRY GATE AS ONE LINE (§10.3) — the compact form of `GateSubnode`, which keeps the full
- * per-check list under Details.
- *
- * `entry gate: none — enters as soon as the previous stage succeeds` when no policy gates the
- * stage; else `entry gate: N checks · <counts by status> [· approval required]`. The current UI has
- * NO aggregate verdict for a gate (each check carries its own mark), so none is invented here: the
- * line says how many checks and how many are in each state, coloured by the same precedence the
- * per-check marks use (a failure red, a warning amber, all passed green, else quiet). "approval
- * required" is appended whenever a policy asks for one, so an approval-only gate does not read as
- * `0 checks` and nothing else.
- */
+/** THE ENTRY GATE AS ONE LINE. See docs/web.md §312. */
 export function gateSummaryText(gate: ComponentPipelineStage["gate"]): string {
   if (gate.policies.length === 0) return "none — enters as soon as the previous stage succeeds";
   const n = gate.checks.length;
@@ -4393,14 +3772,7 @@ function WaveRow({
     <div className="w-full" data-testid="pipeline-wave">
       <SectionLabel className="mb-1 text-center">
         {wave.waveIndex === null ? (
-          // Placed somewhere the topology never mentions. Real state — hidden by neither the server
-          // nor here — but honestly separated from the declared journey, which is the ordered part.
-          //
-          // The label must carry the ORDER claim, not just the membership one (owner, 2026-08-14:
-          // "why would we deploy to gamma and prod in parallel?"). Several targets side by side
-          // read as one wave that fans out — which is a real and legitimate thing (us-east-1-prod ∥
-          // us-west-1-prod) — so a row that is NOT a wave has to say it is not: these are places
-          // the component is placed, with no declared ordering among them.
+          // Placed somewhere the topology never mentions. Real state. See docs/web.md §313.
           <span
             title="This component is placed here, but no wave of its release topology names these places — so no ORDER among them is declared. Side by side here means 'placed at each', not 'released to all at once'. Attach a release topology to state the journey (e.g. gamma in its own wave, then prod fanning out to every prod region)."
             data-testid="pipeline-wave-unordered"
@@ -4439,12 +3811,7 @@ function WaveRow({
   );
 }
 
-/**
- * THE PROVENANCE SENTENCE (owner decision, 2026-08-24) — server-composed facts, plain-English
- * sentence, verbatim per the design system's copy rule. Reads `entry.correlatedVia` alone: the
- * PRIMARY route decides the sentence even when `coupledKey` is also set (a change can match BOTH a
- * place and a coupling — the place is the more specific fact, so it is the one said out loud).
- */
+/** THE PROVENANCE SENTENCE. See docs/web.md §314. */
 export function correlatedInfraSentence(entry: CorrelatedInfraChange): string {
   const { route, target } = entry.correlatedVia;
   if (route === "placement" && target) {
@@ -4458,13 +3825,7 @@ export function correlatedInfraSentence(entry: CorrelatedInfraChange): string {
   return `provides ${entry.coupledKey ?? "(unknown key)"}`;
 }
 
-/**
- * THE CORRELATED-INFRASTRUCTURE SECTION (owner decision, 2026-08-24) — infrastructure lane ONLY
- * (never rendered on the software lane, and the caller below never mounts it there). Absent vs
- * empty (design system §"honesty-copy rules"): `undefined` renders NO section at all (an older
- * server never evaluated this); an evaluated `{ changes: [] }` renders the section with one quiet
- * line, because "we looked and found none" is a different, honest fact from "we never looked".
- */
+/** THE CORRELATED-INFRASTRUCTURE SECTION. See docs/web.md §315. */
 export function CorrelatedInfraSection({
   correlatedInfra
 }: {
@@ -4532,11 +3893,7 @@ export function ComponentPipelinePage({
   lane = LANES[0]!
 }: { lane?: Lane } = {}): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
-  // WHICH SITE THIS IS — the install-time `instanceRole` off `/auth/me`, read the way `router.tsx`
-  // and `AppShell.tsx` read it (§8 "Commander-only signal"). It decides whether the Scan & sign
-  // node is drawn at all and whether a target tile's Outpost line LINKS to the outpost page
-  // (§10.2 — that route exists only on the commander site). Deliberately NOT
-  // `component.maintainedBy.role`, which is the object's origin, not this instance's role.
+  // Which site this is, from the install-time instance role. See docs/web.md §316.
   const { user } = useAuth();
   const instanceRole = user?.instanceRole;
   const pipelineKey = componentPipelineKey(idOrUrn ?? "");
@@ -4711,11 +4068,7 @@ export function ComponentPipelinePage({
                   return (
                     <div key={node.key} className="flex w-full flex-col items-center gap-1">
                       {sharedConnectorVisible(nodes, i) && (
-                        // Between two nodes, the connector is only a verdict where the model HAS one: a
-                        // promotion into a deploy stage. Everywhere else it is a plain link, because
-                        // colouring build→registry green would invent a gate nobody evaluated. A
-                        // "source" node draws its OWN arrow per tile instead (`sharedConnectorVisible`),
-                        // so this one is skipped right after it rather than adding a duplicate.
+                        // A connector is a verdict only where one exists. See docs/web.md §317.
                         <PromotionArrow
                           state={arrow?.state ?? "pending"}
                           label={arrow?.label ?? ""}
