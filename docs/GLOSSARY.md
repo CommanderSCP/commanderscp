@@ -39,6 +39,7 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **pipeline** | The ordered path a release travels for one executor **Type** | INDUSTRY-STANDARD |
 | **artifact** | The immutable built thing identified by digest (image, rpm, npm, config bundle, plan) | INDUSTRY-STANDARD |
 | **configuration as code** | Declarative config/infra released from a git repo like any other artifact — often, **not always**, domain-local | INDUSTRY-STANDARD |
+| **coordination as code** | SCP's **own** registry declared as code — `scp plan`/`apply` over the graph. **Never abbreviated** ("CaC" is the row above) — [ADR-0048](adr/0048-coordination-as-code.md) | SCP-SPECIFIC |
 | **bundle** | Three distinct things — see the entry; always qualify | SCP-SPECIFIC |
 | **security domain** | A domain implementing one security policy under a single administering authority | INDUSTRY-STANDARD (CNSSI-4009) |
 | **containment domain** | The intra-org `domain` graph object type — an ordinary grouping below org | SCP-SPECIFIC |
@@ -560,14 +561,54 @@ choice, not an authorization one.
 observation that a large part of it has **no single upstream source of truth** and is therefore modelled as
 domain-local.
 
-**Not to be confused with:** **IaC** in the SCP-internal sense — `scp plan`/`apply` over SCP's *own* registry
-objects (`apps/server/src/iac/`), i.e. SCP's configuration managed as code, which is a different subject from a
-tenant's configuration travelling a pipeline. Also not the **managed IaC executor** (`scp-managed-iac`), which is
-an execution mechanism, not a content class.
+**Not to be confused with:** **Coordination as Code** — `scp plan`/`apply` over SCP's *own* registry objects,
+which is a different subject from a tenant's configuration travelling a pipeline ([ADR-0048](adr/0048-coordination-as-code.md)
+renamed that sense out of "IaC" precisely so this paragraph could stop carrying it). Also not the **managed IaC
+executor** (`scp-managed-iac`), which is an execution mechanism, not a content class.
+
+**`CaC` means this entry, and only this entry.** The abbreviation is long-established here for the tenant content
+class — 17 uses, always as the pair "IaC/CaC", including the normative scope sentence under **dependency
+subscription** below and the defining distinction of the whole outpost site ([outpost-ui.md](proposals/outpost-ui.md)
+§9). **Coordination as Code is therefore never abbreviated** ([ADR-0048](adr/0048-coordination-as-code.md) D2).
 
 **In the code.** An ordinary component whose executor binding carries a `configuration` or `infrastructure`
 routing Type ([ADR-0007](adr/0007-executor-binding-type-taxonomy.md)); `executor_bindings` is unique on
 `(org_id, target_object_id, type_id)`, so one component may own both at once.
+
+---
+
+### coordination as code — never abbreviated
+
+**Definition.** **SCP's own registry declared as code**: a versioned, reviewable source file that states the
+desired shape of the graph — services, components, ownership, placements, pipelines, policies, governance rungs —
+which `scp plan` diffs against the live estate and `scp apply` reconciles. It is the platform's *own*
+configuration managed as code, and it is the **only** thing this phrase names.
+
+**Why not "IaC".** Nothing it declares is infrastructure. It declares the organisation's model — its systems,
+ownership, dependencies and governance — and the platform's identity is that it **coordinates** that model rather
+than executing it ([PROJECT_CHARTER.md](../PROJECT_CHARTER.md) principle 1). The name was borrowed early because
+the construct library is CDK-shaped; the shape was mistaken for the subject. Renamed by
+[ADR-0048](adr/0048-coordination-as-code.md), 2026-09-10.
+
+**Never abbreviate it.** Write it out in full every time. **`CaC` is already taken** by **configuration as code**
+above, where it is load-bearing in accepted ADR text and in the outpost UI design. This follows the same rule that
+spells **`production`** out and bans `prod` ([ADR-0046](adr/0046-what-how-split-config-sources-and-binding-policy.md),
+D6/D21(e)): an abbreviation that reads as two different things costs more than the characters it saves.
+
+**Industry-standard?** No — SCP-specific. The *pattern* (a CDK-style construct library synthesising desired state
+for a server-side differ) is thoroughly standard; what is ours is applying it to the coordination platform's own
+registry rather than to infrastructure.
+
+**Not to be confused with:** **configuration as code** above (a tenant's release *content*, which travels a
+pipeline) and the **managed IaC executor** `scp-managed-iac` (an execution *mechanism*, the charter's scoped
+exception). Three unrelated senses shared the word "IaC" until ADR-0048 separated them.
+
+**In the code — the words moved, the identifiers have not.** `@scp/iac` (`packages/iac/`) still synthesises the
+`DesiredStateManifest`; `apps/server/src/iac/plan-diff.ts` still diffs and prunes it. ADR-0048 D3 renames prose
+first and defers the identifiers. **The stored marker is deliberately unchanged**: `scp apply` decides what to
+prune by reading `scp:managed-by=iac` + `scp:stack=<name>` off live rows, so that value stays `iac` until someone
+writes the expand/contract migration (D4). Do not "fix" it in passing — pruning correctness depends on the reader
+and the writer agreeing.
 
 ---
 
