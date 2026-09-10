@@ -5,5 +5,9 @@
     "rootDir": "src"
   },
   "include": ["src"],
-  "references": [{ "path": "../sdk" }, { "path": "../schemas" }, { "path": "../iac" }]
+  "references": [
+    { "path": "../sdk" },
+    { "path": "../schemas" },
+    { "path": "../coordination-as-code" }
+  ]
 }

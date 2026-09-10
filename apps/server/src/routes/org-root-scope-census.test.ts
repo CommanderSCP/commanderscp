@@ -149,7 +149,7 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
   {
     site: "routes/executors.ts :: POST /api/v1/discovery/scaffold :: object:read",
     cls: "escalation-bar",
-    why: "replaces the removed /discovery/accept entry (ADR-0047). It writes NOTHING — it renders a proposal as @scp/iac source — but the proposal and the emitted code name the org's services, repos and targets, so the bar stays where /discovery/run's is: role-model.md §8.6's rule is about what the DOOR exposes, not about whether it mutates, and a narrower binding must not satisfy either"
+    why: "replaces the removed /discovery/accept entry (ADR-0047). It writes NOTHING — it renders a proposal as @scp/coordination-as-code source — but the proposal and the emitted code name the org's services, repos and targets, so the bar stays where /discovery/run's is: role-model.md §8.6's rule is about what the DOOR exposes, not about whether it mutates, and a narrower binding must not satisfy either"
   },
 
   // ---- federation: identity and link operation are instance-level acts ---------------------------
@@ -437,7 +437,7 @@ const ORG_ROOT_FALLBACK: readonly CensusEntry[] = [
     why: "a PLATFORM-tier freeze is declared instance-wide and has no scope object, so overriding one is checked at the org root; every other tier is checked at its own declared scope"
   },
   {
-    site: "iac/plans-repo.ts :: prepareApplyChecks() :: writePermissionFor",
+    site: "coordination-as-code/plans-repo.ts :: prepareApplyChecks() :: writePermissionFor",
     cls: "org-level",
     why: "each manifest entry is checked at its own declared containment parent; org root only when the entry declares none"
   },
@@ -536,7 +536,7 @@ const ORG_ROOT_DERIVED: readonly CensusEntry[] = [
 const NUL_CARRYING_FILES = [
   "dependencies/ingestion-stamp-repo.ts",
   "dependencies/internal-release-detection.ts",
-  "iac/plan-diff.ts"
+  "coordination-as-code/plan-diff.ts"
 ] as const;
 
 const SERVER_SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -549,7 +549,7 @@ const ORG_ROOT_TOKEN =
   /(?:^|[^\w$.])(?:(?:[A-Za-z_$][\w$]*\.)*orgId|(?:root|orgRoot)ObjectId|orgRootId)\b/;
 /** BOTH spellings of "a scopeObjectId is being set": the object property, and the `const`/`let`
  *  that is later passed as one. Missing the second is how `components.ts:310` and
- *  `iac/plans-repo.ts` stayed invisible to the original census. */
+ *  `coordination-as-code/plans-repo.ts` stayed invisible to the original census. */
 const SCOPE_ASSIGNMENT = /\bscopeObjectId\s*:|\b(?:const|let)\s+scopeObjectId(?:\s*:[^=]*)?\s*=/g;
 
 /** The value expression assigned at `start`, up to the `,`/`;`/closer that ends it at depth 0. */

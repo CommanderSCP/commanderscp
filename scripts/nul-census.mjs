@@ -30,8 +30,8 @@ const EXPECTED = [
   // `detectInternalReleases`. NUL because a coordinate may contain any printable byte —
   // `@acme/lib`, `com.acme:lib`, `ghcr.io/acme/api` — so every printable joiner can collide.
   "apps/server/src/dependencies/internal-release-detection.ts",
-  "apps/server/src/iac/plan-diff.ts",
-  "packages/iac/src/construct.ts",
+  "apps/server/src/coordination-as-code/plan-diff.ts",
+  "packages/coordination-as-code/src/construct.ts",
   "packages/sdk/src/response-validation.ts",
   "tools/openapi/bin/oasdiff-linux-amd64"
 ];

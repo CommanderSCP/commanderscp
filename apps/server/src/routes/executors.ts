@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { groupDiscoveryProposal, renderEstateProgram } from "@scp/iac";
+import { groupDiscoveryProposal, renderEstateProgram } from "@scp/coordination-as-code";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
@@ -677,7 +677,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     config: {
       openapi: {
         operationId: "scaffoldDiscoveryProposal",
-        summary: "Render a discovery proposal as @scp/iac source — writes nothing to the graph",
+        summary:
+          "Render a discovery proposal as @scp/coordination-as-code source — writes nothing to the graph",
         tags: ["discovery"]
       }
     },

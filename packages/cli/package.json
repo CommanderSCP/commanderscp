@@ -15,7 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@scp/iac": "workspace:*",
+    "@scp/coordination-as-code": "workspace:*",
     "@scp/schemas": "workspace:*",
     "@scp/sdk": "workspace:*",
     "commander": "^12.1.0"

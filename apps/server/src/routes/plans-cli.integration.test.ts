@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Service, Stack, synthToFile } from "@scp/iac";
+import { Service, Stack, synthToFile } from "@scp/coordination-as-code";
 import {
   createTestOrg,
   listenTestServer,
@@ -47,7 +47,7 @@ describe("plans: CLI-driven no-op-on-second-apply (DoD (b))", () => {
     try {
       await cli.run(["login", "--username", org.adminUsername, "--password", org.adminPassword]);
 
-      // The manifest file is exactly what `@scp/iac`'s `synthToFile` writes — the CLI never
+      // The manifest file is exactly what `@scp/coordination-as-code`'s `synthToFile` writes — the CLI never
       // imports/executes the IaC TypeScript program itself, only the synthesized JSON (module
       // doc, packages/cli/src/cli.ts's plan/apply section).
       const stackName = `cli-stack-${randomUUID().slice(0, 8)}`;

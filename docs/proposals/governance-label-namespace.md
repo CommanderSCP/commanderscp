@@ -149,8 +149,8 @@ Two things make it materially different from the label escape rather than merely
 >
 > | File | NUL bytes |
 > |---|---|
-> | `apps/server/src/iac/plan-diff.ts` | 2 |
-> | `packages/iac/src/construct.ts` | 4 |
+> | `apps/server/src/coordination-as-code/plan-diff.ts` | 2 |
+> | `packages/coordination-as-code/src/construct.ts` | 4 |
 > | `packages/sdk/src/response-validation.ts` | 2 |
 > | `apps/server/src/dependencies/ingestion-stamp-repo.ts` | 2 |
 >

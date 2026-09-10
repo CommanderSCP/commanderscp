@@ -2056,7 +2056,7 @@ export const pipelineHookRuns = pgTable(
     orgId: uuid("org_id").notNull(),
     /** The component whose hook this run belongs to — AND the ownership pointer. NO `managedByStack`
      *  column and none is ever added; ownership derives from the owning object, exactly as for
-     *  `pipelineHooks` / `sourceMappings` / `executorBindings` (packages/schemas/src/iac.ts). */
+     *  `pipelineHooks` / `sourceMappings` / `executorBindings` (packages/schemas/src/coordination-as-code.ts). */
     componentObjectId: uuid("component_object_id").notNull(),
     /** NULLABLE, and load-bearing: `postMerge` runs before any artifact exists and is not
      *  target-specific, so there is no target to name. See the constraint note above for what that

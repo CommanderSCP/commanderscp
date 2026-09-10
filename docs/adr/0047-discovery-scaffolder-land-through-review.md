@@ -34,7 +34,7 @@ Meanwhile [ADR-0046](0046-what-how-split-config-sources-and-binding-policy.md) m
 
 `discover()` stays — it is the scaffolder's engine, and `POST /discovery/run` is unchanged. What changes is what happens to its findings:
 
-`scp iac scaffold --from <execution-system-urn> [--repo-pr]` runs the existing discovery and renders the proposal as **`@scp/iac` construct code plus the synthesized manifest**, grouped into services interactively or by flag, and optionally opens a **PR against the config repo**.
+`scp iac scaffold --from <execution-system-urn> [--repo-pr]` runs the existing discovery and renders the proposal as **`@scp/coordination-as-code` construct code plus the synthesized manifest**, grouped into services interactively or by flag, and optionally opens a **PR against the config repo**.
 
 **The orphan problem is solved at authoring time, where a human is present.** Grouping happens in the scaffolder's interactive step or in the PR review, not in a graph write nobody looks at. The scaffolder also emits a commented starter wave topology, so the output is a working declaration rather than a bag of objects.
 

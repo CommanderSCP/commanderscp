@@ -1574,7 +1574,7 @@ identical on each:
 * **CLI** — `scp policy register --domain-id <component-id> --properties '{...}'`
   (`packages/cli/src/cli.ts`; the option's help text is "containing object id (defaults to the org
   root)", the same default and the same consequence).
-* **IaC** — `ManifestObjectSchema.domainId` (`packages/schemas/src/iac.ts`) is the same field with
+* **IaC** — `ManifestObjectSchema.domainId` (`packages/schemas/src/coordination-as-code.ts`) is the same field with
   the same org-root default and the same consequence, though it is spelled differently in the code:
   apply's create branch computes the custody scope as `entry.target?.domainId ?? orgId` rather than
   by calling `resolveDomainId`, so do not go looking for that helper there. It then runs the same

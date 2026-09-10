@@ -13,7 +13,7 @@ import {
 // — see that file's note: `executors.ts` needs it too, and defining it beside its specification
 // would make `pipeline-behaviors -> executors -> pipeline-behaviors` a module cycle.
 import { Sha256DigestSchema } from "./supply-chain.js";
-import { DesiredStateManifestSchema } from "./iac.js";
+import { DesiredStateManifestSchema } from "./coordination-as-code.js";
 
 /** The pipeline behaviour contract, and what it pins. See docs/schemas.md §332. */
 

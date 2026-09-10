@@ -138,16 +138,20 @@ export default tseslint.config(
                 "apps/web/src may import only @scp/sdk and @scp/schemas — never the CLI directly."
             },
             {
-              name: "@scp/iac",
+              name: "@scp/coordination-as-code",
               message:
-                "apps/web/src may import only @scp/sdk and @scp/schemas — never @scp/iac directly."
+                "apps/web/src may import only @scp/sdk and @scp/schemas — never @scp/coordination-as-code directly."
             }
           ],
           patterns: [
             {
-              group: ["**/apps/server/**", "**/packages/cli/**", "**/packages/iac/**"],
+              group: [
+                "**/apps/server/**",
+                "**/packages/cli/**",
+                "**/packages/coordination-as-code/**"
+              ],
               message:
-                "apps/web/src may only import @scp/sdk and @scp/schemas for talking to the backend — no deep-relative imports into apps/server/packages/cli/packages/iac source."
+                "apps/web/src may only import @scp/sdk and @scp/schemas for talking to the backend — no deep-relative imports into apps/server/packages/cli/packages/coordination-as-code source."
             }
           ]
         }

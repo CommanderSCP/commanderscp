@@ -1,6 +1,6 @@
 # Team-pipeline IaC — worked example across a full estate
 
-**Status:** Draft companion to [team-pipeline-iac.md](team-pipeline-iac.md), 2026-08-26. Construct shapes marked **(new)** are proposed by that doc; everything else exists in `@scp/iac` today. Property shapes on new constructs are indicative, not final.
+**Status:** Draft companion to [team-pipeline-iac.md](team-pipeline-iac.md), 2026-08-26. Construct shapes marked **(new)** are proposed by that doc; everything else exists in `@scp/coordination-as-code` today. Property shapes on new constructs are indicative, not final.
 
 The estate: a **commander** (with its **XO** — the designated standby member cluster, ADR-0044), the **HQ outpost** (the outpost in the commander's own trust domain), a **retrans** at the CDS boundary, one **govcloud outpost**, and one **air-gapped outpost**.
 
@@ -61,8 +61,8 @@ The component's declaration rides the same repo that already drives its releases
 ## 3. `platform/estate.ts` — the operator stack (applies at the commander, federates)
 
 ```ts
-import { Stack, Team, DeploymentTarget, TrustTier, Registry } from "@scp/iac";
-import { Outpost } from "@scp/iac"; // (new) one-liner registry construct over the
+import { Stack, Team, DeploymentTarget, TrustTier, Registry } from "@scp/coordination-as-code";
+import { Outpost } from "@scp/coordination-as-code"; // (new) one-liner registry construct over the
                                     // `outpost` object type (migration 0043)
 
 const estate = new Stack("platform-estate"); // App is synth plumbing — gone from user code (D15)
@@ -99,8 +99,8 @@ stage("airgap-amer-production", "production", "amer");
 ## 4. `domains/govcloud/bindings.ts` — one domain's HOW (domain-local, D4)
 
 ```ts
-import { Stack, ExecutorType } from "@scp/iac";
-import { BindingPolicy, DeploymentTarget, ExecutionSystem } from "@scp/iac";
+import { Stack, ExecutorType } from "@scp/coordination-as-code";
+import { BindingPolicy, DeploymentTarget, ExecutionSystem } from "@scp/coordination-as-code";
 // BindingPolicy (new): the D4 policy effect. fromName()/fromUrn() (new, CDK's
 // fromXxx idiom): reference an existing object without managing it — returns the
 // same interface type an owned construct implements; never creates or prunes.
@@ -150,7 +150,7 @@ const payments = new Service(home, "payments"); // owner inferred: the registere
 And a component's **entire** declaration, in its own repo — the file *is* the pipeline (D15) and says what kind it is (D17), so it roots at the typed pipeline class; `App` and `Stack` never appear:
 
 ```ts
-import { ImagePipeline, Service } from "@scp/iac";
+import { ImagePipeline, Service } from "@scp/coordination-as-code";
 import { waves, repos } from "@corp/scp-standards"; // inherited repo (D10)
 
 new ImagePipeline("payments-api", {
@@ -224,9 +224,9 @@ The grammar: the file roots at the **typed pipeline class** (or at `Component` w
 
 ```ts
 // payments/payments-api/scp/stack.ts — the component's entire SCP footprint
-import { Component, Service, ImagePipeline, InfrastructurePipeline } from "@scp/iac";
-import { TargetClass, Duration, Workflow } from "@scp/iac";
-import { PostMergeTest, PostDeployTest, ContinuousTest, BakeAlarms, CanaryRollout } from "@scp/iac";
+import { Component, Service, ImagePipeline, InfrastructurePipeline } from "@scp/coordination-as-code";
+import { TargetClass, Duration, Workflow } from "@scp/coordination-as-code";
+import { PostMergeTest, PostDeployTest, ContinuousTest, BakeAlarms, CanaryRollout } from "@scp/coordination-as-code";
 import { waves, repos, registry } from "@corp/scp-standards"; // org standards (D10)
 import { products } from "@corp/payments-infra"; // the infra pipeline's typed products (D20)
 
@@ -358,7 +358,7 @@ import {
   BindingPolicy, ExecutionSystem, ExecutorType, TargetClass, Duration,
   ImagePipeline, InfrastructurePipeline, Workflow,
   PostMergeTest, PostDeployTest, ContinuousTest, BakeAlarms, CanaryRollout,
-} from "@scp/iac";
+} from "@scp/coordination-as-code";
 
 // ═══ 1. PLATFORM ESTATE — platform team, applied at the commander, federates ═══
 const estate = new Stack("platform-estate");

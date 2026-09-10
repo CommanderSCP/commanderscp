@@ -1768,7 +1768,7 @@ THE REPLACEMENT FOR `accept`, and a different shape on purpose: it writes nothin
 
 PURE TRANSFORM, BUT STILL AUTHENTICATED AND AUTHORIZED: a proposal describes an org's estate, and the emitted code names its services and repos. `object:read` at the org root is the same bar `POST /plans` uses for diff computation, which is the closest analogue — a read-shaped request whose body the caller supplied.
 
-IT EXISTS AT ALL because `apps/web` may import only `@scp/sdk` and `@scp/schemas` — never `@scp/iac` (eslint `no-restricted-imports`, the API -> SDK -> CLI -> IaC -> UI chain). The wizard gets the emitter's output the way it gets everything else: through the API.
+IT EXISTS AT ALL because `apps/web` may import only `@scp/sdk` and `@scp/schemas` — never `@scp/coordination-as-code` (eslint `no-restricted-imports`, the API -> SDK -> CLI -> IaC -> UI chain). The wizard gets the emitter's output the way it gets everything else: through the API.
 
 ### §178. Reachable only when `buildApp` was handed deps with no host
 
@@ -2997,13 +2997,13 @@ THE GATE, AND THE ROW FILTER, IN ONE CALL (role-model.md §8.2, increment 2.5b).
 
 ### §307. BUILD_AND_TEST.md §8 M2 DoD (b), literal wording
 
-BUILD_AND_TEST.md §8 M2 DoD (b), literal wording: "an `@scp/iac` stack applied twice is a no-op the second time (plan shows zero actions) ... integration + a CLI-driven test." Uses `startCliSession` (test-support/cli-runner.ts) to spawn the REAL BUILT `scp` binary, same pattern as `graph/custom-type.integration.test.ts`'s CLI half — a genuine black-box exercise of `scp plan`/`scp apply`, not an in-process shortcut.
+BUILD_AND_TEST.md §8 M2 DoD (b), literal wording: "an `@scp/coordination-as-code` stack applied twice is a no-op the second time (plan shows zero actions) ... integration + a CLI-driven test." Uses `startCliSession` (test-support/cli-runner.ts) to spawn the REAL BUILT `scp` binary, same pattern as `graph/custom-type.integration.test.ts`'s CLI half — a genuine black-box exercise of `scp plan`/`scp apply`, not an in-process shortcut.
 
 ## `apps/server/src/routes/plans.integration.test.ts`
 
-### §308. `@scp/iac` server-side plan/apply
+### §308. `@scp/coordination-as-code` server-side plan/apply
 
-`@scp/iac` server-side plan/apply — full round trip via the SDK (BUILD_AND_TEST.md §8 M2 item 4). DoD (b): "an `@scp/iac` stack applied twice is a no-op the second time (plan shows zero actions)". `plans-cli.integration.test.ts` covers the same core property driven through the real `scp` binary instead of the SDK directly.
+`@scp/coordination-as-code` server-side plan/apply — full round trip via the SDK (BUILD_AND_TEST.md §8 M2 item 4). DoD (b): "an `@scp/coordination-as-code` stack applied twice is a no-op the second time (plan shows zero actions)". `plans-cli.integration.test.ts` covers the same core property driven through the real `scp` binary instead of the SDK directly.
 
 ### §309. C1 — sourceMappings / executorBindings
 
@@ -3011,9 +3011,9 @@ C1 — sourceMappings / executorBindings (docs/proposals/post-import-configurati
 
 ## `apps/server/src/routes/plans.ts`
 
-### §310. Server-side `@scp/iac` plan/apply
+### §310. Server-side `@scp/coordination-as-code` plan/apply
 
-Server-side `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15): the diff engine lives once here and is identical for the CLI (`scp plan`/`scp apply`), the SDK, and (in later milestones) federation import and drift detection — "Kubernetes-apply semantics, not client-side Terraform semantics" (DESIGN.md §15).
+Server-side `@scp/coordination-as-code` plan/apply (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15): the diff engine lives once here and is identical for the CLI (`scp plan`/`scp apply`), the SDK, and (in later milestones) federation import and drift detection — "Kubernetes-apply semantics, not client-side Terraform semantics" (DESIGN.md §15).
 
 **Routing note (documented deviation):** DESIGN.md's `{id}:verb` syntax (e.g. `/changes/{id}:accept`) does NOT survive Fastify's router (find-my-way) the way it reads — verified empirically: registering `/plans/:id:apply` does not parse as param `id` + literal suffix `:apply`; find-my-way instead treats the whole `id:apply` token as ONE parameter name (`request.params["id:apply"]`), so `/plans/abc` and `/plans/abc:apply` collapse onto the same route and can't be told apart. No `:verb`-style route exists anywhere else in the codebase yet to be consistent with (M3 introduces the first ones), so this module falls back to the conventional REST subpath `POST /plans/{id}/apply` instead — a deliberate, isolated deviation, not a precedent-breaking one.
 

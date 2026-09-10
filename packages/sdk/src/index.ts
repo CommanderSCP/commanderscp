@@ -50,7 +50,7 @@ export type {
   DeviceApproveResponse
 } from "@scp/schemas";
 
-// M2 step 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
+// M2 step 3: `@scp/coordination-as-code` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
 export type { ApplyPlanResponse, DesiredStateManifest, Plan, PlanDiff } from "@scp/schemas";
 export { DesiredStateManifestSchema } from "@scp/schemas";
 

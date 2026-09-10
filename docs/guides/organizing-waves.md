@@ -1,7 +1,7 @@
 # Guide: organizing waves
 
 How to shape a pipeline's rollout — which stages ship together, in what order — using the
-`@scp/iac` wave helpers (design: [`docs/proposals/team-pipeline-iac.md`](../proposals/team-pipeline-iac.md)
+`@scp/coordination-as-code` wave helpers (design: [`docs/proposals/team-pipeline-iac.md`](../proposals/team-pipeline-iac.md)
 §8, D6/D8/D21). This guide is for whoever is writing a component's `scp/stack.ts`, not for reading
 the design rationale.
 
@@ -29,7 +29,7 @@ shape. Stage names otherwise follow the GLOSSARY grammar: `<domain>[-<location>]
 ## What a pipeline's `waves` prop actually takes
 
 A pipeline's `waves:` prop is an array of **wave items**, in the relaxed shape every helper below
-produces (`@scp/iac`'s `WaveItem`):
+produces (`@scp/coordination-as-code`'s `WaveItem`):
 
 - a bare target — a single-member wave (`"commercial-amer-production"`, or a construct/reference);
 - a bare array of targets — one unnamed PARALLEL wave (`[a, b, c]`);
@@ -52,7 +52,7 @@ declaration for the same pair always wins over the inferred one; it is never dup
 ## The three helpers
 
 ```ts
-import { waves } from "@scp/iac";
+import { waves } from "@scp/coordination-as-code";
 ```
 
 ### `waves.linear(stages)` — a straight sequence

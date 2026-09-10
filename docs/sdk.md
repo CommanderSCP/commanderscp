@@ -127,9 +127,9 @@ The generated client carries these operations; this wrapper is what the CLI and 
 
 `operatorToken` is REQUIRED on all three of these, unlike the read half of the other instance-tier surfaces: minting, listing and revoking are each gated by `x-scp-operator-token` (an existing credential, or the bootstrap `SCP_OPERATOR_TOKEN`). The listing is operator-gated too because it discloses how many credentials exist and when each was last used, which is a fact about the deployment's key material.
 
-### §21. `@scp/iac` server-side plan/apply
+### §21. `@scp/coordination-as-code` server-side plan/apply
 
-`@scp/iac` server-side plan/apply (M2 step 3, BUILD_AND_TEST.md §8 M2 item 4) — the diff engine lives once on the server (routes/plans.ts); `scp plan`/`scp apply` (packages/cli) are thin callers of `.create()`/`.apply()` here, same layering as every other resource.
+`@scp/coordination-as-code` server-side plan/apply (M2 step 3, BUILD_AND_TEST.md §8 M2 item 4) — the diff engine lives once on the server (routes/plans.ts); `scp plan`/`scp apply` (packages/cli) are thin callers of `.create()`/`.apply()` here, same layering as every other resource.
 
 ### §22. M3 Change Coordination Engine
 
@@ -400,7 +400,7 @@ M20.1 (ADR-0031) — required on the wire. Added HERE, in the shared well-formed
 
 ### §63. Unions: the upsert-by-urn operations declare two 2xx codes
 
-Unions. `@hey-api`'s zod plugin emits `z.union([...])` for every operation declaring two 2xx codes — all 11 upsert-by-urn operations (200 updated / 201 created), i.e. exactly the write path `packages/iac` drives. zod 4 collapses a failed union into ONE top-level `invalid_union` issue and hides the per-branch issues in a nested `errors: ZodIssue[][]`, so reading `error.issues` alone names NO field and the promise `ScpResponseValidationError` makes ("naming BOTH the operation and the offending field(s)") is void precisely where it matters most.
+Unions. `@hey-api`'s zod plugin emits `z.union([...])` for every operation declaring two 2xx codes — all 11 upsert-by-urn operations (200 updated / 201 created), i.e. exactly the write path `packages/coordination-as-code` drives. zod 4 collapses a failed union into ONE top-level `invalid_union` issue and hides the per-branch issues in a nested `errors: ZodIssue[][]`, so reading `error.issues` alone names NO field and the promise `ScpResponseValidationError` makes ("naming BOTH the operation and the offending field(s)") is void precisely where it matters most.
 
 ### §64. Empty bodies are the one bypass of fail-once validation
 

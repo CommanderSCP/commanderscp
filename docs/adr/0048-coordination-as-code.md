@@ -4,7 +4,7 @@
 
 **Numbering note (claimed 2026-09-10):** a census of `docs/adr/` on `origin/main` **and every remote branch** found `0047` the highest number anywhere, so this document takes `0048`. Per [ADR-0044](0044-multi-region-instance-resilience.md)'s numbering note, **a number claimed by census is valid only as of that census** — re-run it against `main` immediately before merge.
 
-**Relates to:** [ADR-0021](0021-terminology.md) (the terminology ADR this amends), [ADR-0046](0046-what-how-split-config-sources-and-binding-policy.md) (the `production`-not-`prod` spell-out precedent D2 leans on, and the ADR that describes `@scp/iac`'s synth → `scp plan`/`apply` path), [ADR-0031](0031-domain-local-objects-never-federate.md) (domain-local content, the sense that keeps the name "configuration as code"), [ADR-0007](0007-executor-binding-type-taxonomy.md) (the `infrastructure` / `configuration` routing Types), [iac-stack-ownership.md](../proposals/iac-stack-ownership.md) (`managed_by_stack` pruning, which D4 declines to disturb), [PROJECT_CHARTER.md](../../PROJECT_CHARTER.md) principle 1 (coordination, not execution — the verb this name takes from), [docs/GLOSSARY.md](../GLOSSARY.md) (delivered by this ADR).
+**Relates to:** [ADR-0021](0021-terminology.md) (the terminology ADR this amends), [ADR-0046](0046-what-how-split-config-sources-and-binding-policy.md) (the `production`-not-`prod` spell-out precedent D2 leans on, and the ADR that describes `@scp/coordination-as-code`'s synth → `scp plan`/`apply` path), [ADR-0031](0031-domain-local-objects-never-federate.md) (domain-local content, the sense that keeps the name "configuration as code"), [ADR-0007](0007-executor-binding-type-taxonomy.md) (the `infrastructure` / `configuration` routing Types), [iac-stack-ownership.md](../proposals/iac-stack-ownership.md) (`managed_by_stack` pruning, which D4 declines to disturb), [PROJECT_CHARTER.md](../../PROJECT_CHARTER.md) principle 1 (coordination, not execution — the verb this name takes from), [docs/GLOSSARY.md](../GLOSSARY.md) (delivered by this ADR).
 
 ---
 
@@ -13,12 +13,12 @@
 **"IaC" carries three unrelated senses in this repository**, and [docs/GLOSSARY.md](../GLOSSARY.md) already spends a paragraph holding them apart — the `configuration as code` entry's "Not to be confused with" block names two siblings it is *not*:
 
 1. **A tenant's content class** — declarative configuration and infrastructure kept in git and released down a pipeline like any other artifact. Frequently domain-local ([ADR-0031](0031-domain-local-objects-never-federate.md)). This is the sense the glossary defines under `configuration as code`.
-2. **SCP's own registry declared as code** — `scp plan` / `apply` over SCP's *own* graph objects: services, components, ownership, placements, pipelines, policies, governance rungs. `@scp/iac` synthesises a `DesiredStateManifest`; the server diffs desired against actual (`apps/server/src/iac/plan-diff.ts`) and prunes within the stack it owns.
+2. **SCP's own registry declared as code** — `scp plan` / `apply` over SCP's *own* graph objects: services, components, ownership, placements, pipelines, policies, governance rungs. `@scp/coordination-as-code` synthesises a `DesiredStateManifest`; the server diffs desired against actual (`apps/server/src/coordination-as-code/plan-diff.ts`) and prunes within the stack it owns.
 3. **The managed IaC executor** (`scp-managed-iac`) — an execution *mechanism*, the charter's scoped exception to principle 1, not a content class at all.
 
 **When a term needs a standing disambiguation block against two of its own siblings, the term is doing poor work.** Sense 2 is also the one where "IaC" is simply *wrong*: nothing it declares is infrastructure. A stack file declares the organisation's model — its systems, ownership, dependencies and governance, which is the charter's opening sentence — and the platform's whole identity is that it **coordinates** that model rather than executing it. The word was borrowed early because the construct library is CDK-shaped, and the shape was mistaken for the subject.
 
-**Why this surfaced now (2026-09-09/10).** Reviewing the homelab estate's stack declaration (`scp/homelab-gitops.stack.ts`, 623 lines, unapplied, open on PR #3 in the `homelab-gitops` repo since 2026-08-02) surfaced the cost concretely: a file that imports `@scp/iac`, is named for a *stack*, declares nothing but services and components, and spends five lines of its module docblock on the `scp:managed-by=iac` pruning marker — while sitting in a repository whose *other* meaning of "IaC" is the Kubernetes manifests in the same tree.
+**Why this surfaced now (2026-09-09/10).** Reviewing the homelab estate's stack declaration (`scp/homelab-gitops.stack.ts`, 623 lines, unapplied, open on PR #3 in the `homelab-gitops` repo since 2026-08-02) surfaced the cost concretely: a file that imports `@scp/coordination-as-code`, is named for a *stack*, declares nothing but services and components, and spends five lines of its module docblock on the `scp:managed-by=iac` pruning marker — while sitting in a repository whose *other* meaning of "IaC" is the Kubernetes manifests in the same tree.
 
 ### The abbreviation is already taken — measured, not assumed
 
@@ -56,8 +56,8 @@ Three tiers, deliberately separated because their costs differ by orders of magn
 | Tier | Contents | This ADR |
 |---|---|---|
 | **A. Prose** | GLOSSARY entry + table row, ADR-0021 pointer, the `configuration as code` disambiguation block, new docs, UI copy, CLI help | **Rename now.** Cheap, reversible, and where the confusion actually costs review time. |
-| **B. Identifiers** | `@scp/iac` package name, `apps/server/src/iac/`, `packages/iac/`, `DesiredStateManifestSchema`, type and symbol names | **Deferred, not refused.** Mechanical but wide: `@scp/iac` is imported by `packages/sdk` (including generated files), `packages/schemas`, and the CLI. Worth one focused change, not a drive-by. |
-| **C. Stored values** | `MANAGED_BY_IAC_VALUE = "iac"` (`apps/server/src/iac/plan-diff.ts:38`) and the `scp:managed-by` / `scp:stack` label pair it writes into `objects.labels` and `relationships.labels` | **Explicitly out of scope.** See D4. |
+| **B. Identifiers** | `@scp/coordination-as-code` package name, `apps/server/src/coordination-as-code/`, `packages/coordination-as-code/`, `DesiredStateManifestSchema`, type and symbol names | **Deferred, not refused.** Mechanical but wide: `@scp/coordination-as-code` is imported by `packages/sdk` (including generated files), `packages/schemas`, and the CLI. Worth one focused change, not a drive-by. |
+| **C. Stored values** | `MANAGED_BY_IAC_VALUE = "iac"` (`apps/server/src/coordination-as-code/plan-diff.ts:38`) and the `scp:managed-by` / `scp:stack` label pair it writes into `objects.labels` and `relationships.labels` | **Explicitly out of scope.** See D4. |
 
 ### D4 — The persisted label value stays `iac` until a deliberate expand/contract migration
 
@@ -75,7 +75,7 @@ A rename here buys nothing a user can see — the value is never displayed — s
 
 **The glossary gains an entry and loses a disambiguation burden.** `configuration as code`'s "Not to be confused with" block stops having to explain a homonym and instead points at a distinctly-named neighbour.
 
-**A census of tier C must use `grep -rna`, never `grep -rn`.** `apps/server/src/iac/plan-diff.ts` holds `MANAGED_BY_IAC_VALUE` and the sole label test that makes an object a *delete* candidate — and it **contains NUL bytes** (verified at byte level 2026-09-10: 56,993 bytes, 2 NUL, first at offset 11538). Every recursive search tool classifies such a file as binary and **drops it with no output and exit 1**, which is indistinguishable from "no such code exists" ([CLAUDE.md](../../CLAUDE.md), BUILD_AND_TEST.md §4.4b, `pnpm nul-census`). A tier-C census run the documented-but-wrong way misses the one file that decides deletions.
+**A census of tier C must use `grep -rna`, never `grep -rn`.** `apps/server/src/coordination-as-code/plan-diff.ts` holds `MANAGED_BY_IAC_VALUE` and the sole label test that makes an object a *delete* candidate — and it **contains NUL bytes** (verified at byte level 2026-09-10: 56,993 bytes, 2 NUL, first at offset 11538). Every recursive search tool classifies such a file as binary and **drops it with no output and exit 1**, which is indistinguishable from "no such code exists" ([CLAUDE.md](../../CLAUDE.md), BUILD_AND_TEST.md §4.4b, `pnpm nul-census`). A tier-C census run the documented-but-wrong way misses the one file that decides deletions.
 
 **Existing documents are not retro-edited.** Following [ADR-0021](0021-terminology.md)'s own precedent, dated records keep their original wording where they cite a real object or a measurement; rewriting them would make the record claim the project used words on a date that it did not. New and revised text uses the new term; the glossary is the current reference.
 
@@ -85,7 +85,7 @@ A rename here buys nothing a user can see — the value is never displayed — s
 
 ## Alternatives considered
 
-**Estate as Code (EaC)** — precise for what the construct declares, abbreviation free, and with an existing code-level anchor in `packages/iac/src/estate-program.ts`. **Rejected by the owner, 2026-09-10.**
+**Estate as Code (EaC)** — precise for what the construct declares, abbreviation free, and with an existing code-level anchor in `packages/coordination-as-code/src/estate-program.ts`. **Rejected by the owner, 2026-09-10.**
 
 **Graph as Code (GaC)** — `GaC` is unused, and it points at charter principle 2, since a stack file literally declares graph objects and relationships. Rejected as the weaker identity: it names the storage shape rather than the purpose, and the charter's distinguishing verb is *coordinate*.
 

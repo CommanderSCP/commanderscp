@@ -105,7 +105,7 @@ A `Workflow` names the file once, inheriting `repo` and `branch` from its pipeli
 off it:
 
 ```ts
-import { Duration, Workflow, PostMergeTest, PostDeployTest, ContinuousTest, BakeAlarms } from "@scp/iac";
+import { Duration, Workflow, PostMergeTest, PostDeployTest, ContinuousTest, BakeAlarms } from "@scp/coordination-as-code";
 
 const integration = new Workflow(pipeline, "integration", { path: ".argo/integration.yaml" });
 

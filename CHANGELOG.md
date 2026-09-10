@@ -87,7 +87,7 @@ load/perf numbers, security-sensitive surfaces).
 - **M3 — Changes & Coordination Engine**: the Change lifecycle state machine, correlation, plans/
   waves/topologies, the resumable reconciliation loop, rollback, the subprocess plugin host.
 - **M2 — Registries, Relationships & the Modeled Org**: typed registries, Web UI v1, generic OIDC,
-  `@scp/iac`, server-side plan/apply.
+  `@scp/coordination-as-code`, server-side plan/apply.
 - **M1 — Graph Core**: generic objects/relationships, runtime type registry, RLS multi-tenancy,
   hash-chained audit log, RBAC.
 - **M0 — Walking Skeleton**: the first end-to-end slice — compose stack, one registered object,

@@ -6,7 +6,11 @@ import { hasPermission } from "../authz/resolve.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { freezesByTarget, unionFreezes } from "../governance/freeze-scope.js";
 import { findObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
-import { computeDiffForManifest, executePlanDiff, prepareApplyChecks } from "../iac/plans-repo.js";
+import {
+  computeDiffForManifest,
+  executePlanDiff,
+  prepareApplyChecks
+} from "../coordination-as-code/plans-repo.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { ConfigSourceDocument } from "./config-source-document.js";
 import { selectChangedManifestPaths } from "./manifest-path-selection.js";

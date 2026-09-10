@@ -36,7 +36,7 @@ describe("D13 artifact-class verification (integration)", () => {
     withTenantTx(server.deps.db, org.orgId, fn);
 
   /** Declares a mapping of `declaredType` and reports a build against it, returning the event id.
-   *  The mapping's `type` IS the declaration D13 verifies against — the same value `@scp/iac`'s
+   *  The mapping's `type` IS the declaration D13 verifies against — the same value `@scp/coordination-as-code`'s
    *  pipeline constructs write (`addSourceMapping({..., type: kind})`). */
   async function declareAndReport(
     declaredType: string,
