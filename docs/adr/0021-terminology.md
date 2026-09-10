@@ -12,6 +12,8 @@
 >
 > **This document's own examples are deliberately left as written.** They are the dated record of a 2026-07-24 decision, and this ADR's own Consequences warn against asserting history the repository does not contain — retro-editing the examples would make the record claim the project used words on that date that it did not. Read the examples here as *grammar* illustrations whose env values have since been restyled; read the GLOSSARY for the current spelling. Environment strings are and remain **operator data** that SCP never enforces, so nothing in the schema, the API, or a live estate changes because of this ruling.
 
+> **AMENDED 2026-09-10 by [ADR-0048](0048-coordination-as-code.md) — a fourth collision, resolved after this ADR was written.** "IaC" carried three unrelated senses: a tenant's release content (**configuration as code**), SCP's *own* registry declared as code, and the `scp-managed-iac` executor. ADR-0048 names the second **Coordination as Code** and rules that it is **never abbreviated**, because `CaC` is long-established here for the first. Nothing this ADR decided is changed or reopened; ADR-0048 extends its remit to a word it did not cover.
+
 **ADR number.** `0020-first-class-commander-scanning.md` is the highest ADR currently on `main`; `0021` is the next free number and is the one taken here.
 
 ---
