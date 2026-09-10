@@ -85,7 +85,7 @@ Without this half the namespace is a feature, not a guard — an author who reac
 
 Enforced at peer-config **authoring** only (`pairPeer`, `updatePeerTransport`), keyed off the DECLARED scope. `entryMatchesScope` stays the pure synchronous predicate both ends apply to identical input, which is the entire basis of the import-side re-filter. An already-stored `custom` scope keeps filtering as it does today until someone edits it.
 
-**5e. WITHDRAWN — `assertPolicyScopeWithinAuthority` at the hand-fill and overlay doors.** An earlier revision of this proposal added that call to `federation/handfill-repo.ts` and `federation/overlay-repo.ts`, on the finding that the check's own three-site census (typed `/policies`, `iac/plans-repo.ts` create, `iac/plans-repo.ts` update) had missed two free-form-`typeId` doors that reach `createObject` directly. **That finding was correct when it was written and is no longer correct.** PR #244 (M22) merged in the interim and closed both doors by a different and stronger route:
+**5e. WITHDRAWN — `assertPolicyScopeWithinAuthority` at the hand-fill and overlay doors.** An earlier revision of this proposal added that call to `federation/handfill-repo.ts` and `federation/overlay-repo.ts`, on the finding that the check's own three-site census (typed `/policies`, `coordination-as-code/plans-repo.ts` create, `coordination-as-code/plans-repo.ts` update) had missed two free-form-`typeId` doors that reach `createObject` directly. **That finding was correct when it was written and is no longer correct.** PR #244 (M22) merged in the interim and closed both doors by a different and stronger route:
 
 - `federation/overlay-repo.ts` gained a governance-managed type check requiring **org-root `policy:write`**;
 - `federation/handfill-repo.ts` gained `assertGovernanceAuthorityForHandFill`, the same bar.
@@ -118,7 +118,7 @@ The calls, and cases F1–F3, are **removed**. The doors' real coverage is `gove
 
 **CEL conditions are not restricted.** `subject.labels` is in the CEL evaluation context (`evaluate.ts`'s `buildCelContext`), so `subject.labels.tier == "pci"` is exactly as evadable as the selector was. It is left alone for two reasons: statically restricting CEL text is fragile and would break legitimate *advisory* conditions that want tenant data ("warn if `labels.experimental`"); and the namespace already gives a condition author a tamper-proof key today — `subject.labels["scp.governance/tier"]` is now an operator-set fact. That is a documentation change, not a code one, and it is the honest scope. `cel-sandbox.ts` already documents the context as "partly attacker-controlled" for a different reason (complexity/DoS).
 
-**Route-level write permissions are not changed.** Hand-fill still authorizes with `federation:write` and overlay with `object:write`, where `iac/plans-repo.ts`'s `writePermissionFor` demands `policy:write` for the same types. Raising that bar is a *new* decision with its own blast radius, not the completion of an existing one, so it is reported (§8.5) rather than taken.
+**Route-level write permissions are not changed.** Hand-fill still authorizes with `federation:write` and overlay with `object:write`, where `coordination-as-code/plans-repo.ts`'s `writePermissionFor` demands `policy:write` for the same types. Raising that bar is a *new* decision with its own blast radius, not the completion of an existing one, so it is reported (§8.5) rather than taken.
 
 ### 7a. The residual that matters most — re-parenting, and it is MEASURED, not suspected
 

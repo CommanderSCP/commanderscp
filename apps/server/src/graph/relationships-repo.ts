@@ -189,7 +189,7 @@ export interface CreateRelationshipInput {
   fromId: string;
   toId: string;
   properties?: Record<string, unknown>;
-  /** Mirrors `objects.labels` (schema.ts doc). IaC applies (`iac/plans-repo.ts`) set the
+  /** Mirrors `objects.labels` (schema.ts doc). IaC applies (`coordination-as-code/plans-repo.ts`) set the
    *  `scp:managed-by`/`scp:stack` markers here, but since drizzle/0068 those are a DESCRIPTIVE
    *  MIRROR: what an apply prunes on is the server-written `relationships.managed_by_stack` column,
    *  which this input deliberately cannot set. */

@@ -542,7 +542,7 @@ Two corrections, both found by building the clause rather than by reading it.
 **(a) It is enforced at the write choke point, not at the typed route.** The first cut installed the
 refusal in exactly one place: the composed `validateWrite` of the typed `/policies` routes. Its
 sibling in that same composition, `assertPolicyScopeWithinAuthority`, was already installed in
-**three** — that config plus `iac/plans-repo.ts`'s create and update branches — which is the tell
+**three** — that config plus `coordination-as-code/plans-repo.ts`'s create and update branches — which is the tell
 that the route was never the boundary. Three doors reached `createObject` with a free-form `typeId`
 and free-form `properties` and planted the exact document the typed route answers 400 to, each
 reproduced end to end: **IaC** (`POST /plans` + `/plans/{id}/apply` — which made `routes/plans.ts`'s

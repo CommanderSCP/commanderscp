@@ -226,7 +226,7 @@ export const relationships = pgTable(
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
     // drizzle/0068 — mirrors `objects.managed_by_stack`; see that column for the full reasoning.
-    // Same single writer (`iac/stack-ownership.ts`), same non-federating behaviour, same reason.
+    // Same single writer (`coordination-as-code/stack-ownership.ts`), same non-federating behaviour, same reason.
     managedByStack: text("managed_by_stack"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true })

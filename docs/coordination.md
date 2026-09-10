@@ -2044,7 +2044,7 @@ AN UNRESOLVABLE REFERENCE IS NOT THIS CHECK'S BUSINESS. It resolves without thro
 
 ### §220. Campaign wrapper reading `properties.targets`
 
-Campaign wrapper reading `properties.targets` — every write path that can create/update a `campaign` graph object must call this (mirroring `assertPolicyScopeWithinAuthority`'s call sites): `coordination/campaign-repo.ts`'s `proposeCampaign` does the equivalent per-target loop inline (it needs the resolved ids back for the plan compiler); this entry point is for the paths that DON'T go through `proposeCampaign` — `routes/objects-generic.ts` blocks `campaign` outright, so the one remaining path is `iac/plans-repo.ts`'s `POST /plans/{id}/apply`.
+Campaign wrapper reading `properties.targets` — every write path that can create/update a `campaign` graph object must call this (mirroring `assertPolicyScopeWithinAuthority`'s call sites): `coordination/campaign-repo.ts`'s `proposeCampaign` does the equivalent per-target loop inline (it needs the resolved ids back for the plan compiler); this entry point is for the paths that DON'T go through `proposeCampaign` — `routes/objects-generic.ts` blocks `campaign` outright, so the one remaining path is `coordination-as-code/plans-repo.ts`'s `POST /plans/{id}/apply`.
 
 ## `apps/server/src/coordination/campaign-status.ts`
 
@@ -2266,7 +2266,7 @@ CENSUS RESULT, 2026-08-08 (filterless sweep of every `orderBy` + `limit` pair in
     - `campaign-rollback.ts`'s `authoritativeCampaignMembers` -> `triggerRollback`: operator-
       driven, not a tick, and every member write goes through `triggerRollback`, which already
       refuses a foreign-origin change and reports it as a `skipped` reason.
-    - `proposeCampaign` / `iac/plans-repo.ts`'s
+    - `proposeCampaign` / `coordination-as-code/plans-repo.ts`'s
       campaign apply: actor-driven creates and updates through `createObject`/`updateObject`,
       which carry the replica guard themselves ("object is a read-only replica").
     - `getCampaignStatus`, `listCampaigns`, `getCampaign`, `routes/campaigns.ts`'s `:id/explain`:
@@ -3774,17 +3774,17 @@ Every binding whose target is one of `targetObjectIds` — the IaC ownership-sco
 
 ### §442. Resolves the bound target's locality for the audit append
 
-Resolves the bound target's `domainLocal` flag for the `subjectDomainLocal` argument every audit append below needs (ADR-0031 S2 / M20.2) — one cheap `objects` read by id, keyed exactly the way every write door here already keys its own row (`orgId`, `targetObjectId`). None of the four binding-identity write doors in this module load the target OBJECT for any other reason (they only ever touch `executor_bindings`, itself keyed by the target's id), so this is resolved HERE, at the one place the audit call already lives, rather than threaded as a parameter through every route and `iac/plans-repo.ts` call site — the same reasoning `UpsertExecutorBindingInput.actorObjectId`'s doc comment gives for centralizing the audit write itself: one door covered once, not five that could drift. Missing target (should not happen inside a transaction that is itself mutating that target's binding) reads `false` — the pre-existing behavior of journaling unconditionally — rather than inventing a new failure mode for an edge case that was never previously distinguished.
+Resolves the bound target's `domainLocal` flag for the `subjectDomainLocal` argument every audit append below needs (ADR-0031 S2 / M20.2) — one cheap `objects` read by id, keyed exactly the way every write door here already keys its own row (`orgId`, `targetObjectId`). None of the four binding-identity write doors in this module load the target OBJECT for any other reason (they only ever touch `executor_bindings`, itself keyed by the target's id), so this is resolved HERE, at the one place the audit call already lives, rather than threaded as a parameter through every route and `coordination-as-code/plans-repo.ts` call site — the same reasoning `UpsertExecutorBindingInput.actorObjectId`'s doc comment gives for centralizing the audit write itself: one door covered once, not five that could drift. Missing target (should not happen inside a transaction that is itself mutating that target's binding) reads `false` — the pre-existing behavior of journaling unconditionally — rather than inventing a new failure mode for an edge case that was never previously distinguished.
 
 ### §443. WHO/WHAT REQUEST is doing this write
 
-WHO/WHAT REQUEST is doing this write — carried through to `executor.binding.put`'s audit event (2026-08-25 gap: PUT and DELETE binding wrote no audit event at all; the only executor-ish audit action ever written was `change.wave_target.no_executor`, a READ-time observation, not a record of the binding itself changing). Threaded HERE rather than appended at each call site, the same "one shared write, every caller covered" idiom `objects-repo.ts`'s `createObject` and `relationships-repo.ts`'s `createRelationship` already use (M6's audit-repo doc: "zero additional call-site wiring anywhere else in the codebase") — this is the ONE function every binding write already funnels through (the typed routes AND `iac/plans-repo.ts`'s apply-time create/update loop), so putting the audit call here covers both doors in one change instead of two that could drift.
+WHO/WHAT REQUEST is doing this write — carried through to `executor.binding.put`'s audit event (2026-08-25 gap: PUT and DELETE binding wrote no audit event at all; the only executor-ish audit action ever written was `change.wave_target.no_executor`, a READ-time observation, not a record of the binding itself changing). Threaded HERE rather than appended at each call site, the same "one shared write, every caller covered" idiom `objects-repo.ts`'s `createObject` and `relationships-repo.ts`'s `createRelationship` already use (M6's audit-repo doc: "zero additional call-site wiring anywhere else in the codebase") — this is the ONE function every binding write already funnels through (the typed routes AND `coordination-as-code/plans-repo.ts`'s apply-time create/update loop), so putting the audit call here covers both doors in one change instead of two that could drift.
 
 ### §444. Deletes a target's binding for one Type (M12 P5c)
 
 Deletes a target's binding for one Type (M12 P5c) — a HARD delete (executor_bindings has no soft-delete column; a binding is config, not an audited graph object). Detaching a binding is the primitive that was missing: before P5c a binding could be created and repointed but never removed, so a stale/mis-imported binding polled forever. Returns the deleted row (for the route to report), or undefined if no such binding exists (the route 404s).
 
-WRITES `executor.binding.delete` in THIS transaction, same reasoning as `upsertExecutorBinding`'s doc — this is the one function both the DELETE route and `iac/plans-repo.ts`'s apply-time prune funnel through, so the audit event needs writing here once, not per caller. A no-op delete (no such binding) writes NOTHING — there is no row to name, and the route 404s instead.
+WRITES `executor.binding.delete` in THIS transaction, same reasoning as `upsertExecutorBinding`'s doc — this is the one function both the DELETE route and `coordination-as-code/plans-repo.ts`'s apply-time prune funnel through, so the audit event needs writing here once, not per caller. A no-op delete (no such binding) writes NOTHING — there is no row to name, and the route 404s instead.
 
 ### §445. THE LANE FALLBACK, IN ONE PLACE
 
@@ -3798,7 +3798,7 @@ FALLBACK IS READ-TIME, NEVER STORED. The reconciler writes rows only for lanes s
 
 ### §446. WHICH LANE to delete
 
-WHICH LANE to delete. Defaults to `"build"`, which is what both existing callers (the DELETE route and `iac/plans-repo.ts`'s apply-time prune) mean.
+WHICH LANE to delete. Defaults to `"build"`, which is what both existing callers (the DELETE route and `coordination-as-code/plans-repo.ts`'s apply-time prune) mean.
 
 THIS PARAMETER CLOSES A DEFECT THE LANE COLUMN OPENED, and it is worth stating plainly because the column shipped one commit earlier (migration 0105): this DELETE was keyed on `(org, target, type)`, so once a target held two lanes it deleted BOTH ROWS and then audited exactly one of them — `.returning()` destructures the first. The identity grew a dimension and three consumers had to grow with it; `getExecutorBinding` and `upsertExecutorBinding` were updated with the column, and this one was not. Latent rather than live (nothing wrote a test lane until the reconciler existed), and fixed before the reconciler starts pruning per lane.
 

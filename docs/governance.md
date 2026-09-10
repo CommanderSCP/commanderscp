@@ -255,7 +255,7 @@ The ruling was first implemented at `POST /api/v1/campaigns/{id}/deadline` and n
 ```text
 1. `POST /api/v1/campaigns/{id}/deadline` -> `coordination/campaign-repo.ts::setCampaignDeadline`
    -> `updateObject`. The one door the route-level check can see.
-2. **IaC apply** -> `iac/plans-repo.ts`'s `executePlanDiff` -> `updateObject` DIRECTLY, with a
+2. **IaC apply** -> `coordination-as-code/plans-repo.ts`'s `executePlanDiff` -> `updateObject` DIRECTLY, with a
    free-form `typeId` and free-form `properties`. `iac/plan-diff.ts` diffs `properties`
    WHOLESALE and `executePlanDiff` replaces it wholesale, so a manifest naming the campaign's
    urn with `typeId: "campaign"` and `deadline` omitted (or moved to 2099) produced EXACTLY the
@@ -1399,7 +1399,7 @@ ENFORCED AT PEER-CONFIG AUTHORING ONLY. `entryMatchesScope` stays a pure, synchr
 
 Object types the governance subsystem owns end to end (DESIGN §10.1/§10.2): `policy` documents bind their DECLARED `properties.scope` to the author's own authority (governance/policy-scope-authz.ts, CRITICAL #1b); `control` documents are the entries a policy's `requireControls` effect can reference. Both are gated behind `policy:write` — never the generic `object:write` every other typed resource uses (routes/typed-registries.ts's `GOVERNANCE_TYPED_REGISTRY_RESOURCES`).
 
-Single source of truth for every write path that must special-case these types instead of treating them like an ordinary graph object (security fast-follow after PR #9's adversarial review found the generic `/objects/{type}` endpoint and the IaC plan/apply path both skipped this entirely — a live governance bypass): - `routes/objects-generic.ts` refuses to create/update/delete these types at all, routing callers to the typed `/policies`/`/controls` resources instead. - `iac/plans-repo.ts` enforces the same `policy:write` permission (and, for `policy`, the same `assertPolicyScopeWithinAuthority` scope binding) a client-controlled manifest could otherwise use to plant an org-wide policy through `POST /plans` + `.../apply`.
+Single source of truth for every write path that must special-case these types instead of treating them like an ordinary graph object (security fast-follow after PR #9's adversarial review found the generic `/objects/{type}` endpoint and the IaC plan/apply path both skipped this entirely — a live governance bypass): - `routes/objects-generic.ts` refuses to create/update/delete these types at all, routing callers to the typed `/policies`/`/controls` resources instead. - `coordination-as-code/plans-repo.ts` enforces the same `policy:write` permission (and, for `policy`, the same `assertPolicyScopeWithinAuthority` scope binding) a client-controlled manifest could otherwise use to plant an org-wide policy through `POST /plans` + `.../apply`.
 
 Adding a new governance-owned type later means updating this one set and re-checking the two call sites above — not re-auditing every write path in the codebase from scratch.
 
@@ -1435,7 +1435,7 @@ WHY A SECOND SET AND NOT A SECOND MEANING FOR THE FIRST. `GOVERNANCE_MANAGED_OBJ
 THE HOLE THIS CLOSES, MEASURED ON THE M25.7 TREE BEFORE IT EXISTED. An actor holding `policy:write` at a narrow domain — and `freeze:write` / `federation:write` NOWHERE — could `POST /plans` a manifest object of `typeId: "freeze"` and apply it. Three things then went wrong at once, and only the first is a permission problem:
 
 ```text
-1. `iac/plans-repo.ts`'s `writePermissionFor` mapped the type to `policy:write`, which the
+1. `coordination-as-code/plans-repo.ts`'s `writePermissionFor` mapped the type to `policy:write`, which the
    actor held, so the freeze's two REAL gates (`freeze:write` at its scope, `federation:write`
    on top for the federating form) were bypassed entirely — `policy:write` became a complete
    substitute for both.
@@ -1452,7 +1452,7 @@ REFUSAL LOSES NOTHING REAL, which is the test this repo applies before refusing 
 
 BEFORE ADDING A MEMBER, the question is the one that separates this set from the governance one: does a row of this type require a SECOND write, in another table, that only a typed route performs? If yes it belongs here, whatever its permission story is. `scan_override_grant` does NOT — it is wholly an object — which is why it stays governance-managed and permission-gated.
 
-The doors that consult this set are the three that would otherwise upgrade rather than refuse: - `iac/plans-repo.ts`'s `prepareApplyChecks` (per-entry, every non-`noop` action) - `federation/overlay-repo.ts`'s `createOverlay` - `federation/handfill-repo.ts`'s `assertGovernanceAuthorityForHandFill` The other two already refuse every governance-managed type, so a member of this set is refused there by the wider rule; `governance-managed-write-doors.integration.test.ts` drives all five with an actor holding every permission those doors ask for EXCEPT `freeze:write`, so "refused" is measured rather than assumed.
+The doors that consult this set are the three that would otherwise upgrade rather than refuse: - `coordination-as-code/plans-repo.ts`'s `prepareApplyChecks` (per-entry, every non-`noop` action) - `federation/overlay-repo.ts`'s `createOverlay` - `federation/handfill-repo.ts`'s `assertGovernanceAuthorityForHandFill` The other two already refuse every governance-managed type, so a member of this set is refused there by the wider rule; `governance-managed-write-doors.integration.test.ts` drives all five with an actor holding every permission those doors ask for EXCEPT `freeze:write`, so "refused" is measured rather than assumed.
 
 FEDERATION JOURNAL REPLAY IS NOT A DOOR HERE EITHER, and for this set the reason is doubled: `import-repo.ts`'s `object_upsert` branch is exactly where a `freeze` object is SUPPOSED to arrive, and it is the branch that then writes the projection row.
 
@@ -1631,13 +1631,13 @@ So the second property is stated over `PROJECTION_BOUND_OBJECT_TYPE_IDS` and the
 MUTATIONS RUN 2026-08-24, MEASURED not predicted. Baseline: 24 passed.
 
 ```text
-P-1  DELETE all three `isProjectionBoundObjectType` refusals (`iac/plans-repo.ts`,
+P-1  DELETE all three `isProjectionBoundObjectType` refusals (`coordination-as-code/plans-repo.ts`,
        `federation/overlay-repo.ts`, `federation/handfill-repo.ts`)
        -> 1 failed, on the FIRST door in the table, with the object live in the response:
           "POST /api/v1/federation/overlays accepted a 'freeze' from an actor with no
            'freeze:write': {…"typeId":"freeze"…"originDomainId":"01a035ea-85f5-…"…}:
            expected 201 to be 403"
-P-2  DELETE only `iac/plans-repo.ts`'s
+P-2  DELETE only `coordination-as-code/plans-repo.ts`'s
        -> "POST /api/v1/plans + /apply accepted a 'freeze' … "status":"applied" …
            expected 200 to be 403"
 P-3  DELETE only `federation/handfill-repo.ts`'s
@@ -1668,7 +1668,7 @@ LAYER 3 — THE DOORS. Every call to the choke point's write surface whose `type
 
 A string literal is exempt because the type is then fixed at the call site: `createObject({typeId: "component"})` can never produce a `policy` no matter what the request says. Everything else is in the table, including the internal and import-channel sites, each with the reason it is safe — "not listed" and "listed as safe" have to be different states or the table is just a filter.
 
-`deleteObject` IS one of the write names, and its absence was a hole: the scan used to name `createObject`/`updateObject`/`upsertObjectByUrn` only, so a door that DELETED a governance object with a caller-supplied `typeId` passed it silently. Removing a `required` policy is exactly as governance-relevant as installing one. Adding it surfaced `iac/plans-repo.ts`'s apply-delete branch (`entry.typeId`), which is accounted for below — `prepareApplyChecks` demands `writePermissionFor(entry.typeId)` for every non-`noop` action, delete included.
+`deleteObject` IS one of the write names, and its absence was a hole: the scan used to name `createObject`/`updateObject`/`upsertObjectByUrn` only, so a door that DELETED a governance object with a caller-supplied `typeId` passed it silently. Removing a `required` policy is exactly as governance-relevant as installing one. Adding it surfaced `coordination-as-code/plans-repo.ts`'s apply-delete branch (`entry.typeId`), which is accounted for below — `prepareApplyChecks` demands `writePermissionFor(entry.typeId)` for every non-`noop` action, delete included.
 
 Deliberately NOT filtered to `routes/`: three of the five doors (`overlay-repo`, `handfill-repo`, `plans-repo`) live under `federation/` and `iac/`, and a filter is where the next instance hides.
 
@@ -1697,7 +1697,7 @@ LAYER 1's reviewed table: every exported callable of `graph/objects-repo.ts`, cl
 
 Sets `managed_by_stack` on rows an IaC apply DECLARES (drizzle/0068). Same shape as the two above: no insert, no `type_id` in the `set`, and the rows are selected by an id list the caller already resolved. It is a raw write on purpose — the column is not federated content and must not allocate a journal sequence or a revision, so routing it through the choke point would be wrong, not merely unnecessary.
 
-WHY IT IS SAFE IS NOT "IT CANNOT MINT A TYPE" ALONE — this column decides which rows an apply DELETES, so being outside the choke point deserves the second sentence. It is unreachable from any request: nothing in `objects-repo.ts`'s inputs, no route, and no schema can express it, so it moves only when `iac/plans-repo.ts`'s apply moves it, on ids that apply already authorized per entry. That is the entire point of moving stack ownership out of tenant-writable `labels`.
+WHY IT IS SAFE IS NOT "IT CANNOT MINT A TYPE" ALONE — this column decides which rows an apply DELETES, so being outside the choke point deserves the second sentence. It is unreachable from any request: nothing in `objects-repo.ts`'s inputs, no route, and no schema can express it, so it moves only when `coordination-as-code/plans-repo.ts`'s apply moves it, on ids that apply already authorized per entry. That is the entire point of moving stack ownership out of tenant-writable `labels`.
 
 ### §181. A verified shared entry converges rather than refusing
 
@@ -2323,14 +2323,14 @@ Disabling a rung that is not enabled is a 404 at the route, not here.
 THE RUNG WRITE'S EFFECTS, IN ONE PLACE — shared by every door that may enable or disable one.
 
 WHY THIS MODULE EXISTS RATHER THAN A SECOND COPY IN THE IaC APPLY PATH
-`routes/governance-move.ts` was the only writer when the lattice was built. Adding the IaC surface (charter principle 3: API -> SDK -> CLI -> IaC, the follow-up named in proposal `governance-reach-on-containment-move.md` §9.6 Q4) makes `iac/plans-repo.ts`'s apply a SECOND door into `governance_move_rungs`, and a rung write is not a row write — two things happen around it, and both are obligations rather than niceties:
+`routes/governance-move.ts` was the only writer when the lattice was built. Adding the IaC surface (charter principle 3: API -> SDK -> CLI -> IaC, the follow-up named in proposal `governance-reach-on-containment-move.md` §9.6 Q4) makes `coordination-as-code/plans-repo.ts`'s apply a SECOND door into `governance_move_rungs`, and a rung write is not a row write — two things happen around it, and both are obligations rather than niceties:
 
 1. A DECISION IS RECORDED, under one kind, so `GET /decisions?kind=governance.move_enforcement` answers "every rung this org ever enabled or disabled" in one index descent. A second writer that skips it makes that sentence FALSE for whichever rungs happened to arrive through IaC — the class of self-contradiction this repo keeps finding in its own accepted documents — and breaks charter principle 6 for exactly the acts an auditor would go looking for. 2. AN AUDIT EVENT IS APPENDED, hash-chained in the same transaction as the write.
 
-Both are inseparable from the row, so they live WITH the row rather than beside each caller. The route and `iac/plans-repo.ts` call these two functions; neither reimplements any of it. This is `dependencies/producer-declaration.ts`'s shape, applied unchanged — that module's header carries the longer form of the argument.
+Both are inseparable from the row, so they live WITH the row rather than beside each caller. The route and `coordination-as-code/plans-repo.ts` call these two functions; neither reimplements any of it. This is `dependencies/producer-declaration.ts`'s shape, applied unchanged — that module's header carries the longer form of the argument.
 
 WHAT IS *NOT* HERE, AND WHY
-- THE AUTHORIZATION. It is the same pair at both doors (`governanceMoveRungScopeCheck`), but the doors CONSUME it differently: the route authorizes inline, while `iac/plans-repo.ts` pushes every check into one list its route drains to completion BEFORE any mutation runs. So the pair is expressed once and applied twice, exactly like `dependencyProducerScopeCheck`. - THE MONOTONE REFUSAL on a disable (409 while an upper rung is enabled). It lives in `move-enforcement.ts`'s `disableGovernanceMoveRung`, which both doors reach through here, so a manifest that drops a rung under an enabled ancestor fails its apply with the verb's own sentence rather than with a second, differently-worded copy. - THE "IS THERE A RUNG HERE AT ALL" CHECK. The route 404s on the caller's own `idOrUrn`; the IaC path 404s as an apply-time prune miss. Same rule, two genuinely different messages, and each door has already had to establish the answer before it gets here. - THE SUBJECT-TYPE CHECK (`assertRungSubjectType`). Same reason: the route runs it on a live lookup, the IaC path re-derives it from the STORED diff.
+- THE AUTHORIZATION. It is the same pair at both doors (`governanceMoveRungScopeCheck`), but the doors CONSUME it differently: the route authorizes inline, while `coordination-as-code/plans-repo.ts` pushes every check into one list its route drains to completion BEFORE any mutation runs. So the pair is expressed once and applied twice, exactly like `dependencyProducerScopeCheck`. - THE MONOTONE REFUSAL on a disable (409 while an upper rung is enabled). It lives in `move-enforcement.ts`'s `disableGovernanceMoveRung`, which both doors reach through here, so a manifest that drops a rung under an enabled ancestor fails its apply with the verb's own sentence rather than with a second, differently-worded copy. - THE "IS THERE A RUNG HERE AT ALL" CHECK. The route 404s on the caller's own `idOrUrn`; the IaC path 404s as an apply-time prune miss. Same rule, two genuinely different messages, and each door has already had to establish the answer before it gets here. - THE SUBJECT-TYPE CHECK (`assertRungSubjectType`). Same reason: the route runs it on a live lookup, the IaC path re-derives it from the STORED diff.
 
 ### §260. THE AUTHORITY EVERY RUNG WRITE TAKES
 
@@ -3256,7 +3256,7 @@ A label the tier vocabulary does not know contributes nothing — `tierRank` ret
 M22.6 (ADR-0033 §6a; owner decisions D3, D4) — A GRANT MAY BE *RAISED* THROUGH ANY WRITE DOOR; IT MAY ONLY BE *DECIDED* THROUGH THE ONE THAT ARBITRATES IT.
 
 THE HOLE THIS CLOSES — A SECOND DOOR STRAIGHT TO THE REPO LAYER
-`scan_override_grant` is in `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`, and the previous version of this feature relied on that alone. The set buys exactly two things: the generic `/objects/{type}` endpoint refuses the type outright, and `iac/plans-repo.ts` demands `policy:write` at the target domain instead of `object:write`. The routes' own docblock then reasoned "without that, a holder of plain `object:write` could write `{status: "approved", expiresAt: "2099-…"}` directly" — true, and not the whole shape. A holder of `policy:write` at a CONTAINMENT DOMAIN — an ordinary scoped policy-author binding — could submit an IaC manifest creating exactly that document and `POST /plans/{id}/apply` it. `drizzle/0075`'s `property_schema` is typed-but-OPEN (it must be: `import-repo.ts` Ajv-validates with no try/catch and one rejection aborts a peer's whole signed bundle), so it accepts `status: "approved"` and a free-string `expiresAt`. The result was an already-approved grant with NO tier check on the rule being waived, NO Decision, NO hash-chained audit event and NO future-expiry validation — every guarantee of the override design, routed around.
+`scan_override_grant` is in `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`, and the previous version of this feature relied on that alone. The set buys exactly two things: the generic `/objects/{type}` endpoint refuses the type outright, and `coordination-as-code/plans-repo.ts` demands `policy:write` at the target domain instead of `object:write`. The routes' own docblock then reasoned "without that, a holder of plain `object:write` could write `{status: "approved", expiresAt: "2099-…"}` directly" — true, and not the whole shape. A holder of `policy:write` at a CONTAINMENT DOMAIN — an ordinary scoped policy-author binding — could submit an IaC manifest creating exactly that document and `POST /plans/{id}/apply` it. `drizzle/0075`'s `property_schema` is typed-but-OPEN (it must be: `import-repo.ts` Ajv-validates with no try/catch and one rejection aborts a peer's whole signed bundle), so it accepts `status: "approved"` and a free-string `expiresAt`. The result was an already-approved grant with NO tier check on the rule being waived, NO Decision, NO hash-chained audit event and NO future-expiry validation — every guarantee of the override design, routed around.
 
 The permission mapping was never the defence. The defence is that the DECISION FIELDS are writable only by the act that decides, and that has to be enforced where the data lands.
 

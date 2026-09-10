@@ -16,7 +16,7 @@ export type SyncAttemptOutcome =
   | { stage: "authz_refused"; refusals: readonly SyncAuthzRefusal[] }
   | { stage: "freeze_held"; freezeIds: readonly string[] }
   /** Reached apply. `changedEntryCount` is the number of non-noop diff entries — the same
-   *  noop-exemption convention `iac/plans-repo.ts` uses everywhere else in this codebase — and is
+   *  noop-exemption convention `coordination-as-code/plans-repo.ts` uses everywhere else in this codebase — and is
    *  what distinguishes `applied` from `no_op` below; it is never inferred from `stage` alone. */
   | { stage: "plan_computed"; changedEntryCount: number };
 

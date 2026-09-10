@@ -7,7 +7,7 @@
 
 ## 1. The defect
 
-`iac/plan-diff.ts`'s `isStackManaged` and `iac/plans-repo.ts`'s
+`iac/plan-diff.ts`'s `isStackManaged` and `coordination-as-code/plans-repo.ts`'s
 `labels @> {"scp:managed-by":"iac","scp:stack":"<name>"}` decided the IaC **prune pool** — which live
 objects and relationships an apply DELETES — by reading two keys out of the row's own `labels` map.
 
@@ -88,7 +88,7 @@ sentence: *`managed_by_stack` is written by the IaC apply and by nothing else.*
 **4a. The column.** `objects.managed_by_stack` and `relationships.managed_by_stack`
 (`drizzle/0068`), nullable, with a partial index for the pool lookup.
 
-**4b. One writer.** `iac/stack-ownership.ts`, called only from `executePlanDiff`. No route passes
+**4b. One writer.** `coordination-as-code/stack-ownership.ts`, called only from `executePlanDiff`. No route passes
 it; no request body can express it. Each half is a single bulk `UPDATE` whose predicate skips rows
 already carrying this stack, so an apply that changes no ownership writes no rows.
 

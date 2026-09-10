@@ -35,7 +35,7 @@ function emptySnapshot(): PlanDiffSnapshot {
   };
 }
 
-describe("iac/plan-diff: computePlanDiff", () => {
+describe("coordination-as-code/plan-diff: computePlanDiff", () => {
   it("create: a manifest object with no existing URN match becomes a create with merged managed-by labels", () => {
     const manifest: ResolvedManifest = {
       stackName: STACK,
@@ -665,7 +665,7 @@ describe("iac/plan-diff: computePlanDiff", () => {
   });
 });
 
-describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, M12 P5a)", () => {
+describe("coordination-as-code/plan-diff: uncontainedComponentCreates (strict create-in-service, M12 P5a)", () => {
   const SVC = "urn:scp:s:service:checkout";
   const COMP = "urn:scp:s:component:checkout-api";
 
@@ -799,7 +799,7 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
   });
 });
 
-describe("iac/plan-diff: isStackManaged / managedLabels", () => {
+describe("coordination-as-code/plan-diff: isStackManaged / managedLabels", () => {
   it("managedLabels produces the scp:managed-by/scp:stack marker pair", () => {
     expect(managedLabels("my-stack")).toEqual({ "scp:managed-by": "iac", "scp:stack": "my-stack" });
   });
@@ -833,7 +833,7 @@ function ownedObject(urn: string, typeId: string): ResolvedManifest["objects"][n
   return { urn, typeId, name: urn, domainId: null, properties: {}, labels: {} };
 }
 
-describe("iac/plan-diff: source mappings (C1)", () => {
+describe("coordination-as-code/plan-diff: source mappings (C1)", () => {
   const COMP = "urn:scp:billing-platform:component:api";
 
   function mapping(over: Partial<ManifestMapping> = {}): ManifestMapping {
@@ -1004,7 +1004,7 @@ describe("iac/plan-diff: source mappings (C1)", () => {
   });
 });
 
-describe("iac/plan-diff: executor bindings (C1)", () => {
+describe("coordination-as-code/plan-diff: executor bindings (C1)", () => {
   const TARGET = "urn:scp:billing-platform:deployment-target:prod";
   const SYSTEM_ID = "11111111-1111-1111-1111-111111111111";
 
@@ -1141,7 +1141,7 @@ describe("iac/plan-diff: executor bindings (C1)", () => {
   });
 });
 
-describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", () => {
+describe("coordination-as-code/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", () => {
   const COMP = "urn:scp:billing-platform:component:api";
   const FOREIGN = "urn:scp:other-stack:component:theirs";
 
@@ -1245,7 +1245,7 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
   });
 });
 
-describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
+describe("coordination-as-code/plan-diff: duplicateProjectionDeclarations (C1)", () => {
   const COMP = "urn:scp:billing-platform:component:api";
 
   const base = (over: Partial<ResolvedManifest> = {}): ResolvedManifest => ({
@@ -1322,7 +1322,7 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
 });
 
 /** PRODUCER DECLARATIONS (ADR-0032 §7e). See docs/coordination-as-code.md §56. */
-describe("iac/plan-diff: dependency producers", () => {
+describe("coordination-as-code/plan-diff: dependency producers", () => {
   const COMP = "urn:scp:billing-platform:component:lib";
   const OTHER = "urn:scp:billing-platform:component:other";
   const FOREIGN = "urn:scp:other-stack:component:theirs";
@@ -1437,7 +1437,7 @@ describe("iac/plan-diff: dependency producers", () => {
   });
 });
 
-describe("iac/plan-diff: invalidProducerDeclarations", () => {
+describe("coordination-as-code/plan-diff: invalidProducerDeclarations", () => {
   const COMP = "urn:scp:billing-platform:component:lib";
   const FOREIGN = "urn:scp:other-stack:component:theirs";
 

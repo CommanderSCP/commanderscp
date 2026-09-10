@@ -2058,7 +2058,7 @@ Lives in `@scp/schemas` (not `@scp/coordination-as-code`) so both the IaC packag
 
 ### §300. The object id this URN's containing domain resolves to
 
-Object id this URN's containing domain resolves to; `undefined`/omitted defaults to the org root, same as `CreateObjectRequestSchema.domainId` (graph.ts) — read that field's `.describe()` for the full argument, because the default carries the same authorization consequence here: `iac/plans-repo.ts` runs the SAME custody `authorize` at the resolved parent and the same `assertPolicyScopeWithinAuthority` at apply time. An omitted `domainId` therefore puts a narrowly-bound author's check at the org root, and the apply is refused for a scope the manifest never named.
+Object id this URN's containing domain resolves to; `undefined`/omitted defaults to the org root, same as `CreateObjectRequestSchema.domainId` (graph.ts) — read that field's `.describe()` for the full argument, because the default carries the same authorization consequence here: `coordination-as-code/plans-repo.ts` runs the SAME custody `authorize` at the resolved parent and the same `assertPolicyScopeWithinAuthority` at apply time. An omitted `domainId` therefore puts a narrowly-bound author's check at the org root, and the apply is refused for a scope the manifest never named.
 
 The manifest equivalent of ADR-0032 §8g's component-team dependency subscription — note the component's own id in BOTH places, `domainId` for custody (where the row lives, hence who may later change it) and `scope.objectRef` for jurisdiction (what the policy reaches):
 
