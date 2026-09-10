@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import { Component, Service, Stack, Team } from "@scp/iac";
+import { Component, Service, Stack, Team } from "@scp/coordination-as-code";
 import {
   createTestOrg,
   createTestUser,
@@ -9,8 +9,8 @@ import {
   type ListeningTestServer
 } from "../test-support/harness.js";
 
-/** `@scp/iac` server-side plan/apply. See docs/routes.md §308. */
-describe("plans: @scp/iac server-side plan/apply", () => {
+/** `@scp/coordination-as-code` server-side plan/apply. See docs/routes.md §308. */
+describe("plans: @scp/coordination-as-code server-side plan/apply", () => {
   let server: ListeningTestServer;
 
   beforeAll(async () => {

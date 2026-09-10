@@ -337,7 +337,7 @@ export async function deleteExecutorBinding(
   // REQUIRED, not optional: an optional pair here is exactly the shape that lets a future caller
   // silently skip the audit event by omission (the failure mode this increment exists to close —
   // `executor.binding.put`/`.delete` had NO caller writing them at all until now). Both current
-  // callers (the DELETE route, `iac/plans-repo.ts`'s apply-time prune) already hold both.
+  // callers (the DELETE route, `coordination-as-code/plans-repo.ts`'s apply-time prune) already hold both.
   actorObjectId: string,
   requestId: string,
   /** WHICH LANE to delete. See docs/coordination.md §446. */

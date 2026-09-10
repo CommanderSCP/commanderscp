@@ -12,7 +12,7 @@
     { "path": "../../packages/cosign" },
     { "path": "../../packages/schemas" },
     { "path": "../../packages/sdk" },
-    { "path": "../../packages/iac" },
+    { "path": "../../packages/coordination-as-code" },
     { "path": "../../packages/plugin-api" },
     { "path": "../../packages/plugins/fake-executor" },
     { "path": "../../packages/plugins/webhook-control" },

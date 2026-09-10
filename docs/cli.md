@@ -333,9 +333,9 @@ THIS COLUMN WAS CALLED `federated` AND THE NAME WAS A LIE, which is the whole re
 
 TO ANSWER "CAN I LIFT THIS?", resolve the object: `--output json` carries `objectId`, and `scp object get freeze <objectId> --output json` reports `originDomainId` — a replica's is not this instance's, and `DELETE`/`PATCH` answer 409 naming that domain. Surfacing origin on the freeze row itself needs `originDomainId` on the wire (a required-nullable response field plus a join in `listFreezes`); it is deliberately NOT invented here from data that cannot support it.
 
-### §47. `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4)
+### §47. `@scp/coordination-as-code` plan/apply (BUILD_AND_TEST.md §8 M2 item 4)
 
-`@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4) — `scp plan` computes a diff (dry run); `scp apply` does plan + apply in one shot, since that's the natural CLI UX and what "`scp apply` twice = no-op the second time" means end to end, not two manual steps.
+`@scp/coordination-as-code` plan/apply (BUILD_AND_TEST.md §8 M2 item 4) — `scp plan` computes a diff (dry run); `scp apply` does plan + apply in one shot, since that's the natural CLI UX and what "`scp apply` twice = no-op the second time" means end to end, not two manual steps.
 
 ### §48. One `source_mappings` row as a table row
 
@@ -455,15 +455,15 @@ Sibling of `scp graph integrity` in spirit: a report, never a repair. The distin
 
 ### §71. plan / apply
 
-plan / apply (`@scp/iac` server-side plan/apply — BUILD_AND_TEST.md §8 M2 item 4). A manifest file is what `@scp/iac`'s `synthToFile` writes (or any hand-authored/CI-generated JSON matching `DesiredStateManifestSchema`) — the CLI never imports/executes a user's IaC TypeScript program directly, only the synthesized manifest (DESIGN.md §15).
+plan / apply (`@scp/coordination-as-code` server-side plan/apply — BUILD_AND_TEST.md §8 M2 item 4). A manifest file is what `@scp/coordination-as-code`'s `synthToFile` writes (or any hand-authored/CI-generated JSON matching `DesiredStateManifestSchema`) — the CLI never imports/executes a user's IaC TypeScript program directly, only the synthesized manifest (DESIGN.md §15).
 
 ### §72. `scp iac render` (team-pipeline-iac.md D21(d), §12)
 
-`scp iac render` (team-pipeline-iac.md D21(d), §12) — regenerates the human-readable pipeline picture from a SYNTHESIZED manifest. Deliberately OFFLINE (no `clientFromStoredCredentials`, no `--base-url`): D21(d)'s own honesty requirement is that render states plainly what it CANNOT know from a manifest alone (`@scp/iac`'s `render.ts` module doc), which is only true if it never reaches for a network call to paper over that gap. `--write` is committed, drift-checkable codegen — the same convention `scp gen`'s SDK output and `products.ts`'s D20 module both follow.
+`scp iac render` (team-pipeline-iac.md D21(d), §12) — regenerates the human-readable pipeline picture from a SYNTHESIZED manifest. Deliberately OFFLINE (no `clientFromStoredCredentials`, no `--base-url`): D21(d)'s own honesty requirement is that render states plainly what it CANNOT know from a manifest alone (`@scp/coordination-as-code`'s `render.ts` module doc), which is only true if it never reaches for a network call to paper over that gap. `--write` is committed, drift-checkable codegen — the same convention `scp gen`'s SDK output and `products.ts`'s D20 module both follow.
 
 ### §73. `scp iac export` (team-pipeline-iac.md §9/D5)
 
-`scp iac export` (team-pipeline-iac.md §9/D5) — reverse-generates `@scp/iac` construct code (or the synthesized manifest) from a service's LIVE subtree, over the already-generated SDK's own read verbs (`services.get`, `relationships.list`, `components.get`, `placements.list`, `deploymentTargets.get`, `changeSources.listMappings`, the generic `object(type).get`) — the onboarding path for the homelab's ~50 imported components and 61 placements, and for any org bringing an existing estate in (D5). ONLINE (reads the live graph); `--format` picks the shape.
+`scp iac export` (team-pipeline-iac.md §9/D5) — reverse-generates `@scp/coordination-as-code` construct code (or the synthesized manifest) from a service's LIVE subtree, over the already-generated SDK's own read verbs (`services.get`, `relationships.list`, `components.get`, `placements.list`, `deploymentTargets.get`, `changeSources.listMappings`, the generic `object(type).get`) — the onboarding path for the homelab's ~50 imported components and 61 placements, and for any org bringing an existing estate in (D5). ONLINE (reads the live graph); `--format` picks the shape.
 
 ### §74. `scp iac scaffold` (team-pipeline-iac.md §7/D1, ADR-0047)
 
@@ -754,9 +754,9 @@ What this file pins, and why it is not readable from `governance-move-cli-wire.t
 
 ### §116. Export, synth and compare through the real compiler
 
-THE CENTREPIECE: export → synth → compare, executed through the REAL TypeScript compiler and the REAL `@scp/iac` package (team-pipeline-iac.md §9's stated correctness property — "exported ts, when synthesized, must produce a manifest equivalent to the json export of the same scope").
+THE CENTREPIECE: export → synth → compare, executed through the REAL TypeScript compiler and the REAL `@scp/coordination-as-code` package (team-pipeline-iac.md §9's stated correctness property — "exported ts, when synthesized, must produce a manifest equivalent to the json export of the same scope").
 
-`@scp/iac`'s own `estate-program.test.ts` covers the two emitters' behavior in isolation; this file proves the stronger claim neither of those tests can: that the rendered TS source ACTUALLY COMPILES against the published `@scp/iac` surface (not just "looks plausible"), and that RUNNING it produces the same manifest `buildEstateManifest` computes directly from the same `ServiceSpec`.
+`@scp/coordination-as-code`'s own `estate-program.test.ts` covers the two emitters' behavior in isolation; this file proves the stronger claim neither of those tests can: that the rendered TS source ACTUALLY COMPILES against the published `@scp/coordination-as-code` surface (not just "looks plausible"), and that RUNNING it produces the same manifest `buildEstateManifest` computes directly from the same `ServiceSpec`.
 
 MUTATION-WATCHED (restored before commit — see each case's own note): - dropping a placement from `renderEstateProgram`'s emission turns "round-trips a full export" RED (the compared manifests stop matching); - emitting a plausible fabricated `repo` instead of the loud `undefined` placeholder turns "the placeholder case FAILS to typecheck" RED (the compile would now succeed).
 
@@ -764,7 +764,7 @@ MUTATION-WATCHED (restored before commit — see each case's own note): - droppi
 
 ### §117. Turns live SDK reads into the shape the emitter consumes
 
-Turns LIVE SDK reads into the `ServiceSpec` shape `@scp/iac`'s shared emitter (`estate-program.ts`) consumes — the CLI-side half of `scp iac export` (team-pipeline-iac.md §9/D5). `scp iac scaffold`'s own reading logic (a `discovery run` proposal, not a live graph walk) lives beside it in `iac-scaffold-reader.ts`; both hand their output to the SAME shared emitter. Everything here talks to `@scp/sdk`; `@scp/iac` stays free of that dependency (its own module doc explains why), so the SDK-shaped reading logic belongs on this side of the boundary.
+Turns LIVE SDK reads into the `ServiceSpec` shape `@scp/coordination-as-code`'s shared emitter (`estate-program.ts`) consumes — the CLI-side half of `scp iac export` (team-pipeline-iac.md §9/D5). `scp iac scaffold`'s own reading logic (a `discovery run` proposal, not a live graph walk) lives beside it in `iac-scaffold-reader.ts`; both hand their output to the SAME shared emitter. Everything here talks to `@scp/sdk`; `@scp/coordination-as-code` stays free of that dependency (its own module doc explains why), so the SDK-shaped reading logic belongs on this side of the boundary.
 
 ### §118. Mirrors the server's list of git-hosting source kinds
 
@@ -778,7 +778,7 @@ Mirrors `apps/server/src/dependencies/manifest-reader.ts`'s `GIT_PROVIDER_MODULE
 
 ### §120. `scp iac export`
 
-`scp iac export` — DRIVEN through `buildProgram().parseAsync([...])` against a stubbed `@scp/sdk` (the house pattern: `outpost-reconcile-precondition.test.ts`/`dependency-read-verbs-wire.test.ts`). What matters here is CLI wiring and honesty, not the emitter's own logic — `@scp/iac`'s `estate-program.test.ts` and this package's `iac-estate-program.roundtrip.test.ts` already prove the emitter itself (round-trip, typecheck, placeholder behavior). This file proves the ACTION BODY actually calls `readServiceExportSpec` off the SDK and prints its answer honestly, including the placeholder count.
+`scp iac export` — DRIVEN through `buildProgram().parseAsync([...])` against a stubbed `@scp/sdk` (the house pattern: `outpost-reconcile-precondition.test.ts`/`dependency-read-verbs-wire.test.ts`). What matters here is CLI wiring and honesty, not the emitter's own logic — `@scp/coordination-as-code`'s `estate-program.test.ts` and this package's `iac-estate-program.roundtrip.test.ts` already prove the emitter itself (round-trip, typecheck, placeholder behavior). This file proves the ACTION BODY actually calls `readServiceExportSpec` off the SDK and prints its answer honestly, including the placeholder count.
 
 ### §121. D5's whole point
 
@@ -800,7 +800,7 @@ D5's whole point: applying an exported program must ADOPT the live topology, nev
 
 ### §124. The `scp iac scaffold` half of the estate-reading layer
 
-The `scp iac scaffold` half of the estate-reading layer (team-pipeline-iac.md §7/D1, ADR-0047) — turns a `discovery run` proposal into `@scp/iac`'s `ServiceSpec` shape, GROUPED into services by the caller-supplied lookup table. Sibling to `iac-estate-reader.ts` (the `scp iac export` half); split into its own file/commit because scaffold's grouping logic is genuinely independent of export's live-graph reads — both hand their output to the SAME shared emitter (`@scp/iac`'s `estate-program.ts`), landed first.
+The `scp iac scaffold` half of the estate-reading layer (team-pipeline-iac.md §7/D1, ADR-0047) — turns a `discovery run` proposal into `@scp/coordination-as-code`'s `ServiceSpec` shape, GROUPED into services by the caller-supplied lookup table. Sibling to `iac-estate-reader.ts` (the `scp iac export` half); split into its own file/commit because scaffold's grouping logic is genuinely independent of export's live-graph reads — both hand their output to the SAME shared emitter (`@scp/coordination-as-code`'s `estate-program.ts`), landed first.
 
 ## `packages/cli/src/index.ts`
 
@@ -998,11 +998,11 @@ THE WORDING TRAP, pinned deliberately. The description was hard-coded to "M12 P4
 
 ### §149. Compiles one generated file against this repo's real types
 
-TEST-ONLY. Compiles ONE generated TypeScript source file (`scp iac export --format ts`'s output, or `scp iac scaffold`'s) against this repo's real strict tsconfig and the REAL `@scp/iac` package — proving the emitter's stated guarantee ("emitted code must actually compile against the real constructs", team-pipeline-iac.md §9) rather than assuming it.
+TEST-ONLY. Compiles ONE generated TypeScript source file (`scp iac export --format ts`'s output, or `scp iac scaffold`'s) against this repo's real strict tsconfig and the REAL `@scp/coordination-as-code` package — proving the emitter's stated guarantee ("emitted code must actually compile against the real constructs", team-pipeline-iac.md §9) rather than assuming it.
 
-The temp project lives INSIDE `packages/cli`'s own directory tree (not `os.tmpdir()`) on purpose: `packages/cli/node_modules/@scp/iac` is a real pnpm workspace symlink (`@scp/iac` is a dependency of this package), so ordinary Node/TS module resolution finds it by walking UP from the compiled file — no `paths` mapping, no dependency on where `os.tmpdir()` happens to point in CI.
+The temp project lives INSIDE `packages/cli`'s own directory tree (not `os.tmpdir()`) on purpose: `packages/cli/node_modules/@scp/coordination-as-code` is a real pnpm workspace symlink (`@scp/coordination-as-code` is a dependency of this package), so ordinary Node/TS module resolution finds it by walking UP from the compiled file — no `paths` mapping, no dependency on where `os.tmpdir()` happens to point in CI.
 
-`emit: true` additionally writes JS to `outDir` so the round-trip test can `import()` and execute it (`estate-program.test.ts`'s sibling in `@scp/iac` covers the same ground at the emitter-unit level; this one proves it through the same compiler a real team's CI would run).
+`emit: true` additionally writes JS to `outDir` so the round-trip test can `import()` and execute it (`estate-program.test.ts`'s sibling in `@scp/coordination-as-code` covers the same ground at the emitter-unit level; this one proves it through the same compiler a real team's CI would run).
 
 ## `packages/cli/vitest.config.ts`
 

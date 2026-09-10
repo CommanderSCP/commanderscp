@@ -77,7 +77,7 @@ npx tsc --init          # becomes tsconfig.base.json: strict, NodeNext, ES2023, 
 
 # 2. Directory skeleton (per DESIGN.md §3 — this layout is binding)
 mkdir -p apps/server apps/web apps/runner-iac \
-  packages/schemas packages/sdk packages/cli packages/iac \
+  packages/schemas packages/sdk packages/cli packages/coordination-as-code \
   packages/plugin-api packages/plugin-testkit \
   packages/plugins/{github,argocd,terraform,managed-iac,oidc,local-auth,webhook-control,webhook-notify,smtp-notify,federation-https} \
   deploy/compose deploy/helm deploy/airgap tools/openapi docs
@@ -101,7 +101,7 @@ cd ../..
 #    packages/schemas       → @scp/schemas       (zod only)
 #    packages/sdk           → @scp/sdk           (dev-dep: @hey-api/openapi-ts)
 #    packages/cli           → @scp/cli           (commander, depends on @scp/sdk; bin: "scp")
-#    packages/iac           → @scp/iac           (depends on @scp/schemas, @scp/sdk)
+#    packages/coordination-as-code           → @scp/coordination-as-code           (depends on @scp/schemas, @scp/sdk)
 #    packages/plugin-api    → @scp/plugin-api    (types only, zero runtime deps)
 #    packages/plugin-testkit→ @scp/plugin-testkit (depends on @scp/plugin-api, vitest as peer)
 pnpm --filter @scp/sdk add -D @hey-api/openapi-ts
@@ -151,7 +151,7 @@ The build order is forced by the single-source-of-truth contract pipeline (DESIG
           └─▶ openapi emit (tools/openapi → openapi.v1.json, COMMITTED)
                  └─▶ @scp/sdk   (generated core via @hey-api/openapi-ts + handwritten layer)
                         ├─▶ @scp/cli
-                        ├─▶ @scp/iac
+                        ├─▶ @scp/coordination-as-code
                         └─▶ apps/web  (SPA; consumes only @scp/sdk)
 @scp/plugin-api (types only — parallel track)
    ├─▶ @scp/plugin-testkit
@@ -295,7 +295,7 @@ Two things follow. First, the placeholder is not a reliable warning: in a Bash t
 
 **`git grep` is right by accident.** Git sniffs only the **first 8000 bytes** for NUL. Three of the four files have their first NUL past that (offsets 10002, 10077, 12581) so git calls them text and searches them; `packages/sdk/src/response-validation.ts` has its first NUL at 4882 and is skipped. A tool that is correct only because of where a byte happens to sit will change its verdict as the file grows. Do not rely on it; `git grep -a` is unconditional.
 
-**Why this is not a footnote.** `apps/server/src/iac/plan-diff.ts` holds the sole label test that makes an object a *delete* candidate. A census of IaC deletion behaviour run the documented way — `grep -rn` over the tree — returns nothing from that file and reports the tree clean. That happened repeatedly before it was caught.
+**Why this is not a footnote.** `apps/server/src/coordination-as-code/plan-diff.ts` holds the sole label test that makes an object a *delete* candidate. A census of IaC deletion behaviour run the documented way — `grep -rn` over the tree — returns nothing from that file and reports the tree clean. That happened repeatedly before it was caught.
 
 **The remedy.** Use `-a` for any census that has to be complete, or do not use grep. `pnpm nul-census` (`scripts/nul-census.mjs`, wired into `pnpm check` and CI job 2) reads bytes rather than trusting a heuristic, prints the current set with `--list`, and fails when the set changes — so "which files need `-a`?" always has a committed answer rather than a remembered one.
 
@@ -326,7 +326,7 @@ docker compose -f deploy/compose/docker-compose.dev.yml up -d   # postgres:16 + 
 pnpm dev                                                        # turbo run dev:
 #   @scp/server  → tsx watch src/main.ts   (SCP_ROLE=all, port 8080, auto-migrate on boot in dev)
 #   @scp/web     → vite dev server, port 5173, proxies /api → localhost:8080
-#   @scp/schemas, @scp/sdk, @scp/cli, @scp/iac → tsc --watch
+#   @scp/schemas, @scp/sdk, @scp/cli, @scp/coordination-as-code → tsc --watch
 ```
 
 Hot reload: server restarts in ~1s via tsx; web HMR via Vite; schema changes ripple through watch-mode `tsc` (SDK regeneration is only needed when routes change: `pnpm gen` = emit spec + regenerate SDK).
@@ -501,8 +501,8 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 
 ### M2 — Registries, Relationships & the Modeled Org (+ IaC, OIDC)
 - **Goal:** charter Phase 1–2 value: register real services/components/domains, model ownership/consumers/dependencies, see it in a real UI, and manage it as code.
-- **Contents:** typed convenience endpoints for domains, services, components, deployment-targets, teams, groups, users, service-accounts (thin layers over the graph); ownership/`consumes`/`depends_on` flows; Web UI v1 (React SPA: login, object browsing, Cytoscape graph/impact explorer fed by named queries, SSE live updates); generic-OIDC identity plugin (Auth Code + PKCE) + PATs + CLI device flow; `@scp/iac` constructs (`Service`, `Component`, `Team`, ownership) with pure synth; server-side `/plans` + `/plans/{id}:apply` diff engine; `scp plan` / `scp apply`; seed script + five-minute-value demo experience (§5.3).
-- **Done / verified by:** E2E: seeded org renders in the graph explorer; `scp service register` → service visible in UI within one SSE tick; an `@scp/iac` stack applied twice is a no-op the second time (plan shows zero actions); OIDC login round-trip tested against a containerized Keycloak fixture; Playwright smoke suite established. Charter five-minute path demonstrable by script.
+- **Contents:** typed convenience endpoints for domains, services, components, deployment-targets, teams, groups, users, service-accounts (thin layers over the graph); ownership/`consumes`/`depends_on` flows; Web UI v1 (React SPA: login, object browsing, Cytoscape graph/impact explorer fed by named queries, SSE live updates); generic-OIDC identity plugin (Auth Code + PKCE) + PATs + CLI device flow; `@scp/coordination-as-code` constructs (`Service`, `Component`, `Team`, ownership) with pure synth; server-side `/plans` + `/plans/{id}:apply` diff engine; `scp plan` / `scp apply`; seed script + five-minute-value demo experience (§5.3).
+- **Done / verified by:** E2E: seeded org renders in the graph explorer; `scp service register` → service visible in UI within one SSE tick; an `@scp/coordination-as-code` stack applied twice is a no-op the second time (plan shows zero actions); OIDC login round-trip tested against a containerized Keycloak fixture; Playwright smoke suite established. Charter five-minute path demonstrable by script.
 
 ### M3 — Changes & Coordination Engine
 - **Goal:** the charter's primary operational responsibility: the Change lifecycle, correlation, plans/waves/topologies, and rollback — proven against the fake executor.
@@ -1337,7 +1337,7 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     apps/server/src/util/canonical-json.ts:21          acc[key] = sortKeysDeep(...)
     apps/server/src/coordination/decisions-repo.ts:264 out[key] = sortKeys(src[key])
     apps/server/src/coordination/test-support/counting-cel-sandbox.ts:143
-    packages/iac/src/canonical.ts:19                   acc[key] = sortKeysDeep(...)
+    packages/coordination-as-code/src/canonical.ts:19                   acc[key] = sortKeysDeep(...)
     packages/schemas/src/federation-journal.ts:52      acc[key] = sortKeysDeep(...)
     ```
 

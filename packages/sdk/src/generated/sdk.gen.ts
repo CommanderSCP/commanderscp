@@ -3138,7 +3138,7 @@ export const listNotificationBindings = <ThrowOnError extends boolean = false>(o
 });
 
 /**
- * Render a discovery proposal as @scp/iac source — writes nothing to the graph
+ * Render a discovery proposal as @scp/coordination-as-code source — writes nothing to the graph
  */
 export const scaffoldDiscoveryProposal = <ThrowOnError extends boolean = false>(options: Options<ScaffoldDiscoveryProposalData, ThrowOnError>): RequestResult<ScaffoldDiscoveryProposalResponses, ScaffoldDiscoveryProposalErrors, ThrowOnError> => (options.client ?? client).post<ScaffoldDiscoveryProposalResponses, ScaffoldDiscoveryProposalErrors, ThrowOnError>({
     responseValidator: async (data) => await zScaffoldDiscoveryProposalResponse.parseAsync(data),

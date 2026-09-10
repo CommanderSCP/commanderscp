@@ -237,7 +237,7 @@ open for the duration of the window, for no user: the platform is pre-release wi
 consumers (proposal header, owner 2026-08-26), so §14 resolution 3 rules no transition flag.
 
 **What replaces it:** `POST /discovery/run` is unchanged and is now the scaffolder's engine. Its
-output becomes `@scp/iac` construct code — through `scp iac scaffold` or the `/connect` wizards —
+output becomes `@scp/coordination-as-code` construct code — through `scp iac scaffold` or the `/connect` wizards —
 which a human groups into services and commits. The graph write then happens through the ordinary
 `POST /plans` + apply path, with strict create and the same authorization every other IaC write gets.
 

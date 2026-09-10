@@ -542,7 +542,7 @@ Two corrections, both found by building the clause rather than by reading it.
 **(a) It is enforced at the write choke point, not at the typed route.** The first cut installed the
 refusal in exactly one place: the composed `validateWrite` of the typed `/policies` routes. Its
 sibling in that same composition, `assertPolicyScopeWithinAuthority`, was already installed in
-**three** — that config plus `iac/plans-repo.ts`'s create and update branches — which is the tell
+**three** — that config plus `coordination-as-code/plans-repo.ts`'s create and update branches — which is the tell
 that the route was never the boundary. Three doors reached `createObject` with a free-form `typeId`
 and free-form `properties` and planted the exact document the typed route answers 400 to, each
 reproduced end to end: **IaC** (`POST /plans` + `/plans/{id}/apply` — which made `routes/plans.ts`'s
@@ -1574,7 +1574,7 @@ identical on each:
 * **CLI** — `scp policy register --domain-id <component-id> --properties '{...}'`
   (`packages/cli/src/cli.ts`; the option's help text is "containing object id (defaults to the org
   root)", the same default and the same consequence).
-* **IaC** — `ManifestObjectSchema.domainId` (`packages/schemas/src/iac.ts`) is the same field with
+* **IaC** — `ManifestObjectSchema.domainId` (`packages/schemas/src/coordination-as-code.ts`) is the same field with
   the same org-root default and the same consequence, though it is spelled differently in the code:
   apply's create branch computes the custody scope as `entry.target?.domainId ?? orgId` rather than
   by calling `resolveDomainId`, so do not go looking for that helper there. It then runs the same

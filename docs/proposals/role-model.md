@@ -5,7 +5,7 @@ API → SDK → CLI → IaC → UI parity chain charter principle 3 requires (**
 `main` on 2026-08-29 by artifact, not by assertion: the five purpose roles seeded
 (`drizzle/0099_rbac_permission_splits_and_purpose_roles.sql`), `authz/role-binding-door.ts`,
 `routes/authz.ts`, `auth/operator-auth.ts`, `auth/identity-sync.ts`,
-`authz/identity-mapping-door.ts`, `iac/iac-rbac-apply.ts`, `packages/iac/src/rbac.ts`,
+`authz/identity-mapping-door.ts`, `iac/iac-rbac-apply.ts`, `packages/coordination-as-code/src/rbac.ts`,
 `apps/web/src/routes/admin-access.tsx`, and all four `ScpClient` facades (`roles`, `roleBindings`,
 `authz`, `operatorCredentials`).
 

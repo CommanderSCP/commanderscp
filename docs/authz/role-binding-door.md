@@ -192,7 +192,7 @@ disagree about what "a subset" means.
 
 AT THE CHOKE POINT, NOT AT THE ROUTE. It is called from `graph/relationships-repo.ts`'s
 `createRelationship`, which is where an edge is actually created, so IaC apply
-(`iac/plans-repo.ts` replays a manifest diff's free-form `typeId`) and discovery-accept
+(`coordination-as-code/plans-repo.ts` replays a manifest diff's free-form `typeId`) and discovery-accept
 (`routes/executors.ts`) inherit it. A route-only version would be invisible to both — the exact
 failure the campaign-deadline fix in this same programme paid for twice before it was moved to
 `updateObject`.
@@ -565,7 +565,7 @@ role-model.md §4.3a):
     directly, which removes no edge at all.
 
 AT THE CHOKE POINTS, not at the routes, for §2a's reason exactly: `deleteObject` and
-`deleteRelationship` are reached by IaC apply (`iac/plans-repo.ts` prunes objects and edges from a
+`deleteRelationship` are reached by IaC apply (`coordination-as-code/plans-repo.ts` prunes objects and edges from a
 manifest diff), by component merge, by placement teardown and by six repos. A route-level copy is
 invisible to all of them, which this programme has already paid for twice.
 

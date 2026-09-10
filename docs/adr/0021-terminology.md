@@ -68,7 +68,7 @@ git grep -I -l domainId da9e92c -- 'apps/**' 'packages/**' \
 
 - **365** non-test source lines, in **73** files.
 - Narrowing the first command by path: **51** of those lines are under `apps/server/src/federation/` (the **trust** sense, `federation_self.domainId`) and **45** under `apps/server/src/graph/` (the **containment** sense, `objects.domainId`).
-- **Two further files match but contribute no counted lines:** `apps/server/src/iac/plan-diff.ts` and `packages/iac/src/construct.ts`. Git classifies both as binary, so `-I` skips them — which is why `git grep -l` *without* `-I` reports **75** files. Both figures are defensible; they simply come from different invocations. **Quote the `-I` pair — 365 lines in 73 files — and name those two files separately. Do not mix figures across invocations**, which is exactly how an unreproducible "365 lines in 75 files" was produced in an earlier draft.
+- **Two further files match but contribute no counted lines:** `apps/server/src/coordination-as-code/plan-diff.ts` and `packages/coordination-as-code/src/construct.ts`. Git classifies both as binary, so `-I` skips them — which is why `git grep -l` *without* `-I` reports **75** files. Both figures are defensible; they simply come from different invocations. **Quote the `-I` pair — 365 lines in 73 files — and name those two files separately. Do not mix figures across invocations**, which is exactly how an unreproducible "365 lines in 75 files" was produced in an earlier draft.
 
 ### B. `stage` — the whole-word census
 

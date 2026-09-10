@@ -260,7 +260,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     const stackName = `gov-doors-${randomUUID().slice(0, 8)}`;
     const name = `iac-escalation-${randomUUID().slice(0, 8)}`;
     // `POST /plans` takes `{manifest: {...}}` (`CreatePlanRequestSchema`, packages/schemas/src/
-    // iac.ts). Spelling the manifest fields at the top level made the route answer 400 for the
+    // coordination-as-code.ts). Spelling the manifest fields at the top level made the route answer 400 for the
     // SHAPE, so the case never reached the door it names — red, but for the wrong reason.
     const plan = await post("/api/v1/plans", operator.token, {
       manifest: {
@@ -758,7 +758,7 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
     // Clears `domain_local` / `domain_local_inherited_from` on one existing row (M20.7). Same shape.
     "federation/publish-domain-local.ts": "clears the domain-local columns on an existing row",
     // Sets `managed_by_stack` on rows an IaC apply DECLARES. See docs/governance.md §180.
-    "iac/stack-ownership.ts":
+    "coordination-as-code/stack-ownership.ts":
       "sets managed_by_stack on already-resolved ids; no insert, no type_id",
     // A verified shared entry converges rather than refusing. See docs/governance.md §181.
     "graph/artifacts-repo.ts":
@@ -780,7 +780,7 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
     // DOOR 4 — `writePermissionFor` demands `policy:write` for every non-`noop` action, plus the
     // declared-scope binding on create/update. `entry.typeId` is the apply-DELETE branch;
     // `target.typeId` is the create and the update.
-    "iac/plans-repo.ts": ["entry.typeId ×1", "target.typeId ×2"],
+    "coordination-as-code/plans-repo.ts": ["entry.typeId ×1", "target.typeId ×2"],
     // DOOR 5 — `policy:write` at the org root (M21.7).
     "federation/handfill-repo.ts": ["input.typeId ×1"],
 

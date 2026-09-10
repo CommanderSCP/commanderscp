@@ -87,7 +87,7 @@ Everything downstream derives from one source of truth: **Zod schemas** on Fasti
 | API stability gate | `oasdiff` breaking-change check in CI on committed spec | Grafted: semantic breaking-change detection is strictly stronger than snapshot testing for the additive-only-within-v1 promise. |
 | Web UI | React 18 + Vite SPA, TanStack Router/Query, Tailwind + shadcn/ui, Cytoscape.js | Static SPA served by the API process; consumes only the generated SDK; no CDN assets (air-gap). |
 | CLI | commander over the SDK (`scp`) | Thin veneer; JSON + table output; PATs and OIDC device flow. |
-| IaC | `@scp/iac` CDK-style constructs → deterministic manifest → server-side plan/apply | Charter mandates CDK-style TypeScript IaC; server-side diff keeps reconciliation logic in one place. |
+| IaC | `@scp/coordination-as-code` CDK-style constructs → deterministic manifest → server-side plan/apply | Charter mandates CDK-style TypeScript IaC; server-side diff keeps reconciliation logic in one place. |
 | Monorepo tooling | pnpm workspaces + Turborepo + Changesets | Boring, fast, offline-cacheable; atomic contract→server→SDK→CLI→IaC changes. |
 | Logging / metrics | pino structured logs; Prometheus metrics endpoint | Standard, self-host-friendly observability. |
 | Signing / integrity | **Two layers.** *Federation transport:* SHA-256 hash chains + Ed25519 domain keys (bundle envelope, journal hash-chain, mTLS, attestations) — unchanged. *Supply chain:* **cosign for release AND cross-boundary promotion artifacts** — all artifact types + the promotion manifest, keyful/offline (`--tlog-upload=false`, no Fulcio/Rekor) ([ADR-0015](adr/0015-cosign-cross-boundary-signing.md)). cosign is **already used on the release path (operator-supplied on `PATH`, unpinned by design)** — **not vendored today**; the runtime sign/verify path must vendor a **pinned** binary at M17.3. The **executor** signs artifacts + the build-time SBOM; the **commander** signs only its own promotion manifest. | Tamper evidence with zero extra infrastructure; works fully offline. Ed25519 and cosign are complementary layers, not alternatives — cosign gives standard external verifiability of artifacts; Ed25519 secures federation transport. |
@@ -109,7 +109,7 @@ commanderscp/
 │   ├── schemas/           # Shared Zod schemas — the single contract source (domain types, API DTOs)
 │   ├── sdk/               # @scp/sdk: @hey-api/openapi-ts generated core + handwritten ergonomic layer
 │   ├── cli/               # @scp/cli: `scp` command tree over the SDK (commander)
-│   ├── iac/               # @scp/iac: CDK-style constructs; pure synth to desired-state manifest
+│   ├── iac/               # @scp/coordination-as-code: CDK-style constructs; pure synth to desired-state manifest
 │   ├── plugin-api/        # @scp/plugin-api: the six plugin interfaces + manifest types (independently semver'd)
 │   ├── plugin-testkit/    # @scp/plugin-testkit: conformance suites plugin authors run per interface version
 │   └── plugins/
@@ -742,7 +742,7 @@ Zod schemas ──▶ OpenAPI 3.1 (committed, oasdiff-gated)
                   └─▶ @scp/sdk        generated core (@hey-api/openapi-ts)
                                       + thin handwritten layer (auth, retries, pagination iterators)
                         └─▶ @scp/cli  `scp` (commander): resource verbs mirror API nouns
-                        └─▶ @scp/iac  CDK-style constructs → pure synth → manifest JSON
+                        └─▶ @scp/coordination-as-code  CDK-style constructs → pure synth → manifest JSON
 ```
 
 - **CLI:** `scp service register`, `scp change accept`, `scp change explain`, `scp policy evaluate`, `scp federation export/import`, `scp audit verify`, `scp plan` / `scp apply`. `--output json|table` everywhere; auth via PAT or OIDC device flow.

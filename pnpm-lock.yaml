@@ -81,9 +81,9 @@ importers:
       '@scp/git-provider-core':
         specifier: workspace:*
         version: link:../../packages/plugins/git-provider-core
-      '@scp/iac':
+      '@scp/coordination-as-code':
         specifier: workspace:*
-        version: link:../../packages/iac
+        version: link:../../packages/coordination-as-code
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
@@ -345,9 +345,9 @@ importers:
 
   packages/cli:
     dependencies:
-      '@scp/iac':
+      '@scp/coordination-as-code':
         specifier: workspace:*
-        version: link:../iac
+        version: link:../coordination-as-code
       '@scp/schemas':
         specifier: workspace:*
         version: link:../schemas
@@ -399,7 +399,7 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
-  packages/iac:
+  packages/coordination-as-code:
     dependencies:
       '@scp/schemas':
         specifier: workspace:*

@@ -603,8 +603,8 @@ registry rather than to infrastructure.
 pipeline) and the **managed IaC executor** `scp-managed-iac` (an execution *mechanism*, the charter's scoped
 exception). Three unrelated senses shared the word "IaC" until ADR-0048 separated them.
 
-**In the code — the words moved, the identifiers have not.** `@scp/iac` (`packages/iac/`) still synthesises the
-`DesiredStateManifest`; `apps/server/src/iac/plan-diff.ts` still diffs and prunes it. ADR-0048 D3 renames prose
+**In the code — the words moved, the identifiers have not.** `@scp/coordination-as-code` (`packages/coordination-as-code/`) still synthesises the
+`DesiredStateManifest`; `apps/server/src/coordination-as-code/plan-diff.ts` still diffs and prunes it. ADR-0048 D3 renames prose
 first and defers the identifiers. **The stored marker is deliberately unchanged**: `scp apply` decides what to
 prune by reading `scp:managed-by=iac` + `scp:stack=<name>` off live rows, so that value stays `iac` until someone
 writes the expand/contract migration (D4). Do not "fix" it in passing — pruning correctness depends on the reader

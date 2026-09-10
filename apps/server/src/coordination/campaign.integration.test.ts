@@ -503,7 +503,7 @@ describe("campaigns (M5)", () => {
           urn: campaignUrn,
           typeId: "campaign",
           name: "campaign-via-iac-urn-targets",
-          // Declared by URN, exactly what @scp/iac's `Campaign` construct's `targets:
+          // Declared by URN, exactly what @scp/coordination-as-code's `Campaign` construct's `targets:
           // (ResourceConstruct | string)[]` resolves to at synth time — NOT real object ids.
           properties: { targets: [infra.urn, app.urn] }
         }

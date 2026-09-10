@@ -226,7 +226,7 @@ export const relationships = pgTable(
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
     // drizzle/0068 — mirrors `objects.managed_by_stack`; see that column for the full reasoning.
-    // Same single writer (`iac/stack-ownership.ts`), same non-federating behaviour, same reason.
+    // Same single writer (`coordination-as-code/stack-ownership.ts`), same non-federating behaviour, same reason.
     managedByStack: text("managed_by_stack"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true })
@@ -2056,7 +2056,7 @@ export const pipelineHookRuns = pgTable(
     orgId: uuid("org_id").notNull(),
     /** The component whose hook this run belongs to — AND the ownership pointer. NO `managedByStack`
      *  column and none is ever added; ownership derives from the owning object, exactly as for
-     *  `pipelineHooks` / `sourceMappings` / `executorBindings` (packages/schemas/src/iac.ts). */
+     *  `pipelineHooks` / `sourceMappings` / `executorBindings` (packages/schemas/src/coordination-as-code.ts). */
     componentObjectId: uuid("component_object_id").notNull(),
     /** NULLABLE, and load-bearing: `postMerge` runs before any artifact exists and is not
      *  target-specific, so there is no target to name. See the constraint note above for what that

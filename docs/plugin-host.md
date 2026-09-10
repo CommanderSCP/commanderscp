@@ -728,7 +728,7 @@ Throws `badRequest` if `config` doesn't satisfy `module`'s declared `configSchem
 
 FAILS CLOSED, and the previous early `return` is the reason this comment is long. It read: "an unknown module has no schema to validate against — that's caught separately (the module allowlist)". That sentence is true of an UNKNOWN module and says nothing whatever about the case that actually existed: a module that PASSES the allowlist and has no manifest. `fake-executor`, `pipeline-generic` and `managed-scan` were all in that state on shipped main, so their bindings' configs were stored unread — and `managed-scan`'s config selects the binary it `execFile`s.
 
-The allowlists really do run first at every one of this function's four call sites (`routes/executors.ts` binding-create + notification-upsert + discovery-run, and `iac/plans-repo.ts`'s `assertInlineBindingsValid`), so in practice this branch is reached only by a NEW allowlisted module whose author forgot the manifest — which is precisely the mistake being closed, and it must be refused rather than waved through. A never-reached refusal is the correct cost of a gate that cannot be forgotten.
+The allowlists really do run first at every one of this function's four call sites (`routes/executors.ts` binding-create + notification-upsert + discovery-run, and `coordination-as-code/plans-repo.ts`'s `assertInlineBindingsValid`), so in practice this branch is reached only by a NEW allowlisted module whose author forgot the manifest — which is precisely the mistake being closed, and it must be refused rather than waved through. A never-reached refusal is the correct cost of a gate that cannot be forgotten.
 
 ### §91. Fails loud at load if an allowlisted module has none
 

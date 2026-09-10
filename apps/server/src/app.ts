@@ -226,7 +226,7 @@ export async function buildApp(
   registerGraphRoutes(app, deps);
   registerAuditEventRoutes(app, deps);
   registerEventStreamRoute(app, deps);
-  // M2 step 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
+  // M2 step 3: `@scp/coordination-as-code` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
   registerPlanRoutes(app, deps);
   // M3: the Change lifecycle + Decision records (BUILD_AND_TEST.md §8 M3) — propose/list/get/
   // cancel/accept/rollback/explain, plus the standalone `/decisions` sub-resource.

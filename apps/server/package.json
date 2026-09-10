@@ -30,7 +30,7 @@
     "@scp/cosign": "workspace:*",
     "@scp/dependency-manifests": "workspace:*",
     "@scp/git-provider-core": "workspace:*",
-    "@scp/iac": "workspace:*",
+    "@scp/coordination-as-code": "workspace:*",
     "@scp/plugin-api": "workspace:*",
     "@scp/plugin-argo-workflows": "workspace:*",
     "@scp/plugin-argocd": "workspace:*",

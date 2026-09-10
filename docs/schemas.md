@@ -33,7 +33,7 @@ used to sit inline. Each source file below carries a one-line headline at the si
 - [`packages/schemas/src/governance.ts`](#packages-schemas-src-governance-ts) — §260–§277
 - [`packages/schemas/src/graph.ts`](#packages-schemas-src-graph-ts) — §278–§296
 - [`packages/schemas/src/health.ts`](#packages-schemas-src-health-ts) — §297–§298
-- [`packages/schemas/src/iac.ts`](#packages-schemas-src-iac-ts) — §299–§328
+- [`packages/schemas/src/coordination-as-code.ts`](#packages-schemas-src-iac-ts) — §299–§328
 - [`packages/schemas/src/objects.ts`](#packages-schemas-src-objects-ts) — §329–§331
 - [`packages/schemas/src/pipeline-behaviors.test.ts`](#packages-schemas-src-pipeline-behaviors-test-ts) — §332–§332
 - [`packages/schemas/src/pipeline-behaviors.ts`](#packages-schemas-src-pipeline-behaviors-ts) — §333–§357
@@ -407,7 +407,7 @@ A full snapshot of `Object.prototype`'s own property names, captured at module l
 
 THE canonical JSON serializer for this repo — one implementation, deliberately.
 
-Before this module existed there were FIVE byte-for-byte copies of the same `sortKeysDeep` helper (`@scp/schemas`'s `federation-journal.ts`, `apps/server`'s `util/canonical-json.ts` and `coordination/decisions-repo.ts` and `coordination/test-support/counting-cel-sandbox.ts`, and `@scp/iac`'s `canonical.ts`), each carrying a comment explaining that it was "vendored" or "duplicated" to avoid a module-boundary violation. They all shared one bug (below), and fixing it in four of five places would have been the classic outcome this repo's census rule exists to prevent. `@scp/schemas` is the lowest common dependency of every one of those call sites, and this module is pure — no `node:crypto`, no I/O — so it is safe in the browser build too.
+Before this module existed there were FIVE byte-for-byte copies of the same `sortKeysDeep` helper (`@scp/schemas`'s `federation-journal.ts`, `apps/server`'s `util/canonical-json.ts` and `coordination/decisions-repo.ts` and `coordination/test-support/counting-cel-sandbox.ts`, and `@scp/coordination-as-code`'s `canonical.ts`), each carrying a comment explaining that it was "vendored" or "duplicated" to avoid a module-boundary violation. They all shared one bug (below), and fixing it in four of five places would have been the classic outcome this repo's census rule exists to prevent. `@scp/schemas` is the lowest common dependency of every one of those call sites, and this module is pure — no `node:crypto`, no I/O — so it is safe in the browser build too.
 
 ## Why the key-sort exists at all
 
@@ -1406,7 +1406,7 @@ A `source_mapping` to create alongside an imported object (M12 P5, owner ruling 
 
 The replacement for `accept`, and deliberately a different SHAPE rather than the same verb with a flag: it writes nothing, reads nothing, and returns text. Its whole job is to run the emitter that `scp iac scaffold` runs, so the wizard and the CLI produce the same code from the same proposal.
 
-WHY IT IS A SERVER ENDPOINT AND NOT A BROWSER IMPORT. `apps/web` may import only `@scp/sdk` and `@scp/schemas` — never `@scp/iac`, `@scp/cli` or the server (eslint `no-restricted-imports`, the API -> SDK -> CLI -> IaC -> UI chain). The UI gets everything through the public API, and the emitter is no exception.
+WHY IT IS A SERVER ENDPOINT AND NOT A BROWSER IMPORT. `apps/web` may import only `@scp/sdk` and `@scp/schemas` — never `@scp/coordination-as-code`, `@scp/cli` or the server (eslint `no-restricted-imports`, the API -> SDK -> CLI -> IaC -> UI chain). The UI gets everything through the public API, and the emitter is no exception.
 
 ### §195. `POST /discovery/accept` AND ITS TWO SCHEMAS ARE GONE
 
@@ -2048,17 +2048,17 @@ Object health contract (observe-enrichment signal 4; ADR-0008 decision 4). SCP d
 
 Batch latest-health read over a caller-supplied object-id set — the graph node-payload JOIN (`POST /graph/subgraph` returns EDGES ONLY, so health is joined at the node source in a parallel follow-up call, mirroring the subgraph batch-by-ids pattern). `objectId` is the exploration root that scopes `graph:query` authorization, identical to `SubgraphRequestSchema`. Objects with no pushed health are simply absent from `records` — the UI renders them grey/unknown (no fabrication).
 
-## `packages/schemas/src/iac.ts`
+## `packages/schemas/src/coordination-as-code.ts`
 
-### §299. `@scp/iac` desired-state manifest contract
+### §299. `@scp/coordination-as-code` desired-state manifest contract
 
-`@scp/iac` desired-state manifest contract (DESIGN.md §15, BUILD_AND_TEST.md §8 M2 item 4). CDK-style constructs (`packages/iac`) synthesize a value conforming to `DesiredStateManifestSchema` via a PURE function — no API calls, no randomness, no wall-clock reads — so the manifest is the one interchange point between IaC authoring (offline, air-gap safe) and server-side reconciliation (`POST /plans`). Objects and relationships are addressed by URN, never by a synth-time-random id, which is exactly what makes two independent synths of an equivalent construct tree converge to byte-identical JSON.
+`@scp/coordination-as-code` desired-state manifest contract (DESIGN.md §15, BUILD_AND_TEST.md §8 M2 item 4). CDK-style constructs (`packages/coordination-as-code`) synthesize a value conforming to `DesiredStateManifestSchema` via a PURE function — no API calls, no randomness, no wall-clock reads — so the manifest is the one interchange point between IaC authoring (offline, air-gap safe) and server-side reconciliation (`POST /plans`). Objects and relationships are addressed by URN, never by a synth-time-random id, which is exactly what makes two independent synths of an equivalent construct tree converge to byte-identical JSON.
 
-Lives in `@scp/schemas` (not `@scp/iac`) so both the IaC package (producer) and the server (consumer, `apps/server/src/iac/plan-diff.ts`) share one contract — same rationale as every other shape in this package (DESIGN.md §6, §15: "Zod schemas flow untranslated from the server to the generated SDK and IaC").
+Lives in `@scp/schemas` (not `@scp/coordination-as-code`) so both the IaC package (producer) and the server (consumer, `apps/server/src/coordination-as-code/plan-diff.ts`) share one contract — same rationale as every other shape in this package (DESIGN.md §6, §15: "Zod schemas flow untranslated from the server to the generated SDK and IaC").
 
 ### §300. The object id this URN's containing domain resolves to
 
-Object id this URN's containing domain resolves to; `undefined`/omitted defaults to the org root, same as `CreateObjectRequestSchema.domainId` (graph.ts) — read that field's `.describe()` for the full argument, because the default carries the same authorization consequence here: `iac/plans-repo.ts` runs the SAME custody `authorize` at the resolved parent and the same `assertPolicyScopeWithinAuthority` at apply time. An omitted `domainId` therefore puts a narrowly-bound author's check at the org root, and the apply is refused for a scope the manifest never named.
+Object id this URN's containing domain resolves to; `undefined`/omitted defaults to the org root, same as `CreateObjectRequestSchema.domainId` (graph.ts) — read that field's `.describe()` for the full argument, because the default carries the same authorization consequence here: `coordination-as-code/plans-repo.ts` runs the SAME custody `authorize` at the resolved parent and the same `assertPolicyScopeWithinAuthority` at apply time. An omitted `domainId` therefore puts a narrowly-bound author's check at the org root, and the apply is refused for a scope the manifest never named.
 
 The manifest equivalent of ADR-0032 §8g's component-team dependency subscription — note the component's own id in BOTH places, `domainId` for custody (where the row lives, hence who may later change it) and `scope.objectRef` for jurisdiction (what the policy reaches):
 
@@ -2090,7 +2090,7 @@ Projection collections (docs/proposals/post-import-configuration.md §8 C1)
 
 `source_mappings` and `executor_bindings` are the two configurations that were UNEXPRESSIBLE in a manifest: unlike everything else a stack declares, they are standalone projection tables rather than graph objects/relationships (`packages/schemas/src/executors.ts`: "projection tables ... no graph-object equivalent exists"), so `objects`/`relationships` could not carry them. That made principle 3 (API → SDK → CLI → IaC → UI parity) false for exactly the two things an operator must reproduce when standing a second instance up offline (principle 5). C1 closes that.
 
-OWNERSHIP IS DERIVED FROM THE OWNING OBJECT (the load-bearing decision — see `apps/server/src/iac/plan-diff.ts`'s `stackOwnedObjectUrns`): neither table has a `labels` column, and neither gets one. A row belongs to stack S iff the graph object it hangs off (`component_object_id` / `target_object_id`) is one THIS stack owns. Two consequences an author must know, both deliberate: 1. A manifest may only declare a mapping/binding for an object the SAME stack declares (or one it already manages). Anything else is rejected 400 at plan-compute — a stack cannot configure an object it does not own. 2. Because ownership is inherited, declaring an object in a stack means the stack owns that object's mappings/bindings WHOLESALE. Adopting a discovery-imported component into a stack and declaring no bindings prunes the imported ones — visible as `delete` entries in the plan the operator reviews before applying, exactly like an object prune, never silent.
+OWNERSHIP IS DERIVED FROM THE OWNING OBJECT (the load-bearing decision — see `apps/server/src/coordination-as-code/plan-diff.ts`'s `stackOwnedObjectUrns`): neither table has a `labels` column, and neither gets one. A row belongs to stack S iff the graph object it hangs off (`component_object_id` / `target_object_id`) is one THIS stack owns. Two consequences an author must know, both deliberate: 1. A manifest may only declare a mapping/binding for an object the SAME stack declares (or one it already manages). Anything else is rejected 400 at plan-compute — a stack cannot configure an object it does not own. 2. Because ownership is inherited, declaring an object in a stack means the stack owns that object's mappings/bindings WHOLESALE. Adopting a discovery-imported component into a stack and declaring no bindings prunes the imported ones — visible as `delete` entries in the plan the operator reviews before applying, exactly like an object prune, never silent.
 
 ### §302. A `source_mappings` row
 
@@ -2161,7 +2161,7 @@ C1 (ADR-0026). OPTIONAL for the same reason as the two above — but note what "
 ### §311. Absent means unmanaged, diverging from the collections
 
 ABSENT MEANS **UNMANAGED**, AND THIS DELIBERATELY DIVERGES FROM THE THREE COLLECTIONS ABOVE
-For `sourceMappings`, `executorBindings` and `placements`, an absent key and an empty array are the same thing and both PRUNE — `apps/server/src/iac/plan-diff.ts` says so at length and records that changing it broke three `plans.integration` tests. DO NOT "fix" this collection to match them. The asymmetry is the ruling (owner, 2026-08-17), and the reason is the blast radius, not consistency:
+For `sourceMappings`, `executorBindings` and `placements`, an absent key and an empty array are the same thing and both PRUNE — `apps/server/src/coordination-as-code/plan-diff.ts` says so at length and records that changing it broke three `plans.integration` tests. DO NOT "fix" this collection to match them. The asymmetry is the ruling (owner, 2026-08-17), and the reason is the blast radius, not consistency:
 
 ```text
 - Pruning a mapping, a binding or a placement costs a route or a pipeline an operator notices
@@ -2176,10 +2176,10 @@ So: key absent  -> this stack manages no producer declarations. NOTHING is prune
 IS A PRESENT COLLECTION AUTHORITATIVE OVER ITS OWN MEMBERS? YES — AND HERE IS THE ALGORITHM
 Removing entry B from `[A, B]` DOES prune B. `computePlanDiff`'s prune step is the same one every other collection gets — `pool.filter(row => !manifestKeys.has(key(row)))`, where `pool` is the declarations whose producer this stack owns. The ONLY thing the absent case changes is that the prune step is SKIPPED ENTIRELY; nothing else in the algorithm distinguishes one member from another. So the catastrophic case ("the whole key vanished") manages nothing, and the ordinary case ("I removed one of my three") is real, reviewable management.
 
-THE CONSEQUENCE: IaC CANNOT RETRACT THE **LAST** DECLARATION THROUGH `@scp/iac`
+THE CONSEQUENCE: IaC CANNOT RETRACT THE **LAST** DECLARATION THROUGH `@scp/coordination-as-code`
 `Stack.synth()` OMITS a collection when it is empty, so a program that declares no producers and a program that declares none ANY MORE synthesize byte-identical manifests. Under the rule above both mean "unmanaged", so deleting your only `producesDependency(...)` call leaves the declaration standing. That is an ACCEPTED COST, not an oversight — the alternative is a forgotten key silently re-arming dependency confusion.
 
-To retract, in order of preference: 1. `POST /dependencies/producers/retract` (`scp dependency producer retract`). Preferred even when IaC could do it: only the verb reports the bumps SCP has already authored and cannot recall. 2. Remove the entry while OTHER entries remain — the key stays present, so the prune fires. 3. Hand-author `"producers": []` and POST it to `/plans`. Present-and-empty is a deliberate statement ("I manage producers, and I declare none"), so it prunes every declaration on a component this stack owns. `@scp/iac` cannot emit this; a hand-written manifest can.
+To retract, in order of preference: 1. `POST /dependencies/producers/retract` (`scp dependency producer retract`). Preferred even when IaC could do it: only the verb reports the bumps SCP has already authored and cannot recall. 2. Remove the entry while OTHER entries remain — the key stays present, so the prune fires. 3. Hand-author `"producers": []` and POST it to `/plans`. Present-and-empty is a deliberate statement ("I manage producers, and I declare none"), so it prunes every declaration on a component this stack owns. `@scp/coordination-as-code` cannot emit this; a hand-written manifest can.
 
 ### §312. Absent means unmanaged, the same divergence and reason
 
@@ -2195,7 +2195,7 @@ Read `producers` above first: absent and empty are the same thing for `sourceMap
 
 So: key absent  -> this stack manages no rungs. NOTHING is disabled, ever. key present -> this stack is authoritative over the rungs it names, AND over any rung whose subject is an object this stack owns. Removing an entry from a present collection DOES disable it.
 
-AND `@scp/iac` THEREFORE CANNOT DISABLE THE **LAST** RUNG: `Stack.synth()` omits an empty collection, so a program that declares no rungs and one that declares none ANY MORE synthesize byte-identical manifests. Accepted cost, identical to `producers`. To disable, use `DELETE /governance/move-enforcement/rungs/{idOrUrn}` (`scp governance move-enforcement disable`), remove the entry while OTHER entries remain, or hand-author `"governanceMoveRungs": []`.
+AND `@scp/coordination-as-code` THEREFORE CANNOT DISABLE THE **LAST** RUNG: `Stack.synth()` omits an empty collection, so a program that declares no rungs and one that declares none ANY MORE synthesize byte-identical manifests. Accepted cost, identical to `producers`. To disable, use `DELETE /governance/move-enforcement/rungs/{idOrUrn}` (`scp governance move-enforcement disable`), remove the entry while OTHER entries remain, or hand-author `"governanceMoveRungs": []`.
 
 A DISABLE MAY STILL BE REFUSED. The lattice is monotone (ADR-0038 §2): a rung whose ancestor — or the instance rung — is enabled cannot be disabled below, so a manifest that drops such an entry fails its apply with the 409 the verb gives, naming the upper rung. That is deliberate: reporting a successful disable that leaves every move under the subtree enforced anyway is the worst of both.
 
@@ -2216,7 +2216,7 @@ The test is not consistency, it is blast radius, and a pipeline hook fails the s
 
 So: key absent  -> this stack manages no hooks. NOTHING is disarmed, ever. key present -> this stack is authoritative over the hooks it names, AND over any hook on a component this stack owns. Removing an entry from a present collection DOES prune it, visible as a delete line in the plan.
 
-AND `@scp/iac` THEREFORE CANNOT REMOVE THE **LAST** HOOK, the identical accepted cost: `Stack.synth()` omits an empty collection, so a pipeline that declares no hooks and one that declares none ANY MORE synthesize byte-identical manifests. Remove an entry while others remain, or hand-author `"pipelineHooks": []`.
+AND `@scp/coordination-as-code` THEREFORE CANNOT REMOVE THE **LAST** HOOK, the identical accepted cost: `Stack.synth()` omits an empty collection, so a pipeline that declares no hooks and one that declares none ANY MORE synthesize byte-identical manifests. Remove an entry while others remain, or hand-author `"pipelineHooks": []`.
 
 IDENTITY is `(componentUrn, kind, hookId)` — no update path keyed on a subset, so a changed hook is a delete + create, exactly as a changed source mapping is. Declaring one tuple twice in a manifest is rejected.
 
@@ -2340,10 +2340,10 @@ Per CLAUDE.md: a well-written comment naming a hazard is a signal to sweep, not 
 
 `@scp/schemas` — pipeline BEHAVIOUR contract: test hooks, rollout declarations, convergence, and the evidence those produce (docs/proposals/team-pipeline-iac.md D11/D12/D13/D21/D23/D24/D25).
 
-WHY THIS FILE EXISTS, AND WHY IT IS IN `@scp/schemas` RATHER THAN `@scp/iac`
-Same rationale as `iac.ts`: the manifest is the ONE interchange point between offline authoring and server-side reconciliation, so producer (`packages/iac`) and consumer (`apps/server`) must share one contract or they drift. D16(6) makes that explicit for this surface — the construct props in `@scp/iac` reuse the Zod types below VERBATIM, so a prop can never accept something plan/apply refuses.
+WHY THIS FILE EXISTS, AND WHY IT IS IN `@scp/schemas` RATHER THAN `@scp/coordination-as-code`
+Same rationale as `coordination-as-code.ts`: the manifest is the ONE interchange point between offline authoring and server-side reconciliation, so producer (`packages/coordination-as-code`) and consumer (`apps/server`) must share one contract or they drift. D16(6) makes that explicit for this surface — the construct props in `@scp/coordination-as-code` reuse the Zod types below VERBATIM, so a prop can never accept something plan/apply refuses.
 
-The split is deliberate and cross-session: this file is the semantics (what a hook MEANS, what evidence must PROVE); `@scp/iac`'s `Workflow` / `PostMergeTest` / `PostDeployTest` / `ContinuousTest` / `BakeAlarms` / `CanaryRollout` / `RollingRollout` constructs are the authoring sugar over it, and are built against these types once they are merged — never in parallel with them.
+The split is deliberate and cross-session: this file is the semantics (what a hook MEANS, what evidence must PROVE); `@scp/coordination-as-code`'s `Workflow` / `PostMergeTest` / `PostDeployTest` / `ContinuousTest` / `BakeAlarms` / `CanaryRollout` / `RollingRollout` constructs are the authoring sugar over it, and are built against these types once they are merged — never in parallel with them.
 
 THE THREE MECHANISMS, AND WHICH ONE EACH HOOK COMPILES TO (measured, not assumed)
 CommanderSCP has exactly two re-evaluated admission mechanisms, and they differ in blast radius:
@@ -2385,13 +2385,13 @@ ASYNCHRONY: A TEST RUN TAKES MINUTES, AND THE CONTRACT ALREADY HAS A WORD FOR TH
 
 ### §334. Canonical D24 vocabularies
 
-Canonical D24 vocabularies — artifact class, infra kind, the deploy-target narrowing, and the compatibility matrix that ties them together. Lives ONCE here per D24 ("the compatibility matrix ... lives once in @scp/schemas, shared by the construct types and the server"); `@scp/iac`'s construct types and the server's plan-time validation both consume these, never a hand-rolled copy.
+Canonical D24 vocabularies — artifact class, infra kind, the deploy-target narrowing, and the compatibility matrix that ties them together. Lives ONCE here per D24 ("the compatibility matrix ... lives once in @scp/schemas, shared by the construct types and the server"); `@scp/coordination-as-code`'s construct types and the server's plan-time validation both consume these, never a hand-rolled copy.
 
 These replaced two PROVISIONAL declarations (`ArtifactClassSchema` as a bare `z.enum([...])`, `RolloutTargetClassSchema` likewise) that a sibling session shipped so the pipeline-behaviour contract could merge before this vocabulary existed. Every reference to either symbol below is unchanged by the replacement — same name, same shape — only the DEFINITION moved from a hand- written list to a derivation of `ExecutorTypeSchema` / `InfraKindSchema`.
 
 ### §335. D24's infra-kind taxonomy
 
-D24's infra-kind taxonomy — the closed set of infrastructure PRODUCT kinds (§14 resolution 10: "a new kind arrives as a release carrying the enum value, the typed construct + interface, and its matrix rows"; org-defined custom kinds wait for a real tenant ask). `@scp/iac`'s matching interface types (`ICluster`, `IInstanceGroup`, `IDatabase`, `IBucket`, `IQueue`) are built against this enum by the core IaC increment, not defined here.
+D24's infra-kind taxonomy — the closed set of infrastructure PRODUCT kinds (§14 resolution 10: "a new kind arrives as a release carrying the enum value, the typed construct + interface, and its matrix rows"; org-defined custom kinds wait for a real tenant ask). `@scp/coordination-as-code`'s matching interface types (`ICluster`, `IInstanceGroup`, `IDatabase`, `IBucket`, `IQueue`) are built against this enum by the core IaC increment, not defined here.
 
 SPELLING, RECONCILED DELIBERATELY: D24's prose names the kubernetes kind `Cluster` (as in `ICluster`), but the vocabulary that shipped first — the provisional `RolloutTargetClassSchema` this file already carried (`"kubernetes" | "instanceGroup"`) — spelled it `kubernetes`. This enum picks **`cluster`**, matching D24's own construct-name vocabulary and the sibling members' shape (`instanceGroup`, `database`, `bucket`, `queue` are all named after the KIND OF THING, not the technology backing it — `database` isn't spelled `postgres`). `kubernetes` was the odd one out: it named the implementation, not the product kind, and every other member already named the kind. `RolloutTargetClassSchema` below is now DERIVED from this enum, so its `kubernetes` member is renamed to `cluster` as part of the same change — `@scp/plugin-api`'s sanctioned third copy (`packages/plugin-api/src/index.ts`) is renamed identically, and its pinning test (`rollout-capability-vocabulary.test.ts`) is updated in lockstep so no side is left holding the old spelling.
 
@@ -2411,7 +2411,7 @@ MECHANISM: `.extract(["cluster", "instanceGroup"])` — an explicit allow-list, 
 
 ### §338. D24's artifact-class × infra-kind compatibility matrix
 
-D24's artifact-class × infra-kind compatibility matrix — the SINGLE definition shared by the construct types (`@scp/iac`, core IaC increment) and the server's plan-time validation (`evaluatePlacementCompatibility`-shaped checks). Keyed on the FULL `ExecutorType` (all eleven members, not just the nine-member `ArtifactClassSchema`) because D24's own initial-rows list includes `configuration` — a GitOps sync pipeline places at a cluster or instance group exactly like a build artifact does, so it needs a row too, and keying on `ExecutorType` gives it one for free instead of inventing a second, wider key type.
+D24's artifact-class × infra-kind compatibility matrix — the SINGLE definition shared by the construct types (`@scp/coordination-as-code`, core IaC increment) and the server's plan-time validation (`evaluatePlacementCompatibility`-shaped checks). Keyed on the FULL `ExecutorType` (all eleven members, not just the nine-member `ArtifactClassSchema`) because D24's own initial-rows list includes `configuration` — a GitOps sync pipeline places at a cluster or instance group exactly like a build artifact does, so it needs a row too, and keying on `ExecutorType` gives it one for free instead of inventing a second, wider key type.
 
 TOTALITY IS THE POINT: `Record<ExecutorType, readonly InfraKind[]>` is a TOTAL mapping keyed by the enum itself, not a partial lookup table with a fallback default. Adding a member to `ExecutorTypeSchema` without adding its row HERE is a TypeScript compile error (a missing required key on the `Record`), not a silent gap that only shows up when someone tries to place that type and gets an unexplained refusal — or worse, an unchecked placement.
 

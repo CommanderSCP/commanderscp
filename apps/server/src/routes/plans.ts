@@ -24,9 +24,9 @@ import {
   lockPendingPlan,
   markPlanApplied,
   prepareApplyChecks
-} from "../iac/plans-repo.js";
+} from "../coordination-as-code/plans-repo.js";
 
-/** Server-side `@scp/iac` plan/apply. See docs/routes.md §310. */
+/** Server-side `@scp/coordination-as-code` plan/apply. See docs/routes.md §310. */
 export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 

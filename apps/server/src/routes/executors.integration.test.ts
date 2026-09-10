@@ -761,7 +761,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
 
     // THE OTHER DOORS ARE THE SAME FUNCTION, and that is deliberate rather than lucky:
     // `validatePluginConfig` is the single gate all four write paths call (this route, the
-    // notification upsert, discovery-run, and `iac/plans-repo.ts`'s `assertInlineBindingsValid`),
+    // notification upsert, discovery-run, and `coordination-as-code/plans-repo.ts`'s `assertInlineBindingsValid`),
     // extracted out of this handler precisely because "a gate that lives inside one route handler
     // is a gate the next write path silently doesn't have". The IaC-apply door's own coverage of
     // that call for `managed-iac` is `plans.integration.test.ts`.

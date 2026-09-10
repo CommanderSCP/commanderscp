@@ -879,7 +879,7 @@ THE ONE PROPERTY THAT CARRIES THE ADR
 
 So the case that matters is NOT that code is emitted. It is that a component nobody grouped is **shown and excluded**, never defaulted into some invented service. A panel that quietly emitted a `Component` under a made-up service name would pass a "does it produce code?" test and reintroduce exactly the defect this replaced.
 
-THE DOOR IS A DOUBLE, NOT A MOCK OF `@scp/iac`. The emitter runs server-side (the UI may not import `@scp/iac`), so this stands in for `POST /discovery/scaffold` and applies the SAME rule the server does — a component with no service is reported, never emitted. Testing the panel against a double that defaulted the ungrouped ones would prove the panel renders whatever it is handed, which is true and useless.
+THE DOOR IS A DOUBLE, NOT A MOCK OF `@scp/coordination-as-code`. The emitter runs server-side (the UI may not import `@scp/coordination-as-code`), so this stands in for `POST /discovery/scaffold` and applies the SAME rule the server does — a component with no service is reported, never emitted. Testing the panel against a double that defaulted the ungrouped ones would prove the panel renders whatever it is handed, which is true and useless.
 
 MUTATION LOG — each applied, watched fail, reverted, watched pass (MEASURED) | Mutation | Result |
 | the ungrouped banner is not rendered | "(2) an ungrouped component is SHOWN" FAILS | | the panel defaults an ungrouped component to a service name instead of excluding it | "(2)" FAILS on the exclusion half — the name appears in the emitted source | | "Apply to all" writes a hidden default instead of filling the per-component fields | "(3)" FAILS — the inputs no longer show what the code uses |
@@ -897,7 +897,7 @@ ADR-0047's fix is not a validation: it is moving the decision to where a human i
 
 UNGROUPED COMPONENTS ARE SHOWN, NEVER DEFAULTED. The server returns them separately and they are never in the emitted code — a `Component` cannot be constructed without a service. Defaulting them to some invented service name is exactly the silent orphan-making this replaced.
 
-THE EMITTER RUNS SERVER-SIDE, and that is an architectural rule rather than a preference: `apps/web/src` may import only `@scp/sdk` and `@scp/schemas` — never `@scp/iac`, `@scp/cli` or the server (eslint `no-restricted-imports`). The UI reaches everything through the public API, so it asks `POST /discovery/scaffold` and renders the answer. One emitter, behind the API, shared with `scp iac scaffold` — so the wizard and the CLI cannot produce different code from one proposal.
+THE EMITTER RUNS SERVER-SIDE, and that is an architectural rule rather than a preference: `apps/web/src` may import only `@scp/sdk` and `@scp/schemas` — never `@scp/coordination-as-code`, `@scp/cli` or the server (eslint `no-restricted-imports`). The UI reaches everything through the public API, so it asks `POST /discovery/scaffold` and renders the answer. One emitter, behind the API, shared with `scp iac scaffold` — so the wizard and the CLI cannot produce different code from one proposal.
 
 ## `apps/web/src/components/ui/alert.tsx`
 

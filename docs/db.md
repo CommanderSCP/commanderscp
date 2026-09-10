@@ -353,11 +353,11 @@ No FK: losing the provenance because its source was tombstoned would be worse th
 
 ### §44. The stack whose apply owns this row, which is what scopes pruning
 
-drizzle/0068 — the `@scp/iac` stack whose apply owns this row, or NULL. This is what scopes PRUNING: an apply deletes exactly the live rows carrying its own stack name that its manifest no longer declares (`iac/plan-diff.ts`'s `isStackManaged`).
+drizzle/0068 — the `@scp/coordination-as-code` stack whose apply owns this row, or NULL. This is what scopes PRUNING: an apply deletes exactly the live rows carrying its own stack name that its manifest no longer declares (`iac/plan-diff.ts`'s `isStackManaged`).
 
-SERVER-WRITTEN ONLY, and that is the whole point of it being a column. It lived in `labels` until 0068, where the prune TARGET could rewrite it under plain `object:write` — enrolling an arbitrary object into a stack's delete pool, or walking its own object out of one. The sole writer is `iac/stack-ownership.ts`, called from the IaC apply path; no request body can reach it and no route passes it, exactly as for `origin_domain_id`, `provenance` and `domain_local`.
+SERVER-WRITTEN ONLY, and that is the whole point of it being a column. It lived in `labels` until 0068, where the prune TARGET could rewrite it under plain `object:write` — enrolling an arbitrary object into a stack's delete pool, or walking its own object out of one. The sole writer is `coordination-as-code/stack-ownership.ts`, called from the IaC apply path; no request body can reach it and no route passes it, exactly as for `origin_domain_id`, `provenance` and `domain_local`.
 
-DOES NOT FEDERATE, deliberately: it is absent from the journal payload, so a replica arrives owned by nobody. That is the truth — the importing domain's IaC does not manage a row another domain authored — and it is a bonus over the label scheme, under which a peer's `scp:stack=X` did land here (labels ARE in the payload) and would join a local stack X's prune pool. That consequence is READ FROM THE CODE, not reproduced against two live domains; see `iac/stack-ownership.ts` for the chain and the caveat.
+DOES NOT FEDERATE, deliberately: it is absent from the journal payload, so a replica arrives owned by nobody. That is the truth — the importing domain's IaC does not manage a row another domain authored — and it is a bonus over the label scheme, under which a peer's `scp:stack=X` did land here (labels ARE in the payload) and would join a local stack X's prune pool. That consequence is READ FROM THE CODE, not reproduced against two live domains; see `coordination-as-code/stack-ownership.ts` for the chain and the caveat.
 
 ### §45. Mirrors the object labels an IaC apply stamps
 
@@ -511,7 +511,7 @@ INVARIANT (coordinate-not-execute, principle 1): SCP never probes/polls/computes
 
 ### §76. Plan -> waves -> wave_targets ROWS (DESIGN §9.3)
 
-Plan -> waves -> wave_targets ROWS (DESIGN §9.3) — the compiled execution shape of a Change. Named `change_*` to avoid colliding with M2's unrelated `plans` table (`@scp/iac` desired-state plan/apply). `topology_document` is a snapshot of the release topology at compile time (not a live FK dereference) so a later topology edit never retroactively changes an in-flight plan — consistent with DESIGN §10.1's "policies are versioned documents" pinning pattern.
+Plan -> waves -> wave_targets ROWS (DESIGN §9.3) — the compiled execution shape of a Change. Named `change_*` to avoid colliding with M2's unrelated `plans` table (`@scp/coordination-as-code` desired-state plan/apply). `topology_document` is a snapshot of the release topology at compile time (not a live FK dereference) so a later topology edit never retroactively changes an in-flight plan — consistent with DESIGN §10.1's "policies are versioned documents" pinning pattern.
 
 ### §77. Last status() stateRef reconcile observed
 
@@ -955,7 +955,7 @@ The four DECLARED test hooks per component (D11/D21) — `postMerge`, `postDeplo
 
 IDENTITY is `(orgId, componentObjectId, kind, hookId)` and it is a real UNIQUE constraint, not a convention the writer observes. `ManifestPipelineHookSchema` states the rule: there is no update path keyed on a subset, so a changed hook is a delete + create.
 
-NO `managedByStack` COLUMN, AND NONE IS EVER ADDED. `packages/schemas/src/iac.ts` settles this for the whole family of per-object configuration tables and this is one of them: "OWNERSHIP IS DERIVED FROM THE OWNING OBJECT ... neither table has a `labels` column, and neither gets one. A row belongs to stack S iff the graph object it hangs off (`component_object_id` / `target_object_id`) is one THIS stack owns." A stack-label column would be a SECOND answer to "who owns this row", and the moment it can disagree with the first, a plan's prune set and its apply's prune set are computed from different facts. `source_mappings` and `executor_bindings` are the precedents.
+NO `managedByStack` COLUMN, AND NONE IS EVER ADDED. `packages/schemas/src/coordination-as-code.ts` settles this for the whole family of per-object configuration tables and this is one of them: "OWNERSHIP IS DERIVED FROM THE OWNING OBJECT ... neither table has a `labels` column, and neither gets one. A row belongs to stack S iff the graph object it hangs off (`component_object_id` / `target_object_id`) is one THIS stack owns." A stack-label column would be a SECOND answer to "who owns this row", and the moment it can disagree with the first, a plan's prune set and its apply's prune set are computed from different facts. `source_mappings` and `executor_bindings` are the precedents.
 
 The per-kind nullable columns are not split into four tables: the closed per-kind shape is enforced by the Zod discriminated union at every write door, and a CHECK matrix here would be a second, driftable copy of it.
 
@@ -971,7 +971,7 @@ SERVER-OWNED, like `plans` and `decisions`: no IaC manifest can declare or prune
 
 D12 — the rollout strategy a component declares per TARGET CLASS, and D25(b) — whether a config pipeline placed at an infrastructure product re-applies its released state when that product's membership changes.
 
-BOTH WERE AUTHORABLE AND DROPPED before migration 0106: the contract defined the collections and `@scp/iac` emitted them, and `plans-repo.ts` projected neither, so a declared canary planned green and vanished at apply. See the migration header.
+BOTH WERE AUTHORABLE AND DROPPED before migration 0106: the contract defined the collections and `@scp/coordination-as-code` emitted them, and `plans-repo.ts` projected neither, so a declared canary planned green and vanished at apply. See the migration header.
 
 Ordinary prune rule (absent = empty = prune), unlike `pipelineHooks`; ownership derives from `component_object_id`, so there is no `managed_by_stack` column on either.
 

@@ -7,7 +7,7 @@
 
 ## 1. The defect
 
-`iac/plan-diff.ts`'s `isStackManaged` and `iac/plans-repo.ts`'s
+`iac/plan-diff.ts`'s `isStackManaged` and `coordination-as-code/plans-repo.ts`'s
 `labels @> {"scp:managed-by":"iac","scp:stack":"<name>"}` decided the IaC **prune pool** — which live
 objects and relationships an apply DELETES — by reading two keys out of the row's own `labels` map.
 
@@ -19,7 +19,7 @@ Two permissions met at that comparison, and they were not the same size:
 | Write the two keys that decide what that apply deletes | `object:write` **at the one object**. No schema — every type registers `labels` with none — no reserved namespace, no prefix rule, no validation of any kind |
 
 Both directions were reproduced through real HTTP doors before the fix
-(`apps/server/src/iac/iac-stack-ownership.integration.test.ts` is those reproductions with their
+(`apps/server/src/coordination-as-code/iac-stack-ownership.integration.test.ts` is those reproductions with their
 expectations inverted):
 
 **Enrolment.** An Operator bound at ONE object — `object:write` there and nowhere else, no IaC
@@ -88,7 +88,7 @@ sentence: *`managed_by_stack` is written by the IaC apply and by nothing else.*
 **4a. The column.** `objects.managed_by_stack` and `relationships.managed_by_stack`
 (`drizzle/0068`), nullable, with a partial index for the pool lookup.
 
-**4b. One writer.** `iac/stack-ownership.ts`, called only from `executePlanDiff`. No route passes
+**4b. One writer.** `coordination-as-code/stack-ownership.ts`, called only from `executePlanDiff`. No route passes
 it; no request body can express it. Each half is a single bulk `UPDATE` whose predicate skips rows
 already carrying this stack, so an apply that changes no ownership writes no rows.
 
@@ -103,7 +103,7 @@ and `scp` output keep the marker they already grep for; they are documented at e
 edit makes the row's labels differ from what the manifest merges, so the next plan diffs it as an
 `update` and the apply rewrites them. Between those moments the label can mislead a human; it can no
 longer mislead the diff. Every doc comment that called them "the pruning convention" —
-`packages/schemas`'s `iac.ts` and `graph.ts`, `packages/iac`'s `construct.ts`,
+`packages/schemas`'s `coordination-as-code.ts` and `graph.ts`, `packages/coordination-as-code`'s `construct.ts`,
 `graph/relationships-repo.ts`, `db/schema.ts` — was rewritten, because a comment asserting the old
 rule is exactly what talks the next reader into reinstating it.
 

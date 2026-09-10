@@ -148,7 +148,7 @@ import {
   startDeviceAuth as startDeviceAuthRequest,
   approveDeviceAuth as approveDeviceAuthRequest,
   pollDeviceAuthToken as pollDeviceAuthTokenRequest,
-  // M2 step 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
+  // M2 step 3: `@scp/coordination-as-code` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
   createPlan as createPlanRequest,
   getPlan as getPlanRequest,
   applyPlan as applyPlanRequest,
@@ -1502,7 +1502,7 @@ export class ScpClient {
     }
   };
 
-  // `@scp/iac` server-side plan/apply. See docs/sdk.md §21.
+  // `@scp/coordination-as-code` server-side plan/apply. See docs/sdk.md §21.
 
   readonly plans = {
     create: async (manifest: DesiredStateManifest): Promise<Plan> => {

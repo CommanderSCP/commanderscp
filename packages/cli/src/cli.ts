@@ -118,14 +118,11 @@ import {
   renderManifestSection,
   updateGeneratedSection,
   type RenderedPipeline
-} from "@scp/iac";
+} from "@scp/coordination-as-code";
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, resolveLoginBaseUrl } from "./client-factory.js";
-import { readServiceExportSpec } from "./iac-estate-reader.js";
-import {
-  discoveryRequestForExecutionSystem,
-  groupDiscoveryProposal
-} from "./iac-scaffold-reader.js";
+import { readServiceExportSpec } from "./estate-reader.js";
+import { discoveryRequestForExecutionSystem, groupDiscoveryProposal } from "./scaffold-reader.js";
 import { promptLine } from "./prompt.js";
 import { printResult, type OutputFormat } from "./output.js";
 
@@ -1105,7 +1102,7 @@ function printPolicyEvaluateResult(result: PolicyEvaluateResponse, output: Outpu
   console.log(summary);
 }
 
-// `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4). See docs/cli.md §47.
+// `@scp/coordination-as-code` plan/apply (BUILD_AND_TEST.md §8 M2 item 4). See docs/cli.md §47.
 
 async function readManifestFile(manifestPath: string): Promise<DesiredStateManifest> {
   const raw = await readFile(manifestPath, "utf8");
@@ -3159,7 +3156,9 @@ export function buildProgram(): Command {
 
   program
     .command("plan")
-    .description("Compute a desired-state diff for an @scp/iac manifest (dry run — does not apply)")
+    .description(
+      "Compute a desired-state diff for an @scp/coordination-as-code manifest (dry run — does not apply)"
+    )
     .requiredOption("--manifest <path>", "path to a synthesized DesiredStateManifest JSON file")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -3173,7 +3172,7 @@ export function buildProgram(): Command {
   program
     .command("apply")
     .description(
-      "Plan and apply an @scp/iac manifest in one shot (POST /plans then apply) — applying an unchanged manifest again is a no-op"
+      "Plan and apply an @scp/coordination-as-code manifest in one shot (POST /plans then apply) — applying an unchanged manifest again is a no-op"
     )
     .requiredOption("--manifest <path>", "path to a synthesized DesiredStateManifest JSON file")
     .option("--base-url <url>", "API base URL override")
@@ -3198,7 +3197,9 @@ export function buildProgram(): Command {
     });
 
   // `scp iac render` (team-pipeline-iac.md D21(d), §12). See docs/cli.md §72.
-  const iacCmd = program.command("iac").description("Local, offline tools for @scp/iac manifests");
+  const iacCmd = program
+    .command("iac")
+    .description("Local, offline tools for @scp/coordination-as-code manifests");
 
   iacCmd
     .command("render")
@@ -3238,7 +3239,7 @@ export function buildProgram(): Command {
   iacCmd
     .command("export")
     .description(
-      "Reverse-generate @scp/iac construct code (or the synthesized manifest) from a service's live subtree (§9/D5) — the onboarding path for an existing estate"
+      "Reverse-generate @scp/coordination-as-code construct code (or the synthesized manifest) from a service's live subtree (§9/D5) — the onboarding path for an existing estate"
     )
     .requiredOption(
       "--scope <serviceIdOrUrn>",
@@ -3303,7 +3304,7 @@ export function buildProgram(): Command {
   iacCmd
     .command("scaffold")
     .description(
-      "Run discovery against an execution system and render the proposal as @scp/iac construct code, grouped into services (§7/ADR-0047) — ungrouped components are reported loudly, never silently dumped into a default"
+      "Run discovery against an execution system and render the proposal as @scp/coordination-as-code construct code, grouped into services (§7/ADR-0047) — ungrouped components are reported loudly, never silently dumped into a default"
     )
     .requiredOption("--from <executionSystemIdOrUrn>", "the execution-system to discover from")
     .option(

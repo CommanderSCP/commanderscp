@@ -42,7 +42,7 @@ The strip list is pinned by a regression test, because a future *third* stripped
 `campaign.properties` has exactly **three** write doors, and the typed route is only one of them:
 
 1. `POST /api/v1/campaigns` → `proposeCampaign` → `createObject`
-2. **IaC apply** → `iac/plans-repo.ts` → `createObject`/`updateObject` **directly**, with free-form `typeId` and free-form `properties`. It never touches the campaign route.
+2. **IaC apply** → `coordination-as-code/plans-repo.ts` → `createObject`/`updateObject` **directly**, with free-form `typeId` and free-form `properties`. It never touches the campaign route.
 3. **Federation import** → `import-repo.ts`'s `object_upsert` branch and its operator-facing twin `federation/handfill-repo.ts`.
 
 The generic `/objects/{type}` route is **not** a fourth door — `coordination/campaign-scope-authz.ts` refuses `campaign` on every write verb there. A guard at the route would therefore miss two of three, which is precisely the miss [ADR-0032 §6a](0032-dependency-subscriptions.md) records. The guard goes at `graph/objects-repo.ts`'s `createObject`/`updateObject`, plus `handFillObject`. The `updateObject` half is checked against the value **about to be stored**, since an ordinary PATCH can rewrite a valid recipe into an unreadable one without passing through a create.
