@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.2, 2026-08-24 — v0.1's design was accepted and built out; see §7 "Reality as of 2026-08-24" for what shipped, what this revision adds, and what is still open.
+**Status:** v0.3, 2026-09-12 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require. **Proposed, pending review.**
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -236,3 +236,156 @@ case, absent leaves the tile unchanged.
   graph object to hang a version staircase off, and per-stage version is still unbuilt observe
   capture. `observedRun` does not touch this gap — it names the CI run that produced a release, not
   the artifact's own identity or its version at a given stage.
+
+---
+
+## 8. The two release paths (v0.3, 2026-09-12)
+
+Owner statement, 2026-09-12, on how an image release actually runs:
+
+> If change is in source code: source code (unit tests) → build (local run tests if provided) →
+> scan/sign → registry → chart → gamma (integration test, probe + bake) → prod (integration test,
+> probe + bake)
+>
+> If change is in chart: chart → gamma (integration test, probe + bake) → prod (integration test,
+> probe + bake)
+
+This is not a new lane. It is a correction to **when the existing lane's head is drawn**, and it is
+the first statement in this document that makes the journey a property of the **change** rather than
+of the component.
+
+### 8.1 What is already right
+
+`laneNodes` (`apps/web/src/routes/component-pipeline.tsx`) already branches, and branches correctly:
+
+- `buildsHere = uniqueBuilds.length > 0 || buildSources.length > 0` (line 1101) — true when the
+  component has a resolved `build`-category binding or a `build`-category source mapping.
+- When true it pushes `Source code` → `build`, then the registry and Scan & sign nodes as
+  `lane.hasRegistry` and commander-role allow. That is **Path A's head**.
+- When false it pushes none of them. That is **Path B**: the lane opens at the chart/config source
+  and runs straight to the waves.
+- Line 1139 flips the stage-source label — `buildsHere ? "Config" : "Source code"` — so the same
+  node reads as *the config commit that triggers the deploy* on Path A and as *the repo this
+  component comes from* on Path B. The two paths' vocabulary is already distinct.
+
+Nothing above needs rebuilding. §8 changes one thing only: **what the branch reads.**
+
+### 8.2 The defect — path selection is static where the owner's model is per-change
+
+`buildsHere` is computed from the component's mappings and bindings. It carries no reference to the
+change being rendered. So for any component that is Path-A-capable — one `image` source and one
+`chart` source, the ordinary shape of a deployed service — **every** change renders the full
+build → registry → scan/sign spine, including a chart-only edit that never went near a builder.
+
+That is the §4 honesty failure this document exists to prevent, inverted: not a box labelled
+"unknown", but a box labelled with someone *else's* build. A chart bump would render the digest,
+scan verdict and signature of whatever artifact `artifactFactsForComponent` last found, presented as
+though this change produced them. The `digestMatch` field (`ComponentPipelineScanRunSummarySchema`,
+`packages/schemas/src/components.ts` — "true iff the scanned digest equals the promoted one") is
+precisely the guard against claiming an unrelated artifact, and it cannot fire here, because on a
+chart-path change there is no promoted artifact of this change's to compare against.
+
+The estate has never exhibited this, for the reason §8.4 gives: nothing on it is Path-A-capable.
+The defect is latent, and it lands the moment the first `image` mapping is created.
+
+### 8.3 The discriminator — DECIDED (owner, 2026-09-12): the mapping's Type
+
+Three candidates were put; the Type was taken.
+
+- **Type (taken).** ADR-0007 already makes Type the routing key, and §3 Segment 1 already renders
+  "the **Type** the mapping produces" on every source card. An `image`-Type mapping matched by the
+  push selects Path A; a `chart`-Type mapping selects Path B. The view **reads** the matched
+  mapping's Type off the server's own matching rather than inferring a path from repo layout — the
+  same discipline `correlatedVia.route` established in §7's Q2: a provenance label is read off the
+  resolved object, never computed from which branch matched.
+- **`path_pattern` (not taken).** Would handle one repo holding both code and chart, which Type
+  alone cannot. Rejected as the *base* mechanism for the same reason operator-declared `depends_on`
+  was rejected in Q2: it encodes a layout convention as an authority. It remains available as the
+  way an operator expresses the mixed repo — two mappings over the same repo, `chart/**` typed
+  `chart` and the remainder typed `image`, which the Type rule then reads correctly with no extra
+  machinery. **The mixed-repo case is therefore served by the taken option, not lost to it.**
+- **Repo identity (not taken).** Matches this estate's split exactly (98 gitops vs. 49 service
+  repos) with no data churn, but breaks the instant one repo holds both, and states nothing a
+  reviewer could check.
+
+Consequence: `buildsHere` must be superseded by a per-change path selection, with `buildsHere`
+retained as the fallback when no change is in view (the component-level "what can arrive here"
+reading the view gives today when it renders no specific change).
+
+### 8.4 Estate precondition — nothing can branch on this estate yet
+
+Measured on the live homelab commander, 2026-09-12 (`scp` DB, 195 MB, persistent longhorn PVC):
+
+| Fact | Count |
+|---|---|
+| `source_mappings` | 148 — **all `type=configuration`**; zero `image`, zero `chart` |
+| …with NULL `path_pattern` (whole repo matches) | 40 |
+| …with NULL `ref_pattern` (**every branch matches**) | **148** |
+| `executor_bindings` | 63, all `configuration` — 61 `argocd`, 2 `github`; zero `build` |
+| `publishes_to` edges (the registry link, §7) | **0** |
+| `artifact` objects (ADR-0045) | **0** |
+
+By repo: `jag8765-personal/homelab-gitops` 98, `AgentKitProject/agentkit` 31, `agentkit-hosting` 15,
+`agentkit-commercial` 3, `CommanderSCP/commanderscp` 1. The split the owner's two paths describe is
+present in the data as **repos**, and absent from it as **Types** — every service repo is typed
+`configuration`, so SCP models a push to `AgentKitProject/agentkit` as a config change that goes
+straight to deploy, when in reality it goes build → scan/sign → registry → chart → gamma → prod.
+
+So `buildSources` is empty for every component, `buildsHere` is false everywhere, and **the estate
+renders Path B for everything — correct logic on wrong data.** Retyping the mappings is an estate
+action, not a code change, and it is the precondition for §8.2's defect becoming reachable *and* for
+Path A ever rendering. It should land with the fix, not before it.
+
+### 8.5 The gate vocabulary the owner's statement names
+
+The owner's two paths name gates this view does not yet distinguish. They are listed here as the
+scope of the rendering work, not as new engine concepts — each is a `pipeline_hook` /
+`control_run` that already has a home:
+
+| Gate | Path | Where it sits |
+|---|---|---|
+| unit tests | A | at the source, before build |
+| local run tests (*if provided*) | A | at build — **optional, and its absence is not a failure** |
+| scan / sign | A | commander-side, over the digest — `ScanSignNode`, built |
+| integration test | A and B | at each of gamma and prod |
+| probe | A and B | at each of gamma and prod |
+| bake | A and B | at each of gamma and prod |
+
+Two honesty rules carry over from §4 unchanged. A gate that is **not part of this path** renders
+absent, never as "not run" — the distinction §8.2 turns on. A gate that is **declared but has not
+started** renders as a stated pending, never as absent; an unstarted bake and an absent bake are
+different facts.
+
+### 8.6 API shape
+
+Additive to `GET /components/{idOrUrn}/pipeline`, for the reason §5 gives — `/v1` is additive-only
+and widening a required response field is an oasdiff ERR (measured, not assumed) — see
+§5's own `unplacedStages` precedent, which is why the journey is two arrays joined by `order`.
+
+- `journeyPath: { kind: "image" | "chart", selectedBy: "mapping-type", mappingId, changeId } | null`
+  — the path this rendering is on, and **which mapping's Type selected it**, so the client states the
+  reason rather than recomputing it. Null when no change is in view, which is the signal to fall back
+  to the component-level `buildsHere` reading.
+- No change to `sources`, `stages`, `unplacedStages`, `artifact`, `registry` or `observedRun`.
+
+A `kind` of `"chart"` is what suppresses the build/registry/scan nodes for that rendering; the server
+does not omit the fields, because the same response still answers "what can arrive at this
+component" for the component-level view.
+
+### 8.7 Open questions
+
+1. **Does a chart-path change show the artifact it is deploying?** It has a digest — the image
+   already in the registry, unchanged by this push. Rendering it risks §8.2's exact confusion;
+   suppressing it hides the one fact an operator most wants during a chart bump ("which image is
+   this chart going to run?"). Recommendation: render it, on the **wave** node where the deploy
+   happens rather than on a registry node, labelled as the deployed artifact and not as a product of
+   this change.
+2. **Both arms in one change.** A push touching both `chart/**` and service code matches two
+   mappings of different Types. §7 already lists the both-arms-merge case as not covered.
+   Recommendation: `journeyPath.kind` becomes the union — Path A, since the artifact must be built
+   before the chart that references it can deploy — with both matched mappings cited in
+   `selectedBy`. Needs a decision before build.
+3. **`ref_pattern` is NULL on all 148 mappings**, so `dev` and `main` route identically
+   (ADR-0030 §1, and M18's "dev pipelines selected by source ref").
+   This is orthogonal to §8 but is in the same retyping pass, and the view already renders the
+   "any branch" case as a loud amber warning — 148 of them, today.
