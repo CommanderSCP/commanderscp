@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.3, 2026-09-12 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require. **Proposed, pending review.**
+**Status:** v0.4, 2026-09-12 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. **Proposed, pending review.**
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -362,30 +362,85 @@ Additive to `GET /components/{idOrUrn}/pipeline`, for the reason §5 gives — `
 and widening a required response field is an oasdiff ERR (measured, not assumed) — see
 §5's own `unplacedStages` precedent, which is why the journey is two arrays joined by `order`.
 
-- `journeyPath: { kind: "image" | "chart", selectedBy: "mapping-type", mappingId, changeId } | null`
-  — the path this rendering is on, and **which mapping's Type selected it**, so the client states the
-  reason rather than recomputing it. Null when no change is in view, which is the signal to fall back
-  to the component-level `buildsHere` reading.
-- No change to `sources`, `stages`, `unplacedStages`, `artifact`, `registry` or `observedRun`.
+**Two code facts, measured 2026-09-12, set this shape.** Both correct the first draft of this
+section.
 
-A `kind` of `"chart"` is what suppresses the build/registry/scan nodes for that rendering; the server
-does not omit the fields, because the same response still answers "what can arrive at this
-component" for the component-level view.
+1. **The path is already persisted per change, so `kind` is a read.** `proposeChange` writes the
+   routing Type into the change object's `properties.type`, straight from the mapping that matched
+   (`apps/server/src/coordination/changes-repo.ts:288`, fed from
+   `apps/server/src/coordination/webhook-processor.ts:379`). The view must **read** that field, not
+   recompute the path from mappings at render time — a label recomputed from "which mapping would
+   match now" goes silently false the moment a mapping is edited after the change was proposed.
+2. **A stage's change is per stage, not per response.** `asOfChangeId` is
+   `placementCurrents[0]?.changeId` for *each* prepared stage
+   (`apps/server/src/coordination/component-pipeline.ts:640`). Gamma can hold a chart change while
+   prod still holds the image change that preceded it. A single top-level `journeyPath` would
+   therefore have to pick one of them and mislabel the rest.
 
-### 8.7 Open questions
+So the field hangs off the stage:
 
-1. **Does a chart-path change show the artifact it is deploying?** It has a digest — the image
-   already in the registry, unchanged by this push. Rendering it risks §8.2's exact confusion;
-   suppressing it hides the one fact an operator most wants during a chart bump ("which image is
-   this chart going to run?"). Recommendation: render it, on the **wave** node where the deploy
-   happens rather than on a registry node, labelled as the deployed artifact and not as a product of
-   this change.
-2. **Both arms in one change.** A push touching both `chart/**` and service code matches two
-   mappings of different Types. §7 already lists the both-arms-merge case as not covered.
-   Recommendation: `journeyPath.kind` becomes the union — Path A, since the artifact must be built
-   before the chart that references it can deploy — with both matched mappings cited in
-   `selectedBy`. Needs a decision before build.
-3. **`ref_pattern` is NULL on all 148 mappings**, so `dev` and `main` route identically
-   (ADR-0030 §1, and M18's "dev pipelines selected by source ref").
-   This is orthogonal to §8 but is in the same retyping pass, and the view already renders the
-   "any branch" case as a loud amber warning — 148 of them, today.
+- **Per stage** — `journeyPath: { kind: "image" | "chart", selectedBy: "change-type", changeId } |
+  null`. The path *this stage's current change* is on, read from that change's `properties.type`.
+  Null when the stage holds no change, which is the signal to fall back to the component-level
+  `buildsHere` reading ("what can arrive here", the view's answer today).
+- **Per stage** — `deploys: { digest, artifactChangeId } | null` (D1 below). The artifact this
+  stage's change puts into service, as distinct from an artifact this change *produced*. Null on an
+  image-path change, where the produced artifact is already the top-level `artifact` and repeating
+  it on the wave would assert two facts where there is one.
+- No change to `sources`, `stages`' existing fields, `unplacedStages`, `artifact`, `registry` or
+  `observedRun`.
+
+A `kind` of `"chart"` is what suppresses the build/registry/scan nodes for that rendering; the
+server does not omit the underlying fields, because the same response still answers "what can
+arrive at this component" for the component-level view.
+
+### 8.7 Decisions (owner, 2026-09-12)
+
+**D1 — a chart-path change shows the artifact it deploys, on the wave node, labelled as deployed.**
+It has a digest: the image already in the registry, unchanged by this push. Suppressing it hides the
+one fact an operator most wants during a chart bump ("which image is this chart going to run?");
+rendering it in the produced-artifact block would be §8.2's exact confusion. It therefore renders
+**on the wave node**, where §8.6's per-stage finding puts the change that explains it, through the
+separate `deploys` field and never through `artifact`. *Rejected: suppress entirely (hides the
+useful fact); a new top-level `deploying` field (spends API surface to say what a label says, and
+top-level is the wrong scope per §8.6 fact 2).*
+
+**D2 — a push touching both arms becomes two releases, per ADR-0007, and the correlator must be
+made to do it.** This reverses the first draft's recommendation, on a measured reading:
+
+- `matchComponentForSource` returns **at most one** match — it ranks by specificity and `return`s on
+  the first hit (`apps/server/src/coordination/correlation.ts:117`).
+- Its Rule 1 ranks by *how many globs are set at all*, so a `chart/**` mapping outranks a whole-repo
+  `image` mapping. A both-arms push would be classified **`chart` → Path B, skipping the build
+  spine entirely** — the opposite of the owner's model, and silently.
+- The intended answer is already written down at the call site: *"One release = one source = one
+  pipeline, so the Type belongs to the CHANGE rather than to each target — a release needing both
+  would be two releases"* (`webhook-processor.ts`, citing ADR-0007 / M12 P4A). The correlator does
+  not implement it.
+
+So: the correlator returns the distinct matched `(component, Type)` pairs, and the processor
+proposes **one change per Type**, grouped by the `correlationKey` they share —
+`linkToCoordinatedChange` already keys on exactly that, so the grouping needs no new machinery.
+*Rejected: rank `image` above `chart` on ties (produces the right answer for a reason no operator
+can see — the provenance-label failure again); render a both-arms warning and leave routing alone
+(honest, but leaves a known-wrong route in place once retyping makes it reachable).*
+
+**D3 — `ref_pattern` is set in the same retyping pass.** All 148 mappings are NULL, so `dev` and
+`main` route identically (ADR-0030 §1; M18's "dev pipelines selected by source ref"). This is pure
+estate data, and the pass already opens every one of these rows to retype it. *Rejected: leave NULL
+(survivable — the view already draws the amber "any branch" warning 148 times — but it leaves M18's
+dev-pipeline selection inert); make NULL fail-closed (`correlation.ts:117` treats NULL as match-all
+**by design**; flipping that semantic breaks all 148 mappings at once).*
+
+### 8.8 Build sequence
+
+The ordering is load-bearing: each step is unreachable on this estate until the one after it lands,
+so no step can render a wrong answer in the window before its successor.
+
+1. **D2, the correlator.** Do it **first, while it is unreachable** — zero mappings are typed
+   `image` today (§8.4), so the both-arms case cannot occur and the change cannot break live
+   routing. Retyping is what makes it live.
+2. **§8.2's rendering fix, carrying D1.** Per-stage `journeyPath` read from `properties.type`, plus
+   `deploys` on the wave node.
+3. **The retyping pass, carrying D3.** Estate action, no code. This is the step that makes Path A
+   render at all, and it must come last.
