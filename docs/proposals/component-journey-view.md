@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.5, 2026-09-12 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build; §8.8 step 1 is **landed** (`d7baf27a`) and §8.9–§8.10 record what building it found. **Proposed, pending review.**
+**Status:** v0.6, 2026-09-12 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build; §8.8 step 1 is **landed** (`d7baf27a`) and §8.9–§8.11 record what building it found — including **§8.11, a blocker on D3**: retyping as specified would stop deployments, and Path A is two correlated changes, not one. **Proposed, pending review.**
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -561,3 +561,58 @@ push can never fan out. D2 is therefore reachable only through the raw `/webhook
 provider adapter (or the flat generic shape) supplies the full changed-file set. Adding `paths` to
 the typed report is purely additive and would let a CI reporter express a both-arms push; nothing
 needs it yet.
+
+### 8.11 STOP — D3's retyping pass would stop deployments, and Path A is two changes
+
+Measured 2026-09-12, before writing any of step 2. This is a blocker on D3 and it changes what D1
+has to render.
+
+**Binding resolution is by Type, and it does not fall back.** The chain:
+
+1. A change's routing Type is stamped onto every wave target as a snapshot
+   (`apps/server/src/coordination/plan-service.ts:209` — *"not re-read from the change at trigger
+   time"*).
+2. At trigger, the wave target's Type is what resolves the executor
+   (`apps/server/src/coordination/reconcile.ts:1380` → `resolveBindingForTarget(..., type)`).
+3. A Type with no binding does **not** fall back to another Type — asserted by an existing passing
+   test, `binding-type.integration.test.ts:156` (*"404s for a Type with no binding (rather than
+   falling back to another)"*). A miss blocks the wave target `no_executor` (ADR-0006, fail-closed).
+
+**The estate has 63 executor bindings and every one is `configuration`; zero are `build` (§8.4).**
+
+So retyping a service repo's mapping from `configuration` to `image` — exactly what D3's pass does —
+makes every change from that repo resolve an `image` binding at gamma and prod, find none, and block
+`no_executor`. **D3 as written does not merely misrender the journey; it stops the deployments.**
+Add this to §8.2's Category collision and §8.8's ordering is not enough on its own: the retyping pass
+itself has to be narrowed.
+
+**What this says about the model.** The owner's Path A — source → build → scan/sign → registry →
+chart → gamma → prod — is one *story* told across **two SCP changes**, not one:
+
+- an `image`-typed change that ends at the registry, and
+- a `configuration`-typed change (the chart/gitops bump) that deploys it through gamma and prod.
+
+That is not a workaround, it is what the estate already is: 98 gitops repos against 49 service repos
+(§8.4), and ADR-0007 puts ArgoCD in `configuration`. Making Path A one change would require binding
+ArgoCD as an `image` executor, which contradicts ADR-0007 outright. It also retro-justifies D2: a
+push touching both arms producing **two** releases is the *normal* Path A shape, not an edge case.
+
+**Consequence for D1 and §8.2 — the discriminator is correlation, not Type.** The defect is not
+"a chart-path change wrongly renders the build spine". It is: *the view cannot tell whether the
+artifact it is showing belongs to this journey.* On Path A the deploy-stage change is `configuration`
+and the artifact legitimately comes from a different, correlated change; on a bare chart bump the
+artifact comes from an unrelated older one. Type cannot separate those two — both deploy-stage
+changes are `configuration`. Only correlation can.
+
+**What the wire already has, and the one thing it lacks.** `artifact.changeId`
+(`ComponentPipelineArtifactSchema`) already names the change whose digest is shown, and
+`pickArtifactChange` already prefers the changes in view and falls back to the newest digest-carrying
+one — so the server is already honest about *which* change it picked. `stage.currents[].changeId`
+names the change at each stage. **Neither the response nor `component-pipeline.ts` carries any
+correlation link** — no `correlationKey`, no coordinated-change reference. That is the one genuinely
+new server field the real fix needs, and D2 has just made it load-bearing, because the fan-out is
+what puts the two arms in one coordinated-change group in the first place.
+
+**Open for the owner (§8.12).** D3 must be re-scoped, and D1's rendering rule follows from it.
+Nothing in §8.8 step 2 should be built until that is settled — building it on the Type discriminator
+would encode a rule that is already known to be wrong.
