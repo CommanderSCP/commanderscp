@@ -4,7 +4,7 @@ import { ScpClient } from "@scp/sdk";
 import type { ExecutorType } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
-import { matchComponentForSource } from "./correlation.js";
+import { matchComponentsForSource } from "./correlation.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -13,7 +13,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 
-/** `matchComponentForSource` precedence (M12 P4A follow-up). See docs/coordination.md §903. */
+/** `matchComponentsForSource` precedence (M12 P4A follow-up). See docs/coordination.md §903. */
 describe("source mapping precedence: the most-constrained mapping wins, deterministically", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -46,13 +46,13 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
 
   const match = (sourceKind: string, repo: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
-      matchComponentForSource(tx, org.orgId, { sourceKind, repo })
+      matchComponentsForSource(tx, org.orgId, { sourceKind, repo }).then((m) => m[0] ?? null)
     );
 
   /** `match`, plus the event's changed-file set — needed by the path-pattern cases below. */
   const matchPath = (sourceKind: string, repo: string, paths: string[]) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
-      matchComponentForSource(tx, org.orgId, { sourceKind, repo, paths })
+      matchComponentsForSource(tx, org.orgId, { sourceKind, repo, paths }).then((m) => m[0] ?? null)
     );
 
   it("the SPECIFIC mapping wins over a catch-all inserted BEFORE it", async () => {

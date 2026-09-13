@@ -24,7 +24,7 @@ import {
   BUMP_OBSERVED_EVENT,
   linkToCoordinatedChange,
   matchAuthoredBumpChange,
-  matchComponentForSource
+  matchComponentsForSource
 } from "./correlation.js";
 import { writeOutboxEvent } from "../events/outbox-repo.js";
 import { recordBumpHeadCommit } from "../dependencies/bump-authorship-repo.js";
@@ -376,7 +376,10 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       }
     }
 
-    const match = await matchComponentForSource(tx, orgId, {
+    // EVERY Type this event routes to (journey-view §8.7 D2). One release = one source = one
+    // pipeline, so a push matching mappings of two different Types is two releases. Same-Type
+    // events still yield exactly one match, byte-identical to the pre-D2 single-match behaviour.
+    const matches = await matchComponentsForSource(tx, orgId, {
       sourceKind: row.sourceKind,
       repo: hint.repo,
       path: hint.path,
@@ -384,7 +387,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       ref: hint.ref
     });
 
-    if (!match) {
+    if (matches.length === 0) {
       // No `source_mappings` row matched. See docs/coordination.md §1108.
       await tx
         .update(changeSourceEvents)
@@ -394,11 +397,21 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     }
 
     // Each unprocessed row is one distinct real-world event. See docs/coordination.md §1109.
-    const name = `${row.sourceKind}${hint.repo ? `: ${hint.repo}` : ""}`;
+    const baseName = `${row.sourceKind}${hint.repo ? `: ${hint.repo}` : ""}`;
+    const fansOut = matches.length > 1;
+    // The two releases from ONE push must be findable as one event. A git push carries no
+    // `correlationKey` — no webhook adapter sets one, only an explicit `scp change-source report`
+    // does — so a fan-out with none synthesises one from the event row. Synthesised ONLY when
+    // fanning out, so a single-Type event still stores exactly the key it stored before.
+    const correlationKey =
+      hint.correlationKey ?? (fansOut ? `change-source-event:${row.id}` : undefined);
     // `sourceRef` is the raw delivery payload kept verbatim (DESIGN §8) plus canonical keys lifted
     // from the hint — `artifact_digest` (M15.3c/M17.1) and `sbom` (M17.2). See
     // `canonicalizeSourceRef`. Additive: a delivery with neither is passed through byte-identical.
     const sourceRef = canonicalizeSourceRef(row.payload, hint);
+    // The verification RECORDED on a refusal below. Reassigned per arm so a fan-out refusal names
+    // the arm that actually refused, not merely the highest-ranked one.
+    let refusedVerification = verifyArtifactClass(matches[0]!.type, hint.artifactClass);
     try {
       // SAVEPOINT (nested transaction) around the propose. See docs/coordination.md §1110.
       await tx.transaction(async (inner) => {
@@ -412,51 +425,81 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
             `report carried a malformed \`stageDependencies\` — each entry must be {dependsOn, minWeight?, atTargets?} (got ${JSON.stringify(hint.stageDependenciesInvalid)})`
           );
         }
-        // The verification, where both sides are finally in hand. See docs/coordination.md §1111.
-        const artifactClassVerification = verifyArtifactClass(match.type, hint.artifactClass);
-        if (artifactClassVerification.verdict === "mismatch") {
-          throw badRequest(artifactClassMismatchReason(artifactClassVerification));
+        // A coupling declaration cannot be SPLIT across two releases — `provides` names what this
+        // release provides, and duplicating it onto both arms would declare the same thing twice
+        // while attaching it to one arbitrarily would be a guess. Refuse, loudly, and let the
+        // report name its pipeline. Unreachable for a plain push, which declares no couplings.
+        if (
+          fansOut &&
+          (hint.provides !== undefined ||
+            hint.requires !== undefined ||
+            hint.stageDependencies !== undefined)
+        ) {
+          throw badRequest(
+            `report matched ${matches.length} pipeline Types (${matches.map((m) => m.type).join(", ")}) AND carried a coupling declaration — a \`provides\`/\`requires\`/\`stageDependencies\` belongs to ONE release, so narrow the mapping (or the report) to the pipeline it describes`
+          );
         }
-        const { change } = await proposeChange(inner, {
-          orgId,
-          actorObjectId: SYSTEM_ACTOR_ID,
-          requestId: `webhook-${row.id}`,
-          name,
-          urn: deriveUrn(orgId, "change", name, row.id),
-          sourceKind: row.sourceKind,
-          sourceRef,
-          correlationKey: hint.correlationKey,
-          targets: [match.componentObjectId],
-          // WHICH pipeline this release drives — the routing Type (ADR-0007), straight from the mapping
-          // that matched it (M12 P4A). One release = one source = one pipeline, so the Type belongs to the
-          // CHANGE rather than to each target — a release needing both would be two releases.
-          type: match.type,
-          // M12 P4B: the coupling declaration from the typed report body (`scp change-source
-          // report --provides/--requires`), threaded IDENTICALLY to `POST /changes`' typed fields —
-          // same `at` resolution inside `proposeChange`, same storage, same routing-guard behaviour.
-          provides: hint.provides,
-          requires: hint.requires,
-          // ADR-0028: the stage-scoped coupling from the typed report body (`scp change-source
-          // report --stage-depends-on`), threaded the same way — same propose-time resolution of
-          // `dependsOn`/`atTargets`, same storage under `properties.stageDependencies`.
-          stageDependencies: hint.stageDependencies,
-          // WHO DECLARED IT. The CHANGE stays the system actor's. See docs/coordination.md §1112.
-          declarationActorObjectId: row.reportedByObjectId ?? undefined
-        });
-
-        if (hint.correlationKey) {
-          await linkToCoordinatedChange(inner, {
+        // One release per matched Type (journey-view §8.7 D2), all inside THIS savepoint: a
+        // both-arms push lands both releases or neither, never just the chart half.
+        let firstChangeId: string | null = null;
+        for (const match of matches) {
+          // The verification, where both sides are finally in hand. See docs/coordination.md §1111.
+          const artifactClassVerification = verifyArtifactClass(match.type, hint.artifactClass);
+          refusedVerification = artifactClassVerification;
+          if (artifactClassVerification.verdict === "mismatch") {
+            throw badRequest(artifactClassMismatchReason(artifactClassVerification));
+          }
+          // The Type disambiguates BOTH the name and the URN when fanning out — `objects` is
+          // UNIQUE on (org_id, urn), and every arm here shares one `row.id`. A single-Type event
+          // keeps the exact name and URN it had before D2.
+          const name = fansOut ? `${baseName} (${match.type})` : baseName;
+          const urnSuffix = fansOut ? `${row.id}-${match.type}` : row.id;
+          const { change } = await proposeChange(inner, {
             orgId,
-            changeObjectId: change.id,
-            correlationKey: hint.correlationKey,
             actorObjectId: SYSTEM_ACTOR_ID,
-            requestId: `webhook-${row.id}`
+            requestId: `webhook-${row.id}`,
+            name,
+            urn: deriveUrn(orgId, "change", name, urnSuffix),
+            sourceKind: row.sourceKind,
+            sourceRef,
+            correlationKey,
+            targets: [match.componentObjectId],
+            // WHICH pipeline this release drives — the routing Type (ADR-0007), straight from the mapping
+            // that matched it (M12 P4A). One release = one source = one pipeline, so the Type belongs to the
+            // CHANGE rather than to each target — a release needing both IS two releases, above.
+            type: match.type,
+            // M12 P4B: the coupling declaration from the typed report body (`scp change-source
+            // report --provides/--requires`), threaded IDENTICALLY to `POST /changes`' typed fields —
+            // same `at` resolution inside `proposeChange`, same storage, same routing-guard behaviour.
+            provides: hint.provides,
+            requires: hint.requires,
+            // ADR-0028: the stage-scoped coupling from the typed report body (`scp change-source
+            // report --stage-depends-on`), threaded the same way — same propose-time resolution of
+            // `dependsOn`/`atTargets`, same storage under `properties.stageDependencies`.
+            stageDependencies: hint.stageDependencies,
+            // WHO DECLARED IT. The CHANGE stays the system actor's. See docs/coordination.md §1112.
+            declarationActorObjectId: row.reportedByObjectId ?? undefined
           });
+
+          if (correlationKey) {
+            await linkToCoordinatedChange(inner, {
+              orgId,
+              changeObjectId: change.id,
+              correlationKey,
+              actorObjectId: SYSTEM_ACTOR_ID,
+              requestId: `webhook-${row.id}`
+            });
+          }
+
+          firstChangeId ??= change.id;
         }
 
+        // `resulting_change_object_id` is ONE column and a fan-out produces two changes, so it
+        // holds the highest-ranked arm. The full set is the coordinated-change group above, which
+        // is why the synthesised `correlationKey` is not optional for a fan-out.
         await inner
           .update(changeSourceEvents)
-          .set({ processedAt: new Date(), resultingChangeObjectId: change.id })
+          .set({ processedAt: new Date(), resultingChangeObjectId: firstChangeId })
           .where(eq(changeSourceEvents.id, row.id));
       });
     } catch (err) {
@@ -476,7 +519,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
           provides: hint.provides ?? null,
           requires: hint.requires ?? hint.requiresInvalid ?? null,
           // D13 — the verification RECORD, not just the message. See docs/coordination.md §1114.
-          artifactClassVerification: verifyArtifactClass(match.type, hint.artifactClass),
+          artifactClassVerification: refusedVerification,
           error: reason
         },
         reasonTree: {

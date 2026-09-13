@@ -3,7 +3,7 @@ import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
-import { matchComponentForSource } from "./correlation.js";
+import { matchComponentsForSource } from "./correlation.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -40,7 +40,7 @@ describe("a source mapping whose component was deleted must not match", () => {
 
   const match = (sourceKind: string, repo: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
-      matchComponentForSource(tx, org.orgId, { sourceKind, repo })
+      matchComponentsForSource(tx, org.orgId, { sourceKind, repo }).then((m) => m[0] ?? null)
     );
 
   it("routes to NOBODY rather than to a deleted component", async () => {
