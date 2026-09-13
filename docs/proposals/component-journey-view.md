@@ -346,7 +346,8 @@ scope of the rendering work, not as new engine concepts — each is a `pipeline_
 |---|---|---|
 | unit tests | A | at the source, before build |
 | local run tests (*if provided*) | A | at build — **optional, and its absence is not a failure** |
-| scan / sign | A | commander-side, over the digest — `ScanSignNode`, built |
+| scan | A | commander-side, over the digest — see §8.9, they are not one gate |
+| sign | A **and** B | commander-side, at every crossing — see §8.9 |
 | integration test | A and B | at each of gamma and prod |
 | probe | A and B | at each of gamma and prod |
 | bake | A and B | at each of gamma and prod |
@@ -444,3 +445,55 @@ so no step can render a wrong answer in the window before its successor.
    `deploys` on the wave node.
 3. **The retyping pass, carrying D3.** Estate action, no code. This is the step that makes Path A
    render at all, and it must come last.
+
+### 8.9 Scan and sign are one tile but two gates, and only one of them is Path A
+
+Owner invariant, restated 2026-09-12: **scan and sign can only ever happen on the commander**; an
+outpost or retrans may only validate that a signature is valid. The placement is right, and the
+view already draws it that way — but the two gates do not sit on the same path, and the invariant
+is not enforced anywhere except in the renderer. Measured 2026-09-12.
+
+**Where it runs.** Both are phases of ONE act: building a promotion bundle for a peer. Not at build
+time, not at the outpost. `buildPromotionExport` runs the scan at Phase 1.5
+(`apps/server/src/federation/promotion-repo.ts:227` → `federation/promotion-scan-step.ts:327`) and
+cosign-signs the canonical manifest bytes at Phase 3 (`promotion-repo.ts:375`). Per promotion
+journey, commander-side, over the digest — exactly where the charter puts it.
+
+**Why they split across the two paths.** The scan step reads the OCI digests off the change's
+`sourceRef` and returns early when there are none — *"metadata-only promotion — nothing to scan"*.
+A chart-path change carries no artifact digest of its own, so **scan is effectively Path A**. The
+signature is not conditional on that: Phase 3 signs whatever manifest was assembled, so **every
+commander-side crossing is signed, on both paths**. A chart-path crossing therefore produces a
+signed manifest with an EMPTY artifact set.
+
+**Consequence for D1, and it is a copy rule.** The digest D1 puts on the wave node — the image the
+chart is about to run — is *not* covered by that crossing's signature, because it is not in that
+crossing's manifest. The wave node must say **deployed**, never *signed* or *verified*, or it
+asserts a provenance that does not exist. This is the same failure §8.2 is about, one field over.
+
+**The validate-only half is real and layered.** Import verifies the cosign signature over the exact
+canonical bytes, requires the arrived artifact set to equal the signed manifest's, and requires the
+Ed25519-anchored digest list to equal the cosign-anchored one — and it rejects a manifest-less
+bundle from a peer known to have a cosign key as a downgrade attack
+(`promotion-repo.ts:498–617`). The outpost tile copy already says the commander creates manifests
+and imports none.
+
+**What is NOT enforced — open, and not part of §8's rendering scope.** Nothing stops a non-commander
+from performing the act:
+
+- The role check is in the RENDERER only — `instanceRole === "commander"` at
+  `apps/web/src/routes/component-pipeline.tsx:1122`. That decides whether a tile is drawn, not
+  whether a manifest can be signed.
+- `POST /api/v1/federation/exports/promotion` (`apps/server/src/routes/federation.ts:681`) is gated
+  on the `federation:write` permission and on no role at all.
+- Key custody is not the lever either: `ensureInstanceCosignKey` generates a keypair **on first
+  use** for whatever instance calls it, so an outpost would mint its own and sign with it.
+- The guard already exists and is not wired here. `commanderOnlyFederationVerdict`
+  (`apps/server/src/dependencies/commander-only.ts`), including its fail-closed "an UNDECLARED role
+  is its own answer, checked first" rule — a census with no filters finds it used by the dependency
+  loops, the dependency routes and `routes/plans.ts`, and **never by federation promotion export**.
+
+This is the component-built-never-installed shape: the right guard exists, in the right form, wired
+to a different subsystem. Whether an outpost-signed manifest would then be ACCEPTED depends on
+whether the receiving peer has that outpost's cosign key registered, which pairing may well do —
+worth measuring before sizing the fix, but the act itself is already unguarded.
