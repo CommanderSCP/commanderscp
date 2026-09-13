@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { matchComponentForSource } from "./correlation.js";
+import { matchComponentsForSource } from "./correlation.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -29,7 +29,7 @@ describe("source mapping: enabled (the pause switch, migration 0063)", () => {
 
   const match = (sourceKind: string, repo: string, paths?: string[]) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
-      matchComponentForSource(tx, org.orgId, { sourceKind, repo, paths })
+      matchComponentsForSource(tx, org.orgId, { sourceKind, repo, paths }).then((m) => m[0] ?? null)
     );
 
   it("round-trips: true by default, false when declared, flips both ways via PATCH, list reflects", async () => {

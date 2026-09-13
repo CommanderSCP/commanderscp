@@ -37,11 +37,10 @@ export interface SourceMatch {
   classification: PipelineClassification | null;
 }
 
-/** The matching component and its pipeline, or null. See docs/coordination.md §377. */
-/** Does `pattern` match the event's location at all. See docs/coordination.md §378. */
-function matchesAnyPath(pattern: string, hint: CorrelationHint): boolean {
-  if (hint.path && globMatch(pattern, hint.path)) return true;
-  return (hint.paths ?? []).some((candidate) => globMatch(pattern, candidate));
+/** The matching components and their pipelines — one per Type. See docs/coordination.md §377. */
+/** Every distinct location the event touched, from both hint shapes. See docs/coordination.md §378. */
+function touchedPaths(hint: CorrelationHint): string[] {
+  return [...new Set([hint.path, ...(hint.paths ?? [])].filter((p): p is string => !!p))];
 }
 
 /** Rule 2a: how NARROW a pattern's widest wildcard is — exact 3, `*` 2, `**` 1, unset 0. */
@@ -74,11 +73,27 @@ function componentIsLive(tx: TenantTx, orgId: string) {
   );
 }
 
-export async function matchComponentForSource(
+/** EVERY Type this event routes to, highest-ranked first (ADR-0007 / M12 P4A, journey-view §8.7 D2).
+ *
+ *  One release = one source = one pipeline, so a push that matches mappings of two different Types
+ *  is TWO releases, not one union — the call site says so in as many words. This used to return the
+ *  single highest-ranked match, which routed a push touching both `chart/**` and service code as a
+ *  `chart` change (Rule 1 ranks by how many globs are set, so `chart/**` outranks a whole-repo
+ *  `image` mapping) and silently skipped the build spine.
+ *
+ *  Ownership is decided PER CHANGED PATH and the distinct Types of the owners are returned — see
+ *  the comment on `winners` for why the whole-event reading fans a chart-only push out wrongly.
+ *
+ *  DEDUPED BY TYPE ALONE, deliberately. Two mappings of the SAME Type matching one event still
+ *  collapse to the highest-ranked of them — including when they name different components, which is
+ *  the monorepo-of-services case. Fanning out per component is a wider change than D2 decided and
+ *  would multiply changes on every existing estate; this narrowing keeps every same-Type event
+ *  byte-identical to its pre-D2 behaviour, so `[0]` is exactly what the old function returned. */
+export async function matchComponentsForSource(
   tx: TenantTx,
   orgId: string,
   hint: CorrelationHint
-): Promise<SourceMatch | null> {
+): Promise<SourceMatch[]> {
   const rows = await tx
     .select()
     .from(sourceMappings)
@@ -107,21 +122,53 @@ export async function matchComponentForSource(
       asc(sourceMappings.id)
     );
 
-  for (const row of rows) {
+  // Everything that clears the non-path filters, still in precedence order.
+  const candidates = rows.filter((row) => {
     // The operator's PAUSE SWITCH (migration 0063). See docs/coordination.md §380.
     if (!row.enabled && (row.disabledUntil === null || row.disabledUntil.getTime() > Date.now()))
-      continue;
-    if (row.repoPattern && (!hint.repo || !globMatch(row.repoPattern, hint.repo))) continue;
-    if (row.pathPattern && !matchesAnyPath(row.pathPattern, hint)) continue;
+      return false;
+    if (row.repoPattern && (!hint.repo || !globMatch(row.repoPattern, hint.repo))) return false;
     // Fail-closed on an unknown ref, the same rule throughout. See docs/coordination.md §381.
-    if (row.refPattern && (!hint.ref || !globMatch(row.refPattern, hint.ref))) continue;
-    return {
-      componentObjectId: row.componentObjectId,
-      type: (row.type as ExecutorType | null) ?? "configuration",
-      classification: parsePipelineClassification(row.classification)
-    };
+    if (row.refPattern && (!hint.ref || !globMatch(row.refPattern, hint.ref))) return false;
+    return true;
+  });
+
+  // PER PATH, not per event. A mixed repo is modelled as `chart/**` typed `chart` plus a
+  // whole-repo mapping typed `image` for "the remainder" — and globs have no negation, so that
+  // whole-repo mapping matches `chart/values.yaml` too. Asking "which mappings match this event"
+  // therefore fans a CHART-ONLY push out into a spurious image release. Asking "which mapping owns
+  // each changed FILE" does not: the file goes to its most specific mapping, exactly the
+  // precedence rank this query already computes, and the Types that survive are the Types the push
+  // actually touched. Same answer as the whole-event reading whenever one Type owns everything,
+  // which is every estate that exists today.
+  const winners = new Set<string>();
+  const paths = touchedPaths(hint);
+  if (paths.length === 0) {
+    // No path information at all: only a mapping that constrains no path can own the event. This
+    // is the pre-existing reading — `matchesAnyPath` returned false for every pattern here.
+    const owner = candidates.find((row) => !row.pathPattern);
+    if (owner) winners.add(owner.id);
+  } else {
+    for (const path of paths) {
+      const owner = candidates.find((row) => !row.pathPattern || globMatch(row.pathPattern, path));
+      if (owner) winners.add(owner.id);
+    }
   }
-  return null;
+
+  // Re-walk in precedence order so `[0]` is the highest-ranked winner — exactly what the old
+  // single-match function returned — rather than whichever path happened to be listed first.
+  const byType = new Map<ExecutorType, SourceMatch>();
+  for (const row of candidates) {
+    if (!winners.has(row.id)) continue;
+    const type = (row.type as ExecutorType | null) ?? "configuration";
+    if (byType.has(type)) continue;
+    byType.set(type, {
+      componentObjectId: row.componentObjectId,
+      type,
+      classification: parsePipelineClassification(row.classification)
+    });
+  }
+  return [...byType.values()];
 }
 
 /** Links a Change into its CoordinatedChange group. See docs/coordination.md §382. */

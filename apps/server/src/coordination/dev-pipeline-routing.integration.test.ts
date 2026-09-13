@@ -6,7 +6,7 @@ import type { ExecutorType, PipelineClassification } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { sourceMappings } from "../db/schema.js";
 import { createSourceMapping, deleteSourceMappingsMatching } from "./source-mappings-repo.js";
-import { matchComponentForSource } from "./correlation.js";
+import { matchComponentsForSource } from "./correlation.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -51,7 +51,9 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
 
   const match = (sourceKind: string, repo: string, ref?: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
-      matchComponentForSource(tx, org.orgId, { sourceKind, repo, ...(ref ? { ref } : {}) })
+      matchComponentsForSource(tx, org.orgId, { sourceKind, repo, ...(ref ? { ref } : {}) }).then(
+        (m) => m[0] ?? null
+      )
     );
 
   it("routes the dev branch and the main branch of ONE repo to different pipelines", async () => {

@@ -4,7 +4,7 @@ import { ScpClient } from "@scp/sdk";
 import type { ExecutorType } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
-import { matchComponentForSource } from "./correlation.js";
+import { matchComponentsForSource } from "./correlation.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -47,7 +47,7 @@ describe("source mapping: a repository routes by changed path, not just by name"
 
   const match = (sourceKind: string, repo: string, paths?: string[]) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
-      matchComponentForSource(tx, org.orgId, { sourceKind, repo, paths })
+      matchComponentsForSource(tx, org.orgId, { sourceKind, repo, paths }).then((m) => m[0] ?? null)
     );
 
   it("routes two components in ONE repository by which directory the push touched", async () => {

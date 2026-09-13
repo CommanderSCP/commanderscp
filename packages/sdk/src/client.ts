@@ -1632,7 +1632,7 @@ export class ScpClient {
       return unwrap(result);
     },
     /** Flips the pause switch on ONE mapping, by id (migration 0063) — a disabled mapping stays
-     *  declared but `matchComponentForSource` skips it, so it routes nothing. */
+     *  declared but `matchComponentsForSource` skips it, so it routes nothing. */
     setMappingEnabled: async (
       sourceKind: string,
       id: string,

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { matchComponentForSource } from "./correlation.js";
+import { matchComponentsForSource } from "./correlation.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -29,7 +29,7 @@ describe("source mapping: declared scope (migration 0066, §10.6)", () => {
 
   const match = (sourceKind: string, repo: string, paths?: string[]) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
-      matchComponentForSource(tx, org.orgId, { sourceKind, repo, paths })
+      matchComponentsForSource(tx, org.orgId, { sourceKind, repo, paths }).then((m) => m[0] ?? null)
     );
 
   it("round-trips incl. NULL: declared at create, read back on create/list/pipeline; omitted = null (not declared)", async () => {

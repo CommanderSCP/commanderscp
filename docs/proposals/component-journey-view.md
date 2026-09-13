@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.2, 2026-08-24 — v0.1's design was accepted and built out; see §7 "Reality as of 2026-08-24" for what shipped, what this revision adds, and what is still open.
+**Status:** v0.6, 2026-09-12 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build; §8.8 step 1 is **landed** (`d7baf27a`) and §8.9–§8.11 record what building it found — including **§8.11, a blocker on D3**: retyping as specified would stop deployments, and Path A is two correlated changes, not one. **Proposed, pending review.**
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -236,3 +236,383 @@ case, absent leaves the tile unchanged.
   graph object to hang a version staircase off, and per-stage version is still unbuilt observe
   capture. `observedRun` does not touch this gap — it names the CI run that produced a release, not
   the artifact's own identity or its version at a given stage.
+
+---
+
+## 8. The two release paths (2026-09-12)
+
+Owner statement, 2026-09-12, on how an image release actually runs:
+
+> If change is in source code: source code (unit tests) → build (local run tests if provided) →
+> scan/sign → registry → chart → gamma (integration test, probe + bake) → prod (integration test,
+> probe + bake)
+>
+> If change is in chart: chart → gamma (integration test, probe + bake) → prod (integration test,
+> probe + bake)
+
+This is not a new lane. It is a correction to **when the existing lane's head is drawn**, and it is
+the first statement in this document that makes the journey a property of the **change** rather than
+of the component.
+
+### 8.1 What is already right
+
+`laneNodes` (`apps/web/src/routes/component-pipeline.tsx`) already branches, and branches correctly:
+
+- `buildsHere = uniqueBuilds.length > 0 || buildSources.length > 0` (line 1101) — true when the
+  component has a resolved `build`-category binding or a `build`-category source mapping.
+  **Category, not Type** — and that is the trap §8.2 turns on: `CATEGORY_OF_TYPE`
+  (`packages/schemas/src/executors.ts`) maps BOTH `image` and `chart` to `build`, so this flag
+  cannot tell the owner's two paths apart even in principle. It reads as Path-B-vs-Path-A today
+  only because every mapping on the estate is typed `configuration` (§8.4).
+- When true it pushes `Source code` → `build`, then the registry and Scan & sign nodes as
+  `lane.hasRegistry` and commander-role allow. That is **Path A's head**.
+- When false it pushes none of them. That is **Path B**: the lane opens at the chart/config source
+  and runs straight to the waves.
+- Line 1139 flips the stage-source label — `buildsHere ? "Config" : "Source code"` — so the same
+  node reads as *the config commit that triggers the deploy* on Path A and as *the repo this
+  component comes from* on Path B. The two paths' vocabulary is already distinct.
+
+Nothing above needs rebuilding. §8 changes one thing only: **what the branch reads.**
+
+### 8.2 The defect — the branch reads Category, and both paths share one
+
+`buildsHere` is computed from the component's mappings and bindings. It carries no reference to the
+change being rendered. So for any component that is Path-A-capable — one `image` source and one
+`chart` source, the ordinary shape of a deployed service — **every** change renders the full
+build → registry → scan/sign spine, including a chart-only edit that never went near a builder.
+
+It is worse than static, and this is the part that sizes the fix: `buildsHere` reads the source's
+**Category**, and `image` and `chart` are both Category `build`. A component whose ONLY source is a
+`chart`-typed mapping — which is precisely what D3's retyping pass creates — therefore has
+`buildsHere` **true**, renders Path A's head on every change, and lists the chart repo under a node
+labelled *Source code* with a build step after it. So the fix is not "read the same flag per
+change"; the flag reads the wrong field. Only Type discriminates the paths (§8.3), and a Category
+can never be narrowed into one.
+
+That is the §4 honesty failure this document exists to prevent, inverted: not a box labelled
+"unknown", but a box labelled with someone *else's* build. A chart bump would render the digest,
+scan verdict and signature of whatever artifact `artifactFactsForComponent` last found, presented as
+though this change produced them. The `digestMatch` field (`ComponentPipelineScanRunSummarySchema`,
+`packages/schemas/src/components.ts` — "true iff the scanned digest equals the promoted one") is
+precisely the guard against claiming an unrelated artifact, and it cannot fire here, because on a
+chart-path change there is no promoted artifact of this change's to compare against.
+
+The estate has never exhibited this, for the reason §8.4 gives: nothing on it is Path-A-capable.
+The defect is latent, and it lands the moment the first `image` mapping is created.
+
+### 8.3 The discriminator — DECIDED (owner, 2026-09-12): the mapping's Type
+
+Three candidates were put; the Type was taken.
+
+- **Type (taken).** ADR-0007 already makes Type the routing key, and §3 Segment 1 already renders
+  "the **Type** the mapping produces" on every source card. An `image`-Type mapping matched by the
+  push selects Path A; a `chart`-Type mapping selects Path B. The view **reads** the matched
+  mapping's Type off the server's own matching rather than inferring a path from repo layout — the
+  same discipline `correlatedVia.route` established in §7's Q2: a provenance label is read off the
+  resolved object, never computed from which branch matched.
+- **`path_pattern` (not taken).** Would handle one repo holding both code and chart, which Type
+  alone cannot. Rejected as the *base* mechanism for the same reason operator-declared `depends_on`
+  was rejected in Q2: it encodes a layout convention as an authority. It remains available as the
+  way an operator expresses the mixed repo — two mappings over the same repo, `chart/**` typed
+  `chart` and the remainder typed `image`, which the Type rule then reads correctly with no extra
+  machinery. **The mixed-repo case is therefore served by the taken option, not lost to it.**
+  One correction from building it: "the remainder" is *not expressible as a glob* — globs have no
+  negation, so the whole-repo `image` mapping also matches `chart/values.yaml`. What makes the
+  two-mapping shape work is that correlation attributes each changed **file** to its most specific
+  mapping rather than asking which mappings match the event; see §8.10.
+- **Repo identity (not taken).** Matches this estate's split exactly (98 gitops vs. 49 service
+  repos) with no data churn, but breaks the instant one repo holds both, and states nothing a
+  reviewer could check.
+
+Consequence: `buildsHere` must be superseded by a per-change path selection, with `buildsHere`
+retained as the fallback when no change is in view (the component-level "what can arrive here"
+reading the view gives today when it renders no specific change).
+
+### 8.4 Estate precondition — nothing can branch on this estate yet
+
+Measured on the live homelab commander, 2026-09-12 (`scp` DB, 195 MB, persistent longhorn PVC):
+
+| Fact | Count |
+|---|---|
+| `source_mappings` | 148 — **all `type=configuration`**; zero `image`, zero `chart` |
+| …with NULL `path_pattern` (whole repo matches) | 40 |
+| …with NULL `ref_pattern` (**every branch matches**) | **148** |
+| `executor_bindings` | 63, all `configuration` — 61 `argocd`, 2 `github`; zero `build` |
+| `publishes_to` edges (the registry link, §7) | **0** |
+| `artifact` objects (ADR-0045) | **0** |
+
+By repo: `jag8765-personal/homelab-gitops` 98, `AgentKitProject/agentkit` 31, `agentkit-hosting` 15,
+`agentkit-commercial` 3, `CommanderSCP/commanderscp` 1. The split the owner's two paths describe is
+present in the data as **repos**, and absent from it as **Types** — every service repo is typed
+`configuration`, so SCP models a push to `AgentKitProject/agentkit` as a config change that goes
+straight to deploy, when in reality it goes build → scan/sign → registry → chart → gamma → prod.
+
+So `buildSources` is empty for every component, `buildsHere` is false everywhere, and **the estate
+renders Path B for everything — correct logic on wrong data.** Retyping the mappings is an estate
+action, not a code change, and it is the precondition for §8.2's defect becoming reachable *and* for
+Path A ever rendering. It must land **after** the fix, not before it — and not only because the
+defect would otherwise be reachable: typing a chart repo `chart` puts it in Category `build`, which
+flips `buildsHere` true for a component that has no build at all (§8.2). Retyping first would not
+merely expose the defect, it would create a second one.
+
+### 8.5 The gate vocabulary the owner's statement names
+
+The owner's two paths name gates this view does not yet distinguish. They are listed here as the
+scope of the rendering work, not as new engine concepts — each is a `pipeline_hook` /
+`control_run` that already has a home:
+
+| Gate | Path | Where it sits |
+|---|---|---|
+| unit tests | A | at the source, before build |
+| local run tests (*if provided*) | A | at build — **optional, and its absence is not a failure** |
+| scan | A | commander-side, over the digest — see §8.9, they are not one gate |
+| sign | A **and** B | commander-side, at every crossing — see §8.9 |
+| integration test | A and B | at each of gamma and prod |
+| probe | A and B | at each of gamma and prod |
+| bake | A and B | at each of gamma and prod |
+
+Two honesty rules carry over from §4 unchanged. A gate that is **not part of this path** renders
+absent, never as "not run" — the distinction §8.2 turns on. A gate that is **declared but has not
+started** renders as a stated pending, never as absent; an unstarted bake and an absent bake are
+different facts.
+
+### 8.6 API shape
+
+Additive to `GET /components/{idOrUrn}/pipeline`, for the reason §5 gives — `/v1` is additive-only
+and widening a required response field is an oasdiff ERR (measured, not assumed) — see
+§5's own `unplacedStages` precedent, which is why the journey is two arrays joined by `order`.
+
+**Two code facts, measured 2026-09-12, set this shape.** Both correct the first draft of this
+section.
+
+1. **The path is already persisted per change, so `kind` is a read.** `proposeChange` writes the
+   routing Type into the change object's `properties.type`, straight from the mapping that matched
+   (`apps/server/src/coordination/changes-repo.ts:288`, fed from
+   `apps/server/src/coordination/webhook-processor.ts:379`). The view must **read** that field, not
+   recompute the path from mappings at render time — a label recomputed from "which mapping would
+   match now" goes silently false the moment a mapping is edited after the change was proposed.
+2. **A stage's change is per stage, not per response.** `asOfChangeId` is
+   `placementCurrents[0]?.changeId` for *each* prepared stage
+   (`apps/server/src/coordination/component-pipeline.ts:640`). Gamma can hold a chart change while
+   prod still holds the image change that preceded it. A single top-level `journeyPath` would
+   therefore have to pick one of them and mislabel the rest.
+
+So the field hangs off the stage:
+
+- **Per stage** — `journeyPath: { kind: "image" | "chart", selectedBy: "change-type", changeId } |
+  null`. The path *this stage's current change* is on, read from that change's `properties.type`.
+  Null when the stage holds no change, which is the signal to fall back to the component-level
+  `buildsHere` reading ("what can arrive here", the view's answer today).
+- **Per stage** — `deploys: { digest, artifactChangeId } | null` (D1 below). The artifact this
+  stage's change puts into service, as distinct from an artifact this change *produced*. Null on an
+  image-path change, where the produced artifact is already the top-level `artifact` and repeating
+  it on the wave would assert two facts where there is one.
+- No change to `sources`, `stages`' existing fields, `unplacedStages`, `artifact`, `registry` or
+  `observedRun`.
+
+A `kind` of `"chart"` is what suppresses the build/registry/scan nodes for that rendering; the
+server does not omit the underlying fields, because the same response still answers "what can
+arrive at this component" for the component-level view.
+
+### 8.7 Decisions (owner, 2026-09-12)
+
+**D1 — a chart-path change shows the artifact it deploys, on the wave node, labelled as deployed.**
+It has a digest: the image already in the registry, unchanged by this push. Suppressing it hides the
+one fact an operator most wants during a chart bump ("which image is this chart going to run?");
+rendering it in the produced-artifact block would be §8.2's exact confusion. It therefore renders
+**on the wave node**, where §8.6's per-stage finding puts the change that explains it, through the
+separate `deploys` field and never through `artifact`. *Rejected: suppress entirely (hides the
+useful fact); a new top-level `deploying` field (spends API surface to say what a label says, and
+top-level is the wrong scope per §8.6 fact 2).*
+
+**D2 — a push touching both arms becomes two releases, per ADR-0007, and the correlator must be
+made to do it.** This reverses the first draft's recommendation, on a measured reading:
+
+- `matchComponentForSource` returns **at most one** match — it ranks by specificity and `return`s on
+  the first hit (`apps/server/src/coordination/correlation.ts:117`).
+- Its Rule 1 ranks by *how many globs are set at all*, so a `chart/**` mapping outranks a whole-repo
+  `image` mapping. A both-arms push would be classified **`chart` → Path B, skipping the build
+  spine entirely** — the opposite of the owner's model, and silently.
+- The intended answer is already written down at the call site: *"One release = one source = one
+  pipeline, so the Type belongs to the CHANGE rather than to each target — a release needing both
+  would be two releases"* (`webhook-processor.ts`, citing ADR-0007 / M12 P4A). The correlator does
+  not implement it.
+
+So: the correlator returns the distinct matched `(component, Type)` pairs, and the processor
+proposes **one change per Type**, grouped by the `correlationKey` they share —
+`linkToCoordinatedChange` already keys on exactly that, so the grouping needs no new machinery.
+*Rejected: rank `image` above `chart` on ties (produces the right answer for a reason no operator
+can see — the provenance-label failure again); render a both-arms warning and leave routing alone
+(honest, but leaves a known-wrong route in place once retyping makes it reachable).*
+
+**D3 — `ref_pattern` is set in the same retyping pass.** All 148 mappings are NULL, so `dev` and
+`main` route identically (ADR-0030 §1; M18's "dev pipelines selected by source ref"). This is pure
+estate data, and the pass already opens every one of these rows to retype it. *Rejected: leave NULL
+(survivable — the view already draws the amber "any branch" warning 148 times — but it leaves M18's
+dev-pipeline selection inert); make NULL fail-closed (`correlation.ts:117` treats NULL as match-all
+**by design**; flipping that semantic breaks all 148 mappings at once).*
+
+### 8.8 Build sequence
+
+The ordering is load-bearing: each step is unreachable on this estate until the one after it lands,
+so no step can render a wrong answer in the window before its successor.
+
+1. **D2, the correlator — LANDED 2026-09-12 (`d7baf27a`).** Done **first, while it was
+   unreachable** — zero mappings are typed `image` today (§8.4), so the both-arms case could not
+   occur and the change could not break live routing. What it does, and what building it found, is
+   §8.10.
+2. **§8.2's rendering fix, carrying D1.** Per-stage `journeyPath` read from `properties.type`, plus
+   `deploys` on the wave node.
+3. **The retyping pass, carrying D3.** Estate action, no code. This is the step that makes Path A
+   render at all, and it must come last.
+
+### 8.9 Scan and sign are one tile but two gates, and only one of them is Path A
+
+Owner invariant, restated 2026-09-12: **scan and sign can only ever happen on the commander**; an
+outpost or retrans may only validate that a signature is valid. The placement is right, and the
+view already draws it that way — but the two gates do not sit on the same path, and the invariant
+is not enforced anywhere except in the renderer. Measured 2026-09-12.
+
+**Where it runs.** Both are phases of ONE act: building a promotion bundle for a peer. Not at build
+time, not at the outpost. `buildPromotionExport` runs the scan at Phase 1.5
+(`apps/server/src/federation/promotion-repo.ts:227` → `federation/promotion-scan-step.ts:327`) and
+cosign-signs the canonical manifest bytes at Phase 3 (`promotion-repo.ts:375`). Per promotion
+journey, commander-side, over the digest — exactly where the charter puts it.
+
+**Why they split across the two paths.** The scan step reads the OCI digests off the change's
+`sourceRef` and returns early when there are none — *"metadata-only promotion — nothing to scan"*.
+A chart-path change carries no artifact digest of its own, so **scan is effectively Path A**. The
+signature is not conditional on that: Phase 3 signs whatever manifest was assembled, so **every
+commander-side crossing is signed, on both paths**. A chart-path crossing therefore produces a
+signed manifest with an EMPTY artifact set.
+
+**Consequence for D1, and it is a copy rule.** The digest D1 puts on the wave node — the image the
+chart is about to run — is *not* covered by that crossing's signature, because it is not in that
+crossing's manifest. The wave node must say **deployed**, never *signed* or *verified*, or it
+asserts a provenance that does not exist. This is the same failure §8.2 is about, one field over.
+
+**The validate-only half is real and layered.** Import verifies the cosign signature over the exact
+canonical bytes, requires the arrived artifact set to equal the signed manifest's, and requires the
+Ed25519-anchored digest list to equal the cosign-anchored one — and it rejects a manifest-less
+bundle from a peer known to have a cosign key as a downgrade attack
+(`promotion-repo.ts:498–617`). The outpost tile copy already says the commander creates manifests
+and imports none.
+
+**What is NOT enforced — open, and not part of §8's rendering scope.** Nothing stops a non-commander
+from performing the act:
+
+- The role check is in the RENDERER only — `instanceRole === "commander"` at
+  `apps/web/src/routes/component-pipeline.tsx:1122`. That decides whether a tile is drawn, not
+  whether a manifest can be signed.
+- `POST /api/v1/federation/exports/promotion` (`apps/server/src/routes/federation.ts:681`) is gated
+  on the `federation:write` permission and on no role at all.
+- Key custody is not the lever either: `ensureInstanceCosignKey` generates a keypair **on first
+  use** for whatever instance calls it, so an outpost would mint its own and sign with it.
+- The guard already exists and is not wired here. `commanderOnlyFederationVerdict`
+  (`apps/server/src/dependencies/commander-only.ts`), including its fail-closed "an UNDECLARED role
+  is its own answer, checked first" rule — a census with no filters finds it used by the dependency
+  loops, the dependency routes and `routes/plans.ts`, and **never by federation promotion export**.
+
+This is the component-built-never-installed shape: the right guard exists, in the right form, wired
+to a different subsystem. Whether an outpost-signed manifest would then be ACCEPTED depends on
+whether the receiving peer has that outpost's cosign key registered, which pairing may well do —
+worth measuring before sizing the fix, but the act itself is already unguarded.
+
+### 8.10 What building D2 found
+
+D2 landed as `d7baf27a`. Four things came out of building it that the decision did not anticipate.
+
+**Ownership is per changed FILE, not per event.** §8.3's mixed repo — `chart/**` typed `chart`, the
+remainder typed `image` — cannot be expressed as two disjoint globs, because globs have no negation:
+the whole-repo `image` mapping also matches `chart/values.yaml`. Asking *which mappings match this
+event* therefore fans a **chart-only** push out into a spurious image release on every chart bump.
+`matchComponentsForSource` instead attributes each changed path to its most specific mapping — the
+precedence rank the query already computed — and returns the distinct Types of the owners. Found by
+a test expectation that was wrong for a real reason; both readings are now mutation-proved against
+each other.
+
+**Deduped by Type alone, deliberately.** Same-Type matches still collapse to the highest-ranked,
+*including when they name different components* — the monorepo-of-services case. Fanning out per
+component is wider than D2 decided and would multiply changes on every estate that exists today.
+This keeps `[0]` exactly what the old single-match function returned, which is why the seven
+existing correlation suites assert unchanged behaviour through it.
+
+**Three mechanics a fan-out forces, none of which were in D2:**
+
+- **A git push carries no `correlationKey`.** No webhook adapter sets one; only an explicit
+  `scp change-source report` does. So `linkToCoordinatedChange` had nothing to group the arms by, and
+  a fan-out now synthesises `change-source-event:<id>`. Synthesised **only** when fanning out, so a
+  single-Type event stores exactly the key it stored before.
+- **`objects` is UNIQUE on (org_id, urn)** and both arms share one event id, so the Type
+  disambiguates the change name and URN. A single-Type event keeps its exact pre-D2 name and URN.
+- **`resulting_change_object_id` is one column with two candidates.** It holds the highest-ranked
+  arm; the coordinated-change group holds the full set — which is why the synthesised key above is
+  not optional.
+
+**A coupling declaration cannot be split, so a fan-out carrying one is refused.** `provides` names
+what ONE release provides; duplicating it onto both arms declares the same thing twice, and
+attaching it to one arm is a guess. The refusal is loud, and it is atomic — both proposes share one
+savepoint, so a both-arms push lands both releases or neither.
+
+**An open gap, additive and not blocking.** `ChangeReportRequestSchema`
+(`packages/schemas/src/executors.ts`) is a `z.strictObject` carrying `path` and **no `paths`**, so
+the typed first-party report cannot describe a push that touched two files at all — and a one-file
+push can never fan out. D2 is therefore reachable only through the raw `/webhook` ingress, where the
+provider adapter (or the flat generic shape) supplies the full changed-file set. Adding `paths` to
+the typed report is purely additive and would let a CI reporter express a both-arms push; nothing
+needs it yet.
+
+### 8.11 STOP — D3's retyping pass would stop deployments, and Path A is two changes
+
+Measured 2026-09-12, before writing any of step 2. This is a blocker on D3 and it changes what D1
+has to render.
+
+**Binding resolution is by Type, and it does not fall back.** The chain:
+
+1. A change's routing Type is stamped onto every wave target as a snapshot
+   (`apps/server/src/coordination/plan-service.ts:209` — *"not re-read from the change at trigger
+   time"*).
+2. At trigger, the wave target's Type is what resolves the executor
+   (`apps/server/src/coordination/reconcile.ts:1380` → `resolveBindingForTarget(..., type)`).
+3. A Type with no binding does **not** fall back to another Type — asserted by an existing passing
+   test, `binding-type.integration.test.ts:156` (*"404s for a Type with no binding (rather than
+   falling back to another)"*). A miss blocks the wave target `no_executor` (ADR-0006, fail-closed).
+
+**The estate has 63 executor bindings and every one is `configuration`; zero are `build` (§8.4).**
+
+So retyping a service repo's mapping from `configuration` to `image` — exactly what D3's pass does —
+makes every change from that repo resolve an `image` binding at gamma and prod, find none, and block
+`no_executor`. **D3 as written does not merely misrender the journey; it stops the deployments.**
+Add this to §8.2's Category collision and §8.8's ordering is not enough on its own: the retyping pass
+itself has to be narrowed.
+
+**What this says about the model.** The owner's Path A — source → build → scan/sign → registry →
+chart → gamma → prod — is one *story* told across **two SCP changes**, not one:
+
+- an `image`-typed change that ends at the registry, and
+- a `configuration`-typed change (the chart/gitops bump) that deploys it through gamma and prod.
+
+That is not a workaround, it is what the estate already is: 98 gitops repos against 49 service repos
+(§8.4), and ADR-0007 puts ArgoCD in `configuration`. Making Path A one change would require binding
+ArgoCD as an `image` executor, which contradicts ADR-0007 outright. It also retro-justifies D2: a
+push touching both arms producing **two** releases is the *normal* Path A shape, not an edge case.
+
+**Consequence for D1 and §8.2 — the discriminator is correlation, not Type.** The defect is not
+"a chart-path change wrongly renders the build spine". It is: *the view cannot tell whether the
+artifact it is showing belongs to this journey.* On Path A the deploy-stage change is `configuration`
+and the artifact legitimately comes from a different, correlated change; on a bare chart bump the
+artifact comes from an unrelated older one. Type cannot separate those two — both deploy-stage
+changes are `configuration`. Only correlation can.
+
+**What the wire already has, and the one thing it lacks.** `artifact.changeId`
+(`ComponentPipelineArtifactSchema`) already names the change whose digest is shown, and
+`pickArtifactChange` already prefers the changes in view and falls back to the newest digest-carrying
+one — so the server is already honest about *which* change it picked. `stage.currents[].changeId`
+names the change at each stage. **Neither the response nor `component-pipeline.ts` carries any
+correlation link** — no `correlationKey`, no coordinated-change reference. That is the one genuinely
+new server field the real fix needs, and D2 has just made it load-bearing, because the fan-out is
+what puts the two arms in one coordinated-change group in the first place.
+
+**Open for the owner (§8.12).** D3 must be re-scoped, and D1's rendering rule follows from it.
+Nothing in §8.8 step 2 should be built until that is settled — building it on the Type discriminator
+would encode a rule that is already known to be wrong.

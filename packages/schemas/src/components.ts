@@ -134,7 +134,7 @@ export const ComponentPipelineSourceMappingSchema = z.object({
    *  never inferred; never an enforcement input. */
   mirrorOfShared: z.boolean(),
   /** The operator's pause switch (migration 0063) — `false` means this source tile is declared but
-   *  `matchComponentForSource` skips it, so a push that matches its repo/path/ref routes nowhere.
+   *  `matchComponentsForSource` skips it, so a push that matches its repo/path/ref routes nowhere.
    *  This is what lets the UI give each source its own enable/disable, not just its own arrow. */
   enabled: z.boolean(),
   /** Timed close bound, or null; and the read-time truth the matcher acts on. The arrow is
