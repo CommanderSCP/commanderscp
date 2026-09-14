@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.6, 2026-09-12 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build; §8.8 step 1 is **landed** (`d7baf27a`) and §8.9–§8.11 record what building it found — including **§8.11, a blocker on D3**: retyping as specified would stop deployments, and Path A is two correlated changes, not one. **Proposed, pending review.**
+**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13); step 3, the retyping pass, is the only one left. **Proposed, pending review.**
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -461,10 +461,12 @@ so no step can render a wrong answer in the window before its successor.
    unreachable** — zero mappings are typed `image` today (§8.4), so the both-arms case could not
    occur and the change could not break live routing. What it does, and what building it found, is
    §8.10.
-2. **§8.2's rendering fix, carrying D1.** Per-stage `journeyPath` read from `properties.type`, plus
-   `deploys` on the wave node.
-3. **The retyping pass, carrying D3.** Estate action, no code. This is the step that makes Path A
-   render at all, and it must come last.
+2. **§8.2's rendering fix, carrying D1 — LANDED 2026-09-14.** Built on §8.12's discriminator
+   (**correlation**, not the `properties.type` reading this step was first written against — see
+   §8.11 for why that reading cannot separate the two paths), and reachable before step 3 for the same
+   reason step 1 was: it changes what the view SAYS about an artifact, never what routes. §8.13.
+3. **The retyping pass, carrying D3 — re-scoped by §8.12 to the build half only.** Estate action, no
+   code. This is the step that makes Path A render at all, and it must come last.
 
 ### 8.9 Scan and sign are one tile but two gates, and only one of them is Path A
 
@@ -613,6 +615,78 @@ correlation link** — no `correlationKey`, no coordinated-change reference. Tha
 new server field the real fix needs, and D2 has just made it load-bearing, because the fan-out is
 what puts the two arms in one coordinated-change group in the first place.
 
-**Open for the owner (§8.12).** D3 must be re-scoped, and D1's rendering rule follows from it.
-Nothing in §8.8 step 2 should be built until that is settled — building it on the Type discriminator
-would encode a rule that is already known to be wrong.
+**Open for the owner — DECIDED, §8.12.** D3 must be re-scoped, and D1's rendering rule follows from
+it. Nothing in §8.8 step 2 should be built until that is settled — building it on the Type
+discriminator would encode a rule that is already known to be wrong.
+
+### 8.12 DECIDED (owner, 2026-09-14): re-scope D3 to the build half; the discriminator is correlation
+
+§8.11's blocker is resolved. Presented as three options — (A) type only the build half, (B) keep D3
+whole and create `build`-Type executor bindings at every deployment target, (C) do not retype and find
+another discriminator — **the owner chose A.**
+
+**What A settles.**
+
+1. **D3 types the 49 service repos `image` and leaves the 98 gitops repos `configuration`.** No
+   `build` binding is ever resolved at a deployment target, so the `no_executor` block §8.11 measured
+   cannot occur. ADR-0007 stands untouched: ArgoCD stays a `configuration` executor.
+2. **Path A is two SCP changes, correlated.** The `image` change ends at the registry; the
+   `configuration` change deploys it. This is what the estate already is — it is not a workaround for
+   the binding rule, and §8.11's reading of ADR-0007 is the reason it is also the *correct* model.
+3. **D1's discriminator is the correlation key, not the routing Type.** At a wave node the artifact
+   shown belongs to *this journey* iff its change IS the stage's change or shares its non-null
+   `changes.correlation_key`; otherwise it is an older artifact this release merely rolls forward.
+4. **D3's `ref_pattern` half is unaffected** and can proceed independently of everything above.
+
+**Two readings this rules out, and why each would have been wrong.**
+
+- *Type-based.* Both deploy-stage changes are `configuration`, so a Type test answers the same for a
+  Path-A gitops bump and a Path-B chart edit. Already established in §8.11; restated here because it
+  is the rule §8.8 step 2 was originally written against.
+- *Treating a null key as a match.* `webhook-processor.ts` synthesises a correlation key **only on a
+  fan-out** (§8.10), so a single-Type push leaves the column NULL — which is nearly every change on
+  the estate today. Correlating null-with-null would therefore report *every* Path-B bump as
+  `produced`: the original §8.2 defect, reintroduced one field over. A null key is the server stating
+  this release names no event, which positively rules out a shared one.
+
+### 8.13 Step 2, as built (2026-09-14)
+
+§8.8 step 2, reached by §8.12's route rather than the Type route it was first written against. The
+wire gains **one field, in two places**; the rule lives in **one function**.
+
+**Server.** `ComponentPipelineCurrentSchema.correlationKey` and
+`ComponentPipelineArtifactSchema.correlationKey`, both `string | null | optional` — projected from
+`changes.correlation_key` by `currentsByPlacement` (`component-pipeline.ts`) and by
+`pickArtifactChange` (`artifact-facts.ts`). Additive optional response properties, so the oasdiff gate
+is untouched. The artifact carries its own change's key specifically because the pick may legitimately
+return a change **no stage is showing** — that fallback is the whole reason `changeId` alone cannot
+answer the question.
+
+**Web.** `artifactRelationToStage(artifact, current)` → `produced | deployed | unknown`, and
+`StageArtifactLine` on every placed stage of a registry-bearing lane:
+
+| relation | when | the line says |
+|---|---|---|
+| `produced` | same change, or same non-null key | *built by this release* |
+| `deployed` | different change, no shared event | *deployed here — built by another release*, naming the change that did |
+| `unknown` | either key absent (an older server) | *this server does not say which release built it* |
+
+`unknown` is the established older-server reading in this file, not a third path: an absent field is
+"not known", never resolved into one of the other two. The line is silent in four cases that would
+each be a claim nobody made — no artifact projected, a stated absence of one, an artifact carrying no
+digest, and a stage nothing has released to (naming a digest there would assert a deployment that
+never happened). The infra lane draws no artifact line at all: an infra plan/apply produces no
+digest-addressed artifact, so an OCI digest there would be borrowed from another pipeline.
+
+**What is proved, and how.** 15 web unit tests and 4 integration tests, every guard mutation-proved —
+six mutations of the rule and the render (null-vs-null counts as correlated; `undefined` resolves to
+`deployed`; the lane gate dropped; the no-current guard dropped; the no-digest guard dropped; the
+same-change shortcut dropped) each kill at least one test, and three server mutations (currents stop
+projecting the key; the artifact stops carrying its change's key; the artifact reports `null` instead
+of its own key) kill 4, 4 and 3 of the integration tests. The integration tests assert the projection
+**per change** rather than per component, which is the shape that would otherwise pass every case
+while making the two sides equal by construction.
+
+**Still §8.8 step 3.** The retyping pass. Nothing above makes Path A render on this estate — 148
+mappings remain `configuration`, so `buildsHere` is still false everywhere and the new line reports
+`deployed` for every real release, which is the honest answer for a single-change config release.

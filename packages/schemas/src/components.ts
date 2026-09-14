@@ -92,7 +92,14 @@ export const ComponentPipelineCurrentSchema = z.object({
   type: z.string(),
   category: ExecutorCategorySchema,
   /** The same observed-state snapshot the wave target carries. See docs/schemas.md §96. */
-  observed: WaveTargetObservedSchema.nullable().optional()
+  observed: WaveTargetObservedSchema.nullable().optional(),
+  /** `changes.correlation_key` — WHICH real-world event produced this release. Two changes sharing a
+   *  non-null key came from one push (`linkToCoordinatedChange`, journey-view §8.11), which is the
+   *  ONLY thing that can tell a Path-A deploy (the artifact is this journey's, built by the
+   *  correlated image arm) from a Path-B chart bump (the artifact is an older, unrelated one). Not
+   *  the routing Type: both deploy-stage changes are `configuration`. `null` = this release names no
+   *  event; absent = a server that does not project the field. */
+  correlationKey: z.string().nullable().optional()
 });
 export type ComponentPipelineCurrent = z.infer<typeof ComponentPipelineCurrentSchema>;
 
@@ -375,6 +382,11 @@ export const ComponentPipelineArtifactSchema = z.object({
   changeId: z.string().uuid(),
   changeName: z.string().nullable(),
   changeCreatedAt: z.string().datetime(),
+  /** The picked change's `changes.correlation_key`, to be compared against a stage's
+   *  `ComponentPipelineCurrentSchema.correlationKey` — see that field for the rule. Carried because
+   *  `pickArtifactChange` may legitimately return a change OTHER than the one a stage is showing,
+   *  and `changeId` alone cannot say whether that other change belongs to the same journey. */
+  correlationKey: z.string().nullable().optional(),
   digests: z.array(z.string()),
   sbom: SbomRefSchema.nullable(),
   scans: z.array(ComponentPipelineScanRunSummarySchema),
