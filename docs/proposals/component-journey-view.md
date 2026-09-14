@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13); step 3, the retyping pass, is the only one left. **Proposed, pending review.**
+**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13). **§8.14 STOPS step 3**: measured through the real reconcile loop, option A does *not* avoid the `no_executor` block — the block is on the image arm itself — and `source_mappings.type` turns out to be one column doing two jobs (journey kind and ADR-0007 routing). Three options for the owner there; nothing may be retyped until one is chosen. **Proposed, pending review.**
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -465,8 +465,10 @@ so no step can render a wrong answer in the window before its successor.
    (**correlation**, not the `properties.type` reading this step was first written against — see
    §8.11 for why that reading cannot separate the two paths), and reachable before step 3 for the same
    reason step 1 was: it changes what the view SAYS about an artifact, never what routes. §8.13.
-3. **The retyping pass, carrying D3 — re-scoped by §8.12 to the build half only.** Estate action, no
-   code. This is the step that makes Path A render at all, and it must come last.
+3. **The retyping pass, carrying D3 — re-scoped by §8.12 to the build half only, then BLOCKED by
+   §8.14.** Estate action, no code. This is the step that makes Path A render at all, and it must come
+   last — but as measured it would stop the 49 service repos' releases, so it is not runnable as
+   decided. See §8.14's three options.
 
 ### 8.9 Scan and sign are one tile but two gates, and only one of them is Path A
 
@@ -690,3 +692,63 @@ while making the two sides equal by construction.
 **Still §8.8 step 3.** The retyping pass. Nothing above makes Path A render on this estate — 148
 mappings remain `configuration`, so `buildsHere` is still false everywhere and the new line reports
 `deployed` for every real release, which is the honest answer for a single-change config release.
+
+### 8.14 STOP on step 3 — option A does not dodge the block, and `source_mappings.type` is overloaded
+
+Measured 2026-09-14, immediately after §8.13 landed, before recommending the retyping pass. §8.12 is
+right that Path A is two changes and right that the discriminator is correlation; it is **wrong that
+option A avoids §8.11's `no_executor` stop.** It does not, and the reason is worth stating precisely
+because the same mistake is easy to make again.
+
+**The measurement.** One component, two placements (gamma, prod), a `configuration` executor binding on
+each — the estate's exact shape. Driven through the REAL reconcile loop, not reasoned about:
+
+| the change | wave target at gamma |
+|---|---|
+| `type: configuration` (what a push produces today) | **`triggered`**, dispatched against the execution system |
+| `type: image`, same component, same bindings | **`no_executor`**, `executorPluginId: null` |
+
+**Why option A does not help.** §8.11 framed the block as coming from retyping the *gitops* repos, so
+leaving those alone looked sufficient. It is not: the block is on the **image arm itself**, and typing
+the 49 service repos `image` is exactly what creates image-typed changes. Every push to a service repo
+would terminalize `no_executor` at every placement. Option A narrows the blast radius from "everything"
+to "the 49 service repos' releases" — which is still a stop, and still the repos that matter.
+
+**And the plan shape is wrong even if a binding existed.** The same probe shows an image-typed change
+compiles **one wave target per placement** — gamma AND prod, `category: build`, with `requiresFanIn`
+on the second wave. So an `image` binding at an ancestor rung (`binding-resolution.ts`'s service rung
+would find one) makes it *resolve* rather than *correct*: it would build the same artifact once per
+place, sequenced behind a fan-in gate, contradicting the build node's own words — *"runs once per
+release, not once per place"*. Nothing special-cases `category: build` in `plan-service.ts` or
+`reconcile.ts`; a build target is planned and dispatched exactly like a deploy target.
+
+**The root cause: one column, two jobs.** `source_mappings.type` is simultaneously
+
+1. *what kind of change is this* — the journey discriminator D3 wants, and
+2. *which executor pipeline routes it* — ADR-0007's routing key.
+
+The chain is unbroken: `correlation.ts` returns the mapping's `type` → `webhook-processor.ts` passes it
+to `proposeChange` → `plan-service.ts:209` snapshots it onto every wave target → `reconcile.ts:1380`
+resolves the binding by it. On this estate those two jobs need *different values* for a service repo:
+"this was a source-code change" (journey) but "route it to the config pipeline" (execution), because
+**SCP does not build here** — GitHub Actions does, and SCP observes the completed run (`observedRun`,
+§7; 0 build-Type changes have ever existed on this estate). `source_mappings.classification` is not the
+spare field: it is the `dev | beta` M18 pipeline selector, unrelated.
+
+**So D3 as decided cannot be executed, and this is an owner decision, not an implementation choice:**
+
+- **(i) Don't type the build arm; render it from what already exists.** Service-repo mappings stay
+  `configuration`; the source/build/registry spine draws from `observedRun` + artifact facts, which is
+  what is true here — build is upstream (ADR-0017, and the charter's coordinate-not-execute line). Path
+  A renders without any image-typed change existing. Cheapest, and matches the estate. Cost: the
+  journey discriminator has no column, so §8.2's `buildsHere` defect stays latent rather than fixed.
+- **(ii) Separate the two jobs.** A journey/kind field on the mapping distinct from the routing Type.
+  Honest and general, and it is the only option that actually fixes §8.2. Cost: a new column, a
+  migration, and a second vocabulary next to ADR-0007's that has to be kept from drifting into it.
+- **(iii) Make SCP coordinate the build.** A `build`-Type binding plus a plan shape that compiles a
+  build arm ONCE per release instead of once per placement. Largest, and it changes what the platform
+  executes on this estate — charter-adjacent.
+
+Nothing should be retyped until this is settled. §8.13 stands either way: the correlation field and the
+`produced | deployed | unknown` rule are correct under all three, because all three keep Path A's
+artifact on a change other than the stage's.
