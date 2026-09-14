@@ -409,17 +409,25 @@ export function StageCardForTest({
   lane = LANES[0]!,
   pipelineKey,
   instanceRole,
-  detailsExpanded
+  detailsExpanded,
+  artifact
 }: {
   stage: ComponentPipelineStage;
   lane?: Lane;
   pipelineKey?: unknown[];
   instanceRole?: InstanceRole;
   detailsExpanded?: boolean;
+  artifact?: ArtifactOnWire;
 }): React.JSX.Element {
   return (
     <TileDetailsForTest expanded={detailsExpanded}>
-      <StageCard stage={stage} lane={lane} pipelineKey={pipelineKey} instanceRole={instanceRole} />
+      <StageCard
+        stage={stage}
+        lane={lane}
+        pipelineKey={pipelineKey}
+        instanceRole={instanceRole}
+        artifact={artifact}
+      />
     </TileDetailsForTest>
   );
 }
@@ -500,6 +508,7 @@ export function WaveRowForTest(props: {
   lane?: Lane;
   componentId?: string;
   pipelineKey?: unknown[];
+  artifact?: ArtifactOnWire;
 }): React.JSX.Element {
   return (
     <WaveRow
@@ -507,6 +516,7 @@ export function WaveRowForTest(props: {
       lane={props.lane ?? LANES[0]!}
       componentId={props.componentId ?? "component"}
       pipelineKey={props.pipelineKey ?? ["pipeline"]}
+      artifact={props.artifact}
     />
   );
 }
@@ -718,7 +728,8 @@ function StageCard({
   stage,
   lane,
   pipelineKey,
-  instanceRole
+  instanceRole,
+  artifact
 }: {
   stage: ComponentPipelineStage;
   lane: Lane;
@@ -728,6 +739,9 @@ function StageCard({
   pipelineKey?: unknown[];
   /** §10.2 — decides whether the outpost line LINKS (commander site only). See `TargetOutpostLine`. */
   instanceRole?: InstanceRole | undefined;
+  /** §9.3's artifact — WHICH artifact is at this place, and whether this release made it
+   *  (journey-view §8.7 D1). Optional: a caller that omits it is not making a claim either way. */
+  artifact?: ArtifactOnWire;
 }): React.JSX.Element {
   const versionUnknown = stage.unknownFields.includes("version");
   const bindings = bindingsFor(stage, lane);
@@ -858,12 +872,86 @@ function StageCard({
               <span className="text-slate-400">nothing has released here</span>
             )}
           </div>
+          {/* D1 (journey-view §8.7): a chart-path change DOES show the artifact it deploys — the image
+            already in the registry — and the line says `deployed`, not `produced`. Only in a lane that
+            has a registry at all: an infra plan/apply produces no digest-addressed artifact, so an OCI
+            line there would be an artifact borrowed from another pipeline. */}
+          {lane.hasRegistry && <StageArtifactLine artifact={artifact} current={current} />}
           {/* B2: a quiet, deliberately unobtrusive removal — this is not the primary action on a
             placed, healthy stage, so it does not compete with the rows above for attention. */}
           {pipelineKey && <RemovePlacementButton stage={stage} pipelineKey={pipelineKey} />}
         </TileDetails>
       </CardContent>
     </Card>
+  );
+}
+
+/** The COPY of each relation, and the sentence that justifies it. Split out so the rule
+ *  (`artifactRelationToStage`) and the words stay one-to-one — a fourth relation would not compile
+ *  without its own sentence. */
+const ARTIFACT_RELATION_TEXT: Record<ArtifactStageRelation, string> = {
+  produced: "built by this release",
+  deployed: "deployed here — built by another release",
+  unknown: "this server does not say which release built it"
+};
+const ARTIFACT_RELATION_TITLE: Record<ArtifactStageRelation, string> = {
+  produced:
+    "This release either IS the change that carries the digest, or shares its correlation key — one push, so the artifact running here is this journey's own.",
+  deployed:
+    "The artifact running here comes from a change this release is not correlated with (journey-view §8.11): a chart/config release rolls an image that already existed. Real state, not a defect — the digest is what is deployed, and this release did not produce it.",
+  unknown:
+    "This server does not project a correlation key on releases, so whether this release produced the artifact cannot be told from the response. Stated rather than guessed."
+};
+
+/** D1 (journey-view §8.7): the artifact AT this place, and which of the two release paths put it
+ *  there. Silent in three cases, each of which would otherwise be a claim nobody made — no artifact
+ *  prop (the caller is not projecting one), an artifact carrying no digest, and a stage nothing has
+ *  released to, where naming a digest would assert a deployment that never happened. */
+function StageArtifactLine({
+  artifact,
+  current
+}: {
+  artifact: ArtifactOnWire;
+  current: ComponentPipelineStage["current"];
+}): React.JSX.Element | null {
+  if (!artifact || current === null) return null;
+  const digest = latestDigest(artifact);
+  if (digest === null) return null;
+  const relation = artifactRelationToStage(artifact, current);
+  return (
+    <div data-testid="stage-artifact" data-artifact-relation={relation}>
+      <span className="text-slate-400">Artifact</span>{" "}
+      <span
+        className="font-mono text-slate-800"
+        title={
+          artifact.digests.length > 1
+            ? `${digest} — the last of ${artifact.digests.length} digests its change lists: ${artifact.digests.join(", ")}`
+            : digest
+        }
+      >
+        {shortDigest(digest)}
+      </span>{" "}
+      <span
+        className={relation === "unknown" ? "italic text-slate-400" : "text-slate-500"}
+        data-testid="stage-artifact-relation"
+        title={ARTIFACT_RELATION_TITLE[relation]}
+      >
+        {ARTIFACT_RELATION_TEXT[relation]}
+      </span>
+      {relation !== "produced" ? (
+        <>
+          {" "}
+          <Link
+            to="/changes/$id/pipeline"
+            params={{ id: artifact.changeId }}
+            className={cn("rounded underline hover:text-slate-900", focusRing)}
+            data-testid="stage-artifact-change-link"
+          >
+            {artifact.changeName ?? artifact.changeId.slice(0, 8)}
+          </Link>
+        </>
+      ) : null}
+    </div>
   );
 }
 
@@ -1074,7 +1162,7 @@ type LaneNode =
       artifact: ArtifactOnWire;
     }
   | { kind: "scan-sign"; key: string; artifact: ArtifactOnWire }
-  | { kind: "wave"; key: string; wave: JourneyWave };
+  | { kind: "wave"; key: string; wave: JourneyWave; artifact: ArtifactOnWire };
 
 /** Builds one lane's node chain. See docs/web.md §272. */
 export function laneNodes(
@@ -1140,8 +1228,10 @@ export function laneNodes(
     sources: stageSources
   });
 
+  // The artifact reaches the wave nodes too (journey-view §8.7 D1): a stage deploys an artifact
+  // whether or not this lane BUILT one, and the tile there says which of the two it is.
   for (const wave of waves)
-    nodes.push({ kind: "wave", key: `wave-${wave.waveIndex ?? "off"}`, wave });
+    nodes.push({ kind: "wave", key: `wave-${wave.waveIndex ?? "off"}`, wave, artifact });
   return nodes;
 }
 
@@ -2345,6 +2435,33 @@ export function latestDigest(artifact: ComponentPipelineArtifact): string | null
   return artifact.digests.length > 0
     ? (artifact.digests[artifact.digests.length - 1] ?? null)
     : null;
+}
+
+/** Whether the artifact a tile is holding belongs to the release the STAGE is showing.
+ *
+ *  journey-view §8.11. Path A is two SCP changes — an `image` change that ends at the registry and a
+ *  `configuration` change (the chart/gitops bump) that deploys it — so at a wave node the artifact
+ *  legitimately comes from a DIFFERENT change than the one that released here. On a Path-B chart bump
+ *  it also comes from a different change, but an unrelated older one. Both deploy-stage changes are
+ *  `configuration`, so the routing Type cannot separate those two; only the correlation key can,
+ *  because `linkToCoordinatedChange` gives both arms of one push the same one.
+ *
+ *  `undefined` on either side is an OLDER SERVER that does not project the field — "not known", never
+ *  guessed into one of the other two. A `null` key is NOT that: it is the server stating this release
+ *  names no event, which positively rules out a shared one, so null-vs-null reads `deployed` rather
+ *  than correlating two absences into a match. */
+export type ArtifactStageRelation = "produced" | "deployed" | "unknown";
+export function artifactRelationToStage(
+  artifact: ComponentPipelineArtifact,
+  current: ComponentPipelineStage["current"]
+): ArtifactStageRelation {
+  if (current === null) return "unknown";
+  if (artifact.changeId === current.changeId) return "produced";
+  if (artifact.correlationKey === undefined || current.correlationKey === undefined)
+    return "unknown";
+  if (artifact.correlationKey !== null && artifact.correlationKey === current.correlationKey)
+    return "produced";
+  return "deployed";
 }
 
 /** The newest export stamp — newest LAST (`signing.promotionExports` is append order, §9.4). */
@@ -3760,13 +3877,17 @@ function WaveRow({
   lane,
   componentId,
   pipelineKey,
-  instanceRole
+  instanceRole,
+  artifact
 }: {
   wave: JourneyWave;
   lane: Lane;
   componentId: string;
   pipelineKey: unknown[];
   instanceRole?: InstanceRole | undefined;
+  /** §9.3's artifact, for the deployed-artifact line on each placed stage (`StageArtifactLine`).
+   *  Optional so the pre-existing test callers render exactly as they did. */
+  artifact?: ArtifactOnWire;
 }): React.JSX.Element {
   return (
     <div className="w-full" data-testid="pipeline-wave">
@@ -3795,6 +3916,7 @@ function WaveRow({
               lane={lane}
               pipelineKey={pipelineKey}
               instanceRole={instanceRole}
+              artifact={artifact}
             />
           ) : (
             <UnplacedStageCard
@@ -4107,6 +4229,7 @@ export function ComponentPipelinePage({
                           componentId={data.component.id}
                           pipelineKey={pipelineKey}
                           instanceRole={instanceRole}
+                          artifact={node.artifact}
                         />
                       )}
                     </div>

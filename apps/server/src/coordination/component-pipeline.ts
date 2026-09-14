@@ -57,6 +57,7 @@ async function currentsByPlacement(
     type: string;
     created_at: string;
     observed_state: unknown;
+    correlation_key: string | null;
   }>(sql`
     SELECT DISTINCT ON (t.target_object_id, t.type)
       t.target_object_id,
@@ -67,7 +68,8 @@ async function currentsByPlacement(
       t.status AS target_status,
       t.type   AS type,
       c.created_at AS created_at,
-      t.observed_state AS observed_state
+      t.observed_state AS observed_state,
+      c.correlation_key AS correlation_key
     FROM ${changeWaveTargets} t
     JOIN ${changeWaves} w  ON w.id = t.wave_id AND w.org_id = t.org_id
     JOIN ${changePlans} p  ON p.id = w.plan_id AND p.org_id = w.org_id
@@ -113,7 +115,11 @@ async function currentsByPlacement(
         // Same jsonb column, same cast idiom `plan-service.ts`'s `toChangeWaveTargetShape` uses
         // for `ChangeWaveTargetSchema.observed` — this is that column read a second time, per
         // pipeline, for the stage's derived `version` below.
-        observed: (r.observed_state as WaveTargetObserved | null) ?? null
+        observed: (r.observed_state as WaveTargetObserved | null) ?? null,
+        // journey-view §8.11 — the event this release came from, so the wave node can say whether
+        // the artifact it shows was built by THIS journey (a correlated `image` arm from the same
+        // push) or merely deployed BY it (an older artifact a bare chart bump rolls forward).
+        correlationKey: r.correlation_key
       });
     }
     out.set(placementId, currents);

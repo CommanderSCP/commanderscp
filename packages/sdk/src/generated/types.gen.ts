@@ -7528,6 +7528,7 @@ export type GetComponentPipelineResponses = {
                         };
                     };
                 } | null;
+                correlationKey?: string | null;
             } | null;
             currents: Array<{
                 changeId: string;
@@ -7555,6 +7556,7 @@ export type GetComponentPipelineResponses = {
                         };
                     };
                 } | null;
+                correlationKey?: string | null;
             }>;
             gate: {
                 policies: Array<{
@@ -7638,6 +7640,7 @@ export type GetComponentPipelineResponses = {
             changeId: string;
             changeName: string | null;
             changeCreatedAt: string;
+            correlationKey?: string | null;
             digests: Array<string>;
             sbom: {
                 format: 'cyclonedx' | 'spdx';

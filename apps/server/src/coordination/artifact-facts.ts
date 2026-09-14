@@ -114,6 +114,7 @@ interface ChangeCandidate {
   name: string | null;
   createdAt: Date;
   sourceRef: unknown;
+  correlationKey: string | null;
 }
 
 /** THE PICK. Newest-first over `preferredChangeIds`. See docs/coordination.md §17. */
@@ -130,7 +131,8 @@ async function pickArtifactChange(
         id: objects.id,
         name: objects.name,
         createdAt: changes.createdAt,
-        sourceRef: changes.sourceRef
+        sourceRef: changes.sourceRef,
+        correlationKey: changes.correlationKey
       })
       .from(changes)
       .innerJoin(objects, and(eq(objects.id, changes.objectId), eq(objects.orgId, changes.orgId)))
@@ -152,7 +154,8 @@ async function pickArtifactChange(
       id: objects.id,
       name: objects.name,
       createdAt: changes.createdAt,
-      sourceRef: changes.sourceRef
+      sourceRef: changes.sourceRef,
+      correlationKey: changes.correlationKey
     })
     .from(changes)
     .innerJoin(objects, and(eq(objects.id, changes.objectId), eq(objects.orgId, changes.orgId)))
@@ -301,6 +304,10 @@ export async function artifactFactsForComponent(
     changeId: pick.id,
     changeName: pick.name,
     changeCreatedAt: pick.createdAt.toISOString(),
+    // journey-view §8.11 — the pick may be a change NO stage is showing (the fallback below returns
+    // the newest digest-carrying change of the component at all), so the key travels with it and the
+    // view compares rather than assumes.
+    correlationKey: pick.correlationKey,
     digests,
     sbom,
     scans,
