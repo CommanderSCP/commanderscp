@@ -78,12 +78,14 @@ describe("source mapping: a repository routes by changed path, not just by name"
     await expect(match(sourceKind, repo, ["loki/values.yaml"])).resolves.toEqual({
       componentObjectId: loki,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
     await expect(match(sourceKind, repo, ["pihole/values.yaml"])).resolves.toEqual({
       componentObjectId: pihole,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -107,7 +109,8 @@ describe("source mapping: a repository routes by changed path, not just by name"
     ).resolves.toEqual({
       componentObjectId: tailscale,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -137,7 +140,8 @@ describe("source mapping: a repository routes by changed path, not just by name"
     await expect(match(sourceKind, repo, ["trivy-operator/values.yaml"])).resolves.toEqual({
       componentObjectId: trivy,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -166,7 +170,8 @@ describe("source mapping: a repository routes by changed path, not just by name"
     await expect(match(sourceKind, repo, ["scripts/backup.sh"])).resolves.toEqual({
       componentObjectId: incumbent,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -199,12 +204,14 @@ describe("source mapping: a repository routes by changed path, not just by name"
     await expect(match(sourceKind, repo, undefined)).resolves.toEqual({
       componentObjectId: incumbent,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
     await expect(match(sourceKind, repo, [])).resolves.toEqual({
       componentObjectId: incumbent,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 

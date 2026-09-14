@@ -23,6 +23,7 @@ import type {
   PipelineClassification,
   SourceMapping,
   SourceMappingScope,
+  JourneyKind,
   Freeze,
   GraphObject,
   NamedGraphQuery,
@@ -104,7 +105,8 @@ import {
   outpostClaimantTokens,
   OutpostTrustTierSchema,
   ScanMethodSchema,
-  SourceMappingScopeSchema
+  SourceMappingScopeSchema,
+  JourneyKindSchema
 } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
@@ -1123,6 +1125,7 @@ export function sourceMappingRow(m: SourceMapping): Record<string, string> {
   // is required, so through the SDK it is never absent — read it as possibly-absent anyway so a row
   // that arrives without it prints `?`, not a crash or a blank.
   const scope = (m as { scope?: SourceMappingScope | null }).scope;
+  const journeyKind = (m as { journeyKind?: JourneyKind | null }).journeyKind;
   return {
     id: m.id,
     sourceKind: m.sourceKind,
@@ -1133,6 +1136,9 @@ export function sourceMappingRow(m: SourceMapping): Record<string, string> {
     type: m.type,
     classification: m.classification ?? "",
     scope: scope === undefined ? "?" : (scope ?? ""),
+    // Widened for `scope`'s reason, one field over — and with the same "?" vs blank distinction: a
+    // server that does not project the field is NOT a mapping with no declared journey.
+    journeyKind: journeyKind === undefined ? "?" : (journeyKind ?? ""),
     mirrorOfShared: String(m.mirrorOfShared),
     enabled: String(m.enabled),
     effectivelyEnabled: String(m.effectivelyEnabled),
@@ -1147,6 +1153,18 @@ export function parseScopeFlag(value: string): SourceMappingScope | null {
   const parsed = SourceMappingScopeSchema.safeParse(value);
   if (!parsed.success) {
     throw new Error(`--scope must be one of global|domain|none (got '${value}')`);
+  }
+  return parsed.data;
+}
+
+/** Parses a `--journey-kind` flag value: `source` | `config`, or `none` to CLEAR (`null`). Same shape
+ *  and same reason as `parseScopeFlag` — a typo names the accepted values rather than being silently
+ *  dropped as undeclared, which on this field would look exactly like "not declared yet". */
+export function parseJourneyKindFlag(value: string): JourneyKind | null {
+  if (value === "none") return null;
+  const parsed = JourneyKindSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`--journey-kind must be one of source|config|none (got '${value}')`);
   }
   return parsed.data;
 }
@@ -6386,6 +6404,10 @@ export function buildProgram(): Command {
       "--scope <scope>",
       "declared reach of this repo (§10.6): global (shared across domains, tracked at the commander) | domain (tracked only here); omit = not declared (no label, nothing inferred); UI/reporting/IaC only, never a routing input"
     )
+    .option(
+      "--journey-kind <kind>",
+      "WHICH RELEASE PATH changes from this source take (§8.14): source (runs the whole source -> build -> scan/sign -> registry -> config -> waves spine) | config (enters at the config node, straight to the waves); omit = not declared; a LABEL for the pipeline view, never a routing input — the routing Type is --type, and describing a journey with --type re-routes the release"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -6401,6 +6423,7 @@ export function buildProgram(): Command {
           mirrorOfShared?: boolean;
           disabled?: boolean;
           scope?: string;
+          journeyKind?: string;
         }
       ) => {
         // Parsed BEFORE the client is built so a typo is a usage error, not a 400 after login.
@@ -6409,6 +6432,13 @@ export function buildProgram(): Command {
         if (opts.scope !== undefined && scope === null) {
           throw new Error(
             "--scope none is not meaningful at create — omit --scope for an undeclared scope"
+          );
+        }
+        const journeyKind =
+          opts.journeyKind === undefined ? undefined : parseJourneyKindFlag(opts.journeyKind);
+        if (opts.journeyKind !== undefined && journeyKind === null) {
+          throw new Error(
+            "--journey-kind none is not meaningful at create — omit --journey-kind for an undeclared journey"
           );
         }
         const client = await clientFromStoredCredentials(opts);
@@ -6421,7 +6451,8 @@ export function buildProgram(): Command {
           classification: opts.classification,
           ...(opts.mirrorOfShared ? { mirrorOfShared: true } : {}),
           ...(opts.disabled ? { enabled: false } : {}),
-          ...(scope ? { scope } : {})
+          ...(scope ? { scope } : {}),
+          ...(journeyKind ? { journeyKind } : {})
         });
         printResult(result, opts.output, (item) => sourceMappingRow(item as SourceMapping));
       }
@@ -6455,6 +6486,25 @@ export function buildProgram(): Command {
       const scope = parseScopeFlag(opts.scope);
       const client = await clientFromStoredCredentials(opts);
       const result = await client.changeSources.setMappingScope(sourceKind, id, scope);
+      printResult(result, opts.output, (item) => sourceMappingRow(item as SourceMapping));
+    });
+
+  // §8.14 — the after-the-fact door for the label `create-mapping --journey-kind` sets at create. By
+  // id, `--journey-kind none` clears it, and it is a LABEL only: this is the command that lets an
+  // operator describe a repo's release path WITHOUT touching `--type`, which is the whole reason the
+  // field is separate (retyping a service repo to describe its journey stopped its releases).
+  changeSourceCmd
+    .command("set-mapping-journey-kind <sourceKind> <id>")
+    .description(
+      "Set or clear a source_mapping's declared release path — source (full source->build->scan/sign->registry->config->waves spine) | config (enters at the config node) | none (clear); a label read by the pipeline view, IaC and this CLI, never a routing input"
+    )
+    .requiredOption("--journey-kind <kind>", "source|config|none")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (sourceKind: string, id: string, opts: BaseCliOpts & { journeyKind: string }) => {
+      const journeyKind = parseJourneyKindFlag(opts.journeyKind);
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.changeSources.setMappingJourneyKind(sourceKind, id, journeyKind);
       printResult(result, opts.output, (item) => sourceMappingRow(item as SourceMapping));
     });
 

@@ -34,7 +34,7 @@ import { resolveOutpostObjectsByPeer } from "../federation/outposts-repo.js";
 import { federationPeers } from "../db/schema.js";
 import { artifactFactsForComponent } from "./artifact-facts.js";
 import { observedRunForComponent } from "./observed-run-facts.js";
-import { requiresOf } from "./changes-repo.js";
+import { journeyKindOf, requiresOf } from "./changes-repo.js";
 import { namesForObjectIds } from "../dependencies/producer-declaration.js";
 
 /** A COMPONENT'S PIPELINE. See docs/coordination.md §299. */
@@ -58,6 +58,7 @@ async function currentsByPlacement(
     created_at: string;
     observed_state: unknown;
     correlation_key: string | null;
+    change_properties: unknown;
   }>(sql`
     SELECT DISTINCT ON (t.target_object_id, t.type)
       t.target_object_id,
@@ -69,7 +70,8 @@ async function currentsByPlacement(
       t.type   AS type,
       c.created_at AS created_at,
       t.observed_state AS observed_state,
-      c.correlation_key AS correlation_key
+      c.correlation_key AS correlation_key,
+      o.properties AS change_properties
     FROM ${changeWaveTargets} t
     JOIN ${changeWaves} w  ON w.id = t.wave_id AND w.org_id = t.org_id
     JOIN ${changePlans} p  ON p.id = w.plan_id AND p.org_id = w.org_id
@@ -116,6 +118,9 @@ async function currentsByPlacement(
         // for `ChangeWaveTargetSchema.observed` — this is that column read a second time, per
         // pipeline, for the stage's derived `version` below.
         observed: (r.observed_state as WaveTargetObserved | null) ?? null,
+        // WHICH RELEASE PATH this release took (§8.14), read off the CHANGE's own properties — never
+        // recomputed from today's mapping, which may since have been re-declared or deleted.
+        journeyKind: journeyKindOf(r.change_properties as Record<string, unknown> | null),
         // journey-view §8.11 — the event this release came from, so the wave node can say whether
         // the artifact it shows was built by THIS journey (a correlated `image` arm from the same
         // push) or merely deployed BY it (an older artifact a bare chart bump rolls forward).
@@ -358,7 +363,12 @@ export async function getComponentPipeline(
       url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null),
       // Declared reach (§10.6) — carried through as READ; null stays null (no label, no inference
       // from this site's role).
-      scope: m.scope
+      scope: m.scope,
+      // DECLARED release path (migration 0112, §8.14) — carried through as READ, same discipline. This
+      // is what lets the lane builder decide whether to draw the build spine from a DECLARATION rather
+      // than from the source's Category, which maps both `image` and `chart` to `build` and so cannot
+      // separate the two paths even in principle (§8.2).
+      journeyKind: m.journeyKind
     }))
     .sort(
       (a, b) =>

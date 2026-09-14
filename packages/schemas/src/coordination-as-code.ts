@@ -3,7 +3,8 @@ import { JsonRecordSchema, UrnSchema } from "./graph.js";
 import {
   ExecutorTypeSchema,
   PipelineClassificationSchema,
-  SourceMappingScopeSchema
+  SourceMappingScopeSchema,
+  JourneyKindSchema
 } from "./executors.js";
 import { DependencyCoordinateSchema, DependencyEcosystemSchema } from "./dependencies.js";
 import {
@@ -77,7 +78,12 @@ export const ManifestSourceMappingSchema = z.object({
    *  delete-and-recreate of the route. Omitted ⇒ enabled, the pre-0063 behaviour. */
   enabled: z.boolean().optional(),
   /** DECLARED reach (§10.6, migration 0066). See docs/schemas.md §303. */
-  scope: SourceMappingScopeSchema.nullable().optional()
+  scope: SourceMappingScopeSchema.nullable().optional(),
+  /** DECLARED release path (journey-view §8.14, migration 0112). Like `classification`/`scope`,
+   *  descriptive and deliberately OUTSIDE the identity tuple — changing which journey a source
+   *  describes is an in-place correction, not a new route, and it must not cause a delete-and-recreate
+   *  of a live mapping. Omitted ⇒ not declared. */
+  journeyKind: JourneyKindSchema.nullable().optional()
 });
 export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
 
@@ -326,6 +332,9 @@ export const PlanSourceMappingDiffEntrySchema = z.object({
    *  `null` = not declared. Optional on the wire — a plan stored before 0066 has no key — read it as
    *  "unknown", never as "undeclared". */
   scope: SourceMappingScopeSchema.nullable().optional(),
+  /** The journey kind the row WILL HAVE after apply — same rule as `scope` directly above, including
+   *  the "a plan stored before this field existed has no key, read it as unknown" reading. */
+  journeyKind: JourneyKindSchema.nullable().optional(),
   reason: z.string()
 });
 export type PlanSourceMappingDiffEntry = z.infer<typeof PlanSourceMappingDiffEntrySchema>;

@@ -468,6 +468,12 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
             // that matched it (M12 P4A). One release = one source = one pipeline, so the Type belongs to the
             // CHANGE rather than to each target — a release needing both IS two releases, above.
             type: match.type,
+            // WHICH RELEASE PATH it takes (journey-view §8.14), from the same matched mapping. A
+            // SEPARATE field from `type` directly above, and that separation is the point: a service
+            // repo's pushes can now say "source-code change" for the view while still routing to the
+            // config pipeline — which is exactly what describing the journey with `type` made
+            // impossible (measured: every release from a retyped service repo went `no_executor`).
+            journeyKind: match.journeyKind,
             // M12 P4B: the coupling declaration from the typed report body (`scp change-source
             // report --provides/--requires`), threaded IDENTICALLY to `POST /changes`' typed fields —
             // same `at` resolution inside `proposeChange`, same storage, same routing-guard behaviour.

@@ -94,7 +94,8 @@ describe("source mapping: declared mirror-of-shared provenance (outpost-ui.md §
     expect(a).toEqual({
       componentObjectId: withMarker.id,
       type: "infrastructure",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 });

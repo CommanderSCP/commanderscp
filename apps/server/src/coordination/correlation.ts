@@ -2,7 +2,9 @@ import { and, asc, eq, exists, isNull, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   parsePipelineClassification,
+  parseJourneyKind,
   type ExecutorType,
+  type JourneyKind,
   type PipelineClassification
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -35,6 +37,11 @@ export interface SourceMatch {
   type: ExecutorType;
   /** From the matched mapping (ADR-0030 §2). See docs/coordination.md §376. */
   classification: PipelineClassification | null;
+  /** From the matched mapping (migration 0112, journey-view §8.14) — WHICH RELEASE PATH this release
+   *  takes. Carried so the change can record it, and for NO other purpose: unlike `type` beside it,
+   *  nothing downstream may route on it. `type` answers "which executor rolls this"; this answers
+   *  "which journey did it take", and the two were one column until §8.14 measured what that cost. */
+  journeyKind: JourneyKind | null;
 }
 
 /** The matching components and their pipelines — one per Type. See docs/coordination.md §377. */
@@ -165,7 +172,11 @@ export async function matchComponentsForSource(
     byType.set(type, {
       componentObjectId: row.componentObjectId,
       type,
-      classification: parsePipelineClassification(row.classification)
+      classification: parsePipelineClassification(row.classification),
+      // From the SAME row the Type came from — the highest-precedence winner. Two mappings of one
+      // Type declaring different journeys collapse to this row's, which is the precedence order the
+      // query already established rather than a second, competing rule.
+      journeyKind: parseJourneyKind(row.journeyKind)
     });
   }
   return [...byType.values()];

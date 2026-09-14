@@ -884,8 +884,10 @@ describe("coordination-as-code/plan-diff: source mappings (C1)", () => {
         classification: null,
         mirrorOfShared: false,
         enabled: true,
-        // Not declared by the manifest, no live row → the row will hold NULL.
+        // Not declared by the manifest, no live row → the row will hold NULL. Both descriptive
+        // attributes, and both for the same reason (§10.6, §8.14): nothing is inferred.
         scope: null,
+        journeyKind: null,
         reason: "no existing source mapping with this identity"
       }
     ]);
@@ -1000,6 +1002,122 @@ describe("coordination-as-code/plan-diff: source mappings (C1)", () => {
         managedSourceMappings: [mapping({ scope: "global" })]
       });
       expect(pruned.sourceMappings?.[0]).toMatchObject({ action: "delete", scope: "global" });
+    });
+  });
+
+  // §8.14 — `journeyKind` is the SECOND attribute outside the identity tuple that the diff converges
+  // in place. Every rule above holds for it, and the two are INDEPENDENT: the trap here is a diff that
+  // raises `update` for one field and then applies only that one, leaving the other silently unconverged.
+  describe("journeyKind (§8.14): the second in-place convergence, independent of scope", () => {
+    it("a declared journey kind that differs from the live row's is an UPDATE, in place — never delete + create of a live route", () => {
+      const diff = computePlanDiff(manifestWith([mapping({ journeyKind: "source" })]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ journeyKind: null })]
+      });
+      expect(diff.sourceMappings).toEqual([
+        expect.objectContaining({
+          action: "update",
+          journeyKind: "source",
+          reason: "journey kind differs: not declared -> source"
+        })
+      ]);
+      expect(diff.summary.updates).toBe(1);
+      expect(diff.summary.deletes).toBe(0);
+      expect(diff.summary.creates).toBe(1); // the component only
+    });
+
+    it("an explicit `null` RETRACTS a live declaration — a mis-declared path must be removable", () => {
+      const diff = computePlanDiff(manifestWith([mapping({ journeyKind: null })]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ journeyKind: "config" })]
+      });
+      expect(diff.sourceMappings?.[0]).toMatchObject({
+        action: "update",
+        journeyKind: null,
+        reason: "journey kind differs: config -> not declared"
+      });
+    });
+
+    it("an OMITTED journey kind manages nothing: a manifest that has never heard of the field cannot wipe a hand-set declaration", () => {
+      const desired = mapping();
+      delete (desired as { journeyKind?: unknown }).journeyKind;
+      const diff = computePlanDiff(manifestWith([desired]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ journeyKind: "source" })]
+      });
+      expect(diff.sourceMappings?.[0]).toMatchObject({ action: "noop", journeyKind: "source" });
+      expect(diff.summary.updates).toBe(0);
+    });
+
+    it("an equal declared journey kind is a noop", () => {
+      const diff = computePlanDiff(manifestWith([mapping({ journeyKind: "config" })]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ journeyKind: "config" })]
+      });
+      expect(diff.sourceMappings?.map((m) => m.action)).toEqual(["noop"]);
+    });
+
+    it("the journey kind is NOT part of the identity tuple: a changed one produces one update, not a delete plus a create", () => {
+      // The claim stated as a count. If `sourceMappingKey` ever grew this field, the live row would
+      // key differently from the manifest and this would be [delete, create] instead.
+      const diff = computePlanDiff(manifestWith([mapping({ journeyKind: "source" })]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ journeyKind: "config" })]
+      });
+      expect(diff.sourceMappings?.map((m) => m.action)).toEqual(["update"]);
+      expect(diff.summary.deletes).toBe(0);
+    });
+
+    it("BOTH drifts at once are BOTH named in the reason — an operator cannot approve a field the plan never mentioned", () => {
+      const diff = computePlanDiff(
+        manifestWith([mapping({ scope: "global", journeyKind: "source" })]),
+        {
+          ...emptySnapshot(),
+          managedSourceMappings: [mapping({ scope: "domain", journeyKind: "config" })]
+        }
+      );
+      expect(diff.sourceMappings?.[0]).toMatchObject({
+        action: "update",
+        scope: "global",
+        journeyKind: "source",
+        reason: "scope differs: domain -> global; journey kind differs: config -> source"
+      });
+      // ONE entry and ONE update for two drifted attributes on one row.
+      expect(diff.sourceMappings).toHaveLength(1);
+      expect(diff.summary.updates).toBe(1);
+    });
+
+    it("a journey drift alone raises the update even when the scope matches — the two are independent", () => {
+      const diff = computePlanDiff(
+        manifestWith([mapping({ scope: "global", journeyKind: "source" })]),
+        {
+          ...emptySnapshot(),
+          managedSourceMappings: [mapping({ scope: "global", journeyKind: null })]
+        }
+      );
+      expect(diff.sourceMappings?.[0]).toMatchObject({
+        action: "update",
+        reason: "journey kind differs: not declared -> source"
+      });
+    });
+
+    it("a create carries the declared journey kind; a prune carries the live row's", () => {
+      const created = computePlanDiff(
+        manifestWith([mapping({ journeyKind: "source" })]),
+        emptySnapshot()
+      );
+      expect(created.sourceMappings?.[0]).toMatchObject({
+        action: "create",
+        journeyKind: "source"
+      });
+      const pruned = computePlanDiff(manifestWith([]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ journeyKind: "config" })]
+      });
+      expect(pruned.sourceMappings?.[0]).toMatchObject({
+        action: "delete",
+        journeyKind: "config"
+      });
     });
   });
 });

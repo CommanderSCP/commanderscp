@@ -19,6 +19,7 @@ import type {
   PipelineClassification,
   PipelineHookKind,
   SourceMappingScope,
+  JourneyKind,
   WorkflowRef
 } from "@scp/schemas";
 import { canonicalJson } from "../graph/objects-repo.js";
@@ -103,6 +104,11 @@ export interface ResolvedManifestSourceMapping {
   enabled: boolean;
   /** Declared reach (migration 0066, §10.6). See docs/coordination-as-code.md §64. */
   scope?: SourceMappingScope | null;
+  /** Declared release path (migration 0112, journey-view §8.14) — descriptive like the three above,
+   *  and like them NOT part of `sourceMappingKey`. Re-declaring which journey a source describes must
+   *  be an in-place correction: a delete + create of a live route to change a LABEL is precisely the
+   *  class of collateral damage §8.14 was about. */
+  journeyKind?: JourneyKind | null;
 }
 
 /** An executor-binding entry, normalized the same way. See docs/coordination-as-code.md §65. */
@@ -616,8 +622,19 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       existing !== undefined &&
       desiredScope !== undefined &&
       existing.some((row) => (row.scope ?? null) !== desiredScope);
-    const action = existing === undefined ? "create" : scopeDrifts ? "update" : "noop";
+    // §8.14 — the SECOND in-place convergence, added for exactly `scope`'s reason. Independent of it:
+    // a manifest that re-declares only the journey must still produce an `update`, or the correction
+    // silently never applies. Undeclared (`undefined`) means UNMANAGED, not "set it to null" — so a
+    // manifest that omits the key leaves a live declaration alone rather than wiping it.
+    const desiredJourneyKind = mapping.journeyKind;
+    const journeyKindDrifts =
+      existing !== undefined &&
+      desiredJourneyKind !== undefined &&
+      existing.some((row) => (row.journeyKind ?? null) !== desiredJourneyKind);
+    const action =
+      existing === undefined ? "create" : scopeDrifts || journeyKindDrifts ? "update" : "noop";
     const currentScope = existing?.[0]?.scope ?? null;
+    const currentJourneyKind = existing?.[0]?.journeyKind ?? null;
     sourceMappingEntries.push({
       kind: "source-mapping",
       action,
@@ -633,11 +650,23 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       // What the row WILL hold after apply: the declaration for create/update; the live value
       // (unmanaged, or already equal) for noop.
       scope: desiredScope !== undefined ? desiredScope : currentScope,
+      journeyKind: desiredJourneyKind !== undefined ? desiredJourneyKind : currentJourneyKind,
       reason:
         action === "create"
           ? "no existing source mapping with this identity"
           : action === "update"
-            ? `scope differs: ${currentScope ?? "not declared"} -> ${desiredScope ?? "not declared"}`
+            ? // BOTH drifts are named when both drifted. Reporting only the first would leave the
+              // operator approving a change to a field the plan never mentioned.
+              [
+                scopeDrifts
+                  ? `scope differs: ${currentScope ?? "not declared"} -> ${desiredScope ?? "not declared"}`
+                  : null,
+                journeyKindDrifts
+                  ? `journey kind differs: ${currentJourneyKind ?? "not declared"} -> ${desiredJourneyKind ?? "not declared"}`
+                  : null
+              ]
+                .filter((r): r is string => r !== null)
+                .join("; ")
             : "matches current state"
     });
     if (action === "noop") noops++;
@@ -711,6 +740,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       mirrorOfShared: managed.mirrorOfShared,
       enabled: managed.enabled,
       scope: managed.scope ?? null,
+      journeyKind: managed.journeyKind ?? null,
       reason:
         "on an object this stack owns, no longer present in the desired manifest's sourceMappings"
     });

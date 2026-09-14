@@ -7449,6 +7449,7 @@ export type GetComponentPipelineResponses = {
             effectivelyEnabled: boolean;
             url: string | null;
             scope: 'global' | 'domain' | null;
+            journeyKind?: 'source' | 'config' | null;
         }>;
         stages: Array<{
             placement: {
@@ -7528,6 +7529,7 @@ export type GetComponentPipelineResponses = {
                         };
                     };
                 } | null;
+                journeyKind?: 'source' | 'config' | null;
                 correlationKey?: string | null;
             } | null;
             currents: Array<{
@@ -7556,6 +7558,7 @@ export type GetComponentPipelineResponses = {
                         };
                     };
                 } | null;
+                journeyKind?: 'source' | 'config' | null;
                 correlationKey?: string | null;
             }>;
             gate: {
@@ -11920,6 +11923,7 @@ export type CreatePlanData = {
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
                 scope?: 'global' | 'domain' | null;
+                journeyKind?: 'source' | 'config' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -12124,6 +12128,7 @@ export type CreatePlanResponses = {
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
                 scope?: 'global' | 'domain' | null;
+                journeyKind?: 'source' | 'config' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -12281,6 +12286,7 @@ export type CreatePlanResponses = {
                 mirrorOfShared: boolean;
                 enabled: boolean;
                 scope?: 'global' | 'domain' | null;
+                journeyKind?: 'source' | 'config' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -12483,6 +12489,7 @@ export type GetPlanResponses = {
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
                 scope?: 'global' | 'domain' | null;
+                journeyKind?: 'source' | 'config' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -12640,6 +12647,7 @@ export type GetPlanResponses = {
                 mirrorOfShared: boolean;
                 enabled: boolean;
                 scope?: 'global' | 'domain' | null;
+                journeyKind?: 'source' | 'config' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -12854,6 +12862,7 @@ export type ApplyPlanResponses = {
                     mirrorOfShared?: boolean;
                     enabled?: boolean;
                     scope?: 'global' | 'domain' | null;
+                    journeyKind?: 'source' | 'config' | null;
                 }>;
                 executorBindings?: Array<{
                     targetUrn: string;
@@ -13011,6 +13020,7 @@ export type ApplyPlanResponses = {
                     mirrorOfShared: boolean;
                     enabled: boolean;
                     scope?: 'global' | 'domain' | null;
+                    journeyKind?: 'source' | 'config' | null;
                     reason: string;
                 }>;
                 placements?: Array<{
@@ -14404,6 +14414,7 @@ export type ListSourceMappingsResponses = {
             disabledUntil: string | null;
             effectivelyEnabled: boolean;
             scope: 'global' | 'domain' | null;
+            journeyKind: 'source' | 'config' | null;
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -14424,6 +14435,7 @@ export type CreateSourceMappingData = {
         mirrorOfShared?: boolean;
         enabled?: boolean;
         scope?: 'global' | 'domain';
+        journeyKind?: 'source' | 'config';
     };
     path: {
         sourceKind: string;
@@ -14501,6 +14513,7 @@ export type CreateSourceMappingResponses = {
         disabledUntil: string | null;
         effectivelyEnabled: boolean;
         scope: 'global' | 'domain' | null;
+        journeyKind: 'source' | 'config' | null;
         createdAt: string;
     };
 };
@@ -14589,6 +14602,7 @@ export type SetSourceMappingEnabledResponses = {
         disabledUntil: string | null;
         effectivelyEnabled: boolean;
         scope: 'global' | 'domain' | null;
+        journeyKind: 'source' | 'config' | null;
         createdAt: string;
     };
 };
@@ -14676,11 +14690,100 @@ export type SetSourceMappingScopeResponses = {
         disabledUntil: string | null;
         effectivelyEnabled: boolean;
         scope: 'global' | 'domain' | null;
+        journeyKind: 'source' | 'config' | null;
         createdAt: string;
     };
 };
 
 export type SetSourceMappingScopeResponse = SetSourceMappingScopeResponses[keyof SetSourceMappingScopeResponses];
+
+export type SetSourceMappingJourneyKindData = {
+    body: {
+        journeyKind: 'source' | 'config' | null;
+    };
+    path: {
+        sourceKind: string;
+        id: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/mappings/{id}/journey-kind';
+};
+
+export type SetSourceMappingJourneyKindErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetSourceMappingJourneyKindError = SetSourceMappingJourneyKindErrors[keyof SetSourceMappingJourneyKindErrors];
+
+export type SetSourceMappingJourneyKindResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        sourceKind: string;
+        repoPattern: string | null;
+        pathPattern: string | null;
+        refPattern: string | null;
+        componentObjectId: string;
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
+        classification: 'dev' | 'beta' | null;
+        mirrorOfShared: boolean;
+        enabled: boolean;
+        disabledUntil: string | null;
+        effectivelyEnabled: boolean;
+        scope: 'global' | 'domain' | null;
+        journeyKind: 'source' | 'config' | null;
+        createdAt: string;
+    };
+};
+
+export type SetSourceMappingJourneyKindResponse = SetSourceMappingJourneyKindResponses[keyof SetSourceMappingJourneyKindResponses];
 
 export type SubmitPipelineEvidenceData = {
     body: {

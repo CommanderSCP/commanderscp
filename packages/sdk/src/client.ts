@@ -172,6 +172,7 @@ import {
   listSourceMappings as listSourceMappingsRequest,
   setSourceMappingEnabled as setSourceMappingEnabledRequest,
   setSourceMappingScope as setSourceMappingScopeRequest,
+  setSourceMappingJourneyKind as setSourceMappingJourneyKindRequest,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, routes/typed-registries.ts +
   // routes/governance.ts): Policy/Control typed-registry resources, control bindings/runs,
   // approvals (N-of-M quorum), freezes, and the `scp policy evaluate` dry-run endpoint.
@@ -367,6 +368,7 @@ import type {
   SourceMapping,
   SourceMappingListResponse,
   SourceMappingScope,
+  JourneyKind,
   WebhookIngressResponse,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4).
   ControlBinding,
@@ -1660,6 +1662,24 @@ export class ScpClient {
         client: this.client,
         path: { sourceKind, id },
         body: { scope }
+      });
+      return unwrap(result);
+    },
+    /** Sets or clears ONE mapping's declared RELEASE PATH, by id (migration 0112, journey-view
+     *  §8.14): `source` = changes from this source run the whole source → build → scan/sign →
+     *  registry → config → waves spine, `config` = they enter at the config node, `null` = clear
+     *  (back to "not declared"). A label read by the pipeline view, IaC and the CLI; NEVER a routing
+     *  input — that is `type`, and conflating the two is what made retyping a service repo stop its
+     *  releases. */
+    setMappingJourneyKind: async (
+      sourceKind: string,
+      id: string,
+      journeyKind: JourneyKind | null
+    ): Promise<SourceMapping> => {
+      const result = await setSourceMappingJourneyKindRequest({
+        client: this.client,
+        path: { sourceKind, id },
+        body: { journeyKind }
       });
       return unwrap(result);
     },
