@@ -62,6 +62,32 @@ export function parseSourceMappingScope(value: string | null): SourceMappingScop
   return parsed.success ? parsed.data : null;
 }
 
+/** WHICH RELEASE PATH a change from this source takes — the JOURNEY discriminator (journey-view
+ *  §8.14, owner decision 2026-09-14 option ii). Named after the journey node a change ENTERS at, in
+ *  the order the GLOSSARY defines: `source` enters at the source-code node and runs the whole spine
+ *  (source → build → scan/sign → registry → config → waves); `config` enters at the config node and
+ *  goes straight to the waves. A third path would name a third node rather than invent a word.
+ *
+ *  THIS IS NOT A ROUTING KEY, and keeping it out of routing is the entire reason it exists. ADR-0007's
+ *  `type` already answers "which executor pipeline rolls this", and `source_mappings.type` was doing
+ *  BOTH jobs — which is why typing a service repo `image` to describe its journey made every release
+ *  from it resolve a `build` binding that does not exist and terminalise `no_executor` (measured,
+ *  §8.14). A journey kind must never reach `resolveBindingForTarget`, `plan-service` wave-target
+ *  compilation, or any admission gate; it is a declared label for the view, the genus of
+ *  `classification`/`scope`/`mirrorOfShared`. */
+export const JourneyKindSchema = z.enum(["source", "config"]);
+export type JourneyKind = z.infer<typeof JourneyKindSchema>;
+
+/** Parse a stored/carried `journeyKind`, total over anything the column or a change's `properties`
+ *  can hold — same shape and reason as `parsePipelineClassification`. Deliberately UNLIKE
+ *  `typeOf` (`changes-repo.ts`), which THROWS on an unrecognised Type because guessing a pipeline
+ *  would route a release somewhere nobody asked for: an unrecognised journey kind costs a label on a
+ *  tile, so it degrades to `null` (undeclared) and never breaks a read path. */
+export function parseJourneyKind(value: unknown): JourneyKind | null {
+  const parsed = JourneyKindSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Static Type → Category map (ADR-0007). Every Type belongs to exactly one Category, so Category
  *  needs no column — it is a projection of Type. The single source of truth for the derivation. */
 export const CATEGORY_OF_TYPE: Record<ExecutorType, ExecutorCategory> = {

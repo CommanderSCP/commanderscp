@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import {
   ExecutorTypeSchema,
+  parseJourneyKind,
   type Change,
   type ChangeState,
   type ContainmentDomainId,
   type ExecutorType,
+  type JourneyKind,
   type StageDependency,
   type TrustDomainId
 } from "@scp/schemas";
@@ -105,6 +107,12 @@ export interface ProposeChangeInput {
   targets: string[];
   /** WHICH pipeline of its targets this change rolls. See docs/coordination.md §263. */
   type?: ExecutorType;
+  /** WHICH RELEASE PATH this change takes (journey-view §8.14) — from the mapping that matched the
+   *  event, or declared directly. Recorded ON the change because the journey a release TOOK is a
+   *  historical fact: the mapping can be re-declared or deleted afterwards, and re-deriving the path
+   *  at display time would silently rewrite history (the same hazard as reading a provenance label
+   *  from which branch matched). Stored, never routed on. */
+  journeyKind?: JourneyKind | null;
   /** Coupled-pipeline keys this release provides at its targets (M12 P4B). Stored verbatim in
    *  `properties.provides`. */
   provides?: string[];
@@ -286,6 +294,10 @@ export async function proposeChange(
       ...restProperties,
       targets: targetObjectIds,
       type: input.type ?? typeOf(input.properties),
+      // Only written when DECLARED, so a change whose source declares no path stays byte-identical to
+      // a pre-0112 change — the same discipline as `provides`/`requires` below. An absent key reads
+      // back as null through `journeyKindOf`, which is "no path declared", not "path unknown to me".
+      ...(input.journeyKind ? { journeyKind: input.journeyKind } : {}),
       // Only written when non-empty, so a change that couples nothing stays byte-identical to a
       // pre-P4B change (and the no-wait fast path in reconcile is a pure absence check).
       ...(providesValue.length > 0 ? { provides: providesValue } : {}),
@@ -640,6 +652,19 @@ export function typeOf(properties: Record<string, unknown> | null | undefined): 
     `change carries type '${String(raw)}', which this version does not recognise — refusing to guess which pipeline to drive. ` +
       `The retired 'infra'/'software' values were replaced by the Type taxonomy (ADR-0007); if this change was promoted from another domain, that domain is likely running a different CommanderSCP.`
   );
+}
+
+/** WHICH RELEASE PATH a change took, read back off properties (journey-view §8.14).
+ *
+ *  Deliberately TOTAL where `typeOf` above THROWS. `typeOf` refuses to guess because an unrecognised
+ *  Type would route a release to a pipeline nobody chose; an unrecognised journey kind costs one label
+ *  on one tile, so degrading to `null` is the proportionate answer and keeps a version-skewed import
+ *  from breaking every read of the change. This asymmetry is the field's whole design in one function:
+ *  the Type is load-bearing, the journey kind is descriptive. */
+export function journeyKindOf(
+  properties: Record<string, unknown> | null | undefined
+): JourneyKind | null {
+  return parseJourneyKind(properties?.journeyKind);
 }
 
 export interface ListChangesQuery {

@@ -871,6 +871,24 @@ function StageCard({
             ) : (
               <span className="text-slate-400">nothing has released here</span>
             )}
+            {/* WHICH PATH that release took (§8.14), read off the CHANGE — so the journey a release
+              actually took survives a later re-declaration of the mapping. Silent when the change
+              declares none, which is every release before a mapping declares a journey: an absent
+              declaration is not a claim that this took the config path. */}
+            {current?.journeyKind ? (
+              <span
+                className="ml-1 text-slate-400"
+                data-testid="stage-current-journey"
+                data-journey-kind={current.journeyKind}
+                title={
+                  current.journeyKind === "source"
+                    ? "A SOURCE-CODE change: its journey ran source → build → scan/sign → registry → config → here. Declared on the source mapping that matched the push (journey-view §8.14), not inferred from the repo."
+                    : "A CONFIG change: its journey entered at the config node and came straight here, deploying an artifact an earlier release produced. Declared on the source mapping that matched the push."
+                }
+              >
+                via {current.journeyKind === "source" ? "the source-code path" : "the config path"}
+              </span>
+            ) : null}
           </div>
           {/* D1 (journey-view §8.7): a chart-path change DOES show the artifact it deploys — the image
             already in the registry — and the line says `deployed`, not `produced`. Only in a lane that
@@ -1174,8 +1192,21 @@ export function laneNodes(
   lane: Lane,
   instanceRole?: InstanceRole | undefined
 ): LaneNode[] {
-  const sourcesIn = (categories: readonly string[]) =>
-    data.sources.filter((s) => categories.includes(s.category));
+  // WHICH LANE a source belongs to is still its Category — unchanged, and it must stay that way or a
+  // declared journey would drag a configuration source into the infrastructure lane.
+  const laneSources = data.sources.filter((s) => lane.categories.includes(s.category));
+  // WHICH NODE it hangs under, WITHIN that lane, is the DECLARATION where there is one (§8.14,
+  // `source_mappings.journey_kind`); otherwise the pre-0112 Category reading stands, unchanged.
+  //
+  // The Category reading cannot separate the two paths even in principle: `CATEGORY_OF_TYPE` maps BOTH
+  // `image` and `chart` to Category `build`, so a chart-typed source — the thing the CONFIG node
+  // consumes — lands in the build arm and puts Path A's head on a component that has no build (§8.2).
+  // A declared journey says which arm the operator meant. An UNDECLARED source keeps the old answer
+  // rather than a guessed one: the estate's 148 mappings declare nothing yet, and silently re-drawing
+  // their lanes on upgrade would be a behaviour change nobody asked for. Repo-identity was rejected as
+  // a discriminator (§8.3), so nothing here infers a journey from the repo or path glob either.
+  const nodeOf = (s: ComponentPipelineResponse["sources"][number]): "source" | "config" =>
+    s.journeyKind ?? (lane.buildCategories.includes(s.category) ? "source" : "config");
   const buildBindings = data.stages
     .flatMap((s) => s.bindings)
     .filter((b) => lane.buildCategories.includes(b.category));
@@ -1185,7 +1216,11 @@ export function laneNodes(
   ];
 
   const nodes: LaneNode[] = [];
-  const buildSources = sourcesIn(lane.buildCategories);
+  // Only in a lane that HAS a build arm: the infra lane's `buildCategories` is empty by design (plan
+  // and apply are the same executor acting at each place), so a source declared `source` there must
+  // not conjure a build node — it stays on the one node that lane has.
+  const hasBuildArm = lane.buildCategories.length > 0;
+  const buildSources = hasBuildArm ? laneSources.filter((s) => nodeOf(s) === "source") : [];
   const buildsHere = uniqueBuilds.length > 0 || buildSources.length > 0;
   const registry = data.registry ?? null;
   // Declared here, at this site. `none` is the server SAYING there is no `publishes_to` edge — a
@@ -1218,7 +1253,9 @@ export function laneNodes(
     nodes.push({ kind: "scan-sign", key: "scan-sign", artifact });
   }
 
-  const stageSources = sourcesIn(lane.stageCategories);
+  const stageSources = hasBuildArm
+    ? laneSources.filter((s) => nodeOf(s) === "config")
+    : laneSources;
   nodes.push({
     kind: "source",
     key: "src-stage",

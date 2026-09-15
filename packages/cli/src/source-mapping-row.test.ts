@@ -21,6 +21,7 @@ describe("sourceMappingRow: the SCOPE column", () => {
     disabledUntil: null,
     effectivelyEnabled: true,
     scope: null,
+    journeyKind: null,
     createdAt: "2026-08-16T00:00:00.000Z"
   };
 

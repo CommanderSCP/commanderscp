@@ -4,8 +4,10 @@ import {
   categoryOfType,
   parsePipelineClassification,
   parseSourceMappingScope,
+  parseJourneyKind,
   type SourceMapping,
   type SourceMappingScope,
+  type JourneyKind,
   type ExecutorType,
   type PipelineClassification
 } from "@scp/schemas";
@@ -39,6 +41,10 @@ function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping
     // Declared reach (migration 0066, §10.6). READ off the row, total over anything the column can
     // hold — never inferred from the site's role or the repo. NULL = not declared.
     scope: parseSourceMappingScope(row.scope),
+    // DECLARED release path (migration 0112, journey-view §8.14). Read off the row and total over
+    // anything the column can hold, like `scope`/`classification` above — NULL is "not declared", and
+    // nothing here infers a path from the repo or the path glob (§8.3 rejected repo-identity).
+    journeyKind: parseJourneyKind(row.journeyKind),
     createdAt: row.createdAt.toISOString()
   };
 }
@@ -58,6 +64,9 @@ export interface CreateSourceMappingInput {
   enabled?: boolean;
   /** Declared reach (migration 0066, §10.6); omitted = NOT declared (stored NULL, no label). */
   scope?: SourceMappingScope | null;
+  /** Declared release path (migration 0112, §8.14); omitted = NOT declared (stored NULL). A LABEL —
+   *  it must never reach routing, which is what makes it a separate field from `type` above. */
+  journeyKind?: JourneyKind | null;
 }
 
 export async function createSourceMapping(
@@ -79,7 +88,8 @@ export async function createSourceMapping(
       classification: input.classification ?? null,
       mirrorOfShared: input.mirrorOfShared ?? false,
       enabled: input.enabled ?? true,
-      scope: input.scope ?? null
+      scope: input.scope ?? null,
+      journeyKind: input.journeyKind ?? null
     })
     .returning();
   if (!row) throw new Error("failed to insert source mapping");
@@ -123,6 +133,32 @@ export async function setSourceMappingScope(
   const [row] = await tx
     .update(sourceMappings)
     .set({ scope })
+    .where(
+      and(
+        eq(sourceMappings.orgId, orgId),
+        eq(sourceMappings.sourceKind, sourceKind),
+        eq(sourceMappings.id, id)
+      )
+    )
+    .returning();
+  if (!row) throw notFound(`no source mapping '${id}' for source kind '${sourceKind}'`);
+  return toSourceMapping(row);
+}
+
+/** Sets (or RETRACTS, with null) the declared release path of one mapping. See docs/coordination.md
+ *  §908a. Its own setter rather than a field on a general PATCH: the journey kind is the one label
+ *  whose whole purpose is to be changeable WITHOUT touching `type`, since changing `type` re-routes
+ *  the release (§8.14). */
+export async function setSourceMappingJourneyKind(
+  tx: TenantTx,
+  orgId: string,
+  sourceKind: string,
+  id: string,
+  journeyKind: JourneyKind | null
+): Promise<SourceMapping> {
+  const [row] = await tx
+    .update(sourceMappings)
+    .set({ journeyKind })
     .where(
       and(
         eq(sourceMappings.orgId, orgId),
@@ -222,6 +258,39 @@ export async function setSourceMappingScopeMatching(
   const rows = await tx
     .update(sourceMappings)
     .set({ scope })
+    .where(
+      and(
+        eq(sourceMappings.orgId, input.orgId),
+        eq(sourceMappings.componentObjectId, input.componentObjectId),
+        eq(sourceMappings.sourceKind, input.sourceKind),
+        input.repoPattern === null
+          ? isNull(sourceMappings.repoPattern)
+          : eq(sourceMappings.repoPattern, input.repoPattern),
+        input.pathPattern === null
+          ? isNull(sourceMappings.pathPattern)
+          : eq(sourceMappings.pathPattern, input.pathPattern),
+        input.refPattern === null
+          ? isNull(sourceMappings.refPattern)
+          : eq(sourceMappings.refPattern, input.refPattern),
+        eq(sourceMappings.type, input.type)
+      )
+    )
+    .returning({ id: sourceMappings.id });
+  return rows.length;
+}
+
+/** The IaC convergence half of `setSourceMappingJourneyKind` — addressed by the identity tuple, like
+ *  `setSourceMappingScopeMatching` above, because a manifest names a mapping by what it matches and
+ *  not by id. The journey kind sits OUTSIDE that tuple, so a changed one converges IN PLACE rather
+ *  than pruning and recreating a live route. */
+export async function setSourceMappingJourneyKindMatching(
+  tx: TenantTx,
+  input: DeleteSourceMappingsMatchingInput,
+  journeyKind: JourneyKind | null
+): Promise<number> {
+  const rows = await tx
+    .update(sourceMappings)
+    .set({ journeyKind })
     .where(
       and(
         eq(sourceMappings.orgId, input.orgId),

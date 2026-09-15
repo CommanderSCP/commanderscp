@@ -11,7 +11,8 @@ import {
   ExecutorTypeSchema,
   ExecutorCategorySchema,
   PipelineClassificationSchema,
-  SourceMappingScopeSchema
+  SourceMappingScopeSchema,
+  JourneyKindSchema
 } from "./executors.js";
 
 /** M3 Change Coordination Engine wire contract. See docs/schemas.md §55. */
@@ -482,6 +483,12 @@ export const SourceMappingSchema = z.object({
   effectivelyEnabled: z.boolean(),
   /** The operator's DECLARED reach of this repo. See docs/schemas.md §80. */
   scope: SourceMappingScopeSchema.nullable(),
+  /** WHICH RELEASE PATH a change from this source takes (journey-view §8.14, migration 0112) —
+   *  `source` runs the whole source→build→scan/sign→registry→config→waves spine, `config` enters at
+   *  the config node. Declared per mapping and read by the VIEW only: it is deliberately NOT `type`,
+   *  because `type` routes the release and a journey label that routed would block it (see
+   *  `JourneyKindSchema`). NULL = not declared, which is every mapping written before 0112. */
+  journeyKind: JourneyKindSchema.nullable(),
   createdAt: z.string().datetime()
 });
 export type SourceMapping = z.infer<typeof SourceMappingSchema>;
@@ -515,7 +522,14 @@ export const CreateSourceMappingRequestSchema = z.object({
    *  or `domain` (tracked only here). Omitted means NOT DECLARED — stored NULL, no label rendered,
    *  nothing inferred; set it later with `PATCH .../mappings/{id}/scope`. `.optional()` not
    *  `.default()` for the same request-shape reason as the fields above. */
-  scope: SourceMappingScopeSchema.optional()
+  scope: SourceMappingScopeSchema.optional(),
+  /** Declare WHICH RELEASE PATH changes from this source take (§8.14). Omitted means NOT DECLARED —
+   *  stored NULL, no journey claim made, and the view falls back to what it could already see; set it
+   *  later with `PATCH .../mappings/{id}/journey-kind`. `.optional()` not `.default()` for the same
+   *  request-shape reason as the fields above. Accepting it here is what makes the release path
+   *  DECLARED rather than inferred from repo layout (§8.3 rejected repo-identity) or borrowed from
+   *  the routing Type (§8.14 measured what that costs). */
+  journeyKind: JourneyKindSchema.optional()
 });
 export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingRequestSchema>;
 
@@ -558,6 +572,16 @@ export const SetSourceMappingScopeRequestSchema = z.object({
   scope: SourceMappingScopeSchema.nullable()
 });
 export type SetSourceMappingScopeRequest = z.infer<typeof SetSourceMappingScopeRequestSchema>;
+
+/** `PATCH /change-sources/{sourceKind}/mappings/{id}/journey-kind` body. Nullable so a mis-declared
+ *  path can be RETRACTED to undeclared, not just corrected — the same affordance `scope` has, and the
+ *  reason both are `.nullable()` rather than a plain enum. */
+export const SetSourceMappingJourneyKindRequestSchema = z.object({
+  journeyKind: JourneyKindSchema.nullable()
+});
+export type SetSourceMappingJourneyKindRequest = z.infer<
+  typeof SetSourceMappingJourneyKindRequestSchema
+>;
 
 /** `POST /change-sources/{sourceKind}/webhook` body. See docs/schemas.md §85. */
 export const ChangeSourceWebhookBodySchema = z.record(z.string(), z.unknown());

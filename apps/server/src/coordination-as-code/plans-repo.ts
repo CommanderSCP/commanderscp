@@ -109,7 +109,8 @@ import {
   createSourceMapping,
   deleteSourceMappingsMatching,
   listSourceMappingsForComponents,
-  setSourceMappingScopeMatching
+  setSourceMappingScopeMatching,
+  setSourceMappingJourneyKindMatching
 } from "../coordination/source-mappings-repo.js";
 import {
   deleteHook,
@@ -567,7 +568,11 @@ export async function computeDiffForManifest(
       mirrorOfShared: row.mirrorOfShared,
       enabled: row.enabled,
       // The ACTUAL side's scope — what the diff's `update` verdict compares against (§10.6).
-      scope: row.scope
+      scope: row.scope,
+      // The ACTUAL side's journey kind — the second attribute the diff converges in place (§8.14).
+      // Carried for the same reason as `scope`: without it every run would read the live value as
+      // "not declared" and propose the same no-op update forever.
+      journeyKind: row.journeyKind
     });
   }
 
@@ -810,7 +815,13 @@ export async function computeDiffForManifest(
       // §10.6 — deliberately NOT defaulted: `undefined` means "this manifest does not manage the
       // scope" (no update proposed, a create writes NULL), `null` means "declare it undeclared".
       // Collapsing the two would make every pre-0066 manifest clear every hand-set scope on apply.
-      ...(m.scope !== undefined ? { scope: m.scope } : {})
+      ...(m.scope !== undefined ? { scope: m.scope } : {}),
+      // §8.14 — the same undefined-vs-null distinction, for the same reason. THIS SITE IS THE ONE A
+      // CENSUS MISSES: it enumerates the desired side field by field and says `m.journeyKind`, not the
+      // type name, so a census keyed on `SourceMappingScope`/`JourneyKind` walks straight past it
+      // while the column, the diff, the apply and the CLI all look correctly wired — the schema
+      // accepts the field, the plan reports it, and the row is written without it.
+      ...(m.journeyKind !== undefined ? { journeyKind: m.journeyKind } : {})
     })),
     placements: (manifest.placements ?? []).map((pl) => ({
       componentUrn: pl.componentUrn,
@@ -1554,25 +1565,26 @@ export async function executePlanDiff(
 
   for (const entry of diff.sourceMappings ?? []) {
     if (entry.action === "update") {
-      // In-place convergence of the one non-identity attribute. See docs/coordination-as-code.md §158.
-      const converged = await setSourceMappingScopeMatching(
-        tx,
-        {
-          orgId,
-          componentObjectId: endpointId(entry.componentUrn),
-          sourceKind: entry.sourceKind,
-          repoPattern: entry.repoPattern,
-          pathPattern: entry.pathPattern,
-          refPattern: entry.refPattern,
-          type: entry.type
-        },
-        entry.scope ?? null
-      );
+      // In-place convergence of the non-identity attributes. See docs/coordination-as-code.md §158.
+      // TWO of them since §8.14, and BOTH are written on every `update`: the diff raises one `update`
+      // action for either drift, so applying only the field that happened to drift would leave the
+      // other silently unconverged whenever both did.
+      const address = {
+        orgId,
+        componentObjectId: endpointId(entry.componentUrn),
+        sourceKind: entry.sourceKind,
+        repoPattern: entry.repoPattern,
+        pathPattern: entry.pathPattern,
+        refPattern: entry.refPattern,
+        type: entry.type
+      };
+      const converged = await setSourceMappingScopeMatching(tx, address, entry.scope ?? null);
       if (converged === 0) {
         throw notFound(
           `no live source mapping '${entry.sourceKind}' -> '${entry.componentUrn}' (${entry.type}) to update`
         );
       }
+      await setSourceMappingJourneyKindMatching(tx, address, entry.journeyKind ?? null);
       continue;
     }
     if (entry.action !== "create") continue;
@@ -1590,7 +1602,9 @@ export async function executePlanDiff(
       // says the row should be created already-paused.
       ...(entry.enabled === false ? { enabled: false } : {}),
       // Declared reach (§10.6) — written as the plan showed it; absent/null ⇒ not declared.
-      ...(entry.scope ? { scope: entry.scope } : {})
+      ...(entry.scope ? { scope: entry.scope } : {}),
+      // Declared release path (§8.14) — same rule, same reason.
+      ...(entry.journeyKind ? { journeyKind: entry.journeyKind } : {})
     });
   }
 

@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13). **§8.14 STOPS step 3**: measured through the real reconcile loop, option A does *not* avoid the `no_executor` block — the block is on the image arm itself — and `source_mappings.type` turns out to be one column doing two jobs (journey kind and ADR-0007 routing). Three options for the owner there; nothing may be retyped until one is chosen. **Proposed, pending review.**
+**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13). **§8.14 STOPPED step 3** — measured through the real reconcile loop, option A does *not* avoid the `no_executor` block, because the block is on the image arm itself, and `source_mappings.type` turns out to be one column doing two jobs. **§8.15 resolves it (owner, option ii, built): the journey is its own field, `source_mappings.journey_kind` (migration 0112)**, so a service repo stays typed `configuration` — which is what routes it — and declares its journey separately. §8.2's rendering defect is fixed with it. What remains of step 3 is a LABELLING pass over the estate, which changes no routing. **Proposed, pending review.**
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -465,10 +465,10 @@ so no step can render a wrong answer in the window before its successor.
    (**correlation**, not the `properties.type` reading this step was first written against — see
    §8.11 for why that reading cannot separate the two paths), and reachable before step 3 for the same
    reason step 1 was: it changes what the view SAYS about an artifact, never what routes. §8.13.
-3. **The retyping pass, carrying D3 — re-scoped by §8.12 to the build half only, then BLOCKED by
-   §8.14.** Estate action, no code. This is the step that makes Path A render at all, and it must come
-   last — but as measured it would stop the 49 service repos' releases, so it is not runnable as
-   decided. See §8.14's three options.
+3. **The estate pass, carrying D3 — re-scoped by §8.12, BLOCKED by §8.14, and replaced by §8.15.** No
+   longer a *retyping* pass at all: with `journey_kind` on its own field it is a **labelling** pass,
+   which changes no routing and therefore cannot stop a release. 49 service repos declare `source`, 98
+   gitops repos `config`, plus D3's `ref_pattern` half. Estate action, no code, owner's call.
 
 ### 8.9 Scan and sign are one tile but two gates, and only one of them is Path A
 
@@ -752,3 +752,72 @@ spare field: it is the `dev | beta` M18 pipeline selector, unrelated.
 Nothing should be retyped until this is settled. §8.13 stands either way: the correlation field and the
 `produced | deployed | unknown` rule are correct under all three, because all three keep Path A's
 artifact on a change other than the stage's.
+
+### 8.15 DECIDED and BUILT (owner, 2026-09-14): option (ii) — the journey is its own field
+
+§8.14's three options went to the owner and **(ii) was chosen**: separate the two jobs
+`source_mappings.type` was doing. Built the same day.
+
+**The field.** `source_mappings.journey_kind`, migration 0112, values `source | config` — named after the
+journey NODE a change from this mapping *enters at*, in the order the GLOSSARY already defines, so a
+third path names a third node rather than inventing a word. `source` runs the whole
+source → build → scan/sign → registry → config → waves spine; `config` enters at the config node.
+NULL = not declared, which is all 148 live mappings.
+
+**The invariant, and why it is load-bearing rather than boilerplate.** A journey kind must never reach
+routing. It is the genus of `classification` / `mirror_of_shared` / `scope`: correlation does not read
+it, no gate, plan compilation or binding resolution consults it, and forging or clearing it changes no
+routing outcome. It *is* carried on `SourceMatch` — unlike `scope`, which is absent there — because the
+CHANGE has to record it: the journey a release **took** is a historical fact, and re-deriving it from
+today's mapping would silently rewrite history after a re-declaration (the same hazard as reading a
+provenance label off which branch matched).
+
+§8.14's measurement is now a permanent regression test rather than a note. One test asserts, side by
+side, that a `source`-journey release **dispatches** while the same journey described the old way — by
+retyping the mapping `image` — terminalises **`no_executor`** at the same placement with the same
+binding. Folding the journey back into `type` fails it.
+
+**Reads degrade where `typeOf` throws.** `parseJourneyKind` / `journeyKindOf` are total. `typeOf`
+refuses to guess an unrecognised Type because that would route a release nobody chose; an unrecognised
+journey kind costs one label on one tile. The column is closed at both ends (Zod on the wire, a CHECK at
+rest), so the only surface skew can reach is a change's jsonb `properties` — which is exactly how a peer
+running a different CommanderSCP arrives.
+
+**What the view does with it (§8.2, finally fixed).** `laneNodes` now decides which node a source hangs
+under from the **declaration** where there is one, and from the pre-0112 Category reading where there is
+not. Three properties are pinned:
+
+- The Category still decides **lane membership** — a declared journey cannot drag a configuration source
+  into the infrastructure lane. (The first version of the fix did exactly that.)
+- A declared `source` journey **never conjures a build node in the infra lane**, which has no build arm
+  by design: plan and apply are the same executor acting at each place.
+- An **undeclared** source renders exactly as it did. All 805 web tests passed untouched, which is the
+  measurement of that claim. The estate declares nothing yet, so silently re-drawing its lanes on
+  upgrade would be a behaviour change nobody asked for.
+
+This is what makes the estate's real shape expressible at last: a service repo stays typed
+`configuration` — because that is what *routes* it — and declares `journeyKind: source`, so the view
+draws its build spine without the retyping that would have stopped its releases.
+
+**A census by type name missed a site, and the miss is the lesson.** `grep -rna SourceMappingScope`
+found 12 files and every one of them looked correctly wired — schema, diff, apply, CLI. The IaC
+desired-side normalizer (`plans-repo.ts:800`) enumerates the desired side field by field and says
+`m.journeyKind`, not the type name, so it silently dropped the field: the plan reported the right value
+and the row was written without it. It was caught by the **apply-path** integration test (the plan-diff
+unit tests all passed), and then confirmed by re-censusing on `mirrorOfShared` — a field of the same
+genus that must appear at every field-enumeration site — which also surfaced `outpost-dashboard.tsx` and
+the CLI plan-diff row, both correctly unaffected. The property is *"enumerates a source mapping's
+fields"*, not *"mentions the type"*. Recorded because the type-name census is the obvious thing to run
+and it is the thing that fails.
+
+**Surfaces.** Migration 0112 + drizzle snapshot, the column, the repo, `SourceMappingSchema` and the
+create request, `PATCH .../mappings/{id}/journey-kind` (its own route, so a journey can be re-declared
+without touching `type`), the pipeline projection per source **and** per stage-current, the change stamp
+at ingress, the IaC manifest + plan diff + apply, the CLI (`--journey-kind`,
+`set-mapping-journey-kind`, the list column), and the hand-written `ScpClient` wrapper. Additive
+optional response properties only — the oasdiff gate is untouched.
+
+**What remains.** Declaring the journeys on the estate — the re-scoped step 3, now a *labelling* pass
+rather than a retyping one, and therefore safe: it changes no routing. 148 mappings, 49 service repos to
+declare `source` and 98 gitops repos `config`, plus D3's `ref_pattern` half. That is an estate action and
+the owner's call.

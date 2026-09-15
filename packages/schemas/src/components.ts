@@ -7,7 +7,8 @@ import {
 import {
   ExecutorCategorySchema,
   PipelineClassificationSchema,
-  SourceMappingScopeSchema
+  SourceMappingScopeSchema,
+  JourneyKindSchema
 } from "./executors.js";
 import { ControlOutcomeStatusSchema } from "./governance.js";
 import {
@@ -93,6 +94,12 @@ export const ComponentPipelineCurrentSchema = z.object({
   category: ExecutorCategorySchema,
   /** The same observed-state snapshot the wave target carries. See docs/schemas.md §96. */
   observed: WaveTargetObservedSchema.nullable().optional(),
+  /** WHICH RELEASE PATH this release took (journey-view §8.14), snapshotted onto the change at
+   *  propose time from the mapping that matched it. Read from the CHANGE, never recomputed from the
+   *  mapping at display time — a mapping can be retyped or deleted after a release, and the journey a
+   *  release actually took is a historical fact. NULL = the change declares no path; absent = a
+   *  server that does not project the field. */
+  journeyKind: JourneyKindSchema.nullable().optional(),
   /** `changes.correlation_key` — WHICH real-world event produced this release. Two changes sharing a
    *  non-null key came from one push (`linkToCoordinatedChange`, journey-view §8.11), which is the
    *  ONLY thing that can tell a Path-A deploy (the artifact is this journey's, built by the
@@ -152,7 +159,13 @@ export const ComponentPipelineSourceMappingSchema = z.object({
    *  repos rather than a page, and a self-hosted provider's host is not recorded on a mapping. */
   url: z.string().nullable(),
   /** DECLARED reach (§10.6, migration 0066). See docs/schemas.md §99. */
-  scope: SourceMappingScopeSchema.nullable()
+  scope: SourceMappingScopeSchema.nullable(),
+  /** DECLARED release path (journey-view §8.14, migration 0112) — which journey a change from THIS
+   *  source takes. The lane builder reads this to decide whether to draw the build spine at all;
+   *  before it existed the only signal was the source's Category, which maps BOTH `image` and
+   *  `chart` to `build` and so could not tell the two paths apart even in principle (§8.2). NULL =
+   *  not declared, and the lane falls back to the Category reading rather than inventing a path. */
+  journeyKind: JourneyKindSchema.nullable().optional()
 });
 export type ComponentPipelineSourceMapping = z.infer<typeof ComponentPipelineSourceMappingSchema>;
 

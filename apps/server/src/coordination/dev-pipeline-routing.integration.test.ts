@@ -85,12 +85,14 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
       componentObjectId: devComponent,
       type: "configuration",
       // READ from the winning mapping, not inferred from the branch name.
-      classification: "dev"
+      classification: "dev",
+      journeyKind: null
     });
     expect(await match(sourceKind, repo, "refs/heads/main")).toEqual({
       componentObjectId: prodComponent,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -132,7 +134,8 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
       expect(await match(sourceKind, repo, ref)).toEqual({
         componentObjectId: anyRef,
         type: "configuration",
-        classification: null
+        classification: null,
+        journeyKind: null
       });
     }
     expect(await match(sourceKind, repo)).not.toBeNull();
@@ -164,13 +167,15 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
     expect(await match(sourceKind, repo, "refs/heads/dev")).toEqual({
       componentObjectId: devComponent,
       type: "configuration",
-      classification: "dev"
+      classification: "dev",
+      journeyKind: null
     });
     // ...and a ref the specific mapping does not claim still falls through to the catch-all.
     expect(await match(sourceKind, repo, "refs/heads/main")).toEqual({
       componentObjectId: catchAll,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -199,7 +204,8 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
     expect(await match(sourceKind, repo, "refs/heads/dev")).toEqual({
       componentObjectId: devWide,
       type: "configuration",
-      classification: "dev"
+      classification: "dev",
+      journeyKind: null
     });
   });
 
@@ -264,7 +270,8 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
     expect(await match(sourceKind, repo, "refs/heads/main")).toEqual({
       componentObjectId: shared,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -325,7 +332,8 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
     expect(await match(sourceKind, repo, "refs/heads/main")).toEqual({
       componentObjectId: comp,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 });

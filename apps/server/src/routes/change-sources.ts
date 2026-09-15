@@ -13,6 +13,7 @@ import {
   ProblemSchema,
   SetSourceMappingEnabledRequestSchema,
   SetSourceMappingScopeRequestSchema,
+  SetSourceMappingJourneyKindRequestSchema,
   SourceMappingIdParamSchema,
   SourceMappingListResponseSchema,
   SourceMappingSchema,
@@ -35,7 +36,8 @@ import {
   getSourceMapping,
   listSourceMappingsForSource,
   setSourceMappingEnabled,
-  setSourceMappingScope
+  setSourceMappingScope,
+  setSourceMappingJourneyKind
 } from "../coordination/source-mappings-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { resolveWebhookSecret, verifierForSourceKind } from "../coordination/webhook-signature.js";
@@ -380,7 +382,8 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           classification: request.body.classification,
           mirrorOfShared: request.body.mirrorOfShared,
           enabled: request.body.enabled,
-          scope: request.body.scope
+          scope: request.body.scope,
+          journeyKind: request.body.journeyKind
         });
       });
       reply.status(201).send(mapping);
@@ -484,6 +487,59 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           request.params.sourceKind,
           request.params.id,
           request.body.scope
+        );
+      });
+      reply.status(200).send(mapping);
+    }
+  });
+
+  /** PATCH a source_mapping's declared JOURNEY KIND. See docs/routes.md §42a. */
+  typed.route({
+    method: "PATCH",
+    url: "/api/v1/change-sources/:sourceKind/mappings/:id/journey-kind",
+    schema: {
+      params: SourceMappingIdParamSchema,
+      body: SetSourceMappingJourneyKindRequestSchema,
+      response: {
+        200: SourceMappingSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "setSourceMappingJourneyKind",
+        summary:
+          "Set or clear a source_mapping's declared release path (source | config | null) — WHICH JOURNEY changes from this source take, a label read by the pipeline view, IaC and the CLI, and never a routing input (the routing Type is `type`)",
+        tags: ["change-sources"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const mapping = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // Same read-then-bar shape and reasons as the scope setter above. Its own route rather than a
+        // field on the general PATCH for the reason the column exists at all: re-declaring a journey
+        // must be possible WITHOUT touching `type`, because writing `type` re-routes the release
+        // (journey-view §8.14).
+        const existing = await getSourceMapping(
+          tx,
+          auth.orgId,
+          request.params.sourceKind,
+          request.params.id
+        );
+        await assertSourceMappingWritable(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          componentObjectId: existing.componentObjectId
+        });
+        return setSourceMappingJourneyKind(
+          tx,
+          auth.orgId,
+          request.params.sourceKind,
+          request.params.id,
+          request.body.journeyKind
         );
       });
       reply.status(200).send(mapping);

@@ -79,7 +79,8 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({
       componentObjectId: infraComponent,
       type: "infrastructure",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -103,7 +104,8 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({
       componentObjectId: infraComponent,
       type: "infrastructure",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -147,7 +149,8 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({
       componentObjectId: fallbackComponent,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -175,7 +178,8 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({
       componentObjectId: exactComponent,
       type: "infrastructure",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -202,7 +206,8 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({
       componentObjectId: singleStar,
       type: "infrastructure",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -237,7 +242,8 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({
       componentObjectId: narrow,
       type: "infrastructure",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -266,7 +272,8 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({
       componentObjectId: older,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 
@@ -297,7 +304,8 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({
       componentObjectId: bothPatterns,
       type: "configuration",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 });

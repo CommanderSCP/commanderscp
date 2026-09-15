@@ -17,7 +17,8 @@ import {
   type ManifestSourceMapping,
   type RolloutStrategy,
   type RolloutTargetClass,
-  type SourceMappingScope
+  type SourceMappingScope,
+  type JourneyKind
 } from "@scp/schemas";
 
 /** Omitting over a union distributes across its members. See docs/coordination-as-code.md §197. */
@@ -136,6 +137,15 @@ export interface SourceMappingSpec {
    * hand); explicit `null` declares it undeclared, a different value from omission.
    */
   readonly scope?: SourceMappingScope | null;
+  /**
+   * WHICH RELEASE PATH changes from this source take — `source` runs the whole
+   * source → build → scan/sign → registry → config → waves spine, `config` enters at the config node
+   * (journey-view §8.14). Deliberately NOT `type` above: `type` selects the executor that rolls the
+   * release, so describing a journey with it re-routes the release and blocks it.
+   * @default undefined — this program does not manage the journey kind (an apply never clears one set
+   * by hand); explicit `null` declares it undeclared, a different value from omission.
+   */
+  readonly journeyKind?: JourneyKind | null;
 }
 
 /** An `executor_bindings` declaration minus the target it binds. See docs/coordination-as-code.md §205. */
@@ -259,7 +269,10 @@ export class Stack extends Construct {
         ...(spec.refPattern !== undefined ? { refPattern: spec.refPattern } : {}),
         ...(spec.type !== undefined ? { type: spec.type } : {}),
         // Omitted stays OMITTED (not `null`): the two mean different things server-side (§10.6).
-        ...(spec.scope !== undefined ? { scope: spec.scope } : {})
+        ...(spec.scope !== undefined ? { scope: spec.scope } : {}),
+        // Same omitted-vs-null distinction, and the same reason (§8.14): omitted means this program
+        // does not manage the journey kind, so an apply leaves a hand-set declaration alone.
+        ...(spec.journeyKind !== undefined ? { journeyKind: spec.journeyKind } : {})
       }
     });
     return this;

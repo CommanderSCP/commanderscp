@@ -544,6 +544,11 @@ export const sourceMappings = pgTable(
     disabledUntil: timestamp("disabled_until", { withTimezone: true }),
     // The operator's declared reach for this mapping's repo. See docs/db.md §70.
     scope: text("scope"),
+    // WHICH RELEASE PATH a change from this source takes, migration 0112. A LABEL, deliberately NOT
+    // `type` above: `type` routes the release, so describing a journey with it re-routed the release
+    // and terminalised it `no_executor` (measured, journey-view §8.14). Never read by correlation,
+    // plan compilation, binding resolution or any gate. See docs/db.md §70a.
+    journeyKind: text("journey_kind"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]

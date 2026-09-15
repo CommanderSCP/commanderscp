@@ -198,7 +198,8 @@ describe("source mapping: declared scope (migration 0066, §10.6)", () => {
     expect(a).toEqual({
       componentObjectId: globalOwner.id,
       type: "infrastructure",
-      classification: null
+      classification: null,
+      journeyKind: null
     });
   });
 });
