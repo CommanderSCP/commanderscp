@@ -201,8 +201,13 @@ export function mapGitlabWebhookEventToHint(
         commitSha: (p.checkout_sha as string | undefined) ?? (p.after as string | undefined),
         // Surfaced under its own name for ref-scoped routing (ADR-0030 §1) — see
         // `GitProviderEventHint.ref` for why this is not parsed back out of `correlationKey`.
-        ref: typeof p.ref === "string" ? p.ref : undefined,
-        correlationKey: p.ref as string | undefined
+        ref: typeof p.ref === "string" ? p.ref : undefined
+        // NO `correlationKey`. A push's ref names the BRANCH, not the push — so using it as the
+        // grouping identity put every push to `main` in ONE group forever (measured: 34 unrelated
+        // homelab-gitops commits under one `coordinated-change`). It also pre-empted the server's own
+        // per-event key: `webhook-processor.ts` synthesises `change-source-event:<id>` for a fan-out
+        // ONLY when the hint carries none, so supplying one here made D2's grouping dead for every
+        // real git push. A single-Type push needs no group; a fan-out gets a real one. journey-view §8.16.
       };
     }
     case "Merge Request Hook": {
@@ -221,7 +226,9 @@ export function mapGitlabWebhookEventToHint(
       return {
         repo,
         commitSha: attrs?.sha,
-        correlationKey: attrs?.id !== undefined ? `pipeline-${attrs.id}` : attrs?.ref
+        // No id ⇒ NO key. The old `: attrs?.ref` fallback grouped every pipeline on a branch
+        // together — the same class-wide-key defect as the push mapping above.
+        correlationKey: attrs?.id !== undefined ? `pipeline-${attrs.id}` : undefined
       };
     }
     default:
@@ -389,8 +396,8 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
         occurredAt,
         correlation: normalizeCorrelation({
           repo,
-          commitSha: commit.id,
-          correlationKey: "refs/heads/*"
+          commitSha: commit.id
+          // NO `correlationKey` — see the push mapping above and journey-view §8.16.
         }),
         raw: commit
       });

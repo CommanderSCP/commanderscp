@@ -96,7 +96,8 @@ describe("mapGitlabWebhookEventToHint", () => {
     ).toEqual({
       repo: "acme/widgets",
       commitSha: "1".repeat(40),
-      correlationKey: "refs/heads/main",
+      // NO `correlationKey`: the ref is the ROUTING input, not the event identity. `toEqual` makes
+      // the absence a contract — reusing the ref grouped every push to a branch together (§8.16).
       ref: "refs/heads/main"
     });
   });
@@ -112,7 +113,7 @@ describe("mapGitlabWebhookEventToHint", () => {
     ).toEqual({
       repo: "acme/widgets",
       commitSha: "2".repeat(40),
-      correlationKey: "refs/tags/v2.0.0",
+      // Same for a TAG push: `refs/tags/v2.0.0` names the tag, and a tag can be re-pushed.
       ref: "refs/tags/v2.0.0"
     });
   });
@@ -428,7 +429,9 @@ describe("observe() polling — commits and pipelines", () => {
       path: undefined,
       commitSha,
       artifactDigest: undefined,
-      correlationKey: "refs/heads/*"
+      // NO grouping key on a polled push (§8.16). The pipeline assertion below still expects a real
+      // per-event key, which is the contrast that makes this absence deliberate.
+      correlationKey: undefined
     });
     const run = events.find((e) => e.kind === "workflow_run");
     expect(run?.correlation.commitSha).toBe(pipelineSha);

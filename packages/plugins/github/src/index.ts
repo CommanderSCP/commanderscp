@@ -278,11 +278,16 @@ export function mapGithubWebhookEventToHint(
       return {
         repo,
         commitSha: headCommit?.id ?? (p.after as string | undefined),
-        // The same `p.ref` the correlation key already carried, now ALSO surfaced under its own
-        // name (ADR-0030 §1) — the key is a grouping identity, `ref` is the routing input, and a
-        // ref-scoped mapping must read the latter.
+        // `p.ref` under its own name (ADR-0030 §1) — the key is a grouping identity, `ref` is the
+        // routing input, and a ref-scoped mapping must read the latter. That sentence was already here
+        // and the code still used the ref as the identity; it no longer does.
         ref: typeof p.ref === "string" ? p.ref : undefined,
-        correlationKey: p.ref as string | undefined,
+        // NO `correlationKey`. A push's ref names the BRANCH, not the push — so using it as the
+        // grouping identity put every push to `main` in ONE group forever (measured: 34 unrelated
+        // homelab-gitops commits under one `coordinated-change`). It also pre-empted the server's own
+        // per-event key: `webhook-processor.ts` synthesises `change-source-event:<id>` for a fan-out
+        // ONLY when the hint carries none, so supplying one here made D2's grouping dead for every
+        // real git push. A single-Type push needs no group; a fan-out gets a real one. journey-view §8.16.
         ...(paths.length > 0 ? { paths } : {})
       };
     }
@@ -309,8 +314,16 @@ export function mapGithubWebhookEventToHint(
       };
     }
     case "deployment": {
-      const deployment = p.deployment as { sha?: string; environment?: string } | undefined;
-      return { repo, commitSha: deployment?.sha, correlationKey: deployment?.environment };
+      const deployment = p.deployment as
+        { id?: number; sha?: string; environment?: string } | undefined;
+      // The DEPLOYMENT, not its environment. `environment` names a place every deployment to prod
+      // shares, so it grouped unrelated deployments exactly the way the push ref did; the id is the
+      // event. No id ⇒ no key, and the sha still discriminates the dedupe identity.
+      return {
+        repo,
+        commitSha: deployment?.sha,
+        correlationKey: deployment?.id !== undefined ? `deployment-${deployment.id}` : undefined
+      };
     }
     case "release": {
       const release = p.release as { tag_name?: string; target_commitish?: string } | undefined;
@@ -378,7 +391,10 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
       correlation: normalizeCorrelation({
         repo: `${config.owner}/${config.repo}`,
         commitSha: commit.sha,
-        correlationKey: "refs/heads/*",
+        // NO `correlationKey` — see the push mapping above. The commits LIST response carries no ref
+        // per commit, which is why a constant was used; a constant is not an identity. The sha already
+        // discriminates the dedupe key (`observedEventIdentity`), and dropping the constant is what
+        // stops the GROUPING layer lumping every polled commit on a repo together.
         ...(paths && paths.length > 0 ? { paths } : {})
       }),
       raw: commit

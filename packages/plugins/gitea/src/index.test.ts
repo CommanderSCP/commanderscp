@@ -96,7 +96,8 @@ describe("mapGiteaWebhookEventToHint", () => {
     ).toEqual({
       repo: "acme/widgets",
       commitSha: "1".repeat(40),
-      correlationKey: "refs/heads/main",
+      // NO `correlationKey`: the ref is the ROUTING input, not the event identity. `toEqual` makes
+      // the absence a contract — reusing the ref grouped every push to a branch together (§8.16).
       ref: "refs/heads/main"
     });
   });
@@ -635,7 +636,10 @@ describe("observe() polling — commits, runs, and package pushes", () => {
       path: undefined,
       commitSha,
       artifactDigest: undefined,
-      correlationKey: "refs/heads/*"
+      // The polled push carries NO grouping key — the commits LIST has no ref per commit, and the
+      // constant that stood in for one grouped every commit on the repo forever (§8.16). The
+      // workflow-run assertion below still expects a real per-event key, which is the contrast.
+      correlationKey: undefined
     });
     const run = events.find((e) => e.kind === "workflow_run");
     expect(run?.correlation.commitSha).toBe(runSha);

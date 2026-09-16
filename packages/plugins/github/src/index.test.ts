@@ -100,19 +100,24 @@ describe("verifyGithubWebhookSignature", () => {
 });
 
 describe("mapGithubWebhookEventToHint", () => {
-  it("maps a push event to repo/commitSha (from head_commit.id)/correlationKey (ref)", () => {
+  it("maps a push event to repo/commitSha (from head_commit.id)/ref — and NO correlationKey, because a ref names the branch and not the push (§8.16)", () => {
     const hint = mapGithubWebhookEventToHint("push", {
       ref: "refs/heads/main",
       after: "0".repeat(40),
       head_commit: { id: "1".repeat(40) },
       repository: { full_name: "acme/widgets" }
     });
+    // `ref` is surfaced (it is the ROUTING input for a ref-scoped mapping) and is deliberately NOT
+    // reused as the grouping identity: every push to `main` would otherwise share one key, which put
+    // 34 unrelated commits in one `coordinated-change` group on the homelab and made the server's
+    // per-event fan-out key dead code. `toEqual` (not `toMatchObject`) is what makes the ABSENCE a
+    // contract rather than an omission.
     expect(hint).toEqual({
       repo: "acme/widgets",
       commitSha: "1".repeat(40),
-      correlationKey: "refs/heads/main",
       ref: "refs/heads/main"
     });
+    expect(hint).not.toHaveProperty("correlationKey");
   });
 
   it("push falls back to payload.after when head_commit is absent (e.g. a branch-delete push)", () => {
@@ -148,15 +153,28 @@ describe("mapGithubWebhookEventToHint", () => {
     });
   });
 
-  it("maps a deployment event to repo/commitSha (sha)/correlationKey (environment)", () => {
+  it("maps a deployment event to repo/commitSha (sha)/correlationKey (the deployment ID, never its environment — §8.16)", () => {
     const hint = mapGithubWebhookEventToHint("deployment", {
-      deployment: { sha: "4".repeat(40), environment: "production" },
+      deployment: { id: 4242, sha: "4".repeat(40), environment: "production" },
       repository: { full_name: "acme/widgets" }
     });
     expect(hint).toEqual({
       repo: "acme/widgets",
       commitSha: "4".repeat(40),
-      correlationKey: "production"
+      correlationKey: "deployment-4242"
+    });
+
+    // An environment names a PLACE that every deployment to prod shares — the same class-wide-key
+    // defect as the push ref. With no id there is no event identity, so the key is absent rather
+    // than falling back to something that groups unrelated deployments together.
+    const noId = mapGithubWebhookEventToHint("deployment", {
+      deployment: { sha: "4".repeat(40), environment: "production" },
+      repository: { full_name: "acme/widgets" }
+    });
+    expect(noId).toEqual({
+      repo: "acme/widgets",
+      commitSha: "4".repeat(40),
+      correlationKey: undefined
     });
   });
 
@@ -726,11 +744,14 @@ describe("observe() polling fallback", () => {
     const pushEvent = events.find((e) => e.kind === "push");
     expect(pushEvent).toBeDefined();
     expect(pushEvent?.occurredAt).toBe("2026-07-01T00:00:00Z");
+    // The polled push carries NO grouping key. The commits LIST response has no ref per commit, and
+    // the constant that used to stand in for one grouped every commit on the repo forever (§8.16).
+    // The workflow-run event below still carries a real per-event key, which is the contrast.
     expect(pushEvent?.correlation).toEqual({
       repo: `${config.owner}/${config.repo}`,
       path: undefined,
       commitSha,
-      correlationKey: "refs/heads/*"
+      correlationKey: undefined
     });
 
     const runEvent = events.find((e) => e.kind === "workflow_run");

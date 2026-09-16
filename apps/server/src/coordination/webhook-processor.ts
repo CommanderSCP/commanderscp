@@ -400,9 +400,18 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     const baseName = `${row.sourceKind}${hint.repo ? `: ${hint.repo}` : ""}`;
     const fansOut = matches.length > 1;
     // The two releases from ONE push must be findable as one event. A git push carries no
-    // `correlationKey` — no webhook adapter sets one, only an explicit `scp change-source report`
-    // does — so a fan-out with none synthesises one from the event row. Synthesised ONLY when
-    // fanning out, so a single-Type event still stores exactly the key it stored before.
+    // `correlationKey` — a fan-out with none synthesises one from the event row. Synthesised ONLY
+    // when fanning out, so a single-Type event still stores exactly the key it stored before.
+    //
+    // THIS COMMENT USED TO CLAIM "no webhook adapter sets one" AND IT WAS FALSE WHEN WRITTEN: the
+    // github, gitea and gitlab adapters all set `correlationKey: p.ref` on a push, so `hint`
+    // ALWAYS carried a key for a real git push and the synthesised per-event key below was dead
+    // code on every estate that receives pushes — which is every estate. Worse, the ref is a BRANCH
+    // name, so all of a branch's pushes landed in one `coordinated-change` group (measured: 34
+    // unrelated commits under `Coordinated: refs/heads/*`). The adapters no longer set it
+    // (journey-view §8.16); a push that needs a group is a fan-out, and a fan-out gets one here.
+    // Anything a first-party `scp change-source report` supplies still wins, which is the one caller
+    // that genuinely knows its own event identity.
     const correlationKey =
       hint.correlationKey ?? (fansOut ? `change-source-event:${row.id}` : undefined);
     // `sourceRef` is the raw delivery payload kept verbatim (DESIGN §8) plus canonical keys lifted
