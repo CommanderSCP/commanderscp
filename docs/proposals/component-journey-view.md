@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13). **§8.14 STOPPED step 3** — measured through the real reconcile loop, option A does *not* avoid the `no_executor` block, because the block is on the image arm itself, and `source_mappings.type` turns out to be one column doing two jobs. **§8.15 resolves it (owner, option ii, built): the journey is its own field, `source_mappings.journey_kind` (migration 0112)**, so a service repo stays typed `configuration` — which is what routes it — and declares its journey separately. §8.2's rendering defect is fixed with it. What remains of step 3 is a LABELLING pass over the estate, which changes no routing. **Proposed, pending review.**
+**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13). **§8.14 STOPPED step 3** — measured through the real reconcile loop, option A does *not* avoid the `no_executor` block, because the block is on the image arm itself, and `source_mappings.type` turns out to be one column doing two jobs. **§8.15 resolves it (owner, option ii, built): the journey is its own field, `source_mappings.journey_kind` (migration 0112)**, so a service repo stays typed `configuration` — which is what routes it — and declares its journey separately. §8.2's rendering defect is fixed with it. What remains of step 3 is a LABELLING pass over the estate, which changes no routing. **§8.16 corrects two claims §8.10/§8.13 made**: a push's correlation key named the BRANCH, so every push to `main` shared one coordinated-change group (34 unrelated commits in one, measured live) and D2's fan-out synthesis was dead code in production while its tests passed on a different code path. **Proposed, pending review.**
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -543,10 +543,13 @@ existing correlation suites assert unchanged behaviour through it.
 
 **Three mechanics a fan-out forces, none of which were in D2:**
 
-- **A git push carries no `correlationKey`.** No webhook adapter sets one; only an explicit
-  `scp change-source report` does. So `linkToCoordinatedChange` had nothing to group the arms by, and
-  a fan-out now synthesises `change-source-event:<id>`. Synthesised **only** when fanning out, so a
-  single-Type event stores exactly the key it stored before.
+- **A git push carries no `correlationKey`.** ~~No webhook adapter sets one; only an explicit
+  `scp change-source report` does.~~ **FALSE WHEN WRITTEN — corrected in §8.16.** The github, gitea and
+  gitlab adapters *all* set `correlationKey: p.ref` on a push, so the hint always carried a key and the
+  synthesis below was **dead code on every estate that receives pushes**. The claim was copied from a
+  comment in `webhook-processor.ts` that was itself wrong. It is true *now*, because §8.16 removed those
+  assignments. A fan-out synthesises `change-source-event:<id>`, only when fanning out, so a single-Type
+  event stores exactly the key it stored before.
 - **`objects` is UNIQUE on (org_id, urn)** and both arms share one event id, so the Type
   disambiguates the change name and URN. A single-Type event keeps its exact pre-D2 name and URN.
 - **`resulting_change_object_id` is one column with two candidates.** It holds the highest-ranked
@@ -646,10 +649,15 @@ another discriminator — **the owner chose A.**
   Path-A gitops bump and a Path-B chart edit. Already established in §8.11; restated here because it
   is the rule §8.8 step 2 was originally written against.
 - *Treating a null key as a match.* `webhook-processor.ts` synthesises a correlation key **only on a
-  fan-out** (§8.10), so a single-Type push leaves the column NULL — which is nearly every change on
-  the estate today. Correlating null-with-null would therefore report *every* Path-B bump as
-  `produced`: the original §8.2 defect, reintroduced one field over. A null key is the server stating
-  this release names no event, which positively rules out a shared one.
+  fan-out** (§8.10), so a single-Type push leaves the column NULL. Correlating null-with-null would
+  therefore report *every* Path-B bump as `produced`: the original §8.2 defect, reintroduced one field
+  over. A null key is the server stating this release names no event, which positively rules out a
+  shared one.
+
+  The parenthetical *"which is nearly every change on the estate today"* was **wrong when written, and
+  in the more dangerous direction** — measured 2026-09-15, **120 of 120** live changes carried a
+  non-null key, 34 of them the same one. §8.16 has the diagnosis and the fix; the rule itself is
+  unchanged and is now true of the data it describes.
 
 ### 8.13 Step 2, as built (2026-09-14)
 
@@ -821,3 +829,67 @@ optional response properties only — the oasdiff gate is untouched.
 rather than a retyping one, and therefore safe: it changes no routing. 148 mappings, 49 service repos to
 declare `source` and 98 gitops repos `config`, plus D3's `ref_pattern` half. That is an estate action and
 the owner's call.
+
+### 8.16 A push's correlation key named the BRANCH, so D2 was dead in production (2026-09-15)
+
+Found by deploying nothing — by asking why the §8.13 UI showed nothing on the homelab, and measuring the
+live database instead of trusting the doc. It disproves two claims §8.10/§8.12 made, and it is the reason
+this section exists rather than a footnote.
+
+**The measurement.** On the live commander: **120 of 120** changes carry a non-null `correlation_key` —
+81 distinct, and **one key held 34 of them**, `Coordinated: refs/heads/*` with 34 `correlates` edges.
+§8.13 asserted the opposite ("nearly every change … NULL"), which is what made the error worth chasing.
+
+**The cause, and the part that matters.** `packages/plugins/{github,gitea,gitlab}` all set
+`correlationKey: p.ref` on a webhook push, and a hardcoded `correlationKey: "refs/heads/*"` on the
+`observe()` poll path (the commits LIST response carries no per-commit ref, so a constant stood in for
+one). A ref names a **branch**; a branch is not an event. Two consequences, the second worse than the
+first:
+
+1. **Every push to a branch landed in one `coordinated-change` group**, forever. That group is what
+   §8.13's rule reads: "same non-null key ⇒ same push ⇒ `produced`". Across 34 unrelated releases that
+   is a false `produced` — the very failure the null-vs-null rule was written to avoid, arriving through
+   a different door. Latent on this estate only because **zero changes carry an OCI digest**, so the
+   artifact tile renders nothing at all.
+2. **D2's fan-out synthesis was unreachable.** `hint.correlationKey ?? (fansOut ? synthesised :
+   undefined)` prefers the hint, and the hint always had the ref — so `change-source-event:<id>` never
+   fired for a real git push. The both-arms grouping that §8.10 built, and that §8.13 called
+   "load-bearing", has never run outside its own tests.
+
+**Why the tests were green.** The D2 integration tests drive sourceKind `terraform`, which has **no entry
+in the webhook adapter registry**, so the flat generic hint applied and carried no key — leaving the
+synthesis free to fire. Production sends `github`, which resolves the real adapter. The tests and
+production took different paths through the same function, and the tests took the one that works. The new
+tests all drive sourceKind `github` with a real push payload **and the `x-github-event` header**, because
+without that header `mapEvent` returns null and the delivery silently falls back to the generic shape —
+accepted, settled, and matching nothing. That fallback is invisible in a green run.
+
+**The hazard was already named, and handled one layer too shallow.**
+`observed-event-identity.test.ts` documents that the same constant once collapsed *dedupe* — "the homelab
+ingested 4 push events across its entire history" — fixed by adding `commitSha` as the discriminator. The
+constant itself was left in place, so the **grouping** consequence survived the fix. A comment naming a
+hazard is a signal to sweep, not evidence it was handled.
+
+**The census found more than the symptom.** The property is *"a correlation key that names a class of
+events rather than one event"*, not *"the literal `refs/heads/*`"*. Over all 23 assignments in every
+plugin, with no filters: **8 instances** — 3 poll-path constants, 3 webhook push refs (the symptom search
+would have missed these, and they are the ones production hits), GitLab's `: attrs?.ref` pipeline
+fallback, and GitHub's `deployment` → `environment` (every deployment to prod, one key). Left alone
+deliberately: `pr-`/`mr-`/`run-`/`pipeline-`/package/release/harbor keys, which name one event;
+argo-workflows' workflow **instance** name, which is per-run; and ArgoCD's app name, which is the
+subject an app's sync events legitimately share and which produced no groups on the estate.
+
+**The fix.** A push emits **no** `correlationKey` — `ref` stays, under its own name, as the routing input
+it always was (ADR-0030 §1). A single-Type push is one release and needs no group; a fan-out gets a real
+per-event key from the server. Dedupe is unaffected: `observedEventIdentity` already discriminates on the
+sha, and watermarks are keyed on `ev.kind`, so no event is re-ingested.
+
+**Verified.** 4 integration tests through the real adapter — two pushes to one branch stay two events
+with NULL keys and no group; a both-arms push produces one synthesised key and one 2-member group (D2,
+alive for the first time); two both-arms pushes get separate groups; and a ref-scoped mapping still
+routes, asserted in both directions. Restoring the original one-line defect kills **all four**. Plus the
+three plugin suites, whose push/poll assertions now pin the *absence* with `toEqual`.
+
+**Not done here.** The existing 120 rows keep their historical keys, and the 34-member group still exists
+on the homelab. Nothing renders from it today (no digests), but it is a latent wrong answer if artifacts
+ever appear. Repairing it is an estate data mutation and the owner's call.

@@ -190,8 +190,13 @@ export function mapGiteaWebhookEventToHint(
         commitSha: headCommit?.id ?? (p.after as string | undefined),
         // Surfaced under its own name for ref-scoped routing (ADR-0030 §1) — see
         // `GitProviderEventHint.ref` for why this is not parsed back out of `correlationKey`.
-        ref: typeof p.ref === "string" ? p.ref : undefined,
-        correlationKey: p.ref as string | undefined
+        ref: typeof p.ref === "string" ? p.ref : undefined
+        // NO `correlationKey`. A push's ref names the BRANCH, not the push — so using it as the
+        // grouping identity put every push to `main` in ONE group forever (measured: 34 unrelated
+        // homelab-gitops commits under one `coordinated-change`). It also pre-empted the server's own
+        // per-event key: `webhook-processor.ts` synthesises `change-source-event:<id>` for a fan-out
+        // ONLY when the hint carries none, so supplying one here made D2's grouping dead for every
+        // real git push. A single-Type push needs no group; a fan-out gets a real one. journey-view §8.16.
       };
     }
     case "pull_request": {
@@ -271,8 +276,10 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
         occurredAt,
         correlation: normalizeCorrelation({
           repo: `${config.owner}/${config.repo}`,
-          commitSha: commit.sha,
-          correlationKey: "refs/heads/*"
+          commitSha: commit.sha
+          // NO `correlationKey` — see the push mapping above and journey-view §8.16. The commits LIST
+          // carries no ref per commit; a constant is not an identity, and the sha already
+          // discriminates the dedupe key.
         }),
         raw: commit
       });
