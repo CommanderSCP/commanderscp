@@ -1,0 +1,136 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Container · Dock · Warehouse</title>
+<style>
+:root{--slate-50:#f8fafc;--slate-100:#f1f5f9;--slate-200:#e2e8f0;--slate-300:#cbd5e1;--slate-400:#94a3b8;--slate-500:#64748b;--slate-600:#475569;--slate-700:#334155;--slate-900:#0f172a;
+--emerald-50:#ecfdf5;--emerald-200:#a7f3d0;--emerald-600:#059669;--emerald-700:#047857;
+--army-50:#f7f8ef;--army-200:#d6ddb8;--army-600:#687435;--army-700:#515a2b;--army-900:#383e20;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--slate-50);color:var(--slate-900);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.page{max-width:700px;margin:0 auto;padding:32px 24px 72px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--slate-500);font-size:13px;margin:0 0 24px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--slate-500);margin:28px 0 10px}
+svg.i{width:1em;height:1em;flex:none;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.big{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:18px;margin-bottom:12px}
+.big-h{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.hero{color:var(--army-700);font-size:76px;display:flex;line-height:1}
+.ramp{display:flex;align-items:flex-end;gap:14px;color:var(--army-700)}
+.ramp span{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:9.5px;color:var(--slate-400)}
+.nm{font-size:15px;font-weight:700;margin-bottom:2px}
+.d{font-size:12.5px;color:var(--slate-600);margin-top:12px}
+.d b{color:var(--slate-900)}
+.pro{color:var(--emerald-700)} .con{color:#b45309}
+.fam{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:16px;display:flex;gap:24px;align-items:center;flex-wrap:wrap;justify-content:center}
+.fam div{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:10.5px;color:var(--slate-500)}
+.fam svg{font-size:30px;color:var(--army-700)}
+.tiles{display:grid;grid-template-columns:1fr;gap:9px}
+.tile{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:12px 14px}
+.t-head{display:flex;align-items:center;gap:10px}
+.t-mark{color:var(--army-700);font-size:22px;display:flex}
+.t-repo{font-size:13px;font-weight:600}
+.t-kind{font-size:10.5px;color:var(--slate-500);text-transform:uppercase;letter-spacing:.05em}
+.t-lab{margin-left:auto;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-400)}
+.globs{margin-top:9px;display:grid;grid-template-columns:44px 1fr;gap:3px 9px;align-items:center}
+.gk{font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--slate-400);text-align:right}
+.gv{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--slate-700)}
+.gv.any{font-family:inherit;font-style:italic;color:var(--slate-500)}
+.flag{border-left:3px solid var(--army-600);background:#fff;padding:12px 16px;margin-top:18px;border-radius:0 8px 8px 0;
+ border-top:1px solid var(--slate-200);border-right:1px solid var(--slate-200);border-bottom:1px solid var(--slate-200);font-size:13px}
+</style></head><body>
+<svg style="display:none">
+<symbol id="barrel" viewBox="0 0 24 24"><path d="M10 3a41 41 0 000 18"/><path d="M14 3a41 41 0 010 18"/><path d="M16.997 21a2 2 0 001.68-.92 15.25 15.25 0 000-16.16 2 2 0 00-1.68-.92h-10a2 2 0 00-1.681.92 15.25 15.25 0 000 16.16 2 2 0 001.681.92z"/><path d="M3.54 16h16.914"/><path d="M3.54 8h16.914"/></symbol>
+<symbol id="dock" viewBox="0 0 24 24"><path d="M2 8h20"/><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 16h12"/></symbol>
+<symbol id="container" viewBox="0 0 24 24"><path d="M22 7.7c0-.6-.4-1.2-.8-1.5l-6.3-3.9a1.72 1.72 0 0 0-1.7 0l-10.3 6c-.5.2-.9.8-.9 1.4v6.6c0 .5.4 1.2.8 1.5l6.3 3.9a1.72 1.72 0 0 0 1.7 0l10.3-6c.5-.3.9-1 .9-1.5Z"/><path d="M10 21.9V14L2.1 9.1"/><path d="m10 14 11.9-6.9"/><path d="M14 19.8v-8.1"/><path d="M18 17.5V9.4"/></symbol>
+<symbol id="warehouse" viewBox="0 0 24 24"><path d="M18 21V10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v11"/><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 1.132-1.803l7.95-3.974a2 2 0 0 1 1.837 0l7.948 3.974A2 2 0 0 1 22 8z"/><path d="M6 13h12"/><path d="M6 17h12"/></symbol>
+<symbol id="crate" viewBox="0 0 24 24"><rect x="4.5" y="6" width="15" height="13" rx="1"/><path d="M4.5 6.5 19.5 18.5"/><path d="M19.5 6.5 4.5 18.5"/></symbol>
+<symbol id="stack" viewBox="0 0 24 24"><rect x="4" y="13" width="16" height="8" rx="1"/><rect x="7.5" y="4" width="9" height="7" rx="1"/><path d="M12 13v8"/></symbol>
+<symbol id="guidon" viewBox="0 0 24 24"><path d="M6 22V3.5"/><path d="M4 22h4"/><path d="M6 4.5h12l-4 3.75 4 3.75H6Z"/></symbol>
+<symbol id="reticle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 1.5v3.5"/><path d="M12 19v3.5"/><path d="M1.5 12h3.5"/><path d="M19 12h3.5"/></symbol>
+</svg>
+<div class="page">
+<h1>Container · Dock · Warehouse</h1>
+<p class="sub">All three ship in lucide. Shown large, then on a size ramp down to 14px, then against your family.</p>
+
+<div class="big">
+  <div class="big-h">
+    <span class="hero"><svg class="i"><use href="#container"/></svg></span>
+    <span>
+      <div class="nm">Container</div>
+      <div class="ramp">
+        <span><svg class="i" style="font-size:32px"><use href="#container"/></svg>32</span>
+        <span><svg class="i" style="font-size:24px"><use href="#container"/></svg>24</span>
+        <span><svg class="i" style="font-size:18px"><use href="#container"/></svg>18</span>
+        <span><svg class="i" style="font-size:14px"><use href="#container"/></svg>14</span>
+      </div>
+    </span>
+  </div>
+  <div class="d"><b>A shipping container, drawn isometric.</b>
+    <span class="pro">Strongest logistics read of the three, and the ribs give it a silhouette nothing else in your set has.</span>
+    <span class="con">But it is the only isometric mark you would own — guidon, stack, crate and reticle are all flat elevation. At 14px the interior ribs collapse into noise.</span></div>
+</div>
+
+<div class="big">
+  <div class="big-h">
+    <span class="hero"><svg class="i"><use href="#dock"/></svg></span>
+    <span>
+      <div class="nm">Dock</div>
+      <div class="ramp">
+        <span><svg class="i" style="font-size:32px"><use href="#dock"/></svg>32</span>
+        <span><svg class="i" style="font-size:24px"><use href="#dock"/></svg>24</span>
+        <span><svg class="i" style="font-size:18px"><use href="#dock"/></svg>18</span>
+        <span><svg class="i" style="font-size:14px"><use href="#dock"/></svg>14</span>
+      </div>
+    </span>
+  </div>
+  <div class="d"><b>A loading dock — a bay with a header band and a sill.</b>
+    <span class="pro">Three strokes, flat, survives 14px intact, and it is semantically exact: the dock is where materiel leaves from. Matches your family's construction.</span>
+    <span class="con">Least distinctive silhouette — a banded rectangle. Beside the crate it can read as another box.</span></div>
+</div>
+
+<div class="big">
+  <div class="big-h">
+    <span class="hero"><svg class="i"><use href="#warehouse"/></svg></span>
+    <span>
+      <div class="nm">Warehouse</div>
+      <div class="ramp">
+        <span><svg class="i" style="font-size:32px"><use href="#warehouse"/></svg>32</span>
+        <span><svg class="i" style="font-size:24px"><use href="#warehouse"/></svg>24</span>
+        <span><svg class="i" style="font-size:18px"><use href="#warehouse"/></svg>18</span>
+        <span><svg class="i" style="font-size:14px"><use href="#warehouse"/></svg>14</span>
+      </div>
+    </span>
+  </div>
+  <div class="d"><b>A depot shed: shallow pitched shell, roller door, two shelf lines.</b>
+    <span class="pro">The unambiguous "depot" of the three — nobody mistakes it for anything else, and its roof is far shallower than the house I drew.</span>
+    <span class="con">It is still a building. If the house shape was the objection, this is the same objection with better proportions.</span></div>
+</div>
+
+<h2>Against your family</h2>
+<div class="fam">
+  <div><svg class="i"><use href="#guidon"/></svg>Guidon</div>
+  <div><svg class="i"><use href="#stack"/></svg>Stack</div>
+  <div><svg class="i"><use href="#crate"/></svg>Crate</div>
+  <div><svg class="i"><use href="#reticle"/></svg>Reticle</div>
+  <div><svg class="i" style="color:var(--emerald-600)"><use href="#container"/></svg>Container</div>
+  <div><svg class="i" style="color:var(--emerald-600)"><use href="#dock"/></svg>Dock</div>
+  <div><svg class="i" style="color:var(--emerald-600)"><use href="#warehouse"/></svg>Warehouse</div>
+</div>
+
+<h2>Each in the tile</h2>
+<div class="tiles">
+  <div class="tile"><div class="t-head"><span class="t-mark"><svg class="i"><use href="#container"/></svg></span>
+    <span><span class="t-repo">jag8765-personal/homelab-gitops</span><br><span class="t-kind">github</span></span><span class="t-lab">container</span></div>
+    <div class="globs"><span class="gk">repo</span><span class="gv">jag8765-personal/homelab-gitops</span>
+    <span class="gk">path</span><span class="gv">commanderscp/**</span><span class="gk">ref</span><span class="gv any">any ref</span></div></div>
+
+  <div class="tile"><div class="t-head"><span class="t-mark"><svg class="i"><use href="#dock"/></svg></span>
+    <span><span class="t-repo">jag8765-personal/homelab-gitops</span><br><span class="t-kind">github</span></span><span class="t-lab">dock</span></div>
+    <div class="globs"><span class="gk">repo</span><span class="gv">jag8765-personal/homelab-gitops</span>
+    <span class="gk">path</span><span class="gv">commanderscp/**</span><span class="gk">ref</span><span class="gv any">any ref</span></div></div>
+
+  <div class="tile"><div class="t-head"><span class="t-mark"><svg class="i"><use href="#warehouse"/></svg></span>
+    <span><span class="t-repo">jag8765-personal/homelab-gitops</span><br><span class="t-kind">github</span></span><span class="t-lab">warehouse</span></div>
+    <div class="globs"><span class="gk">repo</span><span class="gv">jag8765-personal/homelab-gitops</span>
+    <span class="gk">path</span><span class="gv">commanderscp/**</span><span class="gk">ref</span><span class="gv any">any ref</span></div></div>
+</div>
+
+<div class="flag"><b>Also in lucide, if none of these land:</b> <code>Anchor</code>, <code>Ship</code>, <code>Caravan</code>, <code>ShipWheel</code> — that is the complete shipping/depot vocabulary in 1.31.0. There is no "Depot", "Silo", "Bunker" or "Pallet".</div>
+</div></body></html>
