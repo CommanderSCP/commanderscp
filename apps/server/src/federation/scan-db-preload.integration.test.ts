@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { DECLARED_COMMANDER } from "../test-support/federation-roles.js";
 import { promisify } from "node:util";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile, appendFile } from "node:fs/promises";
@@ -189,6 +190,7 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
 
   async function exportClean(changeId: string) {
     return exportPromotionBundle(domain.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domain.orgId,
       peerIdOrName: "peer-outpost",
       changeIdOrUrn: changeId

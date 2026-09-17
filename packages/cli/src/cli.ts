@@ -391,7 +391,7 @@ export function printFederationStatus(
     console.log(
       status.self.cosignPublicKey
         ? `Cosign verification key: present (copy from \`scp federation self\` / --output json)`
-        : "Cosign verification key: not yet provisioned"
+        : "Cosign verification key: none (held only by a deployment declared commander or retrans)"
     );
   }
   if (peers.length === 0) {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { DECLARED_COMMANDER, requireCosignPublicKey } from "../test-support/federation-roles.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
@@ -9,7 +10,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { roleBindings, roles } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
-import { ensureInstanceCosignKey, getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
+import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { ensureFederationSelf, type FederationSelf } from "../federation/self-repo.js";
 import { pairPeer } from "../federation/peers-repo.js";
@@ -70,7 +71,11 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
   ): Promise<void> {
     const key = await withTenantTx(to.db, to.orgId, (tx) => ensureInstanceKey(tx, to.orgId));
     const self = await withTenantTx(to.db, to.orgId, (tx) => ensureFederationSelf(tx, to.orgId));
-    const { publicKey: cosignPublicKey } = await getInstanceCosignPublicKey(to.db, to.orgId);
+    const { publicKey: cosignPublicKey } = await requireCosignPublicKey(
+      to.db,
+      to.orgId,
+      DECLARED_COMMANDER
+    );
     await withTenantTx(from.db, from.orgId, (tx) =>
       pairPeer(tx, {
         orgId: from.orgId,
@@ -97,8 +102,9 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     await pair(commander, outpost, "outpost");
     await pair(outpost, commander, "commander");
     await pair(commander, outpostB, "outpost");
-    commanderCosignPrivateKey = (await ensureInstanceCosignKey(commander.db, commander.orgId))
-      .privateKey;
+    commanderCosignPrivateKey = (
+      await ensureInstanceCosignKey(commander.db, commander.orgId, DECLARED_COMMANDER)
+    ).privateKey;
   }, 180_000);
 
   afterAll(async () => {
@@ -235,6 +241,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
   /** {@link approvedBlobChange} + the export of it to `peer` as a promotion bundle. */
   async function exportTo(peer: IsolatedDomain, changeId: string): Promise<PromotionBundle> {
     const outcome = await exportPromotionBundle(commander.db, {
+      federation: DECLARED_COMMANDER,
       orgId: commander.orgId,
       peerIdOrName: peer.orgName,
       changeIdOrUrn: changeId
@@ -487,7 +494,11 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     );
 
     // The signature is REAL and verifies against the instance key whose fingerprint the record names.
-    const cosignPub = await getInstanceCosignPublicKey(commander.db, commander.orgId);
+    const cosignPub = await requireCosignPublicKey(
+      commander.db,
+      commander.orgId,
+      DECLARED_COMMANDER
+    );
     for (const rec of stamped.entries) {
       expect(rec.keyFingerprint).toBe(cosignPub.fingerprint);
       expect(

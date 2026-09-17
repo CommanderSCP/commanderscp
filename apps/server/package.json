@@ -6,7 +6,7 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -b",
-    "dev": "SCP_DEPLOYMENT_MODE=evaluation tsx watch src/main.ts",
+    "dev": "SCP_DEPLOYMENT_MODE=evaluation SCP_FEDERATION_ROLE=commander tsx watch src/main.ts",
     "start": "node dist/main.js",
     "migrate": "node dist/migrate-bin.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",

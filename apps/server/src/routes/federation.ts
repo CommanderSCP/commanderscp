@@ -74,6 +74,7 @@ import type { S3DeliveryCredentials } from "../federation/delivery-s3.js";
 import { getSecretValue } from "../secrets/secrets-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
+import { commanderOnlyFederationVerdict } from "../dependencies/commander-only.js";
 import { getFederationStatus } from "../federation/status-repo.js";
 import {
   exportSyncBundle,
@@ -87,7 +88,11 @@ import {
   signResyncRequest
 } from "../federation/resync-repo.js";
 import { dialResync, resolveFederationClientMtls } from "../federation/federation-outbound.js";
-import { exportPromotionBundle, importPromotionBundle } from "../federation/promotion-repo.js";
+import {
+  exportPromotionBundle,
+  importPromotionBundle,
+  PROMOTION_SIGNING_RATIONALE
+} from "../federation/promotion-repo.js";
 import { createOverlay, getMergedOverlayView } from "../federation/overlay-repo.js";
 // The overlay doors' SECOND bar is scoped at the base graph object, so they have to resolve it
 // before they can scope anything at it — see the block above `POST /api/v1/federation/overlays`.
@@ -242,8 +247,9 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // OUTSIDE the tx above: `getInstanceCosignPublicKey` provisions the keypair lazily via a cosign
       // subprocess, which must never run while a tx (and its pooled connection) is held open. Only the
       // PUBLIC half is returned — the accessor's type structurally omits the private key.
-      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId);
-      reply.status(200).send({ ...result, cosignPublicKey: cosign.publicKey });
+      // `null` on an outpost or an undeclared deployment: it holds no cosign key (§8.9, owner 2026-09-16).
+      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId, deps.config);
+      reply.status(200).send({ ...result, cosignPublicKey: cosign?.publicKey ?? null });
     }
   });
 
@@ -454,9 +460,9 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // Only NOW resolve the LOCAL cosign public key — OUTSIDE any tx: its lazy provisioning runs a
       // cosign subprocess, which must never execute while a tx holds a pooled connection. Only the
       // public half is ever returned.
-      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId);
+      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId, deps.config);
       const status = await withTenantTx(deps.db, auth.orgId, (tx) =>
-        getFederationStatus(tx, auth.orgId, cosign.publicKey)
+        getFederationStatus(tx, auth.orgId, cosign?.publicKey ?? null)
       );
       reply.status(200).send(status);
     }
@@ -686,13 +692,17 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        // The scan hard-gate refusal (carrying its decision_id), or a deployment that is not an
+        // explicitly declared commander (component-journey-view.md §8.9).
+        409: ProblemSchema
       }
     },
     config: {
       openapi: {
         operationId: "exportPromotionBundle",
-        summary: "Export a Promotion Bundle for a Change (change + evidence + attestations)",
+        summary:
+          "Export a Promotion Bundle for a Change (change + evidence + attestations). COMMANDER-ONLY: the export scans and cosign-signs the promotion manifest, so a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409",
         tags: ["federation"]
       }
     },
@@ -700,6 +710,15 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // M9.3 (ADR-0001) — see the /exports route above for what this does and doesn't change.
       await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
+      // SCAN AND SIGN RUN ON THE COMMANDER ONLY (§8.9). Before any work — the export mints this
+      // org's cosign key on first use — and after authentication, so the route is not an
+      // unauthenticated oracle for this deployment's role. Same 409 shape as the dependency routes.
+      const commander = commanderOnlyFederationVerdict(
+        deps.config,
+        "exporting a signed promotion bundle",
+        PROMOTION_SIGNING_RATIONALE
+      );
+      if (!commander.allowed) throw conflict(commander.reason);
       // Authorize in its own tx — `exportPromotionBundle` manages its OWN transaction phases around
       // an out-of-tx cosign subprocess (it takes `deps.db`, not this tx), so authz runs first here.
       await withTenantTx(deps.db, auth.orgId, (tx) =>
@@ -720,6 +739,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         : null;
       if (deliverPeer) assertOutboundDeliverable(resolveDeliveryTarget(deliverPeer));
       const outcome = await exportPromotionBundle(deps.db, {
+        federation: deps.config,
         orgId: auth.orgId,
         peerIdOrName: request.body.peer,
         changeIdOrUrn: request.body.change,
@@ -862,6 +882,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         : null;
       const outDir = requireOutboundDir(resolveDeliveryTarget(deliverPeer, config));
       const outcome = await buildRelayTarball(deps.db, {
+        federation: deps.config,
         orgId: auth.orgId,
         changeIdOrUrn: request.body.change,
         masterKey: deps.config.secretsMasterKey,

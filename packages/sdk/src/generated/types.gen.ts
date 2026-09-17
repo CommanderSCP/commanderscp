@@ -21628,6 +21628,17 @@ export type ExportPromotionBundleErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type ExportPromotionBundleError = ExportPromotionBundleErrors[keyof ExportPromotionBundleErrors];

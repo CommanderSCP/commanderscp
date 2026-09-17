@@ -16,7 +16,8 @@ describe("GET /federation/status — authz gates cosign provisioning (Testcontai
   let org: TestOrg;
 
   beforeAll(async () => {
-    server = await buildTestServer();
+    // Declared: an undeclared deployment holds no cosign key at all (§8.9, owner 2026-09-16).
+    server = await buildTestServer({ federationRole: "commander" });
     org = await createTestOrg(server, "fed-status-authz");
   });
 

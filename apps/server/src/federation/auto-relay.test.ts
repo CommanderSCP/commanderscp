@@ -1,3 +1,4 @@
+import { DECLARED_RETRANS } from "../test-support/federation-roles.js";
 import { afterEach, describe, expect, it } from "vitest";
 import type PgBoss from "pg-boss";
 import type { Db } from "../db/client.js";
@@ -53,7 +54,8 @@ describe("M13.1b auto-relay config", () => {
     const handle = await startAutoRelayLoop(
       boss as unknown as Parameters<typeof startAutoRelayLoop>[0],
       {} as unknown as Parameters<typeof startAutoRelayLoop>[1],
-      Buffer.alloc(32)
+      Buffer.alloc(32),
+      DECLARED_RETRANS
     );
     await handle.stop();
     // Not "no createQueue" — NOTHING at all. A created queue would be pokeable (the M14.4 handler
@@ -78,7 +80,8 @@ describe("M13.1b auto-relay config", () => {
     const handle = await startAutoRelayLoop(
       boss as unknown as Parameters<typeof startAutoRelayLoop>[0],
       {} as unknown as Parameters<typeof startAutoRelayLoop>[1],
-      Buffer.alloc(32)
+      Buffer.alloc(32),
+      DECLARED_RETRANS
     );
     await handle.stop();
     expect(calls).toEqual([
@@ -174,7 +177,7 @@ describe("M13.1b auto-relay loop — force vs. re-schedule", () => {
           return "job-id";
         }
       } as unknown as PgBoss;
-      const handle = await startAutoRelayLoop(boss, emptyDb, Buffer.alloc(32));
+      const handle = await startAutoRelayLoop(boss, emptyDb, Buffer.alloc(32), DECLARED_RETRANS);
       return { sends, handle, boss, run: (jobs: { data?: AutoRelayJobData }[]) => handler!(jobs) };
     } finally {
       if (previous === undefined) delete process.env.SCP_RETRANS_AUTO_RELAY;

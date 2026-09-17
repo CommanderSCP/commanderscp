@@ -19,6 +19,7 @@ import {
   type RelayBuildClaim
 } from "./relay-builds-repo.js";
 import { buildRelayTarball, relayConfigFromEnv, type RelayConfig } from "./retrans-relay.js";
+import type { FederationRoleConfig } from "../dependencies/commander-only.js";
 
 export const AUTO_RELAY_QUEUE = "federation-auto-relay-tick";
 
@@ -207,6 +208,7 @@ export async function autoRelayOrgTick(
   db: Db,
   orgId: string,
   masterKey: Buffer,
+  federation: FederationRoleConfig,
   options?: AutoRelaySweepOptions & { multiTenantInstance?: boolean }
 ): Promise<AutoRelayOutcome[]> {
   const env = options?.env ?? process.env;
@@ -316,6 +318,7 @@ export async function autoRelayOrgTick(
         orgId,
         changeIdOrUrn: held.changeObjectId,
         masterKey,
+        federation,
         outDir: onward.dir,
         onwardPeerDomainId: onward.peerDomainId,
         config
@@ -413,13 +416,17 @@ export async function autoRelayOrgTick(
 export async function runAutoRelaySweep(
   db: Db,
   masterKey: Buffer,
+  federation: FederationRoleConfig,
   options?: AutoRelaySweepOptions
 ): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   const multiTenantInstance = orgRows.length > 1;
   for (const org of orgRows) {
     try {
-      await autoRelayOrgTick(db, org.id, masterKey, { ...options, multiTenantInstance });
+      await autoRelayOrgTick(db, org.id, masterKey, federation, {
+        ...options,
+        multiTenantInstance
+      });
     } catch (err) {
       console.error(`[auto-relay] org ${org.id} tick failed:`, err);
     }
@@ -449,7 +456,8 @@ export interface AutoRelayLoopHandle {
 export async function startAutoRelayLoop(
   boss: PgBoss,
   db: Db,
-  masterKey: Buffer
+  masterKey: Buffer,
+  federation: FederationRoleConfig
 ): Promise<AutoRelayLoopHandle> {
   if (!autoRelayEnabled()) {
     return { async stop() {} };
@@ -463,7 +471,7 @@ export async function startAutoRelayLoop(
     const batch = jobs ?? [];
     const reschedule =
       batch.length === 0 || batch.some((job) => job.data?.reason !== AUTO_RELAY_POKE_REASON);
-    const tick = runAutoRelaySweep(db, masterKey);
+    const tick = runAutoRelaySweep(db, masterKey, federation);
     inFlightTick = tick;
     try {
       await tick;

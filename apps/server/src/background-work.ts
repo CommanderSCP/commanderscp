@@ -83,7 +83,7 @@ export const BACKGROUND_LOOPS: readonly BackgroundLoop[] = [
     // M13.1b staging-node AUTO-RELAY (proposal §13.1). See docs/server.md §17.
     name: "retrans auto-relay",
     loop: startAutoRelayLoop,
-    start: (ctx) => startAutoRelayLoop(ctx.boss, ctx.db, ctx.config.secretsMasterKey)
+    start: (ctx) => startAutoRelayLoop(ctx.boss, ctx.db, ctx.config.secretsMasterKey, ctx.config)
   },
   {
     // M14.0 outpost live-pull scheduler. See docs/server.md §18.

@@ -5,6 +5,11 @@ import { generateKeyPair, type GeneratedKeyPair } from "@scp/cosign";
 import type { Db } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { instanceCosignKeys } from "../db/schema.js";
+import { conflict } from "../errors.js";
+import {
+  cosignKeyCustodyVerdict,
+  type FederationRoleConfig
+} from "../dependencies/commander-only.js";
 
 /** The org's cosign MANIFEST-SIGNING keypair (M17.3 E4). See docs/governance.md §58. */
 
@@ -47,8 +52,15 @@ function toPair(row: typeof instanceCosignKeys.$inferSelect): InstanceCosignKeyP
 export async function ensureInstanceCosignKey(
   db: Db,
   orgId: string,
+  federation: FederationRoleConfig,
   generate: CosignKeyGenerator = generateKeyPair
 ): Promise<InstanceCosignKeyPair> {
+  // CUSTODY FIRST (owner, 2026-09-16; component-journey-view.md §8.9): an outpost or an undeclared
+  // deployment neither mints NOR reads the key — a key an outpost minted before this rule stays in
+  // `instance_cosign_keys` untouched, but no server path will sign with it or serve it.
+  const custody = cosignKeyCustodyVerdict(federation);
+  if (!custody.allowed) throw conflict(custody.reason);
+
   // Fast path: already provisioned. A plain read inside the tenant tx (RLS-scoped).
   const existing = await withTenantTx(db, orgId, (tx) =>
     tx.select().from(instanceCosignKeys).where(eq(instanceCosignKeys.orgId, orgId)).limit(1)
@@ -92,8 +104,12 @@ export async function ensureInstanceCosignKey(
 export async function getInstanceCosignPublicKey(
   db: Db,
   orgId: string,
+  federation: FederationRoleConfig,
   generate: CosignKeyGenerator = generateKeyPair
-): Promise<InstanceCosignPublicKey> {
-  const pair = await ensureInstanceCosignKey(db, orgId, generate);
+): Promise<InstanceCosignPublicKey | null> {
+  // A deployment that may not hold the key has none to distribute: `null`, the schema's stated
+  // absence (`cosignPublicKey` is nullable), never a refusal of the whole self/status read.
+  if (!cosignKeyCustodyVerdict(federation).allowed) return null;
+  const pair = await ensureInstanceCosignKey(db, orgId, federation, generate);
   return { publicKey: pair.publicKey, fingerprint: pair.fingerprint };
 }

@@ -17,3 +17,19 @@ export function assertProductionSecretsOrThrow(config: {
     );
   }
 }
+
+/** The ONE boot line for an undeclared federation role, or `null` when it is declared.
+ *  SCP_FEDERATION_ROLE defaults to 'commander' for serving the SPA, but every commander-only and
+ *  cosign-key-custody decision refuses an undeclared deployment FAIL-CLOSED (commander-only.ts), so
+ *  an operator who never set it runs a "commander" that silently cannot promote — say so at boot. */
+export function federationRoleUndeclaredWarning(config: {
+  federationRoleDeclared: boolean;
+}): string | null {
+  if (config.federationRoleDeclared) return null;
+  return (
+    "[scpd] SCP_FEDERATION_ROLE is not set — this deployment is UNDECLARED, so promotion export, " +
+    "cosign key minting and dependency automation are all REFUSED (fail-closed). Set " +
+    "SCP_FEDERATION_ROLE=commander|outpost|retrans (Helm: federationRole) to enable what this " +
+    "deployment is for."
+  );
+}

@@ -1,3 +1,4 @@
+import { DECLARED_COMMANDER } from "../test-support/federation-roles.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -55,7 +56,9 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
 
     // Fire many first-use callers at once; each finds no existing row and mints its own pair.
     const results = await Promise.all(
-      Array.from({ length: 6 }, () => ensureInstanceCosignKey(server.deps.db, org, gen))
+      Array.from({ length: 6 }, () =>
+        ensureInstanceCosignKey(server.deps.db, org, DECLARED_COMMANDER, gen)
+      )
     );
 
     // All callers converge on ONE row (same id / public key / fingerprint).
@@ -77,7 +80,7 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
 
     // A later call is idempotent (fast-path re-read; generator NOT invoked again).
     const before = calls();
-    const again = await ensureInstanceCosignKey(server.deps.db, org, gen);
+    const again = await ensureInstanceCosignKey(server.deps.db, org, DECLARED_COMMANDER, gen);
     expect(again.id).toBe(firstId);
     expect(calls()).toBe(before);
   });
@@ -86,8 +89,8 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
   it("RLS isolates each org's key row (org B cannot read org A's cosign private key)", async () => {
     const a = countingFakeGenerator();
     const b = countingFakeGenerator();
-    const keyA = await ensureInstanceCosignKey(server.deps.db, orgAId, a.gen);
-    await ensureInstanceCosignKey(server.deps.db, orgBId, b.gen);
+    const keyA = await ensureInstanceCosignKey(server.deps.db, orgAId, DECLARED_COMMANDER, a.gen);
+    await ensureInstanceCosignKey(server.deps.db, orgBId, DECLARED_COMMANDER, b.gen);
 
     const rawA = await RawScpAppClient.connect();
     await rawA.setOrgContext(orgAId);
@@ -133,7 +136,7 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     const org = (await createTestOrg(server, "cosign-exfil")).orgId;
     const masterKey = server.deps.config.secretsMasterKey;
     const { gen } = countingFakeGenerator();
-    const pair = await ensureInstanceCosignKey(server.deps.db, org, gen);
+    const pair = await ensureInstanceCosignKey(server.deps.db, org, DECLARED_COMMANDER, gen);
 
     // Author a REAL secret so we prove resolveSecretRefs' mechanism is genuinely live (not just
     // returning {} because it's broken).
@@ -188,9 +191,9 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
   it("the public-key accessor returns ONLY the public half, never the private key", async () => {
     const org = (await createTestOrg(server, "cosign-pub")).orgId;
     const { gen } = countingFakeGenerator();
-    const full = await ensureInstanceCosignKey(server.deps.db, org, gen);
+    const full = await ensureInstanceCosignKey(server.deps.db, org, DECLARED_COMMANDER, gen);
 
-    const pub = await getInstanceCosignPublicKey(server.deps.db, org, gen);
+    const pub = (await getInstanceCosignPublicKey(server.deps.db, org, DECLARED_COMMANDER, gen))!;
     expect(pub.publicKey).toBe(full.publicKey);
     expect(pub.fingerprint).toBe(full.fingerprint);
     // The returned object carries no private key, by field name or by value.
@@ -205,7 +208,7 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     // generator actually runs and a genuine cosign keypair is what lands in the table.
     const org = (await createTestOrg(server, "cosign-validity")).orgId;
     // Real generator (no injection) — provisions a genuine cosign keypair into the table.
-    const pair = await ensureInstanceCosignKey(server.deps.db, org);
+    const pair = await ensureInstanceCosignKey(server.deps.db, org, DECLARED_COMMANDER);
     expect(pair.privateKey).toContain("PRIVATE KEY");
     expect(pair.publicKey).toContain("PUBLIC KEY");
 

@@ -18,7 +18,7 @@ import {
 } from "./background-work.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
 import { runSecretsDecryptCanary } from "./secrets/decrypt-canary.js";
-import { assertProductionSecretsOrThrow } from "./boot-checks.js";
+import { assertProductionSecretsOrThrow, federationRoleUndeclaredWarning } from "./boot-checks.js";
 import { recordMemberClusterHeartbeat } from "./db/member-heartbeat-repo.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
@@ -31,6 +31,9 @@ async function main(): Promise<void> {
   // D6 (§7.3) — a PRODUCTION instance must not boot on ephemeral generated secrets (fail-closed,
   // before anything else). Extracted to boot-checks.ts so it is directly testable.
   assertProductionSecretsOrThrow(config);
+  // §8.9 — an undeclared role refuses promotion, key custody and dependency automation; say so once.
+  const undeclaredRole = federationRoleUndeclaredWarning(config);
+  if (undeclaredRole) console.warn(undeclaredRole);
   if (config.deploymentMode !== "production" && config.secretsMasterKeyWasGenerated) {
     // M7 (secrets/crypto.ts) — evaluation mode keeps the loud-not-fatal warning.
     console.warn(

@@ -1,4 +1,5 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { DECLARED_COMMANDER } from "../test-support/federation-roles.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { asTrustDomainId } from "@scp/schemas";
@@ -117,6 +118,7 @@ describe("D23 at the crossing: the test bundle in the promotion manifest, minted
 
   const exportTo = (changeId: string, runner: ManagedScanRunner) =>
     exportPromotionBundle(domain.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domain.orgId,
       peerIdOrName: peerName,
       changeIdOrUrn: changeId,

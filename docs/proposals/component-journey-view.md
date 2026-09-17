@@ -522,6 +522,58 @@ to a different subsystem. Whether an outpost-signed manifest would then be ACCEP
 whether the receiving peer has that outpost's cosign key registered, which pairing may well do —
 worth measuring before sizing the fix, but the act itself is already unguarded.
 
+**§8.9 — enforced (2026-09-16).** Three doors, one role predicate
+(`federationRoleRefusal` in `apps/server/src/dependencies/commander-only.ts`), each mutation-proved at
+the outermost layer.
+
+*The invariant, narrowed (owner, 2026-09-16).* Only the commander signs a **promotion manifest**. A
+retrans may sign the **transport integrity** of bytes it has validated and relays (ADR-0019). An
+outpost signs nothing; it validates both. This replaces the literal *"an outpost or retrans may only
+validate"* above, which the built relay already contradicted.
+
+*Measured first: an outpost-signed manifest would have been ACCEPTED, not merely producible.* At
+`1f7dd8f0`: every instance served its own cosign key, minting it on first use (`GET /federation/self`,
+`routes/federation.ts:245`); pairing stores whatever `cosignPublicKey` the operator supplies for a peer
+of ANY role (`PairPeerRequestSchema`, `packages/schemas/src/federation.ts:157`; `peers-repo.ts:178–234`);
+and import verified against the exporter peer's key with no check of that peer's role
+(`promotion-repo.ts:637–667`). The documented pairing — `scp federation pair --cosign-public-key` from
+the peer's `scp federation self` — was all it took.
+
+1. **Producing.** `POST /api/v1/federation/exports/promotion` asks `commanderOnlyFederationVerdict`
+   after authentication and before delivery resolution (`routes/federation.ts:716`), and
+   `exportPromotionBundle` asks it again before it touches the key (`promotion-repo.ts:202`): an
+   outpost, a retrans or an UNDECLARED deployment gets 409 and mints nothing. The declared role is a
+   required input of the function, so no future caller can skip it.
+2. **Accepting.** `importPromotionBundle` asks `commanderOnlyPeerVerdict` once the bundle is
+   authenticated as the exporter peer's and before the manifest is verified
+   (`promotion-repo.ts:705`): a peer paired as anything but `commander` is refused through the
+   manifest-verify block path (Decision, audit event, `decision_id`); a stored role outside
+   commander|outpost|retrans is the undeclared, fail-closed branch; a manifest-STRIPPED bundle is
+   refused rather than riding pre-E5 back-compat. The relay is unaffected, measured: the `.scpbundle`
+   a retrans carries is still commander-exported, so the retrans-relay, inbox-loop and auto-relay
+   suites pass unchanged, and all die when the peer verdict is mutated to refuse everything.
+3. **Key custody.** `cosignKeyCustodyVerdict` admits a declared commander or retrans only.
+   `ensureInstanceCosignKey` neither mints nor reads the key elsewhere (`cosign-keys.ts:61`, 409), and
+   `getInstanceCosignPublicKey` returns `null` (`:112`), so on an outpost or an undeclared deployment
+   `GET /federation/self` and `GET /federation/status` answer 200 with `cosignPublicKey: null` — the
+   field was already nullable, so no response contract changed. **A key an outpost minted before this
+   stays in `instance_cosign_keys`, untouched:** no server path serves it or signs with it, and it
+   comes back into use only if the deployment is re-declared commander or retrans. Deleting it is an
+   operator action; nothing here removes key material.
+
+*Census, no filters — every server path that signs with, or mints, the instance cosign key:*
+
+| Path | Mints | Signs | Now |
+|---|---|---|---|
+| `exportPromotionBundle` ← the export route (its only non-test caller) | `promotion-repo.ts:212` | manifest, `:407` | commander only, at the route AND in the function |
+| `buildRelayTarball` ← `POST /federation/relay` and the auto-relay loop (`auto-relay.ts:317`) | `retrans-relay.ts:632` | relay `CHECKSUMS.txt`, `:642` | retrans only (`self.role` arm, `:357`) and key custody |
+| `getInstanceCosignPublicKey` ← `GET /federation/self`, `GET /federation/status` | `cosign-keys.ts:112` | — | commander or retrans; `null` elsewhere |
+
+The air-gap release bundle (`deploy/airgap/src/build-bundle.ts`) signs with an operator key, not the
+instance key; every other cosign site verifies. Tests: `routes/federation-promotion-commander-only`,
+`routes/federation-cosign-custody`, `federation/promotion-import-exporter-role` (all
+`.integration.test.ts`).
+
 ### 8.10 What building D2 found
 
 D2 landed as `d7baf27a`. Four things came out of building it that the decision did not anticipate.

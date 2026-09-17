@@ -1,11 +1,12 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { DECLARED_COMMANDER, requireCosignPublicKey } from "../test-support/federation-roles.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, asc, eq } from "drizzle-orm";
 import type { GeneratedKeyPair } from "@scp/cosign";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { federationPeerKeys, instanceCosignKeys } from "../db/schema.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
-import { getInstanceCosignPublicKey, type CosignKeyGenerator } from "../governance/cosign-keys.js";
+import { type CosignKeyGenerator } from "../governance/cosign-keys.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
 import { pairPeer, currentPeerKeyRow, getPeerByIdOrName, listPeers } from "./peers-repo.js";
 import { getFederationStatus } from "./status-repo.js";
@@ -41,7 +42,7 @@ function ed25519KeypairB64(): { publicKey: string; privateKey: string } {
  *  tx (its lazy provisioning runs a cosign subprocess that must never run inside an open tx), then
  *  build the status inside the tx and hand the public key in. Returns both for assertions. */
 async function statusWithCosign(domain: IsolatedDomain, gen: CosignKeyGenerator) {
-  const cosign = await getInstanceCosignPublicKey(domain.db, domain.orgId, gen);
+  const cosign = await requireCosignPublicKey(domain.db, domain.orgId, DECLARED_COMMANDER, gen);
   const status = await withTenantTx(domain.db, domain.orgId, (tx) =>
     getFederationStatus(tx, domain.orgId, cosign.publicKey)
   );

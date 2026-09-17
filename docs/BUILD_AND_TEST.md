@@ -126,7 +126,7 @@ EOF
 
 # 7. Compose stack (deploy/compose/docker-compose.yml): exactly two services
 #    postgres (postgres:16, healthcheck pg_isready) and scp (build: ../../,
-#    SCP_ROLE=all, depends_on postgres healthy, port 8080)
+#    SCP_ROLE=all, SCP_FEDERATION_ROLE=commander, depends_on postgres healthy, port 8080)
 #    plus docker-compose.dev.yml overlay: postgres only, port 5432 exposed.
 
 # 8. CI + hygiene

@@ -43,6 +43,9 @@ services:
         - NODE_IMAGE
     environment:
       SCP_ROLE: all
+      # The eval stack IS a commander — declared, because an undeclared role refuses promotion export,
+      # cosign key minting and dependency automation fail-closed (component-journey-view.md §8.9).
+      SCP_FEDERATION_ROLE: commander
       PORT: "8080"
       HOST: "0.0.0.0"
       DATABASE_URL: postgres://scp:scp@postgres:5432/scp

@@ -1,4 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+  DECLARED_COMMANDER,
+  DECLARED_OUTPOST,
+  DECLARED_RETRANS,
+  requireCosignPublicKey
+} from "../test-support/federation-roles.js";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -17,7 +23,7 @@ import { createObject } from "../graph/objects-repo.js";
 import { proposeChange, getChangeRow } from "../coordination/changes-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
 import { runPreDeployArtifactGate } from "../coordination/pre-deploy-gate.js";
-import { ensureInstanceCosignKey, getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
+import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, initFederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
@@ -205,8 +211,13 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
 
     // Keys: A's instance cosign key signs the promotion manifest AND (as the harness "build
     // executor") the artifacts; B's signs the relay tarball.
-    const commanderPair = await ensureInstanceCosignKey(commander.db, commander.orgId);
-    retransCosignPub = (await getInstanceCosignPublicKey(retrans.db, retrans.orgId)).publicKey;
+    const commanderPair = await ensureInstanceCosignKey(
+      commander.db,
+      commander.orgId,
+      DECLARED_COMMANDER
+    );
+    retransCosignPub = (await requireCosignPublicKey(retrans.db, retrans.orgId, DECLARED_RETRANS))
+      .publicKey;
     commanderKeyPath = path.join(scratch, "commander-cosign.key");
     await writeFile(commanderKeyPath, commanderPair.privateKey, "utf8");
 
@@ -478,6 +489,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     peerName: string
   ): Promise<PromotionBundle> {
     const outcome = await exportPromotionBundle(commander.db, {
+      federation: DECLARED_COMMANDER,
       orgId: commander.orgId,
       peerIdOrName: peerName,
       changeIdOrUrn: changeId
@@ -689,7 +701,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     env: NodeJS.ProcessEnv,
     config: RelayConfig = retransConfig()
   ): Promise<AutoRelayOutcome[]> {
-    return autoRelayOrgTick(retrans.db, retrans.orgId, RETRANS_MASTER_KEY, {
+    return autoRelayOrgTick(retrans.db, retrans.orgId, RETRANS_MASTER_KEY, DECLARED_RETRANS, {
       relayConfig: config,
       env
     });
@@ -813,7 +825,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
 
     // Through the PRODUCTION entry point this time (`runAutoRelaySweep` enumerates orgs and calls
     // the org tick) — the loop's own body, not just the exported tick.
-    await runAutoRelaySweep(retrans.db, RETRANS_MASTER_KEY, {
+    await runAutoRelaySweep(retrans.db, RETRANS_MASTER_KEY, DECLARED_RETRANS, {
       relayConfig: retransConfig(),
       env: AUTO_ON
     });
@@ -858,13 +870,19 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     const outpostDecisionsBefore = await decisionCount(outpost);
 
     expect(
-      await autoRelayOrgTick(commander.db, commander.orgId, COMMANDER_MASTER_KEY, {
-        relayConfig: retransConfig(),
-        env: AUTO_ON
-      })
+      await autoRelayOrgTick(
+        commander.db,
+        commander.orgId,
+        COMMANDER_MASTER_KEY,
+        DECLARED_COMMANDER,
+        {
+          relayConfig: retransConfig(),
+          env: AUTO_ON
+        }
+      )
     ).toEqual([]);
     expect(
-      await autoRelayOrgTick(outpost.db, outpost.orgId, OUTPOST_MASTER_KEY, {
+      await autoRelayOrgTick(outpost.db, outpost.orgId, OUTPOST_MASTER_KEY, DECLARED_OUTPOST, {
         relayConfig: outpostConfig({ outDir: autoDropDir }),
         env: AUTO_ON
       })
@@ -885,6 +903,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     // non-retrans instance is refused with the 409 that names the required role.
     await expect(
       buildRelayTarball(outpost.db, {
+        federation: DECLARED_OUTPOST,
         orgId: outpost.orgId,
         changeIdOrUrn: happy.changeAtC as string,
         masterKey: OUTPOST_MASTER_KEY,
@@ -939,6 +958,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     // lands in the fixture dir, and note what it does NOT do: `buildRelayTarball` itself writes no
     // ledger row, so the obligation is still exactly what the import seeded.
     const built = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: high.changeAtB,
       masterKey: RETRANS_MASTER_KEY,
@@ -1101,6 +1121,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     // The operator fixed the cause (here: the source repo really holds the digest) and re-drove the
     // hop by hand — the same `buildRelayTarball` the sweep calls, with a working config.
     const manual = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: failing.changeAtB,
       masterKey: RETRANS_MASTER_KEY,
@@ -1557,6 +1578,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
   it("a tarball that ARRIVES after the obligation was exhausted still corrects it to `forwarded`", async () => {
     const late = await seedPromotion("late-arrival");
     const built = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: late.changeAtB,
       masterKey: RETRANS_MASTER_KEY,

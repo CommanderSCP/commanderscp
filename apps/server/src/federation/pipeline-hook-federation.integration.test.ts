@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { DECLARED_COMMANDER, requireCosignPublicKey } from "../test-support/federation-roles.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { pipelineEvidence, pipelineHooks } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
-import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import {
   deleteHook,
   recordTestRunEvidence,
@@ -31,7 +31,11 @@ describe("pipeline hook federation: commander declares, outpost receives", () =>
   ): Promise<void> {
     const key = await withTenantTx(to.db, to.orgId, (tx) => ensureInstanceKey(tx, to.orgId));
     const self = await withTenantTx(to.db, to.orgId, (tx) => ensureFederationSelf(tx, to.orgId));
-    const { publicKey: cosignPublicKey } = await getInstanceCosignPublicKey(to.db, to.orgId);
+    const { publicKey: cosignPublicKey } = await requireCosignPublicKey(
+      to.db,
+      to.orgId,
+      DECLARED_COMMANDER
+    );
     await withTenantTx(from.db, from.orgId, (tx) =>
       pairPeer(tx, {
         orgId: from.orgId,

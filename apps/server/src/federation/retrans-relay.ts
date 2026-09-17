@@ -28,6 +28,7 @@ import { changes } from "../db/schema.js";
 import { and, eq } from "drizzle-orm";
 import { getSecretValue } from "../secrets/secrets-repo.js";
 import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
+import type { FederationRoleConfig } from "../dependencies/commander-only.js";
 import { ensureFederationSelf } from "./self-repo.js";
 import { currentPeerCosignPublicKey } from "./peers-repo.js";
 import { recordBundleTransfer } from "./bundle-transfers-repo.js";
@@ -279,6 +280,9 @@ class RelaySourceRegistryReader extends LocationRegistryReader {
 }
 
 export interface BuildRelayTarballInput {
+  /** The deployment's declared federation role — the relay signs with the instance cosign key, whose
+   *  custody is role-gated (component-journey-view.md §8.9). */
+  federation: FederationRoleConfig;
   orgId: string;
   changeIdOrUrn: string;
   /** The secrets-vault master key (ADR-0019 §3 credential resolution). */
@@ -625,7 +629,7 @@ export async function buildRelayTarball(
       // Sign the checksum manifest with THIS instance's cosign key (M17.3 E4) — transport
       // integrity for the CDS crossing. The receiver verifies it against the retrans's
       // out-of-band-distributed public key, then STILL runs its own M17.4 gates (zero trust).
-      const instanceKey = await ensureInstanceCosignKey(db, input.orgId);
+      const instanceKey = await ensureInstanceCosignKey(db, input.orgId, input.federation);
       await writeFile(path.join(bundleRoot, "cosign.pub"), instanceKey.publicKey, "utf8");
       const checksumEntries = await airgapChecksums.computeChecksums(bundleRoot);
       const checksumsPath = path.join(bundleRoot, "CHECKSUMS.txt");

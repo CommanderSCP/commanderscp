@@ -1,4 +1,5 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { DECLARED_COMMANDER } from "../test-support/federation-roles.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { and, asc, eq } from "drizzle-orm";
@@ -313,6 +314,7 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
 
     const { changeId } = await proposeArtifactChange(IMAGE_DIGEST, "image");
     const outcome = await exportPromotionBundle(domain.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domain.orgId,
       peerIdOrName: peerName,
       changeIdOrUrn: changeId,
