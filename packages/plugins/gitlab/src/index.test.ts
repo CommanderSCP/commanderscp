@@ -138,6 +138,38 @@ describe("mapGitlabWebhookEventToHint", () => {
     ).toEqual({ repo: "acme/widgets", commitSha: "4".repeat(40), correlationKey: "pipeline-42" });
   });
 
+  it("a Pipeline Hook with object_attributes.ref carries NO ref when `tag` is absent (poll-events-carry-ref: branch vs. tag is not disambiguable without it, so this refuses to guess)", () => {
+    const hint = mapGitlabWebhookEventToHint("Pipeline Hook", {
+      object_kind: "pipeline",
+      object_attributes: { id: 42, sha: "4".repeat(40), ref: "main" },
+      project: { path_with_namespace: "acme/widgets" }
+    });
+    expect(hint?.ref).toBeUndefined();
+  });
+
+  it("a Pipeline Hook with `tag: false` maps object_attributes.ref to a fully-qualified refs/heads/<ref> (poll-events-carry-ref)", () => {
+    const hint = mapGitlabWebhookEventToHint("Pipeline Hook", {
+      object_kind: "pipeline",
+      object_attributes: { id: 43, sha: "5".repeat(40), ref: "main", tag: false },
+      project: { path_with_namespace: "acme/widgets" }
+    });
+    expect(hint).toEqual({
+      repo: "acme/widgets",
+      commitSha: "5".repeat(40),
+      ref: "refs/heads/main",
+      correlationKey: "pipeline-43"
+    });
+  });
+
+  it("a Pipeline Hook with `tag: true` maps object_attributes.ref to refs/tags/<ref>, not refs/heads/", () => {
+    const hint = mapGitlabWebhookEventToHint("Pipeline Hook", {
+      object_kind: "pipeline",
+      object_attributes: { id: 44, sha: "6".repeat(40), ref: "v2.0.0", tag: true },
+      project: { path_with_namespace: "acme/widgets" }
+    });
+    expect(hint?.ref).toBe("refs/tags/v2.0.0");
+  });
+
   it("returns null for an unrecognized event name", () => {
     expect(mapGitlabWebhookEventToHint("Issue Hook", {})).toBeNull();
     expect(
@@ -554,6 +586,145 @@ describe("observe() polling — commits and pipelines", () => {
     const polledPush = events.find((e) => e.kind === "push");
     expect(polledPush?.correlation.repo).toBe(webhookHint?.repo);
     expect(polledPush?.correlation.commitSha).toBe(webhookHint?.commitSha);
+  });
+
+  it("resolves the project's default branch, lists commits with ref_name=<branch>, and stamps refs/heads/<branch> on every polled push (poll-events-carry-ref)", async () => {
+    const { ctx, token, base, pid } = setup();
+    const commitSha = "d7".repeat(20);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}`)
+      .reply(200, { default_branch: "main" });
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.ref_name === "main")
+      .reply(200, [{ id: commitSha, created_at: "2026-07-01T00:00:00Z" }]);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, []);
+
+    const events = await plugin.observe(ctx);
+    const pushEvent = events.find((e) => e.kind === "push");
+    expect(pushEvent?.correlation.ref).toBe("refs/heads/main");
+  });
+
+  it("a default-branch resolution failure (404) falls back to the pre-fix behaviour: list with no ref_name and stamp NO ref — fail-closed, not a guess", async () => {
+    const { ctx, token, base, pid } = setup();
+    const commitSha = "e8".repeat(20);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}`)
+      .reply(404, { message: "404 Project Not Found" });
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => !("ref_name" in q))
+      .reply(200, [{ id: commitSha, created_at: "2026-07-01T00:00:00Z" }]);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, []);
+
+    const events = await plugin.observe(ctx);
+    const pushEvent = events.find((e) => e.kind === "push");
+    expect(pushEvent?.correlation.commitSha).toBe(commitSha);
+    expect(pushEvent?.correlation.ref).toBeUndefined();
+  });
+
+  it("a polled pipeline with `tag: false` stamps refs/heads/<ref>", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}`)
+      .reply(200, { default_branch: "main" });
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits`)
+      .query(true)
+      .reply(200, []);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, [
+        {
+          id: 9001,
+          status: "success",
+          sha: "9f".repeat(20),
+          ref: "release/1.0",
+          tag: false,
+          updated_at: "2026-07-01T00:05:00Z"
+        }
+      ]);
+
+    const events = await plugin.observe(ctx);
+    const runEvent = events.find((e) => e.kind === "workflow_run");
+    expect(runEvent?.correlation.ref).toBe("refs/heads/release/1.0");
+  });
+
+  it("a polled pipeline with `tag: true` stamps refs/tags/<ref>, not refs/heads/", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}`)
+      .reply(200, { default_branch: "main" });
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits`)
+      .query(true)
+      .reply(200, []);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, [
+        {
+          id: 9002,
+          status: "success",
+          sha: "af".repeat(20),
+          ref: "v2.0.0",
+          tag: true,
+          updated_at: "2026-07-01T00:05:00Z"
+        }
+      ]);
+
+    const events = await plugin.observe(ctx);
+    const runEvent = events.find((e) => e.kind === "workflow_run");
+    expect(runEvent?.correlation.ref).toBe("refs/tags/v2.0.0");
+  });
+
+  it("a polled pipeline with no `tag` field stamps NO ref, rather than guessing branch vs. tag", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}`)
+      .reply(200, { default_branch: "main" });
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits`)
+      .query(true)
+      .reply(200, []);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, [
+        {
+          id: 9003,
+          status: "success",
+          sha: "cf".repeat(20),
+          ref: "main",
+          updated_at: "2026-07-01T00:05:00Z"
+        }
+      ]);
+
+    const events = await plugin.observe(ctx);
+    const runEvent = events.find((e) => e.kind === "workflow_run");
+    expect(runEvent?.correlation.ref).toBeUndefined();
   });
 
   it("silently skips (does not throw for) a rate-limited/non-2xx resource — the lenient observe posture", async () => {

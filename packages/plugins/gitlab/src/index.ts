@@ -221,11 +221,16 @@ export function mapGitlabWebhookEventToHint(
       };
     }
     case "Pipeline Hook": {
-      // ASSUMED (GitLab): pipeline id/sha/ref under object_attributes.
-      const attrs = p.object_attributes as { id?: number; sha?: string; ref?: string } | undefined;
+      // ASSUMED (GitLab): pipeline id/sha/ref/tag under object_attributes — `tag` is the documented
+      // boolean disambiguating `ref`'s branch-or-tag reading (see `GitlabPipeline`/`gitlabPipelineRef`).
+      const attrs = p.object_attributes as
+        { id?: number; sha?: string; ref?: string; tag?: boolean } | undefined;
       return {
         repo,
         commitSha: attrs?.sha,
+        // poll-events-carry-ref: the SAME two-field disambiguation `pollRuns` uses, so a delivered
+        // Pipeline Hook and a polled pipeline stamp identically.
+        ref: attrs ? gitlabPipelineRef(attrs) : undefined,
         // No id ⇒ NO key. The old `: attrs?.ref` fallback grouped every pipeline on a branch
         // together — the same class-wide-key defect as the push mapping above.
         correlationKey: attrs?.id !== undefined ? `pipeline-${attrs.id}` : undefined
@@ -241,15 +246,30 @@ export function mapGitlabWebhookEventToHint(
 // normalization, and verb assembly are provided by `@scp/git-provider-core`.
 // -------------------------------------------------------------------------------------------
 
-/** A GitLab pipeline, as the three endpoints return it. See docs/plugins.md §231. */
+/** A GitLab pipeline, as the three endpoints return it. See docs/plugins.md §231.
+ *
+ *  `ref` names the branch OR tag the pipeline ran for — GitLab does not disambiguate the two in that
+ *  one field. `tag` is the documented boolean that does (`true` for a tag pipeline); this is what
+ *  makes stamping a fully-qualified `ref` in `pollRuns` below true by construction rather than a
+ *  guess — a pipeline with no `tag` field at all (an older/unusual instance) stamps no ref, same
+ *  fail-closed posture as everywhere else in this file. */
 interface GitlabPipeline {
   id: number;
   status: string;
   sha?: string;
   ref?: string;
+  tag?: boolean;
   web_url?: string;
   created_at?: string;
   updated_at?: string;
+}
+
+/** The fully-qualified ref for a pipeline, or `undefined` when either half of the fact this needs
+ *  (`ref`, `tag`) is missing — poll-events-carry-ref. Shared by `pollRuns` and the `"Pipeline Hook"`
+ *  webhook mapper below so poll and push stamp identically from the same two GitLab-reported fields. */
+function gitlabPipelineRef(pipeline: { ref?: string; tag?: boolean }): string | undefined {
+  if (!pipeline.ref || typeof pipeline.tag !== "boolean") return undefined;
+  return pipeline.tag ? `refs/tags/${pipeline.ref}` : `refs/heads/${pipeline.ref}`;
 }
 
 /** Adapter `triggerCI` hook — CREATES a GitLab pipeline and returns its run ref DIRECTLY. Unlike
@@ -365,19 +385,46 @@ interface GitlabCommit {
   committed_date?: string;
 }
 
+/** Resolves the project's default branch (`GET /projects/:id`.`default_branch`, a documented GitLab
+ *  Project field) so `pollCommits` can name a branch EXPLICITLY rather than relying on the commits
+ *  endpoint's implicit default (poll-events-carry-ref). `undefined` on any failure — the same
+ *  lenient, non-throwing posture every other poll call here already has. */
+async function resolveDefaultBranch(
+  ctx: PluginContext,
+  config: GitlabConfig
+): Promise<string | undefined> {
+  try {
+    const { status, body } = await api(ctx, config, "GET", `/projects/${projectId(config)}`);
+    if (status < 200 || status >= 300) return undefined;
+    const branch = (body as { default_branch?: unknown }).default_branch;
+    return typeof branch === "string" && branch.length > 0 ? branch : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Adapter `pollCommits` hook: recent commits (approximates a `push` webhook for the polling
  *  fallback). GitLab's commits endpoint accepts a `since` ISO param; we still filter client-side by
  *  the commit's own timestamp against the watermark (belt-and-suspenders). Silently skips a non-2xx
- *  resource (the lenient observe posture, same as github/gitea). */
+ *  resource (the lenient observe posture, same as github/gitea).
+ *
+ *  Names the branch it lists EXPLICITLY (poll-events-carry-ref, same reasoning as github/gitea's
+ *  `pollCommits`): the commits LIST response carries no ref per commit, so the branch is resolved
+ *  first via `resolveDefaultBranch` and passed back as BOTH the `ref_name` list parameter (GitLab's
+ *  documented filter — the default is the project's default branch when omitted) and the stamped
+ *  `refs/heads/<branch>` — true by construction, not an assumption about the API's default. */
 async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  const defaultBranch = await resolveDefaultBranch(ctx, config);
+  const ref = defaultBranch ? `refs/heads/${defaultBranch}` : undefined;
   let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("since", sinceIso);
+    if (defaultBranch) query.set("ref_name", defaultBranch);
     const { status, body } = await api(
       ctx,
       config,
@@ -396,7 +443,9 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
         occurredAt,
         correlation: normalizeCorrelation({
           repo,
-          commitSha: commit.id
+          commitSha: commit.id,
+          // The EXPLICITLY-named branch this poll asked for — see `resolveDefaultBranch`.
+          ref
           // NO `correlationKey` — see the push mapping above and journey-view §8.16.
         }),
         raw: commit
@@ -445,6 +494,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
         correlation: normalizeCorrelation({
           repo,
           commitSha: pipeline.sha,
+          ref: gitlabPipelineRef(pipeline),
           correlationKey: `pipeline-${pipeline.id}`
         }),
         raw: pipeline

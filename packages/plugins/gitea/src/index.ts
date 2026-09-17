@@ -235,22 +235,52 @@ export function mapGiteaWebhookEventToHint(
 // normalization, and verb assembly are provided by `@scp/git-provider-core`.
 // -------------------------------------------------------------------------------------------
 
-/** ASSUMED (Gitea Actions). See docs/plugins.md §149. */
+/** ASSUMED (Gitea Actions). See docs/plugins.md §149. `head_branch` is ASSUMED too
+ *  (poll-events-carry-ref) — Gitea Actions mirrors github Actions closely enough that the same
+ *  field name is the best available guess; if a real instance's run resource omits it, `ref` below
+ *  is simply undefined (fail-closed at correlation), never a fabricated branch name. */
 interface GiteaActionRun {
   id: number;
   status: string;
   html_url?: string;
   head_sha?: string;
+  head_branch?: string;
   created_at?: string;
+}
+
+/** Resolves the repo's default branch (`GET /repos/{owner}/{repo}`.`default_branch`, a documented
+ *  Gitea Repository field mirroring github's) so `pollCommits` can name a branch EXPLICITLY rather
+ *  than relying on the commits-list endpoint's implicit default (poll-events-carry-ref). `undefined`
+ *  on any failure — the same lenient, non-throwing posture every other poll call here already has. */
+async function resolveDefaultBranch(
+  ctx: PluginContext,
+  config: GiteaConfig
+): Promise<string | undefined> {
+  try {
+    const { status, body } = await api(ctx, config, "GET", `/repos/${config.owner}/${config.repo}`);
+    if (status < 200 || status >= 300) return undefined;
+    const branch = (body as { default_branch?: unknown }).default_branch;
+    return typeof branch === "string" && branch.length > 0 ? branch : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Adapter `pollCommits` hook: recent commits (approximates a `push` webhook for the polling
  *  fallback). `GET /repos/{owner}/{repo}/commits` is documented + stable in Gitea's API. Silently
- *  skips a non-2xx resource (the lenient observe posture, same as github's adapter). */
+ *  skips a non-2xx resource (the lenient observe posture, same as github's adapter).
+ *
+ *  Names the branch it lists EXPLICITLY (poll-events-carry-ref, same reasoning as github's
+ *  `pollCommits`): the commits LIST response carries no ref per commit, so the branch is resolved
+ *  first via `resolveDefaultBranch` and passed back as BOTH the `sha` list parameter (Gitea's
+ *  commits endpoint accepts the same `sha` filter github's does) and the stamped
+ *  `refs/heads/<branch>` — true by construction, not an assumption about the API's default. */
 async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  const defaultBranch = await resolveDefaultBranch(ctx, config);
+  const ref = defaultBranch ? `refs/heads/${defaultBranch}` : undefined;
   // Gitea's /commits does not accept github's `since` param, so the WHOLE window is filtered
   // client-side — which makes reading only the first page worse here than on github, not better:
   // every commit past the page boundary is dropped and the cursor moves on regardless. Paginated
@@ -258,6 +288,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ limit: String(POLL_PAGE_SIZE), page: String(page) });
+    if (defaultBranch) query.set("sha", defaultBranch);
     const { status, body } = await api(
       ctx,
       config,
@@ -276,7 +307,9 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
         occurredAt,
         correlation: normalizeCorrelation({
           repo: `${config.owner}/${config.repo}`,
-          commitSha: commit.sha
+          commitSha: commit.sha,
+          // The EXPLICITLY-named branch this poll asked for — see `resolveDefaultBranch`.
+          ref
           // NO `correlationKey` — see the push mapping above and journey-view §8.16. The commits LIST
           // carries no ref per commit; a constant is not an identity, and the sha already
           // discriminates the dedupe key.
@@ -325,6 +358,12 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
         correlation: normalizeCorrelation({
           repo: `${config.owner}/${config.repo}`,
           commitSha: run.head_sha,
+          // The run's own reported branch (poll-events-carry-ref, ASSUMED field — see the interface
+          // comment above).
+          ref:
+            typeof run.head_branch === "string" && run.head_branch.length > 0
+              ? `refs/heads/${run.head_branch}`
+              : undefined,
           correlationKey: `run-${run.id}`
         }),
         raw: run
