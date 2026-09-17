@@ -586,11 +586,7 @@ export const changeSourceEvents = pgTable(
     index("change_source_events_unprocessed").on(table.processedAt, table.createdAt),
     unique("change_source_events_dedupe").on(table.orgId, table.sourceKind, table.dedupeKey),
     /** 0113 — the "built upstream" run lookup BY COMMIT (`observed-run-facts.ts`). */
-    index("change_source_events_org_kind_commit").on(
-      table.orgId,
-      table.sourceKind,
-      table.commitSha
-    )
+    index("change_source_events_org_kind_commit").on(table.orgId, table.sourceKind, table.commitSha)
   ]
 );
 

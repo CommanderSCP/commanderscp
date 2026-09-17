@@ -1,6 +1,6 @@
 # A CI run is not a release — diagnosis and the decision it needs
 
-**Status:** diagnosis, 2026-09-16. **STOP — owner decision needed (§4)** before any code lands.
+**Status:** DECIDED and BUILT, 2026-09-16 — see §6. (The diagnosis below stopped for an owner decision. §5's options are kept as written.)
 **Relates to:** [component-journey-view.md](component-journey-view.md) §3 Segment 2, §7 (`observedRun`), §8.12, §8.16;
 [promotion-and-execution-model.md](promotion-and-execution-model.md) §3; [ADR-0032](../adr/0032-dependency-subscriptions.md) §9;
 `docs/coordination.md` §385 (the CI-conclusion route); DESIGN.md §12.
@@ -189,3 +189,37 @@ poll path (`observeOrgTick` → `ingestObservedEvents` → `processChangeSourceE
 a real `workflow_run` run object — not a hand-built `source_ref` through `POST /changes`, which is how the
 existing `component-pipeline-observed-run.integration.test.ts` reaches the reader and exactly why it cannot
 see this).
+
+## 6. DECIDED (owner, 2026-09-16) and BUILT
+
+1. **Option (C).** Only an allowlist of SOURCE event kinds may propose a change: push, tag push, release,
+   package push, and first-party report. `workflow_run`, pipeline, deployment and sync events never do.
+2. **Pull-request events never create a change.**
+3. **Cleanup** runs after deploy through the audited cancel API, with a count guard and a `pg_dump`
+   first. It is recorded in the PR and run by the main session.
+
+**The gate.** `apps/server/src/coordination/source-event-kinds.ts#classifySourceEvent` is the one allowlist. It
+is called once in `processChangeSourceEvents`, after the M21.5 provenance attach route (which still consumes
+PR and run events for bump changes) and before the config-source trigger and correlation. All 11 §4 sites are
+refused. A non-source event is still ingested and stored, with dedupe and watermarks untouched, and it is
+marked processed with no change. No per-event Decision is written, for the reason `docs/coordination.md`
+§1107a gives.
+
+**The "built upstream" line.** `observed-run-facts.ts` now finds the run by the release's own commit, through
+`change_source_events.commit_sha` (migration 0113). The repo must match, which is the fork rule. The honesty
+rules are unchanged. The first attempt used an expression index and was measured unusable under forced RLS
+(jsonb `->>` is not leakproof), so the commit is a generated column.
+
+**Proved at the outermost layer** (`run-events-are-not-releases.integration.test.ts`):
+- The REAL github plugin's `observe()` runs against a provider stand-in, goes through `ingestObservedEvents`
+  as sourceKind `github`, then through the real processor: the run is stored and proposes nothing, the push
+  for the same commit proposes one change, and the line names that run.
+- A run ingested before its push is still found, and another commit's run or a fork's run is never named.
+- A `pull_request` webhook proposes nothing. A push webhook to the same repo, the positive control, proposes one.
+- A `workflow_run` webhook proposes nothing.
+- One sync from the REAL argocd plugin proposes nothing.
+- The EXPLAIN shows the commit as an index condition.
+
+Seven mutations were each killed: gate removed; observed `workflow_run` allowed; github `pull_request`
+allowed; github `workflow_run` allowed; observed `sync` allowed; repo check dropped; expression predicate
+instead of column.

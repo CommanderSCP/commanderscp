@@ -13,19 +13,59 @@ const observed = (kind: string) => ({ _observed: true, kind, repo: "acme/api", r
 describe("classifySourceEvent — non-source events never propose (the 11 census sites)", () => {
   it.each([
     ["1 github pollRuns", "github", {}, observed("workflow_run")],
-    ["2 github webhook workflow_run", "github", { "x-github-event": "workflow_run" }, { workflow_run: { id: 1 } }],
+    [
+      "2 github webhook workflow_run",
+      "github",
+      { "x-github-event": "workflow_run" },
+      { workflow_run: { id: 1 } }
+    ],
     ["3 gitea pollRuns", "gitea", {}, observed("workflow_run")],
     ["4 gitlab pollRuns", "gitlab", {}, observed("workflow_run")],
-    ["5 gitlab Pipeline Hook", "gitlab", { "x-gitlab-event": "Pipeline Hook" }, { object_attributes: { id: 1 } }],
+    [
+      "5 gitlab Pipeline Hook",
+      "gitlab",
+      { "x-gitlab-event": "Pipeline Hook" },
+      { object_attributes: { id: 1 } }
+    ],
     ["6 argo-workflows observe", "argo-workflows", {}, observed("workflow_run")],
     ["7 argocd observe sync", "argocd", {}, observed("sync")],
-    ["8 github webhook deployment", "github", { "x-github-event": "deployment" }, { deployment: { id: 1 } }],
-    ["9 github pull_request", "github", { "x-github-event": "pull_request" }, { pull_request: { number: 1 } }],
-    ["10 gitea pull_request", "gitea", { "x-gitea-event": "pull_request" }, { pull_request: { number: 1 } }],
-    ["11 gitlab Merge Request Hook", "gitlab", { "x-gitlab-event": "Merge Request Hook" }, { object_attributes: { iid: 1 } }],
-    ["an unrecognised github event (fail closed)", "github", { "x-github-event": "check_run" }, { repo: "acme/api" }],
+    [
+      "8 github webhook deployment",
+      "github",
+      { "x-github-event": "deployment" },
+      { deployment: { id: 1 } }
+    ],
+    [
+      "9 github pull_request",
+      "github",
+      { "x-github-event": "pull_request" },
+      { pull_request: { number: 1 } }
+    ],
+    [
+      "10 gitea pull_request",
+      "gitea",
+      { "x-gitea-event": "pull_request" },
+      { pull_request: { number: 1 } }
+    ],
+    [
+      "11 gitlab Merge Request Hook",
+      "gitlab",
+      { "x-gitlab-event": "Merge Request Hook" },
+      { object_attributes: { iid: 1 } }
+    ],
+    [
+      "an unrecognised github event (fail closed)",
+      "github",
+      { "x-github-event": "check_run" },
+      { repo: "acme/api" }
+    ],
     ["an unrecognised harbor type (fail closed)", "harbor", {}, { type: "SCANNING_COMPLETED" }],
-    ["an observed event with no kind (fail closed)", "github", {}, { _observed: true, repo: "acme/api" }]
+    [
+      "an observed event with no kind (fail closed)",
+      "github",
+      {},
+      { _observed: true, repo: "acme/api" }
+    ]
   ])("%s", (_label, sourceKind, headers, payload) => {
     expect(classifySourceEvent(sourceKind, headers, payload).proposesChange).toBe(false);
   });
@@ -43,8 +83,18 @@ describe("classifySourceEvent — source events still propose", () => {
     ["harbor PUSH_ARTIFACT", "harbor", {}, { type: "PUSH_ARTIFACT" }],
     ["github pollCommits", "github", {}, observed("push")],
     ["gitea pollPackages (filed as custom)", "gitea", {}, observed("custom")],
-    ["first-party report (no header, not observed)", "github", {}, { repo: "acme/api", commit: "abc" }],
-    ["first-party report for a source kind with no adapter", "terraform", {}, { repo: "acme/infra" }]
+    [
+      "first-party report (no header, not observed)",
+      "github",
+      {},
+      { repo: "acme/api", commit: "abc" }
+    ],
+    [
+      "first-party report for a source kind with no adapter",
+      "terraform",
+      {},
+      { repo: "acme/infra" }
+    ]
   ])("%s", (_label, sourceKind, headers, payload) => {
     expect(classifySourceEvent(sourceKind, headers, payload).proposesChange).toBe(true);
   });

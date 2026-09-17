@@ -495,6 +495,10 @@ Webhook ingress: persist-then-process (DESIGN §8 "Webhook ingestion: raw payloa
 
 M7 (MAJOR #5, adversarial review): the PROVIDER's own delivery identity — GitHub's `X-GitHub-Delivery` (unique per delivery, stable across a redelivery of the same event), or a `payload-sha256:<hex>` of the raw body when no delivery header exists. A unique index on `(org_id, source_kind, dedupe_key)` makes a redelivered/replayed (even validly-signed) webhook a no-op instead of a second Change → second real workflow_dispatch/sync/apply. The PK `id` is freshly minted per HTTP request and is NOT this key (that was the bug).
 
+### §72a. `commit_sha` (0113)
+
+THE COMMIT A STORED EVENT IS ABOUT, derived by the database: `coalesce(payload->>'commitSha', payload->'workflow_run'->>'head_sha', payload->'object_attributes'->>'sha')`, STORED. It serves the "built upstream" run lookup by commit (`observed-run-facts.ts`), since a CI run is stored and never becomes a change (docs/proposals/run-events-are-not-releases.md). It is a generated column rather than an expression index because jsonb `->>` is not leakproof. Under this table's forced RLS, an expression predicate was measured as a post-scan Filter, while the column is an index condition. Nothing writes it, and a push webhook (which carries `after`/`head_commit`) leaves it NULL. That is harmless: only run shapes are looked up.
+
 ### §73. The authenticated principal that reported this event
 
 ADR-0028 (migration 0054): the authenticated principal that reported this event. The processor runs as SYSTEM_ACTOR_ID — right for the CHANGE, since nobody asked for it — but a declared `stageDependencies` on the same body MINTS a `depends_on` edge, and an edge write attributed to the system actor leaves "who declared this?" unanswerable in the audit chain, the federation journal and the emitted event. NULL for observe()-driven rows (no principal exists) and for rows written before 0054; the processor falls back to the system actor.

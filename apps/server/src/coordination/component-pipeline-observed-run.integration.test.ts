@@ -174,10 +174,20 @@ describe("component pipeline: observedRun (§3 Segment 2 — the upstream build 
       kind: "workflow_run",
       occurredAt: "2026-08-20T12:00:00.000Z",
       correlation: { repo: "acme/svc", commitSha: commit, correlationKey: "run-77" },
-      raw: { id: 77, status: "success", head_sha: commit, html_url: "https://gitea.example/acme/svc/actions/runs/77" }
+      raw: {
+        id: 77,
+        status: "success",
+        head_sha: commit,
+        html_url: "https://gitea.example/acme/svc/actions/runs/77"
+      }
     });
     expect(await observedRunOf(component.id)).toEqual(
-      expect.objectContaining({ sourceKind: "gitea", runId: "77", workflowName: null, workflowPath: null })
+      expect.objectContaining({
+        sourceKind: "gitea",
+        runId: "77",
+        workflowName: null,
+        workflowPath: null
+      })
     );
   });
 
@@ -192,7 +202,10 @@ describe("component pipeline: observedRun (§3 Segment 2 — the upstream build 
     const otherCommit = await createOrphanComponent(server, org, uniq("other-commit"));
     await release(otherCommit, "github", { repo: "acme/other", commit: sha() });
     await observeRun("github", githubPolledRun("acme/other", sha(), 4242));
-    expect(await observedRunOf(otherCommit.id), "a run at a DIFFERENT commit is not this release's").toBeNull();
+    expect(
+      await observedRunOf(otherCommit.id),
+      "a run at a DIFFERENT commit is not this release's"
+    ).toBeNull();
 
     const noSourceRef = await createOrphanComponent(server, org, uniq("bare-change"));
     await release(noSourceRef, "manual", undefined);

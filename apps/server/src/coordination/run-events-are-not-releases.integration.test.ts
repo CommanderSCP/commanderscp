@@ -42,7 +42,6 @@ import { selectEventsByCommit } from "./observed-run-facts.js";
  * consumer whose SKIP LOCKED turns the inline call into a silent no-op.
  */
 
-
 interface StandIn {
   commits: { sha: string; date: string; files: string[] }[];
   runs: Record<string, unknown>[];
@@ -98,7 +97,10 @@ describe("a CI run is not a release (run-events-are-not-releases.md option C)", 
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(body));
       };
-      if (req.method === "POST" && /\/app\/installations\/[^/]+\/access_tokens$/.test(url.pathname)) {
+      if (
+        req.method === "POST" &&
+        /\/app\/installations\/[^/]+\/access_tokens$/.test(url.pathname)
+      ) {
         return send(201, {
           token: "stand-in-installation-token",
           expires_at: new Date(Date.now() + 3_600_000).toISOString()
@@ -183,8 +185,13 @@ describe("a CI run is not a release (run-events-are-not-releases.md option C)", 
     return events;
   }
 
-  async function componentWithWholeRepoMapping(sourceKind: string, repoPattern: string | undefined) {
-    const component = await createTestComponent(admin, { name: `run-events-${randomUUID().slice(0, 8)}` });
+  async function componentWithWholeRepoMapping(
+    sourceKind: string,
+    repoPattern: string | undefined
+  ) {
+    const component = await createTestComponent(admin, {
+      name: `run-events-${randomUUID().slice(0, 8)}`
+    });
     await inOrg((tx) =>
       createSourceMapping(tx, {
         orgId: org.orgId,
@@ -265,7 +272,9 @@ describe("a CI run is not a release (run-events-are-not-releases.md option C)", 
     const component = await componentWithWholeRepoMapping("github", REPO);
     const sha = uniqueSha();
     const runId = 35046979497;
-    standIn.commits = [{ sha, date: "2026-09-16T02:10:33Z", files: ["commanderscp/apps/app.yaml"] }];
+    standIn.commits = [
+      { sha, date: "2026-09-16T02:10:33Z", files: ["commanderscp/apps/app.yaml"] }
+    ];
     standIn.runs = [githubRun(runId, sha, "2026-09-16T02:10:47Z", REPO)];
 
     const events = await pollGithub(REPO, "gh-poll-1");
@@ -331,7 +340,9 @@ describe("a CI run is not a release (run-events-are-not-releases.md option C)", 
     expect(released).toHaveLength(1);
 
     const observedRun = await observedRunOf(component.id);
-    expect(observedRun?.runId, "this commit's run, not the other commit's or the fork's").toBe("9001");
+    expect(observedRun?.runId, "this commit's run, not the other commit's or the fork's").toBe(
+      "9001"
+    );
     expect(observedRun?.changeId).toBe(released[0]!.objectId);
   });
 
@@ -421,7 +432,10 @@ describe("a CI run is not a release (run-events-are-not-releases.md option C)", 
           })}`
         )
       );
-      return (rows as unknown as { rows?: Record<string, string>[] }).rows ?? (rows as unknown as Record<string, string>[]);
+      return (
+        (rows as unknown as { rows?: Record<string, string>[] }).rows ??
+        (rows as unknown as Record<string, string>[])
+      );
     });
     const text = plan.map((r) => Object.values(r).join(" ")).join("\n");
     expect(text).toContain("change_source_events_org_kind_commit");

@@ -3378,7 +3378,7 @@ WHAT THE PROVIDERS ACTUALLY MAP, measured rather than assumed. `@scp/plugin-gith
 
 THE JOIN IS STILL A FACT SCP ASSERTED, WHICH IS THE ONLY REASON THIS IS SAFE. It matches the event's commit against `dependency_bump_authorships.head_commit` — a value SCP wrote into its own server-owned record, from a push that had already satisfied the two-sided branch check above. It is not a name the payload chose, and no tenant-facing write path can put a value there. The repo must ALSO agree, by the same case-insensitive rule, so an event from a repository SCP never recorded can never attach however its commit was obtained.
 
-WHY IT MATTERS THAT THIS ATTACHES RATHER THAN FALLING THROUGH: without it, a `workflow_run` for the bump's own commit matches the component's ordinary source mapping and mints a SECOND, unrelated change for a release that already has one — the exact duplication ADR-0032 §9 exists to prevent, arriving through a different event than the one §9 anticipated.
+WHY IT MATTERS THAT THIS ATTACHES RATHER THAN FALLING THROUGH: without it, a `workflow_run` for the bump's own commit matches the component's ordinary source mapping and mints a SECOND, unrelated change for a release that already has one — the exact duplication ADR-0032 §9 exists to prevent, arriving through a different event than the one §9 anticipated. (2026-09-16: that fall-through was not bump-specific. Every non-bump run minted a change the same way, and §1107a now stops all of them. The attach route is still what makes auto-merge reachable, because a refused run proposes nothing and so cannot trigger the bump gate.)
 
 Fail-closed at every step, exactly like the branch route: no commit on the event, no repo, no bump change claiming that commit ⇒ `null`, and ingress proceeds as it always has.
 
@@ -4803,7 +4803,9 @@ THE TWO LENGTHS ARE MEASURED, NOT DECORATIVE. `executor_ref` is bounded at the d
 
 ### §575. THE `observedRun` FIELD OF A COMPONENT'S PIPELINE
 
-THE `observedRun` FIELD OF A COMPONENT'S PIPELINE (component-journey-view.md §3 Segment 2 — "upstream build"): "no binding: draw a single 'built upstream' marker carrying what SCP *did* observe … it reads 'GitHub Actions · CI · run 30858160395 ↗', not 'build: unknown'." Nothing reads the run fields out of `changes.source_ref` anywhere else in the tree; this module is the one place that does.
+THE `observedRun` FIELD OF A COMPONENT'S PIPELINE (component-journey-view.md §3 Segment 2 — "upstream build"): "no binding: draw a single 'built upstream' marker carrying what SCP *did* observe … it reads 'GitHub Actions · CI · run 30858160395 ↗', not 'build: unknown'." Nothing else in the tree reads run fields out of a stored payload. This module is the only place that does.
+
+**WHERE THE RUN IS READ FROM (changed 2026-09-16, docs/proposals/run-events-are-not-releases.md, owner option C).** A CI run is not a release. `workflow_run` / Pipeline Hook events are stored in `change_source_events` and propose nothing (`source-event-kinds.ts`), so no change carries run identity any more. The run is found by joining the stored events on the RELEASE's own commit (`changes.source_ref.commit`), through `change_source_events.commit_sha` (migration 0113, a generated column). The "shapes" below are now the shapes of the stored event, read through the same `canonicalizeSourceRef(payload, extractHint(...))` a change's `sourceRef` was built with, so the predicate and every writer shape are unchanged. A run-shaped `sourceRef` planted on a change through `POST /changes` is no longer read.
 
 ## The writer shapes this module traces (every one, before coding)
 
@@ -4849,7 +4851,7 @@ THE `observedRun` FIELD OF A COMPONENT'S PIPELINE (component-journey-view.md §3
   misread an MR webhook as a pipeline run.
 ```
 
-A change proposed directly through `POST /changes` with a hand-crafted `sourceRef` that happens to match one of these shapes is read exactly the same way (nothing here distinguishes how a change arrived) — which is also how the HTTP-layer test drives this without needing the whole webhook pipeline standing up.
+(Superseded 2026-09-16: a hand-crafted run-shaped `sourceRef` on a change is no longer read. The tests now store the run through its real writer — `ingestObservedEvents` or the `/webhook` route with the provider's event header — beside a release at the same commit.)
 
 Every reader below is defensive: a key that is absent, the wrong type, or empty yields `null` fields, never a thrown error and never a fabricated value.
 
@@ -4859,11 +4861,11 @@ THE PREDICATE ("a change's `sourceRef` carries run identity") applied to ONE cha
 
 ### §577. Bounded newest-first scan size
 
-Bounded newest-first scan size — same shape as `artifact-facts.ts#pickArtifactChange`'s fallback page: the predicate spans three providers' writer shapes and cannot be expressed as one portable SQL prefilter, so a page of candidates is read and reduced in JS. component-journey-view.md §1 measured 336 of 343 changes on the estate as carrying run identity, so this is not a starvation risk in practice.
+Bounded newest-first scan size — same shape as `artifact-facts.ts#pickArtifactChange`'s fallback page. Two bounds apply: the newest 50 changes of the component, then ONE org-scoped read of at most 200 stored events at those changes' commits (`selectEventsByCommit`, served by the `(org_id, source_kind, commit_sha)` index). The run predicate spans three providers' writer shapes and cannot be one portable SQL prefilter, so that page is reduced in JS. The commit is a generated COLUMN rather than an expression because `change_source_events` has forced RLS and jsonb `->>` is not leakproof: an expression predicate was measured as a post-scan `Filter`, and the column is an `Index Cond` (asserted by `run-events-are-not-releases.integration.test.ts`).
 
 ### §578. THE PICK — the MOST RECENT change of the component
 
-THE PICK — the MOST RECENT change of the component (newest `created_at`, object-id tiebreak, the same deterministic ordering `artifact-facts.ts` uses) whose `sourceRef` carries run identity. Null when none of the scanned page does.
+THE PICK — the MOST RECENT change of the component (newest `created_at`, object-id tiebreak, the same deterministic ordering `artifact-facts.ts` uses) for whose own commit a run was observed, and for that change the most recently recorded such run. A run counts only when the predicate holds AND its repo is known and equals the change's repo, case-insensitively: a commit sha is not unique across repositories, since a fork carries its parent's shas. Null when none of the scanned page has one. Arrival order does not matter: a run stored before its push is found once the push's release exists.
 
 ## `apps/server/src/coordination/observed-state-gate-critical-leaf.integration.test.ts`
 
@@ -9459,6 +9461,14 @@ ADR-0046 §2 — THE CONFIG-SOURCE TRIGGER. A push to a registered config repo e
 AN ADDITIONAL EFFECT OF THIS EVENT, NOT AN ALTERNATIVE TO CORRELATION: a repo can be both a team's config source AND a component's release source, so this runs BEFORE the `matchComponentForSource` branch and does not `continue`. Making it exclusive would mean a repo that gained a config-source registration silently stopped proposing changes.
 
 IT ONLY ENQUEUES. Reading the manifest is an out-of-process RPC and applying it writes the graph; neither belongs in this transaction, whose other work is correlating unrelated events. A failure here would abort the tx — and a try/catch would not save it, because a caught Postgres error leaves the tx aborted and the next statement dies somewhere unrelated. So the only thing done here is the one cheap, safe write. See `config-source/sync-queue-repo.ts`.
+
+### §1107a. Only a source event proposes a release
+
+ONLY A SOURCE EVENT PROPOSES A RELEASE (docs/proposals/run-events-are-not-releases.md, owner decision 2026-09-16). `classifySourceEvent` (`source-event-kinds.ts`) is the one allowlist. It reads the provider event header (or harbor's in-body `type`), else an observed row's `kind`. An event carrying neither is a first-party report. Source events are github `push`/`release`; gitea `push`/`release`/`package`; gitlab `Push Hook`/`Tag Push Hook`; harbor `PUSH_ARTIFACT`; observed `push`/`release`/`custom` (`custom` is the kind gitea's package poll files a package push under); and first-party reports. Everything else is stored and marked processed, and it proposes nothing and enqueues no config-source sync. That covers every `workflow_run` (github/gitea/gitlab polls, the github webhook, argo-workflows), gitlab `Pipeline Hook`, argocd `sync`, github `deployment`, and every pull-request event. It is an ALLOWLIST, so an event kind nobody listed fails closed.
+
+It runs AFTER the M21.5 provenance attach route, which still consumes `pull_request` and `workflow_run` to attach them to the bump change SCP authored. No Decision is written per refused event: an Argo CD instance emits one per reconcile, and a per-event write is the decisions-growth incident's shape. This mirrors §1108. The stored row keeps its headers and `kind`, so the classification is re-derivable.
+
+Before this gate the processor never read the event kind. On the homelab, 87 CI runs became changes and 40 of them drove real Argo CD syncs of a component their commits never touched: a run carries no paths, so it matched the top-ranked whole-repo mapping.
 
 ### §1108. No `source_mappings` row matched
 
