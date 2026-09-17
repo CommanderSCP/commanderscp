@@ -249,4 +249,30 @@ describe("device authorization flow", () => {
     });
     expect(write.statusCode).toBe(403);
   });
+
+  it("verificationUri is a relative path (never internalBaseUrl's 127.0.0.1) when publicBaseUrl is unset", async () => {
+    const start = await server.app.inject({ method: "POST", url: "/api/v1/auth/device/start" });
+    expect(start.statusCode, start.body).toBe(200);
+    const started = start.json() as StartBody;
+    expect(started.verificationUri).toBe("/device");
+    expect(started.verificationUri).not.toContain("127.0.0.1");
+  });
+
+  it("verificationUri is built from publicBaseUrl, never internalBaseUrl's 127.0.0.1, when configured", async () => {
+    const publicServer = await buildTestServer({
+      publicBaseUrl: "https://scp.example.com"
+    });
+    try {
+      const start = await publicServer.app.inject({
+        method: "POST",
+        url: "/api/v1/auth/device/start"
+      });
+      expect(start.statusCode, start.body).toBe(200);
+      const started = start.json() as StartBody;
+      expect(started.verificationUri).toBe("https://scp.example.com/device");
+      expect(started.verificationUri).not.toContain("127.0.0.1");
+    } finally {
+      await publicServer.close();
+    }
+  });
 });

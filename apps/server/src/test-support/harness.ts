@@ -77,6 +77,10 @@ export async function buildTestServer(
     operatorToken?: string;
     federationRole?: "commander" | "outpost" | "retrans";
     role?: "all" | "api" | "worker";
+    /** Sets `SCP_PUBLIC_BASE_URL` (config.ts's `publicBaseUrl`) — the human-facing base URL the
+     *  device-authorization flow's `verificationUri` is built from. Unset ⇒ the route falls back
+     *  to a relative `/device` path (routes/device-flow.ts). */
+    publicBaseUrl?: string;
   } = {}
 ): Promise<TestServer> {
   const config = loadConfig({
@@ -92,7 +96,8 @@ export async function buildTestServer(
     // Unset by default so every existing test keeps the pre-M16.3 default (`commander`, SPA served).
     ...(opts.federationRole ? { SCP_FEDERATION_ROLE: opts.federationRole } : {}),
     // M21.7 follow-up: the PROCESS axis. See docs/test-support.md §12.
-    ...(opts.role ? { SCP_ROLE: opts.role } : {})
+    ...(opts.role ? { SCP_ROLE: opts.role } : {}),
+    ...(opts.publicBaseUrl ? { SCP_PUBLIC_BASE_URL: opts.publicBaseUrl } : {})
   });
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
