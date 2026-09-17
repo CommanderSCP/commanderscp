@@ -8,7 +8,7 @@ import {
   type SyncScope,
   type TrustDomainId,
   PipelineHookKindSchema,
-  TestRunEvidenceSchema
+  PipelineEvidenceSchema
 } from "@scp/schemas";
 import {
   computeBundleChecksum,
@@ -32,6 +32,7 @@ import { recordAuditWitness } from "./audit-witness-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
 import {
   deleteHook,
+  recordAlarmEvidence,
   recordTestRunEvidence,
   upsertHook
 } from "../coordination/pipeline-hooks-repo.js";
@@ -367,28 +368,55 @@ async function applyEntry(
         console.error("[federation] pipeline_evidence_upsert: malformed payload — dropped");
         return;
       }
-      const parsed = TestRunEvidenceSchema.safeParse(p.evidence);
+      // `PipelineEvidenceSchema` is the closed union of both evidence kinds this door accepts
+      // (`TestRunEvidenceSchema` | `AlarmStateEvidenceSchema`, discriminated on `evidence.kind`) —
+      // widened from testRun-only so an outpost's bake-alarm reports travel the same channel
+      // (fixed defect: `recordAlarmEvidence` never appended this entry at all; see
+      // `pipeline-hooks-repo.ts`). An OLDER peer that only knows `TestRunEvidenceSchema` fails this
+      // safeParse the same way for an alarmState payload — different required fields, same
+      // "malformed — dropped" branch below — and moves on to the next entry; it never throws, so one
+      // entry it does not understand costs itself, not the bundle.
+      const parsed = PipelineEvidenceSchema.safeParse(p.evidence);
       if (!parsed.success) {
-        // PARSED, NOT TRUSTED. The gate reads `payload` as a `TestRunEvidence` — a row that does
+        // PARSED, NOT TRUSTED. The gate reads `payload` as a `PipelineEvidence` — a row that does
         // not satisfy the schema would be silently unreadable by the only function that consults
         // it, which is worse than absent because the hold would report "no evidence" while a row
         // sat there.
         console.error(
-          "[federation] pipeline_evidence_upsert: payload is not TestRunEvidence — dropped"
+          "[federation] pipeline_evidence_upsert: payload is not a known PipelineEvidence shape — dropped"
         );
         return;
       }
-      await recordTestRunEvidence(tx, orgId, {
-        federationImport: true,
+      const binding = {
         componentObjectId: p.componentObjectId,
         targetObjectId: p.targetObjectId,
         hookId: p.hookId,
         artifactDigest: typeof p.artifactDigest === "string" ? p.artifactDigest : null,
-        commitSha: typeof p.commitSha === "string" ? p.commitSha : null,
-        source: "peer_reported",
-        producerSubjectId: null,
-        evidence: parsed.data
-      });
+        commitSha: typeof p.commitSha === "string" ? p.commitSha : null
+      };
+      // DISPATCH ON THE DISCRIMINANT, exhaustively — mirrors the pushed door
+      // (`routes/pipelines.ts`'s `submitPipelineEvidence` handler): a future third evidence kind is
+      // a compile error here, not a silently-dropped import.
+      switch (parsed.data.kind) {
+        case "testRun":
+          await recordTestRunEvidence(tx, orgId, {
+            ...binding,
+            federationImport: true,
+            source: "peer_reported",
+            producerSubjectId: null,
+            evidence: parsed.data
+          });
+          return;
+        case "alarmState":
+          await recordAlarmEvidence(tx, orgId, {
+            ...binding,
+            federationImport: true,
+            source: "peer_reported",
+            producerSubjectId: null,
+            evidence: parsed.data
+          });
+          return;
+      }
       return;
     }
 
