@@ -522,6 +522,45 @@ to a different subsystem. Whether an outpost-signed manifest would then be ACCEP
 whether the receiving peer has that outpost's cosign key registered, which pairing may well do —
 worth measuring before sizing the fix, but the act itself is already unguarded.
 
+**§8.9 — enforced (2026-09-16).** `POST /api/v1/federation/exports/promotion` now asks
+`commanderOnlyFederationVerdict` after authentication and before any work
+(`routes/federation.ts:725`): an outpost, a retrans, or an UNDECLARED deployment answers 409 — the
+dependency routes' shape — and mints no cosign key on the way. The check is still one definition;
+only the refusal's rationale text became per-capability. Pinned at the HTTP route over four
+deployments (`routes/federation-promotion-commander-only.integration.test.ts`), each guard
+mutation-proved.
+
+*Measured first: an outpost-signed manifest would have been ACCEPTED, not merely producible.* Every
+instance serves its own cosign key, minting it on first use (`GET /federation/self`,
+`routes/federation.ts:260`); pairing stores whatever `cosignPublicKey` the operator supplies for a
+peer of ANY role (`PairPeerRequestSchema` in `packages/schemas/src/federation.ts:157`,
+`peers-repo.ts:178–234`); and import verifies against the exporter peer's key with no check of that
+peer's role (`promotion-repo.ts:637–667`). The documented pairing — `scp federation pair
+--cosign-public-key` from the peer's `scp federation self` — is all it took. The importer still does
+not check the exporter's role; that is defence in depth left open.
+
+*Census, no filters — three server paths produce a cosign signature or mint the instance key:*
+
+| Path | Mints | Signs | Now |
+|---|---|---|---|
+| `exportPromotionBundle` ← the export route (its only caller) | `promotion-repo.ts:183` | manifest, `:378` | **commander-only** |
+| `buildRelayTarball` ← `POST /federation/relay` and the auto-relay loop (`auto-relay.ts:315`) | `retrans-relay.ts:628` | relay `CHECKSUMS.txt`, `:638` | retrans-only, by design (`:353`) |
+| `getInstanceCosignPublicKey` ← `GET /federation/self`, `GET /federation/status` | `cosign-keys.ts:97` | — | any role |
+
+The air-gap release bundle (`deploy/airgap/src/build-bundle.ts`) signs with an operator key, not the
+instance key; every other cosign site verifies.
+
+**Key minting is NOT restricted — stopped, owner's call.** Row two is a legitimate non-commander
+signer: the retrans signs each relay tarball with its OWN instance cosign key (ADR-0019), and the
+outpost inbox verifies it against the retrans peer's registered key (`inbox-loop.ts:287–290`); row
+three is how that key gets distributed. Refusing to mint off the commander breaks the byte relay.
+It also contradicts the invariant as restated above — *"an outpost or retrans may only validate"*.
+Options: **(a)** narrow the invariant to "only the commander signs a *promotion manifest*; a retrans
+signs transport integrity of bytes it has validated", then refuse minting on outposts only —
+recommended, as it matches what is built; **(b)** keep the invariant literal and give the relay a
+separate transport key, so the instance key becomes commander-only; **(c)** leave minting open, as
+now, relying on the export route being the only manifest signer.
+
 ### 8.10 What building D2 found
 
 D2 landed as `d7baf27a`. Four things came out of building it that the decision did not anticipate.
