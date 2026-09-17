@@ -2,13 +2,17 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { is } from "drizzle-orm";
-import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
+import { getTableConfig, PgDialect, PgTable } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 import * as schema from "./schema.js";
 
 /** DRIZZLE-KIT'S SNAPSHOT STATE, against schema.ts. See docs/db.md §155. */
 
 const drizzleDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "drizzle");
+
+// Renders a `check()`'s `sql` value the same way drizzle-kit does when it writes a snapshot, so
+// the two sides of the comparison below are directly comparable text.
+const dialect = new PgDialect();
 
 type Snapshot = {
   tables: Record<
@@ -17,6 +21,7 @@ type Snapshot = {
       columns: Record<string, unknown>;
       indexes: Record<string, unknown>;
       uniqueConstraints: Record<string, unknown>;
+      checkConstraints: Record<string, { name: string; value: string }>;
     }
   >;
 };
@@ -83,5 +88,33 @@ describe("drizzle-kit snapshot state is current with schema.ts", () => {
       }
     }
     expect(missing.sort()).toEqual([]);
+  });
+
+  // GAP CLOSED (team-pipeline-iac increment 0): this file's three cases above never looked at
+  // `check()` at all. `pipeline_evidence_source_check` drifted for a whole migration (0107 widened
+  // the live constraint by hand; nothing here — or in schema-ddl-drift.integration.test.ts, which
+  // is scoped to indexes only — would have caught schema.ts and the snapshot quietly agreeing on a
+  // stale three-value list). This closes the schema.ts-vs-snapshot half; the
+  // schema.ts-vs-migrated-database half is `schema-ddl-drift.integration.test.ts`.
+  it("declares the same check constraints, with the same expression, as the snapshot", () => {
+    const mismatches: string[] = [];
+    for (const [key, config] of tables) {
+      const known = snapshot.tables[key]?.checkConstraints ?? {};
+      for (const check of config.checks) {
+        if (!check.name) continue;
+        const declaredValue = dialect.sqlToQuery(check.value).sql;
+        const snapshotValue = known[check.name]?.value;
+        if (snapshotValue === undefined) {
+          mismatches.push(
+            `${config.name}.${check.name}: declared in schema.ts, absent from the snapshot`
+          );
+        } else if (snapshotValue !== declaredValue) {
+          mismatches.push(
+            `${config.name}.${check.name}: schema.ts says [${declaredValue}], snapshot says [${snapshotValue}]`
+          );
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
   });
 });

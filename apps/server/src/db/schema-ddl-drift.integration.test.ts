@@ -1,9 +1,21 @@
 import pg from "pg";
 import { is } from "drizzle-orm";
-import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
+import { getTableConfig, PgDialect, PgTable } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "./schema.js";
 import { testDatabaseUrl } from "../test-support/harness.js";
+
+// Renders a `check()`'s `sql` value to text, the same way drizzle-kit would when writing a
+// snapshot. Postgres does NOT echo this text back — see `liveCheckConstraints` below.
+const dialect = new PgDialect();
+
+/** The single-quoted string literals in a CHECK expression, order-independent. Postgres rewrites
+ *  `x IN ('a','b')` to `x = ANY (ARRAY['a'::text,'b'::text])` in `pg_get_constraintdef`, and casts
+ *  vary by column type, so comparing rendered SQL text byte-for-byte between schema.ts and the live
+ *  database is not meaningful — the literal SET is the part that must agree. */
+function literalSet(expression: string): string[] {
+  return [...expression.matchAll(/'([^']*)'/g)].map((m) => m[1]!).sort();
+}
 
 /** THE INDEX DRIFT GATE. See docs/db.md §37. */
 
@@ -48,6 +60,38 @@ async function liveIndexes(admin: pg.Client): Promise<{ indexname: string; table
   return result.rows;
 }
 
+/** Every `check()` schema.ts declares, by name, rendered as drizzle-kit would render it. */
+function declaredCheckConstraints(): Map<string, { tablename: string; literals: string[] }> {
+  const out = new Map<string, { tablename: string; literals: string[] }>();
+  for (const value of Object.values(schema)) {
+    if (!is(value, PgTable)) continue;
+    const config = getTableConfig(value);
+    for (const check of config.checks) {
+      if (!check.name) continue;
+      out.set(check.name, {
+        tablename: config.name,
+        literals: literalSet(dialect.sqlToQuery(check.value).sql)
+      });
+    }
+  }
+  return out;
+}
+
+/** Every CHECK constraint (`contype = 'c'`) in the migrated database, by name. */
+async function liveCheckConstraints(
+  admin: pg.Client
+): Promise<{ conname: string; tablename: string; def: string }[]> {
+  const result = await admin.query<{ conname: string; tablename: string; def: string }>(
+    `SELECT co.conname AS conname, t.relname AS tablename, pg_get_constraintdef(co.oid) AS def
+       FROM pg_constraint co
+       JOIN pg_class t ON t.oid = co.conrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' AND co.contype = 'c'
+      ORDER BY t.relname, co.conname`
+  );
+  return result.rows;
+}
+
 describe("schema.ts and the migrated DDL declare the same indexes", () => {
   let admin: pg.Client;
 
@@ -78,5 +122,60 @@ describe("schema.ts and the migrated DDL declare the same indexes", () => {
     const liveNames = new Set(live.map((r) => r.indexname));
     const phantom = [...declaredIndexNames()].filter((n) => !liveNames.has(n)).sort();
     expect(phantom).toEqual([]);
+  });
+});
+
+// GAP PARTIALLY CLOSED (team-pipeline-iac increment 0). This is the gate that would have caught
+// `pipeline_evidence_source_check` drifting: migration 0107 widened the LIVE constraint by hand
+// without updating schema.ts, and `snapshot-freshness.test.ts` could not see it either, because the
+// drizzle-kit snapshot it compares against was reconciled from schema.ts at the same stale value —
+// two things that agree with each other are not thereby correct. This test's ground truth is the
+// migrated database itself, same as the index gate above.
+//
+// SCOPE NOTE, found while building this: a full "declares every check constraint the database
+// holds, by name" assertion (the shape of the two index tests above) currently fails on 18
+// pre-existing constraints across 7 MODELED tables — `bundle_transfers`, `governance_move_rungs`,
+// `instance_freezes` (x4, one of whose OWN doc comment in schema.ts says "(DB CHECK)" — the exact
+// "comment names a hazard" case, never swept), `scan_exclusion_admissions` (x3),
+// `scan_requirement_floors` (x3), `source_mappings` (x2), and `governance_move_instance_rung` —
+// plus 3 more on the tables `docs/BUILD_AND_TEST.md` §3.2 already documents as unmodeled entirely
+// (`scan_db_staleness_policy`, `dependency_subscription_unlock`). That is a different property
+// (total absence, not a value mismatch) and a much larger backfill than this increment's two named
+// defects. Left for a dedicated follow-up rather than silently absorbed here; the value-agreement
+// test below still closes the ORIGINAL gap for every check constraint schema.ts does declare, and
+// will catch a NEW value drift on any of these 18 the moment someone adds a `check()` for it.
+describe("schema.ts and the migrated DDL declare the same check constraints", () => {
+  let admin: pg.Client;
+
+  beforeAll(async () => {
+    admin = new pg.Client({ connectionString: testDatabaseUrl() });
+    await admin.connect();
+  });
+
+  afterAll(async () => {
+    await admin?.end();
+  });
+
+  it("declares the SAME allowed values as the migrated database, for every shared check constraint", async () => {
+    // Comparing rendered SQL text would be wrong on its face: Postgres rewrites `IN (...)` to
+    // `= ANY (ARRAY[...])` with per-value casts, so schema.ts's text and `pg_get_constraintdef`'s
+    // text never match syntactically even when they mean the same thing. The literal SET is the
+    // fact that must agree — and disagreeing here is exactly the shape of bug this test exists for:
+    // a value present in one but not the other, discovered by neither side matching the mismatch.
+    const live = await liveCheckConstraints(admin);
+    const declared = declaredCheckConstraints();
+    const mismatches: string[] = [];
+    for (const row of live) {
+      const decl = declared.get(row.conname);
+      if (!decl) continue; // reported by the name-coverage test above
+      const liveLiterals = literalSet(row.def);
+      if (JSON.stringify(liveLiterals) !== JSON.stringify(decl.literals)) {
+        mismatches.push(
+          `${row.conname} (${row.tablename}): schema.ts allows [${decl.literals.join(",")}], ` +
+            `the database allows [${liveLiterals.join(",")}]`
+        );
+      }
+    }
+    expect(mismatches).toEqual([]);
   });
 });
