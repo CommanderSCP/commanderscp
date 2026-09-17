@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { assertProductionSecretsOrThrow } from "./boot-checks.js";
+import { assertProductionSecretsOrThrow, federationRoleUndeclaredWarning } from "./boot-checks.js";
+
+/** §8.9 — an undeclared federation role is load-bearing, so boot names it. */
+describe("federationRoleUndeclaredWarning", () => {
+  it("an UNDECLARED role yields exactly one line naming the variable and the consequence", () => {
+    const line = federationRoleUndeclaredWarning({ federationRoleDeclared: false });
+    expect(line).not.toBeNull();
+    expect(line).not.toContain("\n");
+    expect(line).toContain("SCP_FEDERATION_ROLE is not set");
+    expect(line).toMatch(/promotion export, cosign key minting and dependency automation.*REFUSED/);
+  });
+
+  it("a DECLARED role is silent", () => {
+    expect(federationRoleUndeclaredWarning({ federationRoleDeclared: true })).toBeNull();
+  });
+});
 
 /** D6 (§7.3) boot-refusal gate. */
 describe("assertProductionSecretsOrThrow (D6)", () => {

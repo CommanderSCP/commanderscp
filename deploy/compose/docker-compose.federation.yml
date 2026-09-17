@@ -54,6 +54,7 @@ services:
     networks: [domain-a]
     environment:
       SCP_ROLE: all
+      SCP_FEDERATION_ROLE: commander # e2e-m6 inits domain A as the commander
       PORT: "8080"
       HOST: "0.0.0.0"
       DATABASE_URL: postgres://scp:scp@domain-a-postgres:5432/scp
@@ -85,6 +86,7 @@ services:
     networks: [domain-b]
     environment:
       SCP_ROLE: all
+      SCP_FEDERATION_ROLE: outpost # e2e-m6 inits domain B as an outpost
       PORT: "8080"
       HOST: "0.0.0.0"
       DATABASE_URL: postgres://scp:scp@domain-b-postgres:5432/scp
