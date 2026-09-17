@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, ExternalLink, TriangleAlert } from "lucide-react";
+import { TargetReticle } from "../icons/catalog-marks";
 import type { ChangeStageDependencyTarget } from "@scp/sdk";
 import { realObservedImages } from "@scp/schemas";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -480,7 +481,16 @@ export function PipelineWaveCard({
               data-held={anyHeld ? "true" : undefined}
             >
               <div className="flex min-w-0 items-center justify-between gap-2">
-                <TargetName target={target} nameOf={nameOf} />
+                <span className="flex min-w-0 items-center gap-1.5">
+                  {/* The target mark (design-system §1.6, owner 2026-09-11): every wave target wears it. */}
+                  <TargetReticle
+                    className="size-3.5 shrink-0 text-slate-400"
+                    strokeWidth={2}
+                    aria-hidden="true"
+                    data-testid={`${testIdPrefix}-target-mark`}
+                  />
+                  <TargetName target={target} nameOf={nameOf} />
+                </span>
                 {/* BOTH, not one instead of the other (ADR-0028 increment 4, extended to the
                     freeze half). `held` is the headline; the raw status stays beside it because
                     `pending` is a real recorded value and substituting it would be a second kind

@@ -1075,6 +1075,33 @@ describe("each node kind is visually distinct and self-explaining", () => {
     ]);
   });
 
+  // Owner's mark vocabulary, 2026-09-11 (never implemented until now): a deployment target gets the
+  // custom TargetReticle mark, a source/config repo gets lucide's Warehouse, and an image/npm/rpm/
+  // chart registry gets lucide's Container. Each assertion below is a fingerprint unique to that
+  // icon's path data — never the icon's display name, which lucide does not expose on the DOM.
+  it("gives stage/source/registry the owner's target-reticle/warehouse/container marks", () => {
+    const stageHtml = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    // TargetReticle's outer ranging ring — no other catalog mark draws a circle at this radius.
+    expect(stageHtml, "stage should carry the target reticle").toContain('cx="12" cy="12" r="7"');
+
+    const sourceHtml = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[]}
+        upstream={{ domainId: "d-self", name: "self", isSelf: true, role: "outpost" }}
+        domainLocal={false}
+      />
+    );
+    // lucide Warehouse's roof line.
+    expect(sourceHtml, "source should carry lucide's Warehouse").toContain('d="M6 13h12"');
+
+    const registryHtml = renderToStaticMarkup(<RegistryNodeForTest registry={null} />);
+    // lucide Container's front-left edge.
+    expect(registryHtml, "registry should carry lucide's Container").toContain(
+      'd="M10 21.9V14L2.1 9.1"'
+    );
+  });
+
   it("says what each node DOES, not just what it is called", () => {
     const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
     expect(html, "a bare title assumes the reader already knows the pipeline model").toContain(

@@ -67,6 +67,18 @@ Structurally-expected absence (fresh outpost with zero syncs, Layer B unmodeled 
 - Every icon is `aria-hidden="true"` unless it is the sole content of a control, in which case the control gets `aria-label`.
 - Federation role marks (custom, `src/components/icons/federation-roles.tsx`, built via `createLucideIcon` — owner direction 2026-08-11): commander `CommanderStar` (general's star over a base bar), outpost `OutpostFort` (crenellated fort tower), retrans `RetransMast` (antenna mast with signal arcs on BOTH flanks — receive/resend). Used in every role badge and the Outposts nav entry; `unset` deliberately has no mark.
 - Catalog marks (custom, `src/components/icons/catalog-marks.tsx` — owner direction 2026-08-11): service `ServiceGuidon` (swallow-tail unit standard), assembly `AssemblyStack` (crate stack — materiel grouped for movement), component `ComponentCrate` (cross-braced ammo crate — the unit that ships). Used in the nav, StatCards, and — via `lib/graph-glyphs.ts` data-URI rasterization of the SAME path data — painted white inside graph canvas nodes (glyph supplements shape+colour, never replaces them). The sidebar also wears an instance-role chip (post-auth only — the login page deliberately never learns the role: pre-auth topology disclosure).
+- Deployment target / source / registry mark vocabulary (owner, 2026-09-11):
+
+  | thing | mark | source |
+  |---|---|---|
+  | Service | `ServiceGuidon` | custom, `catalog-marks.tsx` |
+  | Assembly | `AssemblyStack` | custom, `catalog-marks.tsx` |
+  | Component / artifact | `ComponentCrate` | custom, `catalog-marks.tsx` |
+  | Deployment target | `TargetReticle` (ranging ring(s) + four short cardinal ticks, same 24px viewBox / 2px stroke as the other catalog marks) | custom, `catalog-marks.tsx` — `TARGET_RETICLE_PATHS` |
+  | Source (code/config repo) | `Warehouse` | lucide, imported |
+  | Registry (image/npm/rpm/chart repo) | `Container` | lucide, imported |
+
+  A target's *Type* stays plain text — no per-type glyph ("targets would have a good military-esque target icon. Then we show the type of target, though icon not needed.", owner). `TargetReticle` is the ONLY new custom mark; `Warehouse`/`Container` are stock lucide icons used as-is, since a source or registry is not a first-class graph-object type (no `typeId` of `source`/`registry` exists — census of `apps/server/src` and `packages/*/src`), so neither reaches the graph canvas glyph map, only `lib/registries.ts`, `component-pipeline.tsx`'s `NODE_ICON`, `setup.tsx`'s checklist, and `outpost-dashboard.tsx`'s target cards.
 - Canonical vocabulary (no substitutes): forward/drill-in `ArrowRight`; back `ArrowLeft`; external (leaves CommanderSCP) `ExternalLink` at `size-3.5`, gap `gap-1`, always after the text; pass `Check`; fail `X`; pending `Circle`; partial/in-progress `CircleDashed`; warning `TriangleAlert`; error/blocked `CircleAlert`; unknown/unobservable `CircleHelp`; info affordance `Info`; select chevron `ChevronDown`.
 
 ---

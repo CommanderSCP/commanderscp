@@ -1,7 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { ArrowRight, EyeOff, Server } from "lucide-react";
+import { ArrowRight, EyeOff } from "lucide-react";
 import type { ExecutorBinding, GraphObject, SourceMapping } from "@scp/schemas";
+import { TargetReticle } from "../components/icons/catalog-marks";
 import { client } from "../lib/client";
 import { federationSelfKey, registryListKey } from "../lib/query-client";
 import { Badge } from "../components/ui/badge";
@@ -188,7 +189,7 @@ export function OutpostDashboardPage(): React.JSX.Element {
             </SectionLabel>
             {myTargets.length === 0 ? (
               <EmptyState
-                icon={Server}
+                icon={TargetReticle}
                 message={
                   !selfDomainId
                     ? "Federation isn't initialised on this instance yet, so no target can be attributed to it."
@@ -281,7 +282,11 @@ function TargetCard({
     <Card data-testid="outpost-target-card">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Server className="size-4 shrink-0 text-army-600" strokeWidth={2} aria-hidden="true" />
+          <TargetReticle
+            className="size-4 shrink-0 text-army-600"
+            strokeWidth={2}
+            aria-hidden="true"
+          />
           <Link
             to="/$basePath/$idOrUrn"
             params={{ basePath: "deployment-targets", idOrUrn: target.id }}

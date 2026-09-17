@@ -5,12 +5,12 @@ import {
   ArrowRight,
   ClipboardList,
   EyeOff,
-  GitBranch,
   Link2,
-  Server,
   Snowflake,
+  Warehouse,
   type LucideIcon
 } from "lucide-react";
+import { TargetReticle } from "../components/icons/catalog-marks";
 import type {
   CreateFreezeRequest,
   Freeze,
@@ -95,7 +95,7 @@ export function buildChecklistRows(data: SetupChecklistData): ChecklistRowView[]
     },
     {
       key: "deployment-targets",
-      icon: Server,
+      icon: TargetReticle,
       label: "Deployment targets",
       description: "Where a component can be placed and deployed.",
       count: targetsCount,
@@ -130,7 +130,7 @@ export function buildChecklistRows(data: SetupChecklistData): ChecklistRowView[]
     },
     {
       key: "source-mappings",
-      icon: GitBranch,
+      icon: Warehouse,
       label: "Source mappings",
       description: "Repos routed to components, by source kind.",
       count: mappingsTotal,

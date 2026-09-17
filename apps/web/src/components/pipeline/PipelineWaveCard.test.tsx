@@ -524,3 +524,13 @@ describe("PipelineWaveCard: the wave-level 'N held' chip (ChangeWaveSchema.heldT
     expect(statusBadge(withChip)).toBe(statusBadge(withoutChip));
   });
 });
+
+describe("PipelineWaveCard: the target mark (design-system §1.6, owner 2026-09-11)", () => {
+  it("every wave target row wears the TargetReticle, ahead of its name", () => {
+    const html = renderCard(BASE_TARGET);
+    const mark = html.indexOf("M12 2.5v1.7"); // the reticle's north tick — its fingerprint
+    expect(mark).toBeGreaterThan(-1);
+    expect(mark).toBeLessThan(html.indexOf("agentkit-bootstrap @ gamma"));
+    expect(html).toMatch(/data-testid="[a-z-]*target-mark"/);
+  });
+});

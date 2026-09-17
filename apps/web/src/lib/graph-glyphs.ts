@@ -1,7 +1,8 @@
 import {
   ASSEMBLY_STACK_PATHS,
   COMPONENT_CRATE_PATHS,
-  SERVICE_GUIDON_PATHS
+  SERVICE_GUIDON_PATHS,
+  TARGET_RETICLE_PATHS
 } from "../components/icons/catalog-marks";
 import { COMMANDER_STAR_PATHS, OUTPOST_FORT_PATHS } from "../components/icons/federation-roles";
 
@@ -16,7 +17,12 @@ const TYPE_MARK_PATHS: Record<string, IconNodeLike> = {
   assembly: ASSEMBLY_STACK_PATHS,
   component: COMPONENT_CRATE_PATHS,
   organization: COMMANDER_STAR_PATHS,
-  outpost: OUTPOST_FORT_PATHS
+  outpost: OUTPOST_FORT_PATHS,
+  // Owner, 2026-09-11: the target reticle. `source`/`registry` are NOT graph-object typeIds
+  // (census: no `objects.typeId` value of either across apps/server/src or packages/*/src) —
+  // sources and registries are relationship/config data, not nodes this canvas ever draws, so
+  // Warehouse/Container have nothing to key a canvas entry on.
+  "deployment-target": TARGET_RETICLE_PATHS
   // No `retrans-relay` entry: census (grep -rna 'retrans-relay' across the whole repo) found the
   // string only as the filename `retrans-relay.ts` and its `retrans-relay-*` Decision kinds — no
   // server code ever creates a graph-object typeId `retrans-relay` (`outpost-binding.ts` mints only

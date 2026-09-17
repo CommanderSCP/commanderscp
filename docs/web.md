@@ -576,6 +576,8 @@ THE CATALOG MARKS (owner direction, 2026-08-11): the service → assembly → co
 
 The trio is ordinal on purpose: flag above stack above crate mirrors the containment ladder. Path data is exported separately so `lib/graph-glyphs.ts` can rasterize the SAME drawings into Cytoscape node glyphs — one source of truth per mark, never two drawings that drift.
 
+A fourth mark joined the file on the owner's 2026-09-11 vocabulary: `TargetReticle` for the deployment target — a ranging ring, a small centre ring, and four short cardinal ticks standing off the outer ring, sparse enough to read at 14-16px. Source (a code/config repo) and registry (an image/npm/rpm/chart repo) use stock lucide `Warehouse`/`Container` instead of a hand-drawn mark — neither is a first-class graph-object type (no `typeId` of `source` or `registry` exists anywhere in the server), so neither needed a canvas glyph, only a plain icon at the handful of places a target/source/registry is listed (`lib/registries.ts`, `component-pipeline.tsx`'s `NODE_ICON`, `setup.tsx`, `outpost-dashboard.tsx`). A target's Type is deliberately plain text — no per-type glyph.
+
 ## `apps/web/src/components/icons/federation-roles.tsx`
 
 ### §58. THE FEDERATION ROLE SYMBOLS
@@ -1014,6 +1016,8 @@ Cytoscape draws to <canvas>, so it cannot render a React component; `background-
 Encoding note: a data URI is not a network fetch — the SVG travels inside the bundle, so the air-gap posture is untouched.
 
 The glyph SUPPLEMENTS the existing encodings, never replaces them: shape still says type at a distance and colour still says group (graph-visual.ts); the white glyph makes the type legible up close without hovering. Types without a mark simply render as before — an absent glyph is "no mark exists", not an error.
+
+`deployment-target` carries the `TargetReticle` mark (owner, 2026-09-11) — the only one of the three new catalog entries that reaches the canvas, since `source`/`registry` are not graph-object typeIds.
 
 ## `apps/web/src/lib/graph-visual.test.ts`
 

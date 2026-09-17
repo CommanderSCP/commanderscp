@@ -21,6 +21,18 @@ export const COMPONENT_CRATE_PATHS: IconNode = [
   ["path", { d: "M19.5 6.5 4.5 18.5", key: "brace-b" }]
 ];
 
+// A ranging reticle: outer ring, a small centre ring, and four short cardinal ticks standing off
+// the outer ring — never a full crosshair, which would read busy at 14-16px. Owner, 2026-09-11.
+export const TARGET_RETICLE_PATHS: IconNode = [
+  ["circle", { cx: "12", cy: "12", r: "7", key: "outer-ring" }],
+  ["circle", { cx: "12", cy: "12", r: "1.5", key: "centre-ring" }],
+  ["path", { d: "M12 2.5v1.7", key: "tick-n" }],
+  ["path", { d: "M12 19.8v1.7", key: "tick-s" }],
+  ["path", { d: "M2.5 12h1.7", key: "tick-w" }],
+  ["path", { d: "M19.8 12h1.7", key: "tick-e" }]
+];
+
 export const ServiceGuidon = createLucideIcon("ServiceGuidon", SERVICE_GUIDON_PATHS);
 export const AssemblyStack = createLucideIcon("AssemblyStack", ASSEMBLY_STACK_PATHS);
 export const ComponentCrate = createLucideIcon("ComponentCrate", COMPONENT_CRATE_PATHS);
+export const TargetReticle = createLucideIcon("TargetReticle", TARGET_RETICLE_PATHS);
