@@ -14,6 +14,8 @@ import { createObject } from "../graph/objects-repo.js";
 import { proposeChange } from "../coordination/changes-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { pairPeer } from "../federation/peers-repo.js";
+import { exportPromotionBundle } from "../federation/promotion-repo.js";
+import { DECLARED_RETRANS } from "../test-support/federation-roles.js";
 
 /** SCAN AND SIGN RUN ON THE COMMANDER ONLY (docs/proposals/component-journey-view.md §8.9).
  *
@@ -154,5 +156,22 @@ describe("POST /federation/exports/promotion is COMMANDER-ONLY (§8.9)", () => {
     expect(res.statusCode, res.body).toBe(409);
     expect((res.json() as { detail?: string }).detail ?? "").toMatch(/not declared.*FAIL-CLOSED/);
     expect(await cosignKeyRows(undeclared, f.org.orgId)).toHaveLength(0);
+  }, 60_000);
+
+  it("BELOW the route: exportPromotionBundle itself refuses a non-commander declaration and mints nothing", async () => {
+    // Any future caller that skips the route (a loop, a CLI-side server path) meets the same rule.
+    const f = await fixture(commander, "sign-repo-door");
+    await expect(
+      exportPromotionBundle(commander.deps.db, {
+        federation: DECLARED_RETRANS,
+        orgId: f.org.orgId,
+        peerIdOrName: f.peerName,
+        changeIdOrUrn: f.changeId
+      })
+    ).rejects.toMatchObject({
+      status: 409,
+      detail: expect.stringMatching(/'retrans'.*COMMANDER-ONLY/)
+    });
+    expect(await cosignKeyRows(commander, f.org.orgId)).toHaveLength(0);
   }, 60_000);
 });
