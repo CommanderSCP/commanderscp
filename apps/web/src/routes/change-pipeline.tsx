@@ -280,7 +280,10 @@ export function ChangePipelinePage(): React.JSX.Element {
     return {
       executorRef: binding?.externalRef ?? undefined,
       executorSystemUrl,
-      repoPattern: data.repoByKey[`${target.targetObjectId}::${target.type}`]
+      repoPattern: data.repoByKey[`${target.targetObjectId}::${target.type}`],
+      // The subtitle's provider half (design-system §1.6a) — the same binding already fetched for
+      // `executorRef`, so this is real wire data, not a new query.
+      provider: binding?.pluginModule ?? undefined
     };
   }
 

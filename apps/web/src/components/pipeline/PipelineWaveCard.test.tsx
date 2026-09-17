@@ -534,3 +534,117 @@ describe("PipelineWaveCard: the target mark (design-system §1.6, owner 2026-09-
     expect(html).toMatch(/data-testid="[a-z-]*target-mark"/);
   });
 });
+
+/** design-system §1.6a (owner, 2026-09-11): status moves from a filled plate to a coloured
+ *  outline, dashed when idle/pending; the target mark picks up the same hue; the status WORD
+ *  stays, for colour-blind readers. */
+describe("PipelineWaveCard: status as a coloured outline (design-system §1.6a)", () => {
+  function rowTag(html: string): string {
+    return html.match(/<div[^>]*data-testid="pipeline-wave-target-row"[^>]*>/)?.[0] ?? "";
+  }
+
+  it("a succeeded target gets a solid emerald outline, not the old flat slate border", () => {
+    const html = renderCard({ ...BASE_TARGET, status: "succeeded" });
+    const row = rowTag(html);
+    expect(row).toContain("border-emerald-400");
+    expect(row).not.toContain("border-slate-200");
+    expect(row).toContain('data-outline-tone="success"');
+  });
+
+  it("MUTATION-PROVEN — a pending target gets the DASHED idle outline, never a solid color claim", () => {
+    // Guards against a fixed/no-op tone function: mutate `pending` -> `succeeded` above and this
+    // row goes solid emerald; the assertions here must fail on that mutant.
+    const html = renderCard({ ...BASE_TARGET, status: "pending" });
+    const row = rowTag(html);
+    expect(row).toContain("border-dashed");
+    expect(row).toContain("border-slate-300");
+    expect(row).not.toContain("border-emerald-400");
+    expect(row).not.toContain("border-blue-400");
+    expect(row).not.toContain("border-red-400");
+    expect(row).toContain('data-outline-tone="idle"');
+  });
+
+  it("a failed target gets the danger (red) outline", () => {
+    const html = renderCard({ ...BASE_TARGET, status: "failed" });
+    expect(rowTag(html)).toContain("border-red-400");
+  });
+
+  it("a running target gets the info (blue) outline", () => {
+    const html = renderCard({ ...BASE_TARGET, status: "running" });
+    expect(rowTag(html)).toContain("border-blue-400");
+  });
+
+  it("a freeze-held target's outline is WARNING (amber), outranking its raw `pending` status", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: { freezes: [FREEZE_ENTRY] }
+    });
+    const row = rowTag(html);
+    expect(row).toContain("border-amber-400");
+    expect(row).not.toContain("border-dashed");
+  });
+
+  it("a stage-dependency-ONLY held target's outline is INFO (blue), not the freeze's amber", () => {
+    const html = renderToStaticMarkup(
+      <PipelineWaveCard
+        wave={waveWith({ ...BASE_TARGET, status: "pending" })}
+        waveNumber={1}
+        holdFor={() => STAGE_DEP_HELD}
+      />
+    );
+    const row = rowTag(html);
+    expect(row).toContain("border-blue-400");
+    expect(row).not.toContain("border-amber-400");
+  });
+
+  it("the TargetReticle mark's colour matches the row's own outline tone", () => {
+    const html = renderCard({ ...BASE_TARGET, status: "failed" });
+    const markTag = html.match(/<svg[^>]*target-mark[^>]*>/)?.[0] ?? "";
+    expect(markTag).toContain("text-red-600");
+  });
+
+  it("the status word is kept beside the outline, for colour-blind readers", () => {
+    const html = renderCard({ ...BASE_TARGET, status: "failed" });
+    expect(html).toContain('data-testid="pipeline-wave-target-status-word"');
+    expect(html).toContain("failed");
+  });
+});
+
+/** design-system §1.6a: `<Type> · <provider>` as plain text under the target's name, no glyph —
+ *  falling back to the Type alone when the caller has not fetched executor bindings for this
+ *  target (an increment-3 gap for `change-detail`/`campaign-detail`, not a defect here). */
+describe("PipelineWaveCard: the `<Type> · <provider>` subtitle (design-system §1.6a)", () => {
+  it("renders `type · provider` when the caller's linksFor supplies a provider", () => {
+    const html = renderToStaticMarkup(
+      <PipelineWaveCard
+        wave={waveWith(BASE_TARGET)}
+        waveNumber={1}
+        linksFor={() => ({ provider: "argocd" })}
+      />
+    );
+    expect(html).toContain('data-testid="pipeline-wave-target-subtitle"');
+    expect(html).toContain("configuration · argocd");
+  });
+
+  it("renders the Type ALONE when no provider is available — never a guessed provider", () => {
+    const html = renderCard(BASE_TARGET);
+    expect(html).toContain('data-testid="pipeline-wave-target-subtitle"');
+    expect(html).toMatch(/target-subtitle"[^>]*>configuration</);
+    expect(html).not.toContain("configuration ·");
+  });
+
+  it("renders no subtitle at all when the target carries no Type (a campaign target, say)", () => {
+    const html = renderCard({ ...BASE_TARGET, type: undefined });
+    expect(html).not.toContain('data-testid="pipeline-wave-target-subtitle"');
+  });
+});
+
+describe("PipelineWaveCard: card proportions (design-system §1.6a)", () => {
+  it("the card is a normal ~610px box, not a hyperwide stretched bar", () => {
+    const html = renderCard(BASE_TARGET);
+    const cardTag = html.match(/<div[^>]*data-testid="pipeline-wave-card"[^>]*>/)?.[0] ?? "";
+    expect(cardTag).toContain("max-w-[610px]");
+    expect(cardTag).not.toContain("max-w-2xl");
+  });
+});

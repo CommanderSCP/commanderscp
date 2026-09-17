@@ -44,6 +44,8 @@ const {
   sbomLine,
   sbomLocationHref,
   shortDigest,
+  sourceKindText,
+  stageOutlineTone,
   LANES
 } = await import("./component-pipeline");
 
@@ -159,6 +161,73 @@ describe("a component pipeline stage renders honestly", () => {
     );
     expect(html).toContain("v1.4.2");
     expect(html).not.toContain("not observed yet");
+  });
+
+  it("an untouched stage (no current, no hold) gets the IDLE outline — dashed, no colour claim", () => {
+    expect(stageOutlineTone(null, null)).toBe("idle");
+    expect(stageOutlineTone(null, undefined)).toBe("idle");
+    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    expect(html).toContain('data-outline-tone="idle"');
+    expect(html).toContain("border-dashed");
+  });
+
+  it("a stage whose newest current SUCCEEDED gets the success outline, and the subtitle names the pipeline", () => {
+    const succeeded = {
+      changeId: "019f0000-0000-7000-8000-00000000e100",
+      changeName: "release-42",
+      changeState: "accepted",
+      waveName: "prod",
+      targetStatus: "succeeded",
+      type: "configuration",
+      category: "configuration" as const
+    };
+    expect(stageOutlineTone(succeeded, null)).toBe("success");
+    const html = renderToStaticMarkup(
+      <StageCardForTest stage={stage({ current: succeeded, currents: [succeeded] })} />
+    );
+    expect(html).toContain('data-outline-tone="success"');
+    expect(html).toContain("border-emerald-400");
+    expect(html).toContain('data-testid="pipeline-stage-subtitle"');
+    expect(html).toContain("configuration · argocd-prod");
+  });
+
+  it("a FAILED current gets the danger outline", () => {
+    expect(
+      stageOutlineTone(
+        {
+          changeId: "x",
+          changeName: null,
+          changeState: null,
+          waveName: null,
+          targetStatus: "failed",
+          type: "configuration",
+          category: "configuration"
+        },
+        null
+      )
+    ).toBe("danger");
+  });
+
+  it("a hold outranks the raw status — INFO even when the underlying status would otherwise warn", () => {
+    expect(
+      stageOutlineTone(
+        {
+          changeId: "x",
+          changeName: null,
+          changeState: null,
+          waveName: null,
+          targetStatus: "pending",
+          type: "configuration",
+          category: "configuration"
+        },
+        {
+          changeId: "x",
+          changeName: null,
+          waveIndex: 0,
+          dependencies: []
+        }
+      )
+    ).toBe("info");
   });
 
   it("flags an UNBOUND placement loudly", () => {
@@ -1776,6 +1845,107 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     );
     expect(tiles(html, "pipeline-source-tile-none")).toBe(1);
     expect(html).toContain("No repo is mapped to this component here");
+  });
+
+  it("every source tile wears the generic Warehouse mark and states its KIND in text", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          src({
+            repoPattern: "acme/checkout-api",
+            pathPattern: null,
+            type: "image",
+            category: "build"
+          })
+        ]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+    expect(html).toContain('data-testid="pipeline-source-kind"');
+    expect(html).toContain("service code → image");
+  });
+
+  it("the Type is labelled as DECLARED, not inferred", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[src({})]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+    expect(html).toContain('data-testid="pipeline-source-type-declared"');
+    expect(html).toContain("declared, not inferred");
+  });
+});
+
+/** design-system §1.6a (mockup `sources.html`/`microservice.html`): the repo's KIND stated in
+ *  text — "service code → image", "chart/** → chart", "config" — derived from the mapping's own
+ *  path pattern, Type and journeyKind. */
+describe("sourceKindText — the repo's KIND, in words", () => {
+  it('a build-category source with no path pattern reads "service code → <type>"', () => {
+    expect(
+      sourceKindText({ pathPattern: null, type: "image", category: "build", journeyKind: null })
+    ).toBe("service code → image");
+  });
+
+  it('a build-category source with a declared path pattern reads "<path> → <type>"', () => {
+    expect(
+      sourceKindText({
+        pathPattern: "chart/**",
+        type: "chart",
+        category: "build",
+        journeyKind: null
+      })
+    ).toBe("chart/** → chart");
+  });
+
+  it('a configuration-category source reads bare "config" — never "→ configuration"', () => {
+    expect(
+      sourceKindText({
+        pathPattern: null,
+        type: "configuration",
+        category: "configuration",
+        journeyKind: null
+      })
+    ).toBe("config");
+  });
+
+  it('an infrastructure-category source has no build/config split — reads "<path> → infrastructure"', () => {
+    expect(
+      sourceKindText({
+        pathPattern: "checkout/**",
+        type: "infrastructure",
+        category: "infrastructure",
+        journeyKind: null
+      })
+    ).toBe("checkout/** → infrastructure");
+  });
+
+  it('a DECLARED journeyKind "config" overrides a build-category source — the §8.14 mistyped-source case', () => {
+    expect(
+      sourceKindText({
+        pathPattern: null,
+        type: "image",
+        category: "build",
+        journeyKind: "config"
+      })
+    ).toBe("config");
+  });
+
+  it("journeyKind is irrelevant off the build category — an infra source stays a source read regardless", () => {
+    // Mirrors `laneNodes`' own `hasBuildArm` gate: the infra lane has no build/config split for
+    // `journeyKind` to override, so a stray declaration there must not flip the reading.
+    expect(
+      sourceKindText({
+        pathPattern: "checkout/**",
+        type: "infrastructure",
+        category: "infrastructure",
+        journeyKind: "config"
+      })
+    ).toBe("checkout/** → infrastructure");
   });
 });
 
