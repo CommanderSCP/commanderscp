@@ -53,7 +53,17 @@ export function registerDeviceFlowRoutes(app: FastifyInstance, deps: AppDeps): v
     },
     handler: async (_request, reply) => {
       const started = await startDeviceAuth(deps.db);
-      const verificationUri = `${deps.config.internalBaseUrl.replace(/\/api\/v1\/?$/, "")}/device`;
+      // `verificationUri` is shown directly to a human — it must never be built from
+      // `internalBaseUrl` (the server's SELF-call address, `http://127.0.0.1:<port>/api/v1` by
+      // default on a deployed instance, which cannot resolve for anyone but the server itself).
+      // When the operator has configured `publicBaseUrl`, use it. Otherwise, prefer an honest
+      // RELATIVE path — the schema (`DeviceStartResponseSchema.verificationUri: z.string()`) allows
+      // it, and the CLI resolves it against the base URL it was invoked with (`deviceLogin`,
+      // packages/cli/src/cli.ts) — rather than falling back to a 127.0.0.1 URL that looks absolute
+      // but is wrong for every non-local deployment.
+      const verificationUri = deps.config.publicBaseUrl
+        ? `${deps.config.publicBaseUrl}/device`
+        : "/device";
       reply.status(200).send({
         deviceCode: started.deviceCode,
         userCode: started.userCode,

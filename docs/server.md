@@ -388,6 +388,18 @@ D6 (§7.3). `production` is the DEFAULT (unset → production) so a Helm install
 
 NOT `deriveRuntimeDatabaseUrl(databaseUrl, "scp_operator")` like the two above, and the difference is load-bearing rather than an oversight: that helper swaps the USER and keeps the admin PASSWORD, which only authenticates because `main.ts`/`migrate-bin.ts` provision `scp_app`/`scp_pgboss` with exactly that password at boot. There is no such provisioner for `scp_operator` yet (drizzle/0076's header names the owed `provisionOperatorRole`), so a derived URL here would be a credential that looks configured and cannot log in.
 
+### §105. `publicBaseUrl` — the URL a human actually reaches this instance at
+
+Fixes a defect where the device-authorization flow's `verificationUri` (`routes/device-flow.ts`, shown directly to a human by `scp login --device`) was built from `internalBaseUrl` — the server's SELF-call address, defaulting to `http://127.0.0.1:<port>/api/v1`. Every deployed instance that left `internalBaseUrl` at its default told the user to open a URL that resolves to their own machine, not the server.
+
+`internalBaseUrl` and `publicBaseUrl` answer two different questions and must not be conflated: "what URL does this process use to call its own API" (UI SSR, the boot-time demo seed — `seed.ts`) versus "what URL does a human, sitting outside this pod, actually reach this instance at." Only the Helm chart's `publicBaseUrl` value / `SCP_PUBLIC_BASE_URL` answers the second one; nothing derives it from the first.
+
+`undefined` (unset, the default) means no publicly-reachable URL is configured. The device-flow route does NOT fall back to `internalBaseUrl` in that case — it returns a RELATIVE `/device` path instead (the response schema, `DeviceStartResponseSchema.verificationUri`, is a plain `z.string()`, so a relative path is schema-legal and additive-only-API-safe). The CLI (`deviceLogin`, `packages/cli/src/cli.ts`) resolves that relative path against the API base URL it was already invoked with (`new URL(relative, baseUrl)` — a no-op when the server instead returned an absolute URL because `publicBaseUrl` IS configured). A relative path is honest where a guessed `127.0.0.1` URL was not: it never claims to be reachable from somewhere it isn't, and it still works end to end through the one client (the CLI) that has enough context to complete it.
+
+Deliberately NEVER derived from a request's `Host`/`X-Forwarded-Host` headers, even though those would "fix" the same symptom with less operator configuration: those headers are client-controlled, so a verification link built from one is a phishing vector — an attacker who controls what `Host` they send controls what URL a victim is told to open. This must be an explicit, operator-set deployment value (`SCP_PUBLIC_BASE_URL`) or nothing at all.
+
+Validated at boot (`loadPublicBaseUrl`): must parse as an absolute URL with an `http:`/`https:` scheme, or `loadConfig` throws — mirrors `loadOidcConfig`/`loadEventBusConfig`'s "fail loud on a misconfiguration rather than silently doing something the operator didn't ask for" house style. A trailing slash is stripped so every call site can uniformly write `` `${publicBaseUrl}/path` ``.
+
 ## `apps/server/src/domain-id-edge.ts`
 
 ### §52. THE WIRE BOUNDARY for branded domain ids

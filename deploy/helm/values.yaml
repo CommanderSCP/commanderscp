@@ -388,15 +388,26 @@ bootstrap:
 
 seedDemo: false
 
-# SCP_INTERNAL_BASE_URL — how this instance refers to ITSELF in text it hands to a human.
+# SCP_INTERNAL_BASE_URL — how this instance calls ITSELF (UI SSR dogfoods the SDK, the boot-time
+# demo seed). Include the `/api/v1` suffix — e.g. https://scp.example.com/api/v1. Empty (the
+# default) preserves today's behavior (`http://127.0.0.1:<port>/api/v1`), which is correct for a
+# pod calling its own loopback address.
 #
-# NOT cosmetic. `config.ts` defaults it to `http://127.0.0.1:<port>/api/v1`, and the CLI device
-# login derives its `verificationUri` from it (routes/device-flow.ts) — so on every ingress-served
-# install that has left this unset, `scp login` tells the user to open `http://127.0.0.1:8080/device`,
-# which resolves to the user's own machine and cannot work. Set it to the URL a human actually
-# reaches this instance at, INCLUDING the `/api/v1` suffix — e.g. https://scp.example.com/api/v1.
-# Empty (the default) preserves today's behavior exactly.
+# NEVER a substitute for `publicBaseUrl` below: this value is not guaranteed reachable from outside
+# the pod (nothing requires it to be an ingress-routable URL at all), and using it for anything a
+# human opens was exactly the bug `publicBaseUrl` exists to fix.
 internalBaseUrl: ""
+
+# SCP_PUBLIC_BASE_URL — the URL a HUMAN actually reaches this instance at (origin only, no
+# `/api/v1` suffix — e.g. https://scp.example.com).
+#
+# NOT cosmetic. The CLI's device-authorization login prints a `verificationUri` for a human to
+# open (routes/device-flow.ts). Leave this empty (the default) and the server has no publicly
+# reachable URL to offer, so it returns a RELATIVE `/device` path instead — honest, but only
+# resolvable by a CLI invocation that already knows its own `--base-url`; a human reading raw JSON,
+# or a CLI flow that can't resolve it, sees a bare path rather than a clickable link. Set this on
+# every ingress-served install so `scp login --device` prints a URL that actually works.
+publicBaseUrl: ""
 
 # -------------------------------------------------------------------------------------------
 # Managed-IaC (Mode 2, DESIGN §12) — OFF by default. When enabled, the chart grants the worker

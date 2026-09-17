@@ -35,8 +35,19 @@ export interface ServerConfig {
   bootstrapOrgName: string;
   bootstrapAdminUsername: string;
   cookieSecret: string;
-  /** Base URL the server uses to call its own public API (UI SSR dogfoods the SDK). */
+  /** Base URL the server uses to call its own public API (UI SSR dogfoods the SDK). This is a
+   *  SELF-call address — never hand it to a human or an external party (that was the device-flow
+   *  bug this field's sibling, `publicBaseUrl`, exists to fix). See docs/server.md §105. */
   internalBaseUrl: string;
+  /** The URL a HUMAN or an external party actually reaches this instance at (origin only, e.g.
+   *  `https://scp.example.com`), from `SCP_PUBLIC_BASE_URL`. Deliberately never derived from
+   *  `internalBaseUrl`, nor from a request's Host/X-Forwarded-* headers — a client controls those
+   *  headers, so a header-derived verification link would be a phishing vector. `undefined` (unset)
+   *  means no publicly-reachable URL is configured; each call site that needs one for a human falls
+   *  back to a relative path (or, where a relative path isn't viable, to `internalBaseUrl`, which is
+   *  at least a working URL for a local/dev install) — documented at the call site. See
+   *  docs/server.md §105. */
+  publicBaseUrl?: string;
   /** Boot-time demo seed. See docs/server.md §38. */
   seedDemo: boolean;
   /** Generic OIDC (Authorization Code + PKCE via `openid-client`). See docs/server.md §39. */
@@ -125,6 +136,35 @@ function loadOidcConfig(env: NodeJS.ProcessEnv): ServerConfig["oidc"] {
     scopes: env.SCP_OIDC_SCOPES ?? "openid profile email",
     roleClaim: env.SCP_OIDC_ROLE_CLAIM ?? "roles"
   };
+}
+
+/** `undefined` (SCP_PUBLIC_BASE_URL unset) is the default. See docs/server.md §105.
+ *
+ * Deliberately does NOT accept a Host/X-Forwarded-Host request header as a substitute for an
+ * operator-set value — those are client-controlled, and a verification link built from one is a
+ * phishing vector (an attacker who controls what Host they send controls what URL a victim is
+ * told to open). This must be an explicit, operator-configured deployment value or nothing at all.
+ */
+function loadPublicBaseUrl(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = (env.SCP_PUBLIC_BASE_URL ?? "").trim();
+  if (!raw) return undefined;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      `SCP_PUBLIC_BASE_URL must be an absolute http(s) URL, e.g. "https://scp.example.com" (got "${raw}")`
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `SCP_PUBLIC_BASE_URL must be an absolute http(s) URL, e.g. "https://scp.example.com" (got "${raw}")`
+    );
+  }
+
+  // Strip a trailing slash so every call site can uniformly do `${publicBaseUrl}/path`.
+  return raw.replace(/\/+$/, "");
 }
 
 /** `postgres` (SCP_EVENT_BUS_BACKEND unset) is the default. See docs/server.md §47. */
@@ -264,6 +304,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     bootstrapAdminUsername: env.SCP_BOOTSTRAP_ADMIN_USERNAME ?? "admin",
     cookieSecret: env.SCP_COOKIE_SECRET ?? randomSecret(),
     internalBaseUrl: env.SCP_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}/api/v1`,
+    publicBaseUrl: loadPublicBaseUrl(env),
     seedDemo: env.SCP_SEED_DEMO === "true",
     oidc: loadOidcConfig(env),
     eventBus: loadEventBusConfig(env),
