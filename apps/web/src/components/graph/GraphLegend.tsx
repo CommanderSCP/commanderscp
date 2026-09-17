@@ -1,6 +1,11 @@
 import { Hexagon, Pentagon, Star, type LucideIcon } from "lucide-react";
 import { shapeForType } from "../../lib/graph-visual";
-import { AssemblyStack, ComponentCrate, ServiceGuidon } from "../icons/catalog-marks";
+import {
+  AssemblyStack,
+  ComponentCrate,
+  ServiceGuidon,
+  TargetReticle
+} from "../icons/catalog-marks";
 import { CommanderStar, OutpostFort } from "../icons/federation-roles";
 
 /** Legend for the graph views. See docs/web.md §56. */
@@ -17,7 +22,8 @@ const TYPE_MARK: Partial<Record<string, LucideIcon>> = {
   assembly: AssemblyStack,
   component: ComponentCrate,
   organization: CommanderStar,
-  outpost: OutpostFort
+  outpost: OutpostFort,
+  "deployment-target": TargetReticle
 };
 export interface LegendNodeEntry {
   label: string;

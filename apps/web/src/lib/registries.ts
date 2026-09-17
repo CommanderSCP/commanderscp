@@ -1,5 +1,10 @@
-import { Bot, Globe, Server, UserRound, Users, UsersRound, type LucideIcon } from "lucide-react";
-import { AssemblyStack, ComponentCrate, ServiceGuidon } from "../components/icons/catalog-marks";
+import { Bot, Globe, UserRound, Users, UsersRound, type LucideIcon } from "lucide-react";
+import {
+  AssemblyStack,
+  ComponentCrate,
+  ServiceGuidon,
+  TargetReticle
+} from "../components/icons/catalog-marks";
 import type { ScpClient } from "@scp/sdk";
 import type {
   CreateObjectRequest,
@@ -85,7 +90,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "deployment-targets",
     label: "Deployment Targets",
     clientKey: "deploymentTargets",
-    icon: Server,
+    icon: TargetReticle,
     typeId: "deployment-target",
     ownable: true,
     edges: false

@@ -11,19 +11,19 @@ import {
   Circle,
   CircleAlert,
   CircleDashed,
+  Container,
   ExternalLink,
-  GitBranch,
-  Package,
   Plus,
-  Server,
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
   Unlink,
+  Warehouse,
   Wrench,
   X,
   type LucideIcon
 } from "lucide-react";
+import { TargetReticle } from "../components/icons/catalog-marks";
 import { CommanderStar, OutpostFort } from "../components/icons/federation-roles";
 import type {
   ComponentPipelineResponse,
@@ -1315,14 +1315,17 @@ function ConsoleLink({
 type NodeKind = "source" | "config" | "build" | "registry" | "scan-sign" | "stage" | "unplaced";
 
 const NODE_ICON: Record<NodeKind, { icon: LucideIcon; tint: string }> = {
-  source: { icon: GitBranch, tint: "bg-sky-50 text-sky-700" },
+  // Warehouse — the source/config repo (owner mark vocabulary, 2026-09-11).
+  source: { icon: Warehouse, tint: "bg-sky-50 text-sky-700" },
   config: { icon: SlidersHorizontal, tint: "bg-teal-50 text-teal-700" },
   build: { icon: Wrench, tint: "bg-amber-50 text-amber-700" },
-  registry: { icon: Package, tint: "bg-violet-50 text-violet-700" },
+  // Container — the image/npm/rpm/chart registry (owner mark vocabulary, 2026-09-11).
+  registry: { icon: Container, tint: "bg-violet-50 text-violet-700" },
   // shield-check — the scan at source that AUTHORISES a crossing, and the manifest the commander
   // signs to attest it (§9.3). Emerald, so it does not borrow the registry's violet or a stage's slate.
   "scan-sign": { icon: ShieldCheck, tint: "bg-emerald-50 text-emerald-700" },
-  stage: { icon: Server, tint: "bg-slate-100 text-slate-600" },
+  // TargetReticle — the deployment target (owner mark vocabulary, 2026-09-11).
+  stage: { icon: TargetReticle, tint: "bg-slate-100 text-slate-600" },
   // dashed circle — declared, never reached (§1.6's "structurally not-yet" family)
   unplaced: { icon: CircleDashed, tint: "bg-slate-50 text-slate-400" }
 };
@@ -1969,6 +1972,16 @@ function SourceNode({
   return (
     <div className="w-full" data-testid="pipeline-node-source">
       <SectionLabel className="mb-1 text-center">
+        {/* NODE_ICON.source (Warehouse — owner mark vocabulary, 2026-09-11) read here rather than
+            re-imported: this header was rendering plain text with NO icon at all, so the map entry
+            was declared but never reached (§10.3's dead-mark hazard) — one source of truth, wired
+            in. "Source (code/config repo)" covers both this node's labels, so the mark is the same
+            whichever one is showing. */}
+        <NODE_ICON.source.icon
+          className="mr-1 inline-block size-3.5 shrink-0 align-text-bottom text-slate-400"
+          strokeWidth={2}
+          aria-hidden="true"
+        />
         {label}
         <span className="ml-1 font-normal normal-case tracking-normal text-slate-400">
           {label === "Config"

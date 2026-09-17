@@ -4,7 +4,14 @@ import { glyphForType, hasGlyph } from "./graph-glyphs";
 /** The canvas glyphs are the SAME drawings as the React icons. See docs/web.md §118. */
 describe("graph glyphs: the marks travel into the canvas unchanged", () => {
   it("every marked type yields an encoded SVG data URI with a white stroke", () => {
-    for (const type of ["service", "assembly", "component", "organization", "outpost"]) {
+    for (const type of [
+      "service",
+      "assembly",
+      "component",
+      "organization",
+      "outpost",
+      "deployment-target"
+    ]) {
       const uri = glyphForType(type);
       expect(uri, type).toBeDefined();
       expect(uri!.startsWith("data:image/svg+xml;utf8,"), type).toBe(true);
@@ -19,7 +26,7 @@ describe("graph glyphs: the marks travel into the canvas unchanged", () => {
   });
 
   it("a type with no mark yields undefined — the node renders as before, never a broken image", () => {
-    expect(glyphForType("deployment-target")).toBeUndefined();
+    expect(glyphForType("team")).toBeUndefined();
     expect(glyphForType("something-custom")).toBeUndefined();
     expect(glyphForType(undefined)).toBeUndefined();
   });
