@@ -12,6 +12,7 @@ import {
   type TestBundleRef
 } from "@scp/schemas";
 import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
+import { classifySourceEvent } from "./source-event-kinds.js";
 import { listConfigSourceRegistrations } from "../config-source/config-sources-repo.js";
 import { resolveConfigSourceForSync } from "../config-source/registration-match.js";
 import { enqueueConfigSourceSync } from "../config-source/sync-queue-repo.js";
@@ -351,6 +352,22 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       await tx
         .update(changeSourceEvents)
         .set({ processedAt: new Date(), resultingChangeObjectId: authoredChangeId })
+        .where(eq(changeSourceEvents.id, row.id));
+      continue;
+    }
+
+    // ONLY A SOURCE EVENT PROPOSES A RELEASE (run-events-are-not-releases.md, owner 2026-09-16).
+    // A CI run, pipeline, Argo CD sync, deployment report or pull request is stored and marked
+    // processed, and triggers nothing. That covers the config-source sync below as well: its contract
+    // is "a push to a registered config repo enqueues a sync" (§1107), and a pull request's head
+    // commit is not on the branch. The row itself keeps `kind`/headers, so `classifySourceEvent`
+    // re-derives the reason. No Decision per event: an Argo CD instance emits one per reconcile, and
+    // a per-event write here is the decisions-growth incident's shape. This mirrors the no-mapping
+    // branch below, which also records nothing.
+    if (!classifySourceEvent(row.sourceKind, row.headers, row.payload).proposesChange) {
+      await tx
+        .update(changeSourceEvents)
+        .set({ processedAt: new Date() })
         .where(eq(changeSourceEvents.id, row.id));
       continue;
     }

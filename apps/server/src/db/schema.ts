@@ -570,11 +570,23 @@ export const changeSourceEvents = pgTable(
     reportedByObjectId: uuid("reported_by_object_id"),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     resultingChangeObjectId: uuid("resulting_change_object_id"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** 0113 — THE COMMIT THIS EVENT IS ABOUT, derived by the database from the stored payload. A CI
+     *  run is stored, never a change (docs/proposals/run-events-are-not-releases.md), so this is how
+     *  a release finds the run for its commit. It is a GENERATED column rather than an expression
+     *  index because `->>` is not leakproof: under forced RLS the planner will not use a non-leakproof
+     *  expression as an index condition, but a plain text equality it will (measured, see 0113).
+     *  One arm per writer shape that carries run identity: `commitSha` (every observed event),
+     *  `workflow_run.head_sha` (github webhook run), `object_attributes.sha` (gitlab Pipeline Hook). */
+    commitSha: text("commit_sha").generatedAlwaysAs(
+      sql`coalesce(payload ->> 'commitSha', payload -> 'workflow_run' ->> 'head_sha', payload -> 'object_attributes' ->> 'sha')`
+    )
   },
   (table) => [
     index("change_source_events_unprocessed").on(table.processedAt, table.createdAt),
-    unique("change_source_events_dedupe").on(table.orgId, table.sourceKind, table.dedupeKey)
+    unique("change_source_events_dedupe").on(table.orgId, table.sourceKind, table.dedupeKey),
+    /** 0113 — the "built upstream" run lookup BY COMMIT (`observed-run-facts.ts`). */
+    index("change_source_events_org_kind_commit").on(table.orgId, table.sourceKind, table.commitSha)
   ]
 );
 

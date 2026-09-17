@@ -614,7 +614,7 @@ The coordination boundary is enforced **structurally**, twice: (1) the ExecutorP
 ### GitHub (also the primary Discovery source)
 
 - **Auth:** GitHub App, org-installable, fine-grained permissions.
-- **Observe (push):** webhooks — `push`, `pull_request`, `workflow_run`, `deployment`, `release` — feed change detection and correlation.
+- **Observe (push):** webhooks — `push`, `pull_request`, `workflow_run`, `deployment`, `release` — feed change detection and correlation. Only `push` and `release` DETECT a change. `workflow_run`, `deployment` and `pull_request` are stored as evidence and never propose one (owner decision 2026-09-16, [run-events-are-not-releases](proposals/run-events-are-not-releases.md)).
 - **Observe (pull, grafted):** polling fallback over the same REST endpoints for regulated/disconnected networks where inbound webhooks are impossible — the charter requires push, pull, and hybrid detection.
 - **Trigger:** `workflow_dispatch` / `repository_dispatch` of the org's **own** workflows.
 - **Status:** check runs + workflow conclusions; SCP posts a commit status/check so repos can make SCP coordination a branch-protection gate.

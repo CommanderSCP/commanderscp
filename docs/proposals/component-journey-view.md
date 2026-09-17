@@ -203,9 +203,11 @@ existed, exactly as §3's "nothing below adds a graph concept" promised.
 ### What this increment adds
 
 **`observedRun`** — the one piece of §3 Segment 2's upstream case that stayed a sentence until now:
-"it reads 'GitHub Actions · CI · run 30858160395 ↗', not 'build: unknown'." Composed from the most
-recent change of the component whose `sourceRef` carries a citable run id and at least one of
-`url`/`repo` (`apps/server/src/coordination/observed-run-facts.ts`, wired into
+"it reads 'GitHub Actions · CI · run 30858160395 ↗', not 'build: unknown'." **Re-sourced
+2026-09-16 ([run-events-are-not-releases.md](run-events-are-not-releases.md)):** a CI run is no longer
+a change, so the run is now the stored run event at the component's most recent release's OWN commit.
+Originally it was composed from the most recent change of the component whose `sourceRef` carried a
+citable run id and at least one of `url`/`repo` (`apps/server/src/coordination/observed-run-facts.ts`, wired into
 `getComponentPipeline` in `apps/server/src/coordination/component-pipeline.ts`), traced across every
 writer shape (github/gitea observed-poll, github webhook, gitlab pipeline/webhook — see that module's
 doc comment) and typed as `ComponentPipelineObservedRunSchema`
