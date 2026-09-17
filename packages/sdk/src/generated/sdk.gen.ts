@@ -2824,7 +2824,7 @@ export const federationResyncPeer = <ThrowOnError extends boolean = false>(optio
 });
 
 /**
- * Export a Promotion Bundle for a Change (change + evidence + attestations)
+ * Export a Promotion Bundle for a Change (change + evidence + attestations). COMMANDER-ONLY: the export scans and cosign-signs the promotion manifest, so a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409
  */
 export const exportPromotionBundle = <ThrowOnError extends boolean = false>(options: Options<ExportPromotionBundleData, ThrowOnError>): RequestResult<ExportPromotionBundleResponses, ExportPromotionBundleErrors, ThrowOnError> => (options.client ?? client).post<ExportPromotionBundleResponses, ExportPromotionBundleErrors, ThrowOnError>({
     responseValidator: async (data) => await zExportPromotionBundleResponse.parseAsync(data),
