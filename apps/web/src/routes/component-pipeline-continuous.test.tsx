@@ -44,6 +44,9 @@ const {
   sbomLine,
   sbomLocationHref,
   shortDigest,
+  sourceKindText,
+  stageOutlineTone,
+  newestScan,
   LANES
 } = await import("./component-pipeline");
 
@@ -159,6 +162,73 @@ describe("a component pipeline stage renders honestly", () => {
     );
     expect(html).toContain("v1.4.2");
     expect(html).not.toContain("not observed yet");
+  });
+
+  it("an untouched stage (no current, no hold) gets the IDLE outline — dashed, no colour claim", () => {
+    expect(stageOutlineTone(null, null)).toBe("idle");
+    expect(stageOutlineTone(null, undefined)).toBe("idle");
+    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    expect(html).toContain('data-outline-tone="idle"');
+    expect(html).toContain("border-dashed");
+  });
+
+  it("a stage whose newest current SUCCEEDED gets the success outline, and the subtitle names the pipeline", () => {
+    const succeeded = {
+      changeId: "019f0000-0000-7000-8000-00000000e100",
+      changeName: "release-42",
+      changeState: "accepted",
+      waveName: "prod",
+      targetStatus: "succeeded",
+      type: "configuration",
+      category: "configuration" as const
+    };
+    expect(stageOutlineTone(succeeded, null)).toBe("success");
+    const html = renderToStaticMarkup(
+      <StageCardForTest stage={stage({ current: succeeded, currents: [succeeded] })} />
+    );
+    expect(html).toContain('data-outline-tone="success"');
+    expect(html).toContain("border-emerald-400");
+    expect(html).toContain('data-testid="pipeline-stage-subtitle"');
+    expect(html).toContain("configuration · argocd-prod");
+  });
+
+  it("a FAILED current gets the danger outline", () => {
+    expect(
+      stageOutlineTone(
+        {
+          changeId: "x",
+          changeName: null,
+          changeState: null,
+          waveName: null,
+          targetStatus: "failed",
+          type: "configuration",
+          category: "configuration"
+        },
+        null
+      )
+    ).toBe("danger");
+  });
+
+  it("a hold outranks the raw status — INFO even when the underlying status would otherwise warn", () => {
+    expect(
+      stageOutlineTone(
+        {
+          changeId: "x",
+          changeName: null,
+          changeState: null,
+          waveName: null,
+          targetStatus: "pending",
+          type: "configuration",
+          category: "configuration"
+        },
+        {
+          changeId: "x",
+          changeName: null,
+          waveIndex: 0,
+          dependencies: []
+        }
+      )
+    ).toBe("info");
   });
 
   it("flags an UNBOUND placement loudly", () => {
@@ -1776,6 +1846,107 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     );
     expect(tiles(html, "pipeline-source-tile-none")).toBe(1);
     expect(html).toContain("No repo is mapped to this component here");
+  });
+
+  it("every source tile wears the generic Warehouse mark and states its KIND in text", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          src({
+            repoPattern: "acme/checkout-api",
+            pathPattern: null,
+            type: "image",
+            category: "build"
+          })
+        ]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+    expect(html).toContain('data-testid="pipeline-source-kind"');
+    expect(html).toContain("service code → image");
+  });
+
+  it("the Type is labelled as DECLARED, not inferred", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[src({})]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+    expect(html).toContain('data-testid="pipeline-source-type-declared"');
+    expect(html).toContain("declared, not inferred");
+  });
+});
+
+/** design-system §1.6a (mockup `sources.html`/`microservice.html`): the repo's KIND stated in
+ *  text — "service code → image", "chart/** → chart", "config" — derived from the mapping's own
+ *  path pattern, Type and journeyKind. */
+describe("sourceKindText — the repo's KIND, in words", () => {
+  it('a build-category source with no path pattern reads "service code → <type>"', () => {
+    expect(
+      sourceKindText({ pathPattern: null, type: "image", category: "build", journeyKind: null })
+    ).toBe("service code → image");
+  });
+
+  it('a build-category source with a declared path pattern reads "<path> → <type>"', () => {
+    expect(
+      sourceKindText({
+        pathPattern: "chart/**",
+        type: "chart",
+        category: "build",
+        journeyKind: null
+      })
+    ).toBe("chart/** → chart");
+  });
+
+  it('a configuration-category source reads bare "config" — never "→ configuration"', () => {
+    expect(
+      sourceKindText({
+        pathPattern: null,
+        type: "configuration",
+        category: "configuration",
+        journeyKind: null
+      })
+    ).toBe("config");
+  });
+
+  it('an infrastructure-category source has no build/config split — reads "<path> → infrastructure"', () => {
+    expect(
+      sourceKindText({
+        pathPattern: "checkout/**",
+        type: "infrastructure",
+        category: "infrastructure",
+        journeyKind: null
+      })
+    ).toBe("checkout/** → infrastructure");
+  });
+
+  it('a DECLARED journeyKind "config" overrides a build-category source — the §8.14 mistyped-source case', () => {
+    expect(
+      sourceKindText({
+        pathPattern: null,
+        type: "image",
+        category: "build",
+        journeyKind: "config"
+      })
+    ).toBe("config");
+  });
+
+  it("journeyKind is irrelevant off the build category — an infra source stays a source read regardless", () => {
+    // Mirrors `laneNodes`' own `hasBuildArm` gate: the infra lane has no build/config split for
+    // `journeyKind` to override, so a stray declaration there must not flip the reading.
+    expect(
+      sourceKindText({
+        pathPattern: "checkout/**",
+        type: "infrastructure",
+        category: "infrastructure",
+        journeyKind: "config"
+      })
+    ).toBe("checkout/** → infrastructure");
   });
 });
 
@@ -3418,6 +3589,74 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
       ),
       "no flag → no note"
     ).not.toContain("could not be read");
+  });
+});
+
+/** design-system §1.6a (mockup `microservice.html`'s `.scan` panel): severity counts and the
+ *  digestMatch callout, surfaced in the COMPACT (always-visible) part of the tile that already
+ *  sits between Registry and the first deploy wave — not hidden behind Details. Both fields are
+ *  already read elsewhere on this tile (`ScanSignDetails`' per-row `scan.counts`/`scan.digestMatch`
+ *  — component-pipeline.tsx), so this is a placement change, not a new API surface. */
+describe("the scan severity + digestMatch callout (design-system §1.6a)", () => {
+  it("shows the newest scan's severity counts and a positive digestMatch statement", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ digestMatch: true })] })} />
+    );
+    expect(html).toContain('data-testid="pipeline-scan-severity"');
+    expect(html).toContain("C0 H2 M5 L9");
+    expect(html).toContain('data-testid="pipeline-scan-digest-match"');
+    expect(html).toContain('data-digest-match="true"');
+    expect(html).toContain("scanned digest matches the promoted digest");
+  });
+
+  it("a FALSE digestMatch is stated plainly, not hidden or softened", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ digestMatch: false })] })} />
+    );
+    expect(html).toContain('data-digest-match="false"');
+    expect(html).toContain("scanned digest differs from the promoted digest");
+  });
+
+  it("MUTATION-PROVEN honesty guard — a NULL digestMatch never renders as a pass, even on a passing scan", () => {
+    // The scan's own STATUS is "pass" here — the exact shape where an "absent renders as pass" bug
+    // would hide: mutate the `=== null` branch away (e.g. fold it into the `true` branch) and this
+    // test must catch a passing scan being read as digest-verified when the evidence never said so.
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({ scans: [scan({ status: "pass", digestMatch: null })] })}
+      />
+    );
+    expect(html).toContain('data-digest-match="unknown"');
+    expect(html).toContain("not recorded — cannot confirm this scan covers the promoted digest");
+    expect(html).not.toContain("scanned digest matches the promoted digest");
+    // The colour must not be the emerald "verified" tone either — amber, the tile's existing
+    // "stated absence" treatment.
+    const line = html.slice(html.indexOf('data-testid="pipeline-scan-digest-match"'));
+    expect(line.slice(0, 300)).not.toContain("text-emerald-700");
+    expect(line.slice(0, 300)).toContain("text-amber-700");
+  });
+
+  it("severity counts absent (null) is stated, never rendered as zeros", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ counts: null })] })} />
+    );
+    const line = html.slice(html.indexOf('data-testid="pipeline-scan-severity"'));
+    expect(line.slice(0, 200)).toContain("counts not recorded");
+    expect(line.slice(0, 200)).not.toContain("C0 H0 M0 L0");
+  });
+
+  it("no scan rows at all → no severity/digestMatch callout — nothing to claim", () => {
+    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact({ scans: [] })} />);
+    expect(html).not.toContain('data-testid="pipeline-scan-severity"');
+    expect(html).not.toContain('data-testid="pipeline-scan-digest-match"');
+  });
+
+  it("newestScan picks the row with the latest evaluatedAt, not the first/last by array position", () => {
+    const older = scan({ evaluatedAt: "2026-08-14T10:00:00.000Z", digestMatch: false });
+    const newer = scan({ evaluatedAt: "2026-08-15T10:00:00.000Z", digestMatch: true });
+    expect(newestScan([older, newer])).toBe(newer);
+    expect(newestScan([newer, older])).toBe(newer);
+    expect(newestScan([])).toBeNull();
   });
 });
 

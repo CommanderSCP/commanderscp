@@ -6,7 +6,15 @@ import { realObservedImages } from "@scp/schemas";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { cn, focusRing } from "../../lib/utils";
-import { formatDate, waveStatusBorder, waveStatusTone } from "./wave-status";
+import {
+  formatDate,
+  targetOutlineBorder,
+  targetOutlineTone,
+  targetReticleTone,
+  targetStatusTextTone,
+  waveStatusBorder,
+  waveStatusTone
+} from "./wave-status";
 
 /** THE ONE WAVE CARD. See docs/web.md §78. */
 
@@ -97,6 +105,11 @@ export interface PipelineWaveTargetLinks {
   executorRef?: string | undefined;
   executorSystemUrl?: string | undefined;
   repoPattern?: string | undefined;
+  /** The executor binding's `pluginModule` (e.g. `argocd`) — the subtitle's second half (design-
+   *  system §1.6a: `<Type> · <provider>`, plain text, no glyph). Optional: a caller that has not
+   *  fetched bindings for this target (today, `change-detail`/`campaign-detail` — only the dedicated
+   *  `/changes/{id}/pipeline` route does) simply renders the Type alone, never a guess. */
+  provider?: string | undefined;
 }
 
 /** Distinct `category · type` pipeline-kind pairs across a wave's targets (ADR-0007). Both fields
@@ -388,7 +401,10 @@ export function PipelineWaveCard({
   const kinds = pipelineKinds(wave);
   return (
     <Card
-      className={`w-full max-w-2xl ${waveStatusBorder(wave.status)}`}
+      // ~610px, not a hyperwide stretched bar (owner, 2026-09-11: "let's relook the sizing of the
+      // entire target box — it should be a normal size, not hyperwide"; target-redesign.html landed
+      // on ~610px after 1040px -> 700px narrowing rounds).
+      className={`w-full max-w-[610px] ${waveStatusBorder(wave.status)}`}
       data-testid={`${testIdPrefix}-card`}
       data-wave={waveNumber}
     >
@@ -473,23 +489,52 @@ export function PipelineWaveCard({
           const versionEmpty = !realImage && !revision;
           const wholeStateElided =
             versionEmpty && rolloutContentParts.length === 0 && imagesFullyLost && rolloutDropped;
+          // STATUS AS A COLOURED OUTLINE (design-system §1.6a, owner 2026-09-11: "we can have a
+          // colored outline indicating status"). A hold outranks the raw status — same rule the
+          // held badge below already applies — and everything else not `running`/`succeeded`/
+          // `failed` draws IDLE (dashed), never a color claim nothing has earned.
+          const outlineHoldTone: "warning" | "info" | null =
+            freezeHold || continuousHold ? "warning" : held ? "info" : null;
+          const outlineTone = targetOutlineTone(target.status, outlineHoldTone);
+          // `<Type> · <provider>` (design-system §1.6a): the provider half only when the caller has
+          // it (today only `/changes/{id}/pipeline`'s `linksFor` fetches bindings) — an absent
+          // provider renders the Type alone, never a guess (increment-3 gap for callers that don't).
+          const subtitle = target.type
+            ? links.provider
+              ? `${target.type} · ${links.provider}`
+              : target.type
+            : undefined;
           return (
             <div
               key={target.id}
-              className="rounded border border-slate-200 p-2 text-xs"
+              className={cn("rounded border-[1.5px] p-2 text-xs", targetOutlineBorder(outlineTone))}
               data-testid={`${testIdPrefix}-target-row`}
               data-held={anyHeld ? "true" : undefined}
+              data-outline-tone={outlineTone}
             >
               <div className="flex min-w-0 items-center justify-between gap-2">
                 <span className="flex min-w-0 items-center gap-1.5">
-                  {/* The target mark (design-system §1.6, owner 2026-09-11): every wave target wears it. */}
+                  {/* The target mark (design-system §1.6, owner 2026-09-11): every wave target wears
+                      it, and it picks up the row's own status hue (§1.6a). */}
                   <TargetReticle
-                    className="size-3.5 shrink-0 text-slate-400"
+                    className={cn("size-3.5 shrink-0", targetReticleTone(outlineTone))}
                     strokeWidth={2}
                     aria-hidden="true"
                     data-testid={`${testIdPrefix}-target-mark`}
                   />
-                  <TargetName target={target} nameOf={nameOf} />
+                  <span className="flex min-w-0 flex-col">
+                    <TargetName target={target} nameOf={nameOf} />
+                    {subtitle && (
+                      // Plain text, no glyph (owner: "type as plain text, no glyph — icon not
+                      // needed" — the mark above already says "this is a target").
+                      <span
+                        className="truncate text-[11px] text-slate-500"
+                        data-testid={`${testIdPrefix}-target-subtitle`}
+                      >
+                        {subtitle}
+                      </span>
+                    )}
+                  </span>
                 </span>
                 {/* BOTH, not one instead of the other (ADR-0028 increment 4, extended to the
                     freeze half). `held` is the headline; the raw status stays beside it because
@@ -514,17 +559,24 @@ export function PipelineWaveCard({
                     held
                   </Badge>
                 )}
-                <Badge variant={waveStatusTone(target.status)}>{target.status}</Badge>
+                {/* The status WORD, kept beside the outline for colour-blind readers (owner session
+                    flagged dropping it and never decided either way — kept). Plain text, coloured
+                    to the same tone as the outline/reticle — not a second filled pill competing
+                    with the border for the "this is the status" job. */}
+                <span
+                  className={cn(
+                    "text-[11px] font-semibold uppercase",
+                    targetStatusTextTone(outlineTone)
+                  )}
+                  data-testid={`${testIdPrefix}-target-status-word`}
+                >
+                  {target.status}
+                </span>
               </div>
               {held && <HeldTargetLine held={held} />}
               {freezeHold && <FreezeHoldLines freezes={freezeHold} />}
               {continuousHold && <ContinuousTestHoldLines continuousTests={continuousHold} />}
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500">
-                {target.category && target.type && (
-                  <span>
-                    {target.category} · {target.type}
-                  </span>
-                )}
                 {/* Per-wave version: the REAL snapshot reconcile observed from status(), never
                     fabricated. Prefer the deployed image tag/digest (ADR-0008 signal 1) — a better
                     human version than the git SHA — and demote the synced git revision (decision 1)

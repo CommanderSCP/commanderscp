@@ -84,6 +84,7 @@ import {
 } from "../components/ui/dialog";
 import { QueryErrorNotice } from "../components/query-error";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
+import { targetOutlineBorder, type TargetOutlineTone } from "../components/pipeline/wave-status";
 
 /** THE COMPONENT PIPELINE. See docs/web.md §250. */
 
@@ -569,6 +570,21 @@ function MaintainerLine({
   );
 }
 
+/** A STAGE tile's outline tone (design-system §1.6a, same grammar `PipelineWaveCard` uses for a
+ *  wave-target row) — mirrors `StatusPill`'s own tone rule exactly, so the border and the pill it
+ *  sits beside never disagree about what this place's status is. */
+export function stageOutlineTone(
+  current: ComponentPipelineStage["current"],
+  hold: ComponentPipelineStage["hold"] | undefined
+): TargetOutlineTone {
+  if (hold) return "info";
+  const status = current?.targetStatus ?? null;
+  if (status === "succeeded") return "success";
+  if (status === "failed" || status === "blocked") return "danger";
+  if (status) return "warning";
+  return "idle";
+}
+
 function StatusPill({
   current,
   hold
@@ -747,8 +763,13 @@ function StageCard({
   const bindings = bindingsFor(stage, lane);
   const current = currentFor(stage, lane);
   const hold = holdFor(stage, lane);
+  const outlineTone = stageOutlineTone(current, hold);
   return (
-    <Card className="min-w-[15rem] flex-1" data-testid="pipeline-stage">
+    <Card
+      className={cn("min-w-[15rem] flex-1 border-[1.5px]", targetOutlineBorder(outlineTone))}
+      data-testid="pipeline-stage"
+      data-outline-tone={outlineTone}
+    >
       <CardHeader className="pb-2">
         <NodeHeading
           kind="stage"
@@ -757,6 +778,26 @@ function StageCard({
             <>
               deploys to {stage.deploymentTarget.name}
               <TargetFacet target={stage.deploymentTarget} />
+              {/* `<Type> · <provider>` subtitle (design-system §1.6a), same grammar as a wave-target
+                  row — only where a status exists, i.e. this lane has actually released here.
+                  `executionSystemName` is this wire's nearest equivalent to a wave target's
+                  executor `pluginModule`: the component-pipeline binding does not carry the plugin
+                  module itself, only the execution system's name (§9's `ComponentPipelineBinding`
+                  has no `pluginModule` field) — stated here rather than silently substituted. */}
+              {current && bindings[0] && (
+                <span
+                  className="block text-slate-400"
+                  data-testid="pipeline-stage-subtitle"
+                  title={
+                    bindings[0].executionSystemName
+                      ? undefined
+                      : "This binding names no execution system, so no provider name is known here."
+                  }
+                >
+                  {bindings[0].type}
+                  {bindings[0].executionSystemName ? ` · ${bindings[0].executionSystemName}` : ""}
+                </span>
+              )}
             </>
           }
           right={
@@ -2094,6 +2135,41 @@ function SourceNode({
   );
 }
 
+/** The repo's KIND, in words (design-system §1.6a, mockup `sources.html`/`microservice.html`) —
+ *  "service code → image", "chart/** → chart", "config". Derived from three already-wire fields:
+ *
+ *  - `category === "configuration"` sources bump deployed config directly — bare "config", since
+ *    naming the type here would just repeat the word (the type IS `configuration`).
+ *  - `category === "build"` sources have the source/config split `journeyKind` exists for (§8.14):
+ *    an UNDECLARED one defaults to "source" (the pre-existing Category reading, unchanged), a
+ *    DECLARED `"config"` overrides it — the case journeyKind exists for, a build-typed source (e.g.
+ *    a service repo mistyped `image`) that is really a config bump. Either way it renders bare
+ *    "config" once resolved as one.
+ *  - `category === "infrastructure"` has no build/config split at all (mirrors `laneNodes`'
+ *    `hasBuildArm` gate — the infra lane's `buildCategories` is empty by design: plan and apply are
+ *    one executor, so there is no separate "build" step for a source to enter ahead of).
+ *
+ *  When the journey resolves to "source" (or infra, which has no journey concept), the path glob
+ *  stands in for "what kind of push" when one is declared (`chart/** → chart`); a null path (whole
+ *  repo) reads as the generic "service code" head instead of a misleadingly specific glob. */
+export function sourceKindText(source: {
+  pathPattern: string | null;
+  type: string;
+  category: string;
+  journeyKind?: string | null;
+}): string {
+  const journey =
+    source.category === "configuration"
+      ? "config"
+      : source.category === "build"
+        ? (source.journeyKind ?? "source")
+        : "source"; // infrastructure: no build/config split to declare one way or the other
+  if (journey === "config") return "config";
+  return source.pathPattern
+    ? `${source.pathPattern} → ${source.type}`
+    : `service code → ${source.type}`;
+}
+
 /** The declared provenance of ONE mapping, READ off its own fields. See docs/web.md §290. */
 export function sourceProvenance(source: {
   mirrorOfShared: boolean;
@@ -2204,6 +2280,20 @@ function SourceTile({
           </CardHeader>
         )}
         <CardContent className={`text-xs text-slate-600 ${hasHeader ? "pt-0" : "pt-4"}`}>
+          {/* The mark and the KIND, in text (design-system §1.6a, mockup `sources.html`/
+              `microservice.html`) — one generic Warehouse for every source, never a per-sourceKind
+              glyph, and the kind stated in words rather than left to the routing Type alone. */}
+          <p
+            className="mb-1.5 flex items-center gap-1.5 text-[11px] text-slate-500"
+            data-testid="pipeline-source-kind"
+          >
+            <Warehouse
+              className="size-3.5 shrink-0 text-slate-400"
+              strokeWidth={2}
+              aria-hidden="true"
+            />
+            {sourceKindText(source)}
+          </p>
           {(() => {
             const sources = [source];
             void sources;
@@ -2255,7 +2345,19 @@ function SourceTile({
                 {/* §1.6: the forward glyph is ArrowRight — the rendered `→` literal stays dead. */}
                 <span className="inline-flex items-center gap-1 text-slate-400">
                   <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
-                  {source.type}
+                  <span className="font-medium text-slate-600">{source.type}</span>
+                  {/* Type labelled AS DECLARED (design-system §1.6a, mockup `sources.html`): the
+                      schema comment is emphatic that this is never inferable from `sourceKind` — a
+                      GitHub Actions run can apply Terraform or ship an app — so the operator
+                      declares it per mapping, and rendering it as a bare fact would imply
+                      derivation. */}
+                  <span
+                    className="text-[10px] italic text-slate-400"
+                    title="The routing Type is DECLARED per mapping by the operator. It is NOT inferred from the source kind."
+                    data-testid="pipeline-source-type-declared"
+                  >
+                    declared, not inferred
+                  </span>
                 </span>
                 {/* A1: no edit exists on this table, so the row's only write is delete (see the
                   confirm's own copy for why it is never a bare click). */}
@@ -3217,6 +3319,82 @@ export function scanSummary(scans: ComponentPipelineArtifact["scans"]): {
   return { verdict: "mixed", text: `${detail} (${runs})` };
 }
 
+/** The scan row this component's connector callout speaks for — the newest by `evaluatedAt`, same
+ *  "fold many rows to one fact" shape `scanSummary` already uses for the verdict word. Exported for
+ *  the render tests below (mutation-proving the digestMatch-absent honesty case needs to call it
+ *  directly, not just through the tile). See docs/web.md §308. */
+export function newestScan(
+  scans: ComponentPipelineArtifact["scans"]
+): ComponentPipelineArtifact["scans"][number] | null {
+  if (scans.length === 0) return null;
+  return [...scans].sort((a, b) => b.evaluatedAt.localeCompare(a.evaluatedAt))[0]!;
+}
+
+/** THE SEVERITY + digestMatch CALLOUT (design-system §1.6a, mockup `microservice.html`'s `.scan`
+ *  panel — "Scan sits between build and stage… so it belongs on the connector, not on a target").
+ *  This tile already sits exactly there (registry → Scan & sign → the first wave, `laneNodes`'
+ *  fixed order); what was missing was surfacing these two ALREADY-READ fields (`counts`,
+ *  `digestMatch` — both on `ComponentPipelineScanRunSummarySchema`) in the always-visible compact
+ *  view rather than only under Details.
+ *
+ *  HONESTY (journey-view §8.9/§8.13): `digestMatch === null` means the evidence never recorded it —
+ *  that must never render as either true or false, and a `pass` verdict sitting next to it must not
+ *  be read as "verified against what ships". Worded and coloured amber, the same "stated absence"
+ *  treatment the rest of this tile already gives an unparseable export stamp. */
+function ScanSeverityCallout({
+  scan
+}: {
+  scan: ComponentPipelineArtifact["scans"][number];
+}): React.JSX.Element {
+  return (
+    <>
+      <p data-testid="pipeline-scan-severity">
+        <span className="text-slate-400">severity:</span>{" "}
+        {scan.counts ? (
+          <span
+            className="font-mono"
+            title="critical / high / medium / low counts, as the scanner reported them"
+          >
+            C{scan.counts.critical} H{scan.counts.high} M{scan.counts.medium} L{scan.counts.low}
+          </span>
+        ) : (
+          <span className="italic text-slate-400">counts not recorded</span>
+        )}
+      </p>
+      <p
+        data-testid="pipeline-scan-digest-match"
+        data-digest-match={scan.digestMatch === null ? "unknown" : String(scan.digestMatch)}
+      >
+        <span className="text-slate-400">digestMatch:</span>{" "}
+        {scan.digestMatch === true ? (
+          <span
+            className="text-emerald-700"
+            title="The digest this scan covers equals the digest being promoted — a pass here proves something about what actually ships."
+          >
+            true — scanned digest matches the promoted digest
+          </span>
+        ) : scan.digestMatch === false ? (
+          <span
+            className="text-red-700"
+            title="The digest this scan covers differs from the digest being promoted — any pass verdict here does not cover what actually ships."
+          >
+            false — scanned digest differs from the promoted digest
+          </span>
+        ) : (
+          // NEVER a silent pass: the evidence omitted digestMatch, so this scan cannot say whether
+          // it covered the promoted digest at all — stated, not defaulted to either boolean.
+          <span
+            className="italic text-amber-700"
+            title="The evidence did not record digestMatch — this scan cannot confirm it covers the promoted digest. A pass verdict here must not be read as verifying what ships."
+          >
+            not recorded — cannot confirm this scan covers the promoted digest
+          </span>
+        )}
+      </p>
+    </>
+  );
+}
+
 /** The COMPACT part of the Scan & sign tile (§10.3). See docs/web.md §306. */
 function ScanSignCompact({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
   if (artifact === undefined) {
@@ -3261,6 +3439,9 @@ function ScanSignCompact({ artifact }: { artifact: ArtifactOnWire }): React.JSX.
           {summary.text}
         </span>
       </p>
+      {/* Only when a scan row exists — no scan yet already says so above, and a severity/digestMatch
+          line with nothing behind it would be a claim about a run that never happened. */}
+      {newestScan(artifact.scans) && <ScanSeverityCallout scan={newestScan(artifact.scans)!} />}
       <p data-testid="pipeline-scan-export-gate" data-export-gate={artifact.exportGate}>
         <span className="text-slate-400">export gate (E6):</span>{" "}
         <span
