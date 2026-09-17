@@ -306,10 +306,21 @@ export function mapGithubWebhookEventToHint(
       };
     }
     case "workflow_run": {
-      const run = p.workflow_run as { head_sha?: string; id?: number } | undefined;
+      const run = p.workflow_run as
+        { head_sha?: string; head_branch?: string; id?: number } | undefined;
       return {
         repo,
         commitSha: run?.head_sha,
+        // THE RUN'S OWN BRANCH, under its own name (poll-events-carry-ref) — GitHub reports it
+        // directly on the delivery, so this is a fact the payload states, not a default this code
+        // is guessing at. GitHub does not document `head_branch` as null for a tag-triggered run,
+        // so a tag push could in principle populate it too; a false match against a `refs/heads/*`
+        // mapping is the residual risk, weighed against the alternative of never routing a
+        // workflow_run by ref at all.
+        ref:
+          typeof run?.head_branch === "string" && run.head_branch.length > 0
+            ? `refs/heads/${run.head_branch}`
+            : undefined,
         correlationKey: run?.id !== undefined ? `run-${run.id}` : undefined
       };
     }
@@ -345,22 +356,57 @@ interface WorkflowRun {
   conclusion: string | null;
   html_url: string;
   head_sha?: string;
+  /** The branch this run was triggered from (poll-events-carry-ref) — GitHub reports it directly on
+   *  the run resource, the same field the webhook payload's `workflow_run.head_branch` carries. */
+  head_branch?: string;
   created_at?: string;
   workflow_id?: number;
 }
 
+/** Resolves the repo's default branch (`GET /repos/{owner}/{repo}`.`default_branch`) so
+ *  `pollCommits` can name a branch EXPLICITLY rather than relying on the commits-list endpoint's
+ *  implicit default (poll-events-carry-ref). `undefined` on any failure (non-2xx, transport error,
+ *  or a missing/empty field) — the same lenient, non-throwing posture every other poll call in this
+ *  file already has; the caller falls back to today's ref-less behaviour rather than guessing. */
+async function resolveDefaultBranch(
+  ctx: PluginContext,
+  config: GithubConfig
+): Promise<string | undefined> {
+  try {
+    const { status, body } = await api(ctx, config, "GET", `/repos/${config.owner}/${config.repo}`);
+    if (status < 200 || status >= 300) return undefined;
+    const branch = (body as { default_branch?: unknown }).default_branch;
+    return typeof branch === "string" && branch.length > 0 ? branch : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Adapter `pollCommits` hook: recent commits (approximates `push` webhook activity for the
  *  polling fallback). Silently skips (rather than throws for) a non-2xx resource — the documented,
- *  more-lenient observe posture. */
+ *  more-lenient observe posture.
+ *
+ *  Names the branch it lists EXPLICITLY (poll-events-carry-ref): the commits LIST response carries
+ *  no ref per commit, and simply omitting `sha` lists whatever GitHub currently treats as the
+ *  default branch — an assumption, not a fact this code can stand behind. Resolving the default
+ *  branch first and passing it back as BOTH the `sha` list parameter and the stamped
+ *  `refs/heads/<branch>` makes the ref TRUE BY CONSTRUCTION: it names the exact branch this call
+ *  asked for, not a guess about what the API defaulted to. A `source_mappings` row with a
+ *  `refPattern` fails closed on any event with no ref (`correlation.ts`), so before this fix EVERY
+ *  polled push silently stopped matching the moment an operator set one — the poll path is how the
+ *  homelab estate ingests almost all of its coordination. */
 async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const commits: Array<{ sha: string; commit?: { author?: { date?: string } } }> = [];
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  const defaultBranch = await resolveDefaultBranch(ctx, config);
+  const ref = defaultBranch ? `refs/heads/${defaultBranch}` : undefined;
   let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("since", sinceIso);
+    if (defaultBranch) query.set("sha", defaultBranch);
     const { status, body } = await api(
       ctx,
       config,
@@ -391,6 +437,10 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
       correlation: normalizeCorrelation({
         repo: `${config.owner}/${config.repo}`,
         commitSha: commit.sha,
+        // The EXPLICITLY-named branch this poll asked for (poll-events-carry-ref) — undefined when
+        // `resolveDefaultBranch` could not resolve one, which is fail-closed at correlation
+        // (`refPattern` mappings refuse an event with no ref) rather than a guess.
+        ref,
         // NO `correlationKey` — see the push mapping above. The commits LIST response carries no ref
         // per commit, which is why a constant was used; a constant is not an identity. The sha already
         // discriminates the dedupe key (`observedEventIdentity`), and dropping the constant is what
@@ -465,6 +515,11 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
         correlation: normalizeCorrelation({
           repo: `${config.owner}/${config.repo}`,
           commitSha: run.head_sha,
+          // The run's own reported branch (poll-events-carry-ref) — see `WorkflowRun.head_branch`.
+          ref:
+            typeof run.head_branch === "string" && run.head_branch.length > 0
+              ? `refs/heads/${run.head_branch}`
+              : undefined,
           correlationKey: `run-${run.id}`
         }),
         raw: run

@@ -153,6 +153,27 @@ describe("mapGithubWebhookEventToHint", () => {
     });
   });
 
+  it("maps a workflow_run event's head_branch to a fully-qualified ref (poll-events-carry-ref — GitHub reports the branch directly on the delivery, so this is a fact not a guess)", () => {
+    const hint = mapGithubWebhookEventToHint("workflow_run", {
+      workflow_run: { id: 1000, head_sha: "4".repeat(40), head_branch: "release/1.0" },
+      repository: { full_name: "acme/widgets" }
+    });
+    expect(hint).toEqual({
+      repo: "acme/widgets",
+      commitSha: "4".repeat(40),
+      ref: "refs/heads/release/1.0",
+      correlationKey: "run-1000"
+    });
+  });
+
+  it("a workflow_run event with no head_branch maps to NO ref, rather than fabricating one", () => {
+    const hint = mapGithubWebhookEventToHint("workflow_run", {
+      workflow_run: { id: 1001, head_sha: "5".repeat(40) },
+      repository: { full_name: "acme/widgets" }
+    });
+    expect(hint?.ref).toBeUndefined();
+  });
+
   it("maps a deployment event to repo/commitSha (sha)/correlationKey (the deployment ID, never its environment — §8.16)", () => {
     const hint = mapGithubWebhookEventToHint("deployment", {
       deployment: { id: 4242, sha: "4".repeat(40), environment: "production" },
@@ -793,6 +814,125 @@ describe("observe() polling fallback", () => {
     expect(polledPushEvent).toBeDefined();
     expect(polledPushEvent?.correlation.repo).toBe(webhookHint?.repo);
     expect(polledPushEvent?.correlation.commitSha).toBe(webhookHint?.commitSha);
+  });
+});
+
+// poll-events-carry-ref: pollCommits/pollRuns name the branch EXPLICITLY rather than relying on an
+// implicit default, so a ref-scoped source_mapping keeps matching polled activity the way it
+// already matches delivered webhooks.
+describe("observe() polling fallback: ref-scoped routing (poll-events-carry-ref)", () => {
+  it("resolves the repo's default branch, lists commits with sha=<branch>, and stamps refs/heads/<branch> on every polled push", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const commitSha = "d7".repeat(20);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}`)
+      .reply(200, { default_branch: "main" });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.sha === "main")
+      .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
+      .reply(200, { workflow_runs: [] });
+
+    const events = await plugin.observe(ctx);
+    const pushEvent = events.find((e) => e.kind === "push");
+    expect(pushEvent?.correlation.ref).toBe("refs/heads/main");
+  });
+
+  it("a default-branch resolution failure (404) falls back to the pre-fix behaviour: list the implicit default and stamp NO ref — fail-closed, not a guess", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const commitSha = "e8".repeat(20);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}`)
+      .reply(404, { message: "Not Found" });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => !("sha" in q))
+      .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
+      .reply(200, { workflow_runs: [] });
+
+    const events = await plugin.observe(ctx);
+    const pushEvent = events.find((e) => e.kind === "push");
+    expect(pushEvent?.correlation.commitSha).toBe(commitSha);
+    expect(pushEvent?.correlation.ref).toBeUndefined();
+  });
+
+  it("stamps refs/heads/<head_branch> on a polled workflow run that reports one", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}`)
+      .reply(200, { default_branch: "main" });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
+      .reply(200, []);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
+      .reply(200, {
+        workflow_runs: [
+          {
+            id: 8801,
+            status: "completed",
+            conclusion: "success",
+            html_url: "https://github.com/x",
+            head_sha: "9f".repeat(20),
+            head_branch: "release/1.0",
+            created_at: "2026-07-01T00:05:00Z"
+          }
+        ]
+      });
+
+    const events = await plugin.observe(ctx);
+    const runEvent = events.find((e) => e.kind === "workflow_run");
+    expect(runEvent?.correlation.ref).toBe("refs/heads/release/1.0");
+  });
+
+  it("a polled run with no head_branch stamps NO ref, rather than fabricating one", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}`)
+      .reply(200, { default_branch: "main" });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
+      .reply(200, []);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
+      .reply(200, {
+        workflow_runs: [
+          {
+            id: 8802,
+            status: "completed",
+            conclusion: "success",
+            html_url: "https://github.com/x",
+            head_sha: "af".repeat(20),
+            created_at: "2026-07-01T00:05:00Z"
+          }
+        ]
+      });
+
+    const events = await plugin.observe(ctx);
+    const runEvent = events.find((e) => e.kind === "workflow_run");
+    expect(runEvent?.correlation.ref).toBeUndefined();
   });
 });
 

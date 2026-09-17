@@ -152,6 +152,21 @@ describe("observedEventIdentity: the grouping key alone is not an identity", () 
     expect(a).not.toBe(b);
   });
 
+  it("poll-events-carry-ref: gaining a `ref` field does NOT change the identity of an already-ingested event, so upgrading never re-ingests history", () => {
+    // `observedEventIdentity`'s inputs are `correlationKey`/`kind` (the group) and `commitSha` ??
+    // `artifactDigest` ?? `stateRef` ?? `occurredAt` (the discriminator) — `ref` is not read at all.
+    // A polled push that previously reached `ingestObservedEvents` with no `ref` (source_mappings.ts
+    // §8, before poll-events-carry-ref) and now arrives with one attached (github/gitea/gitlab's
+    // pollCommits/pollRuns fix) must still collapse onto the SAME dedupe key, or every existing
+    // change_source_events row would be re-created the first time an org upgrades onto this fix.
+    const withoutRef = observedEventIdentity(ev({ repo: "acme/app", commitSha: "f".repeat(40) }));
+    const withRef = observedEventIdentity(
+      ev({ repo: "acme/app", commitSha: "f".repeat(40), ref: "refs/heads/main" })
+    );
+
+    expect(withRef).toBe(withoutRef);
+  });
+
   it("an artifact digest discriminates within a repository grouping key", () => {
     // harbor/gitea package pushes carry a digest instead of a commit sha.
     const first = observedEventIdentity(
