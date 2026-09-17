@@ -263,11 +263,19 @@ since those three differ between the migrations Job and the api/worker Deploymen
 {{- end }}
 {{- end }}
 {{- if .Values.internalBaseUrl }}
-{{- /* How this instance names ITSELF to a human — the CLI device-login `verificationUri` is
-       derived from it (routes/device-flow.ts). Unset keeps config.ts's 127.0.0.1 default, which is
-       correct for a local run and wrong for every ingress-served install. */}}
+{{- /* How this instance calls ITSELF (UI SSR, boot-time demo seed) — never a substitute for
+       `publicBaseUrl` below, which is what a human-facing link (the CLI device-login
+       `verificationUri`, routes/device-flow.ts) is built from. Unset keeps config.ts's
+       127.0.0.1 default, correct for a pod calling its own loopback address. */}}
 - name: SCP_INTERNAL_BASE_URL
   value: {{ .Values.internalBaseUrl | quote }}
+{{- end }}
+{{- if .Values.publicBaseUrl }}
+{{- /* How this instance names ITSELF to a human — the CLI device-login `verificationUri` is
+       built from it when set (routes/device-flow.ts); unset makes that route return a relative
+       `/device` path instead of a 127.0.0.1 URL that cannot work off-box. */}}
+- name: SCP_PUBLIC_BASE_URL
+  value: {{ .Values.publicBaseUrl | quote }}
 {{- end }}
 {{- if .Values.operatorApi.enabled }}
 {{- /* The instance-operator write surface. REQUIRES an operator-supplied Secret: the token must be

@@ -2182,7 +2182,8 @@ function main(): void {
       "SCP_ARTIFACT_OCI_REGISTRY_HOSTS",
       "SCP_ARTIFACT_BLOB_BASE_URLS",
       "SCP_ARTIFACT_INSECURE_HOSTS",
-      "SCP_INTERNAL_BASE_URL"
+      "SCP_INTERNAL_BASE_URL",
+      "SCP_PUBLIC_BASE_URL"
     ];
 
     const defaultDocs = renderChart(releaseName, []);
@@ -2206,6 +2207,8 @@ function main(): void {
       "api.role=all",
       "--set",
       "internalBaseUrl=https://scp.example.com/api/v1",
+      "--set",
+      "publicBaseUrl=https://scp.example.com",
       "--set",
       "federation.sync.enabled=true",
       "--set",
@@ -2241,6 +2244,7 @@ function main(): void {
     bothHave(onDocs, "SCP_RETRANS_AUTO_RELAY_MAX_ATTEMPTS", "3");
     bothHave(onDocs, "SCP_RETRANS_AUTO_RELAY_LEASE_SECONDS", "7200");
     bothHave(onDocs, "SCP_INTERNAL_BASE_URL", "https://scp.example.com/api/v1");
+    bothHave(onDocs, "SCP_PUBLIC_BASE_URL", "https://scp.example.com");
     // Comma-joined, in values order — the parse the server does (`parseRegistryHostList`).
     bothHave(onDocs, "SCP_ARTIFACT_OCI_REGISTRY_HOSTS", "reg.example.com:5000,mirror.example.com");
     bothHave(onDocs, "SCP_ARTIFACT_BLOB_BASE_URLS", "https://blobs.example.com");
