@@ -37,16 +37,69 @@ export const DEPENDENCY_AUTOMATION_RATIONALE: CommanderOnlyRationale = {
     `domain-specific repositories the commander never sees are out of scope (ADR-0032 §7d)`
 };
 
-/** THE RULE, ONCE: a role passes only when it was DECLARED and is exactly 'commander'. An
- *  undeclared role is its own answer and is checked first — whatever value it reads. Both verdicts
- *  below (this deployment; a paired peer) ask this and only word the refusal. */
+/** The deployment's install-time federation role, as every role verdict here reads it. */
+export type FederationRoleConfig = Pick<ServerConfig, "federationRole" | "federationRoleDeclared">;
+
+const COMMANDER_ONLY: ReadonlySet<string> = new Set(["commander"]);
+
+/** THE RULE, ONCE: a role passes only when it was DECLARED and is one of `permitted`. An undeclared
+ *  role is its own answer and is checked first — whatever value it reads. Every verdict below (this
+ *  deployment; a paired peer; cosign key custody) asks this and only words the refusal. */
+function federationRoleRefusal(
+  role: string | null | undefined,
+  declared: boolean,
+  permitted: ReadonlySet<string>
+): "undeclared" | "not_permitted" | null {
+  if (!declared) return "undeclared";
+  if (typeof role !== "string" || !permitted.has(role)) return "not_permitted";
+  return null;
+}
+
 function commanderOnlyRefusal(
   role: string | null | undefined,
   declared: boolean
 ): "undeclared" | "not_commander" | null {
-  if (!declared) return "undeclared";
-  if (role !== "commander") return "not_commander";
-  return null;
+  const refusal = federationRoleRefusal(role, declared, COMMANDER_ONLY);
+  return refusal === "not_permitted" ? "not_commander" : refusal;
+}
+
+/** WHO MAY HOLD THE INSTANCE COSIGN SIGNING KEY (owner, 2026-09-16; component-journey-view.md §8.9):
+ *  the commander, which signs promotion manifests, and a retrans, which signs the transport
+ *  integrity of bytes it has validated and relays (ADR-0019). An outpost only validates. */
+const COSIGN_KEY_CUSTODIANS: ReadonlySet<string> = new Set(["commander", "retrans"]);
+
+/** May this deployment mint, read, or serve its instance cosign key? Refused on an outpost and,
+ *  FAIL-CLOSED, on an undeclared role. See {@link COSIGN_KEY_CUSTODIANS}. */
+export function cosignKeyCustodyVerdict(config: FederationRoleConfig): CommanderOnlyVerdict {
+  const refusal = federationRoleRefusal(
+    config.federationRole,
+    config.federationRoleDeclared,
+    COSIGN_KEY_CUSTODIANS
+  );
+  if (refusal === "undeclared") {
+    return {
+      allowed: false,
+      reason:
+        `SCP_FEDERATION_ROLE is not declared on this deployment, so it holds no cosign signing key ` +
+        `(refused FAIL-CLOSED — the setting defaults to 'commander', which cannot be told apart from ` +
+        `an outpost that omits it). Declare it explicitly (Helm: 'federationRole'); only a commander ` +
+        `or a retrans holds one (component-journey-view.md §8.9)`
+    };
+  }
+  if (refusal === "not_permitted") {
+    return {
+      allowed: false,
+      reason:
+        `SCP_FEDERATION_ROLE is '${config.federationRole}' — an outpost holds no cosign signing key. ` +
+        `Only the commander signs a promotion manifest, and only a retrans signs the transport ` +
+        `integrity of the bytes it relays; an outpost validates both (owner, 2026-09-16; ` +
+        `component-journey-view.md §8.9)`
+    };
+  }
+  return {
+    allowed: true,
+    reason: `SCP_FEDERATION_ROLE is explicitly '${config.federationRole}', a cosign key custodian`
+  };
 }
 
 /** THE FEDERATION AXIS ALONE. See docs/dependencies.md §144. */

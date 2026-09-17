@@ -1,4 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+  DECLARED_COMMANDER,
+  DECLARED_OUTPOST,
+  DECLARED_RETRANS,
+  requireCosignPublicKey
+} from "../test-support/federation-roles.js";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -17,7 +23,7 @@ import { proposeChange, getChangeRow } from "../coordination/changes-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
 import { runPreDeployArtifactGate } from "../coordination/pre-deploy-gate.js";
 import { putSecret } from "../secrets/secrets-repo.js";
-import { ensureInstanceCosignKey, getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
+import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, initFederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
@@ -211,9 +217,14 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     // Keys. A's instance cosign key signs the promotion manifest AND (as the harness "build
     // executor") the artifacts themselves; its PUBLIC half is the trust anchor B and C register on
     // the pairing (M17.3 E5) — exactly the production key flow.
-    const commanderPair = await ensureInstanceCosignKey(commander.db, commander.orgId);
+    const commanderPair = await ensureInstanceCosignKey(
+      commander.db,
+      commander.orgId,
+      DECLARED_COMMANDER
+    );
     commanderCosignPub = commanderPair.publicKey;
-    retransCosignPub = (await getInstanceCosignPublicKey(retrans.db, retrans.orgId)).publicKey;
+    retransCosignPub = (await requireCosignPublicKey(retrans.db, retrans.orgId, DECLARED_RETRANS))
+      .publicKey;
     commanderKeyPath = path.join(scratch, "commander-cosign.key");
     await writeFile(commanderKeyPath, commanderPair.privateKey, "utf8");
     const attacker = await generateKeyPair();
@@ -528,6 +539,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     peerName: string
   ): Promise<PromotionBundle> {
     const outcome = await exportPromotionBundle(commander.db, {
+      federation: DECLARED_COMMANDER,
       orgId: commander.orgId,
       peerIdOrName: peerName,
       changeIdOrUrn: changeId
@@ -582,6 +594,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     // THE RELAY at B: pull by digest (vendored-skopeo resolution), validate (M17.4 machinery),
     // package + sign the tarball.
     const result = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: changeAtRetrans,
       masterKey: Buffer.alloc(32, 7),
@@ -665,6 +678,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     const importedAtB = await importPromotionBundle(retrans.db, retrans.orgId, bundleForB);
 
     const result = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: importedAtB.localChangeObjectId,
       masterKey: Buffer.alloc(32, 7),
@@ -722,6 +736,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   it("a source host outside SCP_ARTIFACT_OCI_REGISTRY_HOSTS is refused before any dial (zero requests to the decoy)", async () => {
     const before = forbiddenHits;
     const result = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: changeAtRetrans,
       masterKey: Buffer.alloc(32, 7),
@@ -741,6 +756,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     // itself is the RFC 9457 title, "Conflict").
     await expect(
       buildRelayTarball(outpost.db, {
+        federation: DECLARED_OUTPOST,
         orgId: outpost.orgId,
         changeIdOrUrn: changeAtOutpost,
         masterKey: Buffer.alloc(32, 9),
@@ -846,6 +862,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     // WITHOUT the vaulted secret: the source registry refuses the pull; the relay fails closed
     // (block Decision, no tarball) — proves auth is really enforced on the pull path.
     const noCred = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: importedAtB.localChangeObjectId,
       masterKey: retransMasterKey,
@@ -904,6 +921,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
       );
       [result, gate] = await Promise.all([
         buildRelayTarball(retrans.db, {
+          federation: DECLARED_RETRANS,
           orgId: retrans.orgId,
           changeIdOrUrn: importedAtB.localChangeObjectId,
           masterKey: retransMasterKey,
@@ -948,6 +966,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
 
   it("a plain-HTTP source host not in SCP_RELAY_INSECURE_HOSTS is refused end-to-end (TLS verification enforced on the relay)", async () => {
     const result = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: changeAtRetrans,
       masterKey: Buffer.alloc(32, 7),

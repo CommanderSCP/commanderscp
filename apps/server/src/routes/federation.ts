@@ -247,8 +247,9 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // OUTSIDE the tx above: `getInstanceCosignPublicKey` provisions the keypair lazily via a cosign
       // subprocess, which must never run while a tx (and its pooled connection) is held open. Only the
       // PUBLIC half is returned — the accessor's type structurally omits the private key.
-      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId);
-      reply.status(200).send({ ...result, cosignPublicKey: cosign.publicKey });
+      // `null` on an outpost or an undeclared deployment: it holds no cosign key (§8.9, owner 2026-09-16).
+      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId, deps.config);
+      reply.status(200).send({ ...result, cosignPublicKey: cosign?.publicKey ?? null });
     }
   });
 
@@ -459,9 +460,9 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // Only NOW resolve the LOCAL cosign public key — OUTSIDE any tx: its lazy provisioning runs a
       // cosign subprocess, which must never execute while a tx holds a pooled connection. Only the
       // public half is ever returned.
-      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId);
+      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId, deps.config);
       const status = await withTenantTx(deps.db, auth.orgId, (tx) =>
-        getFederationStatus(tx, auth.orgId, cosign.publicKey)
+        getFederationStatus(tx, auth.orgId, cosign?.publicKey ?? null)
       );
       reply.status(200).send(status);
     }
@@ -738,6 +739,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         : null;
       if (deliverPeer) assertOutboundDeliverable(resolveDeliveryTarget(deliverPeer));
       const outcome = await exportPromotionBundle(deps.db, {
+        federation: deps.config,
         orgId: auth.orgId,
         peerIdOrName: request.body.peer,
         changeIdOrUrn: request.body.change,
@@ -880,6 +882,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         : null;
       const outDir = requireOutboundDir(resolveDeliveryTarget(deliverPeer, config));
       const outcome = await buildRelayTarball(deps.db, {
+        federation: deps.config,
         orgId: auth.orgId,
         changeIdOrUrn: request.body.change,
         masterKey: deps.config.secretsMasterKey,

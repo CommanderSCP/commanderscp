@@ -1,4 +1,5 @@
 import path from "node:path";
+import { DECLARED_COMMANDER, requireCosignPublicKey } from "../test-support/federation-roles.js";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
@@ -39,7 +40,6 @@ import { enforceLocalChangeAuthority } from "../coordination/transition.js";
 import { resolveChangeRecipe } from "../coordination/campaign-recipe.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
-import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { getDecision } from "../coordination/decisions-repo.js";
 import { getComponentPipeline } from "../coordination/component-pipeline.js";
 import { listAuditEvents } from "../audit/audit-repo.js";
@@ -94,7 +94,7 @@ async function pair(
   // a receiver can cosign-verify b's promotion manifests. Opt-in — sync-only tests don't need it, and
   // a peer paired WITHOUT it models a genuine pre-E5 peer (the back-compat / downgrade axis).
   const cosignPublicKey = opts.cosign
-    ? (await getInstanceCosignPublicKey(b.db, b.orgId)).publicKey
+    ? (await requireCosignPublicKey(b.db, b.orgId, DECLARED_COMMANDER)).publicKey
     : undefined;
   await withTenantTx(a.db, a.orgId, (tx) =>
     pairPeer(tx, {
@@ -1041,6 +1041,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   /** Export from domain A and unwrap the success bundle — throws if the gate unexpectedly refused. */
   async function exportBundleA(changeId: string): Promise<PromotionBundle> {
     const outcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: changeId
@@ -1715,6 +1716,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     await seedScanOutcome(changeId, OCI_DIGEST, { status: "fail" });
 
     const outcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: changeId
@@ -1748,6 +1750,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
 
     const outcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: changeId
@@ -1774,6 +1777,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     // (a) Baseline: an unscanned promotion is refused, with no domain-local object anywhere near it.
     const baseline = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
     const before = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: baseline.changeId
@@ -1797,6 +1801,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
     const after = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
     const afterOutcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: after.changeId
@@ -1830,6 +1835,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: true });
     const outcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: changeId
@@ -1843,6 +1849,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     });
     // No scan seeded at all — a MISSING scan refuses exactly like a failed one (universal gate).
     const outcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: changeId
@@ -1863,6 +1870,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     await seedScanOutcome(changeId, otherDigest, { scannedDigest: otherDigest, digestMatch: true });
 
     const outcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: changeId
@@ -1875,6 +1883,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     const forged = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
     await seedScanOutcome(forged.changeId, OCI_DIGEST, { pluginModule: "webhook-control" });
     const refusal = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: forged.changeId,
@@ -1910,6 +1919,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     await seedScanOutcome(stale.changeId, OCI_DIGEST, { controlObjectId: control });
     await seedScanOutcome(stale.changeId, OCI_DIGEST, { controlObjectId: control, status: "fail" });
     const refusal = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: stale.changeId,
@@ -1945,7 +1955,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
 
     // verify-blob the manifest with domain A's cosign PUBLIC key (E5) — proves a real signature.
-    const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
+    const cosignPub = await requireCosignPublicKey(domainA.db, domainA.orgId, DECLARED_COMMANDER);
     const ok = await verifyBlob(
       canonicalStringify(bundle.promotionManifest),
       bundle.manifestSignature!,
@@ -2032,7 +2042,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       bundleB.promotionManifest!.sourceChangeObjectId
     );
 
-    const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
+    const cosignPub = await requireCosignPublicKey(domainA.db, domainA.orgId, DECLARED_COMMANDER);
     expect(
       await verifyBlob(
         canonicalStringify(bundleA.promotionManifest),
@@ -2059,7 +2069,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(bundle.artifacts).toBeUndefined();
     expect(bundle.promotionManifest).toBeDefined();
     expect(bundle.promotionManifest!.artifacts).toEqual([]);
-    const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
+    const cosignPub = await requireCosignPublicKey(domainA.db, domainA.orgId, DECLARED_COMMANDER);
     expect(
       await verifyBlob(
         canonicalStringify(bundle.promotionManifest),
@@ -2082,6 +2092,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
 
     const outcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: changeId
@@ -2122,6 +2133,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
 
     const outcome = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: changeId
@@ -2135,6 +2147,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       { seedScan: false }
     );
     const unlabeled = await exportPromotionBundle(domainA.db, {
+      federation: DECLARED_COMMANDER,
       orgId: domainA.orgId,
       peerIdOrName: domainB.orgName,
       changeIdOrUrn: unlabeledChangeId
@@ -2199,6 +2212,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         { seedScan: false }
       );
       const outcome = await exportPromotionBundle(domainA.db, {
+        federation: DECLARED_COMMANDER,
         orgId: domainA.orgId,
         peerIdOrName: domainB.orgName,
         changeIdOrUrn: changeId
@@ -2283,6 +2297,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         { seedScan: false }
       );
       const refusal = await exportPromotionBundle(domainA.db, {
+        federation: DECLARED_COMMANDER,
         orgId: domainA.orgId,
         peerIdOrName: domainB.orgName,
         changeIdOrUrn: unscanned.changeId
@@ -2309,6 +2324,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         threshold: { maxCritical: 50, maxHigh: 50 }
       });
       const breached = await exportPromotionBundle(domainA.db, {
+        federation: DECLARED_COMMANDER,
         orgId: domainA.orgId,
         peerIdOrName: domainB.orgName,
         changeIdOrUrn: dirty.changeId,
@@ -2588,6 +2604,7 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
     if (oci) await seedPassingScan(change.id, oci);
 
     const outcome = await exportPromotionBundle(commander.db, {
+      federation: DECLARED_COMMANDER,
       orgId: commander.orgId,
       peerIdOrName: receiver.orgName,
       changeIdOrUrn: change.id

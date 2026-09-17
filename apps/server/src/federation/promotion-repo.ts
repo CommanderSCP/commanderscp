@@ -30,8 +30,10 @@ import { autoRelayEnabled } from "./auto-relay.js";
 import { ensureInstanceKey, verifyAttestation } from "../governance/attestation.js";
 import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import {
+  commanderOnlyFederationVerdict,
   commanderOnlyPeerVerdict,
-  type CommanderOnlyRationale
+  type CommanderOnlyRationale,
+  type FederationRoleConfig
 } from "../dependencies/commander-only.js";
 
 /** Why a promotion is commander-only, worded for both doors: the exporting deployment
@@ -103,6 +105,9 @@ export function promotionChecksumPayload(bundle: {
 }
 
 export interface ExportPromotionInput {
+  /** The deployment's declared federation role. Export is commander-only and the cosign key it signs
+   *  with is custody-gated (component-journey-view.md §8.9) — required, so no caller can skip it. */
+  federation: FederationRoleConfig;
   orgId: string;
   peerIdOrName: string;
   changeIdOrUrn: string;
@@ -194,9 +199,17 @@ export async function exportPromotionBundle(
 ): Promise<ExportPromotionResult> {
   const actorObjectId = input.actorObjectId ?? FEDERATION_IMPORT_ACTOR_ID;
 
+  // Phase 0 — COMMANDER-ONLY, here as well as at the route, so no future caller can sign past it.
+  const commander = commanderOnlyFederationVerdict(
+    input.federation,
+    "exporting a signed promotion bundle",
+    PROMOTION_SIGNING_RATIONALE
+  );
+  if (!commander.allowed) throw conflict(commander.reason);
+
   // Phase 1 — resolve the cosign signing keypair OUTSIDE any tx (first-use keygen runs a subprocess
   // that must never execute while a pooled DB connection is held open).
-  const cosignPair = await ensureInstanceCosignKey(db, input.orgId);
+  const cosignPair = await ensureInstanceCosignKey(db, input.orgId, input.federation);
 
   // Phase 1.2 — A DOMAIN-LOCAL CHANGE IS NEVER PROMOTED. See docs/federation.md §391.
   const localityRefusal = await withTenantTx(db, input.orgId, async (tx) => {

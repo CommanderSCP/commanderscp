@@ -1,4 +1,5 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { DECLARED_COMMANDER } from "../test-support/federation-roles.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
@@ -197,6 +198,7 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
 
   function exportTo(s: Scenario, changeId: string, runner: ManagedScanRunner | null) {
     return exportPromotionBundle(server.deps.db, {
+      federation: DECLARED_COMMANDER,
       orgId: s.org.orgId,
       peerIdOrName: s.peerName,
       changeIdOrUrn: changeId,

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { DECLARED_COMMANDER } from "../test-support/federation-roles.js";
 import { promisify } from "node:util";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -412,6 +413,7 @@ describe.runIf(await dockerAvailable())(
       scanRunner?: ManagedScanRunner | null
     ): ReturnType<typeof exportPromotionBundle> {
       return exportPromotionBundle(domain.db, {
+        federation: DECLARED_COMMANDER,
         orgId: domain.orgId,
         peerIdOrName: "peer-outpost",
         changeIdOrUrn: changeId,

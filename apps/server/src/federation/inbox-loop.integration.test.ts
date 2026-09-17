@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+  DECLARED_COMMANDER,
+  DECLARED_RETRANS,
+  requireCosignPublicKey
+} from "../test-support/federation-roles.js";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile } from "node:fs/promises";
@@ -23,7 +28,7 @@ import { createObject } from "../graph/objects-repo.js";
 import { proposeChange, getChangeRow } from "../coordination/changes-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
 import { runPreDeployArtifactGate } from "../coordination/pre-deploy-gate.js";
-import { ensureInstanceCosignKey, getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
+import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, initFederationSelf } from "./self-repo.js";
 import { listPeers, pairPeer } from "./peers-repo.js";
@@ -193,8 +198,13 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
       initFederationSelf(tx, { orgId: outpost.orgId, name: "outpost-c", role: "outpost" })
     );
 
-    const commanderPair = await ensureInstanceCosignKey(commander.db, commander.orgId);
-    retransCosignPub = (await getInstanceCosignPublicKey(retrans.db, retrans.orgId)).publicKey;
+    const commanderPair = await ensureInstanceCosignKey(
+      commander.db,
+      commander.orgId,
+      DECLARED_COMMANDER
+    );
+    retransCosignPub = (await requireCosignPublicKey(retrans.db, retrans.orgId, DECLARED_RETRANS))
+      .publicKey;
     commanderKeyPath = path.join(scratch, "commander-cosign.key");
     await writeFile(commanderKeyPath, commanderPair.privateKey, "utf8");
 
@@ -481,6 +491,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     peerName: string
   ): Promise<PromotionBundle> {
     const outcome = await exportPromotionBundle(commander.db, {
+      federation: DECLARED_COMMANDER,
       orgId: commander.orgId,
       peerIdOrName: peerName,
       changeIdOrUrn: changeId
@@ -585,6 +596,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     changeAtOutpostManual = importedAtC.localChangeObjectId;
 
     const built = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: (await findLocalChangeBySource(retrans, changeA1)) as string,
       masterKey: RETRANS_MASTER_KEY,
@@ -636,6 +648,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     const bundleForB = await exportPromotionFromA(changeA2, "retrans-b");
     await importPromotionBundle(retrans.db, retrans.orgId, bundleForB);
     const built = await buildRelayTarball(retrans.db, {
+      federation: DECLARED_RETRANS,
       orgId: retrans.orgId,
       changeIdOrUrn: (await findLocalChangeBySource(retrans, changeA2)) as string,
       masterKey: RETRANS_MASTER_KEY,

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DECLARED_COMMANDER, requireCosignPublicKey } from "../test-support/federation-roles.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import type { PromotionBundle } from "@scp/schemas";
@@ -7,7 +8,6 @@ import { ProblemError } from "../errors.js";
 import { changes, federationPeers } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
-import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { proposeChange } from "../coordination/changes-repo.js";
 import { getDecision } from "../coordination/decisions-repo.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
@@ -20,7 +20,8 @@ import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolat
 
 /** THE IMPORTER'S HALF OF §8.9 (docs/proposals/component-journey-view.md): only a peer this domain
  *  paired as 'commander' may originate a promotion. The exporter here signs through the REPO
- *  function, below the route's own commander-only guard — a modified or older binary — and the
+ *  function under a commander declaration, so the bundle is genuinely signed — standing in for an
+ *  outpost that lies about its role, runs a modified binary, or signed before §8.9 — and the
  *  importer has its cosign key registered, so every other gate passes: the role check is the only
  *  thing between an outpost-signed manifest and acceptance. The relayed path (a commander bundle
  *  carried past a retrans) is pinned by retrans-relay / inbox-loop / auto-relay integration suites,
@@ -37,7 +38,7 @@ describe("importPromotionBundle refuses a promotion whose exporter peer is not a
       ensureInstanceKey(tx, exporter.orgId)
     );
     const cosignPublicKey = cosign
-      ? (await getInstanceCosignPublicKey(exporter.db, exporter.orgId)).publicKey
+      ? (await requireCosignPublicKey(exporter.db, exporter.orgId, DECLARED_COMMANDER)).publicKey
       : null;
     await withTenantTx(importer.db, importer.orgId, (tx) =>
       pairPeer(tx, {
@@ -82,6 +83,7 @@ describe("importPromotionBundle refuses a promotion whose exporter peer is not a
       })
     );
     const outcome = await exportPromotionBundle(exporter.db, {
+      federation: DECLARED_COMMANDER,
       orgId: exporter.orgId,
       peerIdOrName: importer.orgName,
       changeIdOrUrn: change.id
