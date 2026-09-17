@@ -1,6 +1,6 @@
 # Proposal: the API fields the 2026-09-11 pipeline mockups need
 
-**Status:** Proposed — 2026-09-16. Docs only; nothing here is implemented.
+**Status:** Accepted — owner, 2026-09-16 (decisions in §9). Docs only; nothing here is implemented yet.
 **Sources:** `docs/design/mockups/2026-09-11/` on `origin/docs/recovered-mockups-2026-09-11`
 (`microservice.html`, `pipeline.html`, `target-redesign.html`). The owner has put everything in the
 mockups in scope, including the per-target checks rail he first dropped only because its data did
@@ -283,14 +283,15 @@ plan: z.object({
 | **1** | §2: `executor` union, `pluginModule` / `systemKind` on bindings, `commitSha`, `topologyName`, and the UI subtitle and commit and header chips | Sonnet | Low |
 | **2** | §5 local half: `rollout.stepCount` (argocd), `observedFreshness` (`never/fresh/stale`, sharing the freshness constant with `stage-dependency-hold.ts`), and the pip-stepper | Sonnet | Low. Add a mutation test that the hold and the wire use one constant. |
 | **3** | §3: the `checks` rail and bake states on `explain`, sharing verdict functions with the gate and hold, plus the rail UI | **Opus** | Medium. Grain (§3.4), stage scoping, and hold/rail agreement all need care. |
-| **4** | §4: `ChangeWaveSchema.entry` fan-in counts and `ComponentPipelineGateSchema.approvals` | Sonnet (Opus for `coupled_changes` if D1 = both) | Low–medium |
+| **4** | §4: `ChangeWaveSchema.entry` with BOTH members (`coupled_changes` on wave 0, `previous_wave` on waves ≥1), rendered as two separate chips (D1); `ComponentPipelineGateSchema.approvals`, with the change view's approval chip placed before wave 0 (D2) | Sonnet (`previous_wave`), **Opus** (`coupled_changes`) | Low–medium |
 | **5** | §6: `observed.plan` from managed-iac JSON plan | Sonnet | Low |
-| **6** | §5.3 and D3: the upward wave-target observation journal, the commander projection, and `not_reported` → real states | **Opus** | High. Federation, signing, volume, and possibly an oasdiff exception. |
+| **6** | §5.3 + §9 D3/D4: new `JournalEntryKind` `wave_target_observed` (one-time oasdiff exception, accepted) emitted on change only; FULL hook-run progress journaled upward (every status transition of `postMerge`/`postDeploy` runs); the commander projection; `not_reported` → real states | **Opus** | High. Federation, signing, volume (sized in §9 D3). Add the `OASDIFF-EXCEPTIONS.md` entry and label the PR before pushing its first commit. |
 
 Increments 0–5 need no oasdiff exception. Their migration count is zero (increment 0 fixes source
-drift only).
+drift only). Increment 6 carries the one accepted exception (D4) and needs a migration for the
+commander-side observation projection; renumber it at merge time.
 
-## 8. Owner decisions
+## 8. Owner decisions (as proposed; resolved in §9)
 
 **D1 — What "fan-in N of M" counts.**
 - (a) Build arms of one push (`coupled_changes`).
@@ -327,3 +328,51 @@ draw it between staging and production.
 **D5 — Can the status word next to the outline be dropped?** Left open by the 2026-09-11 session.
 *Recommendation: keep it.* Colour must not be the only signal. This is not an API item, but it blocks
 the final row copy.
+
+## 9. Decisions (owner, 2026-09-16)
+
+| # | Decision | Effect on this proposal |
+|---|---|---|
+| D1 | **Both** fan-in facts, as **separate chips**: build arms of one push (`coupled_changes`) and previous-wave completion (`previous_wave`). | §4 `entry` ships both members; increment 4. |
+| D2 | The approval chip goes **where the engine gates: before wave 0**. **No per-wave approval gates.** | §4 approval; the mockups' between-waves placement is not built. Increment 4. |
+| D3 | **Full run progress journaled upward:** every status transition of `postMerge`/`postDeploy` runs, not only terminal ones. Part of increment 6. (Departs from the recommendation, which was terminal-only.) | Sizing and mitigations below; increment 6. |
+| D4 | A **new journal entry kind** for wave-target observations, **emitted on change only**; a **one-time oasdiff exception is accepted** for it. | §5.3; increment 6. |
+| D5 | **Keep** the small status word beside the coloured outline. (Recommendation adopted by default; the owner delegated unasked decisions to the recommendations.) | UI copy only. |
+
+### D3 sizing: journal volume of full run progress
+
+`pipeline_hook_runs.status` has five values (`pending/running/succeeded/failed/aborted`,
+`db/schema.ts` check `pipeline_hook_runs_status_check`). A run moves forward only, so it makes **at
+most 3 distinct transitions** (`pending → running → terminal`). Terminal-only would be 1.
+
+| Per change | Runs | Entries, terminal-only | Entries, full progress (D3) |
+|---|---|---|---|
+| 1 `postMerge` + 1 `postDeploy` × 3 waves (typical) | 4 | 4 | ≤ 12 |
+| 1 `postMerge` + 3 `postDeploy` × 5 waves (heavy) | 16 | 16 | ≤ 48 |
+
+The cost is a bounded **≤3×** the terminal-only volume. It stays proportional to runs, and never to
+poll ticks or elapsed time. Each entry is small (target the same order as `pipeline_evidence_upsert`,
+well under 1 KB), so even the heavy case adds under ~50 KB per change to the journal and bundles.
+The volume that must **not** occur is one entry per `status()` poll or per trigger retry. That would
+scale with run duration and could reproduce the 1.44 GB/day class of incident (memory
+`scp-unbounded-decision-growth`).
+
+**Mitigations. All of them preserve the owner's choice: every real transition still travels.**
+
+1. **Emit on status change only.** Append in the same transaction that changes
+   `pipeline_hook_runs.status`, and never from the poll path when the status is unchanged.
+   `lastObservedAt` and `attempt` bumps emit nothing.
+2. **Coalesce identical consecutive states.** Key the run by `(change, hookId, waveIndex)` and emit
+   only when the new status differs from the last one journaled. A re-poll that re-reads `running`
+   is a no-op.
+3. **Bounded payload.** Send `{changeId, hookId, kind, waveIndex, targetObjectId?, status, attempt,
+   externalUrl?, startedAt, observedAt}`. `externalUrl` goes through the existing persistence bound.
+   Never send logs, `capturedWorkflow` bodies or executor output.
+4. **Monotone receiver.** The commander applies an entry only if its status is later in the forward
+   order than the one stored, or its `observedAt` is newer for the same status. Out-of-order bundle
+   delivery (air-gap) therefore cannot move a run backwards, and duplicates are idempotent.
+5. **Batching is the transport's job.** Air-gapped bundles already carry many entries per file, so
+   the added entries raise the count per bundle, not the number of bundles.
+6. **Same channel as D4.** Run transitions and wave-target observations share the one new kind
+   (a union discriminated on the subject, `run` vs `target`), so they need a single oasdiff exception,
+   a single signing path and a single receiver.
