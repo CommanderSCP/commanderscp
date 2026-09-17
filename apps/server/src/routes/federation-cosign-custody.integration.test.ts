@@ -98,6 +98,10 @@ describe("instance cosign key custody at the routes (§8.9, owner 2026-09-16)", 
     const org = await createTestOrg(outpost, "custody-outpost");
     expect(await selfKey(outpost, org)).toBeNull();
     expect(await statusKey(outpost, org)).toBeNull();
+    // And the minting function itself refuses, for any caller that is not one of these routes.
+    await expect(
+      ensureInstanceCosignKey(outpost.deps.db, org.orgId, outpost.deps.config, fakeGenerator)
+    ).rejects.toMatchObject({ status: 409 });
     expect(await keyRows(outpost, org.orgId)).toHaveLength(0);
   }, 60_000);
 
@@ -107,6 +111,9 @@ describe("instance cosign key custody at the routes (§8.9, owner 2026-09-16)", 
     const org = await createTestOrg(undeclared, "custody-undeclared");
     expect(await selfKey(undeclared, org)).toBeNull();
     expect(await statusKey(undeclared, org)).toBeNull();
+    await expect(
+      ensureInstanceCosignKey(undeclared.deps.db, org.orgId, undeclared.deps.config, fakeGenerator)
+    ).rejects.toMatchObject({ status: 409, detail: expect.stringContaining("FAIL-CLOSED") });
     expect(await keyRows(undeclared, org.orgId)).toHaveLength(0);
   }, 60_000);
 

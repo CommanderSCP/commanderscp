@@ -138,6 +138,20 @@ describe("POST /federation/exports/promotion is COMMANDER-ONLY (§8.9)", () => {
     expect(await cosignKeyRows(outpost, f.org.orgId)).toHaveLength(0);
   }, 60_000);
 
+  it("the ROUTE answers first: an outpost asking to DELIVER is told 'not the commander', not about its drop directory", async () => {
+    // The route guard runs before delivery resolution; the repo function's own guard runs after it.
+    // This peer has no DeliveryTarget, so without the route guard the answer would be a delivery gap.
+    const f = await fixture(outpost, "sign-outpost-deliver");
+    const res = await outpost.app.inject({
+      method: "POST",
+      url: "/api/v1/federation/exports/promotion",
+      headers: { authorization: `Bearer ${f.org.adminToken}` },
+      payload: { peer: f.peerName, change: f.changeId, deliver: true }
+    });
+    expect(res.statusCode, res.body).toBe(409);
+    expect((res.json() as { detail?: string }).detail ?? "").toMatch(/'outpost'.*COMMANDER-ONLY/);
+  }, 60_000);
+
   it("a declared RETRANS is refused 409 and mints NO cosign key through this path", async () => {
     const f = await fixture(retrans, "sign-retrans");
     const res = await exportPromotion(retrans, f);
