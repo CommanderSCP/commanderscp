@@ -524,7 +524,7 @@ worth measuring before sizing the fix, but the act itself is already unguarded.
 
 **§8.9 — enforced (2026-09-16).** `POST /api/v1/federation/exports/promotion` now asks
 `commanderOnlyFederationVerdict` after authentication and before any work
-(`routes/federation.ts:725`): an outpost, a retrans, or an UNDECLARED deployment answers 409 — the
+(`routes/federation.ts:715`): an outpost, a retrans, or an UNDECLARED deployment answers 409 — the
 dependency routes' shape — and mints no cosign key on the way. The check is still one definition;
 only the refusal's rationale text became per-capability. Pinned at the HTTP route over four
 deployments (`routes/federation-promotion-commander-only.integration.test.ts`), each guard
@@ -532,18 +532,28 @@ mutation-proved.
 
 *Measured first: an outpost-signed manifest would have been ACCEPTED, not merely producible.* Every
 instance serves its own cosign key, minting it on first use (`GET /federation/self`,
-`routes/federation.ts:260`); pairing stores whatever `cosignPublicKey` the operator supplies for a
+`routes/federation.ts:250`); pairing stores whatever `cosignPublicKey` the operator supplies for a
 peer of ANY role (`PairPeerRequestSchema` in `packages/schemas/src/federation.ts:157`,
-`peers-repo.ts:178–234`); and import verifies against the exporter peer's key with no check of that
-peer's role (`promotion-repo.ts:637–667`). The documented pairing — `scp federation pair
---cosign-public-key` from the peer's `scp federation self` — is all it took. The importer still does
-not check the exporter's role; that is defence in depth left open.
+`peers-repo.ts:178–234`); and import verifies against the exporter peer's key and, before this change, with no check of that
+peer's role (`promotion-repo.ts:653–683`). The documented pairing — `scp federation pair
+--cosign-public-key` from the peer's `scp federation self` — is all it took.
+
+*So the importer checks too.* `importPromotionBundle` now asks `commanderOnlyPeerVerdict` — beside
+the deployment verdict in `dependencies/commander-only.ts`, sharing its one predicate — once the
+bundle is authenticated as the exporter peer's and before the manifest is verified: a peer paired as
+anything but `commander` is refused through the manifest-verify block path (Decision, audit event,
+`decision_id`), a stored role outside commander|outpost|retrans takes the undeclared fail-closed
+branch, and a manifest-STRIPPED bundle is refused too rather than riding pre-E5 back-compat
+(`federation/promotion-import-exporter-role.integration.test.ts`). The relay is unaffected, measured:
+the retrans signs only the byte tarball, and the `.scpbundle` it carries is still exported and signed
+by the commander, so the retrans-relay, inbox-loop and auto-relay suites pass unchanged — and all die
+when the peer verdict is mutated to refuse everything, which proves they go through it.
 
 *Census, no filters — three server paths produce a cosign signature or mint the instance key:*
 
 | Path | Mints | Signs | Now |
 |---|---|---|---|
-| `exportPromotionBundle` ← the export route (its only caller) | `promotion-repo.ts:183` | manifest, `:378` | **commander-only** |
+| `exportPromotionBundle` ← the export route (its only caller) | `promotion-repo.ts:199` | manifest, `:394` | **commander-only** |
 | `buildRelayTarball` ← `POST /federation/relay` and the auto-relay loop (`auto-relay.ts:315`) | `retrans-relay.ts:628` | relay `CHECKSUMS.txt`, `:638` | retrans-only, by design (`:353`) |
 | `getInstanceCosignPublicKey` ← `GET /federation/self`, `GET /federation/status` | `cosign-keys.ts:97` | — | any role |
 
@@ -559,7 +569,8 @@ Options: **(a)** narrow the invariant to "only the commander signs a *promotion 
 signs transport integrity of bytes it has validated", then refuse minting on outposts only —
 recommended, as it matches what is built; **(b)** keep the invariant literal and give the relay a
 separate transport key, so the instance key becomes commander-only; **(c)** leave minting open, as
-now, relying on the export route being the only manifest signer.
+now, relying on the export route being the only manifest signer. Whichever is chosen, ACCEPTANCE is
+already closed: the importer refuses a promotion from any peer not paired as `commander`.
 
 ### 8.10 What building D2 found
 
