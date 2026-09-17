@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sources — mark and tile</title>
+<style>
+  :root{
+    --slate-50:#f8fafc; --slate-100:#f1f5f9; --slate-200:#e2e8f0; --slate-300:#cbd5e1;
+    --slate-400:#94a3b8; --slate-500:#64748b; --slate-600:#475569; --slate-700:#334155; --slate-900:#0f172a;
+    --emerald-50:#ecfdf5; --emerald-200:#a7f3d0; --emerald-500:#10b981; --emerald-600:#059669; --emerald-700:#047857;
+    --amber-50:#fffbeb; --amber-200:#fde68a; --amber-300:#fcd34d; --amber-500:#f59e0b; --amber-600:#d97706; --amber-700:#b45309; --amber-800:#92400e;
+    --red-50:#fef2f2; --red-200:#fecaca; --red-400:#f87171; --red-500:#ef4444; --red-700:#b91c1c;
+    --blue-50:#eff6ff; --blue-200:#bfdbfe; --blue-400:#60a5fa; --blue-500:#3b82f6; --blue-600:#2563eb; --blue-700:#1d4ed8;
+    --army-50:#f7f8ef; --army-100:#eaeeda; --army-200:#d6ddb8; --army-600:#687435; --army-700:#515a2b; --army-900:#383e20;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--slate-50);color:var(--slate-900);
+       font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .page{max-width:700px;margin:0 auto;padding:32px 24px 72px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--slate-500);font-size:13px;margin:0 0 24px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--slate-500);
+     margin:26px 0 10px}
+  svg.i{width:1em;height:1em;flex:none;stroke:currentColor;fill:none;
+        stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vertical-align:-.125em}
+
+  /* ---------------- the mark, at size ---------------- */
+  .marks{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:620px){.marks{grid-template-columns:1fr}}
+  .mk{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:14px}
+  .mk-r{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+  .mk-r svg{color:var(--army-700)}
+  .mk-n{font-size:13px;font-weight:600}
+  .mk-d{font-size:11.5px;color:var(--slate-500)}
+  .sizes{display:flex;align-items:flex-end;gap:10px;color:var(--slate-700)}
+
+  /* ---------------- source tile ---------------- */
+  .tile{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:12px 14px;
+        box-shadow:0 1px 2px rgba(0,0,0,.05);margin-bottom:9px}
+  .t-head{display:flex;align-items:center;gap:9px;min-width:0}
+  .t-mark{color:var(--army-700);font-size:20px;display:flex;flex:none}
+  .t-repo{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .t-kind{font-size:10.5px;color:var(--slate-500);text-transform:uppercase;letter-spacing:.05em}
+  .t-right{margin-left:auto;display:flex;align-items:center;gap:6px;flex:none}
+
+  /* the three routing globs — always all three, always this order */
+  .globs{margin-top:10px;display:grid;grid-template-columns:46px 1fr;gap:3px 9px;align-items:center}
+  .gk{font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--slate-400);text-align:right}
+  .gv{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--slate-700);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* NULL refPattern is a REAL RULE (match any ref), not an absence — so it is worded, not em-dashed */
+  .gv.any{font-family:inherit;font-style:italic;color:var(--slate-500)}
+
+  .route{margin-top:10px;display:flex;align-items:center;gap:7px;padding-top:9px;
+         border-top:1px dashed var(--slate-200);font-size:11.5px;color:var(--slate-600);flex-wrap:wrap}
+  .route .arw{color:var(--slate-400);font-size:14px;display:flex}
+  .route b{font-weight:600;color:var(--slate-900)}
+
+  .tag{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid transparent;
+       white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+  .t-neutral{background:var(--slate-100);color:var(--slate-700)}
+  .t-success{background:var(--emerald-50);color:var(--emerald-700);border-color:var(--emerald-200)}
+  .t-info{background:var(--blue-50);color:var(--blue-700);border-color:var(--blue-200)}
+  .t-warning{background:var(--amber-50);color:var(--amber-800);border-color:var(--amber-200)}
+  .t-unknown{background:var(--amber-50);color:var(--amber-700);border:1px dashed var(--amber-300)}
+  .t-declared{background:#fff;color:var(--slate-600);border:1px dashed var(--slate-300)}
+  .typ{font-size:11px;font-weight:700;letter-spacing:.03em;padding:2px 9px;border-radius:6px;border:1px solid}
+  .typ-cfg{background:var(--blue-50);border-color:var(--blue-200);color:var(--blue-700)}
+  .typ-inf{background:var(--amber-50);border-color:var(--amber-200);color:var(--amber-800)}
+  .typ-bld{background:var(--emerald-50);border-color:var(--emerald-200);color:var(--emerald-700)}
+  .dec{font-family:inherit;font-size:10px;color:var(--slate-400);font-style:italic}
+  .gv.cont{font-family:inherit;color:var(--slate-600)}
+  .three{display:grid;grid-template-columns:1fr;gap:9px}
+  .th{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:12px 14px}
+  .th.now{border-color:var(--army-600);border-width:2px}
+  .th-h{display:flex;align-items:center;gap:9px}
+  .th-m{color:var(--army-700);font-size:19px;display:flex}
+  .th-n{font-size:13px;font-weight:700}
+  .th-s{margin-left:auto;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+        color:var(--slate-400);border:1px dashed var(--slate-300);border-radius:999px;padding:1px 8px}
+  .th.now .th-s{color:var(--army-700);border-color:var(--army-200);border-style:solid;background:var(--army-50)}
+  .th-d{font-size:12px;color:var(--slate-600);margin-top:7px}
+  .cat2{font-family:inherit;font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;
+        color:var(--slate-400);border:1px solid var(--slate-200);border-radius:4px;padding:0 5px}
+
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--slate-600);
+        background:var(--slate-50);border:1px solid var(--slate-200);border-radius:5px;padding:1px 6px}
+  .chip .g{color:var(--slate-400);font-size:12px;display:flex}
+
+  /* precedence stack */
+  .prec{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:12px 14px}
+  .pr{display:grid;grid-template-columns:20px 1fr auto;gap:9px;align-items:center;padding:6px 8px;
+      border-radius:6px;border:1px solid var(--slate-200);background:var(--slate-50);margin-bottom:5px}
+  .pr.win{border-color:var(--emerald-400);background:var(--emerald-50)}
+  .pr-n{width:19px;height:19px;border-radius:5px;display:flex;align-items:center;justify-content:center;
+        font-size:10px;font-weight:700;background:var(--slate-200);color:var(--slate-600)}
+  .pr.win .pr-n{background:var(--emerald-500);color:#fff}
+  .pr-g{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--slate-700);
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pr-w{font-size:10px;font-weight:700;color:var(--slate-400)}
+  .pr.win .pr-w{color:var(--emerald-700)}
+
+  .empty{background:#fff;border:1px dashed var(--slate-300);border-radius:10px;padding:22px;
+         text-align:center;color:var(--slate-500)}
+  .empty svg{font-size:30px;color:var(--slate-300)}
+  .empty .h{font-size:13px;font-weight:600;color:var(--slate-700);margin:9px 0 4px}
+  .empty .b{font-size:12px;max-width:420px;margin:0 auto}
+
+  .notes{margin-top:22px;background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:16px 20px}
+  .notes h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--slate-500)}
+  .notes li{margin-bottom:8px;font-size:13px}
+  .k{font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--slate-100);padding:1px 5px;border-radius:3px}
+  .flag{border-left:3px solid var(--army-600);background:#fff;padding:12px 16px;margin-top:14px;
+        border-radius:0 8px 8px 0;border-top:1px solid var(--slate-200);
+        border-right:1px solid var(--slate-200);border-bottom:1px solid var(--slate-200);font-size:13px}
+</style>
+</head>
+<body>
+<svg style="display:none">
+  <!-- PROPOSED: SourceDepot — pitched-roof depot with a door. Materiel comes FROM here. -->
+  <symbol id="depot" viewBox="0 0 24 24"><path d="M18 21V10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v11"/><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 1.132-1.803l7.95-3.974a2 2 0 0 1 1.837 0l7.948 3.974A2 2 0 0 1 22 8z"/><path d="M6 13h12"/><path d="M6 17h12"/></symbol>
+  <!-- ALTERNATE: SourceDepotOut — the same depot, materiel leaving it. -->
+  <symbol id="depotout" viewBox="0 0 24 24">
+    <path d="M2.5 8.5 10 4l7.5 4.5"/><path d="M5 9.6V20h10V9.6"/><path d="M8 20v-4.6h4V20"/>
+    <path d="M17 13h5"/><path d="m19.5 10.5 2.5 2.5-2.5 2.5"/>
+  </symbol>
+  <symbol id="crate" viewBox="0 0 24 24"><rect x="4.5" y="6" width="15" height="13" rx="1"/><path d="M4.5 6.5 19.5 18.5"/><path d="M19.5 6.5 4.5 18.5"/></symbol>
+  <symbol id="reticle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 1.5v3.5"/><path d="M12 19v3.5"/><path d="M1.5 12h3.5"/><path d="M19 12h3.5"/></symbol>
+  <symbol id="right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="radar" viewBox="0 0 24 24"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></symbol>
+  <symbol id="branch" viewBox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+</svg>
+
+<div class="page">
+  <h1>Sources</h1>
+  <p class="sub">Where change comes from: a repo, a path, a ref — routed to one component with an operator-declared Type. Mark: lucide <b>Warehouse</b>.</p>
+
+  <h2>The mark</h2>
+  <div class="marks">
+    <div class="mk">
+      <div class="mk-r">
+        <span class="sizes">
+          <svg class="i" style="font-size:30px"><use href="#depot"/></svg>
+          <svg class="i" style="font-size:20px"><use href="#depot"/></svg>
+          <svg class="i" style="font-size:14px"><use href="#depot"/></svg>
+        </span>
+        <span><span class="mk-n">Warehouse</span><br><span class="mk-d">chosen — lucide, no custom mark</span></span>
+      </div>
+      <div class="mk-d">lucide&rsquo;s <b>Warehouse</b>: shallow pitched shell, roller door, two shelf lines. In the materiel language the crate is what ships and the depot is what it is drawn from &mdash; which is exactly what a source is. A plain import, not an addition to catalog-marks.tsx.</div>
+    </div>
+    <div class="mk">
+      <div class="mk-r">
+        <span class="sizes">
+          <svg class="i" style="font-size:30px"><use href="#depotout"/></svg>
+          <svg class="i" style="font-size:20px"><use href="#depotout"/></svg>
+          <svg class="i" style="font-size:14px"><use href="#depotout"/></svg>
+        </span>
+        <span><span class="mk-n">SourceDepotOut</span><br><span class="mk-d">alternate</span></span>
+      </div>
+      <div class="mk-d">Same depot with materiel leaving it — more explicit about direction, but the arrow crowds the glyph below ~18px.</div>
+    </div>
+  </div>
+
+  <h2>The tile</h2>
+  <div class="tile">
+    <div class="t-head">
+      <span class="t-mark"><svg class="i"><use href="#depot"/></svg></span>
+      <span style="min-width:0">
+        <span class="t-repo">jag8765-personal/homelab-gitops</span><br>
+        <span class="t-kind">source &middot; github</span>
+      </span>
+      <span class="t-right"><span class="typ typ-cfg">configuration</span></span>
+    </div>
+    <div class="globs">
+      <span class="gk">repo</span><span class="gv">jag8765-personal/homelab-gitops</span>
+      <span class="gk">path</span><span class="gv">commanderscp/**</span>
+      <span class="gk">ref</span><span class="gv any" title="refPattern is NULL — matches events on ANY git ref. A rule, not a missing value.">any ref</span>
+      <span class="gk">type</span><span class="gv"><b>configuration</b> <span class="dec" title="The routing Type is DECLARED per mapping by the operator. It is NOT inferred from the source kind.">declared, not inferred</span></span>
+      <span class="gk">holds</span><span class="gv cont">Kubernetes / Helm deploy config</span>
+    </div>
+    <div class="route">
+      <span class="arw"><svg class="i"><use href="#right"/></svg></span>
+      <span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><b>commanderscp</b></span>
+      <span class="chip" style="margin-left:auto"><span class="g"><svg class="i"><use href="#radar"/></svg></span>3 min ago</span>
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="t-head">
+      <span class="t-mark"><svg class="i"><use href="#depot"/></svg></span>
+      <span style="min-width:0">
+        <span class="t-repo">jag8765-personal/agentkit</span><br>
+        <span class="t-kind">source &middot; github</span>
+      </span>
+      <span class="t-right"><span class="typ typ-inf">infrastructure</span></span>
+    </div>
+    <div class="globs">
+      <span class="gk">repo</span><span class="gv">jag8765-personal/agentkit</span>
+      <span class="gk">path</span><span class="gv">infra/**</span>
+      <span class="gk">ref</span><span class="gv">refs/heads/dev</span>
+      <span class="gk">type</span><span class="gv"><b>infrastructure</b> <span class="dec">declared, not inferred</span></span>
+      <span class="gk">holds</span><span class="gv cont">Terraform / OpenTofu</span>
+    </div>
+    <div class="route">
+      <span class="arw"><svg class="i"><use href="#right"/></svg></span>
+      <span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><b>agentkit-vpc</b></span>
+      <span class="chip" style="margin-left:auto"><span class="g"><svg class="i"><use href="#radar"/></svg></span>2 h ago</span>
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="t-head">
+      <span class="t-mark"><svg class="i"><use href="#depot"/></svg></span>
+      <span style="min-width:0">
+        <span class="t-repo">jag8765-personal/agentkit</span><br>
+        <span class="t-kind">source &middot; gitea</span>
+      </span>
+      <span class="t-right"><span class="typ typ-bld">chart</span></span>
+    </div>
+    <div class="globs">
+      <span class="gk">repo</span><span class="gv">jag8765-personal/agentkit</span>
+      <span class="gk">path</span><span class="gv">charts/legacy/**</span>
+      <span class="gk">ref</span><span class="gv any">any ref</span>
+      <span class="gk">type</span><span class="gv"><b>chart</b> <span class="dec">declared, not inferred</span> <span class="cat2">build Category</span></span>
+      <span class="gk">holds</span><span class="gv cont">Helm chart sources</span>
+    </div>
+    <div class="route">
+      <span class="arw"><svg class="i"><use href="#right"/></svg></span>
+      <span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><b>agentkit-chart</b></span>
+      <span class="chip" style="margin-left:auto" title="No event has ever matched this mapping."><span class="g"><svg class="i"><use href="#radar"/></svg></span>no event, ever</span>
+    </div>
+  </div>
+
+  
+  <h2>Three things can originate change — only one is drawn above</h2>
+  <div class="three">
+    <div class="th now">
+      <div class="th-h"><span class="th-m"><svg class="i"><use href="#depot"/></svg></span>
+        <span class="th-n">Source mapping — a git repo</span><span class="th-s">drawn above</span></div>
+      <div class="th-d">Always <b>git</b>: github, gitea or gitlab. It is never an image or chart <i>registry</i> —
+        a registry is where artifacts land, not where change comes from. What the repo <b>holds</b> is exactly
+        what the routing Type declares: <span class="k">chart</span> = chart sources, <span class="k">image</span> =
+        code that builds an image, <span class="k">infrastructure</span> = Terraform,
+        <span class="k">configuration</span> = deploy config. That is the "what kind of repo" answer — it is the
+        Type, worded.</div>
+    </div>
+    <div class="th">
+      <div class="th-h"><span class="th-m"><svg class="i"><use href="#crate"/></svg></span>
+        <span class="th-n">Registry — where artifacts land</span><span class="th-s">different tile</span></div>
+      <div class="th-d">An <b>execution-system</b> object reached by a <span class="k">publishes_to</span> edge, with
+        <span class="k">properties.kind</span> — <span class="k">gitea</span>, <span class="k">harbor</span>,
+        <span class="k">ecr</span>, … This <i>is</i> your image repo / chart repo. Note the kind is a free string,
+        not a closed enum, so a tile cannot switch on a fixed vocabulary. It also carries
+        <span class="k">state: declared | ambiguous | none</span> — <b>ambiguous</b> meaning more than one
+        <span class="k">publishes_to</span> edge, which a tile must show rather than pick a winner from.</div>
+    </div>
+    <div class="th">
+      <div class="th-h"><span class="th-m"><svg class="i"><use href="#reticle"/></svg></span>
+        <span class="th-n">Dependency line — an upstream index</span><span class="th-s">different tile</span></div>
+      <div class="th-d">The <span class="k">alpine:1.2 &rarr; 1.3</span> case. A public index polled for a major
+        line's head — genuinely a source of change, and the only one that is not yours. Modelled separately in
+        <span class="k">dependency_lines</span>, and dormant on this instance.</div>
+    </div>
+  </div>
+
+  <h2>When two mappings could match</h2>
+  <div class="prec">
+    <div style="font-size:12px;color:var(--slate-600);margin-bottom:9px">
+      Push to <span class="k">jag8765-personal/agentkit</span> · <span class="k">infra/vpc/main.tf</span> · <span class="k">refs/heads/dev</span>
+    </div>
+    <div class="pr win">
+      <span class="pr-n">1</span>
+      <span class="pr-g">infra/** · refs/heads/dev → agentkit-vpc</span>
+      <span class="pr-w">most specific · wins</span>
+    </div>
+    <div class="pr">
+      <span class="pr-n">2</span>
+      <span class="pr-g">infra/** · any ref → agentkit-vpc</span>
+      <span class="pr-w">ref is broader</span>
+    </div>
+    <div class="pr">
+      <span class="pr-n">3</span>
+      <span class="pr-g">** · any ref → agentkit</span>
+      <span class="pr-w">catch-all</span>
+    </div>
+    <div style="font-size:11.5px;color:var(--slate-500);margin-top:8px">
+      Specificity is resolved on all three globs, not just the path. Showing the losers is the point:
+      a mapping that never wins looks identical to one that does not exist, until you see it ranked.
+    </div>
+  </div>
+
+  <h2>Empty state — what your estate actually shows today</h2>
+  <div class="empty">
+    <svg class="i"><use href="#depot"/></svg>
+    <div class="h">No sources are mapped</div>
+    <div class="b">Nothing routes a repository event to a component yet, so no push can open a change.
+      <span class="k">source_mappings</span> is empty on this instance.</div>
+  </div>
+
+  <div class="notes">
+    <h3>What the tile encodes</h3>
+    <ol>
+      <li><b>All three globs, always, in routing order</b> — repo, path, ref. A mapping is a three-part rule and hiding the part that happens to be broad is how you end up debugging the wrong one.</li>
+      <li><b>"any ref" is worded, not em-dashed.</b> <span class="k">refPattern: NULL</span> means <i>match every ref</i> — a rule, not a missing value. An em-dash there would say "unset" about the single most consequential default in the routing table.</li>
+      <li><b>Type is labelled "declared".</b> Your own schema comment is emphatic: it is <i>"NOT inferable from sourceKind — a GitHub Actions run can apply Terraform or ship an app — so the operator declares it per mapping."</i> Rendering it as a bare fact would imply derivation.</li>
+      <li><b>Precedence shows the losers.</b> When several mappings match one push, the ranked list makes the near-misses visible; an unranked view makes a never-winning mapping indistinguishable from one that does not exist.</li>
+      <li><b>"no event, ever" is amber-dashed</b>, not grey. A mapping that has never fired is a rule someone wrote that has never been true — worth noticing, unlike a structural absence.</li>
+    </ol>
+  </div>
+
+  <div class="flag">
+    <b>Grounding.</b> The mark and tile are proposals; the three tiles are fixtures. On this instance <span class="k">source_mappings</span>, <span class="k">config_source_stacks</span> and <span class="k">config_source_sync_queue</span> are all <b>zero rows</b>, which is why the empty state is included — it is the state you would actually see. Note also that <span class="k">config-source</span> is a registered object type with no instances, so "Sources" may need to cover both it and <span class="k">source_mappings</span>; I have drawn the mapping, not the config-source, and those may want different tiles.
+  </div>
+</div>
+</body>
+</html>

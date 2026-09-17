@@ -1,0 +1,256 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>checkout-api — full pipeline</title>
+<style>
+:root{--slate-50:#f8fafc;--slate-100:#f1f5f9;--slate-200:#e2e8f0;--slate-300:#cbd5e1;--slate-400:#94a3b8;--slate-500:#64748b;--slate-600:#475569;--slate-700:#334155;--slate-900:#0f172a;
+--emerald-50:#ecfdf5;--emerald-200:#a7f3d0;--emerald-400:#34d399;--emerald-500:#10b981;--emerald-600:#059669;--emerald-700:#047857;
+--amber-50:#fffbeb;--amber-200:#fde68a;--amber-300:#fcd34d;--amber-400:#fbbf24;--amber-500:#f59e0b;--amber-600:#d97706;--amber-700:#b45309;--amber-800:#92400e;
+--red-50:#fef2f2;--red-200:#fecaca;--red-400:#f87171;--red-500:#ef4444;--red-600:#dc2626;--red-700:#b91c1c;
+--blue-50:#eff6ff;--blue-200:#bfdbfe;--blue-400:#60a5fa;--blue-500:#3b82f6;--blue-600:#2563eb;--blue-700:#1d4ed8;
+--army-50:#f7f8ef;--army-200:#d6ddb8;--army-600:#687435;--army-700:#515a2b;--army-900:#383e20;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--slate-50);color:var(--slate-900);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.page{max-width:700px;margin:0 auto;padding:32px 24px 72px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--slate-500);font-size:13px;margin:0 0 20px}
+svg.i{width:1em;height:1em;flex:none;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vertical-align:-.125em}
+.stage{background:#fff;border:1px solid var(--slate-200);border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.05);overflow:hidden}
+.sh{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--army-50);border-bottom:1px solid var(--army-200)}
+.sh .m{color:var(--army-700);font-size:17px;display:flex}
+.sh-t{font-size:12px;font-weight:700;color:var(--army-900);letter-spacing:.02em}
+.sh-c{font-size:11px;color:var(--army-700);opacity:.8}
+.sh-r{margin-left:auto;display:flex;gap:5px;align-items:center}
+.sb{padding:9px 11px;display:flex;flex-direction:column;gap:7px}
+.tag{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid transparent;white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+.t-neutral{background:var(--slate-100);color:var(--slate-700)}
+.t-success{background:var(--emerald-50);color:var(--emerald-700);border-color:var(--emerald-200)}
+.t-info{background:var(--blue-50);color:var(--blue-700);border-color:var(--blue-200)}
+.t-warning{background:var(--amber-50);color:var(--amber-800);border-color:var(--amber-200)}
+.t-unknown{background:var(--amber-50);color:var(--amber-700);border:1px dashed var(--amber-300)}
+/* source / registry line */
+.ln{display:grid;grid-template-columns:24px 1fr auto;gap:9px;align-items:center;padding:6px 9px;
+    background:#fff;border:1px solid var(--slate-200);border-radius:7px}
+.ln .m{color:var(--army-700);font-size:17px;display:flex}
+.ln-n{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ln-s{font-size:10.5px;color:var(--slate-500);font-weight:400;margin-left:6px}
+.ln-r{font-size:10px;font-family:ui-monospace,Menlo,monospace;color:var(--slate-500)}
+/* target row */
+.row{display:grid;grid-template-columns:28px 1fr;gap:9px;align-items:start;padding:9px 11px;background:#fff;
+     border:1.5px solid var(--slate-200);border-radius:9px}
+.s-success{border-color:var(--emerald-400)}.s-info{border-color:var(--blue-400)}
+.s-warning{border-color:var(--amber-400)}.s-danger{border-color:var(--red-400)}
+.s-idle{border-color:var(--slate-300);border-style:dashed}
+.retic{font-size:19px;display:flex;justify-content:center}
+.s-success .retic{color:var(--emerald-600)}.s-info .retic{color:var(--blue-600)}
+.s-warning .retic{color:var(--amber-600)}.s-idle .retic{color:var(--slate-400)}
+.rt{display:flex;align-items:baseline;gap:8px;min-width:0}
+.rn{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rty{font-size:10.5px;color:var(--slate-500);white-space:nowrap}
+.rb{margin-left:auto;display:flex;gap:6px;align-items:center;flex:none}
+.st{font-size:10px;font-weight:700}
+.s-success .st{color:var(--emerald-700)}.s-info .st{color:var(--blue-700)}
+.s-warning .st{color:var(--amber-800)}.s-idle .st{color:var(--slate-500)}
+.chips{margin-top:6px;display:flex;flex-wrap:wrap;gap:5px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--slate-600);background:var(--slate-50);
+      border:1px solid var(--slate-200);border-radius:5px;padding:1px 6px}
+.chip .g{color:var(--slate-400);font-size:12px;display:flex}
+.chip .mono{font-family:ui-monospace,Menlo,monospace;font-size:10px}
+.chip.none{border-style:dashed;background:#fff;color:var(--slate-400)}
+.roll{margin-top:7px;display:flex;align-items:center;gap:7px}
+.pips{display:flex;gap:3px}.pip{width:18px;height:3.5px;border-radius:999px;background:var(--slate-200)}
+.pip.done{background:var(--blue-500)}.pip.now{background:var(--blue-500);box-shadow:0 0 0 2px var(--blue-200)}
+.rl{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-400)}
+.rv{font-size:10.5px;color:var(--blue-700);font-weight:700;margin-left:auto}
+/* connector */
+.conn{display:flex;flex-direction:column;align-items:center;padding:2px 0}
+.stem{width:2px;height:11px;background:var(--slate-300)}
+.gate{display:flex;align-items:center;gap:7px;padding:4px 11px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid}
+.g-open{background:var(--emerald-50);border-color:var(--emerald-200);color:var(--emerald-700)}
+.g-appr{background:var(--amber-50);border-color:var(--amber-300);color:var(--amber-800)}
+.arrow{color:var(--slate-400);font-size:15px;display:flex}
+/* scan panel */
+.scan{background:#fff;border:1.5px solid var(--emerald-400);border-radius:10px;padding:11px 13px}
+.scan-h{display:flex;align-items:center;gap:9px}
+.scan-h .m{color:var(--emerald-600);font-size:19px;display:flex}
+.scan-n{font-size:12.5px;font-weight:700}
+.scan-s{font-size:10.5px;color:var(--slate-500)}
+.counts{margin-top:9px;display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.cc{border:1px solid var(--slate-200);border-radius:6px;padding:5px 7px;text-align:center;background:var(--slate-50)}
+.cc-k{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-400)}
+.cc-v{font-size:15px;font-weight:700;color:var(--slate-700);line-height:1.2}
+.cc-t{font-size:9px;color:var(--slate-400)}
+.cc.crit{border-color:var(--red-200);background:var(--red-50)}.cc.crit .cc-v{color:var(--red-700)}
+.cc.ok{border-color:var(--emerald-200);background:var(--emerald-50)}.cc.ok .cc-v{color:var(--emerald-700)}
+.dm{margin-top:9px;padding-top:8px;border-top:1px dashed var(--slate-200);font-size:11px;
+    display:flex;gap:7px;align-items:flex-start;color:var(--emerald-700)}
+.dm .g{font-size:13px;display:flex;flex:none;margin-top:1px}
+.notes{margin-top:20px;background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:16px 20px}
+.notes h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--slate-500)}
+.notes li{margin-bottom:8px;font-size:13px}
+.k{font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--slate-100);padding:1px 5px;border-radius:3px}
+.flag{border-left:3px solid var(--army-600);background:#fff;padding:12px 16px;margin-top:14px;border-radius:0 8px 8px 0;
+ border-top:1px solid var(--slate-200);border-right:1px solid var(--slate-200);border-bottom:1px solid var(--slate-200);font-size:13px}
+</style></head><body>
+<svg style="display:none">
+<symbol id="warehouse" viewBox="0 0 24 24"><path d="M18 21V10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v11"/><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 1.132-1.803l7.95-3.974a2 2 0 0 1 1.837 0l7.948 3.974A2 2 0 0 1 22 8z"/><path d="M6 13h12"/><path d="M6 17h12"/></symbol>
+<symbol id="container" viewBox="0 0 24 24"><path d="M22 7.7c0-.6-.4-1.2-.8-1.5l-6.3-3.9a1.72 1.72 0 0 0-1.7 0l-10.3 6c-.5.2-.9.8-.9 1.4v6.6c0 .5.4 1.2.8 1.5l6.3 3.9a1.72 1.72 0 0 0 1.7 0l10.3-6c.5-.3.9-1 .9-1.5Z"/><path d="M10 21.9V14L2.1 9.1"/><path d="m10 14 11.9-6.9"/><path d="M14 19.8v-8.1"/><path d="M18 17.5V9.4"/></symbol>
+<symbol id="shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></symbol>
+<symbol id="git-merge" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></symbol>
+<symbol id="users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol>
+<symbol id="radar" viewBox="0 0 24 24"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></symbol>
+<symbol id="git-commit-horizontal" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/></symbol>
+<symbol id="waypoints" viewBox="0 0 24 24"><path d="m10.586 5.414-5.172 5.172"/><path d="m18.586 13.414-5.172 5.172"/><path d="M6 12h12"/><circle cx="12" cy="20" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="20" cy="12" r="2"/><circle cx="4" cy="12" r="2"/></symbol>
+<symbol id="snowflake" viewBox="0 0 24 24"><path d="m10 20-1.25-2.5L6 18"/><path d="M10 4 8.75 6.5 6 6"/><path d="m14 20 1.25-2.5L18 18"/><path d="m14 4 1.25 2.5L18 6"/><path d="m17 21-3-6h-4"/><path d="m17 3-3 6 1.5 3"/><path d="M2 12h6.5L10 9"/><path d="m20 10-1.5 2 1.5 2"/><path d="M22 12h-6.5L14 15"/><path d="m4 10 1.5 2L4 14"/><path d="m7 21 3-6-1.5-3"/><path d="m7 3 3 6h4"/></symbol>
+<symbol id="refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+<symbol id="triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+<symbol id="circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="circle-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></symbol>
+<symbol id="scan-search" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="m16 16-1.9-1.9"/></symbol>
+<symbol id="crate" viewBox="0 0 24 24"><rect x="4.5" y="6" width="15" height="13" rx="1"/><path d="M4.5 6.5 19.5 18.5"/><path d="M19.5 6.5 4.5 18.5"/></symbol>
+<symbol id="stack" viewBox="0 0 24 24"><rect x="4" y="13" width="16" height="8" rx="1"/><rect x="7.5" y="4" width="9" height="7" rx="1"/><path d="M12 13v8"/></symbol>
+<symbol id="guidon" viewBox="0 0 24 24"><path d="M6 22V3.5"/><path d="M4 22h4"/><path d="M6 4.5h12l-4 3.75 4 3.75H6Z"/></symbol>
+<symbol id="reticle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 1.5v3.5"/><path d="M12 19v3.5"/><path d="M1.5 12h3.5"/><path d="M19 12h3.5"/></symbol>
+</svg>
+<div class="page">
+<h1>checkout-api</h1>
+<p class="sub">A Kubernetes microservice, source to production. Three sources, an image and a chart, a commander-side scan, two stages.</p>
+
+<!-- SOURCES -->
+<div class="stage">
+  <div class="sh"><span class="m"><svg class="i"><use href="#warehouse"/></svg></span>
+    <span><span class="sh-t">SOURCES</span> <span class="sh-c">— what can open a change</span></span>
+    <span class="sh-r"><span class="tag t-neutral">3 mapped</span></span></div>
+  <div class="sb">
+    <div class="ln"><span class="m"><svg class="i"><use href="#warehouse"/></svg></span>
+      <span class="ln-n">acme/checkout-api <span class="ln-s">service code &rarr; image</span></span>
+      <span class="ln-r">refs/heads/main</span></div>
+    <div class="ln"><span class="m"><svg class="i"><use href="#warehouse"/></svg></span>
+      <span class="ln-n">acme/checkout-api <span class="ln-s">chart/** &rarr; chart</span></span>
+      <span class="ln-r">refs/heads/main</span></div>
+    <div class="ln"><span class="m"><svg class="i"><use href="#warehouse"/></svg></span>
+      <span class="ln-n">acme/platform-infra <span class="ln-s">checkout/** &rarr; infrastructure</span></span>
+      <span class="ln-r"><i>any ref</i></span></div>
+  </div>
+</div>
+
+<div class="conn"><div class="stem"></div><div class="arrow"><svg class="i"><use href="#arrow-down"/></svg></div></div>
+
+<!-- WAVE 0 BUILD -->
+<div class="stage">
+  <div class="sh"><span class="m"><svg class="i"><use href="#stack"/></svg></span>
+    <span><span class="sh-t">WAVE 0 &middot; build</span> <span class="sh-c">— fan-in required</span></span>
+    <span class="sh-r"><span class="tag t-success">2 / 2</span></span></div>
+  <div class="sb">
+    <div class="row s-success"><div class="retic"><svg class="i"><use href="#reticle"/></svg></div>
+      <div><div class="rt"><span class="rn">checkout-api</span><span class="rty">image &middot; github</span>
+        <span class="rb"><span class="st">BUILT</span></span></div>
+        <div class="chips"><span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><span class="mono">checkout-api:2.7.0</span></span>
+        <span class="chip"><span class="g"><svg class="i"><use href="#git-commit-horizontal"/></svg></span><span class="mono">e41b90c</span></span>
+        <span class="chip"><span class="g"><svg class="i"><use href="#container"/></svg></span>ghcr-prod</span></div></div></div>
+    <div class="row s-success"><div class="retic"><svg class="i"><use href="#reticle"/></svg></div>
+      <div><div class="rt"><span class="rn">checkout-api-chart</span><span class="rty">chart &middot; github</span>
+        <span class="rb"><span class="st">BUILT</span></span></div>
+        <div class="chips"><span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><span class="mono">checkout-api-1.4.2.tgz</span></span>
+        <span class="chip"><span class="g"><svg class="i"><use href="#container"/></svg></span>gitea-charts</span></div></div></div>
+  </div>
+</div>
+
+<div class="conn"><div class="stem"></div><div class="gate g-open"><svg class="i"><use href="#git-merge"/></svg>fan-in satisfied &middot; 2 of 2</div><div class="stem"></div><div class="arrow"><svg class="i"><use href="#arrow-down"/></svg></div></div>
+
+<!-- REGISTRIES -->
+<div class="stage">
+  <div class="sh"><span class="m"><svg class="i"><use href="#container"/></svg></span>
+    <span><span class="sh-t">REGISTRIES</span> <span class="sh-c">— where the artifacts landed</span></span></div>
+  <div class="sb">
+    <div class="ln"><span class="m"><svg class="i"><use href="#container"/></svg></span>
+      <span class="ln-n">ghcr-prod <span class="ln-s">harbor &middot; acme/checkout-api</span></span>
+      <span class="ln-r">1 &times; publishes_to</span></div>
+    <div class="ln"><span class="m"><svg class="i"><use href="#container"/></svg></span>
+      <span class="ln-n">gitea-charts <span class="ln-s">gitea &middot; acme/charts</span></span>
+      <span class="ln-r">1 &times; publishes_to</span></div>
+  </div>
+</div>
+
+<div class="conn"><div class="stem"></div><div class="arrow"><svg class="i"><use href="#arrow-down"/></svg></div></div>
+
+<!-- SCAN -->
+<div class="scan">
+  <div class="scan-h"><span class="m"><svg class="i"><use href="#shield-check"/></svg></span>
+    <span><span class="scan-n">Promotion scan &middot; passed</span><br>
+    <span class="scan-s">trivy 0.58.1 &middot; managed, commander-side &middot; over <span class="k">sha256:9c4f&hellip;</span></span></span>
+    <span style="margin-left:auto"><span class="tag t-success">PASS</span></span></div>
+  <div class="counts">
+    <div class="cc ok"><div class="cc-k">critical</div><div class="cc-v">0</div><div class="cc-t">max 0</div></div>
+    <div class="cc ok"><div class="cc-k">high</div><div class="cc-v">2</div><div class="cc-t">max 5</div></div>
+    <div class="cc"><div class="cc-k">medium</div><div class="cc-v">14</div><div class="cc-t">no max</div></div>
+    <div class="cc"><div class="cc-k">low</div><div class="cc-v">37</div><div class="cc-t">no max</div></div>
+  </div>
+  <div class="dm"><span class="g"><svg class="i"><use href="#circle-check"/></svg></span>
+    <span><b>digestMatch: true</b> — the digest scanned is the digest being promoted. Without this a pass proves
+    nothing about what actually ships.</span></div>
+</div>
+
+<div class="conn"><div class="stem"></div><div class="arrow"><svg class="i"><use href="#arrow-down"/></svg></div></div>
+
+<!-- STAGING -->
+<div class="stage">
+  <div class="sh"><span class="m"><svg class="i"><use href="#stack"/></svg></span>
+    <span><span class="sh-t">WAVE 1 &middot; staging</span> <span class="sh-c">— commercial-amer-staging</span></span>
+    <span class="sh-r"><span class="tag t-success">2 / 2</span></span></div>
+  <div class="sb">
+    <div class="row s-success"><div class="retic"><svg class="i"><use href="#reticle"/></svg></div>
+      <div><div class="rt"><span class="rn">checkout-db</span><span class="rty">infrastructure &middot; terraform</span>
+        <span class="rb"><span class="st">SUCCEEDED</span></span></div>
+        <div class="chips"><span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><span class="mono">plan 7c1e &middot; 2 add / 0 destroy</span></span>
+        <span class="chip"><span class="g"><svg class="i"><use href="#radar"/></svg></span>31 min ago</span></div></div></div>
+    <div class="row s-success"><div class="retic"><svg class="i"><use href="#reticle"/></svg></div>
+      <div><div class="rt"><span class="rn">checkout-api</span><span class="rty">configuration &middot; argocd</span>
+        <span class="rb"><span class="st">SUCCEEDED</span></span></div>
+        <div class="chips"><span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><span class="mono">checkout-api:2.7.0</span></span>
+        <span class="chip"><span class="g"><svg class="i"><use href="#radar"/></svg></span>27 min ago</span></div></div></div>
+  </div>
+</div>
+
+<div class="conn"><div class="stem"></div><div class="gate g-appr"><svg class="i"><use href="#users"/></svg>approval required &middot; 1 of 2</div><div class="stem"></div><div class="arrow"><svg class="i"><use href="#arrow-down"/></svg></div></div>
+
+<!-- PRODUCTION -->
+<div class="stage">
+  <div class="sh"><span class="m"><svg class="i"><use href="#stack"/></svg></span>
+    <span><span class="sh-t">WAVE 2 &middot; production</span> <span class="sh-c">— commercial-amer-production</span></span>
+    <span class="sh-r"><span class="tag t-info">rolling</span></span></div>
+  <div class="sb">
+    <div class="row s-success"><div class="retic"><svg class="i"><use href="#reticle"/></svg></div>
+      <div><div class="rt"><span class="rn">checkout-db-prod</span><span class="rty">infrastructure &middot; terraform</span>
+        <span class="rb"><span class="st">SUCCEEDED</span></span></div>
+        <div class="chips"><span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><span class="mono">plan a802 &middot; 1 add / 0 destroy</span></span>
+        <span class="chip"><span class="g"><svg class="i"><use href="#radar"/></svg></span>6 min ago</span></div></div></div>
+    <div class="row s-info"><div class="retic"><svg class="i"><use href="#reticle"/></svg></div>
+      <div><div class="rt"><span class="rn">checkout-api</span><span class="rty">configuration &middot; argocd</span>
+        <span class="rb"><span class="st">EXECUTING</span></span></div>
+        <div class="roll"><span class="rl">Canary</span>
+          <span class="pips"><i class="pip done"></i><i class="pip done"></i><i class="pip now"></i><i class="pip"></i><i class="pip"></i></span>
+          <span class="rv">step 3 &middot; 40%</span></div>
+        <div class="chips"><span class="chip"><span class="g"><svg class="i"><use href="#crate"/></svg></span><span class="mono">checkout-api:2.7.0</span></span>
+        <span class="chip"><span class="g"><svg class="i"><use href="#radar"/></svg></span>22 s ago</span>
+        <span class="chip"><span class="g"><svg class="i"><use href="#refresh-cw"/></svg></span>bake 10 m &mdash; not started</span></div></div></div>
+  </div>
+</div>
+
+<div class="notes">
+  <h3>What this shows that the target view alone cannot</h3>
+  <ol>
+    <li><b>The same image identity runs the whole length.</b> <span class="k">checkout-api:2.7.0</span> is built in wave 0,
+      lands in a registry, is scanned by digest, then appears unchanged on both stage targets. That continuity is the
+      thing a pipeline view is for — and the reason <span class="k">digestMatch</span> is drawn rather than assumed.</li>
+    <li><b>Sources are plural and asymmetric.</b> One repo drives two Types (code&rarr;image, <span class="k">chart/**</span>&rarr;chart)
+      and a second repo drives the database. Three sources, one service — a single "repo" field could not say this.</li>
+    <li><b>Scan sits between build and stage, not inside a wave.</b> It is commander-side and runs once per promotion
+      journey over the artifact digest, so it belongs on the connector, not on a target.</li>
+    <li><b>Infrastructure precedes configuration inside a wave.</b> The database is created before the workload that
+      needs it — visible as ordering within the wave rather than as two unrelated rows.</li>
+    <li><b>Bake is declared but not started</b>, shown as a dashed chip rather than omitted. An unstarted bake and an
+      absent one are different facts.</li>
+  </ol>
+</div>
+
+<div class="flag"><b>Fixture.</b> No such pipeline exists on your estate — you have one <span class="k">releases_via</span> edge,
+zero registries and zero source mappings. This is the shape a K8s microservice would take, not a reading of your data.</div>
+</div></body></html>

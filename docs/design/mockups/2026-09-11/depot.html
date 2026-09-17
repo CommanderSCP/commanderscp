@@ -1,0 +1,105 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Depot marks</title>
+<style>
+:root{--slate-50:#f8fafc;--slate-200:#e2e8f0;--slate-300:#cbd5e1;--slate-400:#94a3b8;--slate-500:#64748b;--slate-600:#475569;--slate-700:#334155;--slate-900:#0f172a;
+--emerald-50:#ecfdf5;--emerald-200:#a7f3d0;--emerald-600:#059669;--emerald-700:#047857;
+--army-50:#f7f8ef;--army-200:#d6ddb8;--army-600:#687435;--army-700:#515a2b;--army-900:#383e20;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--slate-50);color:var(--slate-900);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.page{max-width:700px;margin:0 auto;padding:32px 24px 72px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--slate-500);font-size:13px;margin:0 0 24px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--slate-500);margin:26px 0 10px}
+svg.i{width:1em;height:1em;flex:none;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:620px){.grid{grid-template-columns:1fr}}
+.c{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:12px 14px}
+.c.pick{border-color:var(--emerald-600);border-width:2px}
+.c-h{display:flex;align-items:center;gap:12px}
+.sizes{display:flex;align-items:flex-end;gap:9px;color:var(--army-700)}
+.nm{font-size:13px;font-weight:700}
+.tagx{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--emerald-700);
+ background:var(--emerald-50);border:1px solid var(--emerald-200);border-radius:999px;padding:1px 7px;margin-left:auto}
+.d{font-size:11.5px;color:var(--slate-500);margin-top:7px}
+.d b{color:var(--slate-700)}
+.fam{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:14px;display:flex;gap:22px;align-items:center;flex-wrap:wrap}
+.fam div{display:flex;flex-direction:column;align-items:center;gap:5px;font-size:10.5px;color:var(--slate-500)}
+.fam svg{font-size:26px;color:var(--army-700)}
+.tile{background:#fff;border:1px solid var(--slate-200);border-radius:10px;padding:12px 14px;margin-top:10px}
+.t-head{display:flex;align-items:center;gap:9px}
+.t-mark{color:var(--army-700);font-size:20px;display:flex}
+.t-repo{font-size:13px;font-weight:600}
+.t-kind{font-size:10.5px;color:var(--slate-500);text-transform:uppercase;letter-spacing:.05em}
+.globs{margin-top:10px;display:grid;grid-template-columns:44px 1fr;gap:3px 9px;align-items:center}
+.gk{font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--slate-400);text-align:right}
+.gv{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--slate-700)}
+.gv.any{font-family:inherit;font-style:italic;color:var(--slate-500)}
+.flag{border-left:3px solid var(--army-600);background:#fff;padding:12px 16px;margin-top:18px;border-radius:0 8px 8px 0;
+ border-top:1px solid var(--slate-200);border-right:1px solid var(--slate-200);border-bottom:1px solid var(--slate-200);font-size:13px}
+</style></head><body>
+<svg style="display:none">
+<symbol id="barrel" viewBox="0 0 24 24"><path d="M10 3a41 41 0 000 18"/><path d="M14 3a41 41 0 010 18"/><path d="M16.997 21a2 2 0 001.68-.92 15.25 15.25 0 000-16.16 2 2 0 00-1.68-.92h-10a2 2 0 00-1.681.92 15.25 15.25 0 000 16.16 2 2 0 001.681.92z"/><path d="M3.54 16h16.914"/><path d="M3.54 8h16.914"/></symbol>
+<symbol id="dock" viewBox="0 0 24 24"><path d="M2 8h20"/><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 16h12"/></symbol>
+<symbol id="archive" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></symbol>
+<symbol id="container" viewBox="0 0 24 24"><path d="M22 7.7c0-.6-.4-1.2-.8-1.5l-6.3-3.9a1.72 1.72 0 0 0-1.7 0l-10.3 6c-.5.2-.9.8-.9 1.4v6.6c0 .5.4 1.2.8 1.5l6.3 3.9a1.72 1.72 0 0 0 1.7 0l10.3-6c.5-.3.9-1 .9-1.5Z"/><path d="M10 21.9V14L2.1 9.1"/><path d="m10 14 11.9-6.9"/><path d="M14 19.8v-8.1"/><path d="M18 17.5V9.4"/></symbol>
+<symbol id="vault" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/><path d="m7.9 7.9 2.7 2.7"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/><path d="m13.4 10.6 2.7-2.7"/><circle cx="7.5" cy="16.5" r=".5" fill="currentColor"/><path d="m7.9 16.1 2.7-2.7"/><circle cx="16.5" cy="16.5" r=".5" fill="currentColor"/><path d="m13.4 13.4 2.7 2.7"/><circle cx="12" cy="12" r="2"/></symbol>
+<symbol id="inbox" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+<symbol id="tent" viewBox="0 0 24 24"><path d="M3.5 21 14 3"/><path d="M20.5 21 10 3"/><path d="M15.5 21 12 15l-3.5 6"/><path d="M2 21h20"/></symbol>
+<symbol id="forklift" viewBox="0 0 24 24"><path d="M12 12H5a2 2 0 0 0-2 2v5"/><path d="M15 19h7"/><path d="M16 19V2"/><path d="M6 12V7a2 2 0 0 1 2-2h2.172a2 2 0 0 1 1.414.586l3.828 3.828A2 2 0 0 1 16 10.828"/><path d="M7 19h4"/><circle cx="13" cy="19" r="2"/><circle cx="5" cy="19" r="2"/></symbol>
+<symbol id="truck" viewBox="0 0 24 24"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></symbol>
+<symbol id="warehouse" viewBox="0 0 24 24"><path d="M18 21V10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v11"/><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 1.132-1.803l7.95-3.974a2 2 0 0 1 1.837 0l7.948 3.974A2 2 0 0 1 22 8z"/><path d="M6 13h12"/><path d="M6 17h12"/></symbol>
+<symbol id="boxes" viewBox="0 0 24 24"><path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/><path d="m7 16.5-4.74-2.85"/><path d="m7 16.5 5-3"/><path d="M7 16.5v5.17"/><path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/><path d="m17 16.5-5-3"/><path d="m17 16.5 4.74-2.85"/><path d="M17 16.5v5.17"/><path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/><path d="M12 8 7.26 5.15"/><path d="m12 8 4.74-2.85"/><path d="M12 13.5V8"/></symbol>
+<symbol id="package-open" viewBox="0 0 24 24"><path d="M12 22v-9"/><path d="M15.17 2.21a1.67 1.67 0 0 1 1.63 0L21 4.57a1.93 1.93 0 0 1 0 3.36L8.82 14.79a1.655 1.655 0 0 1-1.64 0L3 12.43a1.93 1.93 0 0 1 0-3.36z"/><path d="M20 13v3.87a2.06 2.06 0 0 1-1.11 1.83l-6 3.08a1.93 1.93 0 0 1-1.78 0l-6-3.08A2.06 2.06 0 0 1 4 16.87V13"/><path d="M21 12.43a1.93 1.93 0 0 0 0-3.36L8.83 2.2a1.64 1.64 0 0 0-1.63 0L3 4.57a1.93 1.93 0 0 0 0 3.36l12.18 6.86a1.636 1.636 0 0 0 1.63 0z"/></symbol>
+<symbol id="crate" viewBox="0 0 24 24"><rect x="4.5" y="6" width="15" height="13" rx="1"/><path d="M4.5 6.5 19.5 18.5"/><path d="M19.5 6.5 4.5 18.5"/></symbol>
+<symbol id="stack" viewBox="0 0 24 24"><rect x="4" y="13" width="16" height="8" rx="1"/><rect x="7.5" y="4" width="9" height="7" rx="1"/><path d="M12 13v8"/></symbol>
+<symbol id="guidon" viewBox="0 0 24 24"><path d="M6 22V3.5"/><path d="M4 22h4"/><path d="M6 4.5h12l-4 3.75 4 3.75H6Z"/></symbol>
+<symbol id="reticle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 1.5v3.5"/><path d="M12 19v3.5"/><path d="M1.5 12h3.5"/><path d="M19 12h3.5"/></symbol>
+</svg>
+<div class="page">
+<h1>Depot marks</h1>
+<p class="sub">Every one of these is already in your installed <b>lucide-react 1.31.0</b> (1,767 icons) — no custom mark needed. Shown at 32 / 20 / 14px.</p>
+
+<h2>Best fits</h2>
+<div class="grid">
+  <div class="c pick"><div class="c-h"><span class="sizes"><svg class="i" style="font-size:32px"><use href="#barrel"/></svg><svg class="i" style="font-size:20px"><use href="#barrel"/></svg><svg class="i" style="font-size:14px"><use href="#barrel"/></svg></span><span class="nm">Barrel</span><span class="tagx">pick</span></div>
+    <div class="d"><b>A supply drum.</b> Unmistakably materiel, no building. Curved silhouette so it never collides with the crate or the stack, both of which are rectangles. Holds at 14px — the two bands stay legible.</div></div>
+  <div class="c"><div class="c-h"><span class="sizes"><svg class="i" style="font-size:32px"><use href="#dock"/></svg><svg class="i" style="font-size:20px"><use href="#dock"/></svg><svg class="i" style="font-size:14px"><use href="#dock"/></svg></span><span class="nm">Dock</span></div>
+    <div class="d"><b>A loading dock</b> — semantically the best of the lot: literally where materiel ships from. Only three strokes, so it stays clean small. Risk: it is a plain banded rectangle and can read as "generic box".</div></div>
+  <div class="c"><div class="c-h"><span class="sizes"><svg class="i" style="font-size:32px"><use href="#container"/></svg><svg class="i" style="font-size:20px"><use href="#container"/></svg><svg class="i" style="font-size:14px"><use href="#container"/></svg></span><span class="nm">Container</span></div>
+    <div class="d"><b>A shipping container.</b> Strong logistics read, but it is <b>isometric</b> while every one of your marks is flat elevation — it will look imported.</div></div>
+  <div class="c"><div class="c-h"><span class="sizes"><svg class="i" style="font-size:32px"><use href="#archive"/></svg><svg class="i" style="font-size:20px"><use href="#archive"/></svg><svg class="i" style="font-size:14px"><use href="#archive"/></svg></span><span class="nm">Archive</span></div>
+    <div class="d"><b>A lidded store box.</b> Flat, simple, three strokes. Reads "kept" more than "drawn from", and sits close to the crate.</div></div>
+</div>
+
+<h2>Also available</h2>
+<div class="grid">
+  <div class="c"><div class="c-h"><span class="sizes"><svg class="i" style="font-size:28px"><use href="#tent"/></svg><svg class="i" style="font-size:16px"><use href="#tent"/></svg></span><span class="nm">Tent</span></div>
+    <div class="d">Field supply point. Very military — but it is a roofline, which is the thing you just rejected.</div></div>
+  <div class="c"><div class="c-h"><span class="sizes"><svg class="i" style="font-size:28px"><use href="#forklift"/></svg><svg class="i" style="font-size:16px"><use href="#forklift"/></svg></span><span class="nm">Forklift</span></div>
+    <div class="d">Depot <i>activity</i> rather than the depot. Busy below 20px.</div></div>
+  <div class="c"><div class="c-h"><span class="sizes"><svg class="i" style="font-size:28px"><use href="#inbox"/></svg><svg class="i" style="font-size:16px"><use href="#inbox"/></svg></span><span class="nm">Inbox</span></div>
+    <div class="d">Where events <i>arrive</i> — apt for a webhook source, but generic UI furniture elsewhere.</div></div>
+  <div class="c"><div class="c-h"><span class="sizes"><svg class="i" style="font-size:28px"><use href="#warehouse"/></svg><svg class="i" style="font-size:16px"><use href="#warehouse"/></svg></span><span class="nm">Warehouse</span></div>
+    <div class="d">The literal depot — and the building shape you did not like. Included so the rejection is on the record.</div></div>
+</div>
+
+<h2>Against the existing family</h2>
+<div class="fam">
+  <div><svg class="i"><use href="#guidon"/></svg>ServiceGuidon</div>
+  <div><svg class="i"><use href="#stack"/></svg>AssemblyStack</div>
+  <div><svg class="i"><use href="#crate"/></svg>ComponentCrate</div>
+  <div><svg class="i"><use href="#reticle"/></svg>TargetReticle</div>
+  <div><svg class="i" style="color:var(--emerald-600)"><use href="#barrel"/></svg>Barrel</div>
+</div>
+
+<h2>In the tile</h2>
+<div class="tile">
+  <div class="t-head"><span class="t-mark"><svg class="i"><use href="#barrel"/></svg></span>
+    <span><span class="t-repo">jag8765-personal/homelab-gitops</span><br><span class="t-kind">github</span></span></div>
+  <div class="globs">
+    <span class="gk">repo</span><span class="gv">jag8765-personal/homelab-gitops</span>
+    <span class="gk">path</span><span class="gv">commanderscp/**</span>
+    <span class="gk">ref</span><span class="gv any">any ref</span>
+  </div>
+</div>
+
+<div class="flag"><b>No custom mark required.</b> Unlike the reticle, every candidate here ships in lucide — so this is a one-line import, not an addition to <code>catalog-marks.tsx</code>. If none land, the fallback is a custom flat depot silhouette without the pitched roof.</div>
+</div></body></html>
