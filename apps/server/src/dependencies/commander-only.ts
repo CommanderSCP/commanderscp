@@ -15,10 +15,33 @@ export interface CommanderOnlyVerdict {
   readonly reason: string;
 }
 
+/** Why a capability is commander-only — the half of a refusal that differs per capability. The
+ *  CHECK is not parameterized: every caller shares the one predicate below, including its
+ *  fail-closed undeclared branch. */
+export interface CommanderOnlyRationale {
+  /** Closes the UNDECLARED refusal: the rule, with its authority. */
+  readonly rule: string;
+  /** Closes the NOT-COMMANDER refusal: why the capability does not belong on this deployment. */
+  readonly why: string;
+}
+
+/** The dependency-automation rationale (ADR-0032 §7d) — the default, as it was the first caller. */
+export const DEPENDENCY_AUTOMATION_RATIONALE: CommanderOnlyRationale = {
+  rule: "all dependency automation runs on the commander only (ADR-0032 §7d)",
+  why:
+    `Dependency automation exists to ` +
+    `pull from PUBLIC repositories (python library versions, CDK versions, base-image ` +
+    `versions), which an outpost has no need to do: the resulting change is pushed down the ` +
+    `global pipeline the commander manages, so an outpost RECEIVES a dependency bump through ` +
+    `the ordinary promotion path and never originates one. Dependencies declared in ` +
+    `domain-specific repositories the commander never sees are out of scope (ADR-0032 §7d)`
+};
+
 /** THE FEDERATION AXIS ALONE. See docs/dependencies.md §144. */
 export function commanderOnlyFederationVerdict(
   config: Pick<ServerConfig, "federationRole" | "federationRoleDeclared">,
-  what: string
+  what: string,
+  rationale: CommanderOnlyRationale = DEPENDENCY_AUTOMATION_RATIONALE
 ): CommanderOnlyVerdict {
   if (!config.federationRoleDeclared) {
     return {
@@ -28,7 +51,7 @@ export function commanderOnlyFederationVerdict(
         `The setting DEFAULTS to 'commander' — right for "may I serve the SPA?", wrong for "am I ` +
         `the commander?" — so an outpost that predates the setting, or a chart that omits it, is ` +
         `indistinguishable from a commander here. Declare it explicitly (Helm: 'federationRole'); ` +
-        `all dependency automation runs on the commander only (ADR-0032 §7d)`
+        rationale.rule
     };
   }
   if (config.federationRole !== "commander") {
@@ -36,12 +59,8 @@ export function commanderOnlyFederationVerdict(
       allowed: false,
       reason:
         `SCP_FEDERATION_ROLE is '${config.federationRole}' — ${what} is COMMANDER-ONLY, and this ` +
-        `deployment is not the commander. RUN IT ON THE COMMANDER. Dependency automation exists to ` +
-        `pull from PUBLIC repositories (python library versions, CDK versions, base-image ` +
-        `versions), which an outpost has no need to do: the resulting change is pushed down the ` +
-        `global pipeline the commander manages, so an outpost RECEIVES a dependency bump through ` +
-        `the ordinary promotion path and never originates one. Dependencies declared in ` +
-        `domain-specific repositories the commander never sees are out of scope (ADR-0032 §7d)`
+        `deployment is not the commander. RUN IT ON THE COMMANDER. ` +
+        rationale.why
     };
   }
   return {

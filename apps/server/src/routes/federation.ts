@@ -74,6 +74,10 @@ import type { S3DeliveryCredentials } from "../federation/delivery-s3.js";
 import { getSecretValue } from "../secrets/secrets-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
+import {
+  commanderOnlyFederationVerdict,
+  type CommanderOnlyRationale
+} from "../dependencies/commander-only.js";
 import { getFederationStatus } from "../federation/status-repo.js";
 import {
   exportSyncBundle,
@@ -121,6 +125,17 @@ import { recordPokeWake } from "../federation/poke-metrics.js";
 function isPromotionBundle(body: ImportBundleRequest): body is PromotionBundle {
   return body.header.kind === "promotion";
 }
+
+/** Why a promotion export is commander-only (docs/proposals/component-journey-view.md §8.9). */
+const PROMOTION_SIGNING_RATIONALE: CommanderOnlyRationale = {
+  rule:
+    "scan and sign run on the commander only — an outpost or retrans may only VALIDATE a " +
+    "promotion manifest's signature (component-journey-view.md §8.9)",
+  why:
+    "Exporting a promotion bundle scans its artifacts and cosign-signs the promotion manifest, and " +
+    "scan and sign happen on the commander only: an outpost or retrans IMPORTS a commander-signed " +
+    "promotion and validates it, it never originates one (component-journey-view.md §8.9)"
+};
 
 /** Resolve a peer's outbound delivery for a bundle drop. See docs/routes.md §189. */
 async function resolveOutboundDelivery(
@@ -686,13 +701,17 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        // The scan hard-gate refusal (carrying its decision_id), or a deployment that is not an
+        // explicitly declared commander (component-journey-view.md §8.9).
+        409: ProblemSchema
       }
     },
     config: {
       openapi: {
         operationId: "exportPromotionBundle",
-        summary: "Export a Promotion Bundle for a Change (change + evidence + attestations)",
+        summary:
+          "Export a Promotion Bundle for a Change (change + evidence + attestations). COMMANDER-ONLY: the export scans and cosign-signs the promotion manifest, so a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409",
         tags: ["federation"]
       }
     },
@@ -700,6 +719,15 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // M9.3 (ADR-0001) — see the /exports route above for what this does and doesn't change.
       await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
+      // SCAN AND SIGN RUN ON THE COMMANDER ONLY (§8.9). Before any work — the export mints this
+      // org's cosign key on first use — and after authentication, so the route is not an
+      // unauthenticated oracle for this deployment's role. Same 409 shape as the dependency routes.
+      const commander = commanderOnlyFederationVerdict(
+        deps.config,
+        "exporting a signed promotion bundle",
+        PROMOTION_SIGNING_RATIONALE
+      );
+      if (!commander.allowed) throw conflict(commander.reason);
       // Authorize in its own tx — `exportPromotionBundle` manages its OWN transaction phases around
       // an out-of-tx cosign subprocess (it takes `deps.db`, not this tx), so authz runs first here.
       await withTenantTx(deps.db, auth.orgId, (tx) =>
