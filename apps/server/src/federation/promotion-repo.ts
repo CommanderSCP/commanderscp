@@ -29,6 +29,22 @@ import { seedRelayBuild } from "./relay-builds-repo.js";
 import { autoRelayEnabled } from "./auto-relay.js";
 import { ensureInstanceKey, verifyAttestation } from "../governance/attestation.js";
 import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
+import {
+  commanderOnlyPeerVerdict,
+  type CommanderOnlyRationale
+} from "../dependencies/commander-only.js";
+
+/** Why a promotion is commander-only, worded for both doors: the exporting deployment
+ *  (`routes/federation.ts`) and the importer's exporter peer (docs/proposals/component-journey-view.md §8.9). */
+export const PROMOTION_SIGNING_RATIONALE: CommanderOnlyRationale = {
+  rule:
+    "scan and sign run on the commander only — an outpost or retrans may only VALIDATE a " +
+    "promotion manifest's signature (component-journey-view.md §8.9)",
+  why:
+    "Exporting a promotion bundle scans its artifacts and cosign-signs the promotion manifest, and " +
+    "scan and sign happen on the commander only: an outpost or retrans IMPORTS a commander-signed " +
+    "promotion and validates it, it never originates one (component-journey-view.md §8.9)"
+};
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -658,14 +674,31 @@ export async function importPromotionBundle(
     // M17.4(a): resolve the EXPORTER peer's cosign verification key — the SAME non-superseded window
     // the Ed25519 key rode. `null` when the peer has none (governs back-compat vs downgrade below).
     const exporterCosignPubkey = await currentPeerCosignPublicKey(tx, orgId, peer.id);
-    return { peerId: peer.id, exporterCosignPubkey };
+    return { peerId: peer.id, peerName: peer.name, peerRole: peer.role, exporterCosignPubkey };
   });
 
+  // Phase 1.5 — ONLY A COMMANDER ORIGINATES A PROMOTION (component-journey-view.md §8.9). Checked
+  // after the bundle is authenticated as this peer's, before the manifest is verified, and for a
+  // manifest-less bundle too — otherwise a non-commander strips the manifest and rides the
+  // back-compat branch. A relayed promotion is unaffected: the retrans signs only the byte TARBALL
+  // (retrans-relay.ts); the `.scpbundle` it carries is still exported and signed by the commander.
+  const exporterRole = commanderOnlyPeerVerdict(
+    { name: phase1.peerName, role: phase1.peerRole },
+    "importing a promotion bundle from it",
+    PROMOTION_SIGNING_RATIONALE
+  );
+
   // Phase two: manifest verification, outside any transaction. See docs/federation.md §403.
-  const verified = await verifyPromotionManifest({
-    bundle,
-    exporterCosignPubkey: phase1.exporterCosignPubkey
-  });
+  const verified: ManifestVerifyResult = exporterRole.allowed
+    ? await verifyPromotionManifest({
+        bundle,
+        exporterCosignPubkey: phase1.exporterCosignPubkey
+      })
+    : {
+        ok: false,
+        reason: `${exporterRole.reason} (rejected, fail-closed)`,
+        detail: { check: "exporter-role", peerRole: phase1.peerRole }
+      };
   if (!verified.ok) {
     // Persist a `block` Decision + hash-chained audit event and reject fail-closed with a decision_id
     // (mirrors the export scan gate — DESIGN §6/§10.4). `subjectId` is the exporter's change object id

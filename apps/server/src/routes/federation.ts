@@ -74,10 +74,7 @@ import type { S3DeliveryCredentials } from "../federation/delivery-s3.js";
 import { getSecretValue } from "../secrets/secrets-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
-import {
-  commanderOnlyFederationVerdict,
-  type CommanderOnlyRationale
-} from "../dependencies/commander-only.js";
+import { commanderOnlyFederationVerdict } from "../dependencies/commander-only.js";
 import { getFederationStatus } from "../federation/status-repo.js";
 import {
   exportSyncBundle,
@@ -91,7 +88,11 @@ import {
   signResyncRequest
 } from "../federation/resync-repo.js";
 import { dialResync, resolveFederationClientMtls } from "../federation/federation-outbound.js";
-import { exportPromotionBundle, importPromotionBundle } from "../federation/promotion-repo.js";
+import {
+  exportPromotionBundle,
+  importPromotionBundle,
+  PROMOTION_SIGNING_RATIONALE
+} from "../federation/promotion-repo.js";
 import { createOverlay, getMergedOverlayView } from "../federation/overlay-repo.js";
 // The overlay doors' SECOND bar is scoped at the base graph object, so they have to resolve it
 // before they can scope anything at it — see the block above `POST /api/v1/federation/overlays`.
@@ -125,17 +126,6 @@ import { recordPokeWake } from "../federation/poke-metrics.js";
 function isPromotionBundle(body: ImportBundleRequest): body is PromotionBundle {
   return body.header.kind === "promotion";
 }
-
-/** Why a promotion export is commander-only (docs/proposals/component-journey-view.md §8.9). */
-const PROMOTION_SIGNING_RATIONALE: CommanderOnlyRationale = {
-  rule:
-    "scan and sign run on the commander only — an outpost or retrans may only VALIDATE a " +
-    "promotion manifest's signature (component-journey-view.md §8.9)",
-  why:
-    "Exporting a promotion bundle scans its artifacts and cosign-signs the promotion manifest, and " +
-    "scan and sign happen on the commander only: an outpost or retrans IMPORTS a commander-signed " +
-    "promotion and validates it, it never originates one (component-journey-view.md §8.9)"
-};
 
 /** Resolve a peer's outbound delivery for a bundle drop. See docs/routes.md §189. */
 async function resolveOutboundDelivery(
