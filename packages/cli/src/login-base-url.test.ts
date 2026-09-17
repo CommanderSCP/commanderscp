@@ -7,6 +7,16 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 // `scp login` actually targets given flag / env / saved-config precedence.
 const constructedBaseUrls: string[] = [];
 
+// Mutable so a test can swap in a RELATIVE verificationUri — what the server actually returns when
+// it has no `publicBaseUrl` configured (routes/device-flow.ts) — without a second `vi.mock` module.
+let deviceStartResponse = {
+  verificationUri: "https://example/device",
+  userCode: "ABCD",
+  deviceCode: "dev-code",
+  interval: 0,
+  expiresIn: 60
+};
+
 vi.mock("@scp/sdk", () => {
   class ScpClient {
     baseUrl: string;
@@ -18,13 +28,7 @@ vi.mock("@scp/sdk", () => {
       return { token: "tok", org: "acme", expiresAt: "2030-01-01T00:00:00Z" };
     }
     deviceFlow = {
-      start: async () => ({
-        verificationUri: "https://example/device",
-        userCode: "ABCD",
-        deviceCode: "dev-code",
-        interval: 0,
-        expiresIn: 60
-      }),
+      start: async () => deviceStartResponse,
       poll: async () => ({ token: "tok", org: "acme", expiresAt: "2030-01-01T00:00:00Z" })
     };
   }
@@ -108,5 +112,32 @@ describe("scp login base URL precedence", () => {
     await writeSavedConfig(REMOTE);
     await runLogin(["--device"]);
     expect(constructedBaseUrls).toEqual([REMOTE]);
+  });
+
+  it("(e-device) a RELATIVE verificationUri (server has no publicBaseUrl) is resolved against the CLI's own base URL, not printed as-is", async () => {
+    const logSpy = vi.spyOn(console, "log");
+    const original = deviceStartResponse;
+    // Server returns a relative path when it has no `publicBaseUrl` configured
+    // (routes/device-flow.ts) — override the module mock's absolute default for this one test.
+    deviceStartResponse = {
+      verificationUri: "/device",
+      userCode: "WXYZ",
+      deviceCode: "dev-code-2",
+      interval: 0,
+      expiresIn: 60
+    };
+
+    try {
+      await writeSavedConfig(REMOTE);
+      await runLogin(["--device"]);
+
+      const opened = logSpy.mock.calls
+        .map((call) => String(call[0]))
+        .find((line) => line.startsWith("Open "));
+      expect(opened).toBe("Open https://scp.example.com/device and enter code WXYZ");
+      expect(opened).not.toContain("/api/v1/device");
+    } finally {
+      deviceStartResponse = original;
+    }
   });
 });

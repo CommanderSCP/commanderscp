@@ -1581,12 +1581,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Drives the CLI side of the device authorization flow. See docs/cli.md §61. */
+/** Drives the CLI side of the device authorization flow. See docs/cli.md §61.
+ *
+ * `started.verificationUri` may be a RELATIVE path (`/device`) — the server returns that instead
+ * of a `127.0.0.1`-rooted URL when it has no `publicBaseUrl` configured (routes/device-flow.ts).
+ * Resolve it against `baseUrl`, the API base URL this CLI invocation is already targeting — an
+ * absolute `verificationUri` (operator configured `publicBaseUrl`) is returned unchanged by `new
+ * URL(relative, base)` when `relative` is already absolute. */
 async function deviceLogin(
-  client: ScpClient
+  client: ScpClient,
+  baseUrl: string
 ): Promise<{ token: string; expiresAt: string; org: string }> {
   const started = await client.deviceFlow.start();
-  console.log(`Open ${started.verificationUri} and enter code ${started.userCode}`);
+  const verificationUrl = new URL(started.verificationUri, baseUrl).toString();
+  console.log(`Open ${verificationUrl} and enter code ${started.userCode}`);
   console.log("Waiting for approval...");
 
   const deadline = Date.now() + started.expiresIn * 1000;
@@ -1996,7 +2004,7 @@ export function buildProgram(): Command {
         const client = new ScpClient({ baseUrl });
 
         if (opts.device) {
-          const result = await deviceLogin(client);
+          const result = await deviceLogin(client, baseUrl);
           await saveCredentials({
             baseUrl,
             token: result.token,
