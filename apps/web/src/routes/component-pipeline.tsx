@@ -3319,6 +3319,82 @@ export function scanSummary(scans: ComponentPipelineArtifact["scans"]): {
   return { verdict: "mixed", text: `${detail} (${runs})` };
 }
 
+/** The scan row this component's connector callout speaks for — the newest by `evaluatedAt`, same
+ *  "fold many rows to one fact" shape `scanSummary` already uses for the verdict word. Exported for
+ *  the render tests below (mutation-proving the digestMatch-absent honesty case needs to call it
+ *  directly, not just through the tile). See docs/web.md §308. */
+export function newestScan(
+  scans: ComponentPipelineArtifact["scans"]
+): ComponentPipelineArtifact["scans"][number] | null {
+  if (scans.length === 0) return null;
+  return [...scans].sort((a, b) => b.evaluatedAt.localeCompare(a.evaluatedAt))[0]!;
+}
+
+/** THE SEVERITY + digestMatch CALLOUT (design-system §1.6a, mockup `microservice.html`'s `.scan`
+ *  panel — "Scan sits between build and stage… so it belongs on the connector, not on a target").
+ *  This tile already sits exactly there (registry → Scan & sign → the first wave, `laneNodes`'
+ *  fixed order); what was missing was surfacing these two ALREADY-READ fields (`counts`,
+ *  `digestMatch` — both on `ComponentPipelineScanRunSummarySchema`) in the always-visible compact
+ *  view rather than only under Details.
+ *
+ *  HONESTY (journey-view §8.9/§8.13): `digestMatch === null` means the evidence never recorded it —
+ *  that must never render as either true or false, and a `pass` verdict sitting next to it must not
+ *  be read as "verified against what ships". Worded and coloured amber, the same "stated absence"
+ *  treatment the rest of this tile already gives an unparseable export stamp. */
+function ScanSeverityCallout({
+  scan
+}: {
+  scan: ComponentPipelineArtifact["scans"][number];
+}): React.JSX.Element {
+  return (
+    <>
+      <p data-testid="pipeline-scan-severity">
+        <span className="text-slate-400">severity:</span>{" "}
+        {scan.counts ? (
+          <span
+            className="font-mono"
+            title="critical / high / medium / low counts, as the scanner reported them"
+          >
+            C{scan.counts.critical} H{scan.counts.high} M{scan.counts.medium} L{scan.counts.low}
+          </span>
+        ) : (
+          <span className="italic text-slate-400">counts not recorded</span>
+        )}
+      </p>
+      <p
+        data-testid="pipeline-scan-digest-match"
+        data-digest-match={scan.digestMatch === null ? "unknown" : String(scan.digestMatch)}
+      >
+        <span className="text-slate-400">digestMatch:</span>{" "}
+        {scan.digestMatch === true ? (
+          <span
+            className="text-emerald-700"
+            title="The digest this scan covers equals the digest being promoted — a pass here proves something about what actually ships."
+          >
+            true — scanned digest matches the promoted digest
+          </span>
+        ) : scan.digestMatch === false ? (
+          <span
+            className="text-red-700"
+            title="The digest this scan covers differs from the digest being promoted — any pass verdict here does not cover what actually ships."
+          >
+            false — scanned digest differs from the promoted digest
+          </span>
+        ) : (
+          // NEVER a silent pass: the evidence omitted digestMatch, so this scan cannot say whether
+          // it covered the promoted digest at all — stated, not defaulted to either boolean.
+          <span
+            className="italic text-amber-700"
+            title="The evidence did not record digestMatch — this scan cannot confirm it covers the promoted digest. A pass verdict here must not be read as verifying what ships."
+          >
+            not recorded — cannot confirm this scan covers the promoted digest
+          </span>
+        )}
+      </p>
+    </>
+  );
+}
+
 /** The COMPACT part of the Scan & sign tile (§10.3). See docs/web.md §306. */
 function ScanSignCompact({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
   if (artifact === undefined) {
@@ -3363,6 +3439,9 @@ function ScanSignCompact({ artifact }: { artifact: ArtifactOnWire }): React.JSX.
           {summary.text}
         </span>
       </p>
+      {/* Only when a scan row exists — no scan yet already says so above, and a severity/digestMatch
+          line with nothing behind it would be a claim about a run that never happened. */}
+      {newestScan(artifact.scans) && <ScanSeverityCallout scan={newestScan(artifact.scans)!} />}
       <p data-testid="pipeline-scan-export-gate" data-export-gate={artifact.exportGate}>
         <span className="text-slate-400">export gate (E6):</span>{" "}
         <span

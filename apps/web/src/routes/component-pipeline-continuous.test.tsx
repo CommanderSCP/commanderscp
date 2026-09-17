@@ -46,6 +46,7 @@ const {
   shortDigest,
   sourceKindText,
   stageOutlineTone,
+  newestScan,
   LANES
 } = await import("./component-pipeline");
 
@@ -3588,6 +3589,74 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
       ),
       "no flag → no note"
     ).not.toContain("could not be read");
+  });
+});
+
+/** design-system §1.6a (mockup `microservice.html`'s `.scan` panel): severity counts and the
+ *  digestMatch callout, surfaced in the COMPACT (always-visible) part of the tile that already
+ *  sits between Registry and the first deploy wave — not hidden behind Details. Both fields are
+ *  already read elsewhere on this tile (`ScanSignDetails`' per-row `scan.counts`/`scan.digestMatch`
+ *  — component-pipeline.tsx), so this is a placement change, not a new API surface. */
+describe("the scan severity + digestMatch callout (design-system §1.6a)", () => {
+  it("shows the newest scan's severity counts and a positive digestMatch statement", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ digestMatch: true })] })} />
+    );
+    expect(html).toContain('data-testid="pipeline-scan-severity"');
+    expect(html).toContain("C0 H2 M5 L9");
+    expect(html).toContain('data-testid="pipeline-scan-digest-match"');
+    expect(html).toContain('data-digest-match="true"');
+    expect(html).toContain("scanned digest matches the promoted digest");
+  });
+
+  it("a FALSE digestMatch is stated plainly, not hidden or softened", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ digestMatch: false })] })} />
+    );
+    expect(html).toContain('data-digest-match="false"');
+    expect(html).toContain("scanned digest differs from the promoted digest");
+  });
+
+  it("MUTATION-PROVEN honesty guard — a NULL digestMatch never renders as a pass, even on a passing scan", () => {
+    // The scan's own STATUS is "pass" here — the exact shape where an "absent renders as pass" bug
+    // would hide: mutate the `=== null` branch away (e.g. fold it into the `true` branch) and this
+    // test must catch a passing scan being read as digest-verified when the evidence never said so.
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({ scans: [scan({ status: "pass", digestMatch: null })] })}
+      />
+    );
+    expect(html).toContain('data-digest-match="unknown"');
+    expect(html).toContain("not recorded — cannot confirm this scan covers the promoted digest");
+    expect(html).not.toContain("scanned digest matches the promoted digest");
+    // The colour must not be the emerald "verified" tone either — amber, the tile's existing
+    // "stated absence" treatment.
+    const line = html.slice(html.indexOf('data-testid="pipeline-scan-digest-match"'));
+    expect(line.slice(0, 300)).not.toContain("text-emerald-700");
+    expect(line.slice(0, 300)).toContain("text-amber-700");
+  });
+
+  it("severity counts absent (null) is stated, never rendered as zeros", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ counts: null })] })} />
+    );
+    const line = html.slice(html.indexOf('data-testid="pipeline-scan-severity"'));
+    expect(line.slice(0, 200)).toContain("counts not recorded");
+    expect(line.slice(0, 200)).not.toContain("C0 H0 M0 L0");
+  });
+
+  it("no scan rows at all → no severity/digestMatch callout — nothing to claim", () => {
+    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact({ scans: [] })} />);
+    expect(html).not.toContain('data-testid="pipeline-scan-severity"');
+    expect(html).not.toContain('data-testid="pipeline-scan-digest-match"');
+  });
+
+  it("newestScan picks the row with the latest evaluatedAt, not the first/last by array position", () => {
+    const older = scan({ evaluatedAt: "2026-08-14T10:00:00.000Z", digestMatch: false });
+    const newer = scan({ evaluatedAt: "2026-08-15T10:00:00.000Z", digestMatch: true });
+    expect(newestScan([older, newer])).toBe(newer);
+    expect(newestScan([newer, older])).toBe(newer);
+    expect(newestScan([])).toBeNull();
   });
 });
 
