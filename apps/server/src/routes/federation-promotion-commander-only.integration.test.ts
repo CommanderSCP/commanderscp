@@ -17,7 +17,7 @@ import { pairPeer } from "../federation/peers-repo.js";
 
 /** SCAN AND SIGN RUN ON THE COMMANDER ONLY (docs/proposals/component-journey-view.md §8.9).
  *
- *  Entered at the outermost layer — the HTTP route — on three deployments that differ ONLY in
+ *  Entered at the outermost layer — the HTTP route — on four deployments that differ ONLY in
  *  SCP_FEDERATION_ROLE. Each gets the same fixture: an org whose bootstrap admin holds
  *  `federation:write`, a paired peer, and a metadata-only change (nothing to scan, so the export
  *  reaches the signature on a commander without a scan runner). The refused cases also assert that
@@ -102,7 +102,12 @@ describe("POST /federation/exports/promotion is COMMANDER-ONLY (§8.9)", () => {
   }, 120_000);
 
   afterAll(async () => {
-    await Promise.all([commander?.close(), outpost?.close(), retrans?.close(), undeclared?.close()]);
+    await Promise.all([
+      commander?.close(),
+      outpost?.close(),
+      retrans?.close(),
+      undeclared?.close()
+    ]);
   });
 
   it("a declared COMMANDER exports and cosign-signs the manifest (the positive control)", async () => {
