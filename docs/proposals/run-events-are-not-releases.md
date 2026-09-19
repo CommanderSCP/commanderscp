@@ -1,7 +1,9 @@
 # A CI run is not a release — diagnosis and the decision it needs
 
-**Status:** DECIDED and BUILT, 2026-09-16 — see §6. (The diagnosis below stopped for an owner decision. §5's options are kept as written.)
-**Relates to:** [component-journey-view.md](component-journey-view.md) §3 Segment 2, §7 (`observedRun`), §8.12, §8.16;
+**Status:** DECIDED and BUILT, 2026-09-16 — merged and deployed (PR #360, `02618477`). See §6.
+Cleanup of the ~87 run-born changes has **not yet run** — see §7. (The diagnosis below stopped for an
+owner decision. §5's options are kept as written.)
+**Relates to:** [component-journey-view.md](component-journey-view.md) §3 Segment 2, §7 (`observedRun`), §8.12, §8.16, §8.18;
 [promotion-and-execution-model.md](promotion-and-execution-model.md) §3; [ADR-0032](../adr/0032-dependency-subscriptions.md) §9;
 `docs/coordination.md` §385 (the CI-conclusion route); DESIGN.md §12.
 
@@ -223,3 +225,13 @@ rules are unchanged. The first attempt used an expression index and was measured
 Seven mutations were each killed: gate removed; observed `workflow_run` allowed; github `pull_request`
 allowed; github `workflow_run` allowed; observed `sync` allowed; repo check dropped; expression predicate
 instead of column.
+
+## 7. Cleanup status, as of 2026-09-17
+
+Not yet run. The ~87 run-born changes §1 measured — 40 Validate-born duplicates on
+`agentkit-auto@gamma` and 47 canary changes at an unchanged commit — are queued for cancellation
+through the audited cancel API per §6 item 3, with a count guard and a `pg_dump` first, but the run has
+not happened as of this writing. They remain `executing`, parked behind the prod-gate approval that
+should never be given (§3). See [component-journey-view.md](component-journey-view.md) §8.18 for the
+estate pass (journey-kind/ref-pattern declaration and the §8.16 correlation repair) that ran alongside
+this fix.

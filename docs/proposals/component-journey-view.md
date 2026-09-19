@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13). **§8.14 STOPPED step 3** — measured through the real reconcile loop, option A does *not* avoid the `no_executor` block, because the block is on the image arm itself, and `source_mappings.type` turns out to be one column doing two jobs. **§8.15 resolves it (owner, option ii, built): the journey is its own field, `source_mappings.journey_kind` (migration 0112)**, so a service repo stays typed `configuration` — which is what routes it — and declares its journey separately. §8.2's rendering defect is fixed with it. What remains of step 3 is a LABELLING pass over the estate, which changes no routing. **§8.16 corrects two claims §8.10/§8.13 made**: a push's correlation key named the BRANCH, so every push to `main` shared one coordinated-change group (34 unrelated commits in one, measured live) and D2's fan-out synthesis was dead code in production while its tests passed on a different code path. **Proposed, pending review.**
+**Status:** v0.7, 2026-09-14 — v0.1's design was accepted and built out (§7); §8 adds the owner's two release paths and the per-change path selection they require, with §8.7 D1–D3 **decided by the owner 2026-09-12** and §8.8 sequencing the build. §8.9–§8.11 record what building step 1 found, including **§8.11, a blocker on D3** — resolved by **§8.12 (owner, 2026-09-14): re-scope D3 to the build half; Path A is two correlated changes and the discriminator is the correlation key, not the routing Type.** §8.8 steps 1 and 2 are **landed** (§8.10, §8.13). **§8.14 STOPPED step 3** — measured through the real reconcile loop, option A does *not* avoid the `no_executor` block, because the block is on the image arm itself, and `source_mappings.type` turns out to be one column doing two jobs. **§8.15 resolves it (owner, option ii, built): the journey is its own field, `source_mappings.journey_kind` (migration 0112)**, so a service repo stays typed `configuration` — which is what routes it — and declares its journey separately. §8.2's rendering defect is fixed with it. What remains of step 3 is a LABELLING pass over the estate, which changes no routing. **§8.16 corrects two claims §8.10/§8.13 made**: a push's correlation key named the BRANCH, so every push to `main` shared one coordinated-change group (34 unrelated commits in one, measured live) and D2's fan-out synthesis was dead code in production while its tests passed on a different code path. **§8.17 (2026-09-16, PR #361) fixed the poll path's missing ref** — a precondition for D3. **§8.18 (2026-09-16/17): the estate pass ran** — `journey_kind` and `ref_pattern` declared on 99 live mappings, six mismatched agentkit mappings deleted, five duplicate pairs collapsed, 38 mappings left orphaned behind an unrelated product gap, and the §8.16 correlation repair executed. **Shipped**, with the API-parity gaps §8.18 names, the orphaned-mapping fix, and `run-events-are-not-releases.md`'s queued cleanup still open.
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -947,3 +947,83 @@ three plugin suites, whose push/poll assertions now pin the *absence* with `toEq
 **Not done here.** The existing 120 rows keep their historical keys, and the 34-member group still exists
 on the homelab. Nothing renders from it today (no digests), but it is a latent wrong answer if artifacts
 ever appear. Repairing it is an estate data mutation and the owner's call.
+
+**Done, §8.18 (2026-09-16).** The repair ran: the group and its 35 `correlates` edges soft-deleted
+through the API, and the 41 affected `correlation_key` values cleared by a guarded SQL transaction
+(backed up in `repair_20260916_branch_key_changes` and `repair_20260916_branch_key_edges`) because no
+API route owns that column.
+
+### 8.17 The poll path silently stopped matching ref-scoped mappings — fixed (2026-09-16, PR #361)
+
+Found ahead of D3, by the same discipline as §8.16: measure the live path, not the webhook path the
+tests exercise. A `source_mappings` row with a `ref_pattern` fails closed on any event carrying no ref
+(`correlation.ts`'s fail-closed rule, unchanged — the same rule §6#3's rejected option would have
+flipped the other way). The github/gitea/gitlab `pollCommits` pollers listed commits with no `sha`
+param (an implicit default branch) and stamped no ref onto the event at all. The webhook path already
+sets `ref`, so every webhook-driven test passed while the poll path — how the homelab estate ingests
+almost all of its coordination — silently stopped matching a ref-scoped mapping the moment an operator
+set one, with no error anywhere.
+
+**Fix.** Resolve the repo/project's default branch explicitly (GitHub/Gitea
+`GET /repos/{owner}/{repo}`.default_branch, GitLab `GET /projects/:id`.default_branch), pass it back as
+the commits-list `sha`/`ref_name` parameter, and stamp that SAME branch as `refs/heads/<branch>` on
+every event — true by construction, not an assumed API default. Resolution failure falls back to the
+pre-fix behaviour (list the implicit default, emit no ref) rather than guessing. The same census closed
+the sibling gaps: GitHub's `workflow_run` (poll and webhook) reports `head_branch` directly; GitLab's
+pipelines/Pipeline Hook disambiguate branch vs. tag by the `tag` boolean, stamping no ref rather than
+guessing when it is absent.
+
+**Why this had to land before D3's `ref_pattern` half.** §8.7 D3 sets `ref_pattern` on the estate's
+mappings. Doing that against the pre-fix poll path would have made every one of those mappings
+fail-closed against every polled push — silently stopping coordination across the estate the mappings
+already served, not merely leaving `ref_pattern` inert the way a NULL does today. §8.18 is the estate
+pass this fix unblocks.
+
+### 8.18 The estate pass, as executed (2026-09-16/17)
+
+§8.8 step 3 (re-scoped by §8.15 to a labelling pass) and D3's `ref_pattern` half, both run against the
+live homelab commander, in that order, after §8.17 removed the reason the order mattered.
+
+**Journey kind, declared on every live mapping.** 99 mappings carry a `journey_kind` today: 16 `source`
+— the whole-repo `AgentKitProject/agentkit` mappings onto the components actually built from that repo,
+plus `agentkit-commercial` — and the remaining 83 `config`. Declaring it surfaced a standing error, not
+just a label: **6 whole-repo agentkit mappings pointed at components that repo never builds.** Owner
+decision, 2026-09-16: delete them rather than label them `config` on a repo that plainly is not theirs.
+
+**`ref_pattern` set to `refs/heads/main` on all 99 live mappings — owner decision D3 (§8.7) — done only
+after §8.17 deployed.** Before that fix, a polled push carried no ref at all, and `correlation.ts`'s
+`ref_pattern` branch refuses a ref-less event outright — setting the pattern first would have silently
+stopped every one of these mappings from matching a real push, not left it inert the way NULL does
+today. Verified live afterwards: a polled push now arrives carrying `refs/heads/main`, and the mappings
+keep matching.
+
+**Why create-then-delete, not an edit.** No API route sets `ref_pattern` on an existing mapping — the
+`PATCH` surface covers `enabled`, `scope`, and (since §8.15) `journey-kind` only. Setting it meant
+creating a replacement mapping with the pattern and deleting the original through the audited routes.
+**This is an API-parity gap worth closing:** an estate-wide data-correctness pass had to route around
+the very API it is supposed to go through — the same shape as the `correlation_key` gap §8.16 hit.
+
+**Five duplicate pairs collapsed.** The create-then-delete pass surfaced five pairs of mappings that
+were already byte-for-byte identical — same component, repo, path and Type — collapsing 142 rows to
+137 before the 99 counted above were ever reached. Nothing in the schema stops a mapping from being
+created twice; that identical duplicates were creatable at all is a possible identity gap, not
+something this pass fixed.
+
+**38 mappings are orphaned and untouched.** Their component was soft-deleted 2026-09-11, and every
+mutating route — create, patch, delete — resolves the target component first, through a lookup that
+excludes tombstones. An orphaned mapping is therefore unreachable by any of the three verbs the API
+offers: it cannot be labelled, re-pointed, or removed. Owner decision: fix the product before cleaning
+up the data — a fix is in flight on branch `fix/component-delete-orphan-mappings`. These 38 carry no
+`journey_kind` and no `ref_pattern`; they are excluded from both counts above.
+
+**The §8.16 correlation repair executed.** The 34-member `Coordinated: refs/heads/*` group §8.16 left
+in place — 35 `correlates` edges plus the group object itself — was soft-deleted through the API. The
+41 affected `changes.correlation_key` values could not go through the API at all: no route owns that
+column, the same parity shape as `ref_pattern` above. They were cleared by a guarded SQL transaction,
+with the pre-image backed up in `repair_20260916_branch_key_changes` and
+`repair_20260916_branch_key_edges`.
+
+**Cross-reference.** [run-events-are-not-releases.md](run-events-are-not-releases.md) (PR #360, merged
+and deployed) landed alongside this pass: CI runs no longer propose changes. Its ~87 run-born changes
+are queued for cancellation through the audited cancel API and had not been run as of this writing —
+see that document's §7.
