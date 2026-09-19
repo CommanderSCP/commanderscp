@@ -1,0 +1,30 @@
+-- NO-OP AT THE DATABASE LEVEL. This migration exists only to bring drizzle-kit's snapshot lineage
+-- into agreement with the database and schema.ts about 15 CHECK constraints that already exist —
+-- created by their own original migrations, listed below, all of which predate this repo's
+-- practice of giving `check()` a schema.ts declaration at all:
+--
+--   bundle_transfers_channel_check              (0087_bundle_transfers_channel.sql)
+--   governance_move_rungs_tier_ck                (0083_governance_move_rungs.sql)
+--   governance_move_instance_rung_singleton_ck   (0083_governance_move_rungs.sql)
+--   instance_freezes_key_ck                      (0086_instance_freezes.sql)
+--   instance_freezes_reason_ck                   (0086_instance_freezes.sql)
+--   instance_freezes_window_ck                   (0086_instance_freezes.sql)
+--   instance_freezes_match_ck                    (0086_instance_freezes.sql)
+--   scan_exclusion_admissions_tier_ck            (0074_scan_exclusion_admissions.sql)
+--   scan_exclusion_admissions_class_ck           (0074_scan_exclusion_admissions.sql)
+--   scan_exclusion_admissions_origin_ck          (0074_scan_exclusion_admissions.sql)
+--   scan_requirement_floors_tier_ck              (0029_scan_requirement_floors.sql)
+--   scan_requirement_floors_origin_ck            (0029_scan_requirement_floors.sql)
+--   scan_requirement_floors_nonneg_ck            (0029_scan_requirement_floors.sql)
+--   source_mappings_scope_check                  (0082_source_mapping_scope.sql)
+--   source_mappings_journey_kind_check           (0112_source_mapping_journey_kind.sql)
+--
+-- Because schema.ts never carried a `check()` for any of these, drizzle-kit's own generate/diff
+-- never saw them and its snapshot lineage was never told they exist — so adding the `check()`
+-- declarations (docs/BUILD_AND_TEST.md §4.4c, docs/db.md's check-constraint-coverage note) makes
+-- `drizzle-kit generate` believe all 15 are BRAND NEW and emit real `ALTER TABLE ... ADD
+-- CONSTRAINT` statements for them. Running that against an already-migrated database would fail
+-- outright (`already exists`); running it here, as a genuinely empty migration, instead lets the
+-- snapshot catch up to reality without touching a live constraint that has been enforcing since
+-- its original migration. See schema-ddl-drift.integration.test.ts's "declares every check
+-- constraint the database holds, by name" assertion for the gate this closes.

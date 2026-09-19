@@ -551,7 +551,17 @@ export const sourceMappings = pgTable(
     journeyKind: text("journey_kind"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]
+  (table) => [
+    index("source_mappings_org_source").on(table.orgId, table.sourceKind),
+    check(
+      "source_mappings_scope_check",
+      sql`${table.scope} IS NULL OR ${table.scope} IN ('global', 'domain')`
+    ),
+    check(
+      "source_mappings_journey_kind_check",
+      sql`${table.journeyKind} IS NULL OR ${table.journeyKind} IN ('source', 'config')`
+    )
+  ]
 );
 
 /** Webhook ingress: persist-then-process. See docs/db.md §71. */
@@ -1104,6 +1114,10 @@ export const bundleTransfers = pgTable(
       table.orgId,
       table.peerDomainId,
       table.confirmedAt.desc().nullsLast()
+    ),
+    check(
+      "bundle_transfers_channel_check",
+      sql`${table.channel} IS NULL OR ${table.channel} IN ('metadata', 'bytes')`
     )
   ]
 );
@@ -1367,7 +1381,20 @@ export const scanRequirementFloors = pgTable(
     note: text("note"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [primaryKey({ columns: [table.tier, table.origin] })]
+  (table) => [
+    primaryKey({ columns: [table.tier, table.origin] }),
+    // The literal is `trust_domain`, never bare `domain` (see the header) — enforced in the DB so
+    // a future writer cannot store the ambiguous spelling.
+    check("scan_requirement_floors_tier_ck", sql`${table.tier} IN ('platform', 'trust_domain')`),
+    check("scan_requirement_floors_origin_ck", sql`${table.origin} IN ('local', 'federated')`),
+    check(
+      "scan_requirement_floors_nonneg_ck",
+      sql`(${table.maxCritical} IS NULL OR ${table.maxCritical} >= 0)
+    AND (${table.maxHigh} IS NULL OR ${table.maxHigh} >= 0)
+    AND (${table.maxMedium} IS NULL OR ${table.maxMedium} >= 0)
+    AND (${table.maxLow} IS NULL OR ${table.maxLow} >= 0)`
+    )
+  ]
 );
 
 // M22.2 — instance-scoped scan-EXCLUSION admissions. See docs/db.md §119.
@@ -1382,7 +1409,16 @@ export const scanExclusionAdmissions = pgTable(
     note: text("note"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [primaryKey({ columns: [table.tier, table.class, table.origin] })]
+  (table) => [
+    primaryKey({ columns: [table.tier, table.class, table.origin] }),
+    check("scan_exclusion_admissions_tier_ck", sql`${table.tier} IN ('platform', 'trust_domain')`),
+    // Must agree with `ScanExclusionClassSchema` in packages/schemas/src/supply-chain.ts.
+    check(
+      "scan_exclusion_admissions_class_ck",
+      sql`${table.class} IN ('no_fix_available', 'vendor_latest', 'declared_fact', 'approved_override')`
+    ),
+    check("scan_exclusion_admissions_origin_ck", sql`${table.origin} IN ('local', 'federated')`)
+  ]
 );
 
 // M21.2 — the DEPENDENCY INVENTORY substrate. See docs/db.md §120.
@@ -1696,16 +1732,24 @@ export const governanceMoveRungs = pgTable(
   },
   (table) => [
     primaryKey({ name: "governance_move_rungs_pk", columns: [table.subjectObjectId] }),
-    index("governance_move_rungs_org").on(table.orgId)
+    index("governance_move_rungs_org").on(table.orgId),
+    check(
+      "governance_move_rungs_tier_ck",
+      sql`${table.tier} IN ('org', 'containment_domain', 'service', 'assembly')`
+    )
   ]
 );
 
 /** THE INSTANCE (COMMANDER) RUNG. See docs/db.md §141. */
-export const governanceMoveInstanceRung = pgTable("governance_move_instance_rung", {
-  id: text("id").primaryKey().default("default"),
-  enabled: boolean("enabled").notNull().default(false),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
-});
+export const governanceMoveInstanceRung = pgTable(
+  "governance_move_instance_rung",
+  {
+    id: text("id").primaryKey().default("default"),
+    enabled: boolean("enabled").notNull().default(false),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [check("governance_move_instance_rung_singleton_ck", sql`${table.id} = 'default'`)]
+);
 
 /** M25.3 — THE INSTANCE-SCOPED. See docs/db.md §142. */
 export const instanceFreezes = pgTable(
@@ -1745,7 +1789,26 @@ export const instanceFreezes = pgTable(
     liftReason: text("lift_reason"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [index("instance_freezes_window").on(table.startsAt, table.endsAt)]
+  (table) => [
+    index("instance_freezes_window").on(table.startsAt, table.endsAt),
+    check("instance_freezes_key_ck", sql`length(btrim(${table.key})) > 0`),
+    check("instance_freezes_reason_ck", sql`length(btrim(${table.reason})) > 0`),
+    // The SAME window-order invariant `assertWindowOrdered` enforces on both org-tier write paths.
+    check("instance_freezes_window_ck", sql`${table.endsAt} > ${table.startsAt}`),
+    // EXACTLY ONE addressing form, stated in the database so a future writer cannot store the
+    // ambiguous shape: either explicitly deployment-wide (and then no coordinate at all), or an
+    // environment (optionally narrowed to one region).
+    check(
+      "instance_freezes_match_ck",
+      sql`(${table.matchAllEnvironments} AND ${table.matchEnvironment} IS NULL AND ${table.matchRegion} IS NULL)
+    OR (
+      NOT ${table.matchAllEnvironments}
+      AND ${table.matchEnvironment} IS NOT NULL
+      AND length(btrim(${table.matchEnvironment})) > 0
+      AND (${table.matchRegion} IS NULL OR length(btrim(${table.matchRegion})) > 0)
+    )`
+    )
+  ]
 );
 
 /** The per-finding projection of one scan verdict. See docs/db.md §144. */
