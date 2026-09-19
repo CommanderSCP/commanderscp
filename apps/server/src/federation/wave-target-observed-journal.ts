@@ -1,6 +1,8 @@
+import { and, eq } from "drizzle-orm";
 import { boundPersistedJson } from "@scp/runner-launcher";
 import { WaveTargetObservedPayloadSchema, type WaveTargetObservedPayload } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
+import { objects } from "../db/schema.js";
 import { appendJournalEntry } from "./journal-repo.js";
 import { computeWaveTargetObservedContentHash } from "../graph/content-hash.js";
 
@@ -40,6 +42,21 @@ export async function appendWaveTargetObservedEntry(
   payload: WaveTargetObservedPayload
 ): Promise<void> {
   const parsed = WaveTargetObservedPayloadSchema.parse(payload);
+  // ADR-0031 §5: A DOMAIN-LOCAL CHANGE FEDERATES NOTHING, and that has to include its execution.
+  // `createChange` marks the change object domain-local when its targets are, and `createObject`
+  // then SKIPS the object's own journal entry — so without this check an observation would be the
+  // one entry that carried a domain-local release's existence, target id and progress to every
+  // peer, through a channel added after that rule was written. Checked HERE rather than at the two
+  // call sites: every payload names a `changeObjectId`, so one lookup covers both subjects and any
+  // caller added later. (A skip, not a `domainLocal: true` payload flag — the flag keeps the entry
+  // in the local chain where it costs sequence numbers for nothing, and `createObject` already
+  // chose the skip for the same fact.)
+  const [change] = await tx
+    .select({ domainLocal: objects.domainLocal })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), eq(objects.id, parsed.changeObjectId)))
+    .limit(1);
+  if (change?.domainLocal === true) return;
   await appendJournalEntry(tx, {
     orgId,
     entryKind: "wave_target_observed",

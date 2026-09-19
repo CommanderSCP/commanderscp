@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
 import { ComponentPipelineDomainSchema } from "./components.js";
+import { WaveTargetObservedSchema } from "./changes.js";
 
 /** Service release board. See docs/schemas.md §394. */
 
@@ -92,6 +93,89 @@ export const ServiceBoardAssemblySchema = z.object({
 });
 export type ServiceBoardAssembly = z.infer<typeof ServiceBoardAssemblySchema>;
 
+/** HOW OLD the peer's reading is, in the vocabulary this repo already uses for an observation it
+ *  holds but may not believe (`BoundaryValidatePhaseSchema`'s states, `ServiceBoardAsOfSchema`'s
+ *  `staleAfterSeconds`). A union so a further verdict is additive.
+ *
+ *  THE THIRD CASE IS NOT HERE, on purpose: "not reported" is the ABSENCE of a reading, and it is
+ *  said the way this board has always said it — `peerObserved: null` plus the `peerObserved` path in
+ *  `unknownFields`. Spelling it as a third member here would make a row that never reported look
+ *  like a row that reported nothing.
+ *
+ *  Aged against the peer's own `observedAt`, never against `receivedAt`: a bundle that sat on a USB
+ *  stick for a day and arrived a second ago is not a fresh reading. */
+export const ServiceBoardPeerObservedFreshnessSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("fresh"), ageSeconds: z.number().int().nonnegative() }),
+  z.object({
+    state: z.literal("stale"),
+    ageSeconds: z.number().int().nonnegative(),
+    /** The bound the verdict used — the same constant the stage-dependency hold ages an observed
+     *  canary weight against, so the board and the hold cannot disagree about one row. */
+    staleAfterSeconds: z.number().int().positive()
+  })
+]);
+export type ServiceBoardPeerObservedFreshness = z.infer<
+  typeof ServiceBoardPeerObservedFreshnessSchema
+>;
+
+/** ONE wave target as the EXECUTING domain reported it (`wave_target_observed`, subject `target`). */
+export const ServiceBoardPeerObservedTargetSchema = z.object({
+  targetObjectId: z.string().uuid(),
+  /** The routing Type the peer named. `z.string`: a peer may name a Type this side has not
+   *  registered, and the reading is still worth showing verbatim. */
+  type: z.string(),
+  waveIndex: z.number().int(),
+  status: z.string(),
+  attempt: z.number().int().nonnegative(),
+  /** The observe-only rollout snapshot, reusing {@link WaveTargetObservedSchema}'s shape rather than
+   *  restating it — a field added there federates and lands here with no edit. */
+  rollout: WaveTargetObservedSchema.shape.rollout,
+  /** The peer's own statement of when it looked. */
+  observedAt: z.string().datetime(),
+  /** RECEIVER-STAMPED: when this instance applied the entry. */
+  receivedAt: z.string().datetime(),
+  freshness: ServiceBoardPeerObservedFreshnessSchema
+});
+export type ServiceBoardPeerObservedTarget = z.infer<typeof ServiceBoardPeerObservedTargetSchema>;
+
+/** ONE pipeline-hook run as the executing domain reported it (subject `hook_run`, D3's full
+ *  progress). Grain: `pipeline_hook_runs` is identified by `(change, hookId, waveIndex)`, NOT by
+ *  target — a `postMerge` run has no target at all, and a `postDeploy` run gates a whole wave. UI
+ *  copy must not call one of these "this target's post-deploy test". */
+export const ServiceBoardPeerObservedHookRunSchema = z.object({
+  hookId: z.string(),
+  kind: z.string(),
+  /** `null` for `postMerge`, which belongs to no wave. */
+  waveIndex: z.number().int().nullable(),
+  /** `null` for `postMerge`, which belongs to no target. */
+  targetObjectId: z.string().uuid().nullable(),
+  status: z.string(),
+  attempt: z.number().int().nonnegative(),
+  /** The executor's own console URL for the run, when it reported one. The commander cannot serve a
+   *  page for a run in another domain, so this is the only honest link. */
+  externalUrl: z.string().nullable(),
+  startedAt: z.string().datetime(),
+  observedAt: z.string().datetime(),
+  receivedAt: z.string().datetime(),
+  freshness: ServiceBoardPeerObservedFreshnessSchema
+});
+export type ServiceBoardPeerObservedHookRun = z.infer<typeof ServiceBoardPeerObservedHookRunSchema>;
+
+/** WHAT ANOTHER DOMAIN REPORTED about this row's change (pipeline-mockup-data.md D3/D4).
+ *
+ *  Only ever present on a row whose change is NOT driven here: those rows have no local plan, so the
+ *  board's own `waves`/`currentWave` stay unobservable and stay listed in `unknownFields` even when
+ *  this field is full. These are a PEER's readings, replicated read-only and attributed to the peer
+ *  that signed them — never merged into the row's own wave summary, which would put a fact this
+ *  domain never observed behind a field that means "observed here". */
+export const ServiceBoardPeerObservedSchema = z.object({
+  /** The peer whose signed bundle carried these readings, as the RECEIVER resolved it. */
+  peerDomainId: z.string(),
+  targets: z.array(ServiceBoardPeerObservedTargetSchema),
+  hookRuns: z.array(ServiceBoardPeerObservedHookRunSchema)
+});
+export type ServiceBoardPeerObserved = z.infer<typeof ServiceBoardPeerObservedSchema>;
+
 export const ServiceBoardRowSchema = z.object({
   component: z.object({
     id: z.string().uuid(),
@@ -112,6 +196,14 @@ export const ServiceBoardRowSchema = z.object({
   /** Which domain drives `latestChangeId`. Null exactly when `latestChangeId` is null (there is no
    *  change whose authority could be named). */
   driver: ServiceBoardDriverSchema.nullable(),
+  /** THE PEER'S OWN READINGS for a change driven elsewhere — see
+   *  {@link ServiceBoardPeerObservedSchema}. Three readings a client must keep apart:
+   *  `null` + `peerObserved` in `unknownFields` = NOT REPORTED (nothing has arrived);
+   *  present with `freshness.state === "stale"` = REPORTED, and too old to be treated as current;
+   *  present and `fresh` = a real reading. `null` with NO `unknownFields` entry means the question
+   *  does not apply — the change is driven HERE, so the row's own fields are the observation.
+   *  Optional/additive within /v1: absent from an older server's response. */
+  peerObserved: ServiceBoardPeerObservedSchema.nullable().optional(),
   /** The row fields this domain cannot observe, by path. See docs/schemas.md §399. */
   unknownFields: z.array(z.string())
 });

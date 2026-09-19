@@ -226,9 +226,18 @@ describe("service board honesty across a federation link (Testcontainers, two da
         "attention.decisionId",
         "attention.awaitingApproval",
         "attention.emergency",
-        "activeFreeze"
+        "activeFreeze",
+        // pipeline-mockup-data.md D3/D4: the driving domain CAN now report its wave-target and
+        // hook-run observations upward (`wave_target_observed`), so the absence of any is a real
+        // unknown rather than a fact of the architecture. This fixture federates no observations,
+        // which is the "not reported" case — and it is listed here rather than left implicit for the
+        // same reason every other path in this set is.
+        "peerObserved"
       ])
     );
+    // The row that says "not reported" must also say it in the FIELD, not only in the list: null
+    // with the path present is "nothing arrived", and it is a different claim from a stale reading.
+    expect(row!.peerObserved ?? null).toBeNull();
   });
 
   it("the two boards disagree in exactly the honest way — same service, same moment", () => {

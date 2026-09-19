@@ -9173,6 +9173,52 @@ export type GetServiceBoardResponses = {
                 drivenHere: boolean;
                 originDomainId: string | null;
             } | null;
+            peerObserved?: {
+                peerDomainId: string;
+                targets: Array<{
+                    targetObjectId: string;
+                    type: string;
+                    waveIndex: number;
+                    status: string;
+                    attempt: number;
+                    rollout?: {
+                        phase?: string;
+                        step?: number;
+                        weight?: number;
+                        message?: string;
+                    };
+                    observedAt: string;
+                    receivedAt: string;
+                    freshness: {
+                        state: 'fresh';
+                        ageSeconds: number;
+                    } | {
+                        state: 'stale';
+                        ageSeconds: number;
+                        staleAfterSeconds: number;
+                    };
+                }>;
+                hookRuns: Array<{
+                    hookId: string;
+                    kind: string;
+                    waveIndex: number | null;
+                    targetObjectId: string | null;
+                    status: string;
+                    attempt: number;
+                    externalUrl: string | null;
+                    startedAt: string;
+                    observedAt: string;
+                    receivedAt: string;
+                    freshness: {
+                        state: 'fresh';
+                        ageSeconds: number;
+                    } | {
+                        state: 'stale';
+                        ageSeconds: number;
+                        staleAfterSeconds: number;
+                    };
+                }>;
+            } | null;
             unknownFields: Array<string>;
         }>;
         summary: {

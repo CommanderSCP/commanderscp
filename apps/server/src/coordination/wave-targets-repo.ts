@@ -21,6 +21,7 @@ import type { ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
 import { appendWaveTargetObservedEntry } from "../federation/wave-target-observed-journal.js";
+import { canonicalJson } from "../util/canonical-json.js";
 import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
 import {
   WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
@@ -327,9 +328,15 @@ async function journalWaveTargetObservationIfChanged(
   }
 ): Promise<void> {
   const { before, status, rollout, observedAt } = input;
+  // `canonicalJson`, NOT `JSON.stringify`. The stored rollout came back out of a jsonb column, and
+  // Postgres does not preserve object key order — it stores jsonb keys sorted by length then
+  // alphabetically, so `{phase, step, weight}` in and `{step, phase, weight}` out compare unequal
+  // under a plain stringify and EVERY poll looks like a change. Measured, not reasoned: the
+  // on-change-only test appended 4 entries for 4 identical polls until this line used the same
+  // canonicaliser `objects-repo.ts` uses for its own persist-on-change comparison.
   const unchanged =
     before.status === status &&
-    JSON.stringify(before.observedState?.rollout ?? null) === JSON.stringify(rollout ?? null);
+    canonicalJson(before.observedState?.rollout ?? null) === canonicalJson(rollout ?? null);
   if (unchanged) return;
   await appendWaveTargetObservedEntry(tx, orgId, {
     subject: "target",

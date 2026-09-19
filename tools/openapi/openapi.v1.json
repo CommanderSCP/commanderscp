@@ -36898,6 +36898,276 @@
                               }
                             ]
                           },
+                          "peerObserved": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "peerDomainId": {
+                                    "type": "string"
+                                  },
+                                  "targets": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "targetObjectId": {
+                                          "type": "string",
+                                          "format": "uuid",
+                                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                        },
+                                        "type": {
+                                          "type": "string"
+                                        },
+                                        "waveIndex": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "status": {
+                                          "type": "string"
+                                        },
+                                        "attempt": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "rollout": {
+                                          "type": "object",
+                                          "properties": {
+                                            "phase": {
+                                              "type": "string"
+                                            },
+                                            "step": {
+                                              "type": "number"
+                                            },
+                                            "weight": {
+                                              "type": "number"
+                                            },
+                                            "message": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        "observedAt": {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                        },
+                                        "receivedAt": {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                        },
+                                        "freshness": {
+                                          "oneOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "state": {
+                                                  "type": "string",
+                                                  "const": "fresh"
+                                                },
+                                                "ageSeconds": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "state",
+                                                "ageSeconds"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "state": {
+                                                  "type": "string",
+                                                  "const": "stale"
+                                                },
+                                                "ageSeconds": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "staleAfterSeconds": {
+                                                  "type": "integer",
+                                                  "exclusiveMinimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "state",
+                                                "ageSeconds",
+                                                "staleAfterSeconds"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "targetObjectId",
+                                        "type",
+                                        "waveIndex",
+                                        "status",
+                                        "attempt",
+                                        "observedAt",
+                                        "receivedAt",
+                                        "freshness"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "hookRuns": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "hookId": {
+                                          "type": "string"
+                                        },
+                                        "kind": {
+                                          "type": "string"
+                                        },
+                                        "waveIndex": {
+                                          "anyOf": [
+                                            {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "targetObjectId": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "format": "uuid",
+                                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "status": {
+                                          "type": "string"
+                                        },
+                                        "attempt": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "externalUrl": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "startedAt": {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                        },
+                                        "observedAt": {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                        },
+                                        "receivedAt": {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                        },
+                                        "freshness": {
+                                          "oneOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "state": {
+                                                  "type": "string",
+                                                  "const": "fresh"
+                                                },
+                                                "ageSeconds": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "state",
+                                                "ageSeconds"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "state": {
+                                                  "type": "string",
+                                                  "const": "stale"
+                                                },
+                                                "ageSeconds": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "staleAfterSeconds": {
+                                                  "type": "integer",
+                                                  "exclusiveMinimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "state",
+                                                "ageSeconds",
+                                                "staleAfterSeconds"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "hookId",
+                                        "kind",
+                                        "waveIndex",
+                                        "targetObjectId",
+                                        "status",
+                                        "attempt",
+                                        "externalUrl",
+                                        "startedAt",
+                                        "observedAt",
+                                        "receivedAt",
+                                        "freshness"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "peerDomainId",
+                                  "targets",
+                                  "hookRuns"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "unknownFields": {
                             "type": "array",
                             "items": {
