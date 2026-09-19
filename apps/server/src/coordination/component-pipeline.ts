@@ -717,12 +717,12 @@ export async function getComponentPipeline(
       controlNames
     );
     // D2 — the live approvals for every change THIS stage currently names (one per bound pipeline
-    // Type, not just `asOfChangeId`'s single pick), deduped by request id. Omitted (not `[]`) when
-    // none of those changes ever required approval, so an older client's "absent = unknown" reading
-    // still holds.
+    // Type, not just `asOfChangeId`'s single pick), deduped by request id. ALWAYS set (even `[]`,
+    // like the sibling `policies`/`checks` fields) — this server always looked, so an empty array is
+    // the real answer "nothing required approval here", never "we don't know" (that reading is
+    // reserved for the field being ABSENT on an older server that never computed it at all).
     const stageChangeIds = [...new Set(p.placementCurrents.map((c) => c.changeId))];
-    const approvals = stageChangeIds.flatMap((cid) => approvalsByChangeId.get(cid) ?? []);
-    if (approvals.length > 0) gate.approvals = approvals;
+    gate.approvals = stageChangeIds.flatMap((cid) => approvalsByChangeId.get(cid) ?? []);
 
     // THE VERSION STAIRCASE. See docs/coordination.md §314.
     const derivedVersion: string | undefined = preferredObservedVersion(
