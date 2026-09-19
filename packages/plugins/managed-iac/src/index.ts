@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createFileBackedJsonCache } from "@scp/plugin-api";
+import { summarizePlanFile, type PlanSummary } from "./plan-summary.js";
 import type {
   AbortResult,
   Cursor,
@@ -132,6 +133,11 @@ interface RunOutcome {
   /** A bounded detail rather than a string, which is the fix. See docs/plugins.md §419. */
   detail: BoundedDetail;
   stateRef?: string;
+  /** The structured plan tally read off `/workspace/plan.json` AFTER the run (§6 of
+   *  docs/proposals/pipeline-mockup-data.md). Absent when the action produced no genuine plan
+   *  document (rollback's state-format evidence, a plan step that failed before writing it) —
+   *  never a zeroed summary. */
+  plan?: PlanSummary;
 }
 
 interface DedupState {
@@ -356,6 +362,12 @@ async function trigger(
               PRIOR_STATE_FILE: priorStateFile
             }
           );
+          // Read AFTER the run, regardless of `result.succeeded`: `copyOut` runs `when: "always"`,
+          // so a rollback's evidence (state-format `plan.json` — no `resource_changes`) is present
+          // either way, and `summarizePlanFile` reads it as ABSENT rather than a zeroed summary
+          // (docs/proposals/pipeline-mockup-data.md §6). Never thrown: a plan-summary read failure
+          // must not fail the rollback whose own outcome this only enriches.
+          const plan = await summarizePlanFile(workspaceDir);
           outcome = {
             externalId,
             succeeded: result.succeeded,
@@ -364,7 +376,8 @@ async function trigger(
             // pair an operator most needs told apart. See `@scp/runner-launcher`'s
             // `classifyRunnerFailure`.
             detail: runnerOutcomeDetail(result),
-            stateRef: priorStateFile
+            stateRef: priorStateFile,
+            ...(plan ? { plan } : {})
           };
         }
       } else {
@@ -379,12 +392,17 @@ async function trigger(
           cacheKey,
           infraCreds
         );
+        // `plan` action writes `/workspace/plan.json` fresh; `apply` leaves the PRIOR `plan`
+        // action's file untouched (`run.sh` never regenerates it), so this still reports the plan
+        // that was actually applied. See docs/proposals/pipeline-mockup-data.md §6.
+        const plan = await summarizePlanFile(workspaceDir);
         outcome = {
           externalId,
           succeeded: result.succeeded,
           // See the rollback arm above: an empty `detail` in a DURABLE, replicated ledger is how a
           // SIGTERMed `tofu apply` came to look identical to a runner that exited quietly.
-          detail: runnerOutcomeDetail(result)
+          detail: runnerOutcomeDetail(result),
+          ...(plan ? { plan } : {})
         };
       }
     }
@@ -429,7 +447,10 @@ async function status(ctx: PluginContext, ref: ExternalRunRef): Promise<Executio
     // No slice: the evidence is bounded where it is composed. See docs/plugins.md §432.
     detail: outcome.detail,
     stateRef: outcome.stateRef,
-    progress: 1
+    progress: 1,
+    // §6: the plan-summary chip's source. Omitted entirely (not `plan: undefined`'s empty object)
+    // when the ledger holds no plan for this run.
+    ...(outcome.plan ? { observed: { plan: outcome.plan } } : {})
   };
 }
 
