@@ -220,7 +220,28 @@ export const ComponentPipelineGateSchema = z.object({
    *  when no policy asks for one — measured 2026-08-10, that is EVERY policy on the live estate
    *  (0 control bindings, 0 control runs), so this array being empty is a fact about the estate's
    *  configuration and not a limit of this projection. */
-  checks: z.array(ComponentPipelineCheckSchema)
+  checks: z.array(ComponentPipelineCheckSchema),
+  /** THE LIVE APPROVAL REQUEST(S) for this stage's current change(s) (D2, 2026-09-16,
+   *  docs/proposals/pipeline-mockup-data.md §4/§9): the engine gates approval once, at the whole
+   *  change's `validating->accepted` edge (`gates.ts:74`) — never per wave, so this is NOT a new
+   *  per-wave gate, just the live vote count for the SAME requirement `policies[].requireApprovals`
+   *  already declares statically. One entry per `approval_requests` row found for any of
+   *  `currents[].changeId`; absent for an older server, empty when none of those changes ever
+   *  required approval — never a fabricated zero standing in for "we didn't check". `status` is
+   *  `z.string`: `ApprovalRequestStatusSchema` is a response enum and reusing it here would freeze
+   *  the set (`scp-oasdiff-oneof-vs-enum`). */
+  approvals: z
+    .array(
+      z.object({
+        requestId: z.string().uuid(),
+        changeId: z.string().uuid(),
+        fromRole: z.string(),
+        requiredCount: z.number().int(),
+        voteCount: z.number().int(),
+        status: z.string()
+      })
+    )
+    .optional()
 });
 export type ComponentPipelineGate = z.infer<typeof ComponentPipelineGateSchema>;
 

@@ -36,6 +36,7 @@ import { artifactFactsForComponent } from "./artifact-facts.js";
 import { observedRunForComponent } from "./observed-run-facts.js";
 import { journeyKindOf, requiresOf } from "./changes-repo.js";
 import { namesForObjectIds } from "../dependencies/producer-declaration.js";
+import { liveApprovalsForChanges } from "./component-pipeline-approvals.js";
 
 /** A COMPONENT'S PIPELINE. See docs/coordination.md §299. */
 
@@ -555,6 +556,9 @@ export async function getComponentPipeline(
   const prepared: PreparedStage[] = [];
   const allControlIds = new Set<string>();
   const allSystemIds = new Set<string>();
+  // D2 (pipeline-mockup-data.md §4/§9) — every change any stage's `currents[]` names, batched into
+  // ONE query below rather than one per stage.
+  const allApprovalChangeIds = new Set<string>();
 
   for (const [order, seed] of seeds.entries()) {
     const target = targetById.get(seed.deploymentTargetId);
@@ -635,6 +639,7 @@ export async function getComponentPipeline(
     }
 
     const placementCurrents = currents.get(seed.placement.id) ?? [];
+    for (const c of placementCurrents) allApprovalChangeIds.add(c.changeId);
     const { policies: gatePolicies, controlIds: gateControlIds } = await resolveGatePolicies(
       tx,
       orgId,
@@ -667,6 +672,9 @@ export async function getComponentPipeline(
           .from(objects)
           .where(and(eq(objects.orgId, orgId), inArray(objects.id, [...allSystemIds])));
   const systemById = new Map(systemRows.map((r) => [r.id, r]));
+  // THE LIVE APPROVAL COUNTS (D2) — one batched read for every change any stage's `currents[]`
+  // names, keyed back onto each stage below by `changeId`.
+  const approvalsByChangeId = await liveApprovalsForChanges(tx, orgId, [...allApprovalChangeIds]);
 
   for (const p of prepared) {
     const bindings: ComponentPipelineStage["bindings"] = [];
@@ -708,6 +716,13 @@ export async function getComponentPipeline(
       p.asOfChangeId,
       controlNames
     );
+    // D2 — the live approvals for every change THIS stage currently names (one per bound pipeline
+    // Type, not just `asOfChangeId`'s single pick), deduped by request id. ALWAYS set (even `[]`,
+    // like the sibling `policies`/`checks` fields) — this server always looked, so an empty array is
+    // the real answer "nothing required approval here", never "we don't know" (that reading is
+    // reserved for the field being ABSENT on an older server that never computed it at all).
+    const stageChangeIds = [...new Set(p.placementCurrents.map((c) => c.changeId))];
+    gate.approvals = stageChangeIds.flatMap((cid) => approvalsByChangeId.get(cid) ?? []);
 
     // THE VERSION STAIRCASE. See docs/coordination.md §314.
     const derivedVersion: string | undefined = preferredObservedVersion(

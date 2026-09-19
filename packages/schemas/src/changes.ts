@@ -285,6 +285,27 @@ export const ChangeWaveTargetSchema = z.object({
 });
 export type ChangeWaveTarget = z.infer<typeof ChangeWaveTargetSchema>;
 
+/** WHAT MUST HOLD BEFORE THIS WAVE IS ADMITTED (D1, 2026-09-16, docs/proposals/pipeline-mockup-data.md
+ *  §4/§9): the mockups use "fan-in" for two DIFFERENT facts, and the owner decided both ship, as
+ *  SEPARATE members — a union rather than two booleans, so a future entry gate adds a member, not
+ *  an enum value (`scp-oasdiff-oneof-vs-enum`). `coupled_changes` attaches only to wave 0 (the
+ *  build-arm fan-in of one push, `ChangeWaitStatusSchema.requirements`); `previous_wave` attaches
+ *  only to a wave with an actual predecessor (waveIndex > 0), counting THAT wave's targets in
+ *  `succeeded`/`skipped` — the same reading `heldTargetCount` already uses for "done". */
+export const ChangeWaveEntrySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("coupled_changes"),
+    satisfiedCount: z.number().int().nonnegative(),
+    requiredCount: z.number().int().nonnegative()
+  }),
+  z.object({
+    kind: z.literal("previous_wave"),
+    satisfiedCount: z.number().int().nonnegative(),
+    requiredCount: z.number().int().nonnegative()
+  })
+]);
+export type ChangeWaveEntry = z.infer<typeof ChangeWaveEntrySchema>;
+
 export const ChangeWaveSchema = z.object({
   id: z.string().uuid(),
   planId: z.string().uuid(),
@@ -297,6 +318,10 @@ export const ChangeWaveSchema = z.object({
   completedAt: z.string().datetime().nullable(),
   /** SERVER-COMPUTED COUNT of this wave's currently-held targets. See docs/schemas.md §68. */
   heldTargetCount: z.number().int().nonnegative().optional(),
+  /** SERVER-COMPUTED admission facts for this wave's own connector — see `ChangeWaveEntrySchema`.
+   *  Absent for an older server, and for a wave with nothing to report (e.g. wave 0 with no
+   *  declared `requires`) — never a fabricated empty array standing in for "we didn't check". */
+  entry: z.array(ChangeWaveEntrySchema).optional(),
   targets: z.array(ChangeWaveTargetSchema)
 });
 export type ChangeWave = z.infer<typeof ChangeWaveSchema>;
