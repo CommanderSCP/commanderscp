@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { ExecutionPhase, ExecutorPlugin } from "@scp/plugin-api";
 import type {
   CapturedWorkflowRef,
+  ChangeState,
   ExecutorLane,
   PipelineHookKind,
   TestRunEvidence
@@ -15,6 +16,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { pipelineHookRuns } from "../db/schema.js";
 import { commitShaOfSourceRef } from "../governance/gate-orchestrator.js";
 import { getChangeRow } from "./changes-repo.js";
+import { TERMINAL_STATES } from "./transitions.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import {
   DEFAULT_BINDING_TYPE,
@@ -128,6 +130,13 @@ export interface PipelineHookRunRow {
   capturedWorkflow: unknown;
   createdAt: Date;
   updatedAt: Date;
+  /** Set once this run's CHANGE reached a terminal state while the run itself was still
+   *  `pending`/`running`. See `closePipelineHookRunsForChange`'s doc. */
+  closedAt: Date | null;
+  /** The terminal `toState` that closed this run (e.g. `"cancelled"`, `"rolled_back"`), or `null`
+   *  while the run is still open. */
+  closedReason: string | null;
+  closedDecisionId: string | null;
 }
 
 function toRunRow(row: typeof pipelineHookRuns.$inferSelect): PipelineHookRunRow {
@@ -151,7 +160,10 @@ function toRunRow(row: typeof pipelineHookRuns.$inferSelect): PipelineHookRunRow
     lastObservedAt: row.lastObservedAt,
     capturedWorkflow: row.capturedWorkflow ?? null,
     createdAt: row.createdAt,
-    updatedAt: row.updatedAt
+    updatedAt: row.updatedAt,
+    closedAt: row.closedAt,
+    closedReason: row.closedReason,
+    closedDecisionId: row.closedDecisionId
   };
 }
 
@@ -346,7 +358,11 @@ export async function listHookRunsForChange(
 }
 
 /** Runs still in flight for one org — the poll driver's work list. Backed by the PARTIAL index
- *  `pipeline_hook_runs_non_terminal`, so it stays proportional to outstanding work. */
+ *  `pipeline_hook_runs_non_terminal`, so it stays proportional to outstanding work — which
+ *  EXCLUDES a run whose change already went terminal (`closedAt IS NOT NULL`): that run's `status`
+ *  may still read `pending`/`running` forever, but there is no change left for it to gate, so
+ *  polling it again would only spend an executor `status()` call on a fact nobody can act on. See
+ *  `closePipelineHookRunsForChange`'s doc. */
 export async function listNonTerminalHookRuns(
   tx: TenantTx,
   orgId: string
@@ -357,10 +373,51 @@ export async function listNonTerminalHookRuns(
     .where(
       and(
         eq(pipelineHookRuns.orgId, orgId),
-        inArray(pipelineHookRuns.status, [...NON_TERMINAL_STATUSES])
+        inArray(pipelineHookRuns.status, [...NON_TERMINAL_STATUSES]),
+        isNull(pipelineHookRuns.closedAt)
       )
     )
     .orderBy(asc(pipelineHookRuns.startedAt), asc(pipelineHookRuns.id));
+  return rows.map(toRunRow);
+}
+
+export interface ClosePipelineHookRunsForChangeInput {
+  orgId: string;
+  changeObjectId: string;
+  /** The terminal `toState` that closed these runs (e.g. `"cancelled"`, `"rolled_back"`). */
+  closedReason: string;
+  /** The SAME Decision id the closing transition itself recorded. */
+  decisionId: string;
+}
+
+/** Closes every still-open (`pending`/`running`, not yet closed) hook run for a change, in the
+ *  CALLER's transaction — meant to be called from `transitionChange` the moment a change reaches a
+ *  terminal state, mirroring `governance/approvals-repo.ts`'s `closeApprovalRequestsForChange` for
+ *  the same property: state that would otherwise outlive the change it belongs to. A run that
+ *  already reached `succeeded`/`failed`/`aborted` on its own is NOT touched — it already concluded
+ *  validly and is not the state this closes. Idempotent: only rows with `closedAt IS NULL` are
+ *  touched, so calling this twice (or racing a duplicate transition) never overwrites an earlier
+ *  closure's reason/decision. */
+export async function closePipelineHookRunsForChange(
+  tx: TenantTx,
+  input: ClosePipelineHookRunsForChangeInput
+): Promise<PipelineHookRunRow[]> {
+  const rows = await tx
+    .update(pipelineHookRuns)
+    .set({
+      closedAt: new Date(),
+      closedReason: input.closedReason,
+      closedDecisionId: input.decisionId
+    })
+    .where(
+      and(
+        eq(pipelineHookRuns.orgId, input.orgId),
+        eq(pipelineHookRuns.changeObjectId, input.changeObjectId),
+        inArray(pipelineHookRuns.status, [...NON_TERMINAL_STATUSES]),
+        isNull(pipelineHookRuns.closedAt)
+      )
+    )
+    .returning();
   return rows.map(toRunRow);
 }
 
@@ -447,6 +504,17 @@ export async function ensureHookRunTriggered(
       ?.row;
     // The capture is resolved here, not asked of the caller. See docs/coordination.md §628.
     const changeRow = await getChangeRow(tx, ctx.orgId, input.change.objectId).catch(() => null);
+    if (changeRow && TERMINAL_STATES.has(changeRow.state as ChangeState)) {
+      // The change this run would gate already reached a terminal state (cancelled/rolled_back).
+      // Unreachable in practice today — `reconcile.ts`'s advance* functions only select changes in
+      // live states before a gate's block outcome can return `pendingHookTriggers` — but a claim
+      // that DID land here would insert a fresh `pipeline_hook_runs` row for a change nothing will
+      // ever close again, then spend a real executor `trigger()` call on it. LOUD refusal, the same
+      // shape as the unbound-executor guard above, rather than a silent claim.
+      throw new Error(
+        `change ${input.change.objectId} is in terminal state '${changeRow.state}' — refusing to claim a '${input.hook.kind}' hook run for it`
+      );
+    }
     const capturedWorkflow =
       input.capturedWorkflow ??
       deriveCapturedWorkflow(input.hook.workflow, changeRow?.sourceRef ?? null);
@@ -592,15 +660,21 @@ export async function applyHookRunObservation(
         eq(pipelineHookRuns.orgId, orgId),
         eq(pipelineHookRuns.id, run.id),
         // THE EDGE GUARD. Only a still-non-terminal row may be moved, so the terminal transition
-        // happens at most once no matter how many observers arrive.
-        inArray(pipelineHookRuns.status, [...NON_TERMINAL_STATUSES])
+        // happens at most once no matter how many observers arrive. `closedAt IS NULL` too: a run
+        // whose change went terminal between this poll's read and this write must not have its
+        // `status` overwritten by a late-arriving observation of a run nobody is coordinating
+        // anymore — see `closePipelineHookRunsForChange`'s doc.
+        inArray(pipelineHookRuns.status, [...NON_TERMINAL_STATUSES]),
+        isNull(pipelineHookRuns.closedAt)
       )
     )
     .returning();
 
   if (!updated) {
-    // Another observer terminalized it first (or it was already terminal). Report the current row
-    // and write nothing — the evidence for this run has already been written, once, by them.
+    // Another observer terminalized it first, the change it gates went terminal first, or it was
+    // already terminal/closed. Report the current row and write nothing — either the evidence for
+    // this run has already been written, once, by them, or there is no change left to write
+    // evidence for.
     const current = (await findHookRun(tx, run)) ?? run;
     return { run: current, becameTerminal: false };
   }

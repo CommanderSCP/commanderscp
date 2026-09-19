@@ -2277,17 +2277,29 @@ export const pipelineHookRuns = pgTable(
     /** The D23 pin: `CapturedWorkflowRef`. See docs/db.md §153. */
     capturedWorkflow: jsonb("captured_workflow"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Set once this run's CHANGE reaches a terminal state (`cancelled`/`rolled_back`) while the run
+     *  itself is still `pending`/`running` — the same property `approval_requests.closed_at` closes
+     *  (migration 0115): state that would otherwise outlive the change it belongs to. `status` stays
+     *  untouched (mirrors `ExecutionPhase` member for member; a 6th value would break that), so a
+     *  frozen run is read off `closedAt`, not off a new status. */
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    /** The terminal `toState` that closed this run (e.g. `"cancelled"`, `"rolled_back"`). */
+    closedReason: text("closed_reason"),
+    /** The SAME Decision id the closing transition itself recorded — not a second Decision for the
+     *  same event (see the unbounded-Decision-growth incident). */
+    closedDecisionId: uuid("closed_decision_id")
   },
   (table) => [
     unique("pipeline_hook_runs_identity")
       .on(table.orgId, table.changeObjectId, table.hookId, table.waveIndex)
       .nullsNotDistinct(),
-    /** The poll driver's only scan. PARTIAL on the non-terminal statuses so it stays proportional to
-     *  work outstanding rather than to every run ever dispatched. */
+    /** The poll driver's only scan. PARTIAL on the non-terminal statuses AND not yet closed, so it
+     *  stays proportional to work actually outstanding — a run whose change went terminal is no
+     *  longer outstanding work, even while its `status` column still reads `pending`/`running`. */
     index("pipeline_hook_runs_non_terminal")
       .on(table.orgId, table.startedAt)
-      .where(sql`${table.status} IN ('pending','running')`),
+      .where(sql`${table.status} IN ('pending','running') AND ${table.closedAt} IS NULL`),
     index("pipeline_hook_runs_by_change").on(table.orgId, table.changeObjectId, table.hookId),
     check(
       "pipeline_hook_runs_status_check",

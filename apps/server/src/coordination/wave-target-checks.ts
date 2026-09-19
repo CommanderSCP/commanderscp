@@ -252,12 +252,23 @@ function runState(hookId: string, run: PipelineHookRunRow | undefined): Pipeline
       // `pending` (dispatched, not started) and `running` (started) are both in flight. They share
       // a state because the operator action is the same — wait — and keep their distinction in
       // `runStatus`, which is a plain string precisely so the pair can grow.
+      //
+      // `closedAt`/`closedReason` carry the CHANGE's closure verbatim (null unless
+      // `closePipelineHookRunsForChange` froze this run) — `state` stays `"running"` rather than
+      // growing a new `oneOf` member for it (see `PipelineHookStateSchema`'s doc: a new member IS
+      // an oasdiff-breaking response change with the vendored checker, additive fields are not). A
+      // caller must check `closedAt` before treating this as an operator "wait": a closed run's
+      // wait can never resolve, but it is also NOT a failure — the change it gated simply stopped
+      // mattering, exactly as `service-board.ts` reads `closedAt` rather than trusting
+      // `approval_requests.status` alone.
       return {
         state: "running",
         hookId,
         startedAt: run.startedAt.toISOString(),
         runStatus: run.status,
-        externalUrl: run.externalUrl
+        externalUrl: run.externalUrl,
+        closedAt: run.closedAt?.toISOString() ?? null,
+        closedReason: run.closedReason
       };
   }
 }

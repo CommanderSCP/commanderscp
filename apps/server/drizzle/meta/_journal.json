@@ -820,6 +820,13 @@
       "when": 1789839701235,
       "tag": "0116_federation_peer_observations",
       "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1789860332645,
+      "tag": "0117_pipeline_hook_run_closed_on_terminal",
+      "breakpoints": true
     }
   ]
 }
