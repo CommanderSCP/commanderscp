@@ -73,6 +73,18 @@ export function computePipelineHookContentHash(input: {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
+/** One peer-reportable observation (`wave_target_observed`), canonically. The payload IS the whole
+ *  content — it carries no provenance to exclude, which is the same reason
+ *  `computePipelineEvidenceContentHash` has to exclude two fields: provenance is stamped by the
+ *  receiver, so hashing it would make one reading hash differently either side of a hop. */
+export function computeWaveTargetObservedContentHash(input: {
+  orgId: string;
+  payload: unknown;
+}): string {
+  const canonical = JSON.stringify({ orgId: input.orgId, payload: input.payload });
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
 /** A piece of pipeline evidence, canonically. Excludes `source` and `producerSubjectId`: those are
  *  provenance the RECEIVER stamps, so including them would make the same result hash differently
  *  either side of a federation hop. */

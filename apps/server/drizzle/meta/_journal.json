@@ -813,6 +813,13 @@
       "when": 1789839401235,
       "tag": "0115_approval_request_closed_on_terminal",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1789839701235,
+      "tag": "0116_federation_peer_observations",
+      "breakpoints": true
     }
   ]
 }

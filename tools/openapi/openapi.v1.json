@@ -88270,7 +88270,8 @@
                               "key_rotation",
                               "pipeline_hook_upsert",
                               "pipeline_hook_tombstone",
-                              "pipeline_evidence_upsert"
+                              "pipeline_evidence_upsert",
+                              "wave_target_observed"
                             ]
                           },
                           "payload": {
@@ -88735,7 +88736,8 @@
                                   "key_rotation",
                                   "pipeline_hook_upsert",
                                   "pipeline_hook_tombstone",
-                                  "pipeline_evidence_upsert"
+                                  "pipeline_evidence_upsert",
+                                  "wave_target_observed"
                                 ]
                               },
                               "payload": {
@@ -89973,7 +89975,8 @@
                                 "key_rotation",
                                 "pipeline_hook_upsert",
                                 "pipeline_hook_tombstone",
-                                "pipeline_evidence_upsert"
+                                "pipeline_evidence_upsert",
+                                "wave_target_observed"
                               ]
                             },
                             "payload": {

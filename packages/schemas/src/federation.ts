@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { ProblemSchema } from "./common.js";
+import { WaveTargetObservedSchema } from "./changes.js";
+import { PipelineHookKindSchema } from "./pipeline-behaviors.js";
 
 /** M6 Federation wire contract. See docs/schemas.md §215. */
 
@@ -31,9 +33,88 @@ export const JournalEntryKindSchema = z.enum([
   // OUTPOST-RUN PROBES (team-pipeline-iac D11/D23). See docs/schemas.md §217.
   "pipeline_hook_upsert",
   "pipeline_hook_tombstone",
-  "pipeline_evidence_upsert"
+  "pipeline_evidence_upsert",
+  /** WHAT THE EXECUTING DOMAIN SAW (pipeline-mockup-data.md D3/D4, owner 2026-09-16). The domain
+   *  that coordinates a change is the only one with wave-target rows, so a commander showing an
+   *  outpost-driven change had no rollout reading, no check state, and correctly said "not
+   *  reported". This kind carries both observation subjects upward — a wave target's status/rollout
+   *  and a pipeline-hook run's status — as a union discriminated on `subject`
+   *  ({@link WaveTargetObservedPayloadSchema}), so a further subject costs no wire change.
+   *
+   *  ADDING A VALUE HERE IS A DELIBERATE WIRE CHANGE, recorded in
+   *  `tools/openapi/OASDIFF-EXCEPTIONS.md` (2026-09-19 entry) with the owner's accepted exception.
+   *  MEASURED there rather than assumed: `entryKind` is a response enum in two positions, and
+   *  oasdiff 1.23.0 reports an added response enum member as a WARN, not an ERR — `check.sh` exits 0
+   *  on this addition. The payload is still a discriminated union rather than a second enum, because
+   *  a new `oneOf` member is not even a warning and a new value here is one more line in that
+   *  ledger. */
+  "wave_target_observed"
 ]);
 export type JournalEntryKind = z.infer<typeof JournalEntryKindSchema>;
+
+/**
+ * The payload of a `wave_target_observed` entry. Journal payloads are `z.record` on the wire, so
+ * this schema never enters the emitted OpenAPI spec — it is the SHARED definition the sender builds
+ * and the receiver parses (import-repo.ts's "PARSED, NOT TRUSTED" rule: a payload that does not
+ * satisfy this is dropped, one entry at a time, never the bundle).
+ *
+ * TWO SUBJECTS, ONE KIND (proposal §9 mitigation 6): a wave target's observation (D4) and a pipeline
+ * hook run's progress (D3) share one kind, one signing path and one receiver.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: any provenance. No `source`, no `peerDomainId`, no
+ * `producerSubjectId` — the receiver stamps those from the verified bundle signer, exactly as
+ * `pipeline_evidence_upsert` does, because a sender's claim about its own authority is not evidence.
+ * Nor any executor output: no logs, no `capturedWorkflow` body, no `detail`. `status` and `rollout`
+ * are what the read surfaces render, and the payload stops there so its size stays a constant.
+ */
+export const WaveTargetObservedPayloadSchema = z.discriminatedUnion("subject", [
+  z.object({
+    subject: z.literal("target"),
+    changeObjectId: z.string().uuid(),
+    targetObjectId: z.string().uuid(),
+    /** The wave target's routing Type (ADR-0007), part of its identity at the receiver. `z.string`
+     *  rather than `ExecutorTypeSchema`: a peer one migration ahead may name a Type this side has
+     *  not registered, and an observation is worth keeping verbatim even then — the receiver never
+     *  resolves a binding from it. */
+    type: z.string().min(1).max(64),
+    waveIndex: z.number().int().nonnegative(),
+    /** `change_wave_targets.status`. `z.string` for the same reason `type` is: the set grows
+     *  (`REFUSED_WAVE_TARGET_STATUSES` has gained members twice), and a reading this side cannot
+     *  rank is still a reading it can show and date. */
+    status: z.string().min(1).max(64),
+    attempt: z.number().int().nonnegative(),
+    /** The observe-only rollout snapshot, reusing the wire shape ONE definition
+     *  ({@link WaveTargetObservedSchema}) so a field added there (increment 2's `stepCount`)
+     *  federates without an edit here. Absent when the executor reported none. */
+    rollout: WaveTargetObservedSchema.shape.rollout,
+    /** When the EXECUTING domain took the reading, as it stated it. Data, not provenance: the
+     *  receiver stores it beside its own `received_at` and the read surface ages it against that
+     *  one. An air-gapped outpost's reading is legitimately hours old. */
+    observedAt: z.string().datetime()
+  }),
+  z.object({
+    subject: z.literal("hook_run"),
+    changeObjectId: z.string().uuid(),
+    componentObjectId: z.string().uuid(),
+    /** `null` for a `postMerge` run, which belongs to no target (`pipeline_hook_runs` identity). */
+    targetObjectId: z.string().uuid().nullable(),
+    hookId: z.string().min(1).max(200),
+    kind: PipelineHookKindSchema,
+    /** `null` for `postMerge`, which belongs to no wave. Part of the identity either way. */
+    waveIndex: z.number().int().nonnegative().nullable(),
+    /** `pipeline_hook_runs.status` — the FULL progress D3 asked for, one entry per real transition
+     *  (`pending → running → terminal`), never per poll. */
+    status: z.string().min(1).max(64),
+    attempt: z.number().int().nonnegative(),
+    /** The run's human console URL, bounded. `null` until the dispatch returns one. */
+    externalUrl: z.string().max(2048).nullable(),
+    startedAt: z.string().datetime(),
+    observedAt: z.string().datetime()
+  })
+]);
+export type WaveTargetObservedPayload = z.infer<typeof WaveTargetObservedPayloadSchema>;
+/** The two observation subjects the one kind carries. */
+export type WaveTargetObservedSubject = WaveTargetObservedPayload["subject"];
 
 /** One row of the append-only Sync Journal (DESIGN §13 core). `baseRevision`/`conflict` are the
  *  two reserved, v1-unused fields the overlay decision insures against a future format break. */
