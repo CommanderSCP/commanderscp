@@ -3022,7 +3022,16 @@ export function buildProgram(): Command {
         kind: string;
         id: string;
         owner: string;
+        /** Binding rows only — the other two halves of the door's key, carried through from the
+         *  report's STRUCTURED fields so the per-row cleanup loop never has to parse `detail`.
+         *  Empty for a kind the door does not address by `(type, lane)`. */
+        type: string;
+        lane: string;
         detail: string;
+        /** "Would `--repair` act on this?", uniformly across kinds — FALSE for a replica edge
+         *  (single-writer authority) and for a policy-managed binding (the reconciler reaps it).
+         *  The column already meant this for edges; making it mean the same thing for bindings is
+         *  what lets one filter select the whole repairable set. */
         repairable: boolean;
       };
       const rows: IntegrityRow[] = [
@@ -3032,6 +3041,8 @@ export function buildProgram(): Command {
           // An edge IS addressed by its own id (`scp relationship delete <id>`), so its `owner`
           // column is the pair it hangs between rather than a thing to pass anywhere.
           owner: `${r.fromUrn} -> ${r.toUrn}`,
+          type: "",
+          lane: "",
           detail: `${r.typeId} (${r.deadEnd} dead)`,
           repairable: r.repairable
         })),
@@ -3039,22 +3050,34 @@ export function buildProgram(): Command {
           kind: "orphan-source-mapping",
           id: r.id,
           owner: r.ownerUrn,
+          type: "",
+          lane: "",
           detail: `${r.ownerName}: ${r.detail}`,
-          repairable: true
+          // `--repair` does NOT touch mappings: the delete door matches a five-part identity tuple
+          // this report does not carry. Saying `true` here would advertise a repair that never runs.
+          repairable: false
         })),
         ...report.orphanExecutorBindings.map((r) => ({
           kind: "orphan-executor-binding",
           id: r.id,
           owner: r.ownerUrn,
+          type: r.targetType,
+          lane: r.lane,
           detail: `${r.ownerName}: ${r.detail}`,
-          repairable: true
+          // A policy-managed row is NOT repairable by this command — the binding reconciler reaps it
+          // once the target is a tombstone, so `--repair` skips it. Exactly what `repairable` already
+          // means for a replica edge, which is what lets one filter select the whole actionable set.
+          repairable: !r.policyManaged
         })),
         ...report.orphanPlacements.map((r) => ({
           kind: "orphan-placement",
           id: r.id,
           owner: r.ownerUrn,
+          type: "",
+          lane: "",
           detail: `${r.ownerName}: ${r.detail}`,
-          repairable: true
+          // A placement has no delete door reachable for an orphan at all.
+          repairable: false
         }))
       ];
 
@@ -3065,6 +3088,8 @@ export function buildProgram(): Command {
             kind: row.kind,
             id: row.id,
             owner: row.owner,
+            type: row.type,
+            lane: row.lane,
             repairable: String(row.repairable),
             detail: row.detail
           };

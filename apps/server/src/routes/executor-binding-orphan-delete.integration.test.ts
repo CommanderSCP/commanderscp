@@ -174,24 +174,45 @@ describe("deleting an executor binding that outlived its target", () => {
         )
       );
 
-      type Row = { kind: string; id: string; owner: string; detail: string };
+      type Row = {
+        kind: string;
+        id: string;
+        owner: string;
+        type: string;
+        lane: string;
+        detail: string;
+        repairable: boolean;
+      };
       const report = await cli.runJson<Row[]>(["graph", "integrity"]);
       const orphan = report.find(
         (r) => r.kind === "orphan-executor-binding" && r.owner === comp.urn
       );
       expect(orphan, "the CLI must name the OWNER, which is what the door takes").toBeDefined();
-      // `type/lane` is in the detail for the same reason: the door needs both, and the default
-      // reaches only `build`.
+      // `type` and `lane` are their own columns, not something to parse out of `detail` — the door
+      // needs both, and its default reaches only `build`. `detail` carries them too, for a human
+      // reading the table.
+      expect(orphan!.type).toBe("configuration");
+      expect(orphan!.lane).toBe("build");
       expect(orphan!.detail).toContain("configuration/build");
+      // `repairable` means one thing for every kind: would `--repair` take this row. An unmanaged
+      // orphan binding would; the mapping and placement kinds never would, and used to claim they
+      // did — which mattered the moment this column became the filter for selecting the set.
+      expect(orphan!.repairable).toBe(true);
+      for (const kind of ["orphan-source-mapping", "orphan-placement"]) {
+        for (const r of report.filter((x) => x.kind === kind)) {
+          expect(r.repairable, `${kind} has no door --repair can use`).toBe(false);
+        }
+      }
 
+      // Driven exactly as the per-row runbook does: from the report's own columns.
       await cli.run([
         "executor",
         "unbind",
         orphan!.owner,
         "--type",
-        "configuration",
+        orphan!.type,
         "--lane",
-        "build"
+        orphan!.lane
       ]);
 
       const after = await cli.runJson<Row[]>(["graph", "integrity"]);
@@ -304,6 +325,15 @@ describe("deleting an executor binding that outlived its target", () => {
       expect(listed?.policyManaged, "read off managed_by_policy_id, never inferred").toBe(true);
       expect(listed?.targetType).toBe("configuration");
       expect(listed?.lane).toBe("build");
+      // …and the CLI turns that into `repairable: false`, the same word a replica edge already uses
+      // for "reported, never attempted" — so the report says it will be skipped BEFORE it is.
+      const cliRow = (
+        await cli.runJson<{ kind: string; owner: string; repairable: boolean }[]>([
+          "graph",
+          "integrity"
+        ])
+      ).find((r) => r.kind === "orphan-executor-binding" && r.owner === comp.urn);
+      expect(cliRow?.repairable).toBe(false);
 
       const out = await cli.runJson<Outcome[]>(["graph", "integrity", "--repair"]);
       expect(out.find((r) => r.outcome.startsWith("executor-bindings-deleted"))?.count).toBe(0);
