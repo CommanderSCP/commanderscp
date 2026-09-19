@@ -96,9 +96,13 @@ describe("change pipeline: ChangeWaveSchema.entry chips", () => {
       id: "plan-1",
       changeObjectId: CHANGE_ID,
       createdAt: "2026-09-16T10:00:00.000Z",
-      waves: [wave({ waveIndex: 0, targets: [target(TARGET_A, "pending")], entry: [
-        { kind: "coupled_changes", satisfiedCount: 1, requiredCount: 2 }
-      ] })]
+      waves: [
+        wave({
+          waveIndex: 0,
+          targets: [target(TARGET_A, "pending")],
+          entry: [{ kind: "coupled_changes", satisfiedCount: 1, requiredCount: 2 }]
+        })
+      ]
     } as unknown as ChangePlan;
     const waitStatus: ChangeExplainResponse["waitStatus"] = {
       waiting: true,
