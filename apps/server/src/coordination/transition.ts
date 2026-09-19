@@ -6,13 +6,14 @@ import { changes, objects } from "../db/schema.js";
 import { notFound } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { eventBus } from "../events/event-bus.js";
-import { findEdge, isLegalTransition } from "./transitions.js";
+import { findEdge, isLegalTransition, TERMINAL_STATES } from "./transitions.js";
 import { evaluateLifecycleGate, type GateDeps } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import { changeStatusContentHash } from "./changes-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
+import { closeApprovalRequestsForChange } from "../governance/approvals-repo.js";
 
 type ChangeRow = typeof changes.$inferSelect;
 
@@ -277,6 +278,31 @@ export async function transitionChange(
     // domain-local change, while the local audit row is written unchanged.
     subjectDomainLocal: row.domainLocal
   });
+
+  // A change that just reached a TERMINAL state (cancelled/rolled_back) can never again satisfy or
+  // act on a pending approval request — close every still-open one, in this SAME transaction, on
+  // the SAME Decision, so an approvals list can never again show a votable request for a change
+  // that can never proceed. See docs/governance.md §6.
+  if (TERMINAL_STATES.has(toState)) {
+    const closed = await closeApprovalRequestsForChange(tx, {
+      orgId: input.orgId,
+      changeObjectId: input.changeObjectId,
+      closedReason: toState,
+      decisionId: decision.id
+    });
+    if (closed.length > 0) {
+      await appendAuditEvent(tx, {
+        orgId: input.orgId,
+        actorId: input.actorObjectId,
+        action: "approval_requests.closed",
+        subjectId: input.changeObjectId,
+        reason: `change transitioned to terminal state '${toState}': closed ${closed.length} approval request(s)`,
+        decisionId: decision.id,
+        requestId: input.requestId,
+        subjectDomainLocal: row.domainLocal
+      });
+    }
+  }
   {
     // M6 (DESIGN §13): every state change rides the journal too — this is what lets a promotion
     // that just happened in a LOCAL change (possibly one instantiated from a Promotion Bundle)

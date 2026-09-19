@@ -16299,6 +16299,8 @@ export type ListApprovalsResponses = {
             createdAt: string;
             satisfiedAt: string | null;
             voteCount: number;
+            closedAt: string | null;
+            closedReason: string | null;
         }>;
         nextCursor: string | null;
     };
@@ -16370,6 +16372,8 @@ export type GetApprovalResponses = {
         createdAt: string;
         satisfiedAt: string | null;
         voteCount: number;
+        closedAt: string | null;
+        closedReason: string | null;
     };
 };
 

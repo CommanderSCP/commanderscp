@@ -31,7 +31,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { checkAtOrgRootOrScopes } from "../authz/org-root-arm.js";
-import { badRequest, forbidden, notFound } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { targetObjectIdsOf } from "../coordination/changes-repo.js";
@@ -338,7 +338,9 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
               status: r.status,
               createdAt: r.createdAt.toISOString(),
               satisfiedAt: r.satisfiedAt?.toISOString() ?? null,
-              voteCount: status.count
+              voteCount: status.count,
+              closedAt: r.closedAt?.toISOString() ?? null,
+              closedReason: r.closedReason ?? null
             };
           })
         );
@@ -390,7 +392,9 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         status: result.r.status,
         createdAt: result.r.createdAt.toISOString(),
         satisfiedAt: result.r.satisfiedAt?.toISOString() ?? null,
-        voteCount: result.status.count
+        voteCount: result.status.count,
+        closedAt: result.r.closedAt?.toISOString() ?? null,
+        closedReason: result.r.closedReason ?? null
       });
     }
   });
@@ -460,7 +464,10 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      const vote = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+      // Same shape as the guarded-transition verbs (routes/changes.ts's own doc comment): the tx
+      // commits either way — an "allow" vote or a "block" Decision + audit event — and only AFTER
+      // commit does a block become a 409 carrying decision_id.
+      const outcome = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         // Authorize at the approval request's own scope, not root. See docs/routes.md §235.
         const approvalRequest = await getApprovalRequest(tx, auth.orgId, request.params.id);
         await authorize(tx, {
@@ -477,6 +484,10 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           requestId: request.id
         });
       });
+      if (outcome.verdict === "block") {
+        throw conflict(outcome.blockedReason, { decisionId: outcome.decision.id });
+      }
+      const vote = outcome.vote;
       reply.status(201).send({
         id: vote.id,
         approvalRequestId: vote.approvalRequestId,
