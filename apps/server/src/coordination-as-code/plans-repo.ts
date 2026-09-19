@@ -1419,15 +1419,20 @@ export async function executePlanDiff(
 
   for (const entry of diff.sourceMappings ?? []) {
     if (entry.action !== "delete") continue;
-    const removed = await deleteSourceMappingsMatching(tx, {
-      orgId,
-      componentObjectId: endpointId(entry.componentUrn),
-      sourceKind: entry.sourceKind,
-      repoPattern: entry.repoPattern,
-      pathPattern: entry.pathPattern,
-      refPattern: entry.refPattern,
-      type: entry.type
-    });
+    const removed = await deleteSourceMappingsMatching(
+      tx,
+      {
+        orgId,
+        componentObjectId: endpointId(entry.componentUrn),
+        sourceKind: entry.sourceKind,
+        repoPattern: entry.repoPattern,
+        pathPattern: entry.pathPattern,
+        refPattern: entry.refPattern,
+        type: entry.type
+      },
+      actorObjectId,
+      requestId
+    );
     if (removed === 0) {
       throw notFound(
         `no live source mapping '${entry.sourceKind}' -> '${entry.componentUrn}' (${entry.type}) to prune`

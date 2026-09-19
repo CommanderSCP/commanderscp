@@ -580,19 +580,24 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           subjectObjectId: auth.subjectObjectId,
           componentObjectId: component.id
         });
-        return deleteSourceMappingsMatching(tx, {
-          orgId: auth.orgId,
-          componentObjectId: component.id,
-          sourceKind: request.params.sourceKind,
-          repoPattern: request.body.repoPattern,
-          pathPattern: request.body.pathPattern,
-          // ABSENT is treated as NULL, never as a wildcard (ADR-0030 §1). A caller written before
-          // `refPattern` existed therefore deletes only ref-agnostic rows and can never reach a
-          // ref-scoped one — it may UNDER-delete (visible immediately in the `deleted` count this
-          // response exists to report) but never silently take a dev or production route with it.
-          refPattern: request.body.refPattern ?? null,
-          type: request.body.type ?? "configuration"
-        });
+        return deleteSourceMappingsMatching(
+          tx,
+          {
+            orgId: auth.orgId,
+            componentObjectId: component.id,
+            sourceKind: request.params.sourceKind,
+            repoPattern: request.body.repoPattern,
+            pathPattern: request.body.pathPattern,
+            // ABSENT is treated as NULL, never as a wildcard (ADR-0030 §1). A caller written before
+            // `refPattern` existed therefore deletes only ref-agnostic rows and can never reach a
+            // ref-scoped one — it may UNDER-delete (visible immediately in the `deleted` count this
+            // response exists to report) but never silently take a dev or production route with it.
+            refPattern: request.body.refPattern ?? null,
+            type: request.body.type ?? "configuration"
+          },
+          auth.subjectObjectId,
+          request.id
+        );
       });
       reply.status(200).send({ deleted });
     }

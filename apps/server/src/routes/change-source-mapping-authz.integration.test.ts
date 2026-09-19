@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
+import { withTenantTx } from "../db/tenant-tx.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -231,8 +233,15 @@ describe("source-mapping write doors are scoped at the component, credential doo
       type: "configuration"
     });
 
-    const delComponent = await call("DELETE", org.adminToken, `/api/v1/components/${componentId}`);
-    expect(delComponent.status, delComponent.body).toBe(200);
+    // TOMBSTONED BENEATH THE API — from 2026-09-18 `DELETE /components/{id}` REFUSES while a mapping
+    // names the component (route 5 of the orphan guard, docs/graph.md §125a), so the state this test
+    // describes cannot be reached through the API any more. It is still the state of every row created
+    // before that guard existed, and those rows must stay administrable, which is what this pins.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.execute(
+        sql`UPDATE objects SET deleted_at = now(), version = version + 1 WHERE id = ${componentId}::uuid AND org_id = ${org.orgId}::uuid`
+      )
+    );
     const delService = await call("DELETE", org.adminToken, `/api/v1/services/${serviceId}`);
     expect(delService.status, delService.body).toBe(200);
     // The orphan guard permits this precisely because every child is already a tombstone. If it

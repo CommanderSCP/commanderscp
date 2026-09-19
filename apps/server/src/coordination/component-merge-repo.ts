@@ -7,6 +7,7 @@ import { authorize } from "../authz/resolve.js";
 import { getObjectByIdOrUrnAnyType, deleteObject } from "../graph/objects-repo.js";
 import { listRelationships } from "../graph/relationships-repo.js";
 import { insertDecision } from "./decisions-repo.js";
+import { repointSourceMappingsToComponent } from "./source-mappings-repo.js";
 import {
   listExecutorBindingsForTarget,
   repointExecutorBindingTarget,
@@ -159,6 +160,18 @@ export async function mergeComponents(
       input.requestId
     );
   }
+  // …and re-point its SOURCE MAPPINGS the same way, for the same reason, BEFORE the tombstone. A
+  // merge asserts the two rows are one real component, so the loser's correlation rules belong to the
+  // survivor — and until 2026-09-18 they were simply stranded on the tombstone (`docs/graph.md`
+  // §125a: 38 such rows on the live homelab). The orphan guard in `deleteObject` now refuses a delete
+  // that would strand them, so doing this AFTER the delete would make every merge a 409.
+  const movedMappings = await repointSourceMappingsToComponent(tx, {
+    orgId: input.orgId,
+    fromComponentObjectId: loser.id,
+    toComponentObjectId: survivor.id,
+    actorObjectId: input.actorObjectId,
+    requestId: input.requestId
+  });
   await deleteObject(tx, {
     orgId: input.orgId,
     typeId: "component",
@@ -177,12 +190,14 @@ export async function mergeComponents(
       trigger: "merge",
       actorId: input.actorObjectId,
       loserId: loser.id,
-      movedBindingTypes
+      movedBindingTypes,
+      movedSourceMappings: movedMappings
     },
     reasonTree: {
       summary:
         `merged component ${loser.id} into ${survivor.id} — moved ${movedBindingTypes.length} ` +
-        `binding(s) [${movedBindingTypes.join(", ")}] and soft-deleted the loser`
+        `binding(s) [${movedBindingTypes.join(", ")}] and ${movedMappings} source mapping(s), ` +
+        `and soft-deleted the loser`
     }
   });
 

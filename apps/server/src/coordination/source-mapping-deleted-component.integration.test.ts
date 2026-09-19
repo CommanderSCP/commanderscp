@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -38,6 +39,19 @@ describe("a source mapping whose component was deleted must not match", () => {
       createSourceMapping(tx, { orgId: org.orgId, type: "configuration", ...input })
     );
 
+  /** THE PRE-GUARD SOFT DELETE, named as `graph/integrity.integration.test.ts`'s helper is so one
+   *  grep finds every fixture that manufactures this state. It has to bypass the API: from 2026-09-18 `DELETE /components/{id}` REFUSES
+   *  while a mapping names the component (`graph/objects-repo.ts` route 5, docs/graph.md §125a), so
+   *  the state this whole file is about can no longer be reached through the API. It is still reachable
+   *  in the field — every row created before that guard existed, 38 of them on the live homelab — and
+   *  correlation must keep skipping them, which is what these two tests pin. */
+  const legacySoftDelete = (componentId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.execute(
+        sql`UPDATE objects SET deleted_at = now() WHERE id = ${componentId}::uuid AND org_id = ${org.orgId}::uuid`
+      )
+    );
+
   const match = (sourceKind: string, repo: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
       matchComponentsForSource(tx, org.orgId, { sourceKind, repo }).then((m) => m[0] ?? null)
@@ -53,7 +67,7 @@ describe("a source mapping whose component was deleted must not match", () => {
     // the mapping never matched at all.
     expect((await match(sourceKind, repo))?.componentObjectId).toBe(doomed.id);
 
-    await admin.components.delete(doomed.id);
+    await legacySoftDelete(doomed.id);
 
     expect(
       await match(sourceKind, repo),
@@ -74,7 +88,7 @@ describe("a source mapping whose component was deleted must not match", () => {
     await mapping({ sourceKind, componentIdOrUrn: doomed.id, repoPattern: repo });
     await mapping({ sourceKind, componentIdOrUrn: survivor.id, repoPattern: repo });
 
-    await admin.components.delete(doomed.id);
+    await legacySoftDelete(doomed.id);
 
     const hit = await match(sourceKind, repo);
     expect(

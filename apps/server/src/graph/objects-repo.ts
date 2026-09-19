@@ -7,7 +7,7 @@ import {
   type TrustDomainId
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { objects, relationships } from "../db/schema.js";
+import { objects, relationships, sourceMappings } from "../db/schema.js";
 import { badRequest, conflict, notFound, preconditionFailed } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
@@ -1180,6 +1180,23 @@ export async function deleteObject(
         )
       )
       .limit(6);
+    // Source mappings name their component by COLUMN. See docs/graph.md §125a.
+    const sourceMappingBlockers = await tx
+      .select({
+        id: sourceMappings.id,
+        sourceKind: sourceMappings.sourceKind,
+        repoPattern: sourceMappings.repoPattern,
+        pathPattern: sourceMappings.pathPattern,
+        refPattern: sourceMappings.refPattern
+      })
+      .from(sourceMappings)
+      .where(
+        and(
+          eq(sourceMappings.orgId, input.orgId),
+          eq(sourceMappings.componentObjectId, existing.id)
+        )
+      )
+      .limit(6);
 
     const label = (rows: { urn: string; typeId: string }[]): string => {
       const shown = rows.slice(0, 5).map((r) => `${r.typeId} '${r.urn}'`);
@@ -1187,6 +1204,24 @@ export async function deleteObject(
     };
     const count = (rows: unknown[]): string =>
       rows.length > 5 ? "at least 5" : String(rows.length);
+    /** A mapping has no urn and no name — the patterns ARE its identity, and they are also what the
+     *  delete door addresses it by, so the refusal names exactly what the operator must type. */
+    const mappingLabel = (
+      rows: {
+        sourceKind: string;
+        repoPattern: string | null;
+        pathPattern: string | null;
+        refPattern: string | null;
+      }[]
+    ): string => {
+      const shown = rows
+        .slice(0, 5)
+        .map(
+          (r) =>
+            `${r.sourceKind} repo=${r.repoPattern ?? "null"} path=${r.pathPattern ?? "null"} ref=${r.refPattern ?? "null"}`
+        );
+      return `${shown.join(", ")}${rows.length > 5 ? ", …" : ""}`;
+    };
 
     const clauses: string[] = [];
     // VERBATIM the pre-widening sentence — the incident this guard was built for, and the copy the
@@ -1211,6 +1246,13 @@ export async function deleteObject(
         `${count(placementBlockers)} live placement(s) still name it (placement route) — ` +
           `a placement references its component and target by property rather than by an edge, so nothing would tombstone them and they would be left live and dangling. ` +
           `Delete them first (DELETE /placements/{idOrUrn}): ${label(placementBlockers)}`
+      );
+    }
+    if (sourceMappingBlockers.length > 0) {
+      clauses.push(
+        `${count(sourceMappingBlockers)} source mapping(s) still name it as their component (correlation route) — ` +
+          `source_mappings has no deleted_at of its own and no foreign key to objects, so nothing would tombstone them and they would be left pointing at a deleted component: every push to those patterns then falls through to whatever BROADER mapping matches, releasing another component's pipeline. ` +
+          `Delete them first (DELETE /change-sources/{sourceKind}/mappings): ${mappingLabel(sourceMappingBlockers)}`
       );
     }
     if (clauses.length > 0) {

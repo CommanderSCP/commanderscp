@@ -332,6 +332,40 @@ describe("components: driving-case merge (M12 P5d)", () => {
     await expect(admin.components.get(loser.id)).rejects.toMatchObject({ status: 404 });
   });
 
+  it("RE-POINTS the loser's source mappings onto the survivor instead of stranding them", async () => {
+    // Until 2026-09-18 a merge moved the bindings and left the mappings on the tombstone, still
+    // enabled (docs/graph.md §125a — 38 such rows on the live homelab). Two things are pinned here:
+    // the rows now name the survivor, and the merge is NOT blocked by route 5 of the orphan guard,
+    // which it would be if the re-point ran after the soft delete instead of before it.
+    const survivor = await createOrphanComponent(server, org, `surv-${rand()}`);
+    const loser = await createOrphanComponent(server, org, `lose-${rand()}`);
+    await putBinding(loser.id, "configuration");
+    const kind = `merge-map-${rand()}`;
+    const repo = `acme/merge-${rand()}`;
+    await admin.changeSources.createMapping(kind, {
+      component: loser.id,
+      repoPattern: repo,
+      type: "configuration"
+    });
+
+    await expect(admin.components.merge(survivor.id, loser.id)).resolves.toBeTruthy();
+
+    const items = (await admin.changeSources.listMappings(kind)).items;
+    expect(items).toHaveLength(1);
+    expect(
+      items[0]!.componentObjectId,
+      "a stranded mapping would still name the tombstoned loser"
+    ).toBe(survivor.id);
+
+    const page = await admin.auditEvents.list({ limit: 200 });
+    const events = page.items.filter(
+      (e) => e.action === "source_mapping.repoint" && e.subjectId === survivor.id
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.reason).toContain(loser.id);
+    expect(events[0]!.reason).toContain(repo);
+  });
+
   it("REJECTS a binding-type collision (Q1); relabel-then-merge is the driving-case flow", async () => {
     const survivor = await createOrphanComponent(server, org, `surv-${rand()}`);
     const loser = await createOrphanComponent(server, org, `lose-${rand()}`);

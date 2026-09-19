@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
+import { withTenantTx } from "../db/tenant-tx.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -83,7 +85,16 @@ describe("deleting a source mapping", () => {
       type: "configuration"
     });
 
-    await admin.components.delete(doomed.id);
+    // TOMBSTONED BENEATH THE API, deliberately, and this is the one honest way to write this test
+    // from 2026-09-18 on: `DELETE /components/{id}` now REFUSES while a mapping names the component
+    // (`graph/objects-repo.ts` route 5, docs/graph.md §125a), so the API can no longer produce this
+    // state. The population it addresses is the rows created BEFORE that guard existed — 38 of them
+    // on the live homelab — and they must stay deletable, which is what this test pins.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.execute(
+        sql`UPDATE objects SET deleted_at = now() WHERE id = ${doomed.id}::uuid AND org_id = ${org.orgId}::uuid`
+      )
+    );
     // Still listed: the row outlives its component, which is the whole problem.
     expect((await admin.changeSources.listMappings(kind)).items).toHaveLength(1);
 
@@ -99,6 +110,58 @@ describe("deleting a source mapping", () => {
       "resolving the component must accept a deleted one — otherwise the rows most in need of cleanup are precisely the ones that cannot be cleaned"
     ).toBe(1);
     expect((await admin.changeSources.listMappings(kind)).items).toHaveLength(0);
+  });
+
+  it("writes one source_mapping.delete audit event PER ROW, naming the component and the tuple", async () => {
+    // A hard delete of correlation config leaves nothing behind — no row, no tombstone, no
+    // `deleted_at` — so the audit event is the ONLY surviving record that the route existed and who
+    // removed it (charter principle 6). Per row, not per call: the duplicate case above would
+    // otherwise report one event for three removed routes.
+    const kind = `del-audit-${uuidv7()}`;
+    const repo = `acme/audit-${uuidv7()}`;
+    const c = await createTestComponent(admin, { name: `audit-${uuidv7()}` });
+    for (let i = 0; i < 2; i++) {
+      await admin.changeSources.createMapping(kind, {
+        component: c.id,
+        repoPattern: repo,
+        pathPattern: "svc/**",
+        type: "configuration"
+      });
+    }
+
+    const { deleted } = await admin.changeSources.deleteMapping(kind, {
+      component: c.id,
+      repoPattern: repo,
+      pathPattern: "svc/**",
+      type: "configuration"
+    });
+    expect(deleted).toBe(2);
+
+    const page = await admin.auditEvents.list({ limit: 200 });
+    const events = page.items.filter(
+      (e) => e.action === "source_mapping.delete" && e.subjectId === c.id
+    );
+    expect(events, "one per removed row").toHaveLength(2);
+    expect(events[0]!.reason).toContain(kind);
+    expect(events[0]!.reason).toContain(repo);
+    expect(events[0]!.reason).toContain("svc/**");
+    expect(events[0]!.reason).toContain(c.id);
+  });
+
+  it("writes NO audit event when nothing matched — a no-op is not an action", async () => {
+    const kind = `del-audit-none-${uuidv7()}`;
+    const c = await createTestComponent(admin, { name: `audit-none-${uuidv7()}` });
+    const { deleted } = await admin.changeSources.deleteMapping(kind, {
+      component: c.id,
+      repoPattern: "acme/never-mapped",
+      pathPattern: null,
+      type: "configuration"
+    });
+    expect(deleted).toBe(0);
+    const page = await admin.auditEvents.list({ limit: 200 });
+    expect(
+      page.items.filter((e) => e.action === "source_mapping.delete" && e.subjectId === c.id)
+    ).toHaveLength(0);
   });
 
   it("reports 0 rather than failing when nothing matches", async () => {

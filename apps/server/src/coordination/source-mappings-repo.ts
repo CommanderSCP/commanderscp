@@ -12,10 +12,36 @@ import {
   type PipelineClassification
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { sourceMappings } from "../db/schema.js";
+import { objects, sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { notFound } from "../errors.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
+
+/** The component's `domain_local` flag, for the audit event's journal segment — deliberately NOT
+ *  filtered on `deleted_at`, because the rows most in need of an audited removal are the ones whose
+ *  component is already a tombstone. Same shape and same reason as `executor-bindings-repo.ts`'s
+ *  `targetDomainLocal`. */
+async function componentDomainLocal(
+  tx: TenantTx,
+  orgId: string,
+  componentObjectId: string
+): Promise<boolean> {
+  const rows = await tx
+    .select({ domainLocal: objects.domainLocal })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), eq(objects.id, componentObjectId)))
+    .limit(1);
+  return rows[0]?.domainLocal ?? false;
+}
+
+/** One audit line per mapping row, describing it by the tuple that addresses it. */
+function mappingDescription(row: typeof sourceMappings.$inferSelect): string {
+  return (
+    `'${row.sourceKind}' mapping ${row.id} (repo=${row.repoPattern ?? "null"} ` +
+    `path=${row.pathPattern ?? "null"} ref=${row.refPattern ?? "null"} type=${row.type ?? "configuration"})`
+  );
+}
 
 function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping {
   const type = (row.type as ExecutorType | null) ?? "configuration";
@@ -224,7 +250,13 @@ export interface DeleteSourceMappingsMatchingInput {
 /** Deletes every row matching the identity tuple, for prune. See docs/coordination.md §910. */
 export async function deleteSourceMappingsMatching(
   tx: TenantTx,
-  input: DeleteSourceMappingsMatchingInput
+  input: DeleteSourceMappingsMatchingInput,
+  /** REQUIRED, and positional rather than fields on the input above, for the reason
+   *  `executor-bindings-repo.ts`'s delete gives in as many words: an optional pair is exactly the
+   *  shape that lets a future caller skip the audit event by omission. Every caller (the DELETE
+   *  route, IaC apply-time prune) already holds both. */
+  actorObjectId: string,
+  requestId: string
 ): Promise<number> {
   const rows = await tx
     .delete(sourceMappings)
@@ -245,7 +277,63 @@ export async function deleteSourceMappingsMatching(
         eq(sourceMappings.type, input.type)
       )
     )
-    .returning({ id: sourceMappings.id });
+    .returning();
+  // ONE EVENT PER ROW, in the same transaction as the delete (charter principle 6). A hard delete of
+  // correlation config leaves NOTHING behind — no tombstone, no row, no `deleted_at` — so the audit
+  // event is the only surviving record that the route used to exist and who removed it. One event
+  // for the whole call would under-report the duplicate case this door exists to handle.
+  for (const row of rows) {
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      actorId: actorObjectId,
+      action: "source_mapping.delete",
+      // The COMPONENT, not the mapping row: the component is the object that carries authority over
+      // the row (`assertSourceMappingWritable`), and the row id dies with the row. Same choice, same
+      // reason, as `executor.binding.delete`'s `subjectId`.
+      subjectId: input.componentObjectId,
+      reason: `deleted ${mappingDescription(row)} on component '${input.componentObjectId}'`,
+      subjectDomainLocal: await componentDomainLocal(tx, input.orgId, input.componentObjectId),
+      requestId
+    });
+  }
+  return rows.length;
+}
+
+/** Re-points every mapping of one component onto another, for a component MERGE — the source-mapping
+ *  half of `repointExecutorBindingTarget`. See docs/coordination.md §910a. */
+export async function repointSourceMappingsToComponent(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    fromComponentObjectId: string;
+    toComponentObjectId: string;
+    actorObjectId: string;
+    requestId: string;
+  }
+): Promise<number> {
+  const rows = await tx
+    .update(sourceMappings)
+    .set({ componentObjectId: input.toComponentObjectId })
+    .where(
+      and(
+        eq(sourceMappings.orgId, input.orgId),
+        eq(sourceMappings.componentObjectId, input.fromComponentObjectId)
+      )
+    )
+    .returning();
+  for (const row of rows) {
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      actorId: input.actorObjectId,
+      action: "source_mapping.repoint",
+      subjectId: input.toComponentObjectId,
+      reason:
+        `re-pointed ${mappingDescription(row)} from component ` +
+        `'${input.fromComponentObjectId}' onto '${input.toComponentObjectId}'`,
+      subjectDomainLocal: await componentDomainLocal(tx, input.orgId, input.toComponentObjectId),
+      requestId: input.requestId
+    });
+  }
   return rows.length;
 }
 
