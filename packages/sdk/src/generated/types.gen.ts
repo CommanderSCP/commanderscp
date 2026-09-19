@@ -11764,6 +11764,9 @@ export type GraphIntegrityResponses = {
             ownerUrn: string;
             ownerName: string;
             detail: string;
+            targetType: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
+            lane: 'build' | 'test';
+            policyManaged: boolean;
         }>;
         orphanPlacements: Array<{
             id: string;

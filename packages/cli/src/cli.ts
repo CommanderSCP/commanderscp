@@ -2997,7 +2997,16 @@ export function buildProgram(): Command {
   graphCmd
     .command("integrity")
     .description("Report (and optionally repair) rows that outlived the object they hang off")
-    .option("--repair", "delete the repairable rows through the ordinary audited DELETE doors")
+    .option(
+      "--repair",
+      "DELETE the repairable rows through the ordinary audited DELETE doors. This REMOVES EXECUTION " +
+        "ROUTES: an orphaned executor binding carries a target's plugin config, secret refs and " +
+        "external ref, and repairing it detaches that pipeline for good. There is no prompt (owner " +
+        "decision 2026-09-19) — the record is the mitigation, so every removal is printed here AND " +
+        "written to the hash-chained audit log as `executor.binding.delete`. Only rows whose target " +
+        "object is ALREADY soft-deleted are ever touched; policy-managed bindings are skipped, " +
+        "because the binding reconciler reaps those itself"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (opts: { repair?: boolean; baseUrl?: string; output: OutputFormat }) => {
@@ -3072,18 +3081,58 @@ export function buildProgram(): Command {
         deleted += 1;
       }
 
-      const remaining =
-        report.orphanSourceMappings.length +
-        report.orphanExecutorBindings.length +
-        report.orphanPlacements.length;
+      // ORPHANED EXECUTOR BINDINGS TOO, from 2026-09-19 (owner decision; edges-only was recommended
+      // and overridden). Through `executors.deleteBinding` — the SAME door `scp executor unbind`
+      // uses, never a bulk delete — so each removal writes its own `executor.binding.delete` audit
+      // event in the same transaction as the delete, exactly as an explicit unbind would.
+      //
+      // There is no confirmation prompt by decision, which makes the RECORD the entire mitigation:
+      // the removed routes are printed below ONE PER ROW, so a repair run is reconstructable from
+      // its own output without anyone having to go to the audit log. A count alone would not be a
+      // record — it cannot answer "which pipeline did this detach?", the only question that matters
+      // the morning after an unprompted repair.
+      //
+      // Nothing live is reachable here: the list is the REPORT's, so every row in it already has a
+      // tombstoned target. A live target's binding never appears, and therefore can never be taken.
+      const bindingsToRepair = report.orphanExecutorBindings.filter((b) => !b.policyManaged);
+      const skippedManagedBindings = report.orphanExecutorBindings.length - bindingsToRepair.length;
+      const removedBindings: { owner: string; name: string; type: string; lane: string }[] = [];
+      for (const binding of bindingsToRepair) {
+        // Addressed by the OWNER urn plus the row's own `(targetType, lane)`, read from the report's
+        // STRUCTURED fields — never parsed back out of `detail`, where a mis-read lane silently
+        // means `build`.
+        await client.executors.deleteBinding(binding.ownerUrn, binding.targetType, binding.lane);
+        removedBindings.push({
+          owner: binding.ownerUrn,
+          name: binding.ownerName,
+          type: binding.targetType,
+          lane: binding.lane
+        });
+      }
+
+      const remaining = report.orphanSourceMappings.length + report.orphanPlacements.length;
       printResult(
         [
           { outcome: "relationships-deleted", count: deleted },
           { outcome: "replica-edges-skipped (single-writer authority)", count: skippedReplicas },
           {
+            outcome: "executor-bindings-deleted (EXECUTION ROUTES removed; audited per row)",
+            count: removedBindings.length
+          },
+          {
+            outcome:
+              "policy-managed-bindings-skipped (the binding reconciler prunes these itself next " +
+              "tick; deleting one here would only race it)",
+            count: skippedManagedBindings
+          },
+          {
             outcome: "projection-rows-left (no id-addressed door; see --output json)",
             count: remaining
-          }
+          },
+          ...removedBindings.map((r) => ({
+            outcome: `deleted executor binding ${r.type}/${r.lane} on '${r.name}' (${r.owner})`,
+            count: 1
+          }))
         ],
         opts.output,
         (item) => {

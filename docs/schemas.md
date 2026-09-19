@@ -31,7 +31,7 @@ used to sit inline. Each source file below carries a one-line headline at the si
 - [`packages/schemas/src/governance-move.ts`](#packages-schemas-src-governance-move-ts) — §258–§258
 - [`packages/schemas/src/governance.test.ts`](#packages-schemas-src-governance-test-ts) — §259–§259
 - [`packages/schemas/src/governance.ts`](#packages-schemas-src-governance-ts) — §260–§277
-- [`packages/schemas/src/graph.ts`](#packages-schemas-src-graph-ts) — §278–§296
+- [`packages/schemas/src/graph.ts`](#packages-schemas-src-graph-ts) — §278–§296a
 - [`packages/schemas/src/health.ts`](#packages-schemas-src-health-ts) — §297–§298
 - [`packages/schemas/src/coordination-as-code.ts`](#packages-schemas-src-iac-ts) — §299–§328
 - [`packages/schemas/src/objects.ts`](#packages-schemas-src-objects-ts) — §329–§331
@@ -2036,7 +2036,17 @@ Induced-subgraph edges over an explicit object-id set (DESIGN.md §5, additive w
 
 Rows that outlived the object they hang off.
 
-READ-ONLY, and deliberately so: repair is performed by the ordinary `DELETE` doors (`/relationships/{id}`, `/change-sources/{kind}/mappings`, `/executors/{idOrUrn}/binding`), each of which already writes its audit event and journal entry in the same transaction. A dedicated bulk-repair endpoint would be a second, unaudited way to destroy rows — exactly what principle 6 exists to prevent.
+READ-ONLY, and deliberately so: repair is performed by the ordinary `DELETE` doors (`/relationships/{id}`, `/change-sources/{kind}/mappings`, `/executors/{idOrUrn}/binding`), each of which already writes its audit event and journal entry in the same transaction. A dedicated bulk-repair endpoint would be a second, unaudited way to destroy rows — exactly what principle 6 exists to prevent. That still holds after the 2026-09-19 decision to have `scp graph integrity --repair` clear orphaned bindings: the CLI loops over the ordinary per-row door, which is why no endpoint changed.
+
+### §296a. THE ONE PROJECTION ROW A REPAIR RUN CAN ACT ON
+
+`orphanExecutorBindings` is the only member of this report with its own richer row type, and the reason is behavioural rather than cosmetic: from 2026-09-19 it is the only one `--repair` acts on (owner decision; edges-only was recommended and overridden).
+
+A repair run has to PASS the door's whole key, and the door is keyed `(target, type, lane)`. So `targetType` and `lane` are STRUCTURED fields rather than text inside `detail`. Recovering them by parsing a display string is the read-the-label-you-printed mistake, and it fails silently in the worst possible direction: `?lane=` defaults to `build`, so a `test`-lane row whose lane was mis-parsed does not error — it deletes the wrong row or none at all. `policyManaged` is read off `managed_by_policy_id` for the same reason it is not inferred from the plugin or the detail text; it is the exact analogue of `DanglingRelationship.repairable` being false for a replica edge, and `--repair` reports and skips such rows because the binding reconciler reaps them itself once the target is a tombstone.
+
+The two remaining members keep the plain `OrphanProjectionRow`, honestly: a source mapping is addressed by a five-part identity tuple this report does not carry, and an orphan placement has no door at all. Widening those to match would advertise a repairability neither has.
+
+`ExecutorTypeSchema` and `ExecutorLaneSchema` are REUSED here rather than re-declared (no import cycle: neither `executors.ts` nor `binding-policy.ts` imports `graph.ts`), so the integrity report and the binding door can never disagree about what a Type or a lane is.
 
 ## `packages/schemas/src/health.ts`
 

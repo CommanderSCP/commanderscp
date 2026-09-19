@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
+import type { ExecutorLane, ExecutorType } from "@scp/schemas";
 import { executorBindings, objects, relationships, sourceMappings } from "../db/schema.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 
@@ -24,10 +25,23 @@ export interface OrphanProjectionRow {
   detail: string;
 }
 
+/** The one projection row `--repair` can act on, so the one that carries its door's whole key.
+ *  See docs/graph.md §53a. */
+export interface OrphanExecutorBindingRow extends OrphanProjectionRow {
+  /** `(targetType, lane)` completes the key `DELETE /executors/{idOrUrn}/binding` takes, beside
+   *  `ownerUrn`. Structured, not folded into `detail`: a repair run has to PASS them, and a `lane`
+   *  parsed back out of a display string silently defaults to `build` when it is wrong. */
+  targetType: ExecutorType;
+  lane: ExecutorLane;
+  /** Read off `managed_by_policy_id`, never inferred. A managed row is re-derived every reconcile
+   *  tick and reaped by `pruneUnwanted` once its target is a tombstone, so `--repair` skips it. */
+  policyManaged: boolean;
+}
+
 export interface GraphIntegrityReport {
   danglingRelationships: DanglingRelationship[];
   orphanSourceMappings: OrphanProjectionRow[];
-  orphanExecutorBindings: OrphanProjectionRow[];
+  orphanExecutorBindings: OrphanExecutorBindingRow[];
   /** A live placement whose component or deployment-target is dead (ADR-0026 D17 reads the pair
    *  from `properties`, so this cannot be expressed as a foreign key). */
   orphanPlacements: OrphanProjectionRow[];
@@ -119,12 +133,19 @@ export async function findGraphIntegrityIssues(
     id: r.id,
     ownerUrn: r.ownerUrn,
     ownerName: r.ownerName,
-    // `lane` is HERE because the detail line is what an operator types back at the door, and the
+    // STRUCTURED, because `--repair` passes these to the door (owner decision 2026-09-19) and the
+    // door is keyed `(target, type, lane)`. They are ALSO in `detail` below, deliberately: the
+    // human-readable line has to stay self-sufficient for an operator reading a table, and `detail`
+    // is what the pre-`--repair` runbook parsed. The structured fields are the ones code reads.
+    targetType: r.type as ExecutorType,
+    lane: r.lane as ExecutorLane,
+    policyManaged: r.managedByPolicyId !== null,
+    // `lane` is HERE too because the detail line is what an operator types back at the door, and the
     // door is keyed `(target, type, lane)`. Without it the string named a row it could not address:
     // `?lane=` defaults to `build`, so a `test`-lane orphan read as repairable and 404'd. Same rule
-    // as the mapping detail carrying its whole tuple. `managedByPolicyId` is named for the opposite
-    // reason — that row needs no operator at all, the binding reconciler prunes it next tick, and an
-    // operator who races it gets a 404 that looks like a bug.
+    // as the mapping detail carrying its whole tuple. The policy-managed note is there for the
+    // opposite reason — that row needs no operator at all, the binding reconciler prunes it next
+    // tick, and an operator who races it gets a 404 that looks like a bug.
     detail:
       `${r.type}/${r.lane} -> ${r.externalRef ?? "(no external ref)"}` +
       (r.managedByPolicyId === null ? "" : " [policy-managed: the reconciler prunes this]")

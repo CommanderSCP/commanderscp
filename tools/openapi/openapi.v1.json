@@ -46567,13 +46567,42 @@
                           },
                           "detail": {
                             "type": "string"
+                          },
+                          "targetType": {
+                            "type": "string",
+                            "enum": [
+                              "image",
+                              "rpm",
+                              "deb",
+                              "npm",
+                              "maven",
+                              "python",
+                              "go",
+                              "chart",
+                              "vm-image",
+                              "infrastructure",
+                              "configuration"
+                            ]
+                          },
+                          "lane": {
+                            "type": "string",
+                            "enum": [
+                              "build",
+                              "test"
+                            ]
+                          },
+                          "policyManaged": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
                           "id",
                           "ownerUrn",
                           "ownerName",
-                          "detail"
+                          "detail",
+                          "targetType",
+                          "lane",
+                          "policyManaged"
                         ],
                         "additionalProperties": false
                       }

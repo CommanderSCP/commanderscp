@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { cursorPageResponseSchema, stringArrayQueryParam } from "./common.js";
+// No cycle: neither module imports graph.ts (executors.ts -> common/supply-chain,
+// binding-policy.ts -> executors.ts). Reused rather than re-declared so the integrity report and the
+// binding door can never disagree about what a Type or a lane is.
+import { ExecutorTypeSchema } from "./executors.js";
+import { ExecutorLaneSchema } from "./binding-policy.js";
 
 /** Full graph model contract. See docs/schemas.md §278. */
 
@@ -390,11 +395,30 @@ export const OrphanProjectionRowSchema = z.object({
 });
 export type OrphanProjectionRow = z.infer<typeof OrphanProjectionRowSchema>;
 
+/** THE ONE PROJECTION ROW A REPAIR RUN CAN ACT ON. See docs/schemas.md §296a. */
+export const OrphanExecutorBindingRowSchema = OrphanProjectionRowSchema.extend({
+  /** The binding's routing Type and LANE — the two halves, beside `ownerUrn`, of what
+   *  `DELETE /executors/{idOrUrn}/binding` is keyed by. Structured rather than left inside `detail`
+   *  because `--repair` has to pass them: parsing them back out of a display string is the
+   *  read-the-label-you-printed mistake, and a `lane` recovered wrongly silently means `build`. */
+  targetType: ExecutorTypeSchema,
+  lane: ExecutorLaneSchema,
+  /** TRUE when `managed_by_policy_id` is set. Such a row is re-derived from the live placements
+   *  every reconcile tick and pruned by `pruneUnwanted` once its target is a tombstone, so a repair
+   *  run must SKIP it and say so — the same reason `DanglingRelationship.repairable` is false for a
+   *  replica edge. Read off the column, never inferred from the plugin or the detail text. */
+  policyManaged: z.boolean()
+});
+export type OrphanExecutorBindingRow = z.infer<typeof OrphanExecutorBindingRowSchema>;
+
 /** Rows that outlived the object they hang off. See docs/schemas.md §296. */
 export const GraphIntegrityReportSchema = z.object({
   danglingRelationships: z.array(DanglingRelationshipSchema),
   orphanSourceMappings: z.array(OrphanProjectionRowSchema),
-  orphanExecutorBindings: z.array(OrphanProjectionRowSchema),
+  // The only member with its own richer row type, because it is the only one `--repair` can act on
+  // (ADR-free owner decision 2026-09-19). The others stay `OrphanProjectionRow`: a mapping is
+  // addressed by a five-part tuple this report does not carry, and a placement has no door at all.
+  orphanExecutorBindings: z.array(OrphanExecutorBindingRowSchema),
   orphanPlacements: z.array(OrphanProjectionRowSchema)
 });
 export type GraphIntegrityReport = z.infer<typeof GraphIntegrityReportSchema>;

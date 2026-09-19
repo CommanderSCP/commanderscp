@@ -3815,7 +3815,22 @@ export const zGraphIntegrityResponse = z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         ownerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
         ownerName: z.string(),
-        detail: z.string()
+        detail: z.string(),
+        targetType: z.enum([
+            'image',
+            'rpm',
+            'deb',
+            'npm',
+            'maven',
+            'python',
+            'go',
+            'chart',
+            'vm-image',
+            'infrastructure',
+            'configuration'
+        ]),
+        lane: z.enum(['build', 'test']),
+        policyManaged: z.boolean()
     })),
     orphanPlacements: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),

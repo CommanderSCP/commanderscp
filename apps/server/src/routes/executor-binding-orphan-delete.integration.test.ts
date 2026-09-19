@@ -204,6 +204,169 @@ describe("deleting an executor binding that outlived its target", () => {
     }
   });
 
+  /** A fresh org per `--repair` arm. `--repair` is org-scoped and destructive by design, so sharing
+   *  the file's org between arms would let one arm's repair consume another's fixture and every
+   *  assertion would still pass — the vacuous-green shape. */
+  async function repairFixture(tag: string): Promise<{
+    cli: CliInvocation;
+    admin2: ScpClient;
+    orgId: string;
+  }> {
+    const o = await createTestOrg(server, `repair-${tag}-${uuidv7().slice(0, 6)}`);
+    const cli = await startCliSession(server.baseUrl);
+    await cli.run(["login", "--username", o.adminUsername, "--password", o.adminPassword]);
+    return {
+      cli,
+      admin2: new ScpClient({ baseUrl: server.baseUrl, token: o.adminToken }),
+      orgId: o.orgId
+    };
+  }
+
+  type Outcome = { outcome: string; count: number };
+
+  it("--repair DELETES an orphaned executor binding and writes its audit event (owner decision 2026-09-19)", async () => {
+    // The owner chose FULL repair over the edges-only recommendation, with no prompt and no
+    // confirmation flag. What that makes load-bearing is the audited path: `--repair` must go through
+    // `executors.deleteBinding` — the same door `scp executor unbind` uses — so the removal is
+    // indistinguishable in the audit log from an operator typing the verb. A bulk delete would be a
+    // second, unaudited way to destroy execution routes, which is what principle 6 forbids.
+    const { cli, admin2, orgId } = await repairFixture("deletes");
+    try {
+      const comp = await createTestComponent(admin2, { name: `r-${uuidv7().slice(0, 8)}` });
+      await admin2.executors.putBinding(comp.id, {
+        pluginModule: "fake-executor",
+        pluginInstanceId: `inst-${uuidv7().slice(0, 8)}`,
+        type: "configuration"
+      });
+      await withTenantTx(server.deps.db, orgId, (tx) =>
+        tx.execute(
+          sql`UPDATE objects SET deleted_at = now() WHERE id = ${comp.id}::uuid AND org_id = ${orgId}::uuid`
+        )
+      );
+
+      const out = await cli.runJson<Outcome[]>(["graph", "integrity", "--repair"]);
+      const deletedRow = out.find((r) => r.outcome.startsWith("executor-bindings-deleted"));
+      expect(deletedRow?.count, "the route was removed").toBe(1);
+
+      // THE RECORD IS THE MITIGATION, since there is no prompt: a count cannot answer "which
+      // pipeline did this detach?". One line per removed route, naming the urn, type and lane.
+      const named = out.find((r) => r.outcome.includes("deleted executor binding"));
+      expect(named, "a repair run must be reconstructable from its own output").toBeDefined();
+      expect(named!.outcome).toContain("configuration/build");
+      expect(named!.outcome).toContain(comp.urn);
+
+      // …and the second, independent record: the hash-chained audit log.
+      const page = await admin2.auditEvents.list({ limit: 200 });
+      expect(
+        page.items.filter((e) => e.action === "executor.binding.delete" && e.subjectId === comp.id),
+        "one per row, through the ordinary door — never a bulk unaudited delete"
+      ).toHaveLength(1);
+
+      expect(
+        (await admin2.graph.integrity()).orphanExecutorBindings.some((b) => b.ownerUrn === comp.urn)
+      ).toBe(false);
+    } finally {
+      await cli.cleanup();
+    }
+  });
+
+  it("--repair SKIPS a policy-managed orphan and says why — repairing one would only race the reconciler", async () => {
+    // Kept from the guard's own carve-out, for the same measured reason: the binding reconciler
+    // re-derives a managed row every tick from the live placements and `pruneUnwanted` reaps it once
+    // the target is a tombstone. Deleting it here is at best redundant and at worst a race, so it is
+    // reported and skipped — the shape `DanglingRelationship.repairable: false` already establishes
+    // for a replica edge.
+    const { cli, admin2, orgId } = await repairFixture("skips");
+    try {
+      const comp = await createTestComponent(admin2, { name: `m-${uuidv7().slice(0, 8)}` });
+      await admin2.executors.putBinding(comp.id, {
+        pluginModule: "fake-executor",
+        pluginInstanceId: `inst-${uuidv7().slice(0, 8)}`,
+        type: "configuration"
+      });
+      await withTenantTx(server.deps.db, orgId, (tx) =>
+        tx.execute(
+          sql`UPDATE executor_bindings SET managed_by_policy_id = ${orgId}::uuid
+              WHERE org_id = ${orgId}::uuid AND target_object_id = ${comp.id}::uuid`
+        )
+      );
+      await withTenantTx(server.deps.db, orgId, (tx) =>
+        tx.execute(
+          sql`UPDATE objects SET deleted_at = now() WHERE id = ${comp.id}::uuid AND org_id = ${orgId}::uuid`
+        )
+      );
+
+      // The report must SAY it is managed, as a structured field — `--repair` reads that, never the
+      // detail text, and `targetType`/`lane` come from the same place for the same reason.
+      const listed = (await admin2.graph.integrity()).orphanExecutorBindings.find(
+        (b) => b.ownerUrn === comp.urn
+      );
+      expect(listed?.policyManaged, "read off managed_by_policy_id, never inferred").toBe(true);
+      expect(listed?.targetType).toBe("configuration");
+      expect(listed?.lane).toBe("build");
+
+      const out = await cli.runJson<Outcome[]>(["graph", "integrity", "--repair"]);
+      expect(out.find((r) => r.outcome.startsWith("executor-bindings-deleted"))?.count).toBe(0);
+      const skipped = out.find((r) => r.outcome.startsWith("policy-managed-bindings-skipped"));
+      expect(skipped?.count, "reported, never attempted").toBe(1);
+      expect(skipped!.outcome, "and the output states the reason, not just the count").toContain(
+        "reconciler"
+      );
+
+      // Still there, and still reported — a skip is not a silent drop.
+      expect(
+        (await admin2.graph.integrity()).orphanExecutorBindings.some((b) => b.ownerUrn === comp.urn)
+      ).toBe(true);
+    } finally {
+      await cli.cleanup();
+    }
+  });
+
+  it("--repair leaves a LIVE target's binding untouched — the blast radius is structural, not advisory", async () => {
+    // The guarantee that makes an unprompted `--repair` tolerable: the loop iterates the REPORT, and
+    // a row is only in the report when its target object is already soft-deleted. So no reachable
+    // input to this command can name a live pipeline. Asserted directly rather than reasoned about,
+    // because "it only touches orphans" is exactly the kind of claim that stays true by accident.
+    const { cli, admin2, orgId } = await repairFixture("untouched");
+    try {
+      const live = await createTestComponent(admin2, { name: `live-${uuidv7().slice(0, 8)}` });
+      await admin2.executors.putBinding(live.id, {
+        pluginModule: "fake-executor",
+        pluginInstanceId: `inst-${uuidv7().slice(0, 8)}`,
+        type: "configuration"
+      });
+      // A SECOND, orphaned binding in the same org, so the run genuinely does work — a repair that
+      // deleted nothing at all would pass this test for the wrong reason.
+      const dead = await createTestComponent(admin2, { name: `dead-${uuidv7().slice(0, 8)}` });
+      await admin2.executors.putBinding(dead.id, {
+        pluginModule: "fake-executor",
+        pluginInstanceId: `inst-${uuidv7().slice(0, 8)}`,
+        type: "configuration"
+      });
+      await withTenantTx(server.deps.db, orgId, (tx) =>
+        tx.execute(
+          sql`UPDATE objects SET deleted_at = now() WHERE id = ${dead.id}::uuid AND org_id = ${orgId}::uuid`
+        )
+      );
+
+      const out = await cli.runJson<Outcome[]>(["graph", "integrity", "--repair"]);
+      expect(
+        out.find((r) => r.outcome.startsWith("executor-bindings-deleted"))?.count,
+        "the orphan went, so the run was not a no-op"
+      ).toBe(1);
+
+      const stillBound = await admin2.executors.getBinding(live.id, "configuration");
+      expect(stillBound.targetObjectId, "the live pipeline is still bound").toBe(live.id);
+      const page = await admin2.auditEvents.list({ limit: 200 });
+      expect(
+        page.items.filter((e) => e.action === "executor.binding.delete" && e.subjectId === live.id),
+        "and nothing was even attempted against it"
+      ).toHaveLength(0);
+    } finally {
+      await cli.cleanup();
+    }
+  });
+
   it("CREATING a binding on a soft-deleted target is still refused — removal reaches further than creation", async () => {
     // The asymmetry is deliberate and is the same one the mapping doors carry. `includeDeleted` went
     // on the DELETE handler alone; a PUT that accepted a tombstone would let an operator mint the
