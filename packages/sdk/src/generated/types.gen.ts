@@ -9186,6 +9186,7 @@ export type GetServiceBoardResponses = {
                         step?: number;
                         weight?: number;
                         message?: string;
+                        stepCount?: number;
                     };
                     observedAt: string;
                     receivedAt: string;
