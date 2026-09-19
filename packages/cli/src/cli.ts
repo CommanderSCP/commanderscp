@@ -20,6 +20,7 @@ import type {
   DesiredStateManifest,
   DoctorCheck,
   ExecutorType,
+  ExecutorLane,
   PipelineClassification,
   SourceMapping,
   SourceMappingScope,
@@ -3003,29 +3004,46 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const report = await client.graph.integrity();
 
-      type IntegrityRow = { kind: string; id: string; detail: string; repairable: boolean };
+      // `owner` carries the dead object's URN, not just its NAME. Every projection row is repaired by
+      // addressing its OWNER at a typed door (`scp executor unbind <urn>`,
+      // `scp change-source delete-mapping --component <urn>`) — the row's own id reaches nothing —
+      // so folding the urn into a display name made the report unusable as the input to its own
+      // remedy, and the runbook had to go around the CLI to the raw API to get it back.
+      type IntegrityRow = {
+        kind: string;
+        id: string;
+        owner: string;
+        detail: string;
+        repairable: boolean;
+      };
       const rows: IntegrityRow[] = [
         ...report.danglingRelationships.map((r) => ({
           kind: "dangling-relationship",
           id: r.id,
-          detail: `${r.typeId}: ${r.fromUrn} -> ${r.toUrn} (${r.deadEnd} dead)`,
+          // An edge IS addressed by its own id (`scp relationship delete <id>`), so its `owner`
+          // column is the pair it hangs between rather than a thing to pass anywhere.
+          owner: `${r.fromUrn} -> ${r.toUrn}`,
+          detail: `${r.typeId} (${r.deadEnd} dead)`,
           repairable: r.repairable
         })),
         ...report.orphanSourceMappings.map((r) => ({
           kind: "orphan-source-mapping",
           id: r.id,
+          owner: r.ownerUrn,
           detail: `${r.ownerName}: ${r.detail}`,
           repairable: true
         })),
         ...report.orphanExecutorBindings.map((r) => ({
           kind: "orphan-executor-binding",
           id: r.id,
+          owner: r.ownerUrn,
           detail: `${r.ownerName}: ${r.detail}`,
           repairable: true
         })),
         ...report.orphanPlacements.map((r) => ({
           kind: "orphan-placement",
           id: r.id,
+          owner: r.ownerUrn,
           detail: `${r.ownerName}: ${r.detail}`,
           repairable: true
         }))
@@ -3037,6 +3055,7 @@ export function buildProgram(): Command {
           return {
             kind: row.kind,
             id: row.id,
+            owner: row.owner,
             repairable: String(row.repairable),
             detail: row.detail
           };
@@ -6176,15 +6195,25 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("unbind <idOrUrn>")
-    .description("Delete a target's executor binding for one type (default: configuration)")
+    .description(
+      "Delete a target's executor binding for one type and lane (default: configuration/build). " +
+        "Accepts a SOFT-DELETED target, so a binding stranded by a delete has an audited exit"
+    )
     .option("--type <type>", "which routing Type to detach (default: configuration)")
+    .option(
+      "--lane <lane>",
+      "which lane to detach: build|test (default: build). `scp graph integrity` prints each " +
+        "orphan binding as type/lane — a test-lane row is unreachable without this"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const result = await client.executors.deleteBinding(idOrUrn, opts.type);
-      printResult(result, opts.output, (item) => item as Record<string, unknown>);
-    });
+    .action(
+      async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType; lane?: ExecutorLane }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.executors.deleteBinding(idOrUrn, opts.type, opts.lane);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
+      }
+    );
 
   executorCmd
     .command("repurpose <idOrUrn>")

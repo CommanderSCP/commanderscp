@@ -25,7 +25,9 @@ import {
   SecretKeyListResponseSchema,
   SecretKeyParamSchema,
   ExecutorTypeSchema,
-  type ExecutorType
+  ExecutorLaneSchema,
+  type ExecutorType,
+  type ExecutorLane
 } from "@scp/schemas";
 import { BUNDLED_PLUGIN_MANIFESTS, validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 import type { AppDeps } from "../types.js";
@@ -403,12 +405,27 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
 
   // DELETE a target's binding for one Type — M12 P5c (the missing detach primitive). object:write
   // on the target, mirroring PUT. Hard delete (no soft-delete column); returns the removed binding.
+  //
+  // This is the ONLY door that removes an executor binding on an operator's say-so, which makes it
+  // the door `deleteObject`'s orphan-guard clause 6 sends people to — so it has to be able to reach
+  // EVERY row the guard can refuse on, or the guard is a wall. Two ways it could not, both closed
+  // here (docs/routes.md §161a):
+  //   - a TOMBSTONED target (`includeDeleted` below), which is the shape of all 19 rows stranded on
+  //     the live estate before the guard existed and the only shape the guard cannot prevent; and
+  //   - a non-`build` LANE (`?lane=` below). `executor_bindings` is keyed
+  //     `(org, target, type, lane)` and the binding-policy reconciler writes `test`-lane rows, but
+  //     this handler passed no lane at all, so `deleteExecutorBinding`'s `build` default made every
+  //     test-lane row undeletable through the API. Additive optional query param, absent ⇒ `build`,
+  //     which is exactly what every existing caller already got.
   typed.route({
     method: "DELETE",
     url: "/api/v1/executors/:idOrUrn/binding",
     schema: {
       params: RegistryIdOrUrnParamSchema,
-      querystring: z.object({ type: ExecutorTypeSchema.optional() }),
+      querystring: z.object({
+        type: ExecutorTypeSchema.optional(),
+        lane: ExecutorLaneSchema.optional()
+      }),
       response: {
         200: ExecutorBindingSchema,
         401: ProblemSchema,
@@ -426,7 +443,13 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
+        // `includeDeleted` on the DELETE door ONLY. Creating or relabelling a binding on a tombstoned
+        // target stays a 404 (PUT and PATCH resolve live-only, unchanged) — the asymmetry is
+        // deliberate and is the same one `DELETE /change-sources/{kind}/mappings` carries: removal
+        // must reach further than creation, or rows that outlived their object have no audited exit.
+        const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn, {
+          includeDeleted: true
+        });
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -434,17 +457,19 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           scopeObjectId: target.id
         });
         const type = request.query.type ?? DEFAULT_BINDING_TYPE;
+        const lane: ExecutorLane = request.query.lane ?? "build";
         const row = await deleteExecutorBinding(
           tx,
           auth.orgId,
           target.id,
           type,
           auth.subjectObjectId,
-          request.id
+          request.id,
+          lane
         );
         if (!row) {
           throw notFound(
-            `no '${type}' executor binding configured for '${request.params.idOrUrn}'`
+            `no '${type}' executor binding on lane '${lane}' configured for '${request.params.idOrUrn}'`
           );
         }
         return row;

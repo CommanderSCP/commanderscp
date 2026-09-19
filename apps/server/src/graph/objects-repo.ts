@@ -7,7 +7,7 @@ import {
   type TrustDomainId
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { objects, relationships, sourceMappings } from "../db/schema.js";
+import { executorBindings, objects, relationships, sourceMappings } from "../db/schema.js";
 import { badRequest, conflict, notFound, preconditionFailed } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
@@ -1197,6 +1197,33 @@ export async function deleteObject(
         )
       )
       .limit(6);
+    // Executor bindings name their target by COLUMN. See docs/graph.md §125b.
+    //
+    // `managed_by_policy_id IS NULL` is not a convenience filter, it is the difference between a
+    // guard and a WALL. A policy-managed binding is re-derived every reconcile tick from the LIVE
+    // placements (`binding-policy/placement-needs.ts` filters `deleted_at IS NULL`), so refusing the
+    // delete until the operator removes one would livelock: they unbind, the next tick re-creates it
+    // because the target is still live, the delete refuses again, forever. The same tick's
+    // `pruneUnwanted` removes it on its own once the target IS tombstoned — through this very
+    // `deleteExecutorBinding` door, so that cleanup is audited exactly like a manual one. A managed
+    // binding therefore self-heals and must not be refused; an UNMANAGED one has no such reaper and
+    // is what stranded 19 rows on the live estate.
+    const executorBindingBlockers = await tx
+      .select({
+        id: executorBindings.id,
+        type: executorBindings.type,
+        lane: executorBindings.lane,
+        pluginModule: executorBindings.pluginModule
+      })
+      .from(executorBindings)
+      .where(
+        and(
+          eq(executorBindings.orgId, input.orgId),
+          eq(executorBindings.targetObjectId, existing.id),
+          isNull(executorBindings.managedByPolicyId)
+        )
+      )
+      .limit(6);
 
     const label = (rows: { urn: string; typeId: string }[]): string => {
       const shown = rows.slice(0, 5).map((r) => `${r.typeId} '${r.urn}'`);
@@ -1220,6 +1247,14 @@ export async function deleteObject(
           (r) =>
             `${r.sourceKind} repo=${r.repoPattern ?? "null"} path=${r.pathPattern ?? "null"} ref=${r.refPattern ?? "null"}`
         );
+      return `${shown.join(", ")}${rows.length > 5 ? ", …" : ""}`;
+    };
+    /** A binding has no urn either — `(type, lane)` is both its identity within a target and the
+     *  exact pair the delete door's query string takes, so the refusal is copy-pasteable. */
+    const bindingLabel = (rows: { type: string; lane: string; pluginModule: string }[]): string => {
+      const shown = rows
+        .slice(0, 5)
+        .map((r) => `type=${r.type} lane=${r.lane} (plugin '${r.pluginModule}')`);
       return `${shown.join(", ")}${rows.length > 5 ? ", …" : ""}`;
     };
 
@@ -1253,6 +1288,13 @@ export async function deleteObject(
         `${count(sourceMappingBlockers)} source mapping(s) still name it as their component (correlation route) — ` +
           `source_mappings has no deleted_at of its own and no foreign key to objects, so nothing would tombstone them and they would be left pointing at a deleted component: every push to those patterns then falls through to whatever BROADER mapping matches, releasing another component's pipeline. ` +
           `Delete them first (DELETE /change-sources/{sourceKind}/mappings): ${mappingLabel(sourceMappingBlockers)}`
+      );
+    }
+    if (executorBindingBlockers.length > 0) {
+      clauses.push(
+        `${count(executorBindingBlockers)} executor binding(s) still name it as their target (execution route) — ` +
+          `executor_bindings has no deleted_at of its own and no foreign key to objects, so nothing would tombstone them and they would be left pointing at a deleted target: the row keeps holding this target's (type, lane) slot, keeps its plugin config and secret refs, and keeps being resolvable by every reader that does not filter target liveness (getExecutorBinding, resolveLaneBinding). ` +
+          `Delete them first (DELETE /executors/{idOrUrn}/binding?type=&lane=): ${bindingLabel(executorBindingBlockers)}`
       );
     }
     if (clauses.length > 0) {

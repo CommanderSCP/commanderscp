@@ -447,6 +447,10 @@ REPAIR ONLY WHAT THIS COMMAND CAN ACTUALLY DELETE THROUGH AN AUDITED DOOR.
 
 Relationships have one (`DELETE /relationships/{id}`), and it works even when an endpoint is dead. The projection rows do NOT have an id-addressed door — `deleteMapping` matches on the identity TUPLE and the binding door addresses its target object — so repairing them from this report's `id` alone is not possible today. Rather than reach past the API into SQL, this command repairs the edges and NAMES the rest, with the count, so the output can never read as "all clean" when it is not.
 
+2026-09-19 — THE `owner` COLUMN, and why its absence made the report unusable as the input to its own remedy. Because the projection rows are repaired by addressing their OWNER rather than their own id, the owner's **URN** is the one field the operator must copy out of this report — and every row printed `ownerName` folded into `detail` instead, so the documented cleanup had to leave the CLI for raw `curl` against `/graph/integrity` to recover it. `owner` now carries the urn (for a dangling relationship, which genuinely is id-addressed, it carries the `from -> to` pair instead, read off that branch rather than re-derived). Paired with `orphanExecutorBindings`' detail now printing `type/lane`, the loop `scp graph integrity` → `scp executor unbind <owner> --type … --lane …` → `scp graph integrity` closes entirely inside the CLI, and `routes/executor-binding-orphan-delete.integration.test.ts` drives exactly that loop so the report's output and the door's input cannot drift apart again.
+
+`--repair` still touches only the edges. Extending it to bindings would mean a `--repair` run silently deleting execution routes, which is a different and much larger consent question than deleting an edge whose endpoint is already gone.
+
 ### §70. doctor — read-only operational self-checks
 
 doctor — read-only operational self-checks (`GET /doctor`).
