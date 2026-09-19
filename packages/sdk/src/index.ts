@@ -22,7 +22,17 @@ export type { RelayedEvent } from "@scp/schemas";
 
 // Graph-integrity report types — a SEPARATE step from the client method; schema types are not
 // re-exported automatically, and omitting this is what made #211's failure look like a missing method.
-export type { GraphIntegrityReport, DanglingRelationship, OrphanProjectionRow } from "@scp/schemas";
+// `OrphanPlacement` is listed separately from `OrphanProjectionRow` because it IS separate: the
+// placement arm of the report carries `deadEnd`/`repairable`/`blockedReason` that the two projection
+// arms have no equivalent of (docs/schemas.md §296a). A consumer that narrowed the arm to
+// `OrphanProjectionRow` would compile and silently lose the three fields that decide whether it may
+// offer the row for repair — which is the mistake the CLI made for as long as the arm existed.
+export type {
+  GraphIntegrityReport,
+  DanglingRelationship,
+  OrphanProjectionRow,
+  OrphanPlacement
+} from "@scp/schemas";
 
 // `scp doctor` report types — same SEPARATE step as the graph-integrity line above (schema types are
 // not re-exported automatically, and forgetting this makes a present client method look missing).
