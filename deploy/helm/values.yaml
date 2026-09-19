@@ -272,6 +272,27 @@ postgres:
     # out-of-band). When set, this chart does NOT create the postgres-eval PVC — the named claim
     # must already exist. Leave empty (default) for today's behavior: chart creates and owns it.
     existingClaim: ""
+    # THE 2026-09-17 EVICTION INCIDENT. This container shipped with NO `resources` block at all,
+    # which makes a pod BestEffort QoS — Kubernetes' own eviction ordering picks BestEffort pods
+    # FIRST under node memory pressure, before any Burstable/Guaranteed pod is touched. On the
+    # homelab k3s node the kubelet evicted the live `scp-commanderscp-postgres-eval` pod for
+    # exactly this reason: SCP's own datastore was the single easiest thing on the node to kill.
+    #
+    # A REQUEST ONLY, DELIBERATELY NO LIMIT. A `requests.memory` moves this pod to Burstable QoS —
+    # no longer first-evicted — and gives the scheduler a real number to bin-pack against. A
+    # `limits.memory` is NOT set by default: this is a dev/eval box, `postgres:16`'s working set
+    # under an unknown workload is not something this chart can size correctly, and a guessed limit
+    # OOMKills the eval database instead of merely deprioritizing it — a worse failure than the one
+    # being fixed. Set a limit yourself only once you know this install's actual working set.
+    #
+    # 256Mi/50m is deliberately small: it must not outbid a real workload's requests on a
+    # resource-constrained dev node, it only needs to outrank the BestEffort tier. Raise it if this
+    # eval Postgres carries real load. `tools/helm-verify` asserts this default renders unless
+    # overridden, and that an override reaches the container verbatim.
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 50m
 
 # -------------------------------------------------------------------------------------------
 # Object storage — filesystem/PVC provider default (DESIGN §16); S3-compatible configurable.

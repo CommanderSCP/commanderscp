@@ -116,6 +116,13 @@ spec:
               command: ["pg_isready", "-U", {{ .Values.postgres.adminUser | quote }}]
             initialDelaySeconds: 10
             periodSeconds: 10
+          # 2026-09-17 eviction incident (see postgres.evalInCluster.resources' doc comment in
+          # values.yaml): this container previously declared NO resources at all, which is
+          # BestEffort QoS — Kubernetes evicts BestEffort pods FIRST under node memory pressure,
+          # ahead of every other pod this chart renders. A memory request alone (no default limit)
+          # moves it to Burstable without risking an OOMKill from a guessed limit.
+          resources:
+            {{- toYaml .Values.postgres.evalInCluster.resources | nindent 12 }}
       volumes:
         - name: data
           persistentVolumeClaim:
