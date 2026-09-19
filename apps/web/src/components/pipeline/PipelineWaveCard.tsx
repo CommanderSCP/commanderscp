@@ -74,6 +74,11 @@ export interface PipelineWaveTargetLike {
           step?: number | undefined;
           weight?: number | undefined;
           message?: string | undefined;
+          /** `spec.strategy.canary.steps.length`, the pip-stepper's total (M) — off the SAME
+           *  manifest fetch as `step`, never a second call. Absent (never 0, never guessed) for a
+           *  blue-green Rollout, an older Rollouts version, or a non-ArgoCD executor
+           *  (pipeline-mockup-data.md §5.1). */
+          stepCount?: number | undefined;
         }
       | undefined;
     /** WHAT THE PERSISTENCE BOUND REMOVED, KEYED BY ROOT FIELD (M23.1g, ChangeWaveTargetSchema —
@@ -94,6 +99,17 @@ export interface PipelineWaveTargetLike {
     | { basis: "triggered"; pluginModule: string }
     | { basis: "bound"; pluginModule: string }
     | { basis: "unbound" }
+    | undefined;
+  /** `ChangeWaveTargetSchema.observedFreshness` (pipeline-mockup-data.md §5.1) — how fresh
+   *  `observed`'s reading is. `not_reported`: this target executes at another domain instance and
+   *  no observation has been federated up to this one — never rendered as merely "never observed",
+   *  which would promise a reading might still arrive from OUR OWN observation loop. Absent = a
+   *  server predating this field (renders exactly as it always has). */
+  observedFreshness?:
+    | { state: "never" }
+    | { state: "fresh"; ageSeconds: number }
+    | { state: "stale"; ageSeconds: number; staleAfterSeconds: number }
+    | { state: "not_reported" }
     | undefined;
 }
 
@@ -202,6 +218,77 @@ function rolloutParts(rollout: NonNullable<ObservedLike>["rollout"]): string[] {
   if (typeof rollout.step === "number") parts.push(`step ${rollout.step}`);
   if (typeof rollout.weight === "number") parts.push(`weight ${rollout.weight}%`);
   return parts;
+}
+
+/** `ageSeconds` -> "14 min ago" / "40s ago" (mockup microservice.html's stale-copy wording,
+ *  pipeline-mockup-data.md §5.2). */
+function formatAgeAgo(ageSeconds: number): string {
+  if (ageSeconds < 60) return `${ageSeconds}s ago`;
+  return `${Math.round(ageSeconds / 60)} min ago`;
+}
+
+/** THE PIP-STEPPER (2026-09-11 mockup, `microservice.html`'s `.roll`/`.pips`/`.pip`) — rendered
+ *  ONLY when the executor reported `stepCount` (an ArgoCD canary with
+ *  `spec.strategy.canary.steps`). An executor/rollout with no step count keeps today's plain
+ *  `phase · step N · weight N%` text (proposal §5.2's "stepCount absent" row) — never a guessed or
+ *  fabricated total. `step` is 0-based and equals `stepCount` once the rollout completes
+ *  (proposal §5.1), so the displayed step is `min(step + 1, stepCount)` of `stepCount`; `stale`
+ *  greys every pip (the mockup's "last pips greyed") rather than dropping the blue "this is live"
+ *  signal onto a reading that might no longer be true. */
+function RolloutStepper({
+  stepCount,
+  step,
+  weight,
+  stale,
+  testIdPrefix
+}: {
+  stepCount: number;
+  step: number | undefined;
+  weight: number | undefined;
+  stale: boolean;
+  testIdPrefix: string;
+}): React.JSX.Element {
+  const displayStep = typeof step === "number" ? Math.min(step + 1, stepCount) : undefined;
+  const complete = displayStep !== undefined && displayStep >= stepCount;
+  const doneCount = displayStep === undefined ? 0 : complete ? stepCount : displayStep - 1;
+  return (
+    <span className="flex items-center gap-1.5" data-testid={`${testIdPrefix}-rollout-stepper`}>
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+        Canary
+      </span>
+      <span className="flex items-center gap-[3px]" data-testid={`${testIdPrefix}-rollout-pips`}>
+        {Array.from({ length: stepCount }, (_, i) => {
+          const isDone = i < doneCount;
+          const isNow = !complete && displayStep !== undefined && i === displayStep - 1;
+          const active = isDone || isNow;
+          return (
+            <i
+              key={i}
+              className={cn(
+                "block h-[3.5px] w-[18px] rounded-full",
+                active ? (stale ? "bg-slate-400" : "bg-blue-500") : "bg-slate-200",
+                isNow && !stale ? "ring-2 ring-blue-200" : ""
+              )}
+              data-testid={`${testIdPrefix}-rollout-pip-${i}`}
+              data-state={active ? (isNow ? "now" : "done") : "pending"}
+            />
+          );
+        })}
+      </span>
+      {displayStep !== undefined && (
+        <span
+          className={cn(
+            "font-mono text-[10.5px] font-semibold",
+            stale ? "text-slate-500" : "text-blue-700"
+          )}
+          data-testid={`${testIdPrefix}-rollout-step-label`}
+        >
+          step {displayStep}
+          {typeof weight === "number" ? ` · ${weight}%` : ""}
+        </span>
+      )}
+    </span>
+  );
 }
 
 /** THE honesty pill (design spec: amber-dashed `Badge unknown`) — proposal §3's rule, restated:
@@ -691,24 +778,64 @@ export function PipelineWaveCard({
                     );
                   })()}
                 {/* OBSERVE-ONLY progressive-delivery indicator (ADR-0008: rollout state is OBSERVED,
-                    NOT DRIVEN). Display-only — phase · step N · weight% as the executor reported it,
-                    with NO promote/abort/resume controls (SCP coordinates, never drives). Only the
-                    fields the executor actually provided are shown; omitted when no rollout is
-                    observed (the version placeholder above already covers "nothing observed"). */}
+                    NOT DRIVEN). Display-only — a pip-stepper when the executor reported `stepCount`
+                    (proposal §5), else phase · step N · weight% as before — with NO promote/abort/
+                    resume controls (SCP coordinates, never drives). Only the fields the executor
+                    actually provided are shown; omitted when no rollout is observed (the version
+                    placeholder above already covers "nothing observed"). */}
                 {(() => {
-                  if (rolloutContentParts.length > 0) {
-                    const rollout = target.observed!.rollout!;
+                  // proposal §5.2: this instance has no channel to observe a target owned by
+                  // another domain at all — a stronger, permanent fact, never merely "never
+                  // observed (yet)", which would promise a reading might still arrive locally.
+                  if (target.observedFreshness?.state === "not_reported") {
                     return (
                       <span
-                        className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
-                        data-testid={`${testIdPrefix}-observed-rollout`}
-                        title={
-                          rollout.message
-                            ? `rollout: ${rollout.message}`
-                            : "observed rollout state (read-only)"
-                        }
+                        className="text-slate-400"
+                        data-testid={`${testIdPrefix}-observed-rollout-not-reported`}
+                        title="This wave target executes at another domain instance. No observation has been federated up to this commander."
                       >
-                        rollout {rolloutContentParts.join(" · ")}
+                        rolling out elsewhere — not reported to this commander
+                      </span>
+                    );
+                  }
+                  if (rolloutContentParts.length > 0) {
+                    const rollout = target.observed!.rollout!;
+                    const freshness = target.observedFreshness;
+                    const stale = freshness?.state === "stale";
+                    const title = rollout.message
+                      ? `rollout: ${rollout.message}`
+                      : "observed rollout state (read-only)";
+                    return (
+                      <span className="flex items-center gap-1.5" title={title}>
+                        {typeof rollout.stepCount === "number" && rollout.stepCount > 0 ? (
+                          <RolloutStepper
+                            stepCount={rollout.stepCount}
+                            step={rollout.step}
+                            weight={rollout.weight}
+                            stale={stale}
+                            testIdPrefix={testIdPrefix}
+                          />
+                        ) : (
+                          <span
+                            className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
+                            data-testid={`${testIdPrefix}-observed-rollout`}
+                          >
+                            {stale ? "last seen " : ""}
+                            rollout {rolloutContentParts.join(" · ")}
+                          </span>
+                        )}
+                        {/* amber-dashed "unknown" badge (proposal §5.2) — a stale reading must read
+                            as stale, not as live progress; colour alone would fail colour-blind
+                            readers, so the word travels too (§1.6a's status-word precedent). */}
+                        {stale && (
+                          <Badge
+                            variant="unknown"
+                            title={`Last observed ${formatAgeAgo(freshness.ageSeconds)} — older than the ${Math.round(freshness.staleAfterSeconds / 60)} minute freshness bound.`}
+                            data-testid={`${testIdPrefix}-observed-rollout-stale`}
+                          >
+                            stale · {formatAgeAgo(freshness.ageSeconds)}
+                          </Badge>
+                        )}
                       </span>
                     );
                   }

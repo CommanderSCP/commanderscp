@@ -177,7 +177,14 @@ export const WaveTargetObservedSchema = z.object({
       phase: z.string().optional(),
       step: z.number().optional(),
       weight: z.number().optional(),
-      message: z.string().optional()
+      message: z.string().optional(),
+      /** THE STEP TOTAL (M), read from `spec.strategy.canary.steps.length` on the SAME manifest
+       *  fetch that produces `step` — no extra call (ADR-0008: observe-only). Steps include pause
+       *  and analysis steps, not only weight changes, so "3 of 5" counts Argo's steps, never a
+       *  cross-rollout-comparable unit. Absent (never 0, never guessed) when the manifest fetch
+       *  failed or the strategy has no canary steps (blue-green, older Rollouts). See
+       *  docs/proposals/pipeline-mockup-data.md §5.1. */
+      stepCount: z.number().int().nonnegative().optional()
     })
     .optional(),
   /** What the persistence bound removed, keyed by field. See docs/schemas.md §64. */
@@ -248,6 +255,27 @@ export const ChangeWaveTargetSchema = z.object({
        *  as an empty array. */
       continuousTests: z.array(ContinuousTestHoldSchema).optional()
     })
+    .optional(),
+  /** How fresh the reconcile-observed `observed` snapshot is (currently used for the rollout
+   *  pip-stepper) — a discriminated union, not an enum, so a later state stays additive
+   *  (`scp-oasdiff-oneof-vs-enum`). Shares ONE definition with `stage-dependency-hold.ts`'s
+   *  `OBSERVED_WEIGHT_FRESHNESS_MS` and reads the reading's OWN stamped `observed_state.observedAt`
+   *  — never `lastObservedAt`, the row-level column, which is a second, coarser clock.
+   *  `not_reported`: this target executes at another domain instance and no observation has been
+   *  federated up to this one — a permanent state until the wave-target-observation journal kind
+   *  ships (docs/proposals/pipeline-mockup-data.md §5.3, increment 6), never a stale claim about a
+   *  reading that in fact never reaches this instance. Absent = a server predating this field. */
+  observedFreshness: z
+    .discriminatedUnion("state", [
+      z.object({ state: z.literal("never") }),
+      z.object({ state: z.literal("fresh"), ageSeconds: z.number().int().nonnegative() }),
+      z.object({
+        state: z.literal("stale"),
+        ageSeconds: z.number().int().nonnegative(),
+        staleAfterSeconds: z.number().int().nonnegative()
+      }),
+      z.object({ state: z.literal("not_reported") })
+    ])
     .optional(),
   status: z.string(),
   attempt: z.number().int(),

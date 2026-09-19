@@ -29446,6 +29446,11 @@
                                               },
                                               "message": {
                                                 "type": "string"
+                                              },
+                                              "stepCount": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
                                               }
                                             },
                                             "additionalProperties": false
@@ -29621,6 +29626,11 @@
                                             },
                                             "message": {
                                               "type": "string"
+                                            },
+                                            "stepCount": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 9007199254740991
                                             }
                                           },
                                           "additionalProperties": false
@@ -55458,6 +55468,11 @@
                                                     },
                                                     "message": {
                                                       "type": "string"
+                                                    },
+                                                    "stepCount": {
+                                                      "type": "integer",
+                                                      "minimum": 0,
+                                                      "maximum": 9007199254740991
                                                     }
                                                   },
                                                   "additionalProperties": false
@@ -55627,6 +55642,80 @@
                                             "freezes"
                                           ],
                                           "additionalProperties": false
+                                        },
+                                        "observedFreshness": {
+                                          "oneOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "state": {
+                                                  "type": "string",
+                                                  "const": "never"
+                                                }
+                                              },
+                                              "required": [
+                                                "state"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "state": {
+                                                  "type": "string",
+                                                  "const": "fresh"
+                                                },
+                                                "ageSeconds": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "state",
+                                                "ageSeconds"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "state": {
+                                                  "type": "string",
+                                                  "const": "stale"
+                                                },
+                                                "ageSeconds": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "staleAfterSeconds": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "state",
+                                                "ageSeconds",
+                                                "staleAfterSeconds"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "state": {
+                                                  "type": "string",
+                                                  "const": "not_reported"
+                                                }
+                                              },
+                                              "required": [
+                                                "state"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
                                         },
                                         "status": {
                                           "type": "string"

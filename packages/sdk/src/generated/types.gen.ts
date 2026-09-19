@@ -7523,6 +7523,7 @@ export type GetComponentPipelineResponses = {
                         step?: number;
                         weight?: number;
                         message?: string;
+                        stepCount?: number;
                     };
                     truncation?: {
                         [key: string]: {
@@ -7552,6 +7553,7 @@ export type GetComponentPipelineResponses = {
                         step?: number;
                         weight?: number;
                         message?: string;
+                        stepCount?: number;
                     };
                     truncation?: {
                         [key: string]: {
@@ -13548,6 +13550,7 @@ export type ExplainChangeResponses = {
                             step?: number;
                             weight?: number;
                             message?: string;
+                            stepCount?: number;
                         };
                         truncation?: {
                             [key: string]: {
@@ -13575,6 +13578,18 @@ export type ExplainChangeResponses = {
                             staleAfter: string | null;
                             lastReportedAt: string | null;
                         }>;
+                    };
+                    observedFreshness?: {
+                        state: 'never';
+                    } | {
+                        state: 'fresh';
+                        ageSeconds: number;
+                    } | {
+                        state: 'stale';
+                        ageSeconds: number;
+                        staleAfterSeconds: number;
+                    } | {
+                        state: 'not_reported';
                     };
                     status: string;
                     attempt: number;

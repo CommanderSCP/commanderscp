@@ -140,7 +140,17 @@ export interface ExecutionStatus {
   /** A structured snapshot of what the executor has deployed. See docs/plugin-api.md §15. */
   observed?: {
     images?: string[];
-    rollout?: { phase?: string; step?: number; weight?: number; message?: string };
+    rollout?: {
+      phase?: string;
+      step?: number;
+      weight?: number;
+      message?: string;
+      /** THE TOTAL STEP COUNT (M), read from the SAME manifest fetch that already produces `step`
+       *  (`currentStepIndex`) — never a second call. Absent when the executor has no notion of a
+       *  step total (a blue-green Rollout, an older Rollouts version, a non-ArgoCD executor) or the
+       *  manifest fetch failed. NEVER 0 and never guessed: pipeline-mockup-data.md §5.1. */
+      stepCount?: number;
+    };
   };
   /** Best-effort 0..1; heartbeat input for the stuck-change watchdog (DESIGN §9.4). */
   progress?: number;

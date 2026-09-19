@@ -608,6 +608,96 @@ describe("status()", () => {
     expect(result.stateRef).toBe("abc123");
   });
 
+  // pipeline-mockup-data.md §5.1: stepCount (M) off the SAME manifest fetch, no extra call.
+  it("populates observed.rollout.stepCount from spec.strategy.canary.steps.length on the SAME manifest fetch", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const appScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-with-stepcount")
+      .reply(200, {
+        metadata: { name: "status-with-stepcount" },
+        status: {
+          operationState: { phase: "Succeeded" },
+          sync: { status: "Synced", revision: "abc123" },
+          health: { status: "Progressing" },
+          resources: [
+            {
+              group: "argoproj.io",
+              version: "v1alpha1",
+              kind: "Rollout",
+              namespace: "prod",
+              name: "web-rollout",
+              health: { status: "Progressing" }
+            }
+          ]
+        }
+      });
+    const resourceScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-with-stepcount/resource")
+      .query(true)
+      .reply(200, {
+        manifest: JSON.stringify({
+          spec: { strategy: { canary: { steps: [{}, {}, {}, {}, {}] } } },
+          status: {
+            phase: "Paused",
+            currentStepIndex: 2,
+            canary: { weights: { canary: { weight: 40 } } }
+          }
+        })
+      });
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-with-stepcount::run-1"
+    });
+
+    expect(appScope.isDone()).toBe(true);
+    expect(resourceScope.isDone()).toBe(true);
+    expect(result.observed?.rollout?.stepCount).toBe(5);
+    expect(result.observed?.rollout?.step).toBe(2);
+  });
+
+  // NEVER 0, never guessed (proposal §5.1) — a blue-green Rollout's `spec.strategy` has no `canary`
+  // key at all, so `stepCount` must be ABSENT, not 0.
+  it("omits observed.rollout.stepCount when the manifest strategy has no canary.steps (blue-green, or an older Rollouts version)", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const appScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-no-stepcount")
+      .reply(200, {
+        metadata: { name: "status-no-stepcount" },
+        status: {
+          operationState: { phase: "Succeeded" },
+          sync: { status: "Synced", revision: "abc123" },
+          health: { status: "Progressing" },
+          resources: [
+            {
+              group: "argoproj.io",
+              version: "v1alpha1",
+              kind: "Rollout",
+              namespace: "prod",
+              name: "web-rollout",
+              health: { status: "Progressing" }
+            }
+          ]
+        }
+      });
+    const resourceScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-no-stepcount/resource")
+      .query(true)
+      .reply(200, {
+        manifest: JSON.stringify({
+          spec: { strategy: { blueGreen: { activeService: "web-active" } } },
+          status: { phase: "Healthy" }
+        })
+      });
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-no-stepcount::run-1"
+    });
+
+    expect(appScope.isDone()).toBe(true);
+    expect(resourceScope.isDone()).toBe(true);
+    expect(result.observed?.rollout?.stepCount).toBeUndefined();
+  });
+
   it("carries near-free rollout phase/message from resources[] even when the live manifest lacks step/weight — omits what Argo does not report", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     const appScope = nock(SERVER_URL)

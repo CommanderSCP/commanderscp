@@ -2325,7 +2325,8 @@ export const zGetComponentPipelineResponse = z.object({
                     phase: z.string().optional(),
                     step: z.number().optional(),
                     weight: z.number().optional(),
-                    message: z.string().optional()
+                    message: z.string().optional(),
+                    stepCount: z.int().gte(0).lte(9007199254740991).optional()
                 }).optional(),
                 truncation: z.record(z.string(), z.object({
                     dropped: z.boolean(),
@@ -2356,7 +2357,8 @@ export const zGetComponentPipelineResponse = z.object({
                     phase: z.string().optional(),
                     step: z.number().optional(),
                     weight: z.number().optional(),
-                    message: z.string().optional()
+                    message: z.string().optional(),
+                    stepCount: z.int().gte(0).lte(9007199254740991).optional()
                 }).optional(),
                 truncation: z.record(z.string(), z.object({
                     dropped: z.boolean(),
@@ -5321,7 +5323,8 @@ export const zExplainChangeResponse = z.object({
                         phase: z.string().optional(),
                         step: z.number().optional(),
                         weight: z.number().optional(),
-                        message: z.string().optional()
+                        message: z.string().optional(),
+                        stepCount: z.int().gte(0).lte(9007199254740991).optional()
                     }).optional(),
                     truncation: z.record(z.string(), z.object({
                         dropped: z.boolean(),
@@ -5352,6 +5355,23 @@ export const zExplainChangeResponse = z.object({
                         lastReportedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable()
                     })).optional()
                 }).optional(),
+                observedFreshness: z.union([
+                    z.object({
+                        state: z.literal('never')
+                    }),
+                    z.object({
+                        state: z.literal('fresh'),
+                        ageSeconds: z.int().gte(0).lte(9007199254740991)
+                    }),
+                    z.object({
+                        state: z.literal('stale'),
+                        ageSeconds: z.int().gte(0).lte(9007199254740991),
+                        staleAfterSeconds: z.int().gte(0).lte(9007199254740991)
+                    }),
+                    z.object({
+                        state: z.literal('not_reported')
+                    })
+                ]).optional(),
                 status: z.string(),
                 attempt: z.int().gte(-9007199254740991).lte(9007199254740991),
                 lastObservedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
