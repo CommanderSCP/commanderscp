@@ -84,6 +84,17 @@ export interface PipelineWaveTargetLike {
   } | null;
   /** Campaign targets: the per-target member Change the wave fanned out into (DESIGN §9.5). */
   memberChangeObjectId?: string | null;
+  /** `ChangeWaveTargetSchema.executor` (pipeline-mockup-data.md §2) — the `<Type> · <provider>`
+   *  subtitle's provider half, straight off THIS response, no extra fetch. `triggered`/`bound` both
+   *  carry a real `pluginModule`; `bound` is what a PRE-TRIGGER target shows — the binding the
+   *  resolution ladder selects NOW, never a guess from `executorPluginId` (null until trigger).
+   *  Absent on campaign wave targets (no routing Type there) and on a server predating this field —
+   *  `linksFor`'s `provider` is the fallback for that case. */
+  executor?:
+    | { basis: "triggered"; pluginModule: string }
+    | { basis: "bound"; pluginModule: string }
+    | { basis: "unbound" }
+    | undefined;
 }
 
 /** A compiled wave, structurally — satisfied by both ChangeWave and CampaignWave. */
@@ -496,12 +507,20 @@ export function PipelineWaveCard({
           const outlineHoldTone: "warning" | "info" | null =
             freezeHold || continuousHold ? "warning" : held ? "info" : null;
           const outlineTone = targetOutlineTone(target.status, outlineHoldTone);
-          // `<Type> · <provider>` (design-system §1.6a): the provider half only when the caller has
-          // it (today only `/changes/{id}/pipeline`'s `linksFor` fetches bindings) — an absent
-          // provider renders the Type alone, never a guess (increment-3 gap for callers that don't).
+          // `<Type> · <provider>` (design-system §1.6a). The provider half prefers
+          // `target.executor` (pipeline-mockup-data.md §2 — real wire data, no extra fetch, and
+          // correct PRE-TRIGGER too: `bound` is the binding the resolution ladder would use right
+          // now, never a guess from the still-null `executorPluginId`). `links.provider` is the
+          // fallback for a server predating this field, or a caller with no `executor` on its
+          // target shape at all (a campaign wave target: no routing Type there either, so
+          // `target.type` is already undefined and this whole subtitle renders nothing).
+          const provider =
+            target.executor?.basis === "triggered" || target.executor?.basis === "bound"
+              ? target.executor.pluginModule
+              : links.provider;
           const subtitle = target.type
-            ? links.provider
-              ? `${target.type} · ${links.provider}`
+            ? provider
+              ? `${target.type} · ${provider}`
               : target.type
             : undefined;
           return (
