@@ -13611,6 +13611,81 @@ export type ExplainChangeResponses = {
                     } | {
                         state: 'not_reported';
                     };
+                    checks?: {
+                        basis: 'resolved';
+                        slots: Array<{
+                            kind: string;
+                            grain: string;
+                            hooks: Array<{
+                                state: 'not_applicable';
+                                hookId: string;
+                                reason: string;
+                            } | {
+                                state: 'not_run';
+                                hookId: string;
+                            } | {
+                                state: 'running';
+                                hookId: string;
+                                startedAt: string;
+                                runStatus: string;
+                                externalUrl: string | null;
+                            } | {
+                                state: 'passed';
+                                hookId: string;
+                                concludedAt: string | null;
+                                externalUrl: string | null;
+                            } | {
+                                state: 'failed';
+                                hookId: string;
+                                concludedAt: string | null;
+                                runStatus: string | null;
+                                externalUrl: string | null;
+                            } | {
+                                state: 'no_evidence';
+                                hookId: string;
+                                maxAgeSeconds: number;
+                            } | {
+                                state: 'stale';
+                                hookId: string;
+                                maxAgeSeconds: number;
+                                newestEvidenceAt: string;
+                                staleAfter: string;
+                            } | {
+                                state: 'bake_not_started';
+                                hookId: string;
+                                quietWindowSeconds: number;
+                            } | {
+                                state: 'baking';
+                                hookId: string;
+                                quietWindowSeconds: number;
+                                windowEndsAt: string;
+                            } | {
+                                state: 'quiet';
+                                hookId: string;
+                                quietWindowSeconds: number;
+                                windowEndsAt: string;
+                                coveredBy: Array<string>;
+                            } | {
+                                state: 'alarm_firing';
+                                hookId: string;
+                                windowEndsAt: string;
+                                since: string;
+                            } | {
+                                state: 'window_not_covered';
+                                hookId: string;
+                                quietWindowSeconds: number;
+                                windowEndsAt: string;
+                            } | {
+                                state: 'no_source';
+                                hookId: string;
+                                quietWindowSeconds: number;
+                                windowEndsAt: string;
+                            }>;
+                        }>;
+                    } | {
+                        basis: 'unresolvable';
+                        reason: string;
+                    };
                     status: string;
                     attempt: number;
                     lastObservedAt: string | null;

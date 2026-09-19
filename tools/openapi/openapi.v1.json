@@ -55846,6 +55846,470 @@
                                             }
                                           ]
                                         },
+                                        "checks": {
+                                          "oneOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "basis": {
+                                                  "type": "string",
+                                                  "const": "resolved"
+                                                },
+                                                "slots": {
+                                                  "type": "array",
+                                                  "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "kind": {
+                                                        "type": "string"
+                                                      },
+                                                      "grain": {
+                                                        "type": "string"
+                                                      },
+                                                      "hooks": {
+                                                        "type": "array",
+                                                        "items": {
+                                                          "oneOf": [
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "not_applicable"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "reason": {
+                                                                  "type": "string"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "reason"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "not_run"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "running"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "startedAt": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                },
+                                                                "runStatus": {
+                                                                  "type": "string"
+                                                                },
+                                                                "externalUrl": {
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "startedAt",
+                                                                "runStatus",
+                                                                "externalUrl"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "passed"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "concludedAt": {
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string",
+                                                                      "format": "date-time",
+                                                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
+                                                                },
+                                                                "externalUrl": {
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "concludedAt",
+                                                                "externalUrl"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "failed"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "concludedAt": {
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string",
+                                                                      "format": "date-time",
+                                                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
+                                                                },
+                                                                "runStatus": {
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
+                                                                },
+                                                                "externalUrl": {
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "concludedAt",
+                                                                "runStatus",
+                                                                "externalUrl"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "no_evidence"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "maxAgeSeconds": {
+                                                                  "type": "integer",
+                                                                  "minimum": 0,
+                                                                  "maximum": 9007199254740991
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "maxAgeSeconds"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "stale"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "maxAgeSeconds": {
+                                                                  "type": "integer",
+                                                                  "minimum": 0,
+                                                                  "maximum": 9007199254740991
+                                                                },
+                                                                "newestEvidenceAt": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                },
+                                                                "staleAfter": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "maxAgeSeconds",
+                                                                "newestEvidenceAt",
+                                                                "staleAfter"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "bake_not_started"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "quietWindowSeconds": {
+                                                                  "type": "integer",
+                                                                  "minimum": 0,
+                                                                  "maximum": 9007199254740991
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "quietWindowSeconds"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "baking"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "quietWindowSeconds": {
+                                                                  "type": "integer",
+                                                                  "minimum": 0,
+                                                                  "maximum": 9007199254740991
+                                                                },
+                                                                "windowEndsAt": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "quietWindowSeconds",
+                                                                "windowEndsAt"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "quiet"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "quietWindowSeconds": {
+                                                                  "type": "integer",
+                                                                  "minimum": 0,
+                                                                  "maximum": 9007199254740991
+                                                                },
+                                                                "windowEndsAt": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                },
+                                                                "coveredBy": {
+                                                                  "type": "array",
+                                                                  "items": {
+                                                                    "type": "string"
+                                                                  }
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "quietWindowSeconds",
+                                                                "windowEndsAt",
+                                                                "coveredBy"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "alarm_firing"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "windowEndsAt": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                },
+                                                                "since": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "windowEndsAt",
+                                                                "since"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "window_not_covered"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "quietWindowSeconds": {
+                                                                  "type": "integer",
+                                                                  "minimum": 0,
+                                                                  "maximum": 9007199254740991
+                                                                },
+                                                                "windowEndsAt": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "quietWindowSeconds",
+                                                                "windowEndsAt"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "no_source"
+                                                                },
+                                                                "hookId": {
+                                                                  "type": "string"
+                                                                },
+                                                                "quietWindowSeconds": {
+                                                                  "type": "integer",
+                                                                  "minimum": 0,
+                                                                  "maximum": 9007199254740991
+                                                                },
+                                                                "windowEndsAt": {
+                                                                  "type": "string",
+                                                                  "format": "date-time",
+                                                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "hookId",
+                                                                "quietWindowSeconds",
+                                                                "windowEndsAt"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            }
+                                                          ]
+                                                        }
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "kind",
+                                                      "grain",
+                                                      "hooks"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  }
+                                                }
+                                              },
+                                              "required": [
+                                                "basis",
+                                                "slots"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "basis": {
+                                                  "type": "string",
+                                                  "const": "unresolvable"
+                                                },
+                                                "reason": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "basis",
+                                                "reason"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
                                         "status": {
                                           "type": "string"
                                         },

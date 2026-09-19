@@ -5404,6 +5404,98 @@ export const zExplainChangeResponse = z.object({
                         state: z.literal('not_reported')
                     })
                 ]).optional(),
+                checks: z.union([
+                    z.object({
+                        basis: z.literal('resolved'),
+                        slots: z.array(z.object({
+                            kind: z.string(),
+                            grain: z.string(),
+                            hooks: z.array(z.union([
+                                z.object({
+                                    state: z.literal('not_applicable'),
+                                    hookId: z.string(),
+                                    reason: z.string()
+                                }),
+                                z.object({
+                                    state: z.literal('not_run'),
+                                    hookId: z.string()
+                                }),
+                                z.object({
+                                    state: z.literal('running'),
+                                    hookId: z.string(),
+                                    startedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                                    runStatus: z.string(),
+                                    externalUrl: z.string().nullable()
+                                }),
+                                z.object({
+                                    state: z.literal('passed'),
+                                    hookId: z.string(),
+                                    concludedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
+                                    externalUrl: z.string().nullable()
+                                }),
+                                z.object({
+                                    state: z.literal('failed'),
+                                    hookId: z.string(),
+                                    concludedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
+                                    runStatus: z.string().nullable(),
+                                    externalUrl: z.string().nullable()
+                                }),
+                                z.object({
+                                    state: z.literal('no_evidence'),
+                                    hookId: z.string(),
+                                    maxAgeSeconds: z.int().gte(0).lte(9007199254740991)
+                                }),
+                                z.object({
+                                    state: z.literal('stale'),
+                                    hookId: z.string(),
+                                    maxAgeSeconds: z.int().gte(0).lte(9007199254740991),
+                                    newestEvidenceAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                                    staleAfter: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+                                }),
+                                z.object({
+                                    state: z.literal('bake_not_started'),
+                                    hookId: z.string(),
+                                    quietWindowSeconds: z.int().gte(0).lte(9007199254740991)
+                                }),
+                                z.object({
+                                    state: z.literal('baking'),
+                                    hookId: z.string(),
+                                    quietWindowSeconds: z.int().gte(0).lte(9007199254740991),
+                                    windowEndsAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+                                }),
+                                z.object({
+                                    state: z.literal('quiet'),
+                                    hookId: z.string(),
+                                    quietWindowSeconds: z.int().gte(0).lte(9007199254740991),
+                                    windowEndsAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                                    coveredBy: z.array(z.string())
+                                }),
+                                z.object({
+                                    state: z.literal('alarm_firing'),
+                                    hookId: z.string(),
+                                    windowEndsAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                                    since: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+                                }),
+                                z.object({
+                                    state: z.literal('window_not_covered'),
+                                    hookId: z.string(),
+                                    quietWindowSeconds: z.int().gte(0).lte(9007199254740991),
+                                    windowEndsAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+                                }),
+                                z.object({
+                                    state: z.literal('no_source'),
+                                    hookId: z.string(),
+                                    quietWindowSeconds: z.int().gte(0).lte(9007199254740991),
+                                    windowEndsAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+                                })
+                            ]))
+                        }))
+                    }),
+                    z.object({
+                        basis: z.literal('unresolvable'),
+                        reason: z.string()
+                    })
+                ]).optional(),
                 status: z.string(),
                 attempt: z.int().gte(-9007199254740991).lte(9007199254740991),
                 lastObservedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),

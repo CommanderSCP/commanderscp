@@ -205,6 +205,191 @@ export const WaveTargetObservedSchema = z.object({
 });
 export type WaveTargetObserved = z.infer<typeof WaveTargetObservedSchema>;
 
+/** ONE DECLARED PIPELINE HOOK'S STATE, for one wave target.
+ *
+ *  A `z.discriminatedUnion`, NOT a `z.enum`, and deliberately: vendored oasdiff 1.23.0 does not
+ *  flag a new response `oneOf` member but DOES flag a new response enum value (memory
+ *  `scp-oasdiff-oneof-vs-enum`), so the set stays open under the `/v1` additive-only gate. Two
+ *  members it does NOT have yet, on purpose:
+ *  - `not_reported` — "this instance holds no record because the record lives at another domain".
+ *    Not emitted today and therefore not declared today: the coordinating instance dispatches its
+ *    own `postMerge`/`postDeploy` runs, and BOTH evidence kinds (`testRun` and, since the
+ *    increment-0 fix to `recordAlarmEvidence`, `alarmState`) federate upward as
+ *    `pipeline_evidence_upsert`. It arrives with increment 6
+ *    (docs/proposals/pipeline-mockup-data.md §3.3/§5.3), which owns the federation path.
+ *  - a separate "aborted" — an aborted run is a `failed` whose `runStatus` says `aborted`, so the
+ *    rail's colour and the recorded word never disagree.
+ *
+ *  WHAT EACH ABSENCE MEANS, and why they are four different members rather than one:
+ *  `not_applicable` (this hook cannot apply here), `not_run` (it applies and nothing has reached
+ *  it), `no_evidence` (a probe was promised and has NEVER reported), `stale` (a probe was promised,
+ *  reported, and went quiet). Collapsing any pair rebuilds the wall-of-amber the design system's
+ *  §1.5 exists to prevent — and collapsing `not_applicable`/`not_run` into "no hook declared"
+ *  (the empty `hooks` array) would claim nobody ever promised the check. */
+export const PipelineHookStateSchema = z.discriminatedUnion("state", [
+  /** Declared, but cannot apply to THIS wave target — `reason` is server-composed and rendered
+   *  verbatim (charter principle 6). Today: a `stage`-narrowed hook whose stage is not this wave's
+   *  (`pipeline-hook-gate.ts`'s one-line stage rule), a `stage`-narrowed `postMerge` hook (which
+   *  gates before any wave, so no stage can ever match it), or a row whose per-kind number is NULL
+   *  (`maxAgeSeconds` / `quietWindowSeconds`) — not a rule, and never defaulted to a number nobody
+   *  declared. */
+  z.object({ state: z.literal("not_applicable"), hookId: z.string(), reason: z.string() }),
+  /** Bound, and no run row exists for this (change, hookId, wave) yet — the gate has not reached
+   *  it. DISTINCT from the empty `hooks` array: one is waiting, the other will never happen. */
+  z.object({ state: z.literal("not_run"), hookId: z.string() }),
+  /** A run row exists and has not concluded. `runStatus` carries the recorded word verbatim
+   *  (`pending` = dispatched, the executor has not started it; `running` = it has), as a plain
+   *  string rather than an enum for the reason in this schema's doc. `startedAt` is the run row's
+   *  own `started_at`, i.e. when SCP dispatched it. */
+  z.object({
+    state: z.literal("running"),
+    hookId: z.string(),
+    startedAt: z.string().datetime(),
+    runStatus: z.string(),
+    externalUrl: z.string().nullable()
+  }),
+  /** A `postMerge`/`postDeploy` run that `succeeded`, or a `continuous` probe whose newest evidence
+   *  is `passed` AND inside `maxAgeSeconds`. `concludedAt` is the run's `last_observed_at` (the
+   *  poll that saw the terminal status — `null` for a run that reached terminal without one) or the
+   *  evidence's own `completedAt`. */
+  z.object({
+    state: z.literal("passed"),
+    hookId: z.string(),
+    concludedAt: z.string().datetime().nullable(),
+    externalUrl: z.string().nullable()
+  }),
+  /** A run that `failed`/`aborted`, or a `continuous` probe whose newest evidence is `failed` —
+   *  "the probe ran and the target is sick", the one hook absence that is a claim about the TARGET
+   *  (`pipeline-hook-verdicts.ts`). `runStatus` is `null` for the evidence-backed form, which has
+   *  no run row. */
+  z.object({
+    state: z.literal("failed"),
+    hookId: z.string(),
+    concludedAt: z.string().datetime().nullable(),
+    runStatus: z.string().nullable(),
+    externalUrl: z.string().nullable()
+  }),
+  /** `continuous` only. A probe is declared and has NEVER reported for this (component, target) —
+   *  `evaluateContinuousHold`'s `no_evidence`. Nobody is looking; check the PROBER. */
+  z.object({
+    state: z.literal("no_evidence"),
+    hookId: z.string(),
+    maxAgeSeconds: z.number().int().nonnegative()
+  }),
+  /** `continuous` only. It reported, and the newest evidence is older than `maxAgeSeconds` — which
+   *  `ManifestContinuousHookSchema` defines as ABSENT, never a stale PASS. A different operator
+   *  action from `no_evidence` (that one has never reported at all), so a different member. */
+  z.object({
+    state: z.literal("stale"),
+    hookId: z.string(),
+    maxAgeSeconds: z.number().int().nonnegative(),
+    newestEvidenceAt: z.string().datetime(),
+    staleAfter: z.string().datetime()
+  }),
+  /** `bakeAlarms` only. DECLARED AND NOT STARTED: the quiet window begins when the target deploys
+   *  and this target has not (`waveTargetDeployedAt` is null — the same definition the wave gate
+   *  uses). `pipeline-hook-gate.ts`'s `bakeEntry` drops this case entirely (it returns `null` and
+   *  records nothing), which is correct for a GATE — a window that has not opened cannot hold one —
+   *  but leaves an operator unable to tell a declared-and-waiting bake from an undeclared one.
+   *  This member is the only place that fact reaches the wire. */
+  z.object({
+    state: z.literal("bake_not_started"),
+    hookId: z.string(),
+    quietWindowSeconds: z.number().int().nonnegative()
+  }),
+  /** `bakeAlarms` only. The window is OPEN — the target deployed, no alarm has fired inside it, and
+   *  `windowEndsAt` is still in the future, so evidence may yet arrive. Not a pass: nothing has
+   *  been established yet. */
+  z.object({
+    state: z.literal("baking"),
+    hookId: z.string(),
+    quietWindowSeconds: z.number().int().nonnegative(),
+    windowEndsAt: z.string().datetime()
+  }),
+  /** `bakeAlarms` only. `evaluateBakeGate`'s `quiet`: one source covered the WHOLE window and
+   *  nothing fired. `coveredBy` names the sources that covered it, so an operator can see that (for
+   *  example) only `pushed` covered it in an air-gapped domain. */
+  z.object({
+    state: z.literal("quiet"),
+    hookId: z.string(),
+    quietWindowSeconds: z.number().int().nonnegative(),
+    windowEndsAt: z.string().datetime(),
+    coveredBy: z.array(z.string())
+  }),
+  /** `bakeAlarms` only. `evaluateBakeGate`'s `alarm_firing`: at least one alarm fired inside the
+   *  window, from any source, with no precedence between sources (the gate is fail-safe on firing).
+   *  `since` is the EARLIEST such `firedAt`. Reported even while the window is still open — an
+   *  alarm that already fired is not pending news. */
+  z.object({
+    state: z.literal("alarm_firing"),
+    hookId: z.string(),
+    windowEndsAt: z.string().datetime(),
+    since: z.string().datetime()
+  }),
+  /** `bakeAlarms` only. `evaluateBakeGate`'s `window_not_covered`, AND the window has elapsed:
+   *  reports exist and leave a gap. Distinct from `no_source` because the operator action differs —
+   *  here something is reporting and stopped, there nothing ever reported. */
+  z.object({
+    state: z.literal("window_not_covered"),
+    hookId: z.string(),
+    quietWindowSeconds: z.number().int().nonnegative(),
+    windowEndsAt: z.string().datetime()
+  }),
+  /** `bakeAlarms` only. `evaluateBakeGate`'s `no_source`, AND the window has elapsed: a declared
+   *  bake gate with no evidence source at all. Surfaced LOUDLY rather than as a mystery hang. */
+  z.object({
+    state: z.literal("no_source"),
+    hookId: z.string(),
+    quietWindowSeconds: z.number().int().nonnegative(),
+    windowEndsAt: z.string().datetime()
+  })
+]);
+export type PipelineHookState = z.infer<typeof PipelineHookStateSchema>;
+
+/** ONE SLOT of the rail — one hook KIND, and every hook of that kind declared on this target's
+ *  component. */
+export const WaveTargetCheckSlotSchema = z.object({
+  /** `postMerge` | `postDeploy` | `continuous` | `bakeAlarms`. A plain `z.string`, NOT
+   *  `PipelineHookKindSchema`: a response enum freezes the set (memory `scp-oasdiff-oneof-vs-enum`),
+   *  and a fifth kind must stay an additive change. */
+  kind: z.string(),
+  /** WHAT THE RECORD BEHIND THIS SLOT IS KEYED BY — so the UI cannot imply per-target evidence
+   *  where none exists. `pipeline_hook_runs` is identified by `(change, hookId, waveIndex)`, NOT by
+   *  target (docs/proposals/pipeline-mockup-data.md §3.4), so:
+   *  - `per_change` (`postMerge`, whose `waveIndex` is NULL and whose `targetObjectId` is NULL):
+   *    every target of the change shows the SAME run.
+   *  - `per_wave` (`postDeploy`): every target of this wave shows the same run.
+   *  - `per_target` (`continuous`, `bakeAlarms`): the evidence really is keyed by
+   *    `(component, target, hookId)`.
+   *  A plain `z.string` for the same reason `kind` is. */
+  grain: z.string(),
+  /** Every declared hook of `kind` on this target's component, SORTED BY `hookId`.
+   *  **EMPTY = NOT DECLARED** — nobody promised this check. That is a structural absence and must
+   *  never render like a promised check that has gone quiet. */
+  hooks: z.array(PipelineHookStateSchema)
+});
+export type WaveTargetCheckSlot = z.infer<typeof WaveTargetCheckSlotSchema>;
+
+/** THE CHECKS RAIL for one wave target — the four hook kinds' state, in fixed pipeline order.
+ *
+ *  A union on `basis` (the same idiom `executor` above uses) rather than a bare array, because
+ *  "no hook is declared" and "this server could not work out what is declared" are different facts
+ *  and an empty `slots[].hooks` already means the first one. `unresolvable` is reachable: a wave
+ *  target whose object is soft-deleted, or a `placement` missing half its identity, resolves to no
+ *  subject at all in `resolveHookSubjects`, so there is no component whose declarations could be
+ *  read — the honest answer is "unknown", never "nothing is declared". */
+export const WaveTargetChecksSchema = z.discriminatedUnion("basis", [
+  z.object({
+    basis: z.literal("resolved"),
+    /** ALWAYS all four kinds, ALWAYS in pipeline order: postMerge -> postDeploy -> continuous ->
+     *  bakeAlarms. Fixed position is what makes a column of targets scannable (the mockup's own
+     *  rationale: "the third slot is always the canary"). */
+    slots: z.array(WaveTargetCheckSlotSchema)
+  }),
+  z.object({ basis: z.literal("unresolvable"), reason: z.string() })
+]);
+export type WaveTargetChecks = z.infer<typeof WaveTargetChecksSchema>;
+
 export const ChangeWaveTargetSchema = z.object({
   id: z.string().uuid(),
   waveId: z.string().uuid(),
@@ -277,6 +462,8 @@ export const ChangeWaveTargetSchema = z.object({
       z.object({ state: z.literal("not_reported") })
     ])
     .optional(),
+  /** THE PER-TARGET CHECKS RAIL. See docs/schemas.md §67a. */
+  checks: WaveTargetChecksSchema.optional(),
   status: z.string(),
   attempt: z.number().int(),
   lastObservedAt: z.string().datetime().nullable(),

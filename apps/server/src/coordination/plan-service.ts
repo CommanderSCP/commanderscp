@@ -41,6 +41,7 @@ import {
 } from "./wave-targets-repo.js";
 import { OBSERVED_WEIGHT_FRESHNESS_MS } from "./stage-dependency-hold.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { resolveWaveTargetChecks } from "./wave-target-checks.js";
 
 /** Reads the dependency edges among targets from the graph. See docs/coordination.md §687. */
 export async function loadDependsOnEdges(
@@ -234,6 +235,15 @@ export async function compileAndPersistPlan(
   // Same reasoning for freshness: every row is unobserved, so this is `never` (self) or
   // `not_reported` (another domain) from the first response onward, never absent.
   const freshness = await resolveWaveTargetFreshness(tx, input.orgId, targetRows);
+  // Same reasoning again for the checks rail: on a freshly compiled plan every declared hook is
+  // `not_run` / `bake_not_started` and every undeclared kind is an empty slot, which is a real and
+  // useful first answer — "these four checks exist, none has been reached". Resolving it here keeps
+  // the propose response and every later `explain` the same shape.
+  const checks = await resolveWaveTargetChecks(tx, input.orgId, {
+    changeObjectId: input.changeObjectId,
+    waves: waveRows,
+    targets: targetRows
+  });
   return toChangePlanShape(
     planRow,
     waveRows,
@@ -243,7 +253,8 @@ export async function compileAndPersistPlan(
     undefined,
     topologyName,
     executors,
-    freshness
+    freshness,
+    checks
   );
 }
 
@@ -298,7 +309,8 @@ function toChangeWaveTargetShape(
   row: typeof changeWaveTargets.$inferSelect,
   hold?: WaveTargetHold,
   executor?: ChangeWaveTarget["executor"],
-  observedFreshness?: ChangeWaveTarget["observedFreshness"]
+  observedFreshness?: ChangeWaveTarget["observedFreshness"],
+  checks?: ChangeWaveTarget["checks"]
 ): ChangeWaveTarget {
   const waveTargetType = (row.type as ExecutorType | null) ?? "configuration";
   return {
@@ -334,6 +346,9 @@ function toChangeWaveTargetShape(
       } | null) ?? null,
     ...(hold ? { hold } : {}),
     ...(observedFreshness ? { observedFreshness } : {}),
+    // ABSENT means the CALLER did not resolve it — reconcile's `withFreezeHolds: false` read, which
+    // never reaches a response. It never means "no check is declared": that is `slots[].hooks: []`.
+    ...(checks ? { checks } : {}),
     status: row.status,
     attempt: row.attempt,
     lastObservedAt: row.lastObservedAt?.toISOString() ?? null,
@@ -364,7 +379,10 @@ function toChangePlanShape(
   executors?: Map<string, ChangeWaveTarget["executor"]>,
   /** Each wave target's `observedFreshness`, keyed by ITS OWN row id
    *  (`resolveWaveTargetFreshness`). */
-  freshness?: Map<string, ChangeWaveTarget["observedFreshness"]>
+  freshness?: Map<string, ChangeWaveTarget["observedFreshness"]>,
+  /** Each wave target's `checks` rail, keyed by ITS OWN row id (`resolveWaveTargetChecks`).
+   *  `undefined` when the caller did not resolve it — see `toChangeWaveTargetShape`. */
+  checks?: Map<string, ChangeWaveTarget["checks"]>
 ): ChangePlan {
   return {
     id: plan.id,
@@ -425,7 +443,8 @@ function toChangePlanShape(
                   continuousHolds?.get(t.targetObjectId)
                 ),
                 executors?.get(t.id),
-                freshness?.get(t.id)
+                freshness?.get(t.id),
+                checks?.get(t.id)
               )
             )
           };
@@ -797,6 +816,10 @@ export async function getLatestPlanForChange(
   const freshness = await resolveWaveTargetFreshness(tx, orgId, targetRows);
 
   if (options?.withFreezeHolds === false) {
+    // NO CHECKS RAIL ON THIS PATH, deliberately, and for the same reason neither hold half is
+    // resolved here: this is reconcile's per-tick internal read (`reconcile.ts`'s
+    // `withFreezeHolds: false`), it never becomes a response, and the rail costs a per-(target,hook)
+    // evidence read for every declared `continuous`/`bakeAlarms` hook.
     return toChangePlanShape(
       planRow,
       waveRows,
@@ -824,6 +847,14 @@ export async function getLatestPlanForChange(
   const freezeHolds = await resolveWaveTargetFreezeHolds(tx, orgId, candidates);
   const continuousHolds = await resolveWaveTargetContinuousHolds(tx, orgId, candidates);
   const scopeNames = await resolveFreezeScopeNames(tx, orgId, freezeHolds);
+  // THE SAME RE-DERIVE-ON-EVERY-READ RULE the two hold halves follow (see the comment above them):
+  // the gate's Decision rows have no clearing counterpart, so a `checks` field fed from one would
+  // still say "failed" after a rerun went green.
+  const checks = await resolveWaveTargetChecks(tx, orgId, {
+    changeObjectId,
+    waves: waveRows,
+    targets: targetRows
+  });
 
   return toChangePlanShape(
     planRow,
@@ -834,6 +865,7 @@ export async function getLatestPlanForChange(
     continuousHolds,
     topologyName,
     executors,
-    freshness
+    freshness,
+    checks
   );
 }
