@@ -178,8 +178,10 @@ RULING 2 — DELETING A CONTAINER THAT STILL HAS CONTAINMENT CHILDREN IS REFUSED
 
 Route 1's own cases stay in `graph/domain-delete-orphan-guard.integration.test.ts` (whose CONTROL for route 2 is inverted there, with the reason written where the old reason was). THIS file covers the widening and — the part that actually needs protecting — THE CARVE-OUTS.
 
+ROUTE 5 JOINED IT 2026-09-18 — `source_mappings` rows naming the row as their component, the same property on a table with no FK and no `deleted_at` (§125a). Covered here by "refuses deleting a component that still has a SOURCE MAPPING".
+
 MUTATION LOG — each mutation applied ALONE, run, reverted, restoration verified with `cmp`
-m7  drop the widening (guard only `domainChildren`, as before) → RED: "a service with components", "an assembly with components", "a component with a live placement", "a deployment-target with a live placement" m8  drop the `!removedForeignShadow` / `!input.federationImport` carve-out → RED: "a federation IMPORT delete with children still lands", "removing a foreign SHADOW row with children still lands"
+m7  drop the widening (guard only `domainChildren`, as before) → RED: "a service with components", "an assembly with components", "a component with a live placement", "a deployment-target with a live placement" m8  drop the `!removedForeignShadow` / `!input.federationImport` carve-out → RED: "a federation IMPORT delete with children still lands", "removing a foreign SHADOW row with children still lands" m9  disable the route-5 clause (`if (false && sourceMappingBlockers.length > 0)`) → RED: "refuses deleting a component that still has a SOURCE MAPPING" (and that one only)
 
 ## `apps/server/src/graph/containment-depth-doors.integration.test.ts`
 
@@ -1198,6 +1200,7 @@ WIDENED TO ALL THREE DEPENDENT ROUTES (owner ruling 2026-08-18, proposal §9.3 /
 route 1  `objects.domain_id` children   — the measured incident above
 route 2  `contains` children            — a service's components, left live and detached
 routes 3+4  placements naming this row  — invisible to the cascade entirely
+route 5  source mappings naming this row as their component — §125a
 ```
 
 The counts are the same three `countContainmentDependents` computes (kept as counts THERE, for the reach Decision, because that record only needs the blast radius' size); here the rows are ENUMERATED, because a refusal an operator cannot act on is a wall, not a guard.
@@ -1211,6 +1214,18 @@ NOT applied on the federation-import path, and not when removing a foreign SHADO
 Placements name their endpoints by JSON property (`componentId` / `deploymentTargetId`), so this arm COMPOSES `graph/containment.ts`'s `placementNamesObjectSql` — the one definition of routes 3+4 read downward, which `containmentChildrenSql`'s arm 3 also composes. The guard, the reach record (`countContainmentDependents`) and both containment walks therefore cannot disagree about what depends on this row.
 
 ⚠️ IT WAS A HAND-TYPED COPY AND IT HAD DRIFTED, 2026-08-26. The predicate here was a RAW TEXT comparison with no `UUID_TEXT_PATTERN` guard and no `::uuid` cast. `uuid` equality is case-insensitive and `text` equality is not (measured, PostgreSQL 16), and every id compared here comes out of a `uuid` column lower-case — so a placement whose `componentId` was written as UPPER-CASE HEX was on this object's containment chain going UP, and INVISIBLE to this guard coming down. BEHAVIOUR CHANGE, stated rather than folded in: deleting such a component or deployment-target is now REFUSED instead of silently leaving the placement live and dangling, which is this guard's whole purpose. It is not reachable through `createPlacement` (that resolves both endpoints and writes their own ids), only through `createObject` directly — federation import, or legacy rows — which is the same population `placementEndpointParentSql`'s `CASE` guard exists for.
+
+### §125a. Source mappings name their component by COLUMN
+
+ROUTE 5, added 2026-09-18 after the same property was measured on the live homelab a second time. A `source_mappings` row names its component in `component_object_id` — a plain column with **no foreign key to `objects`** and no `deleted_at` of its own — so it is invisible to the edge cascade for exactly the reason a placement is, and the fix is the one the owner already chose for placements in §9.6 Q3: REFUSAL, not a cascade. A mapping is removed by `DELETE /change-sources/{sourceKind}/mappings` and never implicitly.
+
+MEASURED 2026-09-17 on the live homelab: **38 mappings pointed at 19 components soft-deleted on 2026-09-11** (`homelab-loki`, `homelab-headlamp`, `homelab-policy-reporter`, the six github-runner components, …), every one of them `enabled = true`. The 2026-08-02 measurement in `docs/coordination.md` §379 counted five of the same shape, and the repair door and the integrity report built for that round both still work — what nothing did was stop the next 38 from being created.
+
+WHAT IT COSTS, RE-MEASURED — and it is NOT the fake-success §379 describes, because §379's own fix closed that: `matchComponentsForSource` skips a mapping whose component is tombstoned (`componentIsLive`), so the dead mapping no longer proposes a change against a dead component. The cost is now MISATTRIBUTION, one step further along. Correlation decides ownership per changed path and takes the highest-ranked candidate whose `path_pattern` matches — so when a path's own mapping is excluded, the file falls through to whatever broader mapping still matches. On the homelab the fall-through target exists and is not hypothetical: seven LIVE `configuration` mappings carry `repo_pattern = jag8765-personal/homelab-gitops` with `path_pattern = NULL`, tied on every precedence rule, so `asc(created_at), asc(id)` hands every orphaned path to the earliest of them (`agentkit-auto`). A push touching `loki/values.yaml` therefore proposes a release for an unrelated component's pipeline.
+
+WHY REFUSAL AND NOT A CASCADE, restated for this table rather than inherited: a cascade here would be a HARD delete of correlation config (the table has no tombstone to write), so an accidental component delete would silently destroy the routing rules and there would be nothing left to restore them from. Refusal costs an operator one extra call, which the message names verbatim, and `graph/integrity-repo.ts`'s `orphanSourceMappings` report plus `DELETE /change-sources/{sourceKind}/mappings` are the pair that clean up rows created before this guard existed.
+
+THE MERGE PATH RE-POINTS RATHER THAN REFUSING, and that is not an exception to the rule. `coordination/component-merge-repo.ts` already re-points the loser's executor bindings onto the survivor before soft-deleting the loser, because a merge asserts the two rows are the same real component; its source mappings are re-pointed for the same reason and in the same transaction (`repointSourceMappingsToComponent`, audited per row as `source_mapping.repoint`). A merge that instead refused would be the guard blocking the one operation that already knows where the rows belong.
 
 ### §126. THE ADMINISTRATOR FLOOR
 

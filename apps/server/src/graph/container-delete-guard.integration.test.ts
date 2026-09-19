@@ -141,6 +141,46 @@ describe("container delete guard (proposal §9.3, all three dependent routes)", 
     expect((await call("DELETE", `/api/v1/deployment-targets/${targetId}`)).status).toBe(200);
   });
 
+  it("refuses deleting a component that still has a SOURCE MAPPING — route 5 (docs/graph.md §125a)", async () => {
+    // The same property as the placement arm above, on a table the cascade cannot see either:
+    // `source_mappings.component_object_id` is a plain column with no FK and no `deleted_at`. Before
+    // this arm the delete answered 200, and the mapping stayed enabled and pointing at a tombstone —
+    // 38 such rows on the live homelab, 2026-09-17.
+    const { componentId } = await makeService("mapping-comp");
+    const sourceKind = uniq("push");
+    const repo = `acme/${uniq("repo")}`;
+    const created = await call("POST", `/api/v1/change-sources/${sourceKind}/mappings`, {
+      sourceKind,
+      component: componentId,
+      repoPattern: repo,
+      pathPattern: "chart/**",
+      type: "configuration"
+    });
+    expect(created.status, created.body).toBe(201);
+
+    const refused = await call("DELETE", `/api/v1/components/${componentId}`);
+    expect(refused.status, refused.body).toBe(409);
+    expect(detailOf(refused)).toContain("source mapping");
+    // The remedy IS the refusal, and it names the tuple the delete door addresses rows by.
+    expect(detailOf(refused)).toContain("/change-sources/");
+    expect(detailOf(refused)).toContain(sourceKind);
+    expect(detailOf(refused)).toContain(repo);
+    expect(detailOf(refused)).toContain("chart/**");
+
+    // Nothing half-applied: the component is still live and still reachable.
+    expect((await call("GET", `/api/v1/components/${componentId}`)).status).toBe(200);
+
+    // …and the delete lands once the mapping is gone.
+    const removed = await call("DELETE", `/api/v1/change-sources/${sourceKind}/mappings`, {
+      component: componentId,
+      repoPattern: repo,
+      pathPattern: "chart/**",
+      type: "configuration"
+    });
+    expect(removed.status, removed.body).toBe(200);
+    expect((await call("DELETE", `/api/v1/components/${componentId}`)).status).toBe(200);
+  });
+
   it("an EMPTY container still deletes — the guard names blockers, it is not a ban", async () => {
     const empty = await call("POST", "/api/v1/services", { name: uniq("empty-svc") });
     expect(empty.status, empty.body).toBe(201);

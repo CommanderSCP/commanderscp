@@ -6466,6 +6466,53 @@ export function buildProgram(): Command {
       }
     );
 
+  // The CLI rung the tuple-delete door never got (route + SDK + UI had it; API-first parity is
+  // API -> SDK -> CLI -> IaC -> UI). It is THE operator path for a mapping stranded on a
+  // soft-deleted component — `DELETE /change-sources/{kind}/mappings` resolves the component with
+  // `includeDeleted`, so a tombstone still addresses its rows (docs/routes.md §44), and the delete is
+  // audited per row as `source_mapping.delete`.
+  //
+  // ADDRESSED BY THE IDENTITY TUPLE, NOT BY ID, and the omitted flags mean NULL rather than "any":
+  // `--repo`/`--path`/`--ref` left off match only rows whose pattern IS null, so a ref-agnostic
+  // delete can never take a ref-scoped dev or production route with it (ADR-0030 §1). Copy the
+  // values out of `list-mappings` verbatim. Deleting by id is deliberately not offered: the table has
+  // no unique constraint, so byte-identical rows exist and removing one would leave the survivor
+  // still correlating (docs/coordination.md §910).
+  changeSourceCmd
+    .command("delete-mapping <sourceKind>")
+    .description(
+      "Delete every source_mapping matching this identity tuple (component + repo/path/ref globs + type) — the door for a mapping stranded on a deleted component; an omitted glob means NULL, never 'any'"
+    )
+    .requiredOption("--component <idOrUrn>", "the component the mapping names (deleted ones count)")
+    .option("--repo <pattern>", "repo glob exactly as `list-mappings` prints it; omit = null")
+    .option("--path <pattern>", "path glob exactly as `list-mappings` prints it; omit = null")
+    .option("--ref <pattern>", "ref glob exactly as `list-mappings` prints it; omit = null")
+    .option("--type <type>", "routing Type (ADR-0007); default: configuration")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        sourceKind: string,
+        opts: BaseCliOpts & {
+          component: string;
+          repo?: string;
+          path?: string;
+          ref?: string;
+          type?: ExecutorType;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.changeSources.deleteMapping(sourceKind, {
+          component: opts.component,
+          repoPattern: opts.repo ?? null,
+          pathPattern: opts.path ?? null,
+          refPattern: opts.ref ?? null,
+          ...(opts.type ? { type: opts.type } : {})
+        });
+        printResult(result, opts.output, (item) => item as unknown as Record<string, unknown>);
+      }
+    );
+
   changeSourceCmd
     .command("list-mappings <sourceKind>")
     .description(

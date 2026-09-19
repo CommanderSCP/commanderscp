@@ -254,15 +254,20 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
     });
 
     const removed = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      deleteSourceMappingsMatching(tx, {
-        orgId: org.orgId,
-        componentObjectId: shared,
-        sourceKind,
-        repoPattern: repo,
-        pathPattern: null,
-        refPattern: "refs/heads/dev",
-        type: "configuration"
-      })
+      deleteSourceMappingsMatching(
+        tx,
+        {
+          orgId: org.orgId,
+          componentObjectId: shared,
+          sourceKind,
+          repoPattern: repo,
+          pathPattern: null,
+          refPattern: "refs/heads/dev",
+          type: "configuration"
+        },
+        org.orgId,
+        `req-${uuidv7()}`
+      )
     );
 
     expect(removed).toBe(1);
@@ -291,15 +296,20 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
     });
 
     const removed = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      deleteSourceMappingsMatching(tx, {
-        orgId: org.orgId,
-        componentObjectId: shared,
-        sourceKind,
-        repoPattern: repo,
-        pathPattern: null,
-        refPattern: null,
-        type: "configuration"
-      })
+      deleteSourceMappingsMatching(
+        tx,
+        {
+          orgId: org.orgId,
+          componentObjectId: shared,
+          sourceKind,
+          repoPattern: repo,
+          pathPattern: null,
+          refPattern: null,
+          type: "configuration"
+        },
+        org.orgId,
+        `req-${uuidv7()}`
+      )
     );
 
     // 0, and the row survives — the loud failure, not the silent one.

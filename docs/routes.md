@@ -3869,9 +3869,15 @@ The cost is not inconvenience. A `docs/proposals/post-import-configuration.md` �
 WHY THE IDENTITY TUPLE AND NOT AN ID
 `source_mappings` has no unique constraint and `POST /discovery/accept` inserts unconditionally, so an estate can hold several byte-identical rows — the homelab does. A by-id delete would remove one and leave the survivor still correlating, so the operator would see "deleted" and a push would still route there. Matching the tuple removes everything that says the same thing, which is the reasoning `deleteSourceMappingsMatching` was already written with for IaC prune.
 
+2026-09-18 — TWO ADDITIONS, and one FIXTURE CHANGE that is itself the news.
+
+**The delete is now AUDITED**, one `source_mapping.delete` event per removed row, in the same transaction (docs/coordination.md §910). The hard delete is the reason: nothing survives it, so the audit chain is the only record that the route ever existed. Also pinned: a no-op delete writes NO event.
+
+**The fixture can no longer soft-delete the component through the API.** `DELETE /components/{id}` refuses while a mapping names it (route 5 of the orphan guard, docs/graph.md §125a), so the stranded-mapping test now tombstones the row beneath the API with the same `legacySoftDelete` shape `graph/integrity.integration.test.ts` uses. That is not a weaker test — it is the honest one. The population this route serves is now exactly the rows created BEFORE the guard existed (38 on the live homelab, 2026-09-17), and no new ones can be minted; the test says so in as many words rather than implying the state is still reachable.
+
 MUTATION LOG (each applied ALONE against a passing suite, then reverted)
 | Mutation | Result |
-| resolve the component WITHOUT `includeDeleted` | the stranded-mapping test FAILS with 404 — the rows most needing deletion are exactly the undeletable ones | | return 204 instead of the row count | the duplicate test FAILS — it can no longer tell 2 rows removed from 0 | | delete only the first matching row | the duplicate test FAILS — the survivor still correlates |
+| resolve the component WITHOUT `includeDeleted` | the stranded-mapping test FAILS with 404 — the rows most needing deletion are exactly the undeletable ones | | return 204 instead of the row count | the duplicate test FAILS — it can no longer tell 2 rows removed from 0 | | delete only the first matching row | the duplicate test FAILS — the survivor still correlates | | iterate an empty array instead of the deleted rows when appending audit events | the per-row audit test FAILS (0 events, expected 2) and that one only |
 
 ## `apps/server/src/routes/spa-index-freshness.integration.test.ts`
 
