@@ -84,7 +84,11 @@ import {
 } from "../components/ui/dialog";
 import { QueryErrorNotice } from "../components/query-error";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
-import { targetOutlineBorder, type TargetOutlineTone } from "../components/pipeline/wave-status";
+import {
+  approvalQuorum,
+  targetOutlineBorder,
+  type TargetOutlineTone
+} from "../components/pipeline/wave-status";
 
 /** THE COMPONENT PIPELINE. See docs/web.md §250. */
 
@@ -1199,7 +1203,26 @@ export function arrowInto(
       detail: `waiting for ${names.join(", ")} at this stage`
     };
   }
-  if (states.includes("approval")) return { state: "approval", label: "awaiting approval" };
+  if (states.includes("approval")) {
+    // D2 (pipeline-mockup-data.md §4/§9): the LIVE count, from `gate.approvals` — placed where the
+    // engine actually gates (validating->accepted), never a new per-wave approval. Matched by the
+    // triggering stage's OWN current change, since a parallel wave's stages can each be mid a
+    // different change. Absent when the live count hasn't reached the wire (an older server, or a
+    // request that has not yet materialized) — the label alone still renders; never a fabricated
+    // "0 of 0".
+    const approvalStage = placed.find(
+      (stage) => stateOf(currentFor(stage, lane), holdFor(stage, lane)) === "approval"
+    );
+    const current = approvalStage ? currentFor(approvalStage, lane) : null;
+    const live = current
+      ? approvalStage?.gate.approvals?.find((a) => a.changeId === current.changeId)
+      : undefined;
+    return {
+      state: "approval",
+      label: "awaiting approval",
+      detail: live ? approvalQuorum(live) : undefined
+    };
+  }
   if (states.every((s) => s === "open")) return { state: "open", label: "released" };
   return { state: "pending", label: "nothing released yet" };
 }

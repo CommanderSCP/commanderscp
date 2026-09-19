@@ -26,7 +26,12 @@ import { PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { QueryErrorNotice } from "../components/query-error";
 import { stateBadgeVariant } from "../lib/change-format";
-import { formatDate, wavePromotion } from "../components/pipeline/wave-status";
+import {
+  approvalQuorum,
+  formatDate,
+  waveEntryChips,
+  wavePromotion
+} from "../components/pipeline/wave-status";
 import { WhyLink } from "../components/decision/WhyLink";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
 import {
@@ -113,12 +118,6 @@ function blockDetail(
   }
 
   return parts.length > 0 ? parts.join(" — ") : undefined;
-}
-
-/** The awaiting-approval quorum, in the spec's "N/M · <role>" shape (observe-enrichment.md signal
- *  3), from the ApprovalRequest the view already loads — voteCount/requiredCount/fromRole. */
-function approvalQuorum(approval: ApprovalRequest): string {
-  return `${approval.voteCount}/${approval.requiredCount} · ${approval.fromRole}`;
 }
 
 /** The change-level (final) ACCEPTANCE gate. See docs/web.md §205. */
@@ -440,11 +439,14 @@ export function ChangePipelinePage(): React.JSX.Element {
 
       {waves.length > 0 && (
         <div className="flex flex-col items-center gap-1" data-testid="pipeline-waves">
-          {/* Arrow into the first wave: colored by upstream prerequisite satisfaction. */}
+          {/* Arrow into the first wave: colored by upstream prerequisite satisfaction, plus the
+              live build-arm fan-in count (D1) — the SAME `waitStatus.requirements`, server-counted
+              onto `waves[0].entry` so this chip and `change-pipeline`'s own text can never disagree. */}
           {waitStatus && waitStatus.requirements.length > 0 && (
             <PromotionArrow
               state={waitStatus.waiting ? "pending" : "open"}
               label={waitStatus.waiting ? "waiting on prerequisite" : "prerequisites satisfied"}
+              chips={waveEntryChips(waves[0]?.entry)}
             />
           )}
           {waves.map((wave, index) => {
@@ -459,7 +461,9 @@ export function ChangePipelinePage(): React.JSX.Element {
                   linksFor={linksFor}
                   holdFor={holdFor}
                 />
-                {promo && <PromotionArrow state={promo.state} label={promo.label} />}
+                {promo && (
+                  <PromotionArrow state={promo.state} label={promo.label} chips={promo.chips} />
+                )}
                 {isLast && (
                   <PromotionArrow
                     state={gate.state}

@@ -1,5 +1,12 @@
+import type { ChangeExplainResponse } from "@scp/sdk";
 import type { BadgeProps } from "../ui/badge";
 import type { PromotionState } from "./PromotionArrow";
+
+/** The inlined `ChangeWaveSchema`/`ChangeWaveEntrySchema` shapes (the emitted spec has no named
+ *  `components.schemas`, so every response type is inlined wherever it's used — see
+ *  `scp-oasdiff-response-optionality` for why nothing here is exported by name from `@scp/sdk`). */
+type ChangeWave = NonNullable<ChangeExplainResponse["plan"]>["waves"][number];
+export type ChangeWaveEntry = NonNullable<ChangeWave["entry"]>[number];
 
 /** THE ONE wave-status vocabulary (design spec §2.13). See docs/web.md §100. */
 
@@ -112,19 +119,49 @@ export function targetStatusTextTone(tone: TargetOutlineTone): string {
   return TARGET_STATUS_TEXT_TONE[tone];
 }
 
-/** Inter-wave promotion state, derived ONLY from wave status. See docs/web.md §101. */
+/** D1 (2026-09-16, docs/proposals/pipeline-mockup-data.md §4/§9): renders EACH `ChangeWaveEntry` as
+ *  its OWN chip string, kept SEPARATE rather than merged into one line — they are different facts
+ *  about the same connector (`coupled_changes`: the build-arm fan-in of one push; `previous_wave`:
+ *  the predecessor wave's own completion). Absent/empty `entry` renders no chips — never a
+ *  fabricated "0 of 0" standing in for "we didn't check". */
+export function waveEntryChips(entry: ChangeWaveEntry[] | undefined): string[] {
+  if (!entry) return [];
+  return entry.map((e) => {
+    const satisfied = e.satisfiedCount >= e.requiredCount;
+    const noun = e.kind === "coupled_changes" ? "fan-in" : "previous wave";
+    return `${noun} ${satisfied ? "satisfied" : "pending"} · ${e.satisfiedCount} of ${e.requiredCount}`;
+  });
+}
+
+/** The awaiting-approval quorum, in the spec's "N/M · <role>" shape (observe-enrichment.md signal
+ *  3) — shared by the change view's final gate (`change-pipeline.tsx`'s `finalGate`) and the
+ *  component pipeline's per-stage connector (`component-pipeline.tsx`'s `arrowInto`), both of which
+ *  read the same live shape (`voteCount`/`requiredCount`/`fromRole`) through two different response
+ *  fields (`GET /approvals` and `ComponentPipelineGateSchema.approvals`). */
+export function approvalQuorum(a: {
+  voteCount: number;
+  requiredCount: number;
+  fromRole: string;
+}): string {
+  return `${a.voteCount}/${a.requiredCount} · ${a.fromRole}`;
+}
+
+/** Inter-wave promotion state, derived ONLY from wave status — plus, additively, the downstream
+ *  wave's own `entry` chips (D1), which do not change the STATE, only what is shown under it. */
 export function wavePromotion(
   upstream: { status: string },
-  downstream: { status: string }
-): { state: PromotionState; label?: string } {
-  if (upstream.status === "failed") return { state: "blocked", label: "upstream wave failed" };
-  if (downstream.status === "failed") return { state: "blocked", label: "wave failed" };
+  downstream: { status: string; entry?: ChangeWaveEntry[] }
+): { state: PromotionState; label?: string; chips?: string[] } {
+  const chips = waveEntryChips(downstream.entry);
+  if (upstream.status === "failed")
+    return { state: "blocked", label: "upstream wave failed", chips };
+  if (downstream.status === "failed") return { state: "blocked", label: "wave failed", chips };
   // KEEP-SENSE (ADR-0021 D2): this is an artifact advancing wave-to-wave — a *promotion*, the
   // genus. It is NOT the change-lifecycle `accept` gate (change-pipeline's `finalGate`).
   if (downstream.status === "running" || downstream.status === "succeeded")
-    return { state: "open", label: "promoted" };
-  if (downstream.status === "skipped") return { state: "pending", label: "skipped" };
+    return { state: "open", label: "promoted", chips };
+  if (downstream.status === "skipped") return { state: "pending", label: "skipped", chips };
   if (upstream.status === "succeeded" && downstream.status === "pending")
-    return { state: "pending", label: "awaiting promotion" };
-  return { state: "pending" };
+    return { state: "pending", label: "awaiting promotion", chips };
+  return { state: "pending", chips };
 }

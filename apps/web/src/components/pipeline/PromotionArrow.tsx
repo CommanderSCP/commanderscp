@@ -16,6 +16,7 @@ export function PromotionArrow({
   state,
   label,
   detail,
+  chips,
   why,
   inert,
   onToggle,
@@ -25,6 +26,12 @@ export function PromotionArrow({
   state: PromotionState;
   label?: string;
   detail?: string;
+  /** ONE LINE PER GATE FACT (pipeline-mockup-data.md §4/§9, D1) — a wave's `entry` can carry more
+   *  than one admission fact (the build-arm fan-in AND the previous wave's completion are different
+   *  facts about the SAME connector), and D1 keeps them as SEPARATE chips rather than merging them
+   *  into one string. Rendered below `label`/`detail`, one `<p>` per string; omitted entirely when
+   *  empty or absent, never a placeholder line. */
+  chips?: string[];
   why?: ReactNode;
   /** Presentation-only, and never a new `PromotionState`. See docs/web.md §98. */
   inert?: boolean;
@@ -92,6 +99,19 @@ export function PromotionArrow({
         >
           {detail}
         </p>
+      )}
+      {chips && chips.length > 0 && (
+        <div className="mt-0.5 flex flex-col items-center gap-0.5">
+          {chips.map((chip) => (
+            <p
+              key={chip}
+              className="text-center text-[11px] font-medium leading-snug text-slate-600"
+              data-testid="promotion-chip"
+            >
+              {chip}
+            </p>
+          ))}
+        </div>
       )}
       {isSwitch && (
         // The switch says its state in words too — colour alone must not carry it (a11y, and the
