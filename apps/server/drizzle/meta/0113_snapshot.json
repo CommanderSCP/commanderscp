@@ -6299,7 +6299,7 @@
       "checkConstraints": {
         "pipeline_evidence_source_check": {
           "name": "pipeline_evidence_source_check",
-          "value": "\"pipeline_evidence\".\"source\" IN ('rollout_analysis','pushed','executor_observed')"
+          "value": "\"pipeline_evidence\".\"source\" IN ('rollout_analysis','pushed','executor_observed','peer_reported')"
         }
       },
       "isRLSEnabled": false
