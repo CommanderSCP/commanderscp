@@ -9,6 +9,7 @@ import {
   ChangeTransitionRequestSchema,
   type Change,
   type ChangeWaitStatus,
+  type ChangeWaveEntry,
   CreateChangeRequestSchema,
   DecisionIdParamSchema,
   DecisionListQuerySchema,
@@ -512,6 +513,22 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
               (t) => t.held && !freezeHeldTargetIds.has(t.targetObjectId)
             ).length;
             activeWave.heldTargetCount = (activeWave.heldTargetCount ?? 0) + stageHeldCount;
+          }
+        }
+        // `ChangeWaveEntry`'s `coupled_changes` half (D1, pipeline-mockup-data.md §4/§9) — needs
+        // `waitStatus`, which only this handler computes (`plan-service.ts`'s `toChangePlanShape`
+        // supplies the `previous_wave` half instead, the same freeze-count/stage-dependency-count
+        // split `heldTargetCount` already uses). Attaches ONLY to wave 0: the build-arm fan-in is a
+        // fact about the push that started this change, not about admission into any later wave.
+        if (plan) {
+          const wave0 = plan.waves.find((w) => w.waveIndex === 0);
+          if (wave0 && waitStatus && waitStatus.requirements.length > 0) {
+            const coupledEntry: ChangeWaveEntry = {
+              kind: "coupled_changes",
+              satisfiedCount: waitStatus.requirements.filter((r) => r.satisfied).length,
+              requiredCount: waitStatus.requirements.length
+            };
+            wave0.entry = [...(wave0.entry ?? []), coupledEntry];
           }
         }
         return {

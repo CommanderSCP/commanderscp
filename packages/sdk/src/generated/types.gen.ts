@@ -7578,6 +7578,14 @@ export type GetComponentPipelineResponses = {
                     status: 'not_started' | 'pending' | 'pass' | 'fail' | 'warning' | 'skipped' | 'timed_out' | 'expired';
                     changeId: string | null;
                 }>;
+                approvals?: Array<{
+                    requestId: string;
+                    changeId: string;
+                    fromRole: string;
+                    requiredCount: number;
+                    voteCount: number;
+                    status: string;
+                }>;
             };
             hold?: {
                 changeId: string;
@@ -13511,6 +13519,15 @@ export type ExplainChangeResponses = {
                 startedAt: string | null;
                 completedAt: string | null;
                 heldTargetCount?: number;
+                entry?: Array<{
+                    kind: 'coupled_changes';
+                    satisfiedCount: number;
+                    requiredCount: number;
+                } | {
+                    kind: 'previous_wave';
+                    satisfiedCount: number;
+                    requiredCount: number;
+                }>;
                 targets: Array<{
                     id: string;
                     waveId: string;
