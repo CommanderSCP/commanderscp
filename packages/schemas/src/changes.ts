@@ -64,7 +64,12 @@ export const ChangeSchema = z.object({
   /** The underlying graph object's origin domain, additive. See docs/schemas.md §58. */
   originDomainId: z.string().uuid().optional(),
   /** Mirrors the graph object's locality flag. See docs/schemas.md §59. */
-  domainLocal: z.boolean()
+  domainLocal: z.boolean(),
+  /** A typed read of `sourceRef.commit` (webhook-processor.ts's `canonicalizeSourceRef`) — the
+   *  same value, projected as its own field so a client renders the commit chip without reaching
+   *  into the untyped bag. `null` when the source ref carries no `commit` (or it is not a string).
+   *  Additive: `sourceRef` itself is unchanged. */
+  commitSha: z.string().nullable().optional()
 });
 export type Change = z.infer<typeof ChangeSchema>;
 
@@ -206,6 +211,20 @@ export const ChangeWaveTargetSchema = z.object({
   /** DERIVED, read-only (ADR-0007): the Category of `type`, via `categoryOfType`. Not stored. */
   category: ExecutorCategorySchema,
   executorPluginId: z.string().nullable(),
+  /** The `<Type> · <provider>` subtitle's provider half — a union so a THIRD basis (or a richer
+   *  triggered/bound shape) stays additive. `pluginModule` is `executor_bindings.plugin_module`.
+   *  `triggered`: the binding `executorPluginId` (the plugin INSTANCE the trigger actually used)
+   *  joins to. `bound`: not triggered yet — the binding the resolution ladder
+   *  (`binding-resolution.ts`'s `resolveBindingForTarget`) selects NOW for `(targetObjectId, type)`;
+   *  it may change before trigger. `unbound`: no binding resolves — render "no executor", never a
+   *  guessed provider. Absent = a server that does not project the field. */
+  executor: z
+    .discriminatedUnion("basis", [
+      z.object({ basis: z.literal("triggered"), pluginModule: z.string() }),
+      z.object({ basis: z.literal("bound"), pluginModule: z.string() }),
+      z.object({ basis: z.literal("unbound") })
+    ])
+    .optional(),
   /** The `ExternalRunRef` the executor's `trigger()` returned. See docs/schemas.md §65. */
   executorRef: z.record(z.string(), z.unknown()).nullable(),
   /** The snapshot reconcile observed from status(). See docs/schemas.md §66. */
@@ -261,7 +280,11 @@ export const ChangePlanSchema = z.object({
   topologyVersion: z.number().int().nullable(),
   status: z.string(),
   createdAt: z.string().datetime(),
-  waves: z.array(ChangeWaveSchema)
+  waves: z.array(ChangeWaveSchema),
+  /** `objects.name` of `topologyObjectId` — the header's topology name, already on the
+   *  component-pipeline response but missing here. `null` when there is no topology, or its
+   *  object no longer resolves (dangling / deleted). Absent = a server that does not project it. */
+  topologyName: z.string().nullable().optional()
 });
 export type ChangePlan = z.infer<typeof ChangePlanSchema>;
 

@@ -78,7 +78,15 @@ export const ComponentPipelineBindingSchema = z.object({
   executionSystemId: z.string().uuid().nullable(),
   executionSystemName: z.string().nullable(),
   /** WHERE the ladder found it (ADR-0027/0029). See docs/schemas.md §95. */
-  resolvedVia: z.string().optional()
+  resolvedVia: z.string().optional(),
+  /** `executor_bindings.plugin_module` — the `<Type> · <provider>` subtitle's provider half.
+   *  Absent = a server that does not project it. */
+  pluginModule: z.string().optional(),
+  /** The bound execution system's own declared `kind` — already computed for the console-URL
+   *  shape (`component-pipeline.ts`'s `systemKind`) but never emitted until now. `null` when this
+   *  binding has no execution-system object (inline config). Absent = a server that does not
+   *  project it. */
+  systemKind: z.string().nullable().optional()
 });
 export type ComponentPipelineBinding = z.infer<typeof ComponentPipelineBindingSchema>;
 
