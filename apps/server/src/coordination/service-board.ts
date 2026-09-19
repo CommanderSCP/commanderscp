@@ -1,11 +1,14 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { categoryOfType } from "@scp/schemas";
+import { categoryOfType, WaveTargetObservedSchema } from "@scp/schemas";
 import type {
   GraphObject,
   ServiceBoardResponse,
   ServiceBoardRow,
   ServiceBoardWave,
   ServiceBoardFreeze,
+  ServiceBoardPeerObserved,
+  ServiceBoardPeerObservedHookRun,
+  ServiceBoardPeerObservedTarget,
   ServiceBoardPipeline,
   ExecutorCategory
 } from "@scp/schemas";
@@ -32,6 +35,11 @@ import { ensureFederationSelf } from "../federation/self-repo.js";
 import { listPeers } from "../federation/peers-repo.js";
 import { scopeCarriesChangeObjects } from "../federation/scope-filter.js";
 import { listUnattachedChangeStatusInStates } from "../federation/unattached-change-status-repo.js";
+import {
+  classifyPeerObservationFreshness,
+  listPeerObservationsForChanges,
+  type PeerObservationRow
+} from "../federation/peer-observations-repo.js";
 import { limitingUpstreamFreshness } from "../federation/upstream-freshness.js";
 import { sqlIn } from "../graph/sql-helpers.js";
 import { placementComponentParentSql } from "../graph/containment.js";
@@ -49,6 +57,81 @@ const FAILED_STATUSES = new Set<string>([
   // drift the spread exists to prevent. See `REFUSED_WAVE_TARGET_STATUSES`.
   ...REFUSED_WAVE_TARGET_STATUSES
 ]);
+
+/**
+ * THE PEER'S READINGS for one change, or `null` when none has arrived.
+ *
+ * `null` is the "not reported" case and the caller pairs it with the `peerObserved` path in
+ * `unknownFields` — this repo's established way of saying a field is not an observation
+ * (`ServiceBoardRowSchema.unknownFields`, `BoundarySegmentSchema`'s own `unknownFields`). A present
+ * value that is `stale` is the second, different case: reported, and too old to read as current.
+ *
+ * The stored `observation` jsonb is PARSED, not cast. It came off a peer's wire; a shape this side
+ * does not recognise is dropped down to "no rollout" rather than handed to the UI, which is the rule
+ * `import-repo.ts` states for evidence payloads.
+ */
+function toPeerObserved(
+  allRows: PeerObservationRow[],
+  /** The domain that DRIVES this change (`objects.origin_domain_id`, via `LatestChangeRef`). */
+  originDomainId: string | null,
+  now: Date
+): ServiceBoardPeerObserved | null {
+  // ONLY THE DRIVING DOMAIN'S OWN READINGS. The replica is keyed by peer, so two peers can hold a
+  // row about one change; a reading about domain X's execution is X's to make, and another peer's
+  // claim about it is hearsay this row must not present as X's progress. If the driving domain's
+  // readings are not among these (a relay that re-signed, a change whose object arrived from a
+  // different peer than its observations), the row falls back to "not reported" — the honest
+  // reading, and fail-closed rather than misattributed.
+  const rows =
+    originDomainId === null ? [] : allRows.filter((row) => row.peerDomainId === originDomainId);
+  if (rows.length === 0) return null;
+  const targets: ServiceBoardPeerObservedTarget[] = [];
+  const hookRuns: ServiceBoardPeerObservedHookRun[] = [];
+  for (const row of rows) {
+    const freshness = classifyPeerObservationFreshness(row.observedAt, now);
+    if (row.subject === "target") {
+      const rollout = WaveTargetObservedSchema.shape.rollout.safeParse(
+        (row.observation as { rollout?: unknown } | null)?.rollout
+      );
+      targets.push({
+        targetObjectId: row.targetObjectId ?? "",
+        type: row.type ?? "",
+        waveIndex: row.waveIndex ?? 0,
+        status: row.status,
+        attempt: row.attempt,
+        ...(rollout.success && rollout.data !== undefined ? { rollout: rollout.data } : {}),
+        observedAt: row.observedAt.toISOString(),
+        receivedAt: row.receivedAt.toISOString(),
+        freshness
+      });
+      continue;
+    }
+    hookRuns.push({
+      hookId: row.hookId ?? "",
+      kind: row.hookKind ?? "",
+      waveIndex: row.waveIndex,
+      targetObjectId: row.targetObjectId,
+      status: row.status,
+      attempt: row.attempt,
+      externalUrl: row.externalUrl,
+      // A `hook_run` row always carries one (the payload requires it); the fallback keeps a row
+      // readable rather than throwing on data written by an older sender.
+      startedAt: (row.startedAt ?? row.observedAt).toISOString(),
+      observedAt: row.observedAt.toISOString(),
+      receivedAt: row.receivedAt.toISOString(),
+      freshness
+    });
+  }
+  // Stable order, so two reads of an unchanged board are byte-identical: waves then targets for the
+  // rollout rail, hook id then wave for the checks rail.
+  targets.sort(
+    (a, b) => a.waveIndex - b.waveIndex || a.targetObjectId.localeCompare(b.targetObjectId)
+  );
+  hookRuns.sort(
+    (a, b) => a.hookId.localeCompare(b.hookId) || (a.waveIndex ?? -1) - (b.waveIndex ?? -1)
+  );
+  return { peerDomainId: rows[0]!.peerDomainId, targets, hookRuns };
+}
 
 /** A component's latest change, plus WHO DRIVES IT. See docs/coordination.md §879. */
 interface LatestChangeRef {
@@ -468,6 +551,25 @@ export async function buildServiceBoard(
     );
   };
 
+  // WHAT ANOTHER DOMAIN REPORTED (pipeline-mockup-data.md D3/D4), batched for exactly the rows that
+  // can use it: those whose change is driven elsewhere. ONE indexed read
+  // (`federation_peer_observation_by_change`) for the whole board, the same discipline
+  // `pipelinesForComponents` follows — a service with dozens of components is the case this view is
+  // for. A driven-here row is not asked about: its own wave rows ARE the observation.
+  const peerDrivenChangeIds = [
+    ...new Set(
+      [...latestByComponent.values()].filter((ref) => !ref.drivenHere).map((ref) => ref.changeId)
+    )
+  ];
+  const peerObservationsByChange = await listPeerObservationsForChanges(
+    tx,
+    orgId,
+    peerDrivenChangeIds
+  );
+  // ONE clock for the whole board, so two rows cannot disagree about whether the same reading is
+  // stale.
+  const freshnessNow = new Date();
+
   // 3. Per-component projection. Bounded by the service's component count; each iteration's reads are
   //    the same ones the Phase-1 change-pipeline view already relies on, run server-side in this tx.
   let releasing = 0;
@@ -506,6 +608,10 @@ export async function buildServiceBoard(
         attention: { blocked: false, decisionId: null, awaitingApproval: false, emergency: false },
         activeFreeze: componentFreeze ? toFreeze(componentFreeze) : null,
         driver: null,
+        // No change at all, so there is no execution anywhere for a peer to have observed. `null`
+        // WITHOUT an `unknownFields` entry: the question does not apply, which is a different claim
+        // from "it applies and we were not told".
+        peerObserved: null,
         unknownFields: emptyRowUnknowns
       });
       continue;
@@ -514,6 +620,14 @@ export async function buildServiceBoard(
     if (!latest.drivenHere) {
       // Federation honesty about what actually replicated. See docs/coordination.md §890.
       notDrivenHere += 1;
+      // D3/D4: what the driving domain reported, if anything has arrived. THREE readings stay
+      // distinguishable here — `null` plus the `peerObserved` path below is "not reported", a
+      // present value carries its own `fresh`/`stale` verdict per reading.
+      const peerObserved = toPeerObserved(
+        peerObservationsByChange.get(changeId) ?? [],
+        latest.originDomainId,
+        freshnessNow
+      );
       rows.push({
         component: { id: component.id, urn: component.urn, name: component.name },
         pipelines: pipelinesFor(component.id),
@@ -525,9 +639,17 @@ export async function buildServiceBoard(
         attention: { blocked: false, decisionId: null, awaitingApproval: false, emergency: false },
         activeFreeze: componentFreeze ? toFreeze(componentFreeze) : null,
         driver: { drivenHere: false, originDomainId: latest.originDomainId },
+        peerObserved,
         unknownFields: [
           // Absent until a status entry arrives, which is common. See docs/coordination.md §891.
           ...(latest.federationState === null ? ["changeState"] : []),
+          // NOT REPORTED — nothing has arrived from the driving domain for this change. Listed even
+          // when `peerObserved` is present-but-stale? No: a stale reading IS a reading, and it says
+          // so in its own `freshness`. This path is only for the absence.
+          ...(peerObserved === null ? ["peerObserved"] : []),
+          // Still unobservable even WITH peer readings: these summarise a local plan, and there is
+          // none. The peer's facts live in `peerObserved`, attributed to the peer, rather than being
+          // folded into fields that mean "observed here".
           "currentWave",
           "waves",
           "attention.blocked",
@@ -598,6 +720,9 @@ export async function buildServiceBoard(
       },
       activeFreeze: componentFreeze ? toFreeze(componentFreeze) : null,
       driver: { drivenHere: true, originDomainId: null },
+      // Driven HERE: this row's own `waves` are the observation, so there is no peer reading to
+      // prefer and nothing unknown to declare.
+      peerObserved: null,
       unknownFields: []
     });
 

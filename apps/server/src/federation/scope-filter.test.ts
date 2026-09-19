@@ -66,7 +66,14 @@ describe("ADR-0031 §3: domain-local entries match no sync scope", () => {
       "policy_upsert",
       "approval_evidence",
       "audit_segment",
-      "key_rotation"
+      "key_rotation",
+      // The census was short by four when this list was last written — the three outpost-run probe
+      // kinds and, now, the observation kind. A kind missing from here is a kind whose domain-local
+      // withholding nothing checks, which is the same shape of hole the list exists to close.
+      "pipeline_hook_upsert",
+      "pipeline_hook_tombstone",
+      "pipeline_evidence_upsert",
+      "wave_target_observed"
     ]) {
       expect(
         entryMatchesScope(entry({ domainLocal: true }, kind), { mode: "full" }),

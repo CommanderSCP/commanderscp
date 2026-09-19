@@ -9173,6 +9173,53 @@ export type GetServiceBoardResponses = {
                 drivenHere: boolean;
                 originDomainId: string | null;
             } | null;
+            peerObserved?: {
+                peerDomainId: string;
+                targets: Array<{
+                    targetObjectId: string;
+                    type: string;
+                    waveIndex: number;
+                    status: string;
+                    attempt: number;
+                    rollout?: {
+                        phase?: string;
+                        step?: number;
+                        weight?: number;
+                        message?: string;
+                        stepCount?: number;
+                    };
+                    observedAt: string;
+                    receivedAt: string;
+                    freshness: {
+                        state: 'fresh';
+                        ageSeconds: number;
+                    } | {
+                        state: 'stale';
+                        ageSeconds: number;
+                        staleAfterSeconds: number;
+                    };
+                }>;
+                hookRuns: Array<{
+                    hookId: string;
+                    kind: string;
+                    waveIndex: number | null;
+                    targetObjectId: string | null;
+                    status: string;
+                    attempt: number;
+                    externalUrl: string | null;
+                    startedAt: string;
+                    observedAt: string;
+                    receivedAt: string;
+                    freshness: {
+                        state: 'fresh';
+                        ageSeconds: number;
+                    } | {
+                        state: 'stale';
+                        ageSeconds: number;
+                        staleAfterSeconds: number;
+                    };
+                }>;
+            } | null;
             unknownFields: Array<string>;
         }>;
         summary: {
@@ -21431,7 +21478,7 @@ export type ExportSyncBundleResponses = {
             orgId: string;
             originDomainId: string;
             sequence: number;
-            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert';
+            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert' | 'wave_target_observed';
             payload: {
                 [key: string]: unknown;
             };
@@ -21534,7 +21581,7 @@ export type FederationResyncAuthorizeResponses = {
                 orgId: string;
                 originDomainId: string;
                 sequence: number;
-                entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert';
+                entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert' | 'wave_target_observed';
                 payload: {
                     [key: string]: unknown;
                 };
@@ -21793,7 +21840,7 @@ export type ImportBundleData = {
             orgId: string;
             originDomainId: string;
             sequence: number;
-            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert';
+            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert' | 'wave_target_observed';
             payload: {
                 [key: string]: unknown;
             };

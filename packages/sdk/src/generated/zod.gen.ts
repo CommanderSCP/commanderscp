@@ -3173,6 +3173,59 @@ export const zGetServiceBoardResponse = z.object({
             drivenHere: z.boolean(),
             originDomainId: z.string().nullable()
         }).nullable(),
+        peerObserved: z.object({
+            peerDomainId: z.string(),
+            targets: z.array(z.object({
+                targetObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                type: z.string(),
+                waveIndex: z.int().gte(-9007199254740991).lte(9007199254740991),
+                status: z.string(),
+                attempt: z.int().gte(0).lte(9007199254740991),
+                rollout: z.object({
+                    phase: z.string().optional(),
+                    step: z.number().optional(),
+                    weight: z.number().optional(),
+                    message: z.string().optional(),
+                    stepCount: z.int().gte(0).lte(9007199254740991).optional()
+                }).optional(),
+                observedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                receivedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                freshness: z.union([
+                    z.object({
+                        state: z.literal('fresh'),
+                        ageSeconds: z.int().gte(0).lte(9007199254740991)
+                    }),
+                    z.object({
+                        state: z.literal('stale'),
+                        ageSeconds: z.int().gte(0).lte(9007199254740991),
+                        staleAfterSeconds: z.int().gt(0).lte(9007199254740991)
+                    })
+                ])
+            })),
+            hookRuns: z.array(z.object({
+                hookId: z.string(),
+                kind: z.string(),
+                waveIndex: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+                targetObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+                status: z.string(),
+                attempt: z.int().gte(0).lte(9007199254740991),
+                externalUrl: z.string().nullable(),
+                startedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                observedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                receivedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                freshness: z.union([
+                    z.object({
+                        state: z.literal('fresh'),
+                        ageSeconds: z.int().gte(0).lte(9007199254740991)
+                    }),
+                    z.object({
+                        state: z.literal('stale'),
+                        ageSeconds: z.int().gte(0).lte(9007199254740991),
+                        staleAfterSeconds: z.int().gt(0).lte(9007199254740991)
+                    })
+                ])
+            }))
+        }).nullish(),
         unknownFields: z.array(z.string())
     })),
     summary: z.object({
@@ -8634,7 +8687,8 @@ export const zExportSyncBundleResponse = z.object({
             'key_rotation',
             'pipeline_hook_upsert',
             'pipeline_hook_tombstone',
-            'pipeline_evidence_upsert'
+            'pipeline_evidence_upsert',
+            'wave_target_observed'
         ]),
         payload: z.record(z.string(), z.unknown()),
         contentHash: z.string(),
@@ -8685,7 +8739,8 @@ export const zFederationResyncAuthorizeResponse = z.object({
                 'key_rotation',
                 'pipeline_hook_upsert',
                 'pipeline_hook_tombstone',
-                'pipeline_evidence_upsert'
+                'pipeline_evidence_upsert',
+                'wave_target_observed'
             ]),
             payload: z.record(z.string(), z.unknown()),
             contentHash: z.string(),

@@ -9,6 +9,89 @@ durable record of each such exception so the label is never a mystery in the git
 
 ## Log
 
+### Wave-target observations upward — one `JournalEntryKind` value (2026-09-19)
+
+**Spec:** [docs/proposals/pipeline-mockup-data.md](../../docs/proposals/pipeline-mockup-data.md) §5.3
+and §9 decisions **D3** and **D4** (owner, 2026-09-16). D4 is explicit: "a new journal entry kind for
+wave-target observations, emitted on change only; **a one-time oasdiff exception is accepted** for
+it." This entry is that exception.
+
+**What changes (deliberate, one-time):** ONE value is ADDED to `JournalEntryKindSchema`
+(`packages/schemas/src/federation.ts`) — `wave_target_observed`. `entryKind` appears in three
+positions in the emitted spec:
+
+- `POST /federation/exports` → `200.entries[].entryKind` (response)
+- `POST /federation/resync` → `200.bundle.entries[].entryKind` (response)
+- `POST /federation/imports` → request body (additive there by anyone's rule)
+
+**MEASURED, AND THE MEASUREMENT CONTRADICTS THE 2026-08-28 ENTRY BELOW: this change does NOT fail
+the gate.** Run with the vendored binary and `check.sh`'s own flags
+(`tools/openapi/bin/oasdiff-linux-amd64 breaking <main's spec> <this spec> --fail-on ERR`) it reports:
+
+    2 changes: 0 error, 2 warning, 0 info
+    warning [response-property-enum-value-added] ... POST /federation/exports
+    warning [response-property-enum-value-added] ... POST /federation/resync
+
+…and exits **0**. A known-positive control was run against the same binary and the same invocation
+before believing that — removing `POST /federation/exports` from the base spec reports
+`1 changes: 1 error` (`api-path-removed-without-deprecation`) and exits **1** — so the zero is the
+checker's verdict on this change and not a broken invocation. `response-property-enum-value-added` is
+a WARN in oasdiff 1.23.0's default level set, which is exactly what the "team-pipeline-IaC increment
+2a" entry further down this file records for its 138 identical warnings ("oasdiff does not, by
+default, treat an _added_ response enum member as breaking"). The 2026-08-28 entry's sentence
+"response enum-value additions are breaking under `tools/openapi/check.sh`" is **wrong**, and it is
+wrong in the direction that costs an exception nobody needed. It stays where it is as history; this
+paragraph is the correction, and the 2026-08-28 entry now carries a pointer to it.
+
+**Why this entry exists anyway.** The owner ACCEPTED an exception for this value (D4), the label and
+this record are what that acceptance looks like, and a durable note of a deliberate wire change is
+worth more than the gate reading that prompted it. Job 3b requires BOTH the label and an entry here
+before it downgrades anything, so a spurious pair costs nothing: with no ERR to downgrade, 3b is
+green either way. What would have cost something is the opposite — shipping the enum value on the
+assumption that the gate would flag it, and finding out it does not the next time someone relies on
+that assumption to prove an API is still additive.
+
+**Why one value and not two.** D3 (full run progress for `postMerge`/`postDeploy` pipeline-hook runs)
+and D4 (wave-target rollout/status observations) are two subjects on ONE channel: the payload is a
+union discriminated on `subject` (`"target"` | `"hook_run"`), per the proposal's §9 mitigation 6 —
+"one new kind … a single oasdiff exception, a single signing path and a single receiver". Splitting
+them would spend two exceptions on one decision, and the union keeps every FUTURE observation subject
+free (a new `subject` member is not a wire break).
+
+**Why not avoid the break.** The alternatives are the same two the 2026-08-28 entry rejected, plus
+the one D4 itself rejected:
+
+- _Restructure `entryKind` as a discriminated union_ so this and every future kind is free.
+  Converting a shipped enum response into a union is itself a break, so it costs an exception AND a
+  refactor to buy what a later deliberate change gets anyway.
+- _Piggyback on `change_status`_, whose payload is already `z.record` (D4 option b). No API break, but
+  it overloads a LIFECYCLE entry with an observation: `federation/scope-filter.ts` routes
+  `change_status` into the `status_only`/`changes_only` scopes and `import-repo.ts` feeds it to the
+  unattached-status store, so every observation would be treated as a state transition by two doors
+  that are right about `change_status` and wrong about this. D4 chose (a) for exactly that reason.
+- _Don't federate_ (D4 option c): the commander says `not_reported` forever, which is the honest
+  reading of today's state and the thing the owner asked to end.
+
+**Scope of the risk: none to existing peers, and this is asserted from the code rather than
+inherited.** `import-repo.ts`'s `applyEntry` switches on `entryKind` with a `default: return` — an
+older peer that does not know `wave_target_observed` drops that ONE entry, still counts it as applied,
+still advances its cursor and its chain anchor over it, and imports the rest of the bundle. The entry
+is inside the signed chain either way, so the hash chain is unaffected by whether the receiver
+understands it. Nothing in the platform requires the entry: the receiving projection is a read-only
+replica (`federation_peer_observations`) whose absence reads as `not_reported`, which is precisely
+what every commander shows today. The platform is pre-release with one instance and no external SDK
+consumer (charter dev-stage note — the ledger is process hygiene, not user protection).
+
+**How the gate is satisfied:** by the change itself — `check.sh` exits 0 (measured above), so job 3b
+is green on its own terms and nothing needs downgrading. The **`api-v2-exception`** label is carried
+anyway, and was applied BEFORE the commit that adds the enum value was pushed: job 3b reads the label
+from the event payload fixed at run start, so a label added afterwards (or a re-run of an older
+payload) is invisible to it, and doing it in that order is the only way to find out whether the label
+route works when it is actually needed. Job **3 (codegen
+drift)** stays green — `tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*` are
+regenerated (`@scp/schemas` built first, per CLAUDE.md — `pnpm gen` reads `packages/schemas/dist`,
+not source) and committed in this PR.
+
 ### Outpost-run probes — three `JournalEntryKind` values (2026-08-28)
 
 **Spec:** team-pipeline-iac D11/D23 ("SCP triggers locally at the outpost; results flow upward as
@@ -25,6 +108,16 @@ in two RESPONSE positions, so this is oasdiff-breaking even though it is purely 
 (The third occurrence, `POST /federation/imports` request body, is a REQUEST position and additive
 there.) Measured rather than assumed — response enum-value additions are breaking under
 `tools/openapi/check.sh`, while response `oneOf` member additions are not.
+
+> **CORRECTION (2026-09-19, measured with the same vendored binary and a known-positive control):**
+> the sentence immediately above is **wrong**. `response-property-enum-value-added` is a WARN in
+> oasdiff 1.23.0's default level set, so adding a value to _this_ enum reports `0 error, 2 warning`
+> and `check.sh` exits 0. See the 2026-09-19 entry at the top of this log for the transcript and the
+> control. The three values recorded here were additive on the wire either way, so nothing about that
+> change was wrong — only the stated reason for needing a label. The "team-pipeline-IaC increment 2a"
+> entry below already says the same thing about its own 138 identical warnings, which means this file
+> has disagreed with itself since 2026-08-26; the disagreement is resolved in favour of the
+> measurement.
 
 **Why not avoid the break.** Two alternatives were considered and rejected:
 

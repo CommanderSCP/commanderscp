@@ -20,6 +20,8 @@ import {
 import type { ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
+import { appendWaveTargetObservedEntry } from "../federation/wave-target-observed-journal.js";
+import { canonicalJson } from "../util/canonical-json.js";
 import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
 import {
   WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
@@ -218,6 +220,12 @@ export async function updateWaveTargetObserved(
   const now = new Date();
   // ONE BOUND, ONE REPORT, ONE ROW. See docs/coordination.md §1061.
   const forRow = observedState === undefined ? undefined : observedStateForRow(observedState, now);
+  // THE PRE-IMAGE, read before the update in the same transaction. D4 emits a journal entry only
+  // when the observation CHANGED, and "changed" is not answerable from the post-image: this is the
+  // one read that separates a real transition from the 1-per-second re-poll of an unchanged
+  // `observing` target. Also carries the target's identity in its change (wave index, Type), which
+  // the payload needs and this row does not hold.
+  const before = await readWaveTargetObservationPreImage(tx, orgId, targetId);
   await tx
     .update(changeWaveTargets)
     .set({
@@ -228,6 +236,119 @@ export async function updateWaveTargetObserved(
       ...(forRow !== undefined ? { observedState: forRow } : {})
     })
     .where(and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.id, targetId)));
+
+  if (!before) return; // no such target (or it lost its plan) — nothing observed, nothing to report
+  // `undefined` means "leave the stored reading as it is", so the payload must state the STORED
+  // rollout in that case, not drop it.
+  const rollout = forRow === undefined ? before.observedState?.rollout : forRow?.rollout;
+  await journalWaveTargetObservationIfChanged(tx, orgId, {
+    before,
+    status,
+    rollout,
+    observedAt: now
+  });
+}
+
+/** The pre-image `updateWaveTargetObserved` compares against, plus the identity of the target inside
+ *  its change. One indexed read by target id, joined up through wave -> plan. */
+interface WaveTargetObservationPreImage {
+  changeObjectId: string;
+  targetObjectId: string;
+  type: string;
+  waveIndex: number;
+  attempt: number;
+  status: string;
+  observedState: WaveTargetObservedState | null;
+}
+
+async function readWaveTargetObservationPreImage(
+  tx: TenantTx,
+  orgId: string,
+  targetId: string
+): Promise<WaveTargetObservationPreImage | undefined> {
+  const rows = await tx
+    .select({
+      changeObjectId: changePlans.changeObjectId,
+      targetObjectId: changeWaveTargets.targetObjectId,
+      type: changeWaveTargets.type,
+      waveIndex: changeWaves.waveIndex,
+      attempt: changeWaveTargets.attempt,
+      status: changeWaveTargets.status,
+      observedState: changeWaveTargets.observedState
+    })
+    .from(changeWaveTargets)
+    .innerJoin(
+      changeWaves,
+      and(
+        eq(changeWaves.id, changeWaveTargets.waveId),
+        eq(changeWaves.orgId, changeWaveTargets.orgId)
+      )
+    )
+    .innerJoin(
+      changePlans,
+      and(eq(changePlans.id, changeWaves.planId), eq(changePlans.orgId, changeWaves.orgId))
+    )
+    .where(and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.id, targetId)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return undefined;
+  return {
+    changeObjectId: row.changeObjectId,
+    targetObjectId: row.targetObjectId,
+    type: row.type,
+    waveIndex: row.waveIndex,
+    attempt: row.attempt,
+    status: row.status,
+    observedState: (row.observedState as WaveTargetObservedState | null) ?? null
+  };
+}
+
+/**
+ * D4's ON-CHANGE-ONLY RULE, in one place.
+ *
+ * An entry is appended only when this reading differs from the one already stored — status, or the
+ * rollout snapshot the read surfaces actually render. A re-poll that re-reads the same `observing`
+ * status and the same canary weight appends NOTHING, and neither does a `lastObservedAt` refresh.
+ * That is what keeps the journal proportional to real transitions instead of to poll ticks or
+ * elapsed time; the 1.44 GB/day Decision-growth incident is the measured cost of getting this wrong
+ * on a per-tick writer (memory `scp-unbounded-decision-growth`, proposal §9).
+ *
+ * The comparison is over the PAYLOAD's own fields, deliberately: `revision` and `images` can change
+ * without moving anything the pips or the status word show, and shipping an entry for them would
+ * make the volume bound depend on how chatty an executor's `stateRef` is.
+ */
+async function journalWaveTargetObservationIfChanged(
+  tx: TenantTx,
+  orgId: string,
+  input: {
+    before: WaveTargetObservationPreImage;
+    status: string;
+    rollout: WaveTargetObservedState["rollout"];
+    observedAt: Date;
+  }
+): Promise<void> {
+  const { before, status, rollout, observedAt } = input;
+  // `canonicalJson`, NOT `JSON.stringify`. The stored rollout came back out of a jsonb column, and
+  // Postgres does not preserve object key order — it stores jsonb keys sorted by length then
+  // alphabetically, so `{phase, step, weight}` in and `{step, phase, weight}` out compare unequal
+  // under a plain stringify and EVERY poll looks like a change. Measured, not reasoned: the
+  // on-change-only test appended 4 entries for 4 identical polls until this line used the same
+  // canonicaliser `objects-repo.ts` uses for its own persist-on-change comparison.
+  const unchanged =
+    before.status === status &&
+    canonicalJson(before.observedState?.rollout ?? null) === canonicalJson(rollout ?? null);
+  if (unchanged) return;
+  await appendWaveTargetObservedEntry(tx, orgId, {
+    subject: "target",
+    changeObjectId: before.changeObjectId,
+    targetObjectId: before.targetObjectId,
+    type: before.type,
+    waveIndex: before.waveIndex,
+    status,
+    attempt: before.attempt,
+    ...(rollout === undefined ? {} : { rollout }),
+    observedAt: observedAt.toISOString()
+  });
 }
 
 /** Normalizes a status into the observed-state payload. See docs/coordination.md §1063. */
@@ -310,6 +431,13 @@ const TERMINAL_WAVE_TARGET_STATUSES: string[] = [
   "aborted",
   ...REFUSED_WAVE_TARGET_STATUSES
 ];
+
+/** Has this target's status recorded an outcome? Exported so the federation replica's monotone rule
+ *  (`peer-observations-repo.ts`) reads THIS set rather than restating it — the set has grown twice
+ *  already, and a copy of it in a second module is how one of the two starts disagreeing. */
+export function isTerminalWaveTargetStatus(status: string): boolean {
+  return TERMINAL_WAVE_TARGET_STATUSES.includes(status);
+}
 
 /** Does a change in this state still stand behind them. See docs/coordination.md §1067. */
 const CHANGE_STANDS_BEHIND_ITS_TARGETS: Record<ChangeState, boolean> = {
