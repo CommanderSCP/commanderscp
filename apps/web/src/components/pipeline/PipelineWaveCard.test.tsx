@@ -696,3 +696,115 @@ describe("PipelineWaveCard: card proportions (design-system §1.6a)", () => {
     expect(cardTag).not.toContain("max-w-2xl");
   });
 });
+
+describe("PipelineWaveCard: the rollout pip-stepper (pipeline-mockup-data.md §5)", () => {
+  it("renders a labelled 'Canary' pip-stepper with the current step highlighted and 'step N · M%' when stepCount is present", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: { rollout: { phase: "Paused", step: 2, weight: 40, stepCount: 5 } }
+    });
+
+    expect(html).toContain('data-testid="pipeline-wave-rollout-stepper"');
+    expect(html).toContain("Canary");
+    // 5 pips total, one per step.
+    for (let i = 0; i < 5; i++) {
+      expect(html).toContain(`data-testid="pipeline-wave-rollout-pip-${i}"`);
+    }
+    expect(html).not.toContain('data-testid="pipeline-wave-rollout-pip-5"');
+    // step is 0-based (2) -> displayed as 3 of 5, with two DONE pips and one NOW pip.
+    expect(html).toContain('data-testid="pipeline-wave-rollout-pip-0" data-state="done"');
+    expect(html).toContain('data-testid="pipeline-wave-rollout-pip-1" data-state="done"');
+    expect(html).toContain('data-testid="pipeline-wave-rollout-pip-2" data-state="now"');
+    expect(html).toContain('data-testid="pipeline-wave-rollout-pip-3" data-state="pending"');
+    expect(html).toContain('data-testid="pipeline-wave-rollout-pip-4" data-state="pending"');
+    expect(html).toContain('data-testid="pipeline-wave-rollout-step-label"');
+    expect(html).toContain("step 3");
+    expect(html).toContain("40%");
+  });
+
+  it("marks every pip DONE (no 'now' pip) once the rollout has completed all its steps", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: { rollout: { phase: "Healthy", step: 4, weight: 100, stepCount: 5 } }
+    });
+    for (let i = 0; i < 5; i++) {
+      expect(html).toContain(`data-testid="pipeline-wave-rollout-pip-${i}" data-state="done"`);
+    }
+    expect(html).not.toContain('data-state="now"');
+  });
+
+  // THE HONESTY TEST — stepCount ABSENT must render today's plain text, never a guessed/fabricated
+  // total. Mutation-target: dropping the `typeof rollout.stepCount === "number"` guard would render
+  // a stepper with a fabricated 0-pip or NaN-length total instead of falling back.
+  it("with stepCount ABSENT, renders today's plain 'phase · step N · weight N%' text — no pips, never a guessed total", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: { rollout: { phase: "Progressing", step: 2, weight: 40 } }
+    });
+
+    expect(html).not.toContain('data-testid="pipeline-wave-rollout-stepper"');
+    expect(html).not.toContain("pipeline-wave-rollout-pip-");
+    expect(html).not.toContain("Canary");
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout"');
+    expect(html).toContain("rollout Progressing · step 2 · weight 40%");
+  });
+
+  it("stepCount 0 is treated the same as absent — NEVER a zero-pip stepper", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: { rollout: { phase: "Progressing", step: 0, weight: 5, stepCount: 0 } }
+    });
+    expect(html).not.toContain('data-testid="pipeline-wave-rollout-stepper"');
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout"');
+  });
+
+  it("a STALE reading greys the pips, prefixes 'last seen', and carries the amber-dashed 'unknown' stale badge", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: { rollout: { phase: "Paused", step: 2, weight: 40, stepCount: 5 } },
+      observedFreshness: { state: "stale", ageSeconds: 14 * 60, staleAfterSeconds: 600 }
+    });
+
+    expect(html).toContain('data-testid="pipeline-wave-rollout-stepper"');
+    // Done/now pips are grey (bg-slate-400), never the live blue.
+    const pip0Tag = html.match(/<i[^>]*data-testid="pipeline-wave-rollout-pip-0"[^>]*>/)?.[0] ?? "";
+    expect(pip0Tag).toContain("bg-slate-400");
+    expect(html).not.toContain("bg-blue-500");
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout-stale"');
+    expect(html).toContain("stale");
+    expect(html).toContain("14 min ago");
+  });
+
+  it("a STALE reading with no stepCount still flags stale on the plain-text fallback", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: { rollout: { phase: "Progressing", step: 2, weight: 40 } },
+      observedFreshness: { state: "stale", ageSeconds: 900, staleAfterSeconds: 600 }
+    });
+    expect(html).toContain("last seen");
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout-stale"');
+  });
+
+  it("'not_reported' renders honest text and NO pips, even though the target carries no observed rollout at all", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: null,
+      observedFreshness: { state: "not_reported" }
+    });
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout-not-reported"');
+    expect(html).toContain("not reported to this commander");
+    expect(html).not.toContain('data-testid="pipeline-wave-rollout-stepper"');
+  });
+
+  it("'fresh'/'never'/absent observedFreshness renders exactly as before — no stale badge, no not_reported line", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: { rollout: { phase: "Progressing", step: 1, weight: 20 } },
+      observedFreshness: { state: "fresh", ageSeconds: 5 }
+    });
+    expect(html).not.toContain("stale");
+    expect(html).not.toContain("not_reported");
+    expect(html).not.toContain("not reported to this commander");
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout"');
+  });
+});
