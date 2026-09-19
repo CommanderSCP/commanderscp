@@ -340,6 +340,80 @@ describe("wave-target observations federate upward (Testcontainers, two database
     expect(rows[0]!.hookKind).toBe("postDeploy");
   });
 
+  it("4b. a `postMerge` run — NULL target, NULL wave — is one row per run, not one per transition", async () => {
+    // THE NULLABLE-IDENTITY TRAP, which `pipeline_hook_runs_identity` already documents for the same
+    // two columns: a receiver that matched the identity with `= NULL` would find nothing every time
+    // and insert a row per status transition, turning D3's bounded volume into unbounded storage. A
+    // `postMerge` run is the ONLY shape that exercises it — every other run has both values.
+    const { changeId, componentId } = await seedDrivenChange("postmerge");
+    const identity = {
+      orgId: outpost.orgId,
+      changeObjectId: changeId,
+      hookId: "post-merge-unit",
+      waveIndex: null
+    };
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      claimHookRun(tx, {
+        ...identity,
+        componentObjectId: componentId,
+        targetObjectId: null,
+        kind: "postMerge",
+        pluginInstanceId: "fake-instance"
+      })
+    );
+    for (const phase of ["running", "failed"] as const) {
+      const current = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+        findHookRun(tx, identity)
+      );
+      await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+        applyHookRunObservation(tx, outpost.orgId, current!, phase, new Date())
+      );
+    }
+    await syncUp();
+
+    const rows = (await observationsAt(commander, changeId)).filter(
+      (row) => row.hookId === "post-merge-unit"
+    );
+    expect(rows.length, "a NULL identity part inserted a row per transition").toBe(1);
+    expect(rows[0]!.status).toBe("failed");
+    expect(rows[0]!.waveIndex).toBeNull();
+    expect(rows[0]!.targetObjectId).toBeNull();
+    expect(rows[0]!.componentObjectId).toBe(componentId);
+
+    // And the monotone rule has to REACH this row to protect it. The UNIQUE constraint alone would
+    // keep the row count at one whatever the lookup did — it is the `IS NULL` match that lets the
+    // receiver FIND the stored reading and refuse an older one. Without it the select returns
+    // nothing, every arrival looks like a first reading, and a replayed `running` overwrites a
+    // failure the operator is looking at.
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      appendJournalEntry(tx, {
+        orgId: outpost.orgId,
+        entryKind: "wave_target_observed",
+        contentHash: `test-${randomUUID()}`,
+        payload: {
+          subject: "hook_run",
+          changeObjectId: changeId,
+          componentObjectId: componentId,
+          targetObjectId: null,
+          hookId: "post-merge-unit",
+          kind: "postMerge",
+          waveIndex: null,
+          status: "running",
+          attempt: 1,
+          externalUrl: null,
+          startedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+          observedAt: new Date(Date.now() - 60 * 60_000).toISOString()
+        }
+      })
+    );
+    await syncUp();
+    const afterReplay = (await observationsAt(commander, changeId)).filter(
+      (row) => row.hookId === "post-merge-unit"
+    );
+    expect(afterReplay.length).toBe(1);
+    expect(afterReplay[0]!.status, "an older replay overwrote a terminal run").toBe("failed");
+  });
+
   it("5. a LATER bundle carrying an earlier reading cannot walk the commander backwards", async () => {
     const { changeId } = await seedDrivenChange("monotone");
     const targetObjectId = randomUUID();
