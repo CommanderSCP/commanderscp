@@ -759,7 +759,16 @@ export const approvalRequests = pgTable(
     status: text("status").notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     satisfiedAt: timestamp("satisfied_at", { withTimezone: true }),
-    satisfiedDecisionId: uuid("satisfied_decision_id")
+    satisfiedDecisionId: uuid("satisfied_decision_id"),
+    /** Set once this request's CHANGE reaches a terminal state (`cancelled`/`rolled_back`) — the
+     *  request can never be voted on again, but the row stays as history (`status` is untouched: a
+     *  third enum member on this RESPONSE field would be an oasdiff-breaking wire change). */
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    /** The terminal `toState` that closed this request (e.g. `"cancelled"`, `"rolled_back"`). */
+    closedReason: text("closed_reason"),
+    /** The SAME Decision id the closing transition itself recorded — not a second Decision for the
+     *  same event (see the unbounded-Decision-growth incident). */
+    closedDecisionId: uuid("closed_decision_id")
   },
   (table) => [
     unique("approval_requests_dedup_key").on(

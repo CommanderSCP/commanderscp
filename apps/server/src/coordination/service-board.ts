@@ -572,12 +572,15 @@ export async function buildServiceBoard(
     const currentWave = (runningWave ?? lastActed)?.name ?? null;
 
     // Attention (all real). Blocked = a failed wave/target OR a persisted block Decision; the decisionId
-    // is that block Decision (charter principle 6). awaitingApproval = a pending ApprovalRequest.
+    // is that block Decision (charter principle 6). awaitingApproval = a pending ApprovalRequest —
+    // excluding one CLOSED because its change already reached a terminal state (cancelled/rolled
+    // back): that request's own `status` legitimately stays "pending" forever (no third enum member
+    // on the wire, see governance/approvals-repo.ts), so `closedAt` is what this board must read.
     const hasFailedWave = waves.some(
       (w) => w.status === "failed" || w.targets.some((t) => FAILED_STATUSES.has(t.status))
     );
     const isBlocked = hasFailedWave || blockDecision !== undefined;
-    const awaitingApproval = approvals.some((a) => a.status !== "satisfied");
+    const awaitingApproval = approvals.some((a) => a.status !== "satisfied" && a.closedAt === null);
 
     rows.push({
       component: { id: component.id, urn: component.urn, name: component.name },

@@ -8,6 +8,9 @@ import { eq } from "drizzle-orm";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents, changes, controlRuns } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
+import { buildServiceBoard } from "../coordination/service-board.js";
+import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { getApprovalRequest, materializeApprovalRequest } from "./approvals-repo.js";
 import {
   assertStaysExecuting,
   createTestComponent,
@@ -816,6 +819,256 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       });
       expect(approvesRels.items.length).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  // A change that reached a TERMINAL state (cancelled/rolled back) can never satisfy or act on a
+  // pending approval request again — measured on the live estate 2026-09-19: 97 cancelled changes
+  // left ~150 approval_requests rows stuck 'pending' forever.
+
+  describe("approval requests close when their change reaches a terminal state", () => {
+    it("cancelling a change with a pending approval closes it in the SAME transaction, on the SAME Decision, with an audit event — while status stays 'pending' (no wire-breaking third status)", async () => {
+      const org = await createTestOrg(server, "approvals-close-on-cancel");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "close-on-cancel-target" });
+      await createPolicy(admin, org, {
+        name: "close-on-cancel-gate",
+        urnSuffix: "close-on-cancel",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
+      });
+
+      const change = await admin.changes.propose({
+        name: "close-on-cancel-change",
+        targets: [target.id]
+      });
+      const approvalRequest = await waitForApprovalRequest(admin, change.id);
+      expect(approvalRequest.closedAt).toBeNull();
+
+      const cancelled = await admin.changes.cancel(change.id, "no longer needed");
+      expect(cancelled.state).toBe("cancelled");
+
+      const closed = await admin.approvals.get(approvalRequest.id);
+      expect(closed.status).toBe("pending"); // unchanged — the wire contract never gained a 3rd value
+      expect(closed.closedAt).toBeTruthy();
+      expect(closed.closedReason).toBe("cancelled");
+
+      // Same shape via the list endpoint too (it's a different code path).
+      const listed = await admin.approvals.list({ changeId: change.id, limit: 20 });
+      expect(listed.items[0]).toMatchObject({ closedReason: "cancelled" });
+
+      // One audit event closed it, riding the SAME Decision the cancel transition itself recorded
+      // — not a second Decision for the same event (a change auto-progresses through several
+      // transitions before cancel, e.g. proposed->evaluated->coordinated->executing, each with its
+      // OWN Decision, so the identity to prove is against the CANCEL transition's decision
+      // specifically, not merely "some change.transition event exists").
+      const auditPage = await admin.auditEvents.list({ limit: 100 });
+      const closeEvent = auditPage.items.find((e) => e.action === "approval_requests.closed");
+      expect(closeEvent).toBeDefined();
+      expect(closeEvent!.subjectId).toBe(change.id);
+      expect(closeEvent!.decisionId).toBeTruthy();
+
+      const explained = await admin.changes.explain(change.id);
+      const cancelDecision = explained.decisions.find(
+        (d) =>
+          d.kind === "transition" &&
+          d.verdict === "allow" &&
+          (d.inputContext.toState as string) === "cancelled"
+      );
+      expect(cancelDecision).toBeDefined();
+      expect(closeEvent!.decisionId).toBe(cancelDecision!.id);
+    });
+
+    it("a vote on a cancelled change is refused (409, decision_id) and NO vote is recorded — the request stays closed and still 'pending'", async () => {
+      const org = await createTestOrg(server, "vote-refused-on-cancel");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
+      const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
+
+      const target = await createTestComponent(admin, { name: "vote-refused-target" });
+      await createPolicy(admin, org, {
+        name: "vote-refused-gate",
+        urnSuffix: "vote-refused",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
+      });
+
+      const change = await admin.changes.propose({
+        name: "vote-refused-change",
+        targets: [target.id]
+      });
+      const approvalRequest = await waitForApprovalRequest(admin, change.id);
+
+      await admin.changes.cancel(change.id, "cancelled before anyone voted");
+
+      const voteErr = await expectApiError(() => approverClient.approvals.vote(approvalRequest.id));
+      expect(voteErr.status).toBe(409);
+      expect(voteErr.problem?.decision_id).toBeTruthy();
+
+      const decision = await admin.decisions.get(voteErr.problem!.decision_id!);
+      expect(decision.verdict).toBe("block");
+      expect(decision.kind).toBe("approval_vote");
+
+      // The refusal is itself audited.
+      const auditPage = await admin.auditEvents.list({ limit: 100 });
+      const blockedEvent = auditPage.items.find((e) => e.action === "approval_vote.blocked");
+      expect(blockedEvent).toBeDefined();
+      expect(blockedEvent!.decisionId).toBe(voteErr.problem!.decision_id);
+
+      // No vote was ever recorded, and the request's own status never moved off 'pending'.
+      const votes = await admin.approvals.listVotes(approvalRequest.id);
+      expect(votes).toHaveLength(0);
+      const stillPending = await admin.approvals.get(approvalRequest.id);
+      expect(stillPending.status).toBe("pending");
+      expect(stillPending.closedReason).toBe("cancelled");
+    });
+
+    it("cancelling one change never touches another change's still-live pending approval request", async () => {
+      const org = await createTestOrg(server, "approvals-scoped-to-own-change");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
+      const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
+
+      const targetA = await createTestComponent(admin, { name: "scoped-target-a" });
+      const targetB = await createTestComponent(admin, { name: "scoped-target-b" });
+      await createPolicy(admin, org, {
+        name: "scoped-gate-a",
+        urnSuffix: "scoped-a",
+        enforcement: "required",
+        scopeObjectId: targetA.id,
+        requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
+      });
+      await createPolicy(admin, org, {
+        name: "scoped-gate-b",
+        urnSuffix: "scoped-b",
+        enforcement: "required",
+        scopeObjectId: targetB.id,
+        requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
+      });
+
+      const changeA = await admin.changes.propose({
+        name: "scoped-change-a",
+        targets: [targetA.id]
+      });
+      const changeB = await admin.changes.propose({
+        name: "scoped-change-b",
+        targets: [targetB.id]
+      });
+      const approvalA = await waitForApprovalRequest(admin, changeA.id);
+      const approvalB = await waitForApprovalRequest(admin, changeB.id);
+
+      await admin.changes.cancel(changeA.id, "only A is going away");
+
+      const closedA = await admin.approvals.get(approvalA.id);
+      expect(closedA.closedAt).toBeTruthy();
+
+      // B's own request is untouched — still open, and still genuinely votable.
+      const liveB = await admin.approvals.get(approvalB.id);
+      expect(liveB.closedAt).toBeNull();
+      expect(liveB.closedReason).toBeNull();
+
+      await approverClient.approvals.vote(approvalB.id);
+      const votedB = await admin.approvals.get(approvalB.id);
+      expect(votedB.status).toBe("satisfied");
+      expect(votedB.closedAt).toBeNull();
+
+      // Clean up B so this test doesn't leave a change driving reconcile after the suite closes.
+      await admin.changes.cancel(changeB.id, "test cleanup");
+    });
+
+    it("the service board's 'awaiting approval' attention flag drops once the change it was reporting on is cancelled", async () => {
+      const org = await createTestOrg(server, "board-drops-dead-approval");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const svc = await admin.services.create({ name: `board-drops-dead-approval-svc` });
+      const target = await createTestComponent(admin, {
+        name: "board-drops-dead-approval-target",
+        service: svc.id
+      });
+      await createPolicy(admin, org, {
+        name: "board-drops-dead-approval-gate",
+        urnSuffix: "board-drops-dead-approval",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
+      });
+
+      const change = await admin.changes.propose({
+        name: "board-drops-dead-approval-change",
+        targets: [target.id]
+      });
+      await waitForApprovalRequest(admin, change.id);
+
+      const boardBefore = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+        const service = await getObjectByIdOrUrnAnyType(tx, org.orgId, svc.id);
+        return buildServiceBoard(tx, org.orgId, service);
+      });
+      const rowBefore = boardBefore.rows.find((r) => r.component.id === target.id);
+      expect(rowBefore?.attention.awaitingApproval).toBe(true);
+
+      await admin.changes.cancel(change.id, "board should stop asking for this");
+
+      const boardAfter = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+        const service = await getObjectByIdOrUrnAnyType(tx, org.orgId, svc.id);
+        return buildServiceBoard(tx, org.orgId, service);
+      });
+      const rowAfter = boardAfter.rows.find((r) => r.component.id === target.id);
+      expect(rowAfter?.changeState).toBe("cancelled");
+      expect(rowAfter?.attention.awaitingApproval).toBe(false);
+    });
+
+    // REGRESSION (found by CI on PR #373, not by this branch's own tests): the campaign reconciler
+    // reuses this SAME approval_requests/castApprovalVote mechanism keyed by a CAMPAIGN object id
+    // (gate-orchestrator.ts's `materializeApprovalRequest` calls, driven from
+    // campaign-reconcile.ts) — and a campaign has no `changes` table row at all. The terminal-change
+    // check above naively called `getChangeRow` unconditionally, so voting on ANY approval request
+    // whose `changeObjectId` is not a real change (a campaign today; anything else tomorrow) 500'd
+    // with a raw `notFound` instead of voting. Reproduced directly here — no campaign scaffolding
+    // needed, since the property is "changeObjectId doesn't resolve via `changes`", not
+    // "specifically a campaign".
+    it("voting on an approval request whose changeObjectId is NOT a `changes` row (e.g. a campaign's own approval, or any other non-change subject) still succeeds — it has no ChangeState to be terminal in", async () => {
+      const org = await createTestOrg(server, "vote-on-non-change-subject");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
+      const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
+
+      // Any non-`change` object stands in for a campaign here — the fix must not special-case
+      // "campaign", it must tolerate `getChangeRow` finding nothing at all.
+      const nonChangeSubject = await createTestComponent(admin, {
+        name: "non-change-approval-subject"
+      });
+
+      const approvalRequest = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        materializeApprovalRequest(tx, {
+          orgId: org.orgId,
+          changeObjectId: nonChangeSubject.id,
+          policyObjectId: randomUUID(),
+          policyVersion: 1,
+          effectIndex: 0,
+          requiredCount: 1,
+          fromRole: "Approver",
+          scopeObjectId: org.orgId
+        })
+      );
+
+      // The vote route itself has no change-scope gate (only `approval:write` at the policy's own
+      // scope) — unlike the READ routes (`GET /approvals`, `GET /approvals/{id}`, `.../votes`),
+      // which resolve read authority THROUGH the change (`resolveChangeForScope` requires
+      // `typeId === "change"`, 404ing for a campaign or any other non-change subject — a SEPARATE,
+      // pre-existing limitation of those routes, not something this fix touches). So the vote's own
+      // success is verified via its response, and the resulting state via a direct repo read,
+      // exactly as the campaign reconciler itself does (it never goes through the HTTP read routes).
+      const vote = await approverClient.approvals.vote(approvalRequest.id);
+      expect(vote.voterObjectId).toBe(approver.objectId);
+
+      const satisfied = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        getApprovalRequest(tx, org.orgId, approvalRequest.id)
+      );
+      expect(satisfied.status).toBe("satisfied");
+      expect(satisfied.closedAt).toBeNull(); // nothing terminal about a non-change subject
+    });
   });
 
   // MAJOR #7 (adversarial review). See docs/governance.md §213.
