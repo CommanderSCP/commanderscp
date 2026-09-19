@@ -808,3 +808,65 @@ describe("PipelineWaveCard: the rollout pip-stepper (pipeline-mockup-data.md §5
     expect(html).toContain('data-testid="pipeline-wave-observed-rollout"');
   });
 });
+
+describe("PipelineWaveCard: the infrastructure plan chip (pipeline-mockup-data.md §6)", () => {
+  it("renders 'plan <ref> · N add / N change / N destroy' for an infrastructure target", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      category: "infrastructure",
+      type: "infrastructure",
+      observed: { plan: { ref: "7c1e9f2a8b3d4e5f", add: 2, change: 0, destroy: 1 } }
+    });
+    expect(html).toContain('data-testid="pipeline-wave-observed-plan"');
+    // The ref is short-displayed (first 4 chars), the same idiom the revision short-form uses.
+    expect(html).toContain("plan 7c1e");
+    expect(html).toContain("2 add / 0 change / 1 destroy");
+  });
+
+  // THE HONESTY TEST — no `observed.plan` at all (a rollback, an executor with no structured plan,
+  // a parse miss upstream) must render NO chip whatsoever, never a zeroed "0 add / 0 change / 0
+  // destroy" chip. Mutation-target: a `target.observed?.plan ?? {}` fallback anywhere upstream of
+  // this render would still pass every other test in this describe block and only this one would
+  // catch it.
+  it("no observed.plan -> renders no chip at all, even for an infrastructure target", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      category: "infrastructure",
+      type: "infrastructure",
+      observed: { revision: "abc1234" }
+    });
+    expect(html).not.toContain('data-testid="pipeline-wave-observed-plan"');
+    expect(html).not.toContain("add /");
+  });
+
+  it("does not render for a non-infrastructure target, even if observed.plan is somehow present", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      category: "configuration",
+      type: "configuration",
+      observed: { plan: { ref: "aaaa", add: 1, change: 0, destroy: 0 } }
+    });
+    expect(html).not.toContain('data-testid="pipeline-wave-observed-plan"');
+  });
+
+  it("a count the executor did not report renders '?', never a guessed zero", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      category: "infrastructure",
+      type: "infrastructure",
+      observed: { plan: { ref: "a802", add: 1 } }
+    });
+    expect(html).toContain("1 add / ? change / ? destroy");
+  });
+
+  it("renders even with no ref at all — no fabricated identifier", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      category: "infrastructure",
+      type: "infrastructure",
+      observed: { plan: { add: 0, change: 0, destroy: 3 } }
+    });
+    expect(html).toContain('data-testid="pipeline-wave-observed-plan"');
+    expect(html).toContain("0 add / 0 change / 3 destroy");
+  });
+});
