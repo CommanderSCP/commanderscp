@@ -1562,7 +1562,7 @@ The three federation-role tiers (owner decision, 2026-07-15 — clean break from
 
 ### §217. OUTPOST-RUN PROBES (team-pipeline-iac D11/D23)
 
-OUTPOST-RUN PROBES (team-pipeline-iac D11/D23). Three kinds, added together under one `api-v2-exception` because `entryKind` appears in two RESPONSES (`/federation/exports`, `/federation/resync`) and a response enum-value addition is breaking under `tools/openapi/ check.sh` — measured, not assumed. See `tools/openapi/OASDIFF-EXCEPTIONS.md`.
+OUTPOST-RUN PROBES (team-pipeline-iac D11/D23). Three kinds, added together under one `api-v2-exception` because `entryKind` appears in two RESPONSES (`/federation/exports`, `/federation/resync`). CORRECTED 2026-09-19: a response enum-value addition is a WARN under `tools/openapi/check.sh` (`response-property-enum-value-added`), not an ERR — measured with the vendored oasdiff 1.23.0 and a known-positive control, it does not trip `--fail-on ERR` on its own. The sentence this replaces ("a response enum-value addition is breaking … measured, not assumed") had it backwards; see `tools/openapi/OASDIFF-EXCEPTIONS.md`'s 2026-09-19 entry for the transcript. The label and this record were still carried as the owner-approved durable note of a deliberate wire change, not because the gate required it.
 
 WHY THE JOURNAL AND NOT THE GRAPH: a `pipeline_hooks` row is deliberately a side table whose ownership DERIVES from `component_object_id` (migration 0096's header). Making hooks graph objects to ride `object_upsert` for free would reverse that decision; these carry the row.
 
@@ -2301,7 +2301,7 @@ The full desired-state row a `create`/`update` entry will write — `labels` alr
 
 ADOPTION (§9) — this entry claims an object that ALREADY EXISTS and was managed by NO stack.
 
-A QUALIFIER ON THE EXISTING ACTION, not a new `action` value, and the reason is measured rather than stylistic: adding a member to a response ENUM is a breaking change under the oasdiff gate (response enum-value additions are breaking; `oneOf` member additions are not), so an `"adopt"` action would have cost an `api-v2-exception` for a distinction that is genuinely a property OF a create/update rather than a third kind of thing. An optional boolean is additive.
+A QUALIFIER ON THE EXISTING ACTION, not a new `action` value. CORRECTED 2026-09-19: the original reason given here had the oasdiff gate backwards — measured with the vendored oasdiff 1.23.0, a response ENUM-value addition is a WARN (`response-property-enum-value-added`, does not trip `--fail-on ERR`), while a response `oneOf`-member addition IS an ERR (`response-property-one-of-added`/`response-body-one-of-added`, does trip it) — the opposite of what was stated. So an `"adopt"` enum value would NOT, on its own, have cost an `api-v2-exception` under the gate as it actually behaves. The qualifier-not-a-value choice stands anyway on its own merits: `adopt` is genuinely a property OF a create/update (§222 makes the same oneOf-is-non-additive point correctly, for `DeliveryTarget`'s response shape) rather than a third kind of thing, and an optional boolean is additive regardless of which oasdiff check applies.
 
 Absent or `false` means the object was already this stack's, or is being created fresh. `true` means a review is looking at a stack CLAIMING EXISTING ESTATE — which §9 requires be visible, because it is the one action whose blast radius is invisible from the manifest alone.
 

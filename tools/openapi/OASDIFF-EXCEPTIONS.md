@@ -118,6 +118,26 @@ there.) Measured rather than assumed — response enum-value additions are break
 > entry below already says the same thing about its own 138 identical warnings, which means this file
 > has disagreed with itself since 2026-08-26; the disagreement is resolved in favour of the
 > measurement.
+>
+> **SECOND CORRECTION (2026-09-19): the other half of the original sentence is also wrong, and the
+> first correction above left it standing.** "response `oneOf` member additions are not [breaking]"
+> is backwards too. Measured with the same vendored `oasdiff-linux-amd64` 1.23.0 and the same
+> invocation (`breaking <base> <head> --fail-on ERR`), against three independent constructions — a
+> `oneOf` nested under a response property (inline members, and again with a `discriminator` +
+> `$ref` members), and a `oneOf` as the whole response body — every one of them reported
+> `response-property-one-of-added` or `response-body-one-of-added` at **ERR** and exited **1**. It
+> was then reproduced against this repo's OWN real schema: adding a 4th member to
+> `CampaignRecipeSchema.adoption` (a `oneOf`, `packages/schemas/src/campaigns.ts`) across its 7
+> wire occurrences in the committed `openapi.v1.json`
+> produced **6 errors** — one `response-property-one-of-added` for each of its 6 response
+> positions — and exited 1; only its 1 request-body occurrence was silent, matching the
+> request-is-safe pattern enum widening also shows. `response oneOf member additions ARE breaking`
+> is therefore the correct rule, exactly opposite the sentence above and the file's own
+> `scp-oasdiff-oneof-vs-enum` memory note (corrected in place the same day). The likely origin of
+> the reversed 2026-08-24 measurement behind that memory: `pnpm gen` reads `packages/schemas/dist`,
+> not source (CLAUDE.md, this file's own recurring caveat) — a plausible stale-dist run would show
+> zero diff on a oneOf edited only in source, which reads exactly like "adding a member is safe."
+> None of this changes the WARN-vs-ERR conclusion above for enums, which stands.
 
 **Why not avoid the break.** Two alternatives were considered and rejected:
 
