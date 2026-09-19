@@ -1,5 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
+import type { ChangeState, Decision } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { approvalRequests, approvalVotes, relationships } from "../db/schema.js";
 import { conflict, forbidden, notFound } from "../errors.js";
@@ -10,6 +11,10 @@ import { computeObjectContentHash, computeRelationshipContentHash } from "../gra
 import { ensureInstanceKey, signAttestation, type SignedAttestation } from "./attestation.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
+import { getChangeRow } from "../coordination/changes-repo.js";
+import { insertDecision } from "../coordination/decisions-repo.js";
+import { TERMINAL_STATES } from "../coordination/transitions.js";
 
 /** N-of-M approval quorum. See docs/governance.md §1. */
 
@@ -27,6 +32,46 @@ export interface ApprovalRequestRow {
   createdAt: Date;
   satisfiedAt: Date | null;
   satisfiedDecisionId: string | null;
+  /** Set once this request's change reached a terminal state. See ApprovalRequestSchema's doc. */
+  closedAt: Date | null;
+  closedReason: string | null;
+  closedDecisionId: string | null;
+}
+
+export interface CloseApprovalRequestsForChangeInput {
+  orgId: string;
+  changeObjectId: string;
+  /** The terminal `toState` that closed these requests (e.g. `"cancelled"`, `"rolled_back"`). */
+  closedReason: string;
+  /** The SAME Decision id the closing transition itself recorded. */
+  decisionId: string;
+}
+
+/** Closes every still-open approval request for a change, in the CALLER's transaction — meant to
+ *  be called from `transitionChange` the moment a change reaches a terminal state, so a dead
+ *  change never again shows a votable, "still pending" approval request. Idempotent: only rows
+ *  with `closedAt IS NULL` are touched, so calling this twice (or racing a duplicate transition)
+ *  never overwrites an earlier closure's reason/decision. See docs/governance.md §6. */
+export async function closeApprovalRequestsForChange(
+  tx: TenantTx,
+  input: CloseApprovalRequestsForChangeInput
+): Promise<ApprovalRequestRow[]> {
+  const rows = await tx
+    .update(approvalRequests)
+    .set({
+      closedAt: new Date(),
+      closedReason: input.closedReason,
+      closedDecisionId: input.decisionId
+    })
+    .where(
+      and(
+        eq(approvalRequests.orgId, input.orgId),
+        eq(approvalRequests.changeObjectId, input.changeObjectId),
+        isNull(approvalRequests.closedAt)
+      )
+    )
+    .returning();
+  return rows as ApprovalRequestRow[];
 }
 
 export interface MaterializeApprovalRequestInput {
@@ -176,12 +221,57 @@ export interface CastApprovalVoteInput {
   requestId: string;
 }
 
-/** Casts one vote: (1) eligibility check. See docs/governance.md §3. */
+export type CastApprovalVoteResult =
+  | { verdict: "allow"; vote: ApprovalVoteRow }
+  /** A vote refused because the request's change is already terminal — the Decision + audit event
+   *  below still commit in this same transaction (the caller must NOT throw here; see
+   *  `routes/governance.ts`'s block-then-409-after-commit comment, mirrored from
+   *  `coordination/transition.ts`). */
+  | { verdict: "block"; decision: Decision; blockedReason: string };
+
+/** Casts one vote: (0) the request's change must not already be terminal, (1) eligibility check.
+ *  See docs/governance.md §3. */
 export async function castApprovalVote(
   tx: TenantTx,
   input: CastApprovalVoteInput
-): Promise<ApprovalVoteRow> {
+): Promise<CastApprovalVoteResult> {
   const request = await getApprovalRequest(tx, input.orgId, input.approvalRequestId);
+
+  // A change that reached cancelled/rolled_back can never act on a vote again — refuse it with an
+  // audited, Decision-carrying 409 rather than silently recording a vote nobody will ever read.
+  const changeRow = await getChangeRow(tx, input.orgId, request.changeObjectId);
+  if (TERMINAL_STATES.has(changeRow.state as ChangeState)) {
+    const decision = await insertDecision(tx, {
+      orgId: input.orgId,
+      kind: "approval_vote",
+      subjectId: request.id,
+      verdict: "block",
+      inputContext: {
+        changeObjectId: request.changeObjectId,
+        changeState: changeRow.state,
+        voterObjectId: input.voterObjectId
+      },
+      reasonTree: {
+        summary:
+          `refused: change '${request.changeObjectId}' is in terminal state '${changeRow.state}' ` +
+          `— a vote on approval request '${request.id}' can never affect it`
+      }
+    });
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      actorId: input.voterObjectId,
+      action: "approval_vote.blocked",
+      subjectId: request.id,
+      reason: `change is in terminal state '${changeRow.state}'`,
+      decisionId: decision.id,
+      requestId: input.requestId
+    });
+    return {
+      verdict: "block",
+      decision,
+      blockedReason: `change is in terminal state '${changeRow.state}' — voting is refused`
+    };
+  }
 
   const eligible = await hasRoleAtScope(tx, {
     orgId: input.orgId,
@@ -315,5 +405,5 @@ export async function castApprovalVote(
       .where(eq(approvalRequests.id, request.id));
   }
 
-  return row;
+  return { verdict: "allow", vote: row };
 }

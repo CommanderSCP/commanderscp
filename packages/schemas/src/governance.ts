@@ -97,7 +97,15 @@ export const ApprovalRequestSchema = z.object({
   status: ApprovalRequestStatusSchema,
   createdAt: z.string().datetime(),
   satisfiedAt: z.string().datetime().nullable(),
-  voteCount: z.number().int()
+  voteCount: z.number().int(),
+  /** Set once this request's CHANGE reaches a terminal state (`cancelled`/`rolled_back`) — the
+   *  request can never be voted on again, though `status` itself is untouched (a third enum member
+   *  on this response field would be an oasdiff-breaking wire change). Additive field: existing
+   *  readers that ignore it see exactly the response they always did. */
+  closedAt: z.string().datetime().nullable(),
+  /** The terminal `toState` that closed this request (e.g. `"cancelled"`, `"rolled_back"`), or
+   *  `null` while the request is still open. */
+  closedReason: z.string().nullable()
 });
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
 
