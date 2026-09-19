@@ -72,7 +72,8 @@ import {
   describeDeadTarget,
   readTargetLiveness,
   WAVE_TARGET_TOMBSTONED_AUDIT_ACTION,
-  WAVE_TARGET_TOMBSTONED_STATUS
+  WAVE_TARGET_TOMBSTONED_STATUS,
+  type TargetLiveness
 } from "./target-liveness.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
@@ -409,6 +410,27 @@ async function advanceValidatingChanges(
     try {
       const targetObjectIds = targetObjectIdsOf(object.properties as Record<string, unknown>);
       if (targetObjectIds.length === 0) continue;
+
+      // IS EVERY TARGET THIS CHANGE NAMES STILL THERE? See docs/coordination.md §755a. Every wave
+      // already succeeded to reach `validating` — there is no further trigger ahead of this change
+      // on the happy path, unlike `executing`'s `triggerWaveTarget`, which re-checks liveness at
+      // every dispatch. Without this, a target tombstoned while its change sits here (awaiting a
+      // human `scp change accept`) produced no signal at all — the gap this function closes.
+      const dead = await withTenantTx(db, orgId, async (tx) => {
+        for (const targetObjectId of targetObjectIds) {
+          const liveness = await readTargetLiveness(tx, orgId, targetObjectId);
+          if (!liveness.live) return { targetObjectId, liveness };
+        }
+        return undefined;
+      });
+      if (dead) {
+        // Surfaced, not auto-cancelled: the change stays in `validating` and is parked
+        // (`reconcile_blocked_at`) for an operator to cancel/rollback — same recourse
+        // `DEAD_TARGET_REMEDIATION` already names for the executing path.
+        await surfaceDeadValidatingTarget(db, orgId, change, dead.targetObjectId, dead.liveness);
+        continue;
+      }
+
       await withTenantTx(db, orgId, (tx) =>
         prewarmGovernanceForChange(tx, sandbox, host, {
           orgId,
@@ -428,6 +450,47 @@ async function advanceValidatingChanges(
       logChangeError(orgId, change, "validating-governance-prewarm", err);
     }
   }
+}
+
+/** Surfaces a target tombstoned while its change sits in `validating` — the same Decision kind,
+ *  audit action and remediation text as the executing path's `blockWaveTarget` (`target-liveness.ts`
+ *  is the one definition of "this target is dead" both paths read), minus the wave-target row to
+ *  terminalize: every wave here already succeeded, so there is no `pending`/`triggering` row left to
+ *  mark `target_deleted`. `insertDecisionIfChanged` + the audit event gated on `created` keeps this
+ *  exactly-once across ticks the same way the hold recorders above do; `markChangeReconcileBlocked`
+ *  is idempotent on its own guard, and once it lands this change drops out of every
+ *  `listChangeRowsInStates` candidate set (including this function's own), so there is nothing left
+ *  to race. See docs/coordination.md §755b. */
+async function surfaceDeadValidatingTarget(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  targetObjectId: string,
+  liveness: Extract<TargetLiveness, { live: false }>
+): Promise<void> {
+  const summary = describeDeadTarget(targetObjectId, liveness);
+  await withTenantTx(db, orgId, async (tx) => {
+    const recorded = await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "wave_target",
+      subjectId: change.objectId,
+      verdict: "block",
+      inputContext: deadTargetInputContext(targetObjectId, liveness),
+      reasonTree: { summary, remediation: DEAD_TARGET_REMEDIATION }
+    });
+    if (recorded.created) {
+      await appendAuditEvent(tx, {
+        orgId,
+        actorId: SYSTEM_ACTOR_ID,
+        action: WAVE_TARGET_TOMBSTONED_AUDIT_ACTION,
+        subjectId: change.objectId,
+        reason: summary,
+        decisionId: recorded.decision.id,
+        requestId: "reconcile"
+      });
+    }
+    await markChangeReconcileBlocked(tx, orgId, change.objectId);
+  });
 }
 
 // -------------------------------------------------------------------------------------------
