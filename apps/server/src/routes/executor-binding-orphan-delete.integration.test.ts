@@ -10,6 +10,7 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { startCliSession, type CliInvocation } from "../test-support/cli-runner.js";
 
 /** THE AUDITED EXIT FOR A STRANDED EXECUTOR BINDING. See docs/routes.md §161a. */
 describe("deleting an executor binding that outlived its target", () => {
@@ -114,6 +115,93 @@ describe("deleting an executor binding that outlived its target", () => {
 
     const removed = await admin.executors.deleteBinding(comp.id, "configuration", "test");
     expect(removed.targetObjectId).toBe(comp.id);
+  });
+
+  it("addresses the target by its URN — and a PLACEMENT urn contains a SLASH, which is all 19", async () => {
+    // Not a hypothetical encoding worry. `graph/integrity-repo.ts` hands the operator `ownerUrn` and
+    // the BINDING's row id; it does not return the target's object id, so the cleanup command has no
+    // choice but to address the door by URN. Every one of the 19 live orphans is a placement, and a
+    // placement's urn is derived as `<component>/<deploymentTarget>` — a literal `/` inside a single
+    // path parameter. If the SDK's `encodeURIComponent` and Fastify's route matching disagreed about
+    // that, the documented cleanup would 404 on all 19 while every id-addressed test stayed green.
+    const comp = await createTestComponent(admin, { name: `urn-${uuidv7().slice(0, 8)}` });
+    const target = await admin.deploymentTargets.create({ name: `dt-${uuidv7().slice(0, 8)}` });
+    const placement = await admin.placements.create({
+      component: comp.id,
+      deploymentTarget: target.id
+    });
+    expect(placement.urn, "the fixture is only meaningful if the urn really has a slash").toContain(
+      "/"
+    );
+    await admin.executors.putBinding(placement.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${uuidv7().slice(0, 8)}`,
+      type: "configuration"
+    });
+    await legacySoftDelete(placement.id);
+
+    const orphan = (await admin.graph.integrity()).orphanExecutorBindings.find(
+      (b) => b.ownerUrn === placement.urn
+    );
+    expect(orphan, "the report is where the operator gets the urn from").toBeDefined();
+
+    // Addressed exactly as the cleanup runbook does: by the urn the report printed.
+    const removed = await admin.executors.deleteBinding(orphan!.ownerUrn, "configuration", "build");
+    expect(removed.targetObjectId).toBe(placement.id);
+  });
+
+  it("THE OPERATOR LOOP, end to end through the CLI: `graph integrity` -> `executor unbind` -> clean", async () => {
+    // The whole runbook in one test, because every rung of it was individually plausible and the
+    // JOIN between them was the broken part: `scp graph integrity` printed the dead object's NAME,
+    // while `scp executor unbind` takes an id-or-URN — so the report could not be piped into its own
+    // remedy and the cleanup had to leave the CLI for raw curl. `owner` now carries the urn.
+    // Asserting the pair here is the only arrangement in which the report's output and the door's
+    // input cannot drift apart again (charter principle 3: the CLI rung has to actually reach it).
+    const org2 = await createTestOrg(server, `cli-orphan-${uuidv7().slice(0, 6)}`);
+    const cli: CliInvocation = await startCliSession(server.baseUrl);
+    try {
+      await cli.run(["login", "--username", org2.adminUsername, "--password", org2.adminPassword]);
+      const admin2 = new ScpClient({ baseUrl: server.baseUrl, token: org2.adminToken });
+      const comp = await createTestComponent(admin2, { name: `cli-${uuidv7().slice(0, 8)}` });
+      await admin2.executors.putBinding(comp.id, {
+        pluginModule: "fake-executor",
+        pluginInstanceId: `inst-${uuidv7().slice(0, 8)}`,
+        type: "configuration"
+      });
+      await withTenantTx(server.deps.db, org2.orgId, (tx) =>
+        tx.execute(
+          sql`UPDATE objects SET deleted_at = now() WHERE id = ${comp.id}::uuid AND org_id = ${org2.orgId}::uuid`
+        )
+      );
+
+      type Row = { kind: string; id: string; owner: string; detail: string };
+      const report = await cli.runJson<Row[]>(["graph", "integrity"]);
+      const orphan = report.find(
+        (r) => r.kind === "orphan-executor-binding" && r.owner === comp.urn
+      );
+      expect(orphan, "the CLI must name the OWNER, which is what the door takes").toBeDefined();
+      // `type/lane` is in the detail for the same reason: the door needs both, and the default
+      // reaches only `build`.
+      expect(orphan!.detail).toContain("configuration/build");
+
+      await cli.run([
+        "executor",
+        "unbind",
+        orphan!.owner,
+        "--type",
+        "configuration",
+        "--lane",
+        "build"
+      ]);
+
+      const after = await cli.runJson<Row[]>(["graph", "integrity"]);
+      expect(
+        after.some((r) => r.kind === "orphan-executor-binding" && r.owner === comp.urn),
+        "the report the operator verifies with agrees with the door they used"
+      ).toBe(false);
+    } finally {
+      await cli.cleanup();
+    }
   });
 
   it("CREATING a binding on a soft-deleted target is still refused — removal reaches further than creation", async () => {
