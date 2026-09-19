@@ -74,6 +74,7 @@ used to sit inline. Each source file below carries a one-line headline at the si
 - [`apps/server/src/routes/pats.ts`](#apps-server-src-routes-pats-ts) — §300–§300
 - [`apps/server/src/routes/pipeline-evidence.integration.test.ts`](#apps-server-src-routes-pipeline-evidence-integration-test-ts) — §301–§302
 - [`apps/server/src/routes/pipelines.ts`](#apps-server-src-routes-pipelines-ts) — §303–§304
+- [`apps/server/src/routes/placement-orphan-delete.integration.test.ts`](#apps-server-src-routes-placement-orphan-delete-integration-test-ts) — §304a–§304a
 - [`apps/server/src/routes/placements.ts`](#apps-server-src-routes-placements-ts) — §305–§306
 - [`apps/server/src/routes/plans-cli.integration.test.ts`](#apps-server-src-routes-plans-cli-integration-test-ts) — §307–§307
 - [`apps/server/src/routes/plans.integration.test.ts`](#apps-server-src-routes-plans-integration-test-ts) — §308–§309
@@ -3000,6 +3001,34 @@ It records no Decision, so it returns no `decision_id`: nothing here is an engin
 ### §304. Every field of the receipt is read back off the row
 
 EVERY FIELD OF THE RECEIPT IS READ BACK OFF THE PERSISTED ROW, not restated from the constants above: the receipt describes what is IN THE TABLE, so a stamping regression surfaces in the response a reporter actually reads instead of only in a column nobody looks at. The two narrowings below are therefore checks, not casts — both are unreachable while the stamping above stands, and both would be the first sign that it stopped.
+
+## `apps/server/src/routes/placement-orphan-delete.integration.test.ts`
+
+### §304a. THE AUDITED EXIT FOR AN ORPHANED PLACEMENT
+
+THE AUDITED EXIT FOR AN ORPHANED PLACEMENT — the door `graph/integrity-repo.ts` has pointed at for months without anything ever walking it. See docs/graph.md §125c.
+
+WHY THIS FILE EXISTS. `orphanPlacements` has been reported, and `scp graph integrity` has printed every row `repairable: true`, since the report was written; no test had ever tried the repair. That is precisely the arrangement §161a found on the binding door, where the promise turned out to be FALSE and all 19 rows answered 404. Here it is TRUE — `DELETE /placements/{idOrUrn}` resolves the PLACEMENT, not its ends, so a tombstoned component does not hide it — and the only way to know which of the two you have is to run it. Both halves now sit in one test, in that order, which is the only arrangement in which detection and repair cannot drift apart.
+
+WHAT THE REPORT WAS ACTUALLY GETTING WRONG was `repairable` itself: three classes of placement cannot be repaired (replica, binding-held, stack-managed) and were all offered as actionable. Each has its own test here, each asserts the REPORT's claim and the DOOR's real answer together, and the binding case additionally asserts that the reason it prints is a working instruction — the test runs the `scp executor unbind` it names and watches the row become repairable.
+
+THE CARVE-OUT IS MADE TWICE AND MUST MATCH. Route 6 exempts a policy-managed binding (refusing one would livelock against the reconciler that re-creates it), so the report must exempt it too — a placement whose only binding is policy-managed is repairable, and calling it blocked would strand it in `--repair` forever behind a reason naming an unbind the operator must not perform.
+
+THE MALFORMED ARM CARRIES TWO DEFECTS IN ONE ROW, and the second is the dangerous one. A placement not naming two resolvable ids used to be skipped silently — invisible in every arm, so the estate read as healthy. And the ids it *did* find went into an `IN (…)` list against a `uuid` column, so a non-uuid value raised `invalid input syntax for type uuid` and **500'd the whole endpoint**: one malformed row takes out the report that exists to find malformed rows, hiding every other finding in the org with it. The fixture is written beneath the API because no door can produce one (a placement is refused on the generic `/objects/{type}` route), which is exactly why it had never been seen.
+
+`.slice(-8)` AND NOT `.slice(0, 8)` on every fixture tag. A uuidv7's LEADING characters are its millisecond timestamp, so two fixtures built in the same tick collide on `objects_org_id_urn_key` and the suite fails during setup with a 409 that looks like the code under test. Cost a diagnosis on the first run of this file.
+
+MUTATION LOG (each applied ALONE against a passing suite, then restored from a /tmp copy)
+| Mutation | Result |
+| drop the uuid test on a placement's ends | the malformed test FAILS **and takes three later tests with it** (4 failed, 5 passed) — which is the defect itself: one bad row 500s the endpoint for every other finding in the org |
+| restore the `continue` that skipped a malformed row | the malformed test FAILS alone (1/9) |
+| drop the replica check from `blockedReason` | the replica test FAILS alone (1/9) |
+| drop the binding check from `blockedReason` | the binding test AND the CLI loop FAIL (2/9) — the loop because `--repair` then attempts the blocked row and 409s |
+| drop the stack-managed carve-out | the stack test FAILS alone (1/9) |
+| drop `isNull(managedByPolicyId)` from the report's blocking-binding query | the policy-managed test FAILS alone (1/10) |
+| CLI: hardcode `repairable: true` again | the CLI operator-loop test FAILS alone |
+| CLI: repair no placements | the CLI operator-loop test FAILS alone |
+| `deleteObject`: drop the route 3+4 unbind hint | `container-delete-guard`'s two-step-wall test FAILS alone (1/12) |
 
 ## `apps/server/src/routes/placements.ts`
 
