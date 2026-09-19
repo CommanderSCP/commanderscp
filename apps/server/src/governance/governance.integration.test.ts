@@ -10,6 +10,7 @@ import { changeSourceEvents, changes, controlRuns } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 import { buildServiceBoard } from "../coordination/service-board.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { getApprovalRequest, materializeApprovalRequest } from "./approvals-repo.js";
 import {
   assertStaysExecuting,
   createTestComponent,
@@ -1016,6 +1017,57 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const rowAfter = boardAfter.rows.find((r) => r.component.id === target.id);
       expect(rowAfter?.changeState).toBe("cancelled");
       expect(rowAfter?.attention.awaitingApproval).toBe(false);
+    });
+
+    // REGRESSION (found by CI on PR #373, not by this branch's own tests): the campaign reconciler
+    // reuses this SAME approval_requests/castApprovalVote mechanism keyed by a CAMPAIGN object id
+    // (gate-orchestrator.ts's `materializeApprovalRequest` calls, driven from
+    // campaign-reconcile.ts) — and a campaign has no `changes` table row at all. The terminal-change
+    // check above naively called `getChangeRow` unconditionally, so voting on ANY approval request
+    // whose `changeObjectId` is not a real change (a campaign today; anything else tomorrow) 500'd
+    // with a raw `notFound` instead of voting. Reproduced directly here — no campaign scaffolding
+    // needed, since the property is "changeObjectId doesn't resolve via `changes`", not
+    // "specifically a campaign".
+    it("voting on an approval request whose changeObjectId is NOT a `changes` row (e.g. a campaign's own approval, or any other non-change subject) still succeeds — it has no ChangeState to be terminal in", async () => {
+      const org = await createTestOrg(server, "vote-on-non-change-subject");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
+      const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
+
+      // Any non-`change` object stands in for a campaign here — the fix must not special-case
+      // "campaign", it must tolerate `getChangeRow` finding nothing at all.
+      const nonChangeSubject = await createTestComponent(admin, {
+        name: "non-change-approval-subject"
+      });
+
+      const approvalRequest = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        materializeApprovalRequest(tx, {
+          orgId: org.orgId,
+          changeObjectId: nonChangeSubject.id,
+          policyObjectId: randomUUID(),
+          policyVersion: 1,
+          effectIndex: 0,
+          requiredCount: 1,
+          fromRole: "Approver",
+          scopeObjectId: org.orgId
+        })
+      );
+
+      // The vote route itself has no change-scope gate (only `approval:write` at the policy's own
+      // scope) — unlike the READ routes (`GET /approvals`, `GET /approvals/{id}`, `.../votes`),
+      // which resolve read authority THROUGH the change (`resolveChangeForScope` requires
+      // `typeId === "change"`, 404ing for a campaign or any other non-change subject — a SEPARATE,
+      // pre-existing limitation of those routes, not something this fix touches). So the vote's own
+      // success is verified via its response, and the resulting state via a direct repo read,
+      // exactly as the campaign reconciler itself does (it never goes through the HTTP read routes).
+      const vote = await approverClient.approvals.vote(approvalRequest.id);
+      expect(vote.voterObjectId).toBe(approver.objectId);
+
+      const satisfied = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        getApprovalRequest(tx, org.orgId, approvalRequest.id)
+      );
+      expect(satisfied.status).toBe("satisfied");
+      expect(satisfied.closedAt).toBeNull(); // nothing terminal about a non-change subject
     });
   });
 

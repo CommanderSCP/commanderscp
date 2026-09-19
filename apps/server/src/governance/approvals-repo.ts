@@ -239,8 +239,15 @@ export async function castApprovalVote(
 
   // A change that reached cancelled/rolled_back can never act on a vote again — refuse it with an
   // audited, Decision-carrying 409 rather than silently recording a vote nobody will ever read.
-  const changeRow = await getChangeRow(tx, input.orgId, request.changeObjectId);
-  if (TERMINAL_STATES.has(changeRow.state as ChangeState)) {
+  // `changeObjectId` is NOT always a `changes` row: the campaign reconciler reuses this same
+  // approval_requests/castApprovalVote mechanism keyed by a CAMPAIGN object id (campaign-reconcile.ts
+  // via gate-orchestrator.ts), and campaigns have no `changes` table row at all — `getChangeRow`
+  // throws `notFound` for one. `gate-orchestrator.ts`'s `resolveChangeArtifactDigest`/
+  // `resolveChangeCommitSha` hit exactly this and already `.catch(() => null)`; mirrored here. A
+  // non-change subject (campaign or otherwise) has no ChangeState machine to be terminal in, so the
+  // check simply does not apply — voting proceeds exactly as it always did for one.
+  const changeRow = await getChangeRow(tx, input.orgId, request.changeObjectId).catch(() => null);
+  if (changeRow && TERMINAL_STATES.has(changeRow.state as ChangeState)) {
     const decision = await insertDecision(tx, {
       orgId: input.orgId,
       kind: "approval_vote",
