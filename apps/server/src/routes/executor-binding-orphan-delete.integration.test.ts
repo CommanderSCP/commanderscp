@@ -325,8 +325,14 @@ describe("deleting an executor binding that outlived its target", () => {
       expect(listed?.policyManaged, "read off managed_by_policy_id, never inferred").toBe(true);
       expect(listed?.targetType).toBe("configuration");
       expect(listed?.lane).toBe("build");
-      // …and the CLI turns that into `repairable: false`, the same word a replica edge already uses
-      // for "reported, never attempted" — so the report says it will be skipped BEFORE it is.
+      // …and the SERVER (not the CLI) turns that into `repairable: false` plus a stated reason —
+      // the same word a replica edge already uses for "reported, never attempted" — so the report
+      // says it will be skipped BEFORE it is, and a non-CLI caller learns this without knowing the
+      // `!policyManaged` rule itself.
+      expect(listed?.repairable, "server-computed, not the CLI's own !policyManaged check").toBe(
+        false
+      );
+      expect(listed?.blockedReason).toContain("reconciler");
       const cliRow = (
         await cli.runJson<{ kind: string; owner: string; repairable: boolean }[]>([
           "graph",
@@ -337,7 +343,12 @@ describe("deleting an executor binding that outlived its target", () => {
 
       const out = await cli.runJson<Outcome[]>(["graph", "integrity", "--repair"]);
       expect(out.find((r) => r.outcome.startsWith("executor-bindings-deleted"))?.count).toBe(0);
-      const skipped = out.find((r) => r.outcome.startsWith("policy-managed-bindings-skipped"));
+      expect(out.find((r) => r.outcome === "executor-bindings-skipped")?.count).toBe(1);
+      // The per-row skip line names WHICH binding and WHY — the same shape the placement arm's
+      // `placement-skipped <urn>: <reason>` line already uses — not just an aggregate count.
+      const skipped = out.find((r) =>
+        r.outcome.startsWith(`executor-binding-skipped configuration/build on '${comp.name}'`)
+      );
       expect(skipped?.count, "reported, never attempted").toBe(1);
       expect(skipped!.outcome, "and the output states the reason, not just the count").toContain(
         "reconciler"

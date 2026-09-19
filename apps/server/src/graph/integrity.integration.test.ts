@@ -139,6 +139,12 @@ describe("graph integrity report", () => {
     );
     expect(orphans, "now the component is dead and the mapping outlived it").toHaveLength(1);
     expect(orphans[0]!.detail).toContain(`AgentKitProject/${tag}`);
+    // SERVER-COMPUTED, not a CLI-side hardcode: this arm has no id-addressed delete door (a mapping
+    // is a five-part identity tuple this report does not carry), so it is unconditionally
+    // unrepairable — but that has to be a stated reason, not a bare `false` a non-CLI caller cannot
+    // explain to anyone.
+    expect(orphans[0]!.repairable).toBe(false);
+    expect(orphans[0]!.blockedReason).toContain("delete-mapping");
 
     // The delete door resolves the component with `includeDeleted: true` precisely so this works.
     const removed = await admin.changeSources.deleteMapping("github", {
@@ -183,6 +189,10 @@ describe("graph integrity report", () => {
     expect(orphans, "now the target is dead and the binding outlived it").toHaveLength(1);
     // The detail line is what the operator types back at the door, and the door is keyed by BOTH.
     expect(orphans[0]!.detail).toContain("configuration/build");
+    // SERVER-COMPUTED — this row is NOT policy-managed, so it is genuinely repairable, and a non-CLI
+    // caller can tell that without knowing the `!policyManaged` rule the CLI used to hide it behind.
+    expect(orphans[0]!.repairable).toBe(true);
+    expect(orphans[0]!.blockedReason).toBeNull();
 
     await admin.executors.deleteBinding(comp.id, "configuration", "build");
     expect(

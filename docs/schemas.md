@@ -2058,7 +2058,7 @@ READ-ONLY, and deliberately so: repair is performed by the ordinary `DELETE` doo
 
 A repair run has to PASS the door's whole key, and the door is keyed `(target, type, lane)`. So `targetType` and `lane` are STRUCTURED fields rather than text inside `detail`. Recovering them by parsing a display string is the read-the-label-you-printed mistake, and it fails silently in the worst possible direction: `?lane=` defaults to `build`, so a `test`-lane row whose lane was mis-parsed does not error — it deletes the wrong row or none at all. `policyManaged` is read off `managed_by_policy_id` for the same reason it is not inferred from the plugin or the detail text; it is the exact analogue of `DanglingRelationship.repairable` being false for a replica edge, and `--repair` reports and skips such rows because the binding reconciler reaps them itself once the target is a tombstone.
 
-⚠️ THE PLACEMENT HALF OF THAT SENTENCE WAS MEASURED FALSE THE SAME DAY — see §296b, which gives `orphanPlacements` its own row type for its own reasons. A placement DOES have a door (`DELETE /placements/{idOrUrn}`, walked by `routes/placement-orphan-delete.integration.test.ts`); it is `orphanSourceMappings` alone that keeps the plain `OrphanProjectionRow`, because a mapping is addressed by a five-part identity tuple this report does not carry. Widening THAT one would advertise a repairability it does not have.
+⚠️ THE PLACEMENT HALF OF THAT SENTENCE WAS MEASURED FALSE THE SAME DAY — see §296b, which gives `orphanPlacements` its own row type for its own reasons. A placement DOES have a door (`DELETE /placements/{idOrUrn}`, walked by `routes/placement-orphan-delete.integration.test.ts`); it is `orphanSourceMappings` alone that has no door at all, because a mapping is addressed by a five-part identity tuple this report does not carry. ⚠️ Superseded by §296c: `OrphanProjectionRowSchema` itself now carries `repairable`/`blockedReason` (`false` and a stated reason for a mapping, never `true`), so "widening THAT one" already happened — what it does NOT do, and never will while the tuple problem stands, is claim a repairability the door does not have.
 
 `ExecutorTypeSchema` and `ExecutorLaneSchema` are REUSED here rather than re-declared (no import cycle: neither `executors.ts` nor `binding-policy.ts` imports `graph.ts`), so the integrity report and the binding door can never disagree about what a Type or a lane is.
 
@@ -2084,6 +2084,28 @@ managed_by_stack IS NOT NULL         -> the door would take it, but the stack's 
 So the arm gained `deadEnd` (WHICH end died — `component` / `deployment-target` / `both` / `malformed`), `repairable`, and `blockedReason`, which is nullable and, when set, names the command that unblocks it rather than merely asserting a refusal. Additive response properties only; the oasdiff gate reports no ERR.
 
 `malformed` is the fourth `deadEnd` value and it closed a silent skip: a placement whose `properties` do not name two resolvable object ids used to be `continue`d past, so it appeared in NO arm and the estate read as healthy — and worse, a non-uuid end went into an `IN (…)` list against a `uuid` column and **500'd the whole endpoint**, hiding every other finding in the org behind one bad row.
+
+### §296c. `repairable`/`blockedReason` generalized to every kind, not just the placement arm
+
+2026-09-19, LATER THE SAME DAY §296b landed. §296a's report (fixed above) already understated its own inconsistency: after §296b, `orphanPlacements` answered "would `--repair` act on this?" from the SERVER, while `orphanSourceMappings` answered it with nothing at all (the CLI hardcoded `false`, correctly but not verifiably) and `orphanExecutorBindings` answered it with nothing but `policyManaged` (the CLI computed `repairable: !policyManaged` itself). A non-CLI caller of `GET /graph/integrity` — an operator's own script, a dashboard — had no field to read for two of the report's four arms, and would have had to reimplement the CLI's rule to get the third right, with no guarantee the CLI would not change that rule out from under it later.
+
+`repairable: z.boolean()` and `blockedReason: z.string().nullable()` moved onto `OrphanProjectionRowSchema` itself — the shared base `orphanSourceMappings` uses directly and `OrphanExecutorBindingRowSchema`/`OrphanPlacementSchema` both extend — rather than being declared three times with three chances to drift. `OrphanPlacementSchema` no longer redeclares them; it extends the base with only the field that is genuinely placement-specific (`deadEnd`).
+
+The two newly-covered arms:
+
+```text
+orphanSourceMappings    repairable: false, UNCONDITIONALLY — the one arm with no id-addressed
+                         delete door at all (a five-part identity tuple this report does not
+                         carry). blockedReason names the `scp change-source delete-mapping`
+                         invocation that matches this row's own detail line.
+orphanExecutorBindings  repairable: !policyManaged — identical to what the CLI computed before,
+                         now computed once, on the server, from the same `managed_by_policy_id`
+                         column `policyManaged` itself is read off. blockedReason names the
+                         reconciler when set; policyManaged is KEPT (not removed) because the
+                         CLI's skip message names the reconciler specifically, not just "false".
+```
+
+Additive response properties only on both arms; the oasdiff gate reports no ERR (verified against `origin/main` with the vendored binary, the same way §296b's own claim was verified rather than assumed).
 
 ## `packages/schemas/src/health.ts`
 
