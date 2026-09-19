@@ -29455,6 +29455,30 @@
                                             },
                                             "additionalProperties": false
                                           },
+                                          "plan": {
+                                            "type": "object",
+                                            "properties": {
+                                              "ref": {
+                                                "type": "string"
+                                              },
+                                              "add": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "change": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "destroy": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
                                           "truncation": {
                                             "type": "object",
                                             "propertyNames": {
@@ -29628,6 +29652,30 @@
                                               "type": "string"
                                             },
                                             "stepCount": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        "plan": {
+                                          "type": "object",
+                                          "properties": {
+                                            "ref": {
+                                              "type": "string"
+                                            },
+                                            "add": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "change": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "destroy": {
                                               "type": "integer",
                                               "minimum": 0,
                                               "maximum": 9007199254740991
@@ -55899,6 +55947,30 @@
                                                       "type": "string"
                                                     },
                                                     "stepCount": {
+                                                      "type": "integer",
+                                                      "minimum": 0,
+                                                      "maximum": 9007199254740991
+                                                    }
+                                                  },
+                                                  "additionalProperties": false
+                                                },
+                                                "plan": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "ref": {
+                                                      "type": "string"
+                                                    },
+                                                    "add": {
+                                                      "type": "integer",
+                                                      "minimum": 0,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "change": {
+                                                      "type": "integer",
+                                                      "minimum": 0,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "destroy": {
                                                       "type": "integer",
                                                       "minimum": 0,
                                                       "maximum": 9007199254740991

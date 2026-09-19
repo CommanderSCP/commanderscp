@@ -7525,6 +7525,12 @@ export type GetComponentPipelineResponses = {
                         message?: string;
                         stepCount?: number;
                     };
+                    plan?: {
+                        ref?: string;
+                        add?: number;
+                        change?: number;
+                        destroy?: number;
+                    };
                     truncation?: {
                         [key: string]: {
                             dropped: boolean;
@@ -7554,6 +7560,12 @@ export type GetComponentPipelineResponses = {
                         weight?: number;
                         message?: string;
                         stepCount?: number;
+                    };
+                    plan?: {
+                        ref?: string;
+                        add?: number;
+                        change?: number;
+                        destroy?: number;
                     };
                     truncation?: {
                         [key: string]: {
@@ -13621,6 +13633,12 @@ export type ExplainChangeResponses = {
                             weight?: number;
                             message?: string;
                             stepCount?: number;
+                        };
+                        plan?: {
+                            ref?: string;
+                            add?: number;
+                            change?: number;
+                            destroy?: number;
                         };
                         truncation?: {
                             [key: string]: {
