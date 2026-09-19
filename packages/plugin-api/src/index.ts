@@ -151,6 +151,18 @@ export interface ExecutionStatus {
        *  manifest fetch failed. NEVER 0 and never guessed: pipeline-mockup-data.md §5.1. */
       stepCount?: number;
     };
+    /** managed-iac's structured plan tally (pipeline-mockup-data.md §6) — counted from `tofu show
+     *  -json`'s `resource_changes[].change.actions` (`apps/runner-iac/run.sh`'s `plan.json`), NEVER
+     *  from human stdout. `ref` is the plan file's own content hash, so a re-poll of the same
+     *  evidence reports the same identity. Absent means "not reported" (a parse miss, an executor
+     *  with no structured plan, or an action whose evidence is not a plan document — e.g.
+     *  `rollback`'s state-format `plan.json`) — NEVER a zeroed summary. */
+    plan?: {
+      ref?: string;
+      add?: number;
+      change?: number;
+      destroy?: number;
+    };
   };
   /** Best-effort 0..1; heartbeat input for the stuck-change watchdog (DESIGN §9.4). */
   progress?: number;

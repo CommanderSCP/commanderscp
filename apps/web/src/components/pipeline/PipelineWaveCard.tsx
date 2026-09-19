@@ -82,6 +82,19 @@ export interface PipelineWaveTargetLike {
           stepCount?: number | undefined;
         }
       | undefined;
+    /** managed-iac's plan-summary chip (pipeline-mockup-data.md §6) — counted from `tofu show
+     *  -json` in the runner, NEVER from human stdout. Absent means "not reported" (a rollback's
+     *  state-format evidence, a parse miss, an executor with no structured plan at all), and MUST
+     *  NEVER render as a zeroed summary. `ref` is the plan document's own content hash; the UI
+     *  slices it for display, the same idiom the revision short-form already uses. */
+    plan?:
+      | {
+          ref?: string | undefined;
+          add?: number | undefined;
+          change?: number | undefined;
+          destroy?: number | undefined;
+        }
+      | undefined;
     /** WHAT THE PERSISTENCE BOUND REMOVED, KEYED BY ROOT FIELD (M23.1g, ChangeWaveTargetSchema —
      *  packages/schemas/src/changes.ts:346 on #264). Additive-optional: absent means "nothing was
      *  cut" — the only honest reading for a pre-M23.1g row, which cannot be backfilled because the
@@ -224,6 +237,15 @@ function rolloutParts(rollout: NonNullable<ObservedLike>["rollout"]): string[] {
   if (typeof rollout.step === "number") parts.push(`step ${rollout.step}`);
   if (typeof rollout.weight === "number") parts.push(`weight ${rollout.weight}%`);
   return parts;
+}
+
+/** The plan chip's `"N add / N change / N destroy"` body (mockup `microservice.html`'s
+ *  `"2 add / 0 destroy"`, extended with `change` per pipeline-mockup-data.md §6 — the wire never
+ *  hides a real non-zero count). A count the executor did not report renders `?`, never a guessed
+ *  `0`: `add`/`change`/`destroy` are each independently optional on the wire. */
+function planCountsText(plan: NonNullable<ObservedLike>["plan"]): string {
+  const count = (n: number | undefined): string => (typeof n === "number" ? String(n) : "?");
+  return `${count(plan?.add)} add / ${count(plan?.change)} change / ${count(plan?.destroy)} destroy`;
 }
 
 /** `ageSeconds` -> "14 min ago" / "40s ago" (mockup microservice.html's stale-copy wording,
@@ -867,6 +889,26 @@ export function PipelineWaveCard({
                   // RULE 6 — no rollout and no truncation key: exactly today's rendering (omitted).
                   return null;
                 })()}
+                {/* THE INFRASTRUCTURE PLAN CHIP (design-system §1.6a, mockup `microservice.html`'s
+                    `.chip` — "the artifact chip shifts with Category: ... an infrastructure target
+                    shows the plan and its add/destroy counts"). managed-iac-only today (§6): no
+                    other executor reports a structured plan, so this renders for NO category other
+                    than `infrastructure`, and NEVER when `observed.plan` itself is absent — absent
+                    means "not reported", not a zeroed chip (charter principle 6). */}
+                {target.category === "infrastructure" && target.observed?.plan && (
+                  <span
+                    className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
+                    data-testid={`${testIdPrefix}-observed-plan`}
+                    title={
+                      target.observed.plan.ref
+                        ? `plan file ${target.observed.plan.ref}`
+                        : "observed plan (read-only)"
+                    }
+                  >
+                    plan{target.observed.plan.ref ? ` ${target.observed.plan.ref.slice(0, 4)}` : ""}{" "}
+                    · {planCountsText(target.observed.plan)}
+                  </span>
+                )}
                 {typeof target.attempt === "number" && (
                   <span>
                     attempt {target.attempt}

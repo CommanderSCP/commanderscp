@@ -453,3 +453,79 @@ describe("MEDIUM (pass 5): a budget kill and a silent exit are distinguishable I
     expect(ok.detail).toBe("Plan: 3 to add, 0 to change, 0 to destroy.");
   });
 });
+
+describe("@scp/plugin-managed-iac: observed.plan (pipeline-mockup-data.md §6)", () => {
+  // Docker's `cp` is mocked to a no-op (see the `child_process` mock above), so nothing the real
+  // container would write ever lands on disk here. Pre-seeding the workspace with the file
+  // `copyOut` would have produced is how these tests simulate the runner's evidence without Docker.
+  function derivedWorkspace(orgId: string, targetRef: string): string {
+    const safe = (s: string): string => s.replace(/[^A-Za-z0-9._-]/g, "_");
+    return join(workspaceRoot, safe(orgId), safe(targetRef));
+  }
+
+  it("a plan run whose evidence carries resource_changes surfaces observed.plan with a real ref and counts", async () => {
+    const dir = derivedWorkspace("org-1", "t1");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "plan.json"),
+      JSON.stringify({
+        resource_changes: [
+          { change: { actions: ["create"] } },
+          { change: { actions: ["create"] } },
+          { change: { actions: ["delete"] } }
+        ]
+      }),
+      "utf8"
+    );
+    const plugin = createManagedIacExecutorPlugin();
+    const c = ctx();
+    const ref = await plugin.trigger(c, {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "plan-1"
+    });
+    const status = await plugin.status(c, ref);
+    expect(status.phase).toBe("succeeded");
+    expect(status.observed?.plan).toMatchObject({ add: 2, change: 0, destroy: 1 });
+    expect(status.observed?.plan?.ref).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // THE HONESTY TEST — no plan.json at all (a plan step that failed before writing it, or an
+  // executor/action with no structured plan) must leave `observed` absent, NEVER a zeroed
+  // `{add: 0, change: 0, destroy: 0}` masquerading as a real reading. Mutation-target: a
+  // `?? { add: 0, change: 0, destroy: 0 }` fallback anywhere in the read path would still pass
+  // every OTHER test in this file and only this one would catch it.
+  it("no plan.json produced -> observed is absent entirely, never a zeroed plan summary", async () => {
+    const plugin = createManagedIacExecutorPlugin();
+    const c = ctx();
+    const ref = await plugin.trigger(c, {
+      kind: "sync",
+      targetRef: "t2",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "plan-2"
+    });
+    const status = await plugin.status(c, ref);
+    expect(status.phase).toBe("succeeded");
+    expect(status.observed).toBeUndefined();
+  });
+
+  // A rollback's `plan.json` is `tofu show -json` of a STATE file — no `resource_changes` array —
+  // so it must read as absent too, not as a zero-change plan.
+  it("rollback's state-format plan.json -> observed.plan absent", async () => {
+    const dir = derivedWorkspace("org-1", "t3");
+    await mkdir(join(dir, "state-history"), { recursive: true });
+    await writeFile(join(dir, "state-history", "snap.tfstate"), "{}", "utf8");
+    await writeFile(join(dir, "plan.json"), JSON.stringify({ format_version: "1.2" }), "utf8");
+    const plugin = createManagedIacExecutorPlugin();
+    const c = ctx();
+    const ref = await plugin.trigger(c, {
+      kind: "rollback",
+      targetRef: "t3",
+      priorStateRef: "state-history/snap.tfstate",
+      idempotencyKey: "rollback-1"
+    });
+    const status = await plugin.status(c, ref);
+    expect(status.observed).toBeUndefined();
+  });
+});

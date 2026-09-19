@@ -187,6 +187,21 @@ export const WaveTargetObservedSchema = z.object({
       stepCount: z.number().int().nonnegative().optional()
     })
     .optional(),
+  /** managed-iac's plan-summary chip (pipeline-mockup-data.md §6): counted from `tofu show -json`'s
+   *  `resource_changes[].change.actions` in the runner, NEVER from human stdout. `ref` is the plan
+   *  file's own content hash (short-displayed, the same idiom `revision.slice(0, 7)` already uses),
+   *  so a re-poll of the same evidence reports one stable identity. Absent means "not reported" —
+   *  a parse miss, a rollback's state-format evidence, or an executor with no structured plan at
+   *  all — and MUST NEVER be a zeroed summary (charter principle 6: absent ≠ zero). Stays inside
+   *  the Managed Execution Exception: this is an observation of a run SCP already executed. */
+  plan: z
+    .object({
+      ref: z.string().optional(),
+      add: z.number().int().nonnegative().optional(),
+      change: z.number().int().nonnegative().optional(),
+      destroy: z.number().int().nonnegative().optional()
+    })
+    .optional(),
   /** What the persistence bound removed, keyed by field. See docs/schemas.md §64. */
   truncation: z
     .record(

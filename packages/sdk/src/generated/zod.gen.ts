@@ -2328,6 +2328,12 @@ export const zGetComponentPipelineResponse = z.object({
                     message: z.string().optional(),
                     stepCount: z.int().gte(0).lte(9007199254740991).optional()
                 }).optional(),
+                plan: z.object({
+                    ref: z.string().optional(),
+                    add: z.int().gte(0).lte(9007199254740991).optional(),
+                    change: z.int().gte(0).lte(9007199254740991).optional(),
+                    destroy: z.int().gte(0).lte(9007199254740991).optional()
+                }).optional(),
                 truncation: z.record(z.string(), z.object({
                     dropped: z.boolean(),
                     droppedCharacters: z.int().gte(0).lte(9007199254740991).optional(),
@@ -2359,6 +2365,12 @@ export const zGetComponentPipelineResponse = z.object({
                     weight: z.number().optional(),
                     message: z.string().optional(),
                     stepCount: z.int().gte(0).lte(9007199254740991).optional()
+                }).optional(),
+                plan: z.object({
+                    ref: z.string().optional(),
+                    add: z.int().gte(0).lte(9007199254740991).optional(),
+                    change: z.int().gte(0).lte(9007199254740991).optional(),
+                    destroy: z.int().gte(0).lte(9007199254740991).optional()
                 }).optional(),
                 truncation: z.record(z.string(), z.object({
                     dropped: z.boolean(),
@@ -5418,6 +5430,12 @@ export const zExplainChangeResponse = z.object({
                         weight: z.number().optional(),
                         message: z.string().optional(),
                         stepCount: z.int().gte(0).lte(9007199254740991).optional()
+                    }).optional(),
+                    plan: z.object({
+                        ref: z.string().optional(),
+                        add: z.int().gte(0).lte(9007199254740991).optional(),
+                        change: z.int().gte(0).lte(9007199254740991).optional(),
+                        destroy: z.int().gte(0).lte(9007199254740991).optional()
                     }).optional(),
                     truncation: z.record(z.string(), z.object({
                         dropped: z.boolean(),

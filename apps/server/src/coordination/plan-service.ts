@@ -322,28 +322,11 @@ function toChangeWaveTargetShape(
     executorPluginId: row.executorPluginId,
     ...(executor ? { executor } : {}),
     executorRef: (row.executorRef as Record<string, unknown> | null) ?? null,
-    // The snapshot reconcile persisted. See docs/coordination.md §697.
-    observed:
-      (row.observedState as {
-        revision?: string;
-        images?: string[];
-        rollout?: {
-          phase?: string;
-          step?: number;
-          weight?: number;
-          message?: string;
-          stepCount?: number;
-        };
-        truncation?: Record<
-          string,
-          {
-            dropped: boolean;
-            droppedCharacters?: number;
-            droppedEntries?: number;
-            droppedFields?: number;
-          }
-        >;
-      } | null) ?? null,
+    // The snapshot reconcile persisted. See docs/coordination.md §697. Reuses
+    // `WaveTargetObservedState` directly (rather than a second, hand-duplicated shape) so a field
+    // added there — `plan` (pipeline-mockup-data.md §6) — reaches this response with no separate
+    // edit here to forget.
+    observed: (row.observedState as WaveTargetObservedState | null) ?? null,
     ...(hold ? { hold } : {}),
     ...(observedFreshness ? { observedFreshness } : {}),
     // ABSENT means the CALLER did not resolve it — reconcile's `withFreezeHolds: false` read, which

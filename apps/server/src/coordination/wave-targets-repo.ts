@@ -187,6 +187,16 @@ export interface WaveTargetObservedState {
      *  docs/proposals/pipeline-mockup-data.md §5.1 and `@scp/plugin-api`'s `ExecutionStatus`. */
     stepCount?: number;
   };
+  /** managed-iac's plan tally (pipeline-mockup-data.md §6), carried through AS the executor
+   *  reported it — never recomputed here. The commander never contacts an execution system
+   *  (charter principle 1); this stays inside the Managed Execution Exception because it is an
+   *  OBSERVATION of a run the plugin itself already executed, not a new call to anything. */
+  plan?: {
+    ref?: string;
+    add?: number;
+    change?: number;
+    destroy?: number;
+  };
   /** WHAT THE STORE REMOVED FROM THE THREE FIELDS ABOVE. See docs/coordination.md §1058. */
   truncation?: PersistedJsonTruncation;
   /** When THIS payload was written. See docs/coordination.md §1059. */
@@ -376,9 +386,15 @@ export function observedStateFrom(
   const rollout = status.observed?.rollout;
   if (rollout && Object.keys(rollout).length > 0) result.rollout = rollout;
 
+  // managed-iac's plan tally (pipeline-mockup-data.md §6) — same "only when present" rule: a
+  // status() with no plan (a rollback, a parse miss) must not null out a previously-captured one.
+  const plan = status.observed?.plan;
+  if (plan && Object.keys(plan).length > 0) result.plan = plan;
+
   return result.revision !== undefined ||
     result.images !== undefined ||
-    result.rollout !== undefined
+    result.rollout !== undefined ||
+    result.plan !== undefined
     ? result
     : undefined;
 }
