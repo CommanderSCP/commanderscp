@@ -694,7 +694,9 @@ export async function getComponentPipeline(
         category: categoryOfType(row.type),
         executionSystemId: row.executionSystemId ?? null,
         executionSystemName,
-        resolvedVia
+        resolvedVia,
+        pluginModule: row.pluginModule,
+        systemKind
       });
     }
 

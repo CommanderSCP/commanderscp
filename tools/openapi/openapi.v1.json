@@ -29241,6 +29241,19 @@
                                   },
                                   "resolvedVia": {
                                     "type": "string"
+                                  },
+                                  "pluginModule": {
+                                    "type": "string"
+                                  },
+                                  "systemKind": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
                                   }
                                 },
                                 "required": [
@@ -29318,6 +29331,19 @@
                                 },
                                 "resolvedVia": {
                                   "type": "string"
+                                },
+                                "pluginModule": {
+                                  "type": "string"
+                                },
+                                "systemKind": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
                                 }
                               },
                               "required": [
@@ -53949,6 +53975,16 @@
                     },
                     "domainLocal": {
                       "type": "boolean"
+                    },
+                    "commitSha": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -54360,6 +54396,16 @@
                           },
                           "domainLocal": {
                             "type": "boolean"
+                          },
+                          "commitSha": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -54714,6 +54760,16 @@
                     },
                     "domainLocal": {
                       "type": "boolean"
+                    },
+                    "commitSha": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -55095,6 +55151,16 @@
                         },
                         "domainLocal": {
                           "type": "boolean"
+                        },
+                        "commitSha": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -55296,6 +55362,57 @@
                                             },
                                             {
                                               "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "executor": {
+                                          "oneOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "basis": {
+                                                  "type": "string",
+                                                  "const": "triggered"
+                                                },
+                                                "pluginModule": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "basis",
+                                                "pluginModule"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "basis": {
+                                                  "type": "string",
+                                                  "const": "bound"
+                                                },
+                                                "pluginModule": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "basis",
+                                                "pluginModule"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "basis": {
+                                                  "type": "string",
+                                                  "const": "unbound"
+                                                }
+                                              },
+                                              "required": [
+                                                "basis"
+                                              ],
+                                              "additionalProperties": false
                                             }
                                           ]
                                         },
@@ -55574,6 +55691,16 @@
                                 ],
                                 "additionalProperties": false
                               }
+                            },
+                            "topologyName": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
                           },
                           "required": [
@@ -56572,6 +56699,16 @@
                     },
                     "domainLocal": {
                       "type": "boolean"
+                    },
+                    "commitSha": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -57012,6 +57149,16 @@
                     },
                     "domainLocal": {
                       "type": "boolean"
+                    },
+                    "commitSha": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -57453,6 +57600,16 @@
                     },
                     "domainLocal": {
                       "type": "boolean"
+                    },
+                    "commitSha": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -84531,6 +84688,16 @@
                               },
                               "domainLocal": {
                                 "type": "boolean"
+                              },
+                              "commitSha": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
                               }
                             },
                             "required": [

@@ -7493,6 +7493,8 @@ export type GetComponentPipelineResponses = {
                 executionSystemId: string | null;
                 executionSystemName: string | null;
                 resolvedVia?: string;
+                pluginModule?: string;
+                systemKind?: string | null;
             } | null;
             bindings: Array<{
                 externalRef: string | null;
@@ -7502,6 +7504,8 @@ export type GetComponentPipelineResponses = {
                 executionSystemId: string | null;
                 executionSystemName: string | null;
                 resolvedVia?: string;
+                pluginModule?: string;
+                systemKind?: string | null;
             }>;
             current: {
                 changeId: string;
@@ -13209,6 +13213,7 @@ export type ListChangesResponses = {
             updatedAt: string;
             originDomainId?: string;
             domainLocal: boolean;
+            commitSha?: string | null;
         }>;
         nextCursor: string | null;
     };
@@ -13323,6 +13328,7 @@ export type ProposeChangeResponses = {
         updatedAt: string;
         originDomainId?: string;
         domainLocal: boolean;
+        commitSha?: string | null;
     };
 };
 
@@ -13407,6 +13413,7 @@ export type GetChangeResponses = {
         updatedAt: string;
         originDomainId?: string;
         domainLocal: boolean;
+        commitSha?: string | null;
     };
 };
 
@@ -13492,6 +13499,7 @@ export type ExplainChangeResponses = {
             updatedAt: string;
             originDomainId?: string;
             domainLocal: boolean;
+            commitSha?: string | null;
         };
         plan: {
             id: string;
@@ -13520,6 +13528,15 @@ export type ExplainChangeResponses = {
                     type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                     category: 'build' | 'infrastructure' | 'configuration';
                     executorPluginId: string | null;
+                    executor?: {
+                        basis: 'triggered';
+                        pluginModule: string;
+                    } | {
+                        basis: 'bound';
+                        pluginModule: string;
+                    } | {
+                        basis: 'unbound';
+                    };
                     executorRef: {
                         [key: string]: unknown;
                     } | null;
@@ -13566,6 +13583,7 @@ export type ExplainChangeResponses = {
                     updatedAt: string;
                 }>;
             }>;
+            topologyName?: string | null;
         } | null;
         decisions: Array<{
             id: string;
@@ -13754,6 +13772,7 @@ export type CancelChangeResponses = {
         updatedAt: string;
         originDomainId?: string;
         domainLocal: boolean;
+        commitSha?: string | null;
     };
 };
 
@@ -13852,6 +13871,7 @@ export type AcceptChangeResponses = {
         updatedAt: string;
         originDomainId?: string;
         domainLocal: boolean;
+        commitSha?: string | null;
     };
 };
 
@@ -13960,6 +13980,7 @@ export type RollbackChangeResponses = {
         updatedAt: string;
         originDomainId?: string;
         domainLocal: boolean;
+        commitSha?: string | null;
     };
 };
 
@@ -20589,6 +20610,7 @@ export type RollbackCampaignResponses = {
                 updatedAt: string;
                 originDomainId?: string;
                 domainLocal: boolean;
+                commitSha?: string | null;
             };
         }>;
         skipped: Array<{

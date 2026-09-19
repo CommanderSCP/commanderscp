@@ -638,6 +638,54 @@ describe("PipelineWaveCard: the `<Type> · <provider>` subtitle (design-system �
     const html = renderCard({ ...BASE_TARGET, type: undefined });
     expect(html).not.toContain('data-testid="pipeline-wave-target-subtitle"');
   });
+
+  it("prefers `target.executor` over `linksFor`'s provider — real wire data, no extra fetch (pipeline-mockup-data.md §2)", () => {
+    const html = renderToStaticMarkup(
+      <PipelineWaveCard
+        wave={waveWith({
+          ...BASE_TARGET,
+          executor: { basis: "bound", pluginModule: "argocd" }
+        })}
+        waveNumber={1}
+        linksFor={() => ({ provider: "stale-fallback" })}
+      />
+    );
+    expect(html).toContain("configuration · argocd");
+    expect(html).not.toContain("stale-fallback");
+  });
+
+  it("a PRE-TRIGGER target (`bound`) shows the ladder's provider, not a guess from the (still-null) trigger", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      executor: { basis: "bound", pluginModule: "managed-iac" }
+    });
+    expect(html).toContain("configuration · managed-iac");
+  });
+
+  it("a TRIGGERED target shows the binding the trigger actually used", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      executor: { basis: "triggered", pluginModule: "argo-workflows" }
+    });
+    expect(html).toContain("configuration · argo-workflows");
+  });
+
+  it("`unbound` renders the Type alone — never a guessed provider", () => {
+    const html = renderCard({ ...BASE_TARGET, executor: { basis: "unbound" } });
+    expect(html).toMatch(/target-subtitle"[^>]*>configuration</);
+    expect(html).not.toContain("configuration ·");
+  });
+
+  it("falls back to `linksFor`'s provider when the target carries no `executor` at all (a server predating this field)", () => {
+    const html = renderToStaticMarkup(
+      <PipelineWaveCard
+        wave={waveWith(BASE_TARGET)}
+        waveNumber={1}
+        linksFor={() => ({ provider: "argocd" })}
+      />
+    );
+    expect(html).toContain("configuration · argocd");
+  });
 });
 
 describe("PipelineWaveCard: card proportions (design-system §1.6a)", () => {
