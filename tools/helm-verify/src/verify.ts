@@ -1008,6 +1008,11 @@ interface Container {
   /** M23.5 — a write path this chart puts in an env var must have a volume behind it in EVERY pod
    *  that runs the role that writes there. See the `both roles` block. */
   volumeMounts?: { name?: string; mountPath?: string }[];
+  /** 2026-09-17 eviction incident — see values.yaml's `postgres.evalInCluster.resources` doc
+   *  comment. `undefined` (the key absent from the rendered YAML entirely) is the defect: it makes
+   *  the pod BestEffort QoS, the kubelet's first eviction candidate under node memory pressure. An
+   *  empty object ({}) is the same defect and is deliberately NOT treated as "present" below. */
+  resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
 }
 
 interface PodSpec {
@@ -1349,6 +1354,28 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
 
   assert(workloads.length > 0, `[${label}] expected at least one Deployment/Job in the render`);
 
+  // CENSUS, NOT SYMPTOM (2026-09-17 incident — see values.yaml's `postgres.evalInCluster.resources`
+  // doc comment and CLAUDE.md's "census by property" rule). The kubelet evicted the live eval
+  // Postgres because ONE container in ONE template declared no `resources` at all, which is
+  // BestEffort QoS. The fix for THAT container is below; this loop is the sweep for every OTHER
+  // container this chart renders now or ever adds later — over the UNFILTERED `docs`, not
+  // `workloads` (which deliberately excludes postgres-eval and any namespaced hook), and over both
+  // `containers` and `initContainers`. An empty `resources: {}` is the SAME defect as an absent key
+  // (Kubernetes' QoS computation looks at requests/limits, not at whether the key is spelled), so
+  // both are rejected here, not just the absent case.
+  for (const doc of docs) {
+    if (doc.kind !== "Deployment" && doc.kind !== "Job") continue;
+    const podSpec = podSpecOf(doc);
+    if (!podSpec) continue;
+    for (const container of [...(podSpec.containers ?? []), ...(podSpec.initContainers ?? [])]) {
+      const requests = container.resources?.requests;
+      assert(
+        requests !== undefined && Object.keys(requests).length > 0,
+        `[${label}] ${doc.kind}/${doc.metadata?.name} container '${container.name}' declares no resource REQUESTS (got ${JSON.stringify(container.resources)}) — this is BestEffort QoS, the kubelet's first eviction candidate under node memory pressure, and is exactly the property that got the live eval Postgres pod evicted on 2026-09-17`
+      );
+    }
+  }
+
   for (const doc of workloads) {
     const scope = `[${label}] ${doc.kind}/${doc.metadata?.name}`;
     const podSpec = podSpecOf(doc);
@@ -1423,6 +1450,34 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
       apiImage && apiImage === workerImage,
       `[${label}] api and worker must use the SAME image (got api=${apiImage}, worker=${workerImage})`
     );
+  }
+
+  // THE EVAL POSTGRES'S OWN DEFAULT (2026-09-17 incident). Only "kitchen-sink" enables
+  // postgres.evalInCluster — "defaults" renders no postgres-eval Deployment at all, so this block is
+  // a no-op there and load-bearing on kitchen-sink, which sets NO override for
+  // postgres.evalInCluster.resources, so what lands here is the CHART'S OWN default.
+  const postgresEvalDeploy = docs.find(
+    (d) => d.kind === "Deployment" && String(d.metadata?.name).endsWith("-postgres-eval")
+  );
+  if (postgresEvalDeploy) {
+    const postgresContainer = (podSpecOf(postgresEvalDeploy)?.containers ?? []).find(
+      (c) => c.name === "postgres"
+    );
+    assert(
+      postgresContainer,
+      `[${label}] expected a 'postgres' container in the postgres-eval Deployment`
+    );
+    if (postgresContainer) {
+      assert(
+        postgresContainer.resources?.requests?.["cpu"] === "50m" &&
+          postgresContainer.resources?.requests?.["memory"] === "256Mi",
+        `[${label}] postgres-eval's default resources.requests must be {cpu: 50m, memory: 256Mi} (got ${JSON.stringify(postgresContainer.resources?.requests)}) — see values.yaml's postgres.evalInCluster.resources doc comment for why`
+      );
+      assert(
+        postgresContainer.resources?.limits === undefined,
+        `[${label}] postgres-eval must ship NO default memory/cpu LIMIT — a guessed limit risks OOMKilling the eval database instead of merely deprioritizing it (got ${JSON.stringify(postgresContainer.resources?.limits)})`
+      );
+    }
   }
 
   // Ingress mTLS (adversarial review MAJOR #3) — the kitchen-sink render opts into
@@ -1823,6 +1878,40 @@ function main(): void {
       'internalEgressHosts=["argocd-server.argocd.svc.cluster.local"]'
     ])
   );
+
+  // postgres.evalInCluster.resources OVERRIDE PROOF (2026-09-17 incident). "kitchen-sink" above
+  // already proves the chart's OWN default lands on the container; this proves an operator override
+  // reaches the SAME place, verbatim — the same "both ways" shape every other value in this file
+  // gets (absent/default on one render, present and correct when set on another).
+  console.log("helm-verify: checking postgres.evalInCluster.resources overrides the container...");
+  {
+    const label = "postgres-eval-resources-override";
+    const docs = renderChart("verify-postgres-eval-resources", [
+      "--set",
+      "postgres.evalInCluster.enabled=true",
+      "--set",
+      "postgres.evalInCluster.resources.requests.cpu=100m",
+      "--set",
+      "postgres.evalInCluster.resources.requests.memory=512Mi",
+      "--set",
+      "postgres.evalInCluster.resources.limits.memory=1Gi"
+    ]);
+    const deploy = docs.find(
+      (d) => d.kind === "Deployment" && String(d.metadata?.name).endsWith("-postgres-eval")
+    );
+    assert(deploy, `[${label}] expected a postgres-eval Deployment in this render`);
+    const container =
+      deploy && (podSpecOf(deploy)?.containers ?? []).find((c) => c.name === "postgres");
+    assert(container, `[${label}] expected a 'postgres' container in the postgres-eval Deployment`);
+    if (container) {
+      assert(
+        container.resources?.requests?.["cpu"] === "100m" &&
+          container.resources?.requests?.["memory"] === "512Mi" &&
+          container.resources?.limits?.["memory"] === "1Gi",
+        `[${label}] postgres.evalInCluster.resources does not reach the postgres-eval container verbatim (got ${JSON.stringify(container.resources)})`
+      );
+    }
+  }
 
   // AIR-GAP REGRESSION GUARD. See docs/helm-verify.md §32.
   console.log(
