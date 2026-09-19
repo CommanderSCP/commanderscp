@@ -46669,13 +46669,38 @@
                           },
                           "detail": {
                             "type": "string"
+                          },
+                          "deadEnd": {
+                            "type": "string",
+                            "enum": [
+                              "component",
+                              "deployment-target",
+                              "both",
+                              "malformed"
+                            ]
+                          },
+                          "repairable": {
+                            "type": "boolean"
+                          },
+                          "blockedReason": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
                           "id",
                           "ownerUrn",
                           "ownerName",
-                          "detail"
+                          "detail",
+                          "deadEnd",
+                          "repairable",
+                          "blockedReason"
                         ],
                         "additionalProperties": false
                       }

@@ -11781,6 +11781,9 @@ export type GraphIntegrityResponses = {
             ownerUrn: string;
             ownerName: string;
             detail: string;
+            deadEnd: 'component' | 'deployment-target' | 'both' | 'malformed';
+            repairable: boolean;
+            blockedReason: string | null;
         }>;
     };
 };

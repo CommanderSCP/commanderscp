@@ -411,14 +411,42 @@ export const OrphanExecutorBindingRowSchema = OrphanProjectionRowSchema.extend({
 });
 export type OrphanExecutorBindingRow = z.infer<typeof OrphanExecutorBindingRowSchema>;
 
+/** A PLACEMENT is not a projection row, and conflating the two made the report lie. See
+ *  docs/schemas.md §296b.
+ *
+ *  A placement is a graph OBJECT: it has its own id, its own URN, its own `origin_domain_id` and its
+ *  own `managed_by_stack`, and it is removed at `DELETE /api/v1/placements/{idOrUrn}` — which the
+ *  other two arms have no equivalent of, since a mapping and a binding are addressed through their
+ *  OWNER. Reporting it through `OrphanProjectionRowSchema` therefore dropped the three facts that
+ *  decide whether a repair run may touch it, and the CLI filled the gap by hardcoding
+ *  `repairable: true` for every row — false for a replica (single-writer authority refuses the
+ *  delete), false while an executor binding still names it (orphan-guard route 6 refuses), and
+ *  unwanted for a stack-managed row (the IaC apply prune is its reaper). Same rule the edge arm has
+ *  carried since it was written: a row must never be offered as actionable if its door would refuse
+ *  it. */
+export const OrphanPlacementSchema = OrphanProjectionRowSchema.extend({
+  /** WHICH end died. `malformed` means the row does not name two resolvable object ids at all —
+   *  reported rather than skipped, because a row nothing can explain is the one worth seeing. */
+  deadEnd: z.enum(["component", "deployment-target", "both", "malformed"]),
+  /** FALSE when `DELETE /placements/{idOrUrn}` would refuse this row — see `blockedReason`. */
+  repairable: z.boolean(),
+  /** Why not, in the operator's own vocabulary and naming the command that unblocks it; null when
+   *  `repairable` is true. Nullable rather than absent so a client never has to branch on presence. */
+  blockedReason: z.string().nullable()
+});
+export type OrphanPlacement = z.infer<typeof OrphanPlacementSchema>;
+
 /** Rows that outlived the object they hang off. See docs/schemas.md §296. */
 export const GraphIntegrityReportSchema = z.object({
   danglingRelationships: z.array(DanglingRelationshipSchema),
   orphanSourceMappings: z.array(OrphanProjectionRowSchema),
-  // The only member with its own richer row type, because it is the only one `--repair` can act on
-  // (ADR-free owner decision 2026-09-19). The others stay `OrphanProjectionRow`: a mapping is
-  // addressed by a five-part tuple this report does not carry, and a placement has no door at all.
+  // Two members carry a richer row type than `OrphanProjectionRow`, and for DIFFERENT reasons.
+  // A binding's is the (type, lane) its door is keyed by plus the policy-managed flag `--repair`
+  // must skip on (owner decision 2026-09-19). A placement's is the three facts that decide whether
+  // its OWN door would refuse — it is a graph object, not a projection row (§296b). Only
+  // `orphanSourceMappings` stays plain: a mapping is addressed by a five-part tuple this report does
+  // not carry, so it is the one arm a repair run genuinely cannot reach.
   orphanExecutorBindings: z.array(OrphanExecutorBindingRowSchema),
-  orphanPlacements: z.array(OrphanProjectionRowSchema)
+  orphanPlacements: z.array(OrphanPlacementSchema)
 });
 export type GraphIntegrityReport = z.infer<typeof GraphIntegrityReportSchema>;
