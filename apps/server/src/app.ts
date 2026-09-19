@@ -13,7 +13,13 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { AppDeps } from "./types.js";
 import { GLOBAL_BODY_LIMIT_BYTES, URN_MAX_PARAM_LENGTH } from "./http-limits.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
-import { badRequest, frameworkClientProblem, ProblemError, sendProblem } from "./errors.js";
+import {
+  badRequest,
+  frameworkClientProblem,
+  notFound,
+  ProblemError,
+  sendProblem
+} from "./errors.js";
 import { assertNoPrototypePoisoning, PrototypePoisoningError } from "./util/safe-json.js";
 import type { CollectedRoute } from "./openapi/registry.js";
 import "./openapi/registry.js";
@@ -90,7 +96,9 @@ export async function buildApp(
     // Every `:idOrUrn`/`:urn` route param can carry a percent-encoded object URN — the find-my-way
     // default (100 chars) 414s a real placement URN before its Zod schema ever runs. See
     // http-limits.ts's `URN_MAX_PARAM_LENGTH` for the derivation. See docs/server.md §106.
-    maxParamLength: URN_MAX_PARAM_LENGTH,
+    // `routerOptions.maxParamLength`, NOT the deprecated top-level `maxParamLength` (removed in
+    // fastify@6 — logs FSTDEP022 on every boot if used).
+    routerOptions: { maxParamLength: URN_MAX_PARAM_LENGTH },
     // A route-level (`maxParamLength`, malformed-URL) failure is raised by find-my-way BEFORE
     // Fastify dispatches to a handler, so `setErrorHandler` below never sees it — Fastify's own
     // default instead writes a bare, non-problem+json body straight to the raw response. Route it
@@ -312,15 +320,21 @@ export async function buildApp(
 
     const webIndexHtmlPath = path.join(webDistRoot, "index.html");
 
-    // Low-priority catch-all: find-my-way. See docs/server.md §10.
-    app.get("/*", async (request, reply) => {
+    // Low-priority catch-all: `setNotFoundHandler`, NOT a registered `/*` route. See docs/server.md
+    // §10 and §109 for why: a REGISTERED wildcard route is a real find-my-way node that the router
+    // tries as soon as a more specific match (e.g. `/api/v1/executors/:idOrUrn/bindings`) fails for
+    // ANY reason, including an over-long `:idOrUrn` — silently turning "URN too long" into the SAME
+    // plain "route not found" body as a genuinely bad path, for every verb the wildcard was
+    // registered for. `setNotFoundHandler` instead runs on a SEPARATE router that Fastify only
+    // consults after the MAIN router has definitively found no match — an over-long segment is
+    // intercepted by `frameworkErrors` above before dispatch ever gets here.
+    app.setNotFoundHandler(async (request, reply) => {
       if (
         request.url.startsWith("/api/") ||
         request.url.startsWith("/static/") ||
         request.url === "/healthz"
       ) {
-        reply.callNotFound();
-        return;
+        throw notFound(`Route ${request.method}:${request.url} not found`);
       }
       let indexHtml: string;
       try {
@@ -337,10 +351,10 @@ export async function buildApp(
     });
   } else {
     // A retrans instance still needs the API (`/api/*`) and `/healthz` to work — only the UI/static
-    // surface is withheld. Anything that isn't `/api/*`/`/healthz` 404s as JSON here (never HTML),
-    // same shape the guarded catch-all above already used for a bad API path.
-    app.get("/*", async (request, reply) => {
-      reply.callNotFound();
+    // surface is withheld. Anything that isn't `/api/*`/`/healthz` 404s as problem+json here (never
+    // HTML), same shape the guarded catch-all above already uses for a bad API path.
+    app.setNotFoundHandler(async (request) => {
+      throw notFound(`Route ${request.method}:${request.url} not found`);
     });
   }
 
