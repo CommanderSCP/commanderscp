@@ -20,6 +20,7 @@ import type {
   DesiredStateManifest,
   DoctorCheck,
   ExecutorType,
+  ExecutorLane,
   PipelineClassification,
   SourceMapping,
   SourceMappingScope,
@@ -2996,38 +2997,87 @@ export function buildProgram(): Command {
   graphCmd
     .command("integrity")
     .description("Report (and optionally repair) rows that outlived the object they hang off")
-    .option("--repair", "delete the repairable rows through the ordinary audited DELETE doors")
+    .option(
+      "--repair",
+      "DELETE the repairable rows through the ordinary audited DELETE doors. This REMOVES EXECUTION " +
+        "ROUTES: an orphaned executor binding carries a target's plugin config, secret refs and " +
+        "external ref, and repairing it detaches that pipeline for good. There is no prompt (owner " +
+        "decision 2026-09-19) — the record is the mitigation, so every removal is printed here AND " +
+        "written to the hash-chained audit log as `executor.binding.delete`. Only rows whose target " +
+        "object is ALREADY soft-deleted are ever touched; policy-managed bindings are skipped, " +
+        "because the binding reconciler reaps those itself"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (opts: { repair?: boolean; baseUrl?: string; output: OutputFormat }) => {
       const client = await clientFromStoredCredentials(opts);
       const report = await client.graph.integrity();
 
-      type IntegrityRow = { kind: string; id: string; detail: string; repairable: boolean };
+      // `owner` carries the dead object's URN, not just its NAME. Every projection row is repaired by
+      // addressing its OWNER at a typed door (`scp executor unbind <urn>`,
+      // `scp change-source delete-mapping --component <urn>`) — the row's own id reaches nothing —
+      // so folding the urn into a display name made the report unusable as the input to its own
+      // remedy, and the runbook had to go around the CLI to the raw API to get it back.
+      type IntegrityRow = {
+        kind: string;
+        id: string;
+        owner: string;
+        /** Binding rows only — the other two halves of the door's key, carried through from the
+         *  report's STRUCTURED fields so the per-row cleanup loop never has to parse `detail`.
+         *  Empty for a kind the door does not address by `(type, lane)`. */
+        type: string;
+        lane: string;
+        detail: string;
+        /** "Would `--repair` act on this?", uniformly across kinds — FALSE for a replica edge
+         *  (single-writer authority) and for a policy-managed binding (the reconciler reaps it).
+         *  The column already meant this for edges; making it mean the same thing for bindings is
+         *  what lets one filter select the whole repairable set. */
+        repairable: boolean;
+      };
       const rows: IntegrityRow[] = [
         ...report.danglingRelationships.map((r) => ({
           kind: "dangling-relationship",
           id: r.id,
-          detail: `${r.typeId}: ${r.fromUrn} -> ${r.toUrn} (${r.deadEnd} dead)`,
+          // An edge IS addressed by its own id (`scp relationship delete <id>`), so its `owner`
+          // column is the pair it hangs between rather than a thing to pass anywhere.
+          owner: `${r.fromUrn} -> ${r.toUrn}`,
+          type: "",
+          lane: "",
+          detail: `${r.typeId} (${r.deadEnd} dead)`,
           repairable: r.repairable
         })),
         ...report.orphanSourceMappings.map((r) => ({
           kind: "orphan-source-mapping",
           id: r.id,
+          owner: r.ownerUrn,
+          type: "",
+          lane: "",
           detail: `${r.ownerName}: ${r.detail}`,
-          repairable: true
+          // `--repair` does NOT touch mappings: the delete door matches a five-part identity tuple
+          // this report does not carry. Saying `true` here would advertise a repair that never runs.
+          repairable: false
         })),
         ...report.orphanExecutorBindings.map((r) => ({
           kind: "orphan-executor-binding",
           id: r.id,
+          owner: r.ownerUrn,
+          type: r.targetType,
+          lane: r.lane,
           detail: `${r.ownerName}: ${r.detail}`,
-          repairable: true
+          // A policy-managed row is NOT repairable by this command — the binding reconciler reaps it
+          // once the target is a tombstone, so `--repair` skips it. Exactly what `repairable` already
+          // means for a replica edge, which is what lets one filter select the whole actionable set.
+          repairable: !r.policyManaged
         })),
         ...report.orphanPlacements.map((r) => ({
           kind: "orphan-placement",
           id: r.id,
+          owner: r.ownerUrn,
+          type: "",
+          lane: "",
           detail: `${r.ownerName}: ${r.detail}`,
-          repairable: true
+          // A placement has no delete door reachable for an orphan at all.
+          repairable: false
         }))
       ];
 
@@ -3037,6 +3087,9 @@ export function buildProgram(): Command {
           return {
             kind: row.kind,
             id: row.id,
+            owner: row.owner,
+            type: row.type,
+            lane: row.lane,
             repairable: String(row.repairable),
             detail: row.detail
           };
@@ -3053,18 +3106,58 @@ export function buildProgram(): Command {
         deleted += 1;
       }
 
-      const remaining =
-        report.orphanSourceMappings.length +
-        report.orphanExecutorBindings.length +
-        report.orphanPlacements.length;
+      // ORPHANED EXECUTOR BINDINGS TOO, from 2026-09-19 (owner decision; edges-only was recommended
+      // and overridden). Through `executors.deleteBinding` — the SAME door `scp executor unbind`
+      // uses, never a bulk delete — so each removal writes its own `executor.binding.delete` audit
+      // event in the same transaction as the delete, exactly as an explicit unbind would.
+      //
+      // There is no confirmation prompt by decision, which makes the RECORD the entire mitigation:
+      // the removed routes are printed below ONE PER ROW, so a repair run is reconstructable from
+      // its own output without anyone having to go to the audit log. A count alone would not be a
+      // record — it cannot answer "which pipeline did this detach?", the only question that matters
+      // the morning after an unprompted repair.
+      //
+      // Nothing live is reachable here: the list is the REPORT's, so every row in it already has a
+      // tombstoned target. A live target's binding never appears, and therefore can never be taken.
+      const bindingsToRepair = report.orphanExecutorBindings.filter((b) => !b.policyManaged);
+      const skippedManagedBindings = report.orphanExecutorBindings.length - bindingsToRepair.length;
+      const removedBindings: { owner: string; name: string; type: string; lane: string }[] = [];
+      for (const binding of bindingsToRepair) {
+        // Addressed by the OWNER urn plus the row's own `(targetType, lane)`, read from the report's
+        // STRUCTURED fields — never parsed back out of `detail`, where a mis-read lane silently
+        // means `build`.
+        await client.executors.deleteBinding(binding.ownerUrn, binding.targetType, binding.lane);
+        removedBindings.push({
+          owner: binding.ownerUrn,
+          name: binding.ownerName,
+          type: binding.targetType,
+          lane: binding.lane
+        });
+      }
+
+      const remaining = report.orphanSourceMappings.length + report.orphanPlacements.length;
       printResult(
         [
           { outcome: "relationships-deleted", count: deleted },
           { outcome: "replica-edges-skipped (single-writer authority)", count: skippedReplicas },
           {
+            outcome: "executor-bindings-deleted (EXECUTION ROUTES removed; audited per row)",
+            count: removedBindings.length
+          },
+          {
+            outcome:
+              "policy-managed-bindings-skipped (the binding reconciler prunes these itself next " +
+              "tick; deleting one here would only race it)",
+            count: skippedManagedBindings
+          },
+          {
             outcome: "projection-rows-left (no id-addressed door; see --output json)",
             count: remaining
-          }
+          },
+          ...removedBindings.map((r) => ({
+            outcome: `deleted executor binding ${r.type}/${r.lane} on '${r.name}' (${r.owner})`,
+            count: 1
+          }))
         ],
         opts.output,
         (item) => {
@@ -6176,15 +6269,25 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("unbind <idOrUrn>")
-    .description("Delete a target's executor binding for one type (default: configuration)")
+    .description(
+      "Delete a target's executor binding for one type and lane (default: configuration/build). " +
+        "Accepts a SOFT-DELETED target, so a binding stranded by a delete has an audited exit"
+    )
     .option("--type <type>", "which routing Type to detach (default: configuration)")
+    .option(
+      "--lane <lane>",
+      "which lane to detach: build|test (default: build). `scp graph integrity` prints each " +
+        "orphan binding as type/lane — a test-lane row is unreachable without this"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const result = await client.executors.deleteBinding(idOrUrn, opts.type);
-      printResult(result, opts.output, (item) => item as Record<string, unknown>);
-    });
+    .action(
+      async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType; lane?: ExecutorLane }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.executors.deleteBinding(idOrUrn, opts.type, opts.lane);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
+      }
+    );
 
   executorCmd
     .command("repurpose <idOrUrn>")

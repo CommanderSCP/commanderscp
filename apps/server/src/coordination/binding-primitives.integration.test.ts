@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { ExecutorType } from "@scp/schemas";
 import {
@@ -28,6 +29,21 @@ describe("executor-binding primitives (M12 P5c)", () => {
   afterAll(async () => {
     await server?.close();
   });
+
+  /** Tombstone the object row beneath the API, leaving its binding live — the pre-guard shape, which
+   *  route 6 is now the reason no door can produce. See docs/graph.md §125b. */
+  async function legacySoftDelete(objectId: string): Promise<void> {
+    const rows = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await tx.execute(
+        sql`UPDATE objects SET deleted_at = now() WHERE id = ${objectId}::uuid AND org_id = ${org.orgId}::uuid`
+      );
+      return tx.execute(
+        sql`SELECT deleted_at FROM objects WHERE id = ${objectId}::uuid AND org_id = ${org.orgId}::uuid`
+      );
+    });
+    const row = (rows as unknown as { rows: { deleted_at: unknown }[] }).rows[0];
+    expect(row?.deleted_at, "fixture soft-delete must actually have landed").not.toBeNull();
+  }
 
   const putBinding = (targetId: string, type: ExecutorType) =>
     admin.executors.putBinding(targetId, {
@@ -115,7 +131,14 @@ describe("executor-binding primitives (M12 P5c)", () => {
     );
     expect(beforeDelete.some((b) => b.targetObjectId === comp.id)).toBe(true);
 
-    await admin.components.delete(comp.id);
+    // TOMBSTONED BENEATH THE API, and this is the one honest way to write it from 2026-09-19 on:
+    // `DELETE /components/{id}` now REFUSES while an unmanaged binding names the component
+    // (`graph/objects-repo.ts` route 6, docs/graph.md §125b), so the API can no longer produce this
+    // state. The claim below is unchanged and still worth pinning — the population it covers is the
+    // rows created BEFORE that guard existed, 19 of them on the live homelab. Same name and same
+    // reason as `graph/integrity.integration.test.ts`'s helper, so one grep finds every site that
+    // manufactures a pre-guard orphan.
+    await legacySoftDelete(comp.id);
 
     // The org-wide list is exactly what observe.ts:160 enumerates and polls every tick. Without the
     // liveness filter the gone target's binding would still be here — polled forever. This is THE fix.
