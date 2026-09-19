@@ -3004,29 +3004,46 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const report = await client.graph.integrity();
 
-      type IntegrityRow = { kind: string; id: string; detail: string; repairable: boolean };
+      // `owner` carries the dead object's URN, not just its NAME. Every projection row is repaired by
+      // addressing its OWNER at a typed door (`scp executor unbind <urn>`,
+      // `scp change-source delete-mapping --component <urn>`) — the row's own id reaches nothing —
+      // so folding the urn into a display name made the report unusable as the input to its own
+      // remedy, and the runbook had to go around the CLI to the raw API to get it back.
+      type IntegrityRow = {
+        kind: string;
+        id: string;
+        owner: string;
+        detail: string;
+        repairable: boolean;
+      };
       const rows: IntegrityRow[] = [
         ...report.danglingRelationships.map((r) => ({
           kind: "dangling-relationship",
           id: r.id,
-          detail: `${r.typeId}: ${r.fromUrn} -> ${r.toUrn} (${r.deadEnd} dead)`,
+          // An edge IS addressed by its own id (`scp relationship delete <id>`), so its `owner`
+          // column is the pair it hangs between rather than a thing to pass anywhere.
+          owner: `${r.fromUrn} -> ${r.toUrn}`,
+          detail: `${r.typeId} (${r.deadEnd} dead)`,
           repairable: r.repairable
         })),
         ...report.orphanSourceMappings.map((r) => ({
           kind: "orphan-source-mapping",
           id: r.id,
+          owner: r.ownerUrn,
           detail: `${r.ownerName}: ${r.detail}`,
           repairable: true
         })),
         ...report.orphanExecutorBindings.map((r) => ({
           kind: "orphan-executor-binding",
           id: r.id,
+          owner: r.ownerUrn,
           detail: `${r.ownerName}: ${r.detail}`,
           repairable: true
         })),
         ...report.orphanPlacements.map((r) => ({
           kind: "orphan-placement",
           id: r.id,
+          owner: r.ownerUrn,
           detail: `${r.ownerName}: ${r.detail}`,
           repairable: true
         }))
@@ -3038,6 +3055,7 @@ export function buildProgram(): Command {
           return {
             kind: row.kind,
             id: row.id,
+            owner: row.owner,
             repairable: String(row.repairable),
             detail: row.detail
           };
