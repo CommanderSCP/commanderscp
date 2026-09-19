@@ -130,6 +130,12 @@ interface LiveRolloutStatus {
   canary?: { weights?: { canary?: { weight?: number } } };
 }
 
+// The LIVE Rollout manifest's `.spec`, read for the step TOTAL only (`status` above carries the
+// current position). Same manifest body `fetchLiveRollout` already fetched — no second call.
+interface LiveRolloutSpec {
+  strategy?: { canary?: { steps?: unknown[] } };
+}
+
 async function apiRequest(
   ctx: PluginContext,
   config: ArgoCdConfig,
@@ -164,7 +170,16 @@ function phaseAfterFinishedSync(health: string | undefined): ExecutionPhase {
   }
 }
 
-type ObservedRollout = { phase?: string; step?: number; weight?: number; message?: string };
+type ObservedRollout = {
+  phase?: string;
+  step?: number;
+  weight?: number;
+  message?: string;
+  /** `spec.strategy.canary.steps.length` off the SAME manifest fetch. Absent (never 0, never
+   *  guessed) when the strategy has no canary steps (blue-green) or the fetch failed — see
+   *  `rolloutFromManifest`. pipeline-mockup-data.md §5.1. */
+  stepCount?: number;
+};
 
 // Find the app-managed Argo Rollout node in the Application's `status.resources[]` (near-free — it
 // rides the Application body status() already fetches). Argo's group for Rollouts is `argoproj.io`.
@@ -188,9 +203,9 @@ function rolloutFromResource(res: ArgoResourceStatus | undefined): ObservedRollo
 
 // Parse the observe-only rollout fields off a live manifest. See docs/plugins.md §25.
 function rolloutFromManifest(manifestJson: string): ObservedRollout | undefined {
-  let parsed: { status?: LiveRolloutStatus };
+  let parsed: { status?: LiveRolloutStatus; spec?: LiveRolloutSpec };
   try {
-    parsed = JSON.parse(manifestJson) as { status?: LiveRolloutStatus };
+    parsed = JSON.parse(manifestJson) as { status?: LiveRolloutStatus; spec?: LiveRolloutSpec };
   } catch {
     return undefined;
   }
@@ -202,6 +217,10 @@ function rolloutFromManifest(manifestJson: string): ObservedRollout | undefined 
   if (typeof s.currentStepIndex === "number") rollout.step = s.currentStepIndex;
   const weight = s.canary?.weights?.canary?.weight;
   if (typeof weight === "number") rollout.weight = weight;
+  // pipeline-mockup-data.md §5.1: M off the SAME fetch, never a second call. `spec.strategy.canary`
+  // is absent for a blue-green Rollout, so `steps` is undefined there — never 0, never guessed.
+  const steps = parsed.spec?.strategy?.canary?.steps;
+  if (Array.isArray(steps) && steps.length > 0) rollout.stepCount = steps.length;
   return Object.keys(rollout).length > 0 ? rollout : undefined;
 }
 
