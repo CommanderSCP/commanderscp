@@ -3,6 +3,7 @@ import { v7 as uuidv7 } from "uuid";
 import {
   categoryOfType,
   type ChangePlan,
+  type ChangeWaveEntry,
   type ChangeWaveTarget,
   type ExecutorType
 } from "@scp/schemas";
@@ -364,6 +365,26 @@ function toChangePlanShape(
             freezeHolds !== undefined && w.id === activeWaveId
               ? waveTargets.filter((t) => freezeHolds.has(t.targetObjectId)).length
               : undefined;
+          // `ChangeWaveEntry`'s `previous_wave` half (D1, pipeline-mockup-data.md §4/§9): a wave
+          // with an actual predecessor reports how much of it is DONE — the same
+          // succeeded-or-skipped reading `activeWaveOf` treats as "past" a wave. The `coupled_changes`
+          // half needs `waitStatus`, which this function does not have; `routes/changes.ts`'s explain
+          // handler appends it to wave 0 as a second half, the same split `heldTargetCount` already
+          // uses (see `docs/routes.md §73`).
+          const previousWave = waves.find((x) => x.waveIndex === w.waveIndex - 1);
+          const entry: ChangeWaveEntry[] | undefined = previousWave
+            ? [
+                {
+                  kind: "previous_wave",
+                  satisfiedCount: targets.filter(
+                    (t) =>
+                      t.waveId === previousWave.id &&
+                      (t.status === "succeeded" || t.status === "skipped")
+                  ).length,
+                  requiredCount: targets.filter((t) => t.waveId === previousWave.id).length
+                }
+              ]
+            : undefined;
           return {
             id: w.id,
             planId: w.planId,
@@ -375,6 +396,7 @@ function toChangePlanShape(
             startedAt: w.startedAt?.toISOString() ?? null,
             completedAt: w.completedAt?.toISOString() ?? null,
             ...(heldTargetCount !== undefined ? { heldTargetCount } : {}),
+            ...(entry !== undefined ? { entry } : {}),
             targets: waveTargets.map((t) =>
               toChangeWaveTargetShape(
                 t,
