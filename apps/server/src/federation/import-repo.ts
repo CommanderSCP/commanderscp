@@ -8,7 +8,8 @@ import {
   type SyncScope,
   type TrustDomainId,
   PipelineHookKindSchema,
-  PipelineEvidenceSchema
+  PipelineEvidenceSchema,
+  WaveTargetObservedPayloadSchema
 } from "@scp/schemas";
 import {
   computeBundleChecksum,
@@ -40,6 +41,7 @@ import {
   clearUnattachedChangeStatus,
   recordUnattachedChangeStatus
 } from "./unattached-change-status-repo.js";
+import { recordPeerObservation } from "./peer-observations-repo.js";
 import { createRelationship, deleteRelationship } from "../graph/relationships-repo.js";
 import { deleteObject, isUuid, upsertObjectByUrn } from "../graph/objects-repo.js";
 import { adoptArtifactIdentity, findArtifactByIdentity } from "../graph/artifacts-repo.js";
@@ -417,6 +419,36 @@ async function applyEntry(
           });
           return;
       }
+      return;
+    }
+
+    case "wave_target_observed": {
+      // WHAT THE PEER SAW (D3/D4). No try-catch around this write, for the same reason the three
+      // `pipeline_*` writes above have none: a write that genuinely fails must fail the import
+      // transaction rather than be swallowed into a green import that applied nothing.
+      const parsed = WaveTargetObservedPayloadSchema.safeParse(entry.payload);
+      if (!parsed.success) {
+        // PARSED, NOT TRUSTED — and one entry's cost, never the channel's. This is also the branch
+        // that makes version skew survivable in BOTH directions: a payload from a newer peer whose
+        // required fields this side does not know lands here and is dropped, while the import goes
+        // on to the next entry, advances the cursor and commits. (An OLDER peer meeting THIS kind
+        // never reaches this switch at all — it falls to `default: return` below, which is the same
+        // one-entry cost.) Extra fields a newer peer adds are not an error: the payload schema is a
+        // plain `z.object`, so unknown keys are stripped and the reading is kept.
+        console.error(
+          "[federation] wave_target_observed: payload is not a known observation shape — dropped"
+        );
+        return;
+      }
+      await recordPeerObservation(tx, {
+        orgId,
+        // AUTHORITY IS THE VERIFIED SIGNER. The payload carries no provenance to prefer — that is by
+        // construction (`WaveTargetObservedPayloadSchema`) — and `exporterDomainId` is the domain
+        // whose key this bundle's signature verified against, already asserted to equal every
+        // entry's claimed origin by `assertEntryAuthoredBySigner`.
+        peerDomainId: exporterDomainId,
+        payload: parsed.data
+      });
       return;
     }
 

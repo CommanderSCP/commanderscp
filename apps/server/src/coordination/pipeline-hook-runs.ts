@@ -22,6 +22,7 @@ import {
   resolveExecutorPluginInstance
 } from "./executor-bindings-repo.js";
 import { recordTestRunEvidence } from "./pipeline-hooks-repo.js";
+import { appendWaveTargetObservedEntry } from "../federation/wave-target-observed-journal.js";
 
 /** RUN TRACKING for pipeline test hooks. See docs/coordination.md §616. */
 
@@ -43,8 +44,29 @@ const TERMINAL_STATUSES = [
 ] as const satisfies readonly HookRunStatus[];
 const NON_TERMINAL_STATUSES = ["pending", "running"] as const satisfies readonly HookRunStatus[];
 
-export function isTerminalHookRunStatus(status: HookRunStatus): boolean {
+/** Takes a plain `string`, not a `HookRunStatus`: the federation replica
+ *  (`peer-observations-repo.ts`) asks this about a status a PEER reported, which arrives as text and
+ *  may name a value this side has never heard of. Widening the parameter is what lets that caller
+ *  reuse this one definition instead of restating the terminal set. */
+export function isTerminalHookRunStatus(status: string): boolean {
   return (TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
+/** The FORWARD ORDER of a run's status, for the one question D3's volume bound turns on: is this
+ *  reading a real step forward, or a re-read? `pending -> running -> terminal`, and the three
+ *  terminal values are one rank because a run reaches exactly one of them and never moves after. An
+ *  unrecognised value ranks below `pending`, so it can never look like progress. */
+function hookRunStatusRank(status: string): number {
+  if (isTerminalHookRunStatus(status)) return 2;
+  if (status === "running") return 1;
+  if (status === "pending") return 0;
+  return -1;
+}
+
+/** Is `to` later than `from` in that order? The sender's emission test, so a flapping executor that
+ *  reports `running` then `pending` cannot make the journal grow with a fact that never happened. */
+export function isForwardHookRunTransition(from: string, to: string): boolean {
+  return hookRunStatusRank(to) > hookRunStatusRank(from);
 }
 
 /** Which executor Type a hook run resolves its binding on. See docs/coordination.md §618. */
@@ -191,6 +213,41 @@ export interface ClaimHookRunResult {
   claimed: boolean;
 }
 
+/**
+ * D3's UPWARD HALF: one journal entry per real status transition of this run.
+ *
+ * The owner chose FULL progress over terminal-only (decision D3, 2026-09-16), so the cost discipline
+ * is the caller's: every call site below emits only where the `status` COLUMN actually moved
+ * forward, never from the poll that re-reads the same value, and never from an `attempt` bump. The
+ * three sites are the three writers of that column — `claimHookRun` (`pending`),
+ * `ensureHookRunTriggered`'s step 3 (`running`), and `applyHookRunObservation` (the rest) — which is
+ * the whole census: `pipeline_hook_runs.status` is written nowhere else in this repo.
+ *
+ * Volume, therefore: at most three entries per run (`pending -> running -> terminal`), proportional
+ * to runs and never to poll ticks or elapsed time.
+ */
+async function journalHookRunTransition(
+  tx: TenantTx,
+  orgId: string,
+  run: PipelineHookRunRow,
+  observedAt: Date
+): Promise<void> {
+  await appendWaveTargetObservedEntry(tx, orgId, {
+    subject: "hook_run",
+    changeObjectId: run.changeObjectId,
+    componentObjectId: run.componentObjectId,
+    targetObjectId: run.targetObjectId,
+    hookId: run.hookId,
+    kind: run.kind,
+    waveIndex: run.waveIndex,
+    status: run.status,
+    attempt: run.attempt,
+    externalUrl: run.externalUrl,
+    startedAt: run.startedAt.toISOString(),
+    observedAt: observedAt.toISOString()
+  });
+}
+
 /** Claims the right to trigger, or reports who holds it. See docs/coordination.md §623. */
 export async function claimHookRun(
   tx: TenantTx,
@@ -228,7 +285,14 @@ export async function claimHookRun(
     })
     .returning();
 
-  if (inserted[0]) return { run: toRunRow(inserted[0]), claimed: true };
+  if (inserted[0]) {
+    const run = toRunRow(inserted[0]);
+    // TRANSITION 1 of 3 (D3). Only the inserting statement reaches this branch, so the entry is
+    // emitted exactly once per run — the loser of a claim race returns the winner's row below and
+    // reports nothing, which is also why this is not "emit whenever we see pending".
+    await journalHookRunTransition(tx, input.orgId, run, run.startedAt);
+    return { run, claimed: true };
+  }
 
   const existing = await findHookRun(tx, input);
   if (!existing) {
@@ -456,7 +520,16 @@ export async function ensureHookRunTriggered(
       })
       .where(and(eq(pipelineHookRuns.orgId, ctx.orgId), eq(pipelineHookRuns.id, run.id)))
       .returning();
-    return toRunRow(updated!);
+    const next = toRunRow(updated!);
+    // TRANSITION 2 of 3 (D3): `pending -> running`, and this is also where the run first has an
+    // `externalUrl` to report — the commander's "check running" chip links to the executor's own
+    // console rather than to a page this instance cannot serve. Guarded on the transition being
+    // forward, so a re-entry (which `claimed`/`externalRunId` already make unreachable) could not
+    // append a second identical entry.
+    if (isForwardHookRunTransition(run.status, next.status)) {
+      await journalHookRunTransition(tx, ctx.orgId, next, new Date());
+    }
+    return next;
   });
 }
 
@@ -533,6 +606,15 @@ export async function applyHookRunObservation(
   }
 
   const next = toRunRow(updated);
+  // TRANSITION 3 of 3 (D3), and the one that matters for volume: this function runs on EVERY poll
+  // tick of every in-flight run, and re-writes `status` with the same value most of the time (plus
+  // `lastObservedAt`, which is the point of the write). Emitting per call would make the journal
+  // grow with run DURATION — the failure mode §9 names as the one that must not occur, and the one
+  // that produced the 1.44 GB/day Decision incident. Emitting per forward transition keeps the
+  // ceiling at three entries per run whatever the poll interval is.
+  if (isForwardHookRunTransition(run.status, next.status)) {
+    await journalHookRunTransition(tx, orgId, next, observedAt);
+  }
   const outcome = outcomeFor(status);
   if (outcome === null) return { run: next, becameTerminal: false };
 

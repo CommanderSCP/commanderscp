@@ -1222,6 +1222,96 @@ export const federationUnattachedChangeStatus = pgTable(
   ]
 );
 
+/**
+ * PEER-REPORTED EXECUTION OBSERVATIONS — the receiving half of the `wave_target_observed` journal
+ * kind (pipeline-mockup-data.md D3/D4, drizzle/0115).
+ *
+ * A change is coordinated in exactly one domain, and only that domain has `change_wave_targets` /
+ * `pipeline_hook_runs` rows. A commander showing an outpost-driven change therefore had nothing to
+ * render — no rollout pips, no check state — and said "not reported". These rows are what arrives
+ * instead: a READ-ONLY REPLICA of what the executing domain saw, written only by the federation
+ * import door.
+ *
+ * DELIBERATELY NOT the real tables. Projecting a peer's observation into `change_wave_targets`
+ * would make the reconcile loop, the gates and the holds read a row no local plan compiled and no
+ * local executor drives — the "unbound placement fake-succeeds" failure with a peer's data in it.
+ * Kept apart, the worst a hostile or broken peer can do is put a wrong reading on a display that
+ * names the peer it came from.
+ *
+ * PROVENANCE IS RECEIVER-STAMPED. `peer_domain_id` is the verified bundle SIGNER (TRUST sense,
+ * ADR-0021 D4), never a payload field; `received_at` is this instance's clock. `observed_at` is the
+ * sender's own statement of when it looked, which is data — the read surface ages it and says
+ * `stale` rather than believing it.
+ */
+export const federationPeerObservations = pgTable(
+  "federation_peer_observations",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** TRUST sense (ADR-0021 D4) — the peer whose signed bundle carried this observation. */
+    peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(),
+    /** `'target'` (a wave target's status/rollout) | `'hook_run'` (a pipeline-hook run's progress) —
+     *  the payload union's discriminant, kept as a column so one read serves both subjects. */
+    subject: text("subject").notNull(),
+    /** The change object id on the ORIGIN domain. Deliberately not an FK: the commander may hold the
+     *  replica change object, or (scope, ordering) not yet hold it at all, and an observation that
+     *  arrives first must not be refused — `federation_unattached_change_status` makes the same
+     *  argument for the same reason. */
+    changeObjectId: uuid("change_object_id").notNull(),
+    /** Identity part, per subject. `target`: the deployment target + its routing Type. `hook_run`:
+     *  the run's target, which is NULL for `postMerge`. */
+    targetObjectId: uuid("target_object_id"),
+    type: text("type"),
+    /** `target`: the wave the target sits in. `hook_run`: the wave the run gates, NULL for
+     *  `postMerge`. */
+    waveIndex: integer("wave_index"),
+    /** `hook_run` only. */
+    componentObjectId: uuid("component_object_id"),
+    hookId: text("hook_id"),
+    hookKind: text("hook_kind"),
+    /** The reported reading. `status` is text for both subjects — this side must be able to store a
+     *  status value it cannot rank (a peer one migration ahead) rather than drop the reading. */
+    status: text("status").notNull(),
+    attempt: integer("attempt").notNull().default(0),
+    externalUrl: text("external_url"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    /** The rest of the payload as the peer stated it, already bounded at the sender and re-bounded
+     *  at the receiver: `{rollout}` for a target today. Jsonb rather than columns because increment
+     *  2 owns the rollout fields' shape, and this table must not fork a second definition of them. */
+    observation: jsonb("observation"),
+    /** The peer's own statement of when it looked. Data, NOT provenance. */
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    /** RECEIVER-STAMPED: when this instance applied the entry. The only timestamp a reader may trust
+     *  about this row's arrival, and what the board's `fresh`/`stale` verdict is measured against. */
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    /** ONE row per (peer, subject, identity). NULLS NOT DISTINCT so a `postMerge` run (NULL target,
+     *  NULL wave) collides with itself instead of accumulating a row per transition — the
+     *  `pipeline_hook_runs_identity` reading, for the same nullable identity parts. Without it the
+     *  D3 decision (journal EVERY transition) would grow this table per transition per run. */
+    unique("federation_peer_observation_identity")
+      .on(
+        table.orgId,
+        table.peerDomainId,
+        table.subject,
+        table.changeObjectId,
+        table.targetObjectId,
+        table.type,
+        table.hookId,
+        table.waveIndex
+      )
+      .nullsNotDistinct(),
+    /** The read path: every observation for one change (the board's not-driven-here branch). */
+    index("federation_peer_observation_by_change").on(table.orgId, table.changeObjectId),
+    check(
+      "federation_peer_observation_subject_check",
+      sql`${table.subject} IN ('target','hook_run')`
+    )
+  ]
+);
+
 /** Imported-approval EVIDENCE (DESIGN §13: "approvals transfer as evidence, never as authority").
  *  Deliberately a separate table from `approval_votes` — these rows are never counted toward a
  *  LOCAL `approval_requests` quorum; they are read-only, attestation-validated proof attached to
