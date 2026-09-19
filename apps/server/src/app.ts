@@ -11,7 +11,7 @@ import {
 } from "fastify-type-provider-zod";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { AppDeps } from "./types.js";
-import { GLOBAL_BODY_LIMIT_BYTES } from "./http-limits.js";
+import { GLOBAL_BODY_LIMIT_BYTES, URN_MAX_PARAM_LENGTH } from "./http-limits.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import { badRequest, frameworkClientProblem, ProblemError, sendProblem } from "./errors.js";
 import { assertNoPrototypePoisoning, PrototypePoisoningError } from "./util/safe-json.js";
@@ -87,6 +87,22 @@ export async function buildApp(
     logger: options.logger ?? true,
     // Global body ceiling. See docs/server.md §4.
     bodyLimit: GLOBAL_BODY_LIMIT_BYTES,
+    // Every `:idOrUrn`/`:urn` route param can carry a percent-encoded object URN — the find-my-way
+    // default (100 chars) 414s a real placement URN before its Zod schema ever runs. See
+    // http-limits.ts's `URN_MAX_PARAM_LENGTH` for the derivation. See docs/server.md §106.
+    maxParamLength: URN_MAX_PARAM_LENGTH,
+    // A route-level (`maxParamLength`, malformed-URL) failure is raised by find-my-way BEFORE
+    // Fastify dispatches to a handler, so `setErrorHandler` below never sees it — Fastify's own
+    // default instead writes a bare, non-problem+json body straight to the raw response. Route it
+    // through the same `frameworkClientProblem`/`sendProblem` pair every other framework-raised
+    // client error uses, so "URN too long" reads the same as every other 4xx. See docs/server.md §107.
+    frameworkErrors: (err, request, reply) => {
+      sendProblem(
+        request,
+        reply,
+        frameworkClientProblem(err) ?? new ProblemError(500, "Internal Server Error")
+      );
+    },
     // M9.3 (ADR-0001, `docs/adr/0001-in-app-federation-mtls.md`). See docs/server.md §5.
     ...(deps.config.federationServerMtls
       ? {
