@@ -562,6 +562,20 @@ COMPOSED AT READ TIME, NEVER PERSISTED, for exactly the reason stated above for 
 
 `now` NEVER CROSSES THIS SEAM (property 4, again): each entry carries `staleAfter` and `lastReportedAt` as DATA that the client's own clock contextualizes, and `summary` is a server-composed sentence naming the boundary rather than a relative time.
 
+### §67a. THE PER-TARGET CHECKS RAIL
+
+THE PER-TARGET CHECKS RAIL — all four pipeline hook kinds' state for this wave target, in fixed pipeline order (`postMerge` -> `postDeploy` -> `continuous` -> `bakeAlarms`). docs/proposals/pipeline-mockup-data.md §3, increment 3; the 2026-09-11 mockups' `.checks` strip (`docs/design/mockups/2026-09-11/target-redesign.html`).
+
+COMPOSED AT READ TIME, NEVER PERSISTED, for the same reason `hold` is (§67): the gate's Decision rows have no clearing counterpart, so a field fed from one would still say "failed" after a rerun went green. `wave-target-checks.ts`'s `resolveWaveTargetChecks` re-derives it on every full-fidelity plan read, and calls the SAME verdict functions the gate and the hold call (`evaluateContinuousHold`, `evaluateBakeGate`, `waveTargetDeployedAt`) — a second copy of any of them would let the rail and the gate disagree about the same target.
+
+SKIPPED on `getLatestPlanForChange`'s `withFreezeHolds: false` path, exactly like both hold halves and for the same reason: that path is reconcile's per-tick internal read and never reaches a response.
+
+**SIX ABSENCES THAT MUST NOT LOOK ALIKE.** `slots[].hooks: []` (nobody declared this kind), `not_applicable` (declared, cannot apply here), `not_run` (declared, nothing reached it), `no_evidence` (a probe was promised and has never reported), `stale` (promised, reported, went quiet — `ManifestContinuousHookSchema` defines that as ABSENT, never a stale pass), and `bake_not_started` (declared, and the window has not opened because the target has not deployed). The last one reaches the wire from nowhere else: `pipeline-hook-gate.ts`'s `bakeEntry` returns `null` for `deployedAt === null` and records nothing, which is right for a gate and leaves an operator unable to tell a waiting bake from an undeclared one.
+
+**GRAIN IS STATED, NOT IMPLIED** (`slots[].grain`). `pipeline_hook_runs` is keyed `(change, hookId, waveIndex)`, not by target, so `postMerge` state is `per_change` and `postDeploy` state is `per_wave` — the SAME record repeated across a wave's target rows. Only `continuous` and `bakeAlarms` evidence is genuinely `per_target`. A rail that rendered all four identically would imply per-target evidence that does not exist (proposal §3.4).
+
+**UNIONS, NOT ENUMS**, throughout (`basis`, `state`) and plain `z.string` for `kind`/`grain`/`runStatus`: vendored oasdiff 1.23.0 does not flag a new response `oneOf` member but DOES flag a new response enum value (memory `scp-oasdiff-oneof-vs-enum`). `PipelineHookStateSchema` has no `not_reported` member yet — nothing emits one today (the coordinating instance dispatches its own runs, and both evidence kinds federate upward as `pipeline_evidence_upsert` since the increment-0 fix), and increment 6 owns the federation path that will need it.
+
 ### §68. SERVER-COMPUTED COUNT of this wave's currently-held targets
 
 SERVER-COMPUTED COUNT of this wave's currently-held targets — freeze-held (`targets[].hold`) plus stage-dependency-held (ADR-0028, carried separately via `ChangeExplainResponse.stageDependencyStatus` for the reason given on that field). ADDITIVE- OPTIONAL for oasdiff, and emitted ONLY for the wave admission currently governs (the active wave — the one wave the freeze evaluation ever looks at). Absent means "not evaluated" (a future wave's targets may sit under a standing freeze that will hold them at their turn — a zero there would be fabricated), never "zero by omission"; `0` means evaluated with nothing held. Clients must never recompute this from `targets[].hold` — a caller with no `stageDependencyStatus` in hand (e.g. `service-board.ts`) would undercount it.

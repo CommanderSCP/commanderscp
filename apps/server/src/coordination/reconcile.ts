@@ -92,7 +92,7 @@ import {
 } from "./campaign-recipe.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
-import type { HookTriggerRequest } from "./pipeline-hook-gate.js";
+import { waveTargetDeployedAt, type HookTriggerRequest } from "./pipeline-hook-gate.js";
 import {
   insertDecision,
   insertDecisionIfChanged,
@@ -645,11 +645,17 @@ async function reconcileExecutingChange(
                       // failed target has already parked the change on the `failed` branch above,
                       // so this filter is about skipped/never-triggered rows, not about hiding
                       // failures.
-                      .filter((t) => t.status === "succeeded")
+                      //
+                      // THE PREDICATE AND THE VALUE ARE THE SAME RULE, so they are the same
+                      // function: `waveTargetDeployedAt` returns null for anything not
+                      // `succeeded`. The checks rail (`wave-target-checks.ts`) reads it too — see
+                      // its doc for why a second copy here would let the rail and this gate
+                      // disagree about the same bake window.
+                      .filter((t) => waveTargetDeployedAt(t) !== null)
                       .map((t) => ({
                         targetObjectId: t.targetObjectId,
                         // THE DEPLOY INSTANT, AS DATA. See docs/coordination.md §765.
-                        deployedAt: t.lastObservedAt ?? t.updatedAt
+                        deployedAt: waveTargetDeployedAt(t)
                       }))
                   }
                 : null,

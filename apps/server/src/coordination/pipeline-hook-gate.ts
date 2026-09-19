@@ -46,6 +46,30 @@ export interface PipelineHookGateWaveTarget {
   deployedAt: string | null;
 }
 
+/** THE DEPLOY INSTANT OF A WAVE TARGET — ONE definition, two readers.
+ *
+ *  `reconcile.ts` builds the gate's `previousWave.targets` from it, and `wave-target-checks.ts`
+ *  builds the checks rail's `bake_not_started` from it. They MUST agree: the rail saying "the bake
+ *  window has not opened" while the gate is already holding on that window (or the reverse) is the
+ *  two-copies-of-one-rule failure this repo keeps finding, and the two call sites read different
+ *  shapes of the same row (reconcile reads the WIRE plan, whose instants are ISO strings; the rail
+ *  reads the `change_wave_targets` row, whose instants are `Date`s), which is exactly the kind of
+ *  difference that invites a second, subtly divergent copy.
+ *
+ *  `null` for anything not `succeeded`: a target that never deployed has no window, so a
+ *  `postDeploy` result or a quiet window for it is evidence that can never arrive. `lastObservedAt`
+ *  first (the poll that saw it succeed) and `updatedAt` as the fallback for a target that reached
+ *  `succeeded` without a status poll. */
+export function waveTargetDeployedAt(target: {
+  status: string;
+  lastObservedAt: Date | string | null;
+  updatedAt: Date | string;
+}): string | null {
+  if (target.status !== "succeeded") return null;
+  const at = target.lastObservedAt ?? target.updatedAt;
+  return at instanceof Date ? at.toISOString() : at;
+}
+
 export interface PipelineHookGateContext {
   orgId: string;
   /** The change being admitted — the row whose `source_ref` carries the evidence BINDINGS. Read
