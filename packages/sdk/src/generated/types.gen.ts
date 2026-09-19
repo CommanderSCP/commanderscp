@@ -21392,7 +21392,7 @@ export type ExportSyncBundleResponses = {
             orgId: string;
             originDomainId: string;
             sequence: number;
-            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert';
+            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert' | 'wave_target_observed';
             payload: {
                 [key: string]: unknown;
             };
@@ -21495,7 +21495,7 @@ export type FederationResyncAuthorizeResponses = {
                 orgId: string;
                 originDomainId: string;
                 sequence: number;
-                entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert';
+                entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert' | 'wave_target_observed';
                 payload: {
                     [key: string]: unknown;
                 };
@@ -21754,7 +21754,7 @@ export type ImportBundleData = {
             orgId: string;
             originDomainId: string;
             sequence: number;
-            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert';
+            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation' | 'pipeline_hook_upsert' | 'pipeline_hook_tombstone' | 'pipeline_evidence_upsert' | 'wave_target_observed';
             payload: {
                 [key: string]: unknown;
             };

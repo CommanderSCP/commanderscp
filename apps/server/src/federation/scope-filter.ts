@@ -18,11 +18,24 @@ export function entryMatchesScope(entry: SyncJournalEntry, scope: SyncScope): bo
       return (
         entry.entryKind === "change_status" ||
         entry.entryKind === "approval_evidence" ||
+        // A wave-target / hook-run observation is a fact ABOUT one change, and about nothing else —
+        // its payload names a `changeObjectId` and carries no graph object. A peer narrowed to
+        // changes that received the lifecycle transitions but not the executions would show the
+        // same "not reported" the whole increment exists to end, for a scope whose name promises
+        // otherwise. Same reading as `change_status`, which is already here.
+        entry.entryKind === "wave_target_observed" ||
         (entry.entryKind === "object_upsert" && entry.payload.typeId === "change") ||
         (entry.entryKind === "object_tombstone" && entry.payload.typeId === "change")
       );
     case "status_only":
-      return entry.entryKind === "change_status" || entry.entryKind === "audit_segment";
+      return (
+        entry.entryKind === "change_status" ||
+        // `status_only` is the scope an outpost reporting upward sits at, and an observation IS
+        // status — the finest-grained status this platform has. Withholding it here would leave the
+        // narrowest useful scope unable to carry the one thing it is for.
+        entry.entryKind === "wave_target_observed" ||
+        entry.entryKind === "audit_segment"
+      );
     case "custom": {
       const labels = (entry.payload as { labels?: unknown }).labels;
       if (!labels || typeof labels !== "object") return false;
