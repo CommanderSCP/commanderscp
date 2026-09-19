@@ -7,10 +7,13 @@ import { pipelineEvidence, pipelineHooks } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import {
+  alarmReportsInWindow,
   deleteHook,
+  recordAlarmEvidence,
   recordTestRunEvidence,
   upsertHook
 } from "../coordination/pipeline-hooks-repo.js";
+import { evaluateBakeGate } from "../coordination/pipeline-hook-verdicts.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
 import { getCursor } from "./cursors-repo.js";
@@ -290,5 +293,138 @@ describe("pipeline hook federation: commander declares, outpost receives", () =>
     expect(row!.producerSubjectId).toBeNull();
     // The evidence itself survives intact — it is what the gate parses.
     expect((row!.payload as { outcome?: string }).outcome).toBe("passed");
+  });
+
+  it("6. UPWARD: bake-alarm evidence produced at the outpost reaches the commander, stamped peer_reported, and the bake gate is satisfied from it", async () => {
+    // Fixed defect (increment 0): `recordAlarmEvidence` never appended a journal entry, so an
+    // outpost's bake alarms never reached the commander at all — this is the other half of the
+    // round trip test 5 proves for `testRun` evidence.
+    const componentObjectId = await replicatedComponent();
+    const targetObjectId = componentObjectId;
+    const deployedAt = new Date("2026-09-01T00:00:00.000Z");
+    const windowEnd = new Date(deployedAt.getTime() + 10 * 60_000);
+
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      recordAlarmEvidence(tx, outpost.orgId, {
+        componentObjectId,
+        targetObjectId,
+        hookId: "bake",
+        artifactDigest: `sha256:${"cd".repeat(32)}`,
+        source: "pushed",
+        evidence: {
+          kind: "alarmState",
+          hookId: "bake",
+          windowStart: deployedAt.toISOString(),
+          windowEnd: windowEnd.toISOString(),
+          alarms: []
+        }
+      })
+    );
+
+    // Outpost -> commander: the commander pulls from the outpost's journal.
+    const outpostSelf = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      ensureFederationSelf(tx, outpost.orgId)
+    );
+    const cursor = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getCursor(tx, commander.orgId, outpostSelf.domainId, outpostSelf.domainId)
+    );
+    const bundle = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      exportSyncBundle(tx, outpost.orgId, commander.orgName, cursor.sequence)
+    );
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      importSyncBundle(tx, commander.orgId, bundle)
+    );
+
+    const [row] = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx
+        .select()
+        .from(pipelineEvidence)
+        .where(
+          and(
+            eq(pipelineEvidence.orgId, commander.orgId),
+            eq(pipelineEvidence.componentObjectId, componentObjectId),
+            eq(pipelineEvidence.kind, "alarmState")
+          )
+        )
+    );
+    expect(row, "the alarm report never reached the gate that needs it").toBeTruthy();
+    expect(row!.hookId).toBe("bake");
+    // PROVENANCE IS STAMPED BY THE RECEIVER, never carried on the wire — same rule as test 5.
+    expect(row!.source).toBe("peer_reported");
+    expect(row!.producerSubjectId).toBeNull();
+
+    // The commander's bake gate SEES it: `alarmReportsInWindow` returns the peer-reported row, and
+    // `evaluateBakeGate` is satisfied from it alone — the exact function the gate itself calls.
+    const reports = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      alarmReportsInWindow(tx, commander.orgId, {
+        componentObjectId,
+        targetObjectId,
+        hookId: "bake",
+        windowStart: deployedAt,
+        windowEnd
+      })
+    );
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.source).toBe("peer_reported");
+
+    const verdict = evaluateBakeGate(
+      { quietWindowSeconds: 10 * 60 },
+      reports,
+      deployedAt,
+      new Date()
+    );
+    expect(verdict.satisfied).toBe(true);
+    expect(verdict.reason).toBe("quiet");
+    expect(verdict.coveredBy).toEqual(["peer_reported"]);
+  });
+
+  it("7. the commander does NOT echo bake-alarm evidence back — same loop guard as test 2", async () => {
+    // Both directions are paired in `beforeAll`. If the commander's import path re-journalled the
+    // alarm evidence it was sent, it would flow back down to the outpost and, paired both ways,
+    // loop forever. `federationImport: true` on `recordAlarmEvidence`'s import call is what
+    // prevents it (mirrors the fix for `recordTestRunEvidence`).
+    const componentObjectId = await replicatedComponent();
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      recordAlarmEvidence(tx, outpost.orgId, {
+        componentObjectId,
+        targetObjectId: componentObjectId,
+        hookId: "bake",
+        source: "pushed",
+        evidence: {
+          kind: "alarmState",
+          hookId: "bake",
+          windowStart: "2026-09-01T00:00:00.000Z",
+          windowEnd: "2026-09-01T00:10:00.000Z",
+          alarms: []
+        }
+      })
+    );
+
+    // Outpost -> commander.
+    const outpostSelf = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      ensureFederationSelf(tx, outpost.orgId)
+    );
+    const upCursor = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getCursor(tx, commander.orgId, outpostSelf.domainId, outpostSelf.domainId)
+    );
+    const upBundle = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      exportSyncBundle(tx, outpost.orgId, commander.orgName, upCursor.sequence)
+    );
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      importSyncBundle(tx, commander.orgId, upBundle)
+    );
+
+    // Commander -> outpost: export the COMMANDER's own journal from the position the outpost has
+    // already pulled, and assert the import added nothing of this kind to it.
+    const downCursor = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      getCursor(tx, outpost.orgId, commanderSelf.domainId, commanderSelf.domainId)
+    );
+    const echo = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      exportSyncBundle(tx, commander.orgId, outpost.orgName, downCursor.sequence)
+    );
+    expect(
+      echo.entries.filter((e) => e.entryKind === "pipeline_evidence_upsert"),
+      "the commander re-journalled what it was sent"
+    ).toHaveLength(0);
   });
 });

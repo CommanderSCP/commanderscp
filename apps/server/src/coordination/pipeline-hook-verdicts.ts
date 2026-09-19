@@ -70,9 +70,11 @@ export function evaluateContinuousHold(
 /** One alarm-state report, tagged with the server-stamped source it arrived from. `source` is
  *  never caller-supplied in the real system (see `AlarmStateEvidenceSchema`'s producer-stamping
  *  rule) — the caller resolving evidence for this function stamps it from where the row came
- *  from, not from anything in the payload. */
+ *  from, not from anything in the payload. `peer_reported` is an outpost's bake-alarm evidence,
+ *  federated upward and stamped by the RECEIVER at import — same rule as `testRun` evidence. It
+ *  is coverage exactly like any other source: an air-gapped domain may have nothing BUT this one. */
 export interface BakeAlarmReport {
-  source: "rollout_analysis" | "pushed";
+  source: "rollout_analysis" | "pushed" | "peer_reported";
   evidence: Pick<AlarmStateEvidence, "windowStart" | "windowEnd" | "alarms">;
 }
 

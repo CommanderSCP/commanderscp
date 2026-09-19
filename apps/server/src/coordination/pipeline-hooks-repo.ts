@@ -235,9 +235,9 @@ export interface RecordTestRunEvidenceInput
   evidence: TestRunEvidence;
 }
 
-export interface RecordAlarmEvidenceInput extends PipelineEvidenceSubjectRef {
-  /** NARROWER THAN THE COLUMN, on purpose: `BakeAlarmReport["source"]` is a two-member union, and
-   *  `evaluateBakeGate` computes coverage PER SOURCE over exactly those two. Admitting a third
+export interface RecordAlarmEvidenceInput extends PipelineEvidenceSubjectRef, FederationImportable {
+  /** NARROWER THAN THE COLUMN, on purpose: `BakeAlarmReport["source"]` is a three-member union, and
+   *  `evaluateBakeGate` computes coverage PER SOURCE over exactly those three. Admitting a fourth
    *  spelling here would create a source the gate can never satisfy a window from, whose rows would
    *  be silently invisible to the only function that reads them. */
   source: BakeAlarmReport["source"];
@@ -370,7 +370,38 @@ export async function recordAlarmEvidence(
       payload: input.evidence
     })
     .returning();
-  return toEvidenceRow(row!);
+  const evidence = toEvidenceRow(row!);
+  // OUTPOST-RUN PROBES, THE UPWARD HALF — mirrors `recordTestRunEvidence` exactly. Bake alarms are
+  // watched inside the domain, so a commander with no journal entry for them just never learns a
+  // window was quiet, and `evaluateBakeGate`'s `no_source` reads as "nobody is watching" instead of
+  // the true state, "nobody TOLD ME". Fixed defect: this append was missing entirely.
+  if (input.federationImport !== true)
+    await appendJournalEntry(tx, {
+      orgId,
+      entryKind: "pipeline_evidence_upsert",
+      contentHash: computePipelineEvidenceContentHash({
+        orgId,
+        componentObjectId: evidence.componentObjectId,
+        targetObjectId: evidence.targetObjectId,
+        hookId: evidence.hookId,
+        artifactDigest: evidence.artifactDigest,
+        commitSha: evidence.commitSha,
+        payload: evidence.payload
+      }),
+      // NO `source` AND NO `producerSubjectId` ON THE WIRE, deliberately — same rule
+      // `recordTestRunEvidence` states just above: provenance is the RECEIVER's to stamp, never the
+      // sender's to claim. `evidence.kind` ("alarmState") is what lets the importer tell this apart
+      // from a `testRun` payload sharing the same entry kind.
+      payload: {
+        componentObjectId: evidence.componentObjectId,
+        targetObjectId: evidence.targetObjectId,
+        hookId: evidence.hookId,
+        artifactDigest: evidence.artifactDigest,
+        commitSha: evidence.commitSha,
+        evidence: evidence.payload
+      }
+    });
+  return evidence;
 }
 
 export interface LatestTestRunEvidenceQuery extends PipelineEvidenceBinding {
@@ -447,9 +478,10 @@ export async function alarmReportsInWindow(
   return rows.map((row) => {
     const payload = row.payload as AlarmStateEvidence;
     return {
-      // The stamped column. `executor_observed` is not a member of `BakeAlarmReport["source"]` and
-      // `recordAlarmEvidence` refuses to write it, so this narrowing is total for every row this
-      // query can return.
+      // The stamped column. `executor_observed` is the one `PipelineEvidenceSource` member that is
+      // not also a member of `BakeAlarmReport["source"]`, and `recordAlarmEvidence`'s narrower
+      // parameter type refuses to write it, so this narrowing is total for every row this query can
+      // return (`rollout_analysis` / `pushed` / `peer_reported`, all three now writable here).
       source: row.source as BakeAlarmReport["source"],
       evidence: {
         windowStart: payload.windowStart,

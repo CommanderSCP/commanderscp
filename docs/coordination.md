@@ -5677,6 +5677,8 @@ THE CONSEQUENCE, STATED RATHER THAN GLOSSED: this table grows without bound. Ret
 
 `source` and `producerSubjectId` are stamped by the caller from the authenticated request, never from the body — same rule as `recordTestRunEvidence`, and it bites harder here: coverage is evaluated PER SOURCE, so a caller able to choose its own `source` could manufacture single-source coverage of a window nobody observed.
 
+FIXED DEFECT (team-pipeline-iac increment 0): this function had no §653. An outpost's bake-alarm reports never left the domain that watched them — the commander's `evaluateBakeGate` saw `no_source` for every outpost-origin target, indistinguishable from "nobody is watching" when the true state was "nobody told me". It now appends `pipeline_evidence_upsert` on the same seam `recordTestRunEvidence` uses, guarded by `federationImport` for the identical loop reason, with the receiver stamping `source: "peer_reported"` at import — never carried on the wire. `BakeAlarmReport["source"]` widened from two members to three (`peer_reported` joins `rollout_analysis` / `pushed`) so `evaluateBakeGate`'s per-source coverage counts it like any other.
+
 ### §655. The single latest test-run row for a hook and target
 
 The single latest test-run row for a (component, target, hook) and, when given, a specific binding.

@@ -2058,9 +2058,13 @@ export const pipelineEvidence = pgTable(
         sql`coalesce(${table.commitSha}, '')`
       )
       .where(sql`${table.kind} = 'testRun'`),
+    // Widened by migration 0107 to admit `peer_reported` (outpost-run probes, evidence produced
+    // in a domain and reported upward over the signed journal — stamped by the RECEIVER, never
+    // carried on the wire). This source list must stay a superset of `RecordAlarmEvidenceInput`'s
+    // and `RecordTestRunEvidenceInput`'s `source` types below, or a legal write would 500 here.
     check(
       "pipeline_evidence_source_check",
-      sql`${table.source} IN ('rollout_analysis','pushed','executor_observed')`
+      sql`${table.source} IN ('rollout_analysis','pushed','executor_observed','peer_reported')`
     )
   ]
 );
