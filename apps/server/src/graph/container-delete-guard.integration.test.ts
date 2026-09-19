@@ -34,7 +34,7 @@ describe("container delete guard (proposal §9.3, all three dependent routes)", 
   }
 
   async function call(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "DELETE",
     url: string,
     payload?: Record<string, unknown>
   ): Promise<Response> {
@@ -179,6 +179,99 @@ describe("container delete guard (proposal §9.3, all three dependent routes)", 
     });
     expect(removed.status, removed.body).toBe(200);
     expect((await call("DELETE", `/api/v1/components/${componentId}`)).status).toBe(200);
+  });
+
+  it("refuses deleting a PLACEMENT that still has an EXECUTOR BINDING — route 6 (docs/graph.md §125b)", async () => {
+    // MEASURED on the live homelab 2026-09-19: 19 `executor_bindings` rows name placements that
+    // `placement.delete` tombstoned on 2026-09-11. The binding table is the third table with the
+    // property routes 4 and 5 cover — the owner is named in a plain column, there is no FK to
+    // `objects` and no `deleted_at` of its own, so the edge cascade cannot see it.
+    //
+    // Deliberately driven at a PLACEMENT rather than a component: the placement is the object the
+    // estate actually stranded, the ONE delete door with no binding check of its own (the IaC prune
+    // at `coordination-as-code/plans-repo.ts` has had one all along — the N-doors shape this guard's
+    // choke point exists to end), and the target shape `resolveBindingForTarget`'s direct rung reads
+    // without any liveness filter.
+    const { componentId } = await makeService("binding-comp");
+    const target = await call("POST", "/api/v1/deployment-targets", { name: uniq("eb-target") });
+    expect(target.status, target.body).toBe(201);
+    const placement = await call("POST", "/api/v1/placements", {
+      component: componentId,
+      deploymentTarget: target.json().id as string
+    });
+    expect(placement.status, placement.body).toBe(201);
+    const placementId = placement.json().id as string;
+
+    const bound = await call("PUT", `/api/v1/executors/${placementId}/binding`, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: uniq("inst"),
+      type: "configuration"
+    });
+    expect(bound.status, bound.body).toBe(200);
+
+    const refused = await call("DELETE", `/api/v1/placements/${placementId}`);
+    expect(refused.status, refused.body).toBe(409);
+    expect(detailOf(refused)).toContain("executor binding");
+    // The remedy IS the refusal, and it names BOTH halves of the key the door takes — a message
+    // naming only the type would send the operator to a `?lane=build` default that cannot reach a
+    // `test`-lane row.
+    expect(detailOf(refused)).toContain("/executors/");
+    expect(detailOf(refused)).toContain("type=configuration");
+    expect(detailOf(refused)).toContain("lane=build");
+
+    // Nothing half-applied.
+    expect((await call("GET", `/api/v1/placements/${placementId}`)).status).toBe(200);
+
+    // …and the delete lands once the binding is gone, through the door the refusal named.
+    const unbound = await call(
+      "DELETE",
+      `/api/v1/executors/${placementId}/binding?type=configuration&lane=build`
+    );
+    expect(unbound.status, unbound.body).toBe(200);
+    expect((await call("DELETE", `/api/v1/placements/${placementId}`)).status).toBe(200);
+  });
+
+  it("a POLICY-MANAGED binding does NOT refuse — refusing one would livelock, so the reaper owns it", async () => {
+    // The carve-out, and the reason it is not laziness: `binding-policy/reconcile-bindings.ts` runs
+    // every reconcile tick, derives the wanted set from LIVE placements, and writes back whatever is
+    // missing. Refuse on a managed row and the operator unbinds, the next tick re-creates it (the
+    // target is still live, so it is still wanted), and the delete refuses again — forever. The same
+    // tick's `pruneUnwanted` deletes it once the target IS a tombstone, through
+    // `deleteExecutorBinding`, so the cleanup is audited exactly like a manual one.
+    //
+    // Driven beneath the API because no route sets `managed_by_policy_id` — the reconciler is its
+    // only writer, and a fixture that could not produce the column would prove nothing.
+    const { componentId } = await makeService("managed-binding");
+    const target = await call("POST", "/api/v1/deployment-targets", { name: uniq("mb-target") });
+    const placement = await call("POST", "/api/v1/placements", {
+      component: componentId,
+      deploymentTarget: target.json().id as string
+    });
+    expect(placement.status, placement.body).toBe(201);
+    const placementId = placement.json().id as string;
+
+    const bound = await call("PUT", `/api/v1/executors/${placementId}/binding`, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: uniq("inst"),
+      type: "configuration"
+    });
+    expect(bound.status, bound.body).toBe(200);
+
+    // A policy object id is a plain uuid column with no FK, so the org root serves as the owner.
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const updated = await tx.execute(sql`
+        UPDATE executor_bindings SET managed_by_policy_id = ${org.orgId}::uuid
+        WHERE org_id = ${org.orgId}::uuid AND target_object_id = ${placementId}::uuid
+        RETURNING id
+      `);
+      expect(
+        (updated as unknown as { rows?: unknown[] }).rows,
+        "fixture: the row must actually have been marked policy-managed"
+      ).toHaveLength(1);
+    });
+
+    const deleted = await call("DELETE", `/api/v1/placements/${placementId}`);
+    expect(deleted.status, deleted.body).toBe(200);
   });
 
   it("an EMPTY container still deletes — the guard names blockers, it is not a ban", async () => {

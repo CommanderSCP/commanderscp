@@ -20,6 +20,7 @@ import type {
   DesiredStateManifest,
   DoctorCheck,
   ExecutorType,
+  ExecutorLane,
   PipelineClassification,
   SourceMapping,
   SourceMappingScope,
@@ -6176,15 +6177,25 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("unbind <idOrUrn>")
-    .description("Delete a target's executor binding for one type (default: configuration)")
+    .description(
+      "Delete a target's executor binding for one type and lane (default: configuration/build). " +
+        "Accepts a SOFT-DELETED target, so a binding stranded by a delete has an audited exit"
+    )
     .option("--type <type>", "which routing Type to detach (default: configuration)")
+    .option(
+      "--lane <lane>",
+      "which lane to detach: build|test (default: build). `scp graph integrity` prints each " +
+        "orphan binding as type/lane — a test-lane row is unreachable without this"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const result = await client.executors.deleteBinding(idOrUrn, opts.type);
-      printResult(result, opts.output, (item) => item as Record<string, unknown>);
-    });
+    .action(
+      async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType; lane?: ExecutorLane }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.executors.deleteBinding(idOrUrn, opts.type, opts.lane);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
+      }
+    );
 
   executorCmd
     .command("repurpose <idOrUrn>")

@@ -154,6 +154,43 @@ describe("graph integrity report", () => {
     ).toBe(false);
   });
 
+  it("finds an orphan EXECUTOR BINDING, and repairs it through the executors door", async () => {
+    // The 19 rows measured on the live homelab 2026-09-19 are exactly this shape: a binding whose
+    // target placement was tombstoned by `placement.delete` on 2026-09-11.
+    //
+    // Detection was already written; what was UNPROVEN — and false — was the report's own claim that
+    // the row is repairable. `DELETE /executors/{idOrUrn}/binding` resolved its target live-only, so
+    // every one of the 19 answered 404 at the door the CLI's `repairable: true` points at. Nothing
+    // failed when the detector worked, because no test ever tried the repair it promises.
+    const tag = `gi-bind-${uuidv7().slice(0, 8)}`;
+    const { comp } = await seedPair(tag);
+    await admin.executors.putBinding(comp.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${tag}`,
+      type: "configuration"
+    });
+
+    expect(
+      (await admin.graph.integrity()).orphanExecutorBindings.some((b) => b.ownerUrn === comp.urn),
+      "a binding on a LIVE target is not an orphan"
+    ).toBe(false);
+
+    await legacySoftDelete(comp.id);
+
+    const orphans = (await admin.graph.integrity()).orphanExecutorBindings.filter(
+      (b) => b.ownerUrn === comp.urn
+    );
+    expect(orphans, "now the target is dead and the binding outlived it").toHaveLength(1);
+    // The detail line is what the operator types back at the door, and the door is keyed by BOTH.
+    expect(orphans[0]!.detail).toContain("configuration/build");
+
+    await admin.executors.deleteBinding(comp.id, "configuration", "build");
+    expect(
+      (await admin.graph.integrity()).orphanExecutorBindings.some((b) => b.ownerUrn === comp.urn),
+      "detection and repair agree"
+    ).toBe(false);
+  });
+
   it("REPAIRS a dangling edge through the ordinary DELETE door, which is what makes it audited", async () => {
     // The question this answers: `DELETE /relationships/{id}` authorizes at BOTH endpoints, and one
     // of them is deleted. If authorization could not resolve a dead scope object, repair would be

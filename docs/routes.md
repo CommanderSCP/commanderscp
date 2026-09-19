@@ -38,6 +38,7 @@ used to sit inline. Each source file below carries a one-line headline at the si
 - [`apps/server/src/routes/events-authz.integration.test.ts`](#apps-server-src-routes-events-authz-integration-test-ts) — §145–§150
 - [`apps/server/src/routes/events.ts`](#apps-server-src-routes-events-ts) — §151–§158
 - [`apps/server/src/routes/executor-binding-audit.integration.test.ts`](#apps-server-src-routes-executor-binding-audit-integration-test-ts) — §159–§161
+- [`apps/server/src/routes/executor-binding-orphan-delete.integration.test.ts`](#apps-server-src-routes-executor-binding-orphan-delete-integration-test-ts) — §161a–§161a
 - [`apps/server/src/routes/executors.integration.test.ts`](#apps-server-src-routes-executors-integration-test-ts) — §162–§169
 - [`apps/server/src/routes/executors.ts`](#apps-server-src-routes-executors-ts) — §170–§181
 - [`apps/server/src/routes/federation-audit-witnesses.test.ts`](#apps-server-src-routes-federation-audit-witnesses-test-ts) — §182–§182
@@ -1670,6 +1671,27 @@ THE FOURTH-DOOR CASE IS GONE WITH ITS DOOR (ADR-0047). It proved that `discovery
 ### §161. Every journal row whose payload names both of those
 
 Every `audit_segment` journal row whose payload names `subjectId` AND an `executor.binding.*` action — the withholding check has to read the PAYLOAD, not just count rows, since an unrelated audit_segment naming the SAME subject (the component's own `component.create`, which journals ahead of any binding write) would otherwise inflate a "shared" control's count and make it indistinguishable from a real leak.
+
+## `apps/server/src/routes/executor-binding-orphan-delete.integration.test.ts`
+
+### §161a. THE AUDITED EXIT FOR A STRANDED EXECUTOR BINDING
+
+THE AUDITED EXIT FOR A STRANDED EXECUTOR BINDING — the door `deleteObject`'s route-6 orphan guard (docs/graph.md §125b) sends operators to, and the door that could not previously be walked through.
+
+WHY THIS FILE EXISTS SEPARATELY FROM `executors.integration.test.ts`. That suite covers the binding surface working on LIVE targets. This one covers the case the estate actually produced: 19 bindings measured on the live homelab 2026-09-19, sitting on `placement` objects tombstoned by `placement.delete` on 2026-09-11, with no `executor.binding.delete` anywhere in their audit trail. Keeping it apart also keeps it cheap to run alone while the rest of the suite is untouched.
+
+THE DEFECT IT PINS IS A FALSE PROMISE, not a missing feature. `graph/integrity-repo.ts` has reported `orphanExecutorBindings` for months and `scp graph integrity` prints every one of them with `repairable: true` — while `DELETE /executors/{idOrUrn}/binding` resolved its target through `getObjectByIdOrUrnAnyType` with no `includeDeleted`, so all 19 answered **404**. Detection and repair disagreed, and nothing failed, because no test ever tried the repair the report promises. Both halves are now asserted in one test, in that order, which is the only arrangement in which they cannot drift apart again.
+
+THE SECOND UNREACHABILITY, which the guard turns from a nuisance into a wall. `executor_bindings` is keyed `(org_id, target_object_id, type, lane)`; `binding-policy/reconcile-bindings.ts` writes `test`-lane rows; and this handler passed no lane at all, so `deleteExecutorBinding`'s `build` default made every test-lane row undeletable through the API. Harmless while nothing refused a delete over a binding — but route 6 refuses, so an object carrying a test-lane binding would have become permanently undeletable. `?lane=` (additive, optional, absent ⇒ `build`) closes it, and the integrity report now prints `type/lane` so the operator is told which to pass.
+
+WHAT DELIBERATELY STAYS 404: creating or relabelling a binding on a tombstoned target. `includeDeleted` went on the DELETE handler alone. The asymmetry is the same one `DELETE /change-sources/{sourceKind}/mappings` carries (§412) — removal must reach further than creation, or rows that outlived their object have no audited exit, while a PUT that accepted a tombstone would mint the very orphan route 6 exists to prevent.
+
+MUTATION LOG (each applied ALONE against a passing suite, then restored from /tmp)
+| Mutation | Result |
+| drop `includeDeleted: true` from the DELETE handler's target lookup | the stranded-row test and the audit test FAIL with 404, and `graph/integrity.integration.test.ts`'s binding arm FAILS at its repair step — the three that claim the repair works, and no others |
+| pass no `lane` to `deleteExecutorBinding` (restore the `build` default) | the test-lane test FAILS — the row is unreachable again |
+| drop the `isNull(managedByPolicyId)` filter from route 6 | the policy-managed carve-out test FAILS with 409 — the livelock is back |
+| disable route 6's clause entirely | `container-delete-guard`'s route-6 test FAILS alone; the nine others still pass |
 
 ## `apps/server/src/routes/executors.integration.test.ts`
 
