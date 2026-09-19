@@ -82,8 +82,20 @@ export function toChangeShape(change: ChangeRow, object: ObjectLike): Change {
     // M20-A3 (ADR-0031 §5) — read straight off the underlying object, exactly like `originDomainId`
     // just above: `proposeChange` already computed this once (`changeIsDomainLocal`, inherited from
     // targets) and stamped it onto the object at create; this is not a second computation.
-    domainLocal: object.domainLocal
+    domainLocal: object.domainLocal,
+    // A typed read of the untyped bag `webhook-processor.ts`'s `canonicalizeSourceRef` writes to
+    // `sourceRef.commit`. Guarded rather than cast: a replicated row from an older peer, or a
+    // change proposed directly against the API with a hand-supplied `sourceRef`, was never checked
+    // against a shape here.
+    commitSha: commitShaOf(change.sourceRef)
   };
+}
+
+/** The commit chip's typed source. See `toChangeShape`'s `commitSha`. */
+function commitShaOf(sourceRef: unknown): string | null {
+  if (!sourceRef || typeof sourceRef !== "object") return null;
+  const commit = (sourceRef as Record<string, unknown>).commit;
+  return typeof commit === "string" ? commit : null;
 }
 
 export interface ProposeChangeInput {

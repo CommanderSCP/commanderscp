@@ -59,8 +59,19 @@ describe("a component's pipeline is continuous", () => {
         wave: { index: number; name: string | null } | null;
         deploymentTarget: { name: string };
         stageName: string | null;
-        binding: { externalRef: string | null; type: string } | null;
-        bindings: { externalRef: string | null; type: string; category: string }[];
+        binding: {
+          externalRef: string | null;
+          type: string;
+          pluginModule?: string;
+          systemKind?: string | null;
+        } | null;
+        bindings: {
+          externalRef: string | null;
+          type: string;
+          category: string;
+          pluginModule?: string;
+          systemKind?: string | null;
+        }[];
         current: { changeId: string } | null;
         currents: { changeId: string; type: string; category: string }[];
         gate: {
@@ -331,6 +342,44 @@ describe("a component's pipeline is continuous", () => {
       without,
       "an UNBOUND placement must be visible — it fake-succeeds under stage-shaped compilation (ADR-0006 case (a))"
     ).toBeDefined();
+  });
+
+  it("carries the binding's plugin module and its execution system's kind — the `<Type> · <provider>` subtitle's provider half (pipeline-mockup-data.md §2)", async () => {
+    const component = await createOrphanComponent(server, org, `provider-${uuidv7()}`);
+    const placement = await admin.placements.create({
+      component: component.id,
+      deploymentTarget: gamma.id
+    });
+    // An INLINE binding — no execution-system object — so systemKind must read null, never a
+    // guess: there is nothing here to derive a system kind FROM.
+    await admin.executors.putBinding(placement.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${uuidv7()}`,
+      externalRef: "inline-app"
+    });
+
+    const p = await pipelineOf(component.id);
+    const binding = p.stages[0]!.binding;
+    expect(binding?.pluginModule).toBe("fake-executor");
+    expect(binding?.systemKind).toBeNull();
+  });
+
+  it("reads systemKind from the bound execution-system object, not the binding's own module name", async () => {
+    const component = await createOrphanComponent(server, org, `provider-sys-${uuidv7()}`);
+    const placement = await admin.placements.create({
+      component: component.id,
+      deploymentTarget: gamma.id
+    });
+    const sys = await admin.object("execution-system").create({
+      name: `sys-${uuidv7().slice(0, 8)}`,
+      properties: { kind: "fake-executor", serverUrl: "https://exec.example" }
+    });
+    await admin.executors.putBinding(placement.id, { executionSystemId: sys.id });
+
+    const p = await pipelineOf(component.id);
+    const binding = p.stages[0]!.binding;
+    expect(binding?.pluginModule).toBe("fake-executor");
+    expect(binding?.systemKind).toBe("fake-executor");
   });
 
   it("shows EVERY pipeline bound at a stage, not just the first", async () => {

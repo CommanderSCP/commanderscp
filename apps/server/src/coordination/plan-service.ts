@@ -12,10 +12,13 @@ import {
   changes,
   changeWaveTargets,
   changeWaves,
+  executorBindings,
   objects,
   relationships
 } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
+import { resolveBindingForTarget } from "./binding-resolution.js";
+import { DEFAULT_BINDING_TYPE } from "./executor-bindings-repo.js";
 import {
   compilePlan,
   type DependsOnEdge,
@@ -131,6 +134,7 @@ export async function compileAndPersistPlan(
   );
 
   let topologyDocument: Record<string, unknown> | null = null;
+  let topologyName: string | null = null;
   if (input.topologyObjectId) {
     // Live-filtered, the same call the resolver already makes. See docs/coordination.md §692.
     const topology = await tx.query.objects.findFirst({
@@ -143,6 +147,7 @@ export async function compileAndPersistPlan(
     });
     if (!topology) throw notFound(`release-topology '${input.topologyObjectId}' not found`);
     topologyDocument = topology.properties as Record<string, unknown>;
+    topologyName = topology.name;
   }
 
   const topologyWaves = parseTopologyWaves(topologyDocument);
@@ -215,7 +220,21 @@ export async function compileAndPersistPlan(
     }
   }
 
-  return toChangePlanShape(planRow, waveRows, targetRows);
+  // A freshly compiled plan has triggered nothing yet, so every target is `bound` or `unbound` —
+  // still worth resolving so the FIRST response after propose already shows a real provider,
+  // exactly like a subsequent `explain` would (`resolveWaveTargetExecutors` handles both cases;
+  // here every row happens to have a null `executorPluginId`).
+  const executors = await resolveWaveTargetExecutors(tx, input.orgId, targetRows);
+  return toChangePlanShape(
+    planRow,
+    waveRows,
+    targetRows,
+    undefined,
+    undefined,
+    undefined,
+    topologyName,
+    executors
+  );
 }
 
 /** Wire shape of `ChangeWaveTargetSchema.hold`. See docs/coordination.md §694. */
@@ -267,7 +286,8 @@ export function composeWaveTargetHold(
 
 function toChangeWaveTargetShape(
   row: typeof changeWaveTargets.$inferSelect,
-  hold?: WaveTargetHold
+  hold?: WaveTargetHold,
+  executor?: ChangeWaveTarget["executor"]
 ): ChangeWaveTarget {
   const waveTargetType = (row.type as ExecutorType | null) ?? "configuration";
   return {
@@ -277,6 +297,7 @@ function toChangeWaveTargetShape(
     type: waveTargetType,
     category: categoryOfType(waveTargetType),
     executorPluginId: row.executorPluginId,
+    ...(executor ? { executor } : {}),
     executorRef: (row.executorRef as Record<string, unknown> | null) ?? null,
     // The snapshot reconcile persisted. See docs/coordination.md §697.
     observed:
@@ -317,7 +338,12 @@ function toChangePlanShape(
   /** The continuous-probe half of `hold`, re-derived on this same read. Passed SEPARATELY from
    *  `freezeHolds` rather than pre-merged because the two are produced by two independent
    *  predicates over the same candidate set and a target can be held by either, both, or neither. */
-  continuousHolds?: Map<string, ContinuousHoldTargetVerdict>
+  continuousHolds?: Map<string, ContinuousHoldTargetVerdict>,
+  /** `objects.name` of `plan.topologyObjectId`, resolved once by the caller. `undefined` when the
+   *  caller did not resolve it (never asked); `null` is a real "no name" (no topology, or dangling). */
+  topologyName?: string | null,
+  /** Each wave target's provider basis, keyed by ITS OWN row id (`resolveWaveTargetExecutors`). */
+  executors?: Map<string, ChangeWaveTarget["executor"]>
 ): ChangePlan {
   return {
     id: plan.id,
@@ -326,6 +352,7 @@ function toChangePlanShape(
     topologyVersion: plan.topologyVersion,
     status: plan.status,
     createdAt: plan.createdAt.toISOString(),
+    ...(topologyName !== undefined ? { topologyName } : {}),
     waves: (() => {
       const activeWaveId = freezeHolds !== undefined ? activeWaveOf(waves)?.id : undefined;
       return waves
@@ -354,7 +381,8 @@ function toChangePlanShape(
                 composeWaveTargetHold(
                   toWaveTargetHold(freezeHolds?.get(t.targetObjectId), scopeNames ?? new Map()),
                   continuousHolds?.get(t.targetObjectId)
-                )
+                ),
+                executors?.get(t.id)
               )
             )
           };
@@ -482,6 +510,88 @@ export async function resolveFreezeScopeNames(
   return new Map(rows.map((row) => [row.id, row.name]));
 }
 
+/** `ChangePlanSchema.topologyName` — `objects.name` of `topologyObjectId`, or `null` when there is
+ *  no topology to name (no id) or its object no longer resolves (dangling / deleted). See
+ *  docs/proposals/pipeline-mockup-data.md §2. */
+export async function topologyNameOf(
+  tx: TenantTx,
+  orgId: string,
+  topologyObjectId: string | null
+): Promise<string | null> {
+  if (!topologyObjectId) return null;
+  const row = await tx.query.objects.findFirst({
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.id, topologyObjectId), eqOp(t.orgId, orgId), isNullOp(t.deletedAt))
+  });
+  return row?.name ?? null;
+}
+
+/** `ChangeWaveTargetSchema.executor` — the `<Type> · <provider>` subtitle's provider half, for
+ *  every row in `targets`. See docs/proposals/pipeline-mockup-data.md §2.
+ *
+ *  Two disjoint groups, by whether the row has already been triggered:
+ *  - `executorPluginId` set: the trigger already picked a plugin INSTANCE. Batch-joined to
+ *    `executor_bindings.plugin_instance_id` for its `plugin_module` — one query for every distinct
+ *    instance id across the whole plan.
+ *  - `executorPluginId` null: not triggered yet. Resolved through the SAME ladder the reconciler
+ *    and `component-pipeline.ts` use (`resolveBindingForTarget`), deduped by `(targetObjectId,
+ *    type)` since several wave-target rows can share both. This is what lets a PRE-TRIGGER target
+ *    still show a real provider, not a guess: the binding that would be used if triggered now. */
+export async function resolveWaveTargetExecutors(
+  tx: TenantTx,
+  orgId: string,
+  targets: (typeof changeWaveTargets.$inferSelect)[]
+): Promise<Map<string, ChangeWaveTarget["executor"]>> {
+  const result = new Map<string, ChangeWaveTarget["executor"]>();
+
+  const triggered = targets.filter(
+    (t): t is typeof t & { executorPluginId: string } => t.executorPluginId !== null
+  );
+  const instanceIds = [...new Set(triggered.map((t) => t.executorPluginId))];
+  const moduleByInstanceId = new Map<string, string>();
+  if (instanceIds.length > 0) {
+    const rows = await tx
+      .select({
+        pluginInstanceId: executorBindings.pluginInstanceId,
+        pluginModule: executorBindings.pluginModule
+      })
+      .from(executorBindings)
+      .where(
+        and(
+          eq(executorBindings.orgId, orgId),
+          inArray(executorBindings.pluginInstanceId, instanceIds)
+        )
+      );
+    for (const row of rows) {
+      if (!moduleByInstanceId.has(row.pluginInstanceId)) {
+        moduleByInstanceId.set(row.pluginInstanceId, row.pluginModule);
+      }
+    }
+  }
+  for (const t of triggered) {
+    const pluginModule = moduleByInstanceId.get(t.executorPluginId);
+    result.set(t.id, pluginModule ? { basis: "triggered", pluginModule } : { basis: "unbound" });
+  }
+
+  const pending = targets.filter((t) => t.executorPluginId === null);
+  const ladderCache = new Map<string, ChangeWaveTarget["executor"]>();
+  for (const t of pending) {
+    const type = (t.type as ExecutorType | null) ?? DEFAULT_BINDING_TYPE;
+    const key = `${t.targetObjectId}:${type}`;
+    let outcome = ladderCache.get(key);
+    if (!outcome) {
+      const resolution = await resolveBindingForTarget(tx, orgId, t.targetObjectId, type);
+      outcome = resolution.binding
+        ? { basis: "bound", pluginModule: resolution.binding.pluginModule }
+        : { basis: "unbound" };
+      ladderCache.set(key, outcome);
+    }
+    result.set(t.id, outcome);
+  }
+
+  return result;
+}
+
 export async function getLatestPlanForChange(
   tx: TenantTx,
   orgId: string,
@@ -512,8 +622,20 @@ export async function getLatestPlanForChange(
             and(eq(changeWaveTargets.orgId, orgId), inArray(changeWaveTargets.waveId, waveIds))
           );
 
+  const topologyName = await topologyNameOf(tx, orgId, planRow.topologyObjectId);
+  const executors = await resolveWaveTargetExecutors(tx, orgId, targetRows);
+
   if (options?.withFreezeHolds === false) {
-    return toChangePlanShape(planRow, waveRows, targetRows);
+    return toChangePlanShape(
+      planRow,
+      waveRows,
+      targetRows,
+      undefined,
+      undefined,
+      undefined,
+      topologyName,
+      executors
+    );
   }
 
   // ONE gate, TWO predicates over it — see `resolveWaveTargetHoldCandidates`. Both halves of
@@ -531,5 +653,14 @@ export async function getLatestPlanForChange(
   const continuousHolds = await resolveWaveTargetContinuousHolds(tx, orgId, candidates);
   const scopeNames = await resolveFreezeScopeNames(tx, orgId, freezeHolds);
 
-  return toChangePlanShape(planRow, waveRows, targetRows, freezeHolds, scopeNames, continuousHolds);
+  return toChangePlanShape(
+    planRow,
+    waveRows,
+    targetRows,
+    freezeHolds,
+    scopeNames,
+    continuousHolds,
+    topologyName,
+    executors
+  );
 }
