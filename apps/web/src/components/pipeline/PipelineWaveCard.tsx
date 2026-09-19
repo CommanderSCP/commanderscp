@@ -3,6 +3,7 @@ import { ArrowRight, ExternalLink, TriangleAlert } from "lucide-react";
 import { TargetReticle } from "../icons/catalog-marks";
 import type { ChangeStageDependencyTarget } from "@scp/sdk";
 import { realObservedImages } from "@scp/schemas";
+import { PipelineChecksRail, type WaveTargetChecksLike } from "./PipelineChecksRail";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { cn, focusRing } from "../../lib/utils";
@@ -111,6 +112,11 @@ export interface PipelineWaveTargetLike {
     | { state: "stale"; ageSeconds: number; staleAfterSeconds: number }
     | { state: "not_reported" }
     | undefined;
+  /** `ChangeWaveTargetSchema.checks` (pipeline-mockup-data.md §3) — all four pipeline hook kinds'
+   *  state for this target, in fixed pipeline order. Absent = a server predating the field, or a
+   *  caller that did not resolve it; it NEVER means "no check is declared", which is a slot with an
+   *  empty `hooks` array. Absent on campaign wave targets (no pipeline hooks there). */
+  checks?: WaveTargetChecksLike | undefined;
 }
 
 /** A compiled wave, structurally — satisfied by both ChangeWave and CampaignWave. */
@@ -902,6 +908,13 @@ export function PipelineWaveCard({
                   </span>
                 )}
               </div>
+              {/* THE CHECKS RAIL (design-system §1.6a / mockup `target-redesign.html`). Rendered
+                  only when the server actually sent it: a caller whose payload predates the field
+                  must not thereby assert that nothing is declared — the same "absence means this
+                  caller does not know" discipline `holdFor` already follows. */}
+              {target.checks && (
+                <PipelineChecksRail checks={target.checks} testIdPrefix={testIdPrefix} />
+              )}
               {/* The wave target's real unit of work is an actual Change — link straight to it
                   (DESIGN §9.5: campaign waves fan out into per-target member Changes). */}
               {target.memberChangeObjectId && (
