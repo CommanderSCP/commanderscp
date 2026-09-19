@@ -61,7 +61,10 @@ describe("pipeline-mockup-data increment 1: provider, commit, topology name", ()
 
     const explained = await admin.changes.explain(change.id);
     const target = explained.plan!.waves[0]!.targets[0]!;
-    expect(target.executorPluginId, "not triggered — the null this whole field exists for").toBeNull();
+    expect(
+      target.executorPluginId,
+      "not triggered — the null this whole field exists for"
+    ).toBeNull();
     expect(target.executor).toEqual({ basis: "unbound" });
   });
 
