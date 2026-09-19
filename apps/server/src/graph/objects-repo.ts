@@ -1,4 +1,4 @@
-import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import {
   asContainmentDomainId,
@@ -1180,6 +1180,35 @@ export async function deleteObject(
         )
       )
       .limit(6);
+    // …AND WHICH OF THOSE PLACEMENTS IS ITSELF UNDELETABLE RIGHT NOW. See docs/graph.md §125c.
+    //
+    // Route 3+4 sends the operator to `DELETE /placements/{idOrUrn}`, and since route 6 landed that
+    // door can answer 409 in its own right — an unmanaged executor binding on the placement refuses
+    // the placement's tombstone. Without this the estate's ordinary shape (a placement that carries
+    // the binding, which is how every one of the 19 live rows was arranged) is a TWO-STEP wall: the
+    // component refusal names a door, the door refuses, and nothing has said the two are connected.
+    // Naming the unbind command inside the first refusal is the same rule route 6 followed when it put
+    // `lane` in its own message — the refusal must name the whole walk, not its first step.
+    const placementBindingBlockers =
+      placementBlockers.length === 0
+        ? []
+        : await tx
+            .select({
+              targetObjectId: executorBindings.targetObjectId,
+              type: executorBindings.type,
+              lane: executorBindings.lane
+            })
+            .from(executorBindings)
+            .where(
+              and(
+                eq(executorBindings.orgId, input.orgId),
+                isNull(executorBindings.managedByPolicyId),
+                inArray(
+                  executorBindings.targetObjectId,
+                  placementBlockers.map((p) => p.id)
+                )
+              )
+            );
     // Source mappings name their component by COLUMN. See docs/graph.md §125a.
     const sourceMappingBlockers = await tx
       .select({
@@ -1277,10 +1306,20 @@ export async function deleteObject(
       );
     }
     if (placementBlockers.length > 0) {
+      const bindingHint =
+        placementBindingBlockers.length === 0
+          ? ""
+          : ` ${placementBindingBlockers.length} of those placement(s) carry an executor binding, which route 6 refuses in turn — unbind first (DELETE /executors/{idOrUrn}/binding?type=&lane=): ${placementBindingBlockers
+              .slice(0, 5)
+              .map((b) => {
+                const p = placementBlockers.find((row) => row.id === b.targetObjectId);
+                return `placement '${p?.urn ?? b.targetObjectId}' type=${b.type} lane=${b.lane}`;
+              })
+              .join(", ")}${placementBindingBlockers.length > 5 ? ", …" : ""}.`;
       clauses.push(
         `${count(placementBlockers)} live placement(s) still name it (placement route) — ` +
           `a placement references its component and target by property rather than by an edge, so nothing would tombstone them and they would be left live and dangling. ` +
-          `Delete them first (DELETE /placements/{idOrUrn}): ${label(placementBlockers)}`
+          `Delete them first (DELETE /placements/{idOrUrn}): ${label(placementBlockers)}.${bindingHint}`
       );
     }
     if (sourceMappingBlockers.length > 0) {

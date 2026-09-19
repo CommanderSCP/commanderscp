@@ -1265,6 +1265,41 @@ WHERE THE GUARD STOPS, AND WHY — the twelve tables §125a listed as "DANGLES a
 
 THE LIVE COUNT SAYS THE SAME THING FROM THE OTHER SIDE. Every one of the twelve holds **zero** dangling rows on the homelab. Generated over every uuid column named `%object_id%` plus `subject_id`/`actor_id`/`from_id`/`to_id`/`config_source_id`, the only non-zero product results are `audit_events.subject_id` (122, by design), `relationships` (200, all tombstoned — the cascade provably works, 0 live), `executor_bindings` (19, closed here), and `change_wave_targets` (2, historical, and its readers fail closed via `coordination/target-liveness.ts`). So the honest scope line is: **the guard covers every table that both dangles and has a door, and there are three of them** — placements (route 3+4), source mappings (route 5), executor bindings (route 6). The rest need a door before they can have a guard, and that is the order to do it in.
 
+### §125c. Placements: the arm that was reported but never repaired, and the two-step wall
+
+2026-09-19, stacked on §125b. This section exists partly to **retract a claim §125b made without measuring it**, which is worth recording because the claim was reasonable and wrong in the same way the "these are inert" paragraph in §53 was.
+
+§125b's close said `scp graph integrity` "will still list the matching `orphan-placement` rows for the same estate event; those are a separate population with no id-addressed door". Measured on the live homelab, read-only, 2026-09-19:
+
+```text
+placements, live                                           42   every one with two LIVE ends
+placements, tombstoned                                     24   every one naming a tombstoned component
+ORPHAN placements (the report's own definition)              0
+placements with a non-uuid end                               0
+placements managed_by_stack                                  0
+placements that are replicas                                 0
+```
+
+**Zero.** And the reason is that the guard worked: the 24 placements were tombstoned by `placement.delete` at 00:26:57–00:27:04 on 2026-09-11 and their components at 00:27:46–00:27:53 — the placements went **~49 seconds first**, which is exactly the order routes 3+4 force. The estate pass did not strand placements; it stranded the bindings that sat ON those placements, which is §125b's 19 rows and a different population entirely.
+
+**The second half of the claim was also false.** A placement HAS an id-addressed door — `DELETE /api/v1/placements/{idOrUrn}` (`scp placement withdraw`) — and it reaches an orphan, because it resolves the PLACEMENT and not its ends, so a tombstoned component does not hide it. That was never asserted anywhere, which is the same unproven-promise shape §125b found on the binding door; the difference is that there the promise turned out to be false and here it turned out to be true. Both are now pinned by a test, which is the only state in which the difference is knowable.
+
+WHAT WAS ACTUALLY WRONG, then, is not a missing door — it is that **the report offered every placement as `repairable: true` when three classes of them cannot be repaired**, and `--repair` printed all of them under "no id-addressed door". The three: a replica (single-writer authority refuses the local delete — the identical rule the dangling-EDGE arm has computed since it was written, on the arm that never got it); a placement an unmanaged executor binding still names (route 6 refuses); and a stack-managed row (the door would take it, but the next `iac apply` is its reaper). See docs/schemas.md §296b for the shape and docs/cli.md §69a for the receipt.
+
+THE TWO-STEP WALL, and why the route 3+4 refusal changed. Since route 6 landed, the door that refusal names can refuse in its own right: a component delete is refused because a live placement names it, the operator goes to `DELETE /placements/{idOrUrn}` as instructed, and route 6 refuses THAT because a binding names the placement. Two 409s, and nothing in the first said the two were connected — so the product's own remedy reads as broken. The clause now names the unbind, with `type=` and `lane=` both, computed from the SAME `managed_by_policy_id IS NULL` set route 6 refuses on so the two can never disagree. Same rule route 6 followed when it put `lane` in its own message: **a refusal must name the whole walk, not its first step.** The negative is asserted too — a placement with no binding gets no hint, because a hint that always printed would send the operator to a door that 404s.
+
+WHERE THIS STOPS, and it covers NONE of the twelve tables §125b deferred. Those twelve still have no operator-reachable door, and the order §125b gave still holds: a door before a guard. This change is one table over from all of them — `objects` rows of `type_id = 'placement'`, which always had a door and was never on that list. The whole-schema dangling census was re-run at the same time and agrees with §125b's, with one addition that is not product state:
+
+```text
+audit_events.subject_id                  122  by design — append-only
+relationships.to_id / from_id            105 / 95, ALL tombstoned; 0 LIVE dangling edges
+repair_20260916_branch_key_edges.to_id    35  a one-off repair table, not product state
+executor_bindings.target_object_id        19  §125b's rows, still there
+change_wave_targets.target_object_id       2  historical; readers fail closed
+```
+
+ONE PROPERTY FOUND AND DELIBERATELY LEFT: `relationships` carries `managed_by_stack` too, so a stack-managed dangling edge gets the same "racing the apply" argument the placement arm now makes. It is left alone because the argument is weaker there — an edge to a tombstoned object will not be re-derived by an apply whose manifest no longer names that object — and because the edge arm belongs to the change that wrote it. Recorded here so the next census does not have to rediscover it.
+
 ### §126. THE ADMINISTRATOR FLOOR
 
 THE ADMINISTRATOR FLOOR (`docs/authz/role-binding-door.md` §7) — DOOR C, HALF ONE: the RELEVANCE PROBE, which has to be read HERE because the tombstone below and the edge cascade further down both destroy the evidence it reads. The check itself runs at the END of this function.

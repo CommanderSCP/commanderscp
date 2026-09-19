@@ -191,6 +191,43 @@ describe("graph integrity report", () => {
     ).toBe(false);
   });
 
+  it("finds an orphan PLACEMENT, says WHICH end died, and repairs it through the placements door", async () => {
+    // The third arm, and the one that was reported without ever being proven repairable — the same
+    // unproven promise route 6 found on the binding door, where it turned out to be false. Here it is
+    // true, and the whole arrangement is asserted in one test so detection and repair cannot drift:
+    // the report finds it, names the dead end, calls it repairable, and the door it points at works.
+    const tag = `gi-pl-${uuidv7().slice(-8)}`;
+    const { comp } = await seedPair(tag);
+    const dt = await admin.deploymentTargets.create({ name: `dt-${tag}` });
+    const placement = await admin.placements.create({
+      component: comp.id,
+      deploymentTarget: dt.id
+    });
+
+    expect(
+      (await admin.graph.integrity()).orphanPlacements.some((p) => p.id === placement.id),
+      "a placement between two LIVE objects is not an orphan"
+    ).toBe(false);
+
+    await legacySoftDelete(comp.id);
+
+    const orphans = (await admin.graph.integrity()).orphanPlacements.filter(
+      (p) => p.id === placement.id
+    );
+    expect(orphans, "now its component is dead and the placement outlived it").toHaveLength(1);
+    expect(orphans[0]!.deadEnd, "'one of the two' does not tell you where to look").toBe(
+      "component"
+    );
+    expect(orphans[0]!.repairable).toBe(true);
+    expect(orphans[0]!.blockedReason).toBeNull();
+
+    await admin.placements.delete(placement.id);
+    expect(
+      (await admin.graph.integrity()).orphanPlacements.some((p) => p.id === placement.id),
+      "detection and repair agree"
+    ).toBe(false);
+  });
+
   it("REPAIRS a dangling edge through the ordinary DELETE door, which is what makes it audited", async () => {
     // The question this answers: `DELETE /relationships/{id}` authorizes at BOTH endpoints, and one
     // of them is deleted. If authorization could not resolve a dead scope object, repair would be

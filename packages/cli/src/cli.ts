@@ -3075,9 +3075,14 @@ export function buildProgram(): Command {
           owner: r.ownerUrn,
           type: "",
           lane: "",
-          detail: `${r.ownerName}: ${r.detail}`,
-          // A placement has no delete door reachable for an orphan at all.
-          repairable: false
+          // `blockedReason` rather than a bare flag: a row the operator is told not to touch is
+          // useless unless it also says who will. See docs/cli.md §69a.
+          detail: `${r.ownerName}: ${r.detail}${r.blockedReason === null ? "" : ` [blocked: ${r.blockedReason}]`}`,
+          // COMPUTED by the server, not asserted here. This column has been the literal `true` and
+          // then the literal `false` for this arm, and both were wrong: a placement DOES have a door
+          // (`DELETE /placements/{idOrUrn}`), and it refuses exactly three classes — a replica, a row
+          // an executor binding still holds, and a stack-managed row. Only the server can tell which.
+          repairable: r.repairable
         }))
       ];
 
@@ -3119,6 +3124,12 @@ export function buildProgram(): Command {
       //
       // Nothing live is reachable here: the list is the REPORT's, so every row in it already has a
       // tombstoned target. A live target's binding never appears, and therefore can never be taken.
+      //
+      // BINDINGS BEFORE PLACEMENTS, and the order is load-bearing rather than incidental: a binding
+      // on a placement is what makes that placement unrepairable (orphan-guard route 6 refuses the
+      // tombstone), so clearing bindings first is what lets such a placement go in a LATER run. It
+      // cannot help within this one — `repairable` was computed server-side before either loop ran —
+      // and reversing the order would guarantee a 409 in a run where the two populations overlap.
       const bindingsToRepair = report.orphanExecutorBindings.filter((b) => !b.policyManaged);
       const skippedManagedBindings = report.orphanExecutorBindings.length - bindingsToRepair.length;
       const removedBindings: { owner: string; name: string; type: string; lane: string }[] = [];
@@ -3135,11 +3146,47 @@ export function buildProgram(): Command {
         });
       }
 
-      const remaining = report.orphanSourceMappings.length + report.orphanPlacements.length;
+      // …AND ORPHAN PLACEMENTS, through `DELETE /placements/{idOrUrn}`. See docs/cli.md §69a.
+      //
+      // Deleting one is a SOFT delete of a graph object: it writes `placement.delete`, a journal
+      // entry and an event-bus publish, and it tombstones the two derived edges first, exactly as
+      // `scp placement withdraw` does — because it IS that door. That is also why it needs none of
+      // the caution the binding arm above does: a binding delete is HARD and takes an execution
+      // route's config and secret refs with it, while a placement's tombstone, revision and audit
+      // event all survive, on an object whose two endpoints are already gone.
+      //
+      // Each row is deleted in its own request and PRINTED, never counted only — the same rule the
+      // binding arm follows, for the same reason: a receipt saying "3 deleted" leaves the operator
+      // unable to name which three, and a placement's URN is the only handle to re-declare it.
+      const placementsToRepair = report.orphanPlacements.filter((p) => p.repairable);
+      const placementsDeleted: { outcome: string; count: number }[] = [];
+      for (const orphan of placementsToRepair) {
+        // By id, not by URN: the id is what the report guarantees is unique, and a placement URN
+        // contains a `/`. The `deadEnd` travels with the line so the receipt says WHY it went.
+        await client.placements.delete(orphan.id);
+        placementsDeleted.push({
+          outcome: `placement-deleted ${orphan.ownerUrn} (${orphan.deadEnd} dead)`,
+          count: 1
+        });
+      }
+      // The skipped ones are printed too, each with the server's stated reason — a count of "skipped"
+      // with no reason is the line that gets read as "nothing to do here".
+      const placementsSkipped = report.orphanPlacements
+        .filter((p) => !p.repairable)
+        .map((p) => ({
+          outcome: `placement-skipped ${p.ownerUrn}: ${p.blockedReason ?? "no reason given"}`,
+          count: 1
+        }));
+
+      const remaining = report.orphanSourceMappings.length;
       printResult(
         [
           { outcome: "relationships-deleted", count: deleted },
           { outcome: "replica-edges-skipped (single-writer authority)", count: skippedReplicas },
+          { outcome: "placements-deleted", count: placementsDeleted.length },
+          ...placementsDeleted,
+          { outcome: "placements-skipped", count: placementsSkipped.length },
+          ...placementsSkipped,
           {
             outcome: "executor-bindings-deleted (EXECUTION ROUTES removed; audited per row)",
             count: removedBindings.length
@@ -3151,7 +3198,9 @@ export function buildProgram(): Command {
             count: skippedManagedBindings
           },
           {
-            outcome: "projection-rows-left (no id-addressed door; see --output json)",
+            outcome:
+              "source-mapping-rows-left (the ONE arm with no id-addressed door — a mapping is " +
+              "addressed by a five-part identity tuple this report does not carry; see --output json)",
             count: remaining
           },
           ...removedBindings.map((r) => ({

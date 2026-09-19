@@ -231,6 +231,72 @@ describe("container delete guard (proposal §9.3, all three dependent routes)", 
     expect((await call("DELETE", `/api/v1/placements/${placementId}`)).status).toBe(200);
   });
 
+  it("the route 3+4 refusal names the UNBIND it will hit next — a door that refuses is not a remedy", async () => {
+    // THE TWO-STEP WALL, and it is the estate's ordinary arrangement rather than a corner case: the
+    // binding sits on the PLACEMENT (all 19 live rows), so deleting the component is refused by route
+    // 3+4, which sends the operator to `DELETE /placements/{idOrUrn}` — and route 6 then refuses THAT
+    // too. Two 409s, and until this the first one said nothing that connected them, so the second
+    // reads as a bug in the remedy the product just handed you.
+    //
+    // Same rule route 6 followed when it put `lane` in its own message: a refusal has to name the
+    // whole walk, not its first step. The hint is computed from the same `managed_by_policy_id IS
+    // NULL` set route 6 refuses on, so the two can never disagree about which placements are stuck.
+    const { componentId } = await makeService("two-step");
+    const target = await call("POST", "/api/v1/deployment-targets", { name: uniq("ts-target") });
+    expect(target.status, target.body).toBe(201);
+    const placement = await call("POST", "/api/v1/placements", {
+      component: componentId,
+      deploymentTarget: target.json().id as string
+    });
+    expect(placement.status, placement.body).toBe(201);
+    const placementId = placement.json().id as string;
+    const bound = await call("PUT", `/api/v1/executors/${placementId}/binding`, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: uniq("inst"),
+      type: "configuration"
+    });
+    expect(bound.status, bound.body).toBe(200);
+
+    const refused = await call("DELETE", `/api/v1/components/${componentId}`);
+    expect(refused.status, refused.body).toBe(409);
+    expect(detailOf(refused)).toContain("/placements/");
+    // …and the second door, with both halves of its key, exactly as route 6's own refusal prints them.
+    expect(detailOf(refused)).toContain("route 6 refuses in turn");
+    expect(detailOf(refused)).toContain("/executors/");
+    expect(detailOf(refused)).toContain("type=configuration");
+    expect(detailOf(refused)).toContain("lane=build");
+
+    // The walk the refusal describes actually terminates.
+    expect(
+      (
+        await call(
+          "DELETE",
+          `/api/v1/executors/${placementId}/binding?type=configuration&lane=build`
+        )
+      ).status
+    ).toBe(200);
+    expect((await call("DELETE", `/api/v1/placements/${placementId}`)).status).toBe(200);
+    expect((await call("DELETE", `/api/v1/components/${componentId}`)).status).toBe(200);
+  });
+
+  it("a placement with NO binding gets no unbind hint — the refusal must not invent a second step", async () => {
+    // The negative half, and it is load-bearing: a hint that always printed would send an operator
+    // to a door that answers 404, which is the same class of false instruction this hint exists to
+    // remove. Its absence is asserted, not assumed.
+    const { componentId } = await makeService("no-hint");
+    const target = await call("POST", "/api/v1/deployment-targets", { name: uniq("nh-target") });
+    const placement = await call("POST", "/api/v1/placements", {
+      component: componentId,
+      deploymentTarget: target.json().id as string
+    });
+    expect(placement.status, placement.body).toBe(201);
+
+    const refused = await call("DELETE", `/api/v1/components/${componentId}`);
+    expect(refused.status, refused.body).toBe(409);
+    expect(detailOf(refused)).toContain("/placements/");
+    expect(detailOf(refused)).not.toContain("route 6 refuses in turn");
+  });
+
   it("a POLICY-MANAGED binding does NOT refuse — refusing one would livelock, so the reaper owns it", async () => {
     // The carve-out, and the reason it is not laziness: `binding-policy/reconcile-bindings.ts` runs
     // every reconcile tick, derives the wanted set from LIVE placements, and writes back whatever is

@@ -2050,7 +2050,7 @@ Induced-subgraph edges over an explicit object-id set (DESIGN.md §5, additive w
 
 Rows that outlived the object they hang off.
 
-READ-ONLY, and deliberately so: repair is performed by the ordinary `DELETE` doors (`/relationships/{id}`, `/change-sources/{kind}/mappings`, `/executors/{idOrUrn}/binding`), each of which already writes its audit event and journal entry in the same transaction. A dedicated bulk-repair endpoint would be a second, unaudited way to destroy rows — exactly what principle 6 exists to prevent. That still holds after the 2026-09-19 decision to have `scp graph integrity --repair` clear orphaned bindings: the CLI loops over the ordinary per-row door, which is why no endpoint changed.
+READ-ONLY, and deliberately so: repair is performed by the ordinary `DELETE` doors (`/relationships/{id}`, `/change-sources/{kind}/mappings`, `/executors/{idOrUrn}/binding`, `/placements/{idOrUrn}`), each of which already writes its audit event and journal entry in the same transaction. A dedicated bulk-repair endpoint would be a second, unaudited way to destroy rows — exactly what principle 6 exists to prevent. That still holds after the 2026-09-19 decision to have `scp graph integrity --repair` clear orphaned bindings: the CLI loops over the ordinary per-row door, which is why no endpoint changed.
 
 ### §296a. THE ONE PROJECTION ROW A REPAIR RUN CAN ACT ON
 
@@ -2058,9 +2058,32 @@ READ-ONLY, and deliberately so: repair is performed by the ordinary `DELETE` doo
 
 A repair run has to PASS the door's whole key, and the door is keyed `(target, type, lane)`. So `targetType` and `lane` are STRUCTURED fields rather than text inside `detail`. Recovering them by parsing a display string is the read-the-label-you-printed mistake, and it fails silently in the worst possible direction: `?lane=` defaults to `build`, so a `test`-lane row whose lane was mis-parsed does not error — it deletes the wrong row or none at all. `policyManaged` is read off `managed_by_policy_id` for the same reason it is not inferred from the plugin or the detail text; it is the exact analogue of `DanglingRelationship.repairable` being false for a replica edge, and `--repair` reports and skips such rows because the binding reconciler reaps them itself once the target is a tombstone.
 
-The two remaining members keep the plain `OrphanProjectionRow`, honestly: a source mapping is addressed by a five-part identity tuple this report does not carry, and an orphan placement has no door at all. Widening those to match would advertise a repairability neither has.
+⚠️ THE PLACEMENT HALF OF THAT SENTENCE WAS MEASURED FALSE THE SAME DAY — see §296b, which gives `orphanPlacements` its own row type for its own reasons. A placement DOES have a door (`DELETE /placements/{idOrUrn}`, walked by `routes/placement-orphan-delete.integration.test.ts`); it is `orphanSourceMappings` alone that keeps the plain `OrphanProjectionRow`, because a mapping is addressed by a five-part identity tuple this report does not carry. Widening THAT one would advertise a repairability it does not have.
 
 `ExecutorTypeSchema` and `ExecutorLaneSchema` are REUSED here rather than re-declared (no import cycle: neither `executors.ts` nor `binding-policy.ts` imports `graph.ts`), so the integrity report and the binding door can never disagree about what a Type or a lane is.
+
+READ-ONLY, and deliberately so: repair is performed by the ordinary `DELETE` doors (`/relationships/{id}`, `/change-sources/{kind}/mappings`, `/executors/{idOrUrn}/binding`, `/placements/{idOrUrn}`), each of which already writes its audit event and journal entry in the same transaction. A dedicated bulk-repair endpoint would be a second, unaudited way to destroy rows — exactly what principle 6 exists to prevent.
+
+### §296b. A placement is not a projection row, and conflating the two made the report lie
+
+`OrphanPlacementSchema`, 2026-09-19. Three of the report's four arms were typed `OrphanProjectionRow` when this was written — `id`, `ownerUrn`, `ownerName`, `detail` — and for two of them that is the whole truth: a `source_mappings` row and an `executor_bindings` row have no identity of their own on the wire, no origin domain, no stack, and are removed by addressing their OWNER. A placement is none of those things. It is a graph OBJECT: it has its own id and URN, its own `origin_domain_id`, its own `managed_by_stack`, and its own door at `DELETE /api/v1/placements/{idOrUrn}`.
+
+Typing it as a projection row dropped exactly the three facts that decide whether a repair run may touch it, and the CLI filled the hole the only way it could — by hardcoding `repairable: true` for every placement it printed. That literal was false for three whole classes:
+
+```text
+replica (origin_domain_id != self)   -> deleteObject refuses; single-writer authority. The exact
+                                        rule the dangling-EDGE arm has computed since it was
+                                        written, on the one arm that never got it.
+an executor binding names it         -> orphan-guard route 6 refuses the tombstone (§125b). This
+                                        is the live estate's ordinary arrangement, not a corner
+                                        case: all 19 stranded bindings sat on placements.
+managed_by_stack IS NOT NULL         -> the door would take it, but the stack's next `iac apply`
+                                        is its reaper; repairing by hand races that apply.
+```
+
+So the arm gained `deadEnd` (WHICH end died — `component` / `deployment-target` / `both` / `malformed`), `repairable`, and `blockedReason`, which is nullable and, when set, names the command that unblocks it rather than merely asserting a refusal. Additive response properties only; the oasdiff gate reports no ERR.
+
+`malformed` is the fourth `deadEnd` value and it closed a silent skip: a placement whose `properties` do not name two resolvable object ids used to be `continue`d past, so it appeared in NO arm and the estate read as healthy — and worse, a non-uuid end went into an `IN (…)` list against a `uuid` column and **500'd the whole endpoint**, hiding every other finding in the org behind one bad row.
 
 ## `packages/schemas/src/health.ts`
 

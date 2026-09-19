@@ -4,8 +4,14 @@ import { badRequest, conflict } from "../errors.js";
 
 /** THE containment walk. See docs/graph.md §29. */
 
-/** ROUTES 3 AND 4, shared verbatim by BOTH containment walks. See docs/graph.md §30. */
-const UUID_TEXT_PATTERN =
+/** ROUTES 3 AND 4, shared verbatim by BOTH containment walks. See docs/graph.md §30.
+ *
+ *  Exported because `graph/integrity-repo.ts` has to decide the SAME question in TypeScript — "is
+ *  this JSON value a resolvable object id?" — and a second copy of the pattern is a second answer.
+ *  It reads a placement's ends out of `properties` and puts them in an `IN (…)` list, so a value
+ *  this pattern rejects is one Postgres would refuse to cast: one malformed row would 500 the whole
+ *  integrity endpoint, which is the one endpoint that exists to find malformed rows. */
+export const UUID_TEXT_PATTERN =
   "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
 /** ONE endpoint of the pair, as a single `parent_id` row. A malformed value yields a NULL row,
