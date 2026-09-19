@@ -108,8 +108,8 @@ describe("pipeline-mockup-data increment 2: observedFreshness", () => {
 
   async function explainTarget(changeId: string, targetObjectId: string) {
     const explained = await admin.changes.explain(changeId);
-    const target = explained.plan!.waves
-      .flatMap((w) => w.targets)
+    const target = explained
+      .plan!.waves.flatMap((w) => w.targets)
       .find((t) => t.targetObjectId === targetObjectId);
     if (!target) throw new Error(`no wave target for ${targetObjectId} on change ${changeId}`);
     return target;
@@ -206,7 +206,9 @@ describe("pipeline-mockup-data increment 2: observedFreshness", () => {
     const foreignTarget = await plantForeignDeploymentTarget("outpost-place");
     const topology = await admin.object("release-topology").create({
       name: `topo-not-reported-${randomUUID()}`,
-      properties: { waves: [{ name: "outpost-wave", mode: "parallel", targets: [foreignTarget.id] }] }
+      properties: {
+        waves: [{ name: "outpost-wave", mode: "parallel", targets: [foreignTarget.id] }]
+      }
     });
     const { component, placement } = await componentPlacedAt(foreignTarget.id, "not-reported");
     const change = await proposeAndCompile(
