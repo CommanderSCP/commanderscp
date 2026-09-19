@@ -108,6 +108,8 @@ export async function findGraphIntegrityIssues(
         ownerUrn: objects.urn,
         ownerName: objects.name,
         type: executorBindings.type,
+        lane: executorBindings.lane,
+        managedByPolicyId: executorBindings.managedByPolicyId,
         externalRef: executorBindings.externalRef
       })
       .from(executorBindings)
@@ -117,7 +119,15 @@ export async function findGraphIntegrityIssues(
     id: r.id,
     ownerUrn: r.ownerUrn,
     ownerName: r.ownerName,
-    detail: `${r.type} -> ${r.externalRef ?? "(no external ref)"}`
+    // `lane` is HERE because the detail line is what an operator types back at the door, and the
+    // door is keyed `(target, type, lane)`. Without it the string named a row it could not address:
+    // `?lane=` defaults to `build`, so a `test`-lane orphan read as repairable and 404'd. Same rule
+    // as the mapping detail carrying its whole tuple. `managedByPolicyId` is named for the opposite
+    // reason — that row needs no operator at all, the binding reconciler prunes it next tick, and an
+    // operator who races it gets a 404 that looks like a bug.
+    detail:
+      `${r.type}/${r.lane} -> ${r.externalRef ?? "(no external ref)"}` +
+      (r.managedByPolicyId === null ? "" : " [policy-managed: the reconciler prunes this]")
   }));
 
   // A placement reads its pair from `properties` (ADR-0026 D17), so no foreign key can express

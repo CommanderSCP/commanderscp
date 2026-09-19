@@ -477,6 +477,7 @@ import type {
   CreateExecutorBindingRequest,
   ExecutorBinding,
   ExecutorType,
+  ExecutorLane,
   RegionalExecutorView,
   CreateNotificationBindingRequest,
   NotificationBinding,
@@ -2443,12 +2444,20 @@ export class ScpClient {
       const result = await listExecutorBindingsRequest({ client: this.client, path: { idOrUrn } });
       return unwrap(result).items;
     },
-    /** Delete a target's binding for one Type (default 'configuration') — M12 P5c. Returns the removed binding. */
-    deleteBinding: async (idOrUrn: string, type?: ExecutorType): Promise<ExecutorBinding> => {
+    /** Delete a target's binding for one Type (default 'configuration') and LANE (default 'build')
+     *  — M12 P5c. Returns the removed binding. Unlike every other executor verb this one reaches a
+     *  SOFT-DELETED target, because a binding that outlived its object must still have an audited
+     *  exit (docs/routes.md §161a). `lane` is required to reach a `test`-lane row at all. */
+    deleteBinding: async (
+      idOrUrn: string,
+      type?: ExecutorType,
+      lane?: ExecutorLane
+    ): Promise<ExecutorBinding> => {
+      const query = { ...(type ? { type } : {}), ...(lane ? { lane } : {}) };
       const result = await deleteExecutorBindingRequest({
         client: this.client,
         path: { idOrUrn },
-        ...(type ? { query: { type } } : {})
+        ...(Object.keys(query).length > 0 ? { query } : {})
       });
       return unwrap(result);
     },

@@ -23288,6 +23288,7 @@ export type DeleteExecutorBindingData = {
     };
     query?: {
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
+        lane?: 'build' | 'test';
     };
     url: '/executors/{idOrUrn}/binding';
 };

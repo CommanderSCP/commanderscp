@@ -696,6 +696,8 @@ A guard that only stops NEW strandings leaves both. Hence a report: it is the on
 THESE ARE INERT, AND SAYING SO IS PART OF THE REPORT'S HONESTY
 Every read path already filters them: `containment.ts` skips deleted ancestors (so no policy or role binding governs through a dead node), `correlation.ts`'s `componentIsLive()` drops events correlated to a dead component, and `targetObjectIsLive` hides a stranded binding. This is hygiene, not an outage — the report must not imply otherwise, or it becomes an alarm that gets muted.
 
+⚠️ TWO CLAUSES OF THAT PARAGRAPH WERE MEASURED FALSE AND ARE CORRECTED HERE, 2026-09-19. It is a clean example of a well-written sentence outliving the code it described. `targetObjectIsLive` is a fragment used by the LIST readers only — `getExecutorBinding` and `resolveLaneBinding` do not apply it, so a stranded binding is resolvable by id and is exactly what `binding-resolution.ts`'s direct rung reads. And `componentIsLive()` does not make a dead mapping inert, it makes it INVISIBLE, which hands its paths to whatever broader mapping still matches (§125a). Neither is an outage today, but "inert" was the wrong word for both, and it is the word that justified leaving the backlog alone. The true statement is narrower: nothing currently DISPATCHES through a stranded row, because the fail-closed target-liveness gate stands in front of every path that could.
+
 ### §54. Every integrity finding for one org, in one read-only pass
 
 Every integrity finding for one org, in one read-only pass.
@@ -1201,6 +1203,7 @@ route 1  `objects.domain_id` children   — the measured incident above
 route 2  `contains` children            — a service's components, left live and detached
 routes 3+4  placements naming this row  — invisible to the cascade entirely
 route 5  source mappings naming this row as their component — §125a
+route 6  executor bindings naming this row as their target    — §125b
 ```
 
 The counts are the same three `countContainmentDependents` computes (kept as counts THERE, for the reach Decision, because that record only needs the blast radius' size); here the rows are ENUMERATED, because a refusal an operator cannot act on is a wall, not a guard.
@@ -1226,6 +1229,37 @@ WHAT IT COSTS, RE-MEASURED — and it is NOT the fake-success §379 describes, b
 WHY REFUSAL AND NOT A CASCADE, restated for this table rather than inherited: a cascade here would be a HARD delete of correlation config (the table has no tombstone to write), so an accidental component delete would silently destroy the routing rules and there would be nothing left to restore them from. Refusal costs an operator one extra call, which the message names verbatim, and `graph/integrity-repo.ts`'s `orphanSourceMappings` report plus `DELETE /change-sources/{sourceKind}/mappings` are the pair that clean up rows created before this guard existed.
 
 THE MERGE PATH RE-POINTS RATHER THAN REFUSING, and that is not an exception to the rule. `coordination/component-merge-repo.ts` already re-points the loser's executor bindings onto the survivor before soft-deleting the loser, because a merge asserts the two rows are the same real component; its source mappings are re-pointed for the same reason and in the same transaction (`repointSourceMappingsToComponent`, audited per row as `source_mapping.repoint`). A merge that instead refused would be the guard blocking the one operation that already knows where the rows belong.
+
+### §125b. Executor bindings name their target by COLUMN
+
+ROUTE 6, added 2026-09-19 — the same property as §125a on a third table, and the one §125a measured but deferred. An `executor_bindings` row names its target in `target_object_id`: a plain column with **no foreign key to `objects`** and no `deleted_at` of its own, invisible to the edge cascade for exactly the reason a placement and a source mapping are.
+
+MEASURED 2026-09-19 on the live homelab, read-only: **19 bindings on 19 `placement` objects tombstoned on 2026-09-11**, all `argocd` / `configuration` / lane `build`, all execution-system-backed, none policy-managed. Their audit trail is 19 `placement.create` on 2026-08-02 and 19 `placement.delete` on 2026-09-11 with **no `executor.binding.delete` between them** — the delete door simply did not consider them. Disjoint from §125a's 19 components, one estate event.
+
+WHICH DOOR STRANDED THEM, AND WHY THE CHOKE POINT IS THE ANSWER. The IaC apply path has had a binding check all along — `coordination-as-code/plans-repo.ts` refuses to prune a placement while `listExecutorBindingsForTarget` returns rows for it. `DELETE /placements/{idOrUrn}` (`withdrawPlacement`) had none. That is the N-doors shape this guard's one choke point exists to end: a check installed at one door is a check at one door, and the census of where a rule belongs is the set of callers of `deleteObject`, not the set of routes someone remembered.
+
+WHAT A STRANDED BINDING COSTS, MEASURED RATHER THAN ASSUMED — and the honest answer for these 19 is **nothing yet**, which is why the row is worth stating precisely rather than dramatising:
+
+```text
+wave target IS the dead placement       -> fail-closed. `coordination/target-liveness.ts`
+                                           parks the target `target_deleted` with a Decision
+                                           and a `change.wave_target.target_deleted` audit
+                                           event BEFORE any binding is resolved.
+wave target is the live COMPONENT       -> `placementsOfComponent` filters `deleted_at IS NULL`,
+                                           so the dead placement contributes no candidate; the
+                                           resolution falls through to the service/org rung.
+list readers (`listExecutorBindings*`)  -> filtered by `targetObjectIsLive`.
+`getExecutorBinding`/`resolveLaneBinding` -> NOT filtered. A dangling row is resolvable by id,
+                                           and is what the direct rung reads.
+```
+
+So the three exposed edges are: the fall-through above is a SILENT re-route of a component whose placement was deleted out from under it (the misattribution shape §125a measured on mappings, one table over); the row keeps its plugin config, `secret_refs` and `allowed_hosts` indefinitely, with no object left to authorize a read of them against; and it keeps occupying that target's `(type, lane)` slot in `executor_bindings_org_target_type_lane_key`. The guard is therefore preventive, and the report + door below are what clear the backlog.
+
+THE CARVE-OUT: `managed_by_policy_id IS NOT NULL` IS EXEMPT, and it is not a convenience. A policy-managed binding is re-derived every reconcile tick by `binding-policy/reconcile-bindings.ts` from the LIVE placements. Refuse a delete over one and the operator unbinds, the next tick re-creates it (the target is still live, so it is still wanted), and the delete refuses again — a livelock, which is the worst kind of wall because it looks like a race. The same tick's `pruneUnwanted` deletes the row once the target IS tombstoned, through this same `deleteExecutorBinding`, so that cleanup is audited exactly like a manual one. Managed rows self-heal; unmanaged ones have no reaper, and all 19 live rows are unmanaged.
+
+WHY REFUSAL AND NOT A CASCADE — §9.6 Q3-A, and the table-specific reason §125a gives applies verbatim: the delete would be HARD (no tombstone to write), so an accidental placement delete would destroy an execution route and its secret references with nothing left to restore them from.
+
+THE MERGE PATH RE-POINTS RATHER THAN REFUSING, already, and predates this guard: `coordination/component-merge-repo.ts` calls `repointExecutorBindingTarget` before soft-deleting the loser. That is the precedent §125a's mapping re-point was modelled on, so the merge path needed no change for route 6.
 
 ### §126. THE ADMINISTRATOR FLOOR
 
