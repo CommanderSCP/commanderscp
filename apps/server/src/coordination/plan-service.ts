@@ -34,7 +34,12 @@ import {
 } from "./freeze-hold.js";
 import { evaluateContinuousHolds, type ContinuousHoldTargetVerdict } from "./continuous-hold.js";
 import { rollbackExemptible } from "../governance/freeze-scope.js";
-import { originalChangeDispatchedTarget } from "./wave-targets-repo.js";
+import {
+  originalChangeDispatchedTarget,
+  type WaveTargetObservedState
+} from "./wave-targets-repo.js";
+import { OBSERVED_WEIGHT_FRESHNESS_MS } from "./stage-dependency-hold.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 /** Reads the dependency edges among targets from the graph. See docs/coordination.md §687. */
 export async function loadDependsOnEdges(
@@ -225,6 +230,9 @@ export async function compileAndPersistPlan(
   // exactly like a subsequent `explain` would (`resolveWaveTargetExecutors` handles both cases;
   // here every row happens to have a null `executorPluginId`).
   const executors = await resolveWaveTargetExecutors(tx, input.orgId, targetRows);
+  // Same reasoning for freshness: every row is unobserved, so this is `never` (self) or
+  // `not_reported` (another domain) from the first response onward, never absent.
+  const freshness = await resolveWaveTargetFreshness(tx, input.orgId, targetRows);
   return toChangePlanShape(
     planRow,
     waveRows,
@@ -233,7 +241,8 @@ export async function compileAndPersistPlan(
     undefined,
     undefined,
     topologyName,
-    executors
+    executors,
+    freshness
   );
 }
 
@@ -287,7 +296,8 @@ export function composeWaveTargetHold(
 function toChangeWaveTargetShape(
   row: typeof changeWaveTargets.$inferSelect,
   hold?: WaveTargetHold,
-  executor?: ChangeWaveTarget["executor"]
+  executor?: ChangeWaveTarget["executor"],
+  observedFreshness?: ChangeWaveTarget["observedFreshness"]
 ): ChangeWaveTarget {
   const waveTargetType = (row.type as ExecutorType | null) ?? "configuration";
   return {
@@ -304,7 +314,13 @@ function toChangeWaveTargetShape(
       (row.observedState as {
         revision?: string;
         images?: string[];
-        rollout?: { phase?: string; step?: number; weight?: number; message?: string };
+        rollout?: {
+          phase?: string;
+          step?: number;
+          weight?: number;
+          message?: string;
+          stepCount?: number;
+        };
         truncation?: Record<
           string,
           {
@@ -316,6 +332,7 @@ function toChangeWaveTargetShape(
         >;
       } | null) ?? null,
     ...(hold ? { hold } : {}),
+    ...(observedFreshness ? { observedFreshness } : {}),
     status: row.status,
     attempt: row.attempt,
     lastObservedAt: row.lastObservedAt?.toISOString() ?? null,
@@ -343,7 +360,10 @@ function toChangePlanShape(
    *  caller did not resolve it (never asked); `null` is a real "no name" (no topology, or dangling). */
   topologyName?: string | null,
   /** Each wave target's provider basis, keyed by ITS OWN row id (`resolveWaveTargetExecutors`). */
-  executors?: Map<string, ChangeWaveTarget["executor"]>
+  executors?: Map<string, ChangeWaveTarget["executor"]>,
+  /** Each wave target's `observedFreshness`, keyed by ITS OWN row id
+   *  (`resolveWaveTargetFreshness`). */
+  freshness?: Map<string, ChangeWaveTarget["observedFreshness"]>
 ): ChangePlan {
   return {
     id: plan.id,
@@ -382,7 +402,8 @@ function toChangePlanShape(
                   toWaveTargetHold(freezeHolds?.get(t.targetObjectId), scopeNames ?? new Map()),
                   continuousHolds?.get(t.targetObjectId)
                 ),
-                executors?.get(t.id)
+                executors?.get(t.id),
+                freshness?.get(t.id)
               )
             )
           };
@@ -592,6 +613,133 @@ export async function resolveWaveTargetExecutors(
   return result;
 }
 
+/** Which domain OWNS (executes) a wave target's `targetObjectId` — the same two shapes
+ *  `component-pipeline.ts`'s placement resolution distinguishes:
+ *  - **Stage mode**: `targetObjectId` names a `placement` object (`plan-compiler.ts`'s
+ *    `compileStages`), whose OWN `originDomainId` is who imported the PLACEMENT record, not who
+ *    runs it. The real answer is one hop further, at `properties.deploymentTargetId`'s own object
+ *    (`component-pipeline.ts`'s `outpostOf` makes the identical hop) — a placement's origin is never
+ *    read directly for this.
+ *  - **Legacy/no-topology mode**: `targetObjectId` IS the component (`plan-compiler.ts`'s toposort
+ *    path never creates a placement). There is no deployment-target to hop to, so the component's
+ *    own `originDomainId` is the only signal this shape has. */
+async function resolveWaveTargetOriginDomains(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectIds: string[]
+): Promise<Map<string, string | undefined>> {
+  const result = new Map<string, string | undefined>();
+  if (targetObjectIds.length === 0) return result;
+
+  const rows = await tx
+    .select({
+      id: objects.id,
+      typeId: objects.typeId,
+      properties: objects.properties,
+      originDomainId: objects.originDomainId
+    })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), inArray(objects.id, targetObjectIds)));
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+
+  const deploymentTargetIds = new Set<string>();
+  for (const row of rows) {
+    if (row.typeId !== "placement") continue;
+    const deploymentTargetId = (row.properties as { deploymentTargetId?: unknown })
+      .deploymentTargetId;
+    if (typeof deploymentTargetId === "string") deploymentTargetIds.add(deploymentTargetId);
+  }
+  const deploymentTargetRows =
+    deploymentTargetIds.size === 0
+      ? []
+      : await tx
+          .select({ id: objects.id, originDomainId: objects.originDomainId })
+          .from(objects)
+          .where(and(eq(objects.orgId, orgId), inArray(objects.id, [...deploymentTargetIds])));
+  const originByDeploymentTargetId = new Map(
+    deploymentTargetRows.map((r) => [r.id, r.originDomainId as string])
+  );
+
+  for (const targetObjectId of targetObjectIds) {
+    const row = rowById.get(targetObjectId);
+    if (!row) {
+      result.set(targetObjectId, undefined); // dangling/deleted — unresolved, never "ours"
+      continue;
+    }
+    if (row.typeId === "placement") {
+      const deploymentTargetId = (row.properties as { deploymentTargetId?: unknown })
+        .deploymentTargetId;
+      const resolved =
+        typeof deploymentTargetId === "string"
+          ? originByDeploymentTargetId.get(deploymentTargetId)
+          : undefined;
+      // A placement with no resolvable deployment-target object degrades to the placement's own
+      // origin rather than "unresolved" — an honest best-effort, not a crash.
+      result.set(targetObjectId, resolved ?? (row.originDomainId as string));
+      continue;
+    }
+    result.set(targetObjectId, row.originDomainId as string);
+  }
+  return result;
+}
+
+/** `ChangeWaveTargetSchema.observedFreshness`, for every row in `targets`. See
+ *  docs/proposals/pipeline-mockup-data.md §5.1.
+ *
+ *  ONE domain check, ONE staleness bound — never a second copy of either:
+ *  - **Domain.** `resolveWaveTargetOriginDomains` above, mirroring `component-pipeline.ts`'s
+ *    `outpostOf`. Not this instance's own domain -> the target executes at another domain instance,
+ *    and this instance's reconcile loop never polls status() for it — so it is `not_reported`, not
+ *    merely `never`, because "never" would promise a reading might still arrive from OUR OWN
+ *    observation loop, which it cannot.
+ *  - **Staleness.** `OBSERVED_WEIGHT_FRESHNESS_MS` (`stage-dependency-hold.ts`), applied to the
+ *    reading's OWN stamped `observed_state.observedAt` (`observedStateForRow`) — never
+ *    `lastObservedAt`, the row-level column that also moves on transitions the observed-state
+ *    payload itself did not touch. */
+export async function resolveWaveTargetFreshness(
+  tx: TenantTx,
+  orgId: string,
+  targets: (typeof changeWaveTargets.$inferSelect)[],
+  now: Date = new Date()
+): Promise<Map<string, ChangeWaveTarget["observedFreshness"]>> {
+  const result = new Map<string, ChangeWaveTarget["observedFreshness"]>();
+  if (targets.length === 0) return result;
+
+  const self = await ensureFederationSelf(tx, orgId);
+  const targetObjectIds = [...new Set(targets.map((t) => t.targetObjectId))];
+  const originByObjectId = await resolveWaveTargetOriginDomains(tx, orgId, targetObjectIds);
+
+  for (const t of targets) {
+    const originDomainId = originByObjectId.get(t.targetObjectId);
+    // Unresolved (a dangling/deleted target object) reads the same as "not ours" — never a claim
+    // this instance will ever observe it.
+    if (originDomainId === undefined || originDomainId !== self.domainId) {
+      result.set(t.id, { state: "not_reported" });
+      continue;
+    }
+    const observed = t.observedState as WaveTargetObservedState | null;
+    const observedAt = observed === null ? undefined : Date.parse(observed.observedAt ?? "");
+    // No reading at all, OR a reading with no reliable date (a row written before `observedAt`
+    // existed — deliberately not backfilled, `stage-dependency-hold.ts`'s `not_observed` cause):
+    // both read as "never", because neither lets this field state an age it can stand behind.
+    if (observed === null || observedAt === undefined || Number.isNaN(observedAt)) {
+      result.set(t.id, { state: "never" });
+      continue;
+    }
+    const ageSeconds = Math.max(0, Math.round((now.getTime() - observedAt) / 1000));
+    if (now.getTime() - observedAt > OBSERVED_WEIGHT_FRESHNESS_MS) {
+      result.set(t.id, {
+        state: "stale",
+        ageSeconds,
+        staleAfterSeconds: Math.round(OBSERVED_WEIGHT_FRESHNESS_MS / 1000)
+      });
+    } else {
+      result.set(t.id, { state: "fresh", ageSeconds });
+    }
+  }
+  return result;
+}
+
 export async function getLatestPlanForChange(
   tx: TenantTx,
   orgId: string,
@@ -624,6 +772,7 @@ export async function getLatestPlanForChange(
 
   const topologyName = await topologyNameOf(tx, orgId, planRow.topologyObjectId);
   const executors = await resolveWaveTargetExecutors(tx, orgId, targetRows);
+  const freshness = await resolveWaveTargetFreshness(tx, orgId, targetRows);
 
   if (options?.withFreezeHolds === false) {
     return toChangePlanShape(
@@ -634,7 +783,8 @@ export async function getLatestPlanForChange(
       undefined,
       undefined,
       topologyName,
-      executors
+      executors,
+      freshness
     );
   }
 
@@ -661,6 +811,7 @@ export async function getLatestPlanForChange(
     scopeNames,
     continuousHolds,
     topologyName,
-    executors
+    executors,
+    freshness
   );
 }

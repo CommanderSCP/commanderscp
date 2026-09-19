@@ -176,7 +176,15 @@ export async function markWaveTargetTriggerFailed(
 export interface WaveTargetObservedState {
   revision?: string;
   images?: string[];
-  rollout?: { phase?: string; step?: number; weight?: number; message?: string };
+  rollout?: {
+    phase?: string;
+    step?: number;
+    weight?: number;
+    message?: string;
+    /** `spec.strategy.canary.steps.length` off the SAME manifest fetch. See
+     *  docs/proposals/pipeline-mockup-data.md §5.1 and `@scp/plugin-api`'s `ExecutionStatus`. */
+    stepCount?: number;
+  };
   /** WHAT THE STORE REMOVED FROM THE THREE FIELDS ABOVE. See docs/coordination.md §1058. */
   truncation?: PersistedJsonTruncation;
   /** When THIS payload was written. See docs/coordination.md §1059. */
