@@ -60,6 +60,19 @@ async function liveIndexes(admin: pg.Client): Promise<{ indexname: string; table
   return result.rows;
 }
 
+/** Tables the migrations create that `schema.ts` does not model at all (docs/BUILD_AND_TEST.md
+ *  §3.2: `scanner_assignments`, `scan_db_staleness_policy` and `dependency_subscription_unlock` are
+ *  instance-scoped singletons addressed by raw SQL, plus the dead `objects_m0_deprecated`). A check
+ *  constraint on one of these can never get a `check()` declaration — there is no `pgTable` call to
+ *  hang it on — so the name-coverage gate below excludes them rather than failing forever. Only
+ *  `scan_db_staleness_policy` (2) and `dependency_subscription_unlock` (1) actually carry any. */
+const UNMODELLED_TABLES = new Set([
+  "scanner_assignments",
+  "scan_db_staleness_policy",
+  "dependency_subscription_unlock",
+  "objects_m0_deprecated"
+]);
+
 /** Every `check()` schema.ts declares, by name, rendered as drizzle-kit would render it. */
 function declaredCheckConstraints(): Map<string, { tablename: string; literals: string[] }> {
   const out = new Map<string, { tablename: string; literals: string[] }>();
@@ -125,25 +138,26 @@ describe("schema.ts and the migrated DDL declare the same indexes", () => {
   });
 });
 
-// GAP PARTIALLY CLOSED (team-pipeline-iac increment 0). This is the gate that would have caught
+// GAP CLOSED (db-check-constraint-coverage increment). This is the gate that would have caught
 // `pipeline_evidence_source_check` drifting: migration 0107 widened the LIVE constraint by hand
 // without updating schema.ts, and `snapshot-freshness.test.ts` could not see it either, because the
 // drizzle-kit snapshot it compares against was reconciled from schema.ts at the same stale value —
 // two things that agree with each other are not thereby correct. This test's ground truth is the
 // migrated database itself, same as the index gate above.
 //
-// SCOPE NOTE, found while building this: a full "declares every check constraint the database
-// holds, by name" assertion (the shape of the two index tests above) currently fails on 18
+// FULL NAME COVERAGE (was a SCOPE NOTE above; the backfill it deferred is now done). schema.ts used
+// to write `check(...)` for only 5 of the 23 CHECK constraints the migrated database holds, so the
+// "declares every one, by name" assertion (the shape of the two index tests above) failed on 18
 // pre-existing constraints across 7 MODELED tables — `bundle_transfers`, `governance_move_rungs`,
-// `instance_freezes` (x4, one of whose OWN doc comment in schema.ts says "(DB CHECK)" — the exact
+// `instance_freezes` (x4, one of whose OWN doc comment in schema.ts said "(DB CHECK)" — the exact
 // "comment names a hazard" case, never swept), `scan_exclusion_admissions` (x3),
-// `scan_requirement_floors` (x3), `source_mappings` (x2), and `governance_move_instance_rung` —
-// plus 3 more on the tables `docs/BUILD_AND_TEST.md` §3.2 already documents as unmodeled entirely
-// (`scan_db_staleness_policy`, `dependency_subscription_unlock`). That is a different property
-// (total absence, not a value mismatch) and a much larger backfill than this increment's two named
-// defects. Left for a dedicated follow-up rather than silently absorbed here; the value-agreement
-// test below still closes the ORIGINAL gap for every check constraint schema.ts does declare, and
-// will catch a NEW value drift on any of these 18 the moment someone adds a `check()` for it.
+// `scan_requirement_floors` (x3), `source_mappings` (x2), and `governance_move_instance_rung`. All
+// 15 of those now have a `check()` (migration 0114 is a database no-op that only reconciles
+// drizzle-kit's snapshot lineage, since the constraints themselves were created by their own
+// original migrations). The remaining 3, on `scan_db_staleness_policy` and
+// `dependency_subscription_unlock`, are on tables `docs/BUILD_AND_TEST.md` §3.2 documents as
+// unmodeled entirely — see `UNMODELLED_TABLES` above — and are excluded from the name-coverage
+// assertion for that reason, not left as a gap.
 describe("schema.ts and the migrated DDL declare the same check constraints", () => {
   let admin: pg.Client;
 
@@ -154,6 +168,19 @@ describe("schema.ts and the migrated DDL declare the same check constraints", ()
 
   afterAll(async () => {
     await admin?.end();
+  });
+
+  it("declares every check constraint the database holds, by name", async () => {
+    const live = await liveCheckConstraints(admin);
+    // A fully-migrated database holds well over twenty; an empty or tiny result would mean this
+    // test is reading an unmigrated database and asserting nothing (mirrors the index gate's guard).
+    expect(live.length).toBeGreaterThan(15);
+
+    const declared = declaredCheckConstraints();
+    const undeclared = live
+      .filter((r) => !UNMODELLED_TABLES.has(r.tablename) && !declared.has(r.conname))
+      .map((r) => `${r.conname} (${r.tablename})`);
+    expect(undeclared).toEqual([]);
   });
 
   it("declares the SAME allowed values as the migrated database, for every shared check constraint", async () => {
