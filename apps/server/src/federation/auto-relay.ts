@@ -20,6 +20,7 @@ import {
 } from "./relay-builds-repo.js";
 import { buildRelayTarball, relayConfigFromEnv, type RelayConfig } from "./retrans-relay.js";
 import type { FederationRoleConfig } from "../dependencies/commander-only.js";
+import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 
 export const AUTO_RELAY_QUEUE = "federation-auto-relay-tick";
 
@@ -485,7 +486,11 @@ export async function startAutoRelayLoop(
     await boss.send(
       AUTO_RELAY_QUEUE,
       {},
-      { startAfter: interval, singletonKey: "tick", singletonSeconds: interval }
+      {
+        startAfter: interval,
+        singletonKey: "tick",
+        singletonSeconds: clampSingletonSeconds(interval)
+      }
     );
   });
   // Startup kick: UNKEYED, so it always inserts (LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts).

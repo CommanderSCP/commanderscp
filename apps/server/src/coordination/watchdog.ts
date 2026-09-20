@@ -15,6 +15,7 @@ import { appendAuditEvent } from "../audit/audit-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import { dispatchNotification } from "../notify/dispatch.js";
+import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 
 /** Stuck-change watchdog (DESIGN.md §9.4). See docs/coordination.md §1023. */
 export const WATCHDOG_SLA_MS: Record<
@@ -347,7 +348,11 @@ export async function startWatchdogLoop(
     await boss.send(
       WATCHDOG_QUEUE,
       {},
-      { startAfter: intervalSeconds, singletonKey: "tick", singletonSeconds: intervalSeconds }
+      {
+        startAfter: intervalSeconds,
+        singletonKey: "tick",
+        singletonSeconds: clampSingletonSeconds(intervalSeconds)
+      }
     );
   });
   // Startup kick: UNKEYED, so it always inserts. See docs/coordination.md §1036.

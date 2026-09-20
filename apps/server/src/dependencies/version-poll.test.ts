@@ -10,6 +10,8 @@ import {
   startDependencyVersionPollLoop
 } from "./version-poll.js";
 import type { HeadRefusalReason } from "./line-head.js";
+import { PGBOSS_ARCHIVE_SECONDS } from "../events/pgboss-limits.js";
+import { assertPgBossWouldAccept, pgBossSendRejection } from "../test-support/pgboss-validation.js";
 
 /** THE ROLE GUARD. See docs/dependencies.md §429. */
 
@@ -217,5 +219,67 @@ describe("norecordFor — the refusal's explanation follows the refusal", () => 
     for (const reason of [...OWNERSHIP, ...VERSION]) {
       expect(norecordFor(reason), reason).toMatch(/ADR-0032 §7/);
     }
+  });
+});
+
+/** THE RESCHEDULE, EXECUTED. The suite above drives `startDependencyVersionPollLoop` but discards
+ *  the handler `boss.work` is given, so the tick body — and the `boss.send` that files the next
+ *  tick — never ran under test. That is why this loop shipped dead at its own default interval:
+ *  every assertion about the cadence was about the GETTER's return value, and pg-boss's objection
+ *  is to what the getter's value is then USED for. See docs/dependencies.md. */
+describe("a version-poll tick files the next tick at the default (86400s) interval", () => {
+  /** No orgs, so the sweep is a no-op and only the RESCHEDULE is under test. */
+  const emptyDb = { select: () => ({ from: async () => [] }) } as unknown as Db;
+
+  async function runOneTick(): Promise<{ queue: string; options?: unknown }[]> {
+    const sends: { queue: string; options?: unknown }[] = [];
+    let handler: (() => Promise<void>) | undefined;
+    const boss = {
+      createQueue: async () => undefined,
+      work: async (_queue: string, h: () => Promise<void>) => {
+        handler = h;
+        return "worker-id";
+      },
+      send: async (queue: string, _data: unknown, options?: unknown) => {
+        // The fake validates EXACTLY as the real client does. Without this the fake accepts the
+        // very options pg-boss refuses, and every assertion below becomes a claim about the fake.
+        await assertPgBossWouldAccept(options);
+        sends.push({ queue, options });
+        return "job-id";
+      }
+    } as unknown as PgBoss;
+
+    const handle = await startDependencyVersionPollLoop(boss, emptyDb, {} as PluginHost, {
+      role: "worker",
+      federationRole: "commander",
+      federationRoleDeclared: true
+    });
+    sends.length = 0; // drop the startup kick; the CHAIN is what is under test
+    await handler!();
+    await handle.stop();
+    return sends;
+  }
+
+  it("the tick completes and files exactly one follow-up (before the clamp this REJECTED)", async () => {
+    // The regression in one line: unclamped, `boss.send` threw ERR_ASSERTION here, the job was
+    // marked failed, and nothing filed the next tick.
+    const sends = await runOneTick();
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.queue).toBe(DEPENDENCY_VERSION_POLL_QUEUE);
+  });
+
+  it("keeps the full 24h CADENCE — the clamp narrows the window, never the interval", async () => {
+    const [tick] = await runOneTick();
+    expect(dependencyVersionPollIntervalSeconds({})).toBe(86_400);
+    expect(tick?.options).toMatchObject({ startAfter: 86_400, singletonKey: "tick" });
+  });
+
+  it("and the window it does file is one pg-boss will actually accept", async () => {
+    const [tick] = await runOneTick();
+    const options = tick?.options as { singletonSeconds?: number } | undefined;
+    expect(options?.singletonSeconds).toBeLessThanOrEqual(PGBOSS_ARCHIVE_SECONDS);
+    // Not a restatement of the rule — the options the loop really produced, handed to pg-boss's
+    // own validator.
+    expect(await pgBossSendRejection(tick?.options)).toBeUndefined();
   });
 });
