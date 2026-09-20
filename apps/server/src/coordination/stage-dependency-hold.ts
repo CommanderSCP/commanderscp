@@ -8,11 +8,18 @@ import {
 } from "./wave-targets-repo.js";
 import type { ResolvedStageDependency } from "./changes-repo.js";
 import type { DependsOnEdge } from "./plan-compiler.js";
+import { OBSERVED_WEIGHT_FRESHNESS_MS } from "./observed-weight-freshness.js";
 
 /** ADR-0028 increment 3 — THE HOLD. See docs/coordination.md §949. */
 
-/** FRESHNESS BOUND for the optional `minWeight` qualifier. See docs/coordination.md §950. */
-export const OBSERVED_WEIGHT_FRESHNESS_MS = 10 * 60_000;
+/** FRESHNESS BOUND for the optional `minWeight` qualifier. See docs/coordination.md §950.
+ *  DEFINED in `./observed-weight-freshness.ts` (a dependency-free leaf module) and re-exported here
+ *  for every existing importer of `OBSERVED_WEIGHT_FRESHNESS_MS` from this file — see that module's
+ *  doc for why the constant cannot be DEFINED here anymore: this file sits in a real import cycle
+ *  (back to itself through `graph/placements-repo.ts` -> ... -> `plan-service.ts` ->
+ *  `wave-target-checks.ts` -> `federation/peer-observations-repo.ts`), and a federation-side importer
+ *  reading the constant from a module that is still mid-cycle got `undefined` at runtime. */
+export { OBSERVED_WEIGHT_FRESHNESS_MS };
 
 /**
  * Which of the branches ADR-0028 decision 4 requires to be DISTINGUISHABLE produced this verdict.
