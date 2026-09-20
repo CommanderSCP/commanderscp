@@ -2107,6 +2107,28 @@ orphanExecutorBindings  repairable: !policyManaged — identical to what the CLI
 
 Additive response properties only on both arms; the oasdiff gate reports no ERR (verified against `origin/main` with the vendored binary, the same way §296b's own claim was verified rather than assumed).
 
+### §296d. A FOURTH arm: the one table §125b's census could not see
+
+`OrphanGovernanceMoveRungSchema`, 2026-09-19. docs/graph.md §125b ruled a route 7 out over twelve tables on one measured fact — that eight of them have "no `.delete(...)` statement anywhere in the codebase" — and named `governance_move_rungs` among the eight. The census was keyed on the drizzle identifier; that table's delete is raw SQL, reached from an HTTP door, a CLI verb and the IaC apply prune. The retraction and the guard are docs/graph.md §125d; what reaches the wire is here.
+
+`orphanGovernanceMoveRungs` extends `OrphanProjectionRowSchema` with exactly ONE field, for the same reason `OrphanPlacementSchema` extends it with exactly `deadEnd`: everything else about "would `--repair` act on this?" is already answered uniformly by the shared base (§296c).
+
+```text
+tier   the STORED literal (`org` / `containment_domain` / `service` / `assembly`), never
+       recomputed from the subject's current type — the rule `move-enforcement.ts`'s `toRung`
+       already follows. `GovernanceMoveTierSchema` is REUSED from governance-move.ts rather than
+       re-declared (no import cycle: that module imports zod and nothing else), so the integrity
+       report and the rung doors can never disagree about what a tier is.
+```
+
+`id` IS `ownerUrn`'s object id, and that is not a mistake to tidy up later: this table's primary key is `subject_object_id` ALONE (drizzle/0083), so the row's identity and its owner's identity are the same uuid. It is carried through the shared base anyway rather than given a bespoke shape, because every consumer reads `id`/`ownerUrn`/`repairable`/`blockedReason` uniformly and a fourth row shape would be one more thing to special-case for no gain.
+
+`repairable` IS MEASURED, not asserted — §296b's rule, applied to a different door. The disable door throws 409 while an upper rung is enabled (an ancestor's, or the deployment-wide instance rung), so the server calls the door's OWN `nearestEnabledUpperRung` and reports `false` with a `blockedReason` naming the pinning rung. The carve-out is made in two places (orphan-guard route 7 exempts a pinned rung from its refusal, and the report marks it unrepairable) and is therefore written in ONE — the same arrangement route 6's policy-managed exemption has, and for the same reason: a report that made the carve-out differently would either offer a row `--repair` then 409s on, or hide one the operator could have cleared.
+
+`OrphanGovernanceMoveRung` is exported from the SDK barrel by name (`packages/sdk/src/index.ts`), which is a SEPARATE step from the client method — a consumer narrowing the arm to `OrphanProjectionRow` would compile and silently lose `tier`.
+
+Additive response property only; the oasdiff gate reports no ERR against `origin/main`, verified with the vendored binary and beside a known-positive control (removing `/graph/integrity` → 1 ERR, exit 1), because a zero without one proves nothing.
+
 ## `packages/schemas/src/health.ts`
 
 ### §297. Object health contract

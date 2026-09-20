@@ -131,8 +131,13 @@ describe("a stack-managed relationship that outlived its endpoint", () => {
   it("CAN dangle, and the report offers it as repairable — no stack exemption", async () => {
     const { aUrn, edgeId } = await seedDanglingStackEdge();
 
-    const found = (await admin.graph.integrity()).danglingRelationships.find((r) => r.id === edgeId);
-    expect(found, "a live edge to a tombstoned object is exactly this arm's definition").toBeDefined();
+    const found = (await admin.graph.integrity()).danglingRelationships.find(
+      (r) => r.id === edgeId
+    );
+    expect(
+      found,
+      "a live edge to a tombstoned object is exactly this arm's definition"
+    ).toBeDefined();
     expect(found!.deadEnd).toBe("to");
     expect(found!.fromUrn).toBe(aUrn);
     // THE DECISION. `repairable` for this arm is computed from ORIGIN DOMAIN ALONE — a replica edge is
@@ -183,7 +188,9 @@ describe("a stack-managed relationship that outlived its endpoint", () => {
     const { stackName, edgeId } = await seedDanglingStackEdge();
     await admin.relationships.delete(edgeId);
 
-    const plan = await admin.plans.create(manifest(stackName, { declareEdge: true, declareB: true }));
+    const plan = await admin.plans.create(
+      manifest(stackName, { declareEdge: true, declareB: true })
+    );
     await expect(
       admin.plans.apply(plan.id),
       "the apply refuses rather than re-deriving the edge"
@@ -201,8 +208,8 @@ describe("a stack-managed relationship that outlived its endpoint", () => {
     // journal entry — and it is the ONLY reaper this row has.
     const { edgeId } = await seedDanglingStackEdge();
     await admin.relationships.delete(edgeId);
-    expect(
-      (await admin.graph.integrity()).danglingRelationships.some((r) => r.id === edgeId)
-    ).toBe(false);
+    expect((await admin.graph.integrity()).danglingRelationships.some((r) => r.id === edgeId)).toBe(
+      false
+    );
   });
 });

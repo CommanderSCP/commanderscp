@@ -488,6 +488,22 @@ the non---repair table view's `repairable` field  -> reads r.repairable for all 
 
 `policyManaged` itself is UNCHANGED — still a real column read off `managed_by_policy_id`, still printed in `detail`, still what `blockedReason` names when it is set. Only the DERIVED verdict (`repairable`) stopped being derived twice. The `detail` line for a mapping now also carries `[blocked: …]`, the same convention placements and bindings already had, since the server started giving it a reason worth printing.
 
+### §69c. `--repair` also disables orphan governance:move RUNGS, and it is the one arm that mints a Decision
+
+2026-09-19, the fourth arm. `governance_move_rungs` was recorded in docs/graph.md §125b as one of eight tables with no delete statement anywhere — a census keyed on the drizzle identifier, which cannot see that table's raw `DELETE FROM`. It has a full parity chain: the HTTP door, **this CLI's own `scp governance move-enforcement disable <idOrUrn>`**, and the IaC apply prune. So it is the one member of that list that could be both guarded (orphan-guard route 7) and repaired here.
+
+WHAT AN OPERATOR IS AGREEING TO, and it is the mildest of the three repair arms. A rung is a governance bar; the row it leaves behind when its container is deleted governs NOTHING — `containmentChain` filters tombstoned ancestors, so a dead subject is on no live object's chain — while `GET /governance/move-enforcement/rungs` goes on listing it under its old name. Disabling it removes a bar that is already not being applied and makes the lattice list true again. Nothing is detached, and nothing is lost: unlike a binding's hard delete, the rung's whole history is elsewhere.
+
+IT IS THE ONE `--repair` ARM WITH A DECISION, and that is not an inconsistency with §69's reasoning. §69 declined to mint a Decision for a binding removal because `executor.binding.delete` is an operator action and not an engine verdict, and minting one only on the `--repair` path would make repair diverge from the verb it reuses. The same rule gives the opposite answer here: `disableGovernanceMoveRungWithEffects` ALREADY writes a Decision (kind `governance.move_enforcement`) plus an audit event on every disable, through either door, so reusing the door is what produces the Decision. Repair diverging from the verb is the thing to avoid in both cases; here the verb happens to be a governance write.
+
+WHAT IT PRINTS: `governance-move-rungs-disabled <n>` followed by one `governance-move-rung-disabled <tier> '<name>' (<urn>)` per row, and `governance-move-rungs-skipped <n>` followed by one `governance-move-rung-skipped <urn>: <reason>` per row — the same per-row shape §69a established, for the same reason.
+
+WHAT IT SKIPS, AND THE SERVER DECIDES IT. `disableGovernanceMoveRung` throws 409 while an upper rung is enabled (an ancestor's, or the deployment-wide INSTANCE rung), so such a row is `repairable: false` with a `blockedReason` naming the rung that pins it. That verdict is MEASURED server-side against the door's own `nearestEnabledUpperRung`, not recomputed here and not asserted — the rule §69b made general.
+
+ORDER: EDGES, BINDINGS, PLACEMENTS, RUNGS. Only `edges before rungs` is load-bearing among the new adjacencies: a rung is pinned by an upper rung found on its subject's containment chain, that chain is walked over live `contains` EDGES, and a dangling edge from a live container to the dead subject is exactly what can put one there — so clearing edges first is what lets such a rung go in a LATER run. Relative to bindings and placements the order is FREE, which is worth stating rather than leaving to be inferred: a rung's subject is a CONTAINER, never a placement and never an executor binding's target, so the populations are disjoint and neither can unblock the other.
+
+THE `type` COLUMN CARRIES THE TIER for this kind. It is the word `scp governance move-enforcement rungs` prints, so the two listings line up without anybody parsing a sentence; the column is empty for the kinds that have neither a tier nor a `(type, lane)`.
+
 ### §70. doctor — read-only operational self-checks
 
 doctor — read-only operational self-checks (`GET /doctor`).

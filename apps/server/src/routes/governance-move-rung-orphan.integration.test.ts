@@ -129,9 +129,9 @@ describe("a governance:move rung and the container it sits on", () => {
     await legacySoftDelete(svc.id);
 
     // The list read shows it — under its old name, looking perfectly healthy.
-    expect((await admin.governanceMove.rungs()).rungs.some((r) => r.subjectObjectId === svc.id)).toBe(
-      true
-    );
+    expect(
+      (await admin.governanceMove.rungs()).rungs.some((r) => r.subjectObjectId === svc.id)
+    ).toBe(true);
 
     const response = await admin.governanceMove.disable(svc.urn);
     expect(response.subjectObjectId).toBe(svc.id);
@@ -285,7 +285,9 @@ describe("a governance:move rung and the container it sits on", () => {
       await legacySoftDelete(svc.id, orgId);
 
       const out = await cli.runJson<Outcome[]>(["graph", "integrity", "--repair"]);
-      expect(out.find((r) => r.outcome.startsWith("governance-move-rungs-disabled"))?.count).toBe(0);
+      expect(out.find((r) => r.outcome.startsWith("governance-move-rungs-disabled"))?.count).toBe(
+        0
+      );
       expect(out.find((r) => r.outcome === "governance-move-rungs-skipped")?.count).toBe(1);
       const skipped = out.find((r) =>
         r.outcome.startsWith(`governance-move-rung-skipped ${svc.urn}`)
@@ -320,7 +322,9 @@ describe("a governance:move rung and the container it sits on", () => {
       await legacySoftDelete(dead.id, orgId);
 
       const out = await cli.runJson<Outcome[]>(["graph", "integrity", "--repair"]);
-      expect(out.find((r) => r.outcome.startsWith("governance-move-rungs-disabled"))?.count).toBe(1);
+      expect(out.find((r) => r.outcome.startsWith("governance-move-rungs-disabled"))?.count).toBe(
+        1
+      );
 
       expect(
         (await admin2.governanceMove.enforcement("service", live.urn)).enforced,

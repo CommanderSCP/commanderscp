@@ -1204,6 +1204,7 @@ route 2  `contains` children            — a service's components, left live an
 routes 3+4  placements naming this row  — invisible to the cascade entirely
 route 5  source mappings naming this row as their component — §125a
 route 6  executor bindings naming this row as their target    — §125b
+route 7  a governance:move rung naming this row as its subject — §125d
 ```
 
 The counts are the same three `countContainmentDependents` computes (kept as counts THERE, for the reach Decision, because that record only needs the blast radius' size); here the rows are ENUMERATED, because a refusal an operator cannot act on is a wall, not a guard.
@@ -1261,7 +1262,9 @@ WHY REFUSAL AND NOT A CASCADE — §9.6 Q3-A, and the table-specific reason §12
 
 THE MERGE PATH RE-POINTS RATHER THAN REFUSING, already, and predates this guard: `coordination/component-merge-repo.ts` calls `repointExecutorBindingTarget` before soft-deleting the loser. That is the precedent §125a's mapping re-point was modelled on, so the merge path needed no change for route 6.
 
-WHERE THE GUARD STOPS, AND WHY — the twelve tables §125a listed as "DANGLES and UNREACHABLE", re-censused 2026-09-19 with `grep -rna` (no filters) plus a live per-column count. **Route 7 does not exist and should not**, and the reason is a single measured fact rather than twelve judgements: `object_health`, `control_bindings`, `gate_bindings`, `pipeline_hook_runs`, `dependency_ingestion_stamps`, `dependency_bump_authorships`, `governance_move_rungs` and `config_source_stacks` have **no `.delete(...)` statement anywhere in the codebase** — no route, no CLI verb, no repo function. A refusal clause over any of them would make its owner **permanently undeletable by anyone**, which is the wall §124 says a guard must never be. The five that DO have a delete (`pipeline_hooks`, `pipeline_evidence`, `component_rollouts`, `component_convergence`, `component_dependencies`) are reached only from the IaC apply prune and the dependency-ingestion rewrite, both of which resolve their owner live-only, so an orphan is unreachable there too — and `pipeline_evidence`, `component_rollouts` and `component_convergence` are historical records in the `audit_events` class, which SHOULD outlive their subject.
+WHERE THE GUARD STOPS, AND WHY — the twelve tables §125a listed as "DANGLES and UNREACHABLE", re-censused 2026-09-19 with `grep -rna` (no filters) plus a live per-column count. ⚠️ **THE FIRST CLAUSE OF THIS PARAGRAPH WAS MEASURED FALSE ON 2026-09-19 AND IS RETRACTED IN §125d.** It is kept here rather than rewritten, because the way it went wrong is the lesson: the sentence below says **Route 7 does not exist and should not**, and rests it on a single measured fact rather than twelve judgements — but the fact was produced by grepping the DRIZZLE identifier `.delete(governanceMoveRungs)`, and that table's delete is RAW SQL. `governance_move_rungs` has an HTTP door, a CLI verb and an IaC apply prune; route 7 sits on it (§125d), and the scope line below should read four tables, not three. The remaining seven of the eight are unchanged and the ruling still holds for them. The original sentence, verbatim:
+
+**Route 7 does not exist and should not**, and the reason is a single measured fact rather than twelve judgements: `object_health`, `control_bindings`, `gate_bindings`, `pipeline_hook_runs`, `dependency_ingestion_stamps`, `dependency_bump_authorships`, `governance_move_rungs` and `config_source_stacks` have **no `.delete(...)` statement anywhere in the codebase** — no route, no CLI verb, no repo function. A refusal clause over any of them would make its owner **permanently undeletable by anyone**, which is the wall §124 says a guard must never be. The five that DO have a delete (`pipeline_hooks`, `pipeline_evidence`, `component_rollouts`, `component_convergence`, `component_dependencies`) are reached only from the IaC apply prune and the dependency-ingestion rewrite, both of which resolve their owner live-only, so an orphan is unreachable there too — and `pipeline_evidence`, `component_rollouts` and `component_convergence` are historical records in the `audit_events` class, which SHOULD outlive their subject.
 
 THE LIVE COUNT SAYS THE SAME THING FROM THE OTHER SIDE. Every one of the twelve holds **zero** dangling rows on the homelab. Generated over every uuid column named `%object_id%` plus `subject_id`/`actor_id`/`from_id`/`to_id`/`config_source_id`, the only non-zero product results are `audit_events.subject_id` (122, by design), `relationships` (200, all tombstoned — the cascade provably works, 0 live), `executor_bindings` (19, closed here), and `change_wave_targets` (2, historical, and its readers fail closed via `coordination/target-liveness.ts`). So the honest scope line is: **the guard covers every table that both dangles and has a door, and there are three of them** — placements (route 3+4), source mappings (route 5), executor bindings (route 6). The rest need a door before they can have a guard, and that is the order to do it in.
 
@@ -1299,6 +1302,126 @@ change_wave_targets.target_object_id       2  historical; readers fail closed
 ```
 
 ONE PROPERTY FOUND AND DELIBERATELY LEFT: `relationships` carries `managed_by_stack` too, so a stack-managed dangling edge gets the same "racing the apply" argument the placement arm now makes. It is left alone because the argument is weaker there — an edge to a tombstoned object will not be re-derived by an apply whose manifest no longer names that object — and because the edge arm belongs to the change that wrote it. Recorded here so the next census does not have to rediscover it.
+
+**SETTLED 2026-09-19 — see §125e. The answer is NO EXEMPTION, and the guess above was right for the wrong reason.** The apply is not a weak reaper for a dangling edge; it is not a reaper at all, and it cannot re-create one either. Both halves are measured in §125e.
+
+### §125d. ROUTE 7 — a governance:move rung names its subject container by COLUMN
+
+ROUTE 7, added 2026-09-19. **This section exists first of all to retract §125b's scope line**, in the same way §125c retracted one of §125b's own. §125b ruled route 7 out over twelve tables on one measured fact — that eight of them have "no `.delete(...)` statement anywhere in the codebase — no route, no CLI verb, no repo function" — and named `governance_move_rungs` among the eight. The census behind that sentence was keyed on the DRIZZLE identifier. This table's delete is raw SQL:
+
+```text
+apps/server/src/governance/move-enforcement.ts   DELETE FROM governance_move_rungs
+  <- disableGovernanceMoveRungWithEffects
+       <- DELETE /api/v1/governance/move-enforcement/rungs/{idOrUrn}   (operationId disableGovernanceMoveRung)
+       <- scp governance move-enforcement disable <idOrUrn>
+       <- coordination-as-code/plans-repo.ts, the IaC apply prune
+```
+
+Three rungs of the parity chain, and `grep -rna 'delete(governanceMoveRungs'` sees none of them. **The lesson is the one CLAUDE.md states and this repo keeps re-learning: a capability's names diverge across layers, and a census on one spelling is a census on one layer.** §125b's scope line ("the guard covers every table that both dangles AND has a door, and there are three of them") should have read four. The gate that makes this the last time is §125f.
+
+THE ROW IS LIVE CONFIG, WHICH IS WHY THE GUARD IS LEGITIMATE. drizzle/0083's header says "NOTHING CHANGES UNTIL A RUNG IS SET"; a rung's whole job is to change what `assertGovernanceMoveAdmits` refuses right now. Its own history lives elsewhere — `move-rung-write.ts` writes one Decision and one audit event per enable and per disable — so refusing to strand it costs no record at all. That is the argument routes 5 and 6 could NOT make for their tables, whose deletes are hard and take correlation config or an execution route's secret refs with them.
+
+WHAT A STRANDED RUNG ACTUALLY DOES, measured rather than dramatised. It is the OPPOSITE failure from routes 5 and 6, and worth naming as such: a stranded mapping or binding is a row that still ACTS; a stranded rung is a row that stops acting while still reading as enabled.
+
+```text
+listGovernanceMoveRungs        LEFT JOINs objects with NO liveness filter, so the rung stays
+                               listed for ever, under its old name, looking healthy — in
+                               `GET /governance/move-enforcement/rungs`, the CLI and the Admin page.
+resolveGovernanceMoveEnforcement  containmentChain filters tombstoned ANCESTORS, so a dead subject
+                               falls off every live object's chain. The bar therefore governs
+                               nothing — which is harmless only because routes 1+2 already refuse
+                               to delete a container that still holds anything.
+the disable door               404'd on it before this change (see below), so the one row the list
+                               was advertising was the one nothing could remove.
+```
+
+THE CARVE-OUT, AND IT IS THE WHOLE DIFFERENCE BETWEEN A GUARD AND A WALL. `disableGovernanceMoveRung` throws 409 while an upper rung is enabled — an ancestor's, or the INSTANCE rung — because an enablement above cannot be undone below. A route 7 that refused over a rung pinned that way would make the container **permanently undeletable by anyone in the org**, and when the pin is the instance rung the only remedy is a deployment-wide operator switch every other org shares. So a pinned rung is EXEMPT from the refusal and reported instead. This is route 6's `managed_by_policy_id` exemption in different clothing, and it is made in two places — the guard and the report — so it is WRITTEN in one: `nearestEnabledUpperRung` is exported from `move-enforcement.ts` and both call it.
+
+`includeDeleted` ON THE DISABLE HANDLER ALONE, the asymmetry §125b established for the binding door and ADR-0030 for the mapping door: **removal must reach further than creation, never the reverse.** The ENABLE handler stays live-only, because a PUT that accepted a tombstone would mint the very orphan route 7 exists to prevent. Before this, a rung stranded by a pre-route-7 delete answered 404 at the only door that could clear it while the list read went on showing it — detection and repair disagreeing, and nothing failing, because no test ever tried the repair the list implies. That is the third time this exact shape has been found in four changes.
+
+THE REPORT AND THE REPAIR. `GET /api/v1/graph/integrity` gains `orphanGovernanceMoveRungs`, with the shared `repairable`/`blockedReason` base plus the one rung-specific field, `tier` (the stored literal, never recomputed from the subject's current type). `repairable` is MEASURED per row against `nearestEnabledUpperRung`, never asserted — §125c's rule. `--repair` disables the repairable ones through `governanceMove.disable`, so each removal writes its own `governance.move_enforcement.disable` audit event AND its own Decision in the same transaction; this is the one `--repair` arm that mints a Decision, and it does so because the door it reuses already does.
+
+ORDER INSIDE `--repair`: **edges, then bindings, then placements, then rungs.** Only one of the two new adjacencies is load-bearing. EDGES BEFORE RUNGS is: a rung is unrepairable while an upper rung stands on its subject's containment chain, and that chain is walked over live `contains` EDGES — so a dangling edge from a live container to the dead subject is exactly what can pin one, and clearing edges first is what lets such a rung go in a LATER run (it cannot help within this one, because `repairable` is computed server-side before any loop starts). Relative to bindings and placements the order is FREE, and saying so is the point: a rung's subject is a CONTAINER — org root, containment domain, service or assembly — which is never a placement and never an executor binding's target, so the two populations are disjoint and neither can unblock the other.
+
+MEASURED ON THE LIVE HOMELAB, read-only, 2026-09-19: **0 rungs in the table, 0 orphaned.** The estate has nothing to clean up; the guard and the report are preventive, and the door widening exists so that a row stranded before this change has an exit at all.
+
+### §125e. `relationships.managed_by_stack` does NOT get the placement arm's exemption
+
+2026-09-19, settling the property §125c recorded and left. §125c's guess ("the argument is weaker there") was right, and right for the wrong reason. The real answer is stronger and is measured:
+
+**For an EDGE the apply is not a weak reaper. It is not a reaper at all, and it cannot re-create one either.**
+
+```text
+CANNOT SEE IT   plans-repo.ts builds the managed-relationship prune pool by resolving both endpoint
+                ids to URNs through `fetchObjectsByIds`, which filters `deleted_at IS NULL`.
+                `toTriple` then returns null and the row is dropped BEFORE the diff is computed —
+                so the plan carries no `delete` entry for it and the apply leaves it untouched.
+                (The comment at that `return null` calls itself "defensive — closed by the
+                'unresolved ids' follow-up query below". It is not closed for a TOMBSTONED
+                endpoint, and that is the sentence this section corrects.)
+CANNOT RE-MAKE  a manifest that still declares the edge fails the apply outright: the tombstoned
+                URN is neither creatable (`objects_org_id_urn_key` is non-partial, so a tombstone
+                occupies its URN for ever) nor resolvable as an endpoint
+                (`getObjectByIdOrUrnAnyType` is live-only, and `prepareApplyChecks` resolves BOTH
+                ends of every relationship entry, `noop` entries included).
+```
+
+So there is no reconciler to race. An exemption would leave the row **repairable by nobody, for ever, behind a `blockedReason` naming an apply that provably never touches it** — strictly worse than the dangle it was meant to avoid.
+
+THE CONTRAST WORTH KEEPING. §125b exempted a policy-managed executor binding for a reason that does not transfer: that row is RE-DERIVED from the live placements every reconcile tick, so refusing it livelocks and deleting it races a writer that will put it back. Nothing re-derives an edge to a tombstone. The general rule the two cases together give: **an exemption is owed to a row that has a REAPER, not to a row that has an OWNER.** A `managed_by_stack` label is ownership; the placement arm's exemption is legitimate because the apply genuinely re-derives a placement from the manifest, and this arm's would not be.
+
+WHERE A STACK-MANAGED EDGE CAN DANGLE AT ALL, since the local cascade (§128) tombstones self-authored edges: through a FEDERATION IMPORT of a peer's `object_tombstone`, which skips the cascade by design, and through a replica edge, which the cascade skips for single-writer authority and which is already `repairable: false`. `repairable` for this arm therefore stays computed from ORIGIN DOMAIN ALONE. Pinned by `graph/stack-managed-dangling-edge.integration.test.ts`, whose "the apply is not its reaper" case is mutation-proven against the live-only filter it rests on.
+
+### §125f. The census is a GATE now, not a paragraph
+
+`apps/server/src/graph/dangling-table-census.integration.test.ts`, 2026-09-19.
+
+Four changes in a row (routes 5, 6, the placement measurement, route 7) each began by re-deriving "which tables can dangle, and what should happen to them" from scratch, because the previous census lived only in a PR body — and §125b's, the one written into this document, **was wrong within a day** for the reason §125d gives. A prose census cannot fail. This one can, four ways:
+
+```text
+(A) a NEW column that can name an objects.id and has no recorded verdict     -> RED
+(B) a recorded verdict naming a column the catalog no longer has             -> RED
+(C) a DELETE grant gained or lost on a table whose verdict rests on it       -> RED
+(D) a verdict of `guarded`/`repairable` on a table scp_app cannot delete     -> RED
+```
+
+The population is DERIVED from the catalog, in three arms because one convention does not cover it: every foreign key to `objects`, every uuid column named `%object_id%`, and the object-naming columns that follow neither (`subject_id`, `actor_id`, `producer_subject_id`) — that third arm is a NAME list rather than a pattern, and a separate case asserts it is not silently empty, which is the known-positive control a negative search needs. 61 columns today.
+
+(C) IS THE INTERESTING ONE. It is the derived proxy for "somebody built a door": under `FORCE ROW LEVEL SECURITY` a write needs both a grant and a policy, so a new delete verb cannot ship without a `GRANT DELETE` in its migration — and the moment one appears, a "no delete statement exists, so a guard here would be a permanent wall" verdict has to be re-argued. It is read out of `information_schema.role_table_grants` rather than by attempting a write, because the integration harness connects as the superuser and would hide the answer either way. It earned its keep on the first run, catching a LATENT grant on `federation_peer_observations` (drizzle/0116) that nothing exercises.
+
+THREE TABLES HOLD A DELETE GRANT NO STATEMENT USES — `config_source_stacks` (0101), `config_source_sync_queue` (0109) and `federation_peer_observations` (0116). Recorded rather than revoked: the grant is a capability the code does not take, which is worth knowing and is not itself a defect.
+
+THE VERDICTS AND THEIR LIVE COUNTS are in the test file, one entry per column, each with the reason in its own words. The homelab measurement behind them (read-only SELECTs, 2026-09-19) is:
+
+```text
+audit_events.subject_id                  141 tombstoned + 9036 naming no row at all — by design
+relationships from_id/to_id              95 / 105, ALL on tombstoned EDGES; 0 LIVE dangling edges
+change_wave_targets.target_object_id       2  historical; readers fail closed
+repair_20260916_branch_key_edges.to_id    35  a one-off repair table, not in any migration
+source_mappings.component_object_id        0  §125a's 38 have been cleaned up
+executor_bindings.target_object_id         0  §125b's 19 have been cleaned up
+governance_move_rungs.subject_object_id    0  nothing for route 7 to clean
+every other column in the census           0
+```
+
+FOUR VERDICTS ARE "LEFT, AND THE DANGLE IS NOT INERT" — recorded that way deliberately, because §53's corrected paragraph shows what happens when "inert" is used as a synonym for "unreached". In each case a guard is still the wrong instrument (no door, or the row is audit-shaped) and the real defect is a reader that does not filter owner liveness:
+
+```text
+object_health.object_id          getObjectHealthBatch (POST /graph/health) returns a live-looking
+                                 health record for a tombstoned object id.
+control_bindings.control_object_id  getControlBinding (control-runner) and the scan-rule authoring
+                                 guard both read unfiltered, so a tombstoned control still
+                                 EVALUATES and still counts as "provable".
+pipeline_hook_runs.component_object_id  listNonTerminalHookRuns is org-wide and unfiltered, so a
+                                 pending run on a tombstoned component is polled every tick.
+component_dependencies.component_object_id  resolveDeclaredComponentLines scans org-wide with no
+                                 liveness filter, keeping a dead component's coordinates on the
+                                 version-poll work list.
+```
+
+And one is a wall with no exit rather than a dangle: `config_source_stacks` retains its row when the config source is soft-deleted, DELIBERATELY (so the stack is not handed back to CLI-push while its manifest still sits in a repo) — but `POST /plans/{id}/apply` then 409s for that stack name for ever, naming a bare uuid, with no door to release it. A release door first, then a guard.
+
+`dependency_bump_authorships` IS NOT ONE OF THEM, and the claim that it is deserves its own line because it was relayed as a live defect. The true part: nothing closes an open (`merged_at IS NULL`) row when its change reaches a terminal state, so a cancelled or rolled-back bump's authorship stays "open" for ever. The part that is FALSE is the consequence — it does not block future bumps. `dispatchOneBump` does not refuse on an existing open authorship, it REUSES its `changeObjectId`; the lookup key includes `toVersion`, so a bump to a newer version — which is what "a future bump" means — misses the row entirely and gets a fresh change; and the one place an open authorship reaches an operator-visible surface, producer retraction, says in as many words that these rows are "REPORTED, NEVER TOUCHED … Closing or rewriting these rows would assert SCP closed a PR it did not close." The real residue is narrower: a re-dispatch of the SAME `(component, manifestPath, coordinate, toVersion)` after its change was cancelled re-uses the terminal change instead of minting a fresh one, so that one target version can never be re-proposed — a state-space bug (three states read as two), not a dangling-row bug. **Live: 0 rows in the table, 0 open, against 97 cancelled changes — the precondition has never occurred on this estate.** Left with that measurement recorded; the fix, when it comes, belongs with the terminal transition and not with a guard.
 
 ### §126. THE ADMINISTRATOR FLOOR
 
