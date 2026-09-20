@@ -812,19 +812,51 @@ export function PipelineWaveCard({
                     actually provided are shown; omitted when no rollout is observed (the version
                     placeholder above already covers "nothing observed"). */}
                 {(() => {
-                  // proposal §5.2: this instance has no channel to observe a target owned by
-                  // another domain at all — a stronger, permanent fact, never merely "never
-                  // observed (yet)", which would promise a reading might still arrive locally.
-                  if (target.observedFreshness?.state === "not_reported") {
-                    return (
-                      <span
-                        className="text-slate-400"
-                        data-testid={`${testIdPrefix}-observed-rollout-not-reported`}
-                        title="This wave target executes at another domain instance. No observation has been federated up to this commander."
-                      >
-                        rolling out elsewhere — not reported to this commander
-                      </span>
-                    );
+                  // proposal §5.2 / increment 6 (PR #374, wave_target_observed subject `target`):
+                  // this instance runs no local reconcile for a target owned by another domain, so
+                  // `target.observed` (this instance's OWN snapshot) never fills for one — but that
+                  // is no longer a permanent silence. `target.observed === null` together with a
+                  // `fresh`/`stale` freshness is the reliable sign an ARRIVED peer reading exists
+                  // (a locally-driven target only ever reaches `fresh`/`stale` once `observed` is
+                  // non-null — `resolveWaveTargetFreshness`'s own invariant), never a heuristic on
+                  // freshness state alone. Mirrors the checks rail's `evidenceOrigin` caveat wording
+                  // (`PipelineChecksRail.tsx`'s `evidenceOriginCaveat`) rather than inventing new
+                  // words for the same fact: annotate, don't fabricate rollout content this instance
+                  // was never sent.
+                  if (target.observed === null && target.observedFreshness) {
+                    const freshness = target.observedFreshness;
+                    if (freshness.state === "not_reported") {
+                      return (
+                        <span
+                          className="text-slate-400"
+                          data-testid={`${testIdPrefix}-observed-rollout-not-reported`}
+                          title="This wave target executes at another domain instance. No observation has been federated up to this commander."
+                        >
+                          rolling out elsewhere — not reported to this commander
+                        </span>
+                      );
+                    }
+                    if (freshness.state === "fresh" || freshness.state === "stale") {
+                      const stale = freshness.state === "stale";
+                      return (
+                        <span
+                          className="flex items-center gap-1.5 text-slate-400"
+                          data-testid={`${testIdPrefix}-observed-rollout-elsewhere`}
+                          title="This wave target executes at another domain instance. This commander does not display its rollout detail, only when it last reported."
+                        >
+                          rolling out elsewhere — reported {formatAgeAgo(freshness.ageSeconds)}
+                          {stale && (
+                            <Badge
+                              variant="unknown"
+                              title={`Last reported ${formatAgeAgo(freshness.ageSeconds)} — older than the ${Math.round(freshness.staleAfterSeconds / 60)} minute freshness bound.`}
+                              data-testid={`${testIdPrefix}-observed-rollout-elsewhere-stale`}
+                            >
+                              stale
+                            </Badge>
+                          )}
+                        </span>
+                      );
+                    }
                   }
                   if (rolloutContentParts.length > 0) {
                     const rollout = target.observed!.rollout!;
