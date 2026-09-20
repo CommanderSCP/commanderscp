@@ -408,13 +408,49 @@ export type WaveTargetCheckSlot = z.infer<typeof WaveTargetCheckSlotSchema>;
  *  target whose object is soft-deleted, or a `placement` missing half its identity, resolves to no
  *  subject at all in `resolveHookSubjects`, so there is no component whose declarations could be
  *  read — the honest answer is "unknown", never "nothing is declared". */
+/** Reporting provenance for a `resolved` target's hook evidence (owner decision, 2026-09-20:
+ *  additive optional field, NOT an eighth `PipelineHookStateSchema` member — a per-hook state
+ *  addition would be an oasdiff-breaking `oneOf` addition, memory `scp-oasdiff-oneof-vs-enum`).
+ *
+ *  Every slot above is built from tables local to THIS instance (`pipeline_hook_runs`,
+ *  `pipeline_evidence`, alarm reports) — correct when this target executes here, but not a claim
+ *  this instance can make about a prober it does not run. `resolveWaveTargetOriginDomains` (shared
+ *  with `observedFreshness`, never a second copy of the domain check) is how the server already
+ *  knows the difference.
+ *
+ *  ABSENT: this target executes in THIS domain — the slots are watched directly, so no provenance
+ *  statement is needed. PRESENT: the declaring component executes at ANOTHER domain:
+ *  - `fresh` / `stale`: a `wave_target_observed` (subject `hook_run`) journal entry has arrived for
+ *    this target and is this current, mirroring `observedFreshness`'s own two words for the same
+ *    fact about a different subject.
+ *  - `not_reported`: none has arrived. The rail must render this as "not reported to this
+ *    commander", never as a failed or silent prober — this instance simply cannot see one.
+ *
+ *  No `never` member: unlike `observedFreshness` (whose `never` means "local, but not read yet, and
+ *  might still arrive from OUR OWN reconcile loop"), this field exists ONLY for the elsewhere-driven
+ *  case, so there is no "might still arrive locally" state to name. */
+export const WaveTargetCheckEvidenceOriginSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("fresh"), ageSeconds: z.number().int().nonnegative() }),
+  z.object({
+    state: z.literal("stale"),
+    ageSeconds: z.number().int().nonnegative(),
+    staleAfterSeconds: z.number().int().nonnegative()
+  }),
+  z.object({ state: z.literal("not_reported") })
+]);
+export type WaveTargetCheckEvidenceOrigin = z.infer<typeof WaveTargetCheckEvidenceOriginSchema>;
+
 export const WaveTargetChecksSchema = z.discriminatedUnion("basis", [
   z.object({
     basis: z.literal("resolved"),
     /** ALWAYS all four kinds, ALWAYS in pipeline order: postMerge -> postDeploy -> continuous ->
      *  bakeAlarms. Fixed position is what makes a column of targets scannable (the mockup's own
      *  rationale: "the third slot is always the canary"). */
-    slots: z.array(WaveTargetCheckSlotSchema)
+    slots: z.array(WaveTargetCheckSlotSchema),
+    /** See {@link WaveTargetCheckEvidenceOriginSchema}. Absent = locally-driven target, or a server
+     *  predating this field — either way, never treat absence as "not_reported": check `checks`'s
+     *  own basis and this instance's federation state before assuming anything about a prober. */
+    evidenceOrigin: WaveTargetCheckEvidenceOriginSchema.optional()
   }),
   z.object({ basis: z.literal("unresolvable"), reason: z.string() })
 ]);
