@@ -16,6 +16,7 @@ import {
 } from "../test-support/harness.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import { updateWaveTargetObserved, type WaveTargetObservedState } from "./wave-targets-repo.js";
+import { recordPeerObservation } from "../federation/peer-observations-repo.js";
 
 /** The plan's own wave-target row for a placement, straight off the table — NOT
  *  `findLatestWaveTargetForObject` (that repo function scopes to `DRIVING_CHANGE_STATES` for the
@@ -56,8 +57,8 @@ describe("pipeline-mockup-data increment 2: observedFreshness", () => {
    *  `plantTargetUnder`. */
   async function plantForeignDeploymentTarget(slug: string) {
     const name = `${slug}-${randomUUID()}`;
-    const foreignDomainId = randomUUID();
-    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+    const foreignDomainId = asTrustDomainId(randomUUID());
+    const object = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const { object } = await upsertObjectByUrn(tx, {
         orgId: org.orgId,
         typeId: "deployment-target",
@@ -67,13 +68,14 @@ describe("pipeline-mockup-data increment 2: observedFreshness", () => {
         name,
         properties: { environment: "prod" },
         federationImport: {
-          originDomainId: asTrustDomainId(foreignDomainId),
+          originDomainId: foreignDomainId,
           revision: 1,
           provenance: null
         }
       });
       return object;
     });
+    return { object, foreignDomainId };
   }
 
   async function componentPlacedAt(deploymentTargetId: string, slug: string) {
@@ -202,8 +204,8 @@ describe("pipeline-mockup-data increment 2: observedFreshness", () => {
     expect(stale.ageSeconds).toBeGreaterThan(600);
   });
 
-  it("a target whose PLACEMENT names a deployment-target owned by ANOTHER domain reports 'not_reported', never 'never' — this instance has no channel to observe it at all", async () => {
-    const foreignTarget = await plantForeignDeploymentTarget("outpost-place");
+  it("a target whose PLACEMENT names a deployment-target owned by ANOTHER domain reports 'not_reported', never 'never' — nothing has arrived on the wave_target_observed channel yet", async () => {
+    const { object: foreignTarget } = await plantForeignDeploymentTarget("outpost-place");
     const topology = await admin.object("release-topology").create({
       name: `topo-not-reported-${randomUUID()}`,
       properties: {
@@ -219,5 +221,99 @@ describe("pipeline-mockup-data increment 2: observedFreshness", () => {
 
     const target = await explainTarget(change.id, placement.id);
     expect(target.observedFreshness).toEqual({ state: "not_reported" });
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // Increment 6 (PR #374) follow-up: `wave_target_observed` (subject `target`) now really does
+  // reach this instance, and `observedFreshness` must read the ARRIVED reading rather than
+  // asserting `not_reported` from topology alone forever. Same defect class, same fix shape, as
+  // `evidenceOrigin` (PR #386) on the `hook_run` subject of the same journal kind.
+  // -----------------------------------------------------------------------------------------
+
+  it("a target driven elsewhere, with a FRESH wave_target_observed(subject: target) arrived, reports 'fresh' off the PEER'S stamped observedAt", async () => {
+    const { object: foreignTarget, foreignDomainId } =
+      await plantForeignDeploymentTarget("outpost-fresh");
+    const topology = await admin.object("release-topology").create({
+      name: `topo-elsewhere-fresh-${randomUUID()}`,
+      properties: {
+        waves: [{ name: "outpost-wave", mode: "parallel", targets: [foreignTarget.id] }]
+      }
+    });
+    const { component, placement } = await componentPlacedAt(foreignTarget.id, "elsewhere-fresh");
+    const change = await proposeAndCompile(
+      `chg-elsewhere-fresh-${randomUUID()}`,
+      [component.id],
+      topology.id
+    );
+
+    const observedAt = new Date();
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      recordPeerObservation(tx, {
+        orgId: org.orgId,
+        peerDomainId: foreignDomainId,
+        payload: {
+          subject: "target",
+          changeObjectId: change.id,
+          targetObjectId: placement.id,
+          type: "configuration",
+          waveIndex: 0,
+          status: "observing",
+          attempt: 1,
+          rollout: { phase: "Progressing", step: 1, weight: 20 },
+          observedAt: observedAt.toISOString()
+        }
+      })
+    );
+
+    const target = await explainTarget(change.id, placement.id);
+    expect(target.observedFreshness?.state).toBe("fresh");
+    expect((target.observedFreshness as { ageSeconds: number }).ageSeconds).toBeLessThan(30);
+    // This instance still runs no reconcile for it — the rollout CONTENT stays this instance's
+    // own (empty) snapshot; only the FRESHNESS verdict reads the peer's arrival.
+    expect(target.observed).toBeNull();
+  });
+
+  it("a target driven elsewhere, with a STALE wave_target_observed(subject: target) arrived, reports 'stale' off the PEER'S stamped observedAt — sharing OBSERVED_WEIGHT_FRESHNESS_MS, not a second bound", async () => {
+    const { object: foreignTarget, foreignDomainId } =
+      await plantForeignDeploymentTarget("outpost-stale");
+    const topology = await admin.object("release-topology").create({
+      name: `topo-elsewhere-stale-${randomUUID()}`,
+      properties: {
+        waves: [{ name: "outpost-wave", mode: "parallel", targets: [foreignTarget.id] }]
+      }
+    });
+    const { component, placement } = await componentPlacedAt(foreignTarget.id, "elsewhere-stale");
+    const change = await proposeAndCompile(
+      `chg-elsewhere-stale-${randomUUID()}`,
+      [component.id],
+      topology.id
+    );
+
+    const staleObservedAt = new Date(Date.now() - 15 * 60_000); // 15 min — past the 10 min bound
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      recordPeerObservation(tx, {
+        orgId: org.orgId,
+        peerDomainId: foreignDomainId,
+        payload: {
+          subject: "target",
+          changeObjectId: change.id,
+          targetObjectId: placement.id,
+          type: "configuration",
+          waveIndex: 0,
+          status: "observing",
+          attempt: 1,
+          rollout: { phase: "Paused", step: 2, weight: 40 },
+          observedAt: staleObservedAt.toISOString()
+        }
+      })
+    );
+
+    const target = await explainTarget(change.id, placement.id);
+    expect(target.observedFreshness?.state).toBe("stale");
+    const stale = target.observedFreshness as { ageSeconds: number; staleAfterSeconds: number };
+    // The SAME bound the self-owned stale test above asserts (600s) — `PEER_OBSERVATION_FRESHNESS_MS`
+    // is `OBSERVED_WEIGHT_FRESHNESS_MS`, never a second constant.
+    expect(stale.staleAfterSeconds).toBe(600);
+    expect(stale.ageSeconds).toBeGreaterThan(600);
   });
 });
