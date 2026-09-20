@@ -27,6 +27,7 @@ import {
   resolveFederationClientMtls,
   type FederationClientMtls
 } from "./federation-outbound.js";
+import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 
 export const FEDERATION_SYNC_QUEUE = "federation-sync-tick";
 
@@ -542,7 +543,7 @@ export async function startFederationSyncLoop(
       {
         startAfter: FEDERATION_SYNC_INTERVAL_SECONDS,
         singletonKey: "tick",
-        singletonSeconds: FEDERATION_SYNC_INTERVAL_SECONDS
+        singletonSeconds: clampSingletonSeconds(FEDERATION_SYNC_INTERVAL_SECONDS)
       }
     );
   });

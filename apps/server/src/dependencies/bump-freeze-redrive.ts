@@ -12,6 +12,7 @@ import {
   DEPENDENCY_BUMP_MERGE_DECISION_KIND,
   type BumpGateJob
 } from "./bump-gate.js";
+import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 
 /** M25.8b — THE PRODUCER OF "THE NEXT ATTEMPT". See docs/dependencies.md §96. */
 
@@ -152,7 +153,7 @@ export async function startBumpFreezeRedriveLoop(
       {
         startAfter: BUMP_FREEZE_REDRIVE_INTERVAL_SECONDS,
         singletonKey: "tick",
-        singletonSeconds: BUMP_FREEZE_REDRIVE_INTERVAL_SECONDS
+        singletonSeconds: clampSingletonSeconds(BUMP_FREEZE_REDRIVE_INTERVAL_SECONDS)
       }
     );
   });

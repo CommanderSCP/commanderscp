@@ -11,6 +11,7 @@ import {
   resolveExecutorPluginInstance,
   type ExecutorBindingRow
 } from "./executor-bindings-repo.js";
+import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 
 /** The observe driver, for poll-versus-push equivalence. See docs/coordination.md §564. */
 
@@ -310,7 +311,7 @@ export async function startObserveLoop(
       {
         startAfter: OBSERVE_TICK_INTERVAL_SECONDS,
         singletonKey: "tick",
-        singletonSeconds: OBSERVE_TICK_INTERVAL_SECONDS
+        singletonSeconds: clampSingletonSeconds(OBSERVE_TICK_INTERVAL_SECONDS)
       }
     );
   });

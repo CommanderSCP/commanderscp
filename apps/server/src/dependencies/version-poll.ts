@@ -14,6 +14,7 @@ import type { HeadRefusalReason, ThirdPartyLine } from "./line-head.js";
 import { listSubscribedComponentLines } from "./subscription-resolution.js";
 import { queryLineHead, type LineHeadOutcome } from "./version-index.js";
 import { readDependencyIndexFeed, type FeedRead } from "./version-index-feed.js";
+import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 
 /** M21.4 — THE DAILY THIRD-PARTY VERSION POLL. See docs/dependencies.md §435. */
 
@@ -412,7 +413,11 @@ export async function startDependencyVersionPollLoop(
     await boss.send(
       DEPENDENCY_VERSION_POLL_QUEUE,
       {},
-      { startAfter: interval, singletonKey: "tick", singletonSeconds: interval }
+      {
+        startAfter: interval,
+        singletonKey: "tick",
+        singletonSeconds: clampSingletonSeconds(interval)
+      }
     );
   });
   // Startup kick: UNKEYED, so it always inserts (LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts).

@@ -121,6 +121,7 @@ import { runPreDeployArtifactGate } from "./pre-deploy-gate.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook-runs.js";
 import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
+import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1956,7 +1957,7 @@ export async function startReconcileLoop(
       {
         startAfter: RECONCILE_TICK_INTERVAL_SECONDS,
         singletonKey: "tick",
-        singletonSeconds: RECONCILE_TICK_INTERVAL_SECONDS
+        singletonSeconds: clampSingletonSeconds(RECONCILE_TICK_INTERVAL_SECONDS)
       }
     );
   });

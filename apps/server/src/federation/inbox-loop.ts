@@ -29,6 +29,7 @@ import {
   type RelayConfig
 } from "./retrans-relay.js";
 import { parseJsonRejectingPrototypePoisoning } from "../util/safe-json.js";
+import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 
 export const INBOX_QUEUE = "federation-inbox-tick";
 
@@ -765,7 +766,7 @@ export async function startInboxLoop(
       {
         startAfter: INBOX_TICK_INTERVAL_SECONDS,
         singletonKey: "tick",
-        singletonSeconds: INBOX_TICK_INTERVAL_SECONDS
+        singletonSeconds: clampSingletonSeconds(INBOX_TICK_INTERVAL_SECONDS)
       }
     );
   });
