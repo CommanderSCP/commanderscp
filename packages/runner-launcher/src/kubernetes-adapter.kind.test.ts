@@ -13,7 +13,8 @@ import {
   createFetchKubernetesIo,
   createKubernetesRunnerLauncher,
   jobManifest,
-  runnerJobName
+  runnerJobName,
+  runnerSecretName
 } from "./index.js";
 import type { KubernetesRunnerIo, RunnerSpec } from "./index.js";
 
@@ -675,59 +676,104 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   it("THE LAUNCHER DYING MID-RUN: the API SERVER deletes the Secret, with no `finally` involved", async () => {
     // The one that matters, and the reason for the reordering. See docs/runner-launcher.md §189.
     const ns = harness.namespace;
-    await kubectlIn(ns, "delete", "secret", "scp-runner-sigkill-env", "--ignore-not-found");
-    // AND THE VACUITY THIS CASE HAS TO CLOSE. See docs/runner-launcher.md §190.
+    const runId = "sigkill";
+    const jobName = runnerJobName(runId);
+    const secretName = runnerSecretName(runId);
+    await kubectlIn(ns, "delete", "secret", secretName, "--ignore-not-found");
+
+    // THE RACE THIS CASE USED TO LOSE (CI #381/#382, main@4a741431, 2026-09-19/20), AND WHY TIMING
+    // COULD NOT FIX IT. Nothing here can literally SIGKILL the process under test, so "the launcher
+    // died" was stood in for by deleting the Job it owns out from under a launcher that is still very
+    // much alive in this same process. That stand-in's own unconditional `finally` notices the Job is
+    // gone and issues its OWN `DELETE` on this exact Secret — something a genuinely dead launcher
+    // never does. The two events this test needs to tell apart were racing with no ordering guarantee
+    // between them: the API server's ownerReference collector deleting the Secret because it is
+    // OWNED, versus this still-running stand-in's poll loop noticing the pod's `deletionTimestamp`
+    // and reaching its own teardown DELETE first. Whichever won, the assertion below could not tell
+    // which had actually removed the Secret — hence the self-diagnosing failure message this case
+    // used to emit when it lost.
+    //
+    // THE FIX: blackhole the stand-in's own DELETE for this Secret at the io seam so it is never
+    // forwarded to the API server at all — the one thing a truly dead process could never do either.
+    // That makes it STRUCTURALLY impossible for anything but the cluster's own garbage collector to
+    // be the one that removes the Secret, independent of which clock would otherwise have won.
+    let interceptedSecretDelete = false;
+    const real = io();
+    const secretTeardownBlackholed: KubernetesRunnerIo = {
+      ...real,
+      request: async (req) => {
+        if (
+          req.method === "DELETE" &&
+          req.path.includes("/secrets/") &&
+          req.path.endsWith(secretName)
+        ) {
+          interceptedSecretDelete = true;
+          // Answered locally, as a real DELETE of an already-absent object would be. The teardown
+          // call site already tolerates any outcome here (`.catch(...)`), so this changes nothing it
+          // observes about its own run — only what actually reaches the API server.
+          return { status: 404, body: "" };
+        }
+        return real.request(req);
+      }
+    };
+
     const RUN_BUDGET_MS = 30_000;
-    let settled = false;
-    const abandoned = launcher()
+    const abandoned = createKubernetesRunnerLauncher({
+      namespace: ns,
+      workspaceRoot: harness.workspaceHost,
+      workspaceVolume: { kind: "hostPath", path: harness.nodeWorkspace },
+      perRunSecrets: true,
+      runAsNonRoot: false,
+      pollIntervalMs: 500,
+      io: secretTeardownBlackholed
+    })
       .run(
         spec({
-          runId: "sigkill",
-          labels: { "scp.run-id": "sigkill" },
+          runId,
+          labels: { "scp.run-id": runId },
           operands: ["/bin/sh", "-c", 'test -n "$AWS_SECRET_ACCESS_KEY" && sleep 120'],
           secretEnv: [`AWS_SECRET_ACCESS_KEY=${CREDENTIAL}`],
           timeoutMs: RUN_BUDGET_MS
         })
       )
-      .catch(() => undefined)
-      .finally(() => {
-        settled = true;
-      });
+      .catch(() => undefined);
 
     const live = await until(async () =>
-      (await kubectlIn(ns, "get", "secrets", "-o", "name")).includes("scp-runner-sigkill-env")
+      (await kubectlIn(ns, "get", "secrets", "-o", "name")).includes(secretName)
     );
     expect(live, "the per-run Secret never existed, so its disappearance proves nothing").toBe(
       true
     );
 
-    const deletedAt = Date.now();
-    await kubectlIn(ns, "delete", "job", "scp-runner-sigkill", "--wait=false");
+    await kubectlIn(ns, "delete", "job", jobName, "--wait=false");
 
     // NOT AN IMMEDIATE READ. Garbage collection is asynchronous by design, and asserting "gone the
     // instant the Job DELETE returns" would be asserting an implementation detail of the collector
-    // rather than the guarantee, which is that the credential's life is BOUNDED by the Job's.
+    // rather than the guarantee, which is that the credential's life is BOUNDED by the Job's. The
+    // budget here is generous and no longer tied to the run's own `timeoutMs` — with the launcher's
+    // own DELETE blackholed above, there is nothing else left that could delete the Secret early, so
+    // there is nothing to race against.
     const collected = await until(
-      async () =>
-        !(await kubectlIn(ns, "get", "secrets", "-o", "name")).includes("scp-runner-sigkill-env"),
-      RUN_BUDGET_MS / 2
+      async () => !(await kubectlIn(ns, "get", "secrets", "-o", "name")).includes(secretName),
+      30_000
     );
     expect(
       collected,
       "the per-run Secret outlived the Job that owned it. That is the M23.1d credential-lifetime defect, reappearing on the Kubernetes adapter and in a worse place than a mode-0600 file: etcd, and every etcd backup"
     ).toBe(true);
 
-    // THE TWO GUARDS THAT MAKE THE DELETION THE CLUSTER'S AND NOT THE LAUNCHER'S.
-    expect(
-      settled,
-      "the run had already finished when the Secret went, so its own teardown could have deleted it and this case proves nothing about ownerReferences"
-    ).toBe(false);
-    expect(
-      Date.now() - deletedAt,
-      `the Secret took longer than half the run's ${RUN_BUDGET_MS}ms budget to disappear, which puts the observation inside the window where the launcher's own teardown runs`
-    ).toBeLessThan(RUN_BUDGET_MS / 2);
-
     await abandoned;
+
+    // THE NON-VACUITY CONTROL. Without this, blackholing the DELETE proves nothing on its own — the
+    // `collected` assertion above would be equally (and silently) true if this test's stand-in never
+    // attempted the call at all, e.g. because teardown was skipped or `secretIsOurs` came back false.
+    // This is what makes the `collected` result attributable to the cluster's own ownerReference
+    // garbage collection specifically, rather than merely "not this test's fault".
+    expect(
+      interceptedSecretDelete,
+      "the launcher's own teardown never attempted to DELETE this Secret, so blackholing that call " +
+        "exercised nothing and the `collected` assertion above is not evidence about ownerReferences"
+    ).toBe(true);
   }, 180_000);
 
   it("THE NON-VACUITY CONTROL: the same sweep FINDS a credential delivered the wrong way", async () => {
