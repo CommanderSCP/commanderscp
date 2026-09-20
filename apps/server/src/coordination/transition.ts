@@ -14,6 +14,7 @@ import { changeStatusContentHash } from "./changes-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { closeApprovalRequestsForChange } from "../governance/approvals-repo.js";
+import { closePipelineHookRunsForChange } from "./pipeline-hook-runs.js";
 
 type ChangeRow = typeof changes.$inferSelect;
 
@@ -297,6 +298,30 @@ export async function transitionChange(
         action: "approval_requests.closed",
         subjectId: input.changeObjectId,
         reason: `change transitioned to terminal state '${toState}': closed ${closed.length} approval request(s)`,
+        decisionId: decision.id,
+        requestId: input.requestId,
+        subjectDomainLocal: row.domainLocal
+      });
+    }
+
+    // The SAME property, one table over (census from PR #373): a pipeline hook run left
+    // `pending`/`running` when its change goes terminal never finishes and is never polled again
+    // (`listNonTerminalHookRuns` excludes a closed run) — close every still-open one, in this SAME
+    // transaction, on the SAME Decision, with one audit event. See
+    // `pipeline-hook-runs.ts`'s `closePipelineHookRunsForChange` doc.
+    const closedRuns = await closePipelineHookRunsForChange(tx, {
+      orgId: input.orgId,
+      changeObjectId: input.changeObjectId,
+      closedReason: toState,
+      decisionId: decision.id
+    });
+    if (closedRuns.length > 0) {
+      await appendAuditEvent(tx, {
+        orgId: input.orgId,
+        actorId: input.actorObjectId,
+        action: "pipeline_hook_runs.closed",
+        subjectId: input.changeObjectId,
+        reason: `change transitioned to terminal state '${toState}': closed ${closedRuns.length} pipeline hook run(s)`,
         decisionId: decision.id,
         requestId: input.requestId,
         subjectDomainLocal: row.domainLocal

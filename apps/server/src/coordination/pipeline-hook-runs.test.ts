@@ -132,7 +132,10 @@ describe("capturedWorkflowRefOf — parsed, not cast", () => {
     lastObservedAt: null,
     capturedWorkflow,
     createdAt: new Date(),
-    updatedAt: new Date()
+    updatedAt: new Date(),
+    closedAt: null,
+    closedReason: null,
+    closedDecisionId: null
   });
 
   it("returns null when capturedWorkflow is null", () => {

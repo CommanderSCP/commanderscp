@@ -13701,6 +13701,8 @@ export type ExplainChangeResponses = {
                                 startedAt: string;
                                 runStatus: string;
                                 externalUrl: string | null;
+                                closedAt: string | null;
+                                closedReason: string | null;
                             } | {
                                 state: 'passed';
                                 hookId: string;

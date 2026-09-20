@@ -294,6 +294,48 @@ describe("pipeline-mockup-data increment 3: the checks rail", () => {
     expect(after.get("postDeploy")!.hooks[0]!.state).toBe("passed");
   });
 
+  // A run still `pending`/`running` when its CHANGE reaches a terminal state (cancelled/rolled
+  // back) is closed by `closePipelineHookRunsForChange` (`coordination/transition.ts`, the SAME
+  // property PR #373 closed for `approval_requests`). The rail must render that frozen run as
+  // `running` (its `status` never moves — closing does not touch it) with `closedAt`/`closedReason`
+  // populated, and MUST NOT render it as `failed`: the run never ran to a bad outcome, the change it
+  // gated simply stopped mattering.
+  it("a postDeploy run frozen by its change's cancellation stays `running` with closedAt/closedReason set — never `failed`", async () => {
+    const { change, placement, component } = await stageFixture("pd-closed");
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertHook(tx, org.orgId, {
+        componentObjectId: component.id,
+        kind: "postDeploy",
+        hookId: "close-me"
+      })
+    );
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      plantRun(tx, {
+        componentObjectId: component.id,
+        targetObjectId: placement.id,
+        changeObjectId: change.id,
+        hookId: "close-me",
+        kind: "postDeploy",
+        waveIndex: 0,
+        status: "running"
+      })
+    );
+
+    const before = slotsOf(await railFor(change.id, placement.id)).get("postDeploy")!.hooks[0]!;
+    expect(before.state).toBe("running");
+    expect((before as { closedAt: string | null }).closedAt).toBeNull();
+
+    const cancelled = await admin.changes.cancel(change.id, "closed-run render test");
+    expect(cancelled.state).toBe("cancelled");
+
+    const after = slotsOf(await railFor(change.id, placement.id)).get("postDeploy")!.hooks[0]!;
+    // NOT "failed" — the whole point. Still `running`, because `status` is untouched by closure.
+    expect(after.state).toBe("running");
+    expect((after as { runStatus: string }).runStatus).toBe("running");
+    expect((after as { closedAt: string | null }).closedAt).toBeTruthy();
+    expect((after as { closedReason: string | null }).closedReason).toBe("cancelled");
+  });
+
   it("a postDeploy hook narrowed to ANOTHER stage is `not_applicable`, with the server's own reason — never `not_run`", async () => {
     const { change, placement, component } = await stageFixture("pd-stage", "gamma");
     await withTenantTx(server.deps.db, org.orgId, (tx) =>

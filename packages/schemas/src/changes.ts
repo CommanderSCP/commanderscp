@@ -255,13 +255,28 @@ export const PipelineHookStateSchema = z.discriminatedUnion("state", [
   /** A run row exists and has not concluded. `runStatus` carries the recorded word verbatim
    *  (`pending` = dispatched, the executor has not started it; `running` = it has), as a plain
    *  string rather than an enum for the reason in this schema's doc. `startedAt` is the run row's
-   *  own `started_at`, i.e. when SCP dispatched it. */
+   *  own `started_at`, i.e. when SCP dispatched it.
+   *
+   *  `closedAt`/`closedReason` are set once this run's CHANGE reaches a terminal state
+   *  (cancelled/rolled_back) while the run itself is still `pending`/`running` — it is frozen here
+   *  forever (nothing polls it again). `state` deliberately stays `"running"` rather than growing a
+   *  new `oneOf` member for this: MEASURED against the vendored oasdiff (v1.23.0) this schema's
+   *  actual `/v1` gate runs, a new response `oneOf` member IS flagged `response-property-one-of-added`
+   *  and fails the additive-only gate — the `scp-oasdiff-oneof-vs-enum` memory's claim that
+   *  `oneOf` additions are safe does NOT hold for this checker/spec shape (reproduced directly against
+   *  `CampaignRecipeSchema.adoption`, the memory's own example, with the same binary). Additive
+   *  nullable fields on an EXISTING member is the pattern PR #373 proved clean here
+   *  (`approval_requests.closedAt`/`closedReason` beside an unchanged `status`), so a caller that
+   *  wants to stop reading a frozen run as "in flight" checks `closedAt !== null`, exactly as
+   *  `service-board.ts`'s `awaitingApproval` checks it for approval requests. */
   z.object({
     state: z.literal("running"),
     hookId: z.string(),
     startedAt: z.string().datetime(),
     runStatus: z.string(),
-    externalUrl: z.string().nullable()
+    externalUrl: z.string().nullable(),
+    closedAt: z.string().datetime().nullable(),
+    closedReason: z.string().nullable()
   }),
   /** A `postMerge`/`postDeploy` run that `succeeded`, or a `continuous` probe whose newest evidence
    *  is `passed` AND inside `maxAgeSeconds`. `concludedAt` is the run's `last_observed_at` (the
