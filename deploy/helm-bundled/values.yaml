@@ -110,6 +110,15 @@ bundledExecutor:
     # unauthenticated call returns 401), so every request carries a Kubernetes bearer token, and on
     # a multi-node cluster with an unencrypted CNI that token crosses the wire in clear.
     tlsSecretName: argo-server-tls
+    # The scoped, non-admin ServiceAccount SCP authenticates as when coordinating this backend —
+    # the same shape as `bundledExecutor.argocd.scpAccount` and `gitea.scpAccount`, which this
+    # backend was missing entirely.
+    #
+    # It is load-bearing rather than cosmetic: argo-server runs `--auth-mode=client`, so every call
+    # SCP makes carries THIS account's token and every Kubernetes action is performed AS it. The
+    # Role bound to it is therefore the exact set `@scp/plugin-argo-workflows` calls and nothing
+    # more — see the template for the endpoint-by-endpoint derivation.
+    scpAccount: scp-coordinator
     # Per-CONTAINER resources. Upstream ships neither workload with any, which makes both
     # BestEffort — unbounded, and first evicted under node pressure.
     resources:
