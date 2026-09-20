@@ -33,6 +33,7 @@ import {
 import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { containmentDomainIdFromWire, listObjectsQueryFromWire } from "../domain-id-edge.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
+import { isSystemMintedObjectType } from "../graph/system-minted-types.js";
 import { isCoordinationTargetScopedObjectType } from "../coordination/campaign-scope-authz.js";
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
@@ -55,6 +56,19 @@ function assertNotGovernanceManagedObjectType(type: string): void {
         `${GOVERNANCE_MANAGED_TYPED_DOOR[type] ?? "its typed route"}, which enforces 'policy:write' ` +
         `(or, for a freeze, 'freeze:write' plus 'federation:write' to federate it) and the ` +
         `scope-authority binding the generic door cannot check`
+    );
+  }
+}
+
+/** Types only an internal code path may mint. See graph/system-minted-types.ts. */
+function assertNotSystemMintedObjectType(type: string): void {
+  if (isSystemMintedObjectType(type)) {
+    throw forbidden(
+      `object type '${type}' is system-minted: CommanderSCP creates it as part of its own ` +
+        `bookkeeping and there is no door for creating, updating or deleting one by hand. ` +
+        `A '${type}' minted here would be found by the lookup that mints the real ones and would ` +
+        `capture them — which is why this is refused rather than merely discouraged. Peer copies ` +
+        `still arrive normally through federation import; only this tenant-facing door refuses.`
     );
   }
 }
@@ -127,6 +141,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const auth = await requireAuth(deps, request);
       const { type } = request.params;
       assertNotGovernanceManagedObjectType(type);
+      assertNotSystemMintedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
       assertNotPeerBoundObjectType(type);
@@ -336,6 +351,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const auth = await requireAuth(deps, request);
       const { type, idOrUrn } = request.params;
       assertNotGovernanceManagedObjectType(type);
+      assertNotSystemMintedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
       assertNotPeerBoundObjectType(type);
@@ -399,6 +415,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const auth = await requireAuth(deps, request);
       const { type, idOrUrn } = request.params;
       assertNotGovernanceManagedObjectType(type);
+      assertNotSystemMintedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
       assertNotPeerBoundObjectType(type);
@@ -449,6 +466,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const auth = await requireAuth(deps, request);
       const { type, urn } = request.params;
       assertNotGovernanceManagedObjectType(type);
+      assertNotSystemMintedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
       assertNotPeerBoundObjectType(type);
