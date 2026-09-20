@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
-import type { TestRunEvidence } from "@scp/schemas";
+import { asTrustDomainId, type TestRunEvidence } from "@scp/schemas";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { changeWaveTargets, pipelineHookRuns } from "../db/schema.js";
+import { changeWaveTargets, objects, pipelineHookRuns } from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -13,6 +13,10 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import {
+  PEER_OBSERVATION_FRESHNESS_MS,
+  recordPeerObservation
+} from "../federation/peer-observations-repo.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import { recordAlarmEvidence, recordTestRunEvidence, upsertHook } from "./pipeline-hooks-repo.js";
 
@@ -68,7 +72,7 @@ describe("pipeline-mockup-data increment 3: the checks rail", () => {
         topologyVersion: null
       })
     );
-    return { component, placement, change, stage };
+    return { component, placement, change, stage, deploymentTarget };
   }
 
   async function waveTargetRowFor(tx: TenantTx, targetObjectId: string) {
@@ -694,5 +698,164 @@ describe("pipeline-mockup-data increment 3: the checks rail", () => {
     // hook demonstrably is. The honest answer is that the subject could not be resolved.
     expect(checks?.basis).toBe("unresolvable");
     expect((checks as { reason: string }).reason).toContain("could not be resolved to a component");
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // evidenceOrigin — the seventh, honesty case (owner decision 2026-09-20): a target driven at
+  // ANOTHER domain gets an additive marker, never an eighth `PipelineHookState` member. See
+  // `docs/proposals/pipeline-mockup-data.md` §3.3/§5.3 and `resolveWaveTargetOriginDomains`
+  // (`wave-targets-repo.ts`) — the SAME domain check `observedFreshness` already uses.
+  // -------------------------------------------------------------------------------------------
+  describe("evidenceOrigin: this target executes at another domain", () => {
+    /** `stageFixture`, with its deployment target's `originDomainId` surgically moved to a foreign
+     *  domain AFTER creation — the shape a replicated outpost deployment target has at the
+     *  commander (same technique as `foreign-origin-campaign.integration.test.ts`). */
+    async function elsewhereFixture(slug: string) {
+      const fixture = await stageFixture(slug);
+      const foreign = asTrustDomainId(randomUUID());
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx
+          .update(objects)
+          .set({ originDomainId: foreign })
+          .where(and(eq(objects.orgId, org.orgId), eq(objects.id, fixture.deploymentTarget.id)))
+      );
+      return { ...fixture, foreign };
+    }
+
+    it("a locally-driven target carries NO evidenceOrigin at all — the six existing states are untouched", async () => {
+      const { change, placement, component } = await stageFixture("local-marker");
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        upsertHook(tx, org.orgId, {
+          componentObjectId: component.id,
+          kind: "continuous",
+          hookId: "smoke",
+          maxAgeSeconds: 300
+        })
+      );
+      const checks = await railFor(change.id, placement.id);
+      expect(checks?.basis).toBe("resolved");
+      expect((checks as { evidenceOrigin?: unknown }).evidenceOrigin).toBeUndefined();
+    });
+
+    it("a target driven elsewhere, with NO wave_target_observed arrived, reports evidenceOrigin `not_reported` — not a failed or silent prober", async () => {
+      const { change, placement, component } = await elsewhereFixture("elsewhere-none");
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        upsertHook(tx, org.orgId, {
+          componentObjectId: component.id,
+          kind: "continuous",
+          hookId: "smoke",
+          maxAgeSeconds: 300
+        })
+      );
+
+      const checks = await railFor(change.id, placement.id);
+      expect(checks?.basis).toBe("resolved");
+      expect((checks as { evidenceOrigin?: unknown }).evidenceOrigin).toEqual({
+        state: "not_reported"
+      });
+      // The per-hook slot state is UNCHANGED by this marker — still the local, evidence-based
+      // verdict. The marker is what lets a caller soften "nobody is looking" into "not reported to
+      // this commander" without inventing an eighth `PipelineHookState`.
+      const slots = slotsOf(checks);
+      expect(slots.get("continuous")!.hooks[0]!.state).toBe("no_evidence");
+    });
+
+    it("a target driven elsewhere, with a FRESH wave_target_observed hook_run, reports evidenceOrigin `fresh` with its age", async () => {
+      const { change, placement, component } = await elsewhereFixture("elsewhere-fresh");
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        upsertHook(tx, org.orgId, {
+          componentObjectId: component.id,
+          kind: "postDeploy",
+          hookId: "e2e"
+        })
+      );
+      const observedAt = new Date();
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        recordPeerObservation(tx, {
+          orgId: org.orgId,
+          peerDomainId: asTrustDomainId(randomUUID()),
+          payload: {
+            subject: "hook_run",
+            changeObjectId: change.id,
+            componentObjectId: component.id,
+            targetObjectId: placement.id,
+            hookId: "e2e",
+            kind: "postDeploy",
+            waveIndex: 0,
+            status: "succeeded",
+            attempt: 1,
+            externalUrl: null,
+            startedAt: observedAt.toISOString(),
+            observedAt: observedAt.toISOString()
+          }
+        })
+      );
+
+      const checks = await railFor(change.id, placement.id);
+      expect(checks?.basis).toBe("resolved");
+      const origin = (checks as { evidenceOrigin?: { state: string; ageSeconds?: number } })
+        .evidenceOrigin;
+      expect(origin?.state).toBe("fresh");
+      expect(typeof origin?.ageSeconds).toBe("number");
+      expect(origin?.ageSeconds).toBeLessThan(60);
+    });
+
+    it("a target driven elsewhere, with a STALE wave_target_observed hook_run, reports evidenceOrigin `stale` with its freshness bound", async () => {
+      const { change, placement, component } = await elsewhereFixture("elsewhere-stale");
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        upsertHook(tx, org.orgId, {
+          componentObjectId: component.id,
+          kind: "postDeploy",
+          hookId: "e2e"
+        })
+      );
+      const staleObservedAt = new Date(Date.now() - (PEER_OBSERVATION_FRESHNESS_MS + 60_000));
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        recordPeerObservation(tx, {
+          orgId: org.orgId,
+          peerDomainId: asTrustDomainId(randomUUID()),
+          payload: {
+            subject: "hook_run",
+            changeObjectId: change.id,
+            componentObjectId: component.id,
+            targetObjectId: placement.id,
+            hookId: "e2e",
+            kind: "postDeploy",
+            waveIndex: 0,
+            status: "succeeded",
+            attempt: 1,
+            externalUrl: null,
+            startedAt: staleObservedAt.toISOString(),
+            observedAt: staleObservedAt.toISOString()
+          }
+        })
+      );
+
+      const checks = await railFor(change.id, placement.id);
+      const origin = (
+        checks as {
+          evidenceOrigin?: { state: string; ageSeconds?: number; staleAfterSeconds?: number };
+        }
+      ).evidenceOrigin;
+      expect(origin?.state).toBe("stale");
+      expect(typeof origin?.ageSeconds).toBe("number");
+      expect(typeof origin?.staleAfterSeconds).toBe("number");
+    });
+
+    it("a target driven elsewhere still reports `unresolvable` when its object cannot be resolved — the domain check never overrides it", async () => {
+      const { change, placement, component } = await elsewhereFixture("elsewhere-gone");
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        upsertHook(tx, org.orgId, {
+          componentObjectId: component.id,
+          kind: "continuous",
+          hookId: "smoke",
+          maxAgeSeconds: 300
+        })
+      );
+      await admin.placements.delete(placement.id);
+
+      const checks = await railFor(change.id, placement.id);
+      expect(checks?.basis).toBe("unresolvable");
+    });
   });
 });
