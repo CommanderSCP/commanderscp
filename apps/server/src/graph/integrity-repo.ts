@@ -1,9 +1,16 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import type { OrphanPlacement } from "@scp/schemas";
+import type { GovernanceMoveTier, OrphanGovernanceMoveRung, OrphanPlacement } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { ExecutorLane, ExecutorType } from "@scp/schemas";
-import { executorBindings, objects, relationships, sourceMappings } from "../db/schema.js";
+import {
+  executorBindings,
+  governanceMoveRungs,
+  objects,
+  relationships,
+  sourceMappings
+} from "../db/schema.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { nearestEnabledUpperRung } from "../governance/move-enforcement.js";
 import { UUID_TEXT_PATTERN } from "./containment.js";
 
 /** GRAPH INTEGRITY — rows that outlived the object they hang off. See docs/graph.md §53. */
@@ -54,6 +61,8 @@ export interface GraphIntegrityReport {
    *  projection arms because a placement is a graph OBJECT with its own delete door — see
    *  `OrphanPlacementSchema` for why that difference has to reach the wire. */
   orphanPlacements: OrphanPlacement[];
+  /** A `governance_move_rungs` row whose subject container is a tombstone. See docs/graph.md §125d. */
+  orphanGovernanceMoveRungs: OrphanGovernanceMoveRung[];
 }
 
 /** Every integrity finding for one org, in one read-only pass. See docs/graph.md §54. */
@@ -340,10 +349,58 @@ export async function findGraphIntegrityIssues(
     };
   });
 
+  // A `governance_move_rungs` row names its subject container in `subject_object_id` — a real FK to
+  // `objects`, so it can never point at a NONEXISTENT row, only at a tombstoned one. See
+  // docs/graph.md §125d for why this arm exists at all after §125b recorded the table as having no
+  // delete door: that census was keyed on the drizzle identifier and missed the raw
+  // `DELETE FROM governance_move_rungs` in `governance/move-enforcement.ts`.
+  //
+  // `tier` is the STORED literal, not `moveRungTierForObjectType(typeId)` recomputed here — the same
+  // rule `toRung` follows, so the report names the rung the way the list read and the write response
+  // already do.
+  const rungRows = await tx
+    .select({
+      subjectObjectId: governanceMoveRungs.subjectObjectId,
+      tier: governanceMoveRungs.tier,
+      ownerUrn: objects.urn,
+      ownerName: objects.name,
+      enabledAt: governanceMoveRungs.enabledAt
+    })
+    .from(governanceMoveRungs)
+    .innerJoin(objects, eq(objects.id, governanceMoveRungs.subjectObjectId))
+    .where(and(eq(governanceMoveRungs.orgId, orgId), sql`${objects.deletedAt} is not null`));
+
+  const orphanGovernanceMoveRungs: OrphanGovernanceMoveRung[] = [];
+  for (const row of rungRows) {
+    // MEASURED against the door's own refusal, never asserted — #379's rule. The disable door throws
+    // 409 while an upper rung (an ancestor's, or the instance rung) is enabled, so a row under one is
+    // reported and skipped rather than offered and then failed on. `nearestEnabledUpperRung` is the
+    // door's own function, exported for exactly this, so the two cannot come to disagree.
+    const blocker = await nearestEnabledUpperRung(tx, orgId, row.subjectObjectId);
+    orphanGovernanceMoveRungs.push({
+      // The row's id IS its subject's id: this table's primary key is `subject_object_id` alone
+      // (drizzle/0083), so there is no separate row identity to report.
+      id: row.subjectObjectId,
+      ownerUrn: row.ownerUrn,
+      ownerName: row.ownerName,
+      tier: row.tier as GovernanceMoveTier,
+      detail: `governance:move enforcement still enabled at ${row.tier} '${row.ownerName}'`,
+      repairable: blocker === undefined,
+      blockedReason:
+        blocker === undefined
+          ? null
+          : `governance:move enforcement is also enabled ${blocker} — the disable door refuses a ` +
+            `lower rung while an upper one stands (an enablement above cannot be undone below). ` +
+            `Disable it at that rung first; this row then clears with ` +
+            `\`scp governance move-enforcement disable ${row.ownerUrn}\``
+    });
+  }
+
   return {
     danglingRelationships,
     orphanSourceMappings,
     orphanExecutorBindings,
-    orphanPlacements
+    orphanPlacements,
+    orphanGovernanceMoveRungs
   };
 }

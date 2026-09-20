@@ -11848,6 +11848,15 @@ export type GraphIntegrityResponses = {
             blockedReason: string | null;
             deadEnd: 'component' | 'deployment-target' | 'both' | 'malformed';
         }>;
+        orphanGovernanceMoveRungs: Array<{
+            id: string;
+            ownerUrn: string;
+            ownerName: string;
+            detail: string;
+            repairable: boolean;
+            blockedReason: string | null;
+            tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+        }>;
     };
 };
 

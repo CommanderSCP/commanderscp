@@ -5,6 +5,9 @@ import { cursorPageResponseSchema, stringArrayQueryParam } from "./common.js";
 // binding door can never disagree about what a Type or a lane is.
 import { ExecutorTypeSchema } from "./executors.js";
 import { ExecutorLaneSchema } from "./binding-policy.js";
+// Same no-cycle argument: `governance-move.ts` imports zod and nothing else. Reused so the integrity
+// report and the rung doors can never disagree about what a tier is.
+import { GovernanceMoveTierSchema } from "./governance-move.js";
 
 /** Full graph model contract. See docs/schemas.md §278. */
 
@@ -448,6 +451,21 @@ export const OrphanPlacementSchema = OrphanProjectionRowSchema.extend({
 });
 export type OrphanPlacement = z.infer<typeof OrphanPlacementSchema>;
 
+/** A `governance_move_rungs` row whose subject container is soft-deleted. See docs/schemas.md §296d.
+ *
+ *  `id` IS `ownerUrn`'s object id, not a separate row id: this table's primary key is
+ *  `subject_object_id` alone (drizzle/0083), so the row's identity and its owner's identity are the
+ *  same uuid. Carried through the shared base anyway rather than given a bespoke shape, because
+ *  every consumer of this report reads `id`/`ownerUrn`/`repairable`/`blockedReason` uniformly and a
+ *  fourth row shape would be one more thing to special-case for no gain. */
+export const OrphanGovernanceMoveRungSchema = OrphanProjectionRowSchema.extend({
+  /** The stored tier literal, never recomputed from the subject's current type — the same rule
+   *  `move-enforcement.ts`'s `toRung` follows, and for the same reason: an operator matching this
+   *  row against `scp governance move-enforcement rungs` is matching on what was written. */
+  tier: GovernanceMoveTierSchema
+});
+export type OrphanGovernanceMoveRung = z.infer<typeof OrphanGovernanceMoveRungSchema>;
+
 /** Rows that outlived the object they hang off. See docs/schemas.md §296. */
 export const GraphIntegrityReportSchema = z.object({
   danglingRelationships: z.array(DanglingRelationshipSchema),
@@ -459,6 +477,12 @@ export const GraphIntegrityReportSchema = z.object({
   // `orphanSourceMappings` stays plain: a mapping is addressed by a five-part tuple this report does
   // not carry, so it is the one arm a repair run genuinely cannot reach.
   orphanExecutorBindings: z.array(OrphanExecutorBindingRowSchema),
-  orphanPlacements: z.array(OrphanPlacementSchema)
+  orphanPlacements: z.array(OrphanPlacementSchema),
+  /** The FOURTH kind, added 2026-09-19 (§296d). `governance_move_rungs` was recorded in
+   *  docs/graph.md §125b as one of eight tables with "no `.delete(...)` statement anywhere" — a
+   *  census keyed on the drizzle identifier, which missed `move-enforcement.ts`'s raw
+   *  `DELETE FROM governance_move_rungs`. It has an HTTP door, a CLI verb and an IaC apply prune, so
+   *  it is the one member of that list that can be both guarded and repaired. */
+  orphanGovernanceMoveRungs: z.array(OrphanGovernanceMoveRungSchema)
 });
 export type GraphIntegrityReport = z.infer<typeof GraphIntegrityReportSchema>;

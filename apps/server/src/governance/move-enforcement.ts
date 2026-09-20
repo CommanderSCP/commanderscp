@@ -272,8 +272,18 @@ export async function disableGovernanceMoveRung(
   `);
 }
 
-/** A human phrase naming the nearest enabled rung STRICTLY ABOVE this subject, or `undefined`. */
-async function nearestEnabledUpperRung(
+/** A human phrase naming the nearest enabled rung STRICTLY ABOVE this subject, or `undefined`.
+ *
+ *  EXPORTED so `graph/integrity-repo.ts` can ask the door's own question rather than re-deriving it.
+ *  An orphan rung is repairable exactly when this returns `undefined`, and the two answers have to
+ *  come from one function: a report that computed the monotone rule differently would either offer a
+ *  row `--repair` then 409s on, or hide one the operator could have cleared. Same rule route 6's
+ *  policy-managed carve-out follows — the carve-out is made twice, so it is written once.
+ *
+ *  Safe on a TOMBSTONED subject: `containmentChain` seeds on the subject id without a liveness
+ *  filter and only its ANCESTOR joins require `deleted_at IS NULL`, so a dead subject still yields
+ *  its own rung at depth 0 and every live rung above it. */
+export async function nearestEnabledUpperRung(
   tx: TenantTx,
   orgId: string,
   subjectObjectId: string

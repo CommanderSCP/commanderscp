@@ -3005,7 +3005,10 @@ export function buildProgram(): Command {
         "decision 2026-09-19) — the record is the mitigation, so every removal is printed here AND " +
         "written to the hash-chained audit log as `executor.binding.delete`. Only rows whose target " +
         "object is ALREADY soft-deleted are ever touched; policy-managed bindings are skipped, " +
-        "because the binding reconciler reaps those itself"
+        "because the binding reconciler reaps those itself. It also withdraws orphan placements and " +
+        "disables governance:move rungs left on deleted containers — both audited per row, the rung " +
+        "with a Decision as well, through the same doors `scp placement withdraw` and " +
+        "`scp governance move-enforcement disable` use"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -3022,9 +3025,10 @@ export function buildProgram(): Command {
         kind: string;
         id: string;
         owner: string;
-        /** Binding rows only — the other two halves of the door's key, carried through from the
-         *  report's STRUCTURED fields so the per-row cleanup loop never has to parse `detail`.
-         *  Empty for a kind the door does not address by `(type, lane)`. */
+        /** Binding rows: the other two halves of the door's key (with `lane`), carried through from
+         *  the report's STRUCTURED fields so the per-row cleanup loop never has to parse `detail`.
+         *  Rung rows: the rung's TIER, which is the word the lattice list speaks in. Empty for a kind
+         *  that has neither. */
         type: string;
         lane: string;
         detail: string;
@@ -3084,6 +3088,22 @@ export function buildProgram(): Command {
           // then the literal `false` for this arm, and both were wrong: a placement DOES have a door
           // (`DELETE /placements/{idOrUrn}`), and it refuses exactly three classes — a replica, a row
           // an executor binding still holds, and a stack-managed row. Only the server can tell which.
+          repairable: r.repairable
+        })),
+        // THE FOURTH KIND. `governance_move_rungs` was recorded in docs/graph.md §125b as having no
+        // delete statement anywhere — a census keyed on the drizzle identifier, which cannot see
+        // `move-enforcement.ts`'s raw `DELETE FROM governance_move_rungs`. It has an HTTP door, this
+        // CLI's own `scp governance move-enforcement disable`, and an IaC apply prune.
+        ...report.orphanGovernanceMoveRungs.map((r) => ({
+          kind: "orphan-governance-move-rung",
+          id: r.id,
+          owner: r.ownerUrn,
+          // The rung's TIER goes in the `type` column rather than into `detail`: it is the word the
+          // lattice list and the write response both speak in, so this row lines up with
+          // `scp governance move-enforcement rungs` without anybody parsing a sentence.
+          type: r.tier,
+          lane: "",
+          detail: `${r.ownerName}: ${r.detail}${r.blockedReason === null ? "" : ` [blocked: ${r.blockedReason}]`}`,
           repairable: r.repairable
         }))
       ];
@@ -3194,6 +3214,45 @@ export function buildProgram(): Command {
         count: 1
       }));
 
+      // …AND ORPHANED governance:move RUNGS, LAST. See docs/cli.md §69c.
+      //
+      // WHY LAST, and the order is reasoned rather than incidental. Two facts:
+      //  * EDGES BEFORE RUNGS is load-bearing, the same shape as bindings-before-placements. A rung
+      //    is unrepairable while an upper rung stands on its subject's containment chain, and that
+      //    chain is walked over live `contains` EDGES — so a dangling edge from a live container to
+      //    the dead subject is exactly what can pin one. Clearing edges first is what lets such a
+      //    rung go in a LATER run; it cannot help within this one, because `repairable` was computed
+      //    server-side before any loop started.
+      //  * Relative to bindings and placements the order is FREE, and stating that is the point: a
+      //    rung's subject is a CONTAINER (org root, containment domain, service, assembly), which is
+      //    never a placement and never an executor binding's target, so the two populations are
+      //    disjoint and neither can unblock the other. Running rungs last keeps the established
+      //    bindings→placements adjacency legible rather than interleaving a third rule into it.
+      //
+      // Through `governanceMove.disable` — the SAME door `scp governance move-enforcement disable`
+      // uses — so each removal writes its own `governance.move_enforcement.disable` audit event AND
+      // its own Decision in the same transaction. This arm is the one place in `--repair` that mints
+      // a Decision, and it does so for the ordinary reason: disabling a rung is a governance verdict
+      // whose door already records one, and repair reuses the door rather than a quieter path.
+      const rungsToRepair = report.orphanGovernanceMoveRungs.filter((r) => r.repairable);
+      const rungsDeleted: { outcome: string; count: number }[] = [];
+      for (const rung of rungsToRepair) {
+        // By URN, because that is what the door takes and what the report guarantees resolves: the
+        // row's `id` IS the subject's object id (the table's primary key is `subject_object_id`
+        // alone), so either would work — the URN is the one a human can read back.
+        await client.governanceMove.disable(rung.ownerUrn);
+        rungsDeleted.push({
+          outcome: `governance-move-rung-disabled ${rung.tier} '${rung.ownerName}' (${rung.ownerUrn})`,
+          count: 1
+        });
+      }
+      const rungsSkipped = report.orphanGovernanceMoveRungs
+        .filter((r) => !r.repairable)
+        .map((r) => ({
+          outcome: `governance-move-rung-skipped ${r.ownerUrn}: ${r.blockedReason ?? "no reason given"}`,
+          count: 1
+        }));
+
       const remaining = report.orphanSourceMappings.length;
       printResult(
         [
@@ -3209,6 +3268,13 @@ export function buildProgram(): Command {
           },
           { outcome: "executor-bindings-skipped", count: bindingsSkipped.length },
           ...bindingsSkipped,
+          {
+            outcome: "governance-move-rungs-disabled (audited per row, with a Decision each)",
+            count: rungsDeleted.length
+          },
+          ...rungsDeleted,
+          { outcome: "governance-move-rungs-skipped", count: rungsSkipped.length },
+          ...rungsSkipped,
           {
             outcome:
               "source-mapping-rows-left (the ONE arm with no id-addressed door — a mapping is " +
