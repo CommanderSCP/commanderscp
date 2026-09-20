@@ -17,13 +17,22 @@ Argo CD / Argo Workflows / Argo Events bundle templates so the 33k-line render l
     is why the two kinds share the subject walk but not the metadata write.
   - Passes CustomResourceDefinitions through byte-for-byte (never fromYaml'd — they carry multi-MB
     schemas); ClusterRoles pass through unchanged (cluster-scoped, no namespace).
+  - Applies per-container RESOURCES to every Deployment/StatefulSet/DaemonSet, keyed by CONTAINER
+    name. Upstream ships all four bundled backends with no requests and no limits on any workload,
+    which makes every one BestEffort: unbounded, and first evicted under node pressure. On a
+    single-node install the thing they evict is the SCP database.
+    Keyed by container rather than workload because the container name is the stable identifier —
+    `argocd-redis`'s container is `redis`, and a workload can be renamed upstream without its
+    container being renamed. A container with no entry is left exactly as upstream shipped it.
   - Emits the Namespace, then every resource, join'd with clean "\n---\n".
 
 Args (dict): ctx (root context `.`), namespace, component (label), manifest (raw yaml string from
-`.Files.Get`), replaces (list of [from, to] pairs).
+`.Files.Get`), replaces (list of [from, to] pairs), resources (dict: container name -> resource
+block; optional, defaults to none).
 */}}
 {{- define "commanderscp.renderVendoredBackend" -}}
 {{- $ns := .namespace -}}
+{{- $res := (.resources | default dict) -}}
 {{- $raw := .manifest -}}
 {{- range $pair := (.replaces | default (list)) -}}
 {{- $raw = $raw | replace (index $pair 0) (index $pair 1) -}}
@@ -47,6 +56,20 @@ Args (dict): ctx (root context `.`), namespace, component (label), manifest (raw
 {{- if eq $kind "RoleBinding" -}}{{- $_ := set $obj.metadata "namespace" $ns -}}{{- end -}}
 {{- else if ne $kind "ClusterRole" -}}
 {{- $_ := set $obj.metadata "namespace" $ns -}}
+{{- end -}}
+{{- if or (eq $kind "Deployment") (eq $kind "StatefulSet") (eq $kind "DaemonSet") -}}
+{{- $podSpec := ((($obj.spec).template).spec) -}}
+{{- if $podSpec -}}
+{{- range $field := (list "containers" "initContainers") -}}
+{{- $walked := list -}}
+{{- range $c := ((index $podSpec $field) | default (list)) -}}
+{{- $entry := index $res ($c.name | default "") -}}
+{{- if $entry -}}{{- $_ := set $c "resources" $entry -}}{{- end -}}
+{{- $walked = append $walked $c -}}
+{{- end -}}
+{{- if $walked -}}{{- $_ := set $podSpec $field $walked -}}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- $out = append $out (trim (toYaml $obj)) -}}
 {{- end -}}

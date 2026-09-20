@@ -24,5 +24,6 @@
       (list "quay.io/argoproj/argocli:v4.0.7" $w.serverImage)
       (list "quay.io/argoproj/workflow-controller:v4.0.7" $w.controllerImage)
     )
+    "resources" $w.resources
   ) }}
 {{- end }}

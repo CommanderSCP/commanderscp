@@ -16,5 +16,6 @@
     "replaces" (list
       (list "quay.io/argoproj/argo-events:v1.9.10" $e.image)
     )
+    "resources" $e.resources
   ) }}
 {{- end }}
