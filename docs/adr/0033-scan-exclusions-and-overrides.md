@@ -1,6 +1,6 @@
 # ADR-0033: Scan exclusions — a separately-authorized loosening dimension, admitted top-down
 
-**Status:** Proposed (owner decisions D1–D11 taken 2026-08-17; the mechanism below is proposal pending review)
+**Status:** **Accepted** (owner decisions D1–D11 taken 2026-08-17; mechanism built and merged as **M22, PR #262**; owner sign-off 2026-09-20). Accepting this ADR is what discharges [ADR-0020](0020-first-class-commander-scanning.md)'s conditional amendment — that bullet's supersession was written *"if and when"* this document is accepted, and is now unconditional.
 **Context doc:** [docs/proposals/secops-scan-rules-and-overrides.md](../proposals/secops-scan-rules-and-overrides.md)
 **Relates to:** [ADR-0016](0016-scoped-scan-requirement-policies.md) (the tightening MIN this sits beside, unchanged); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan as a boundary-authorization gate); [ADR-0032](0032-dependency-subscriptions.md) (the dependency inventory D1's rule reads); [ADR-0003](0003-internal-egress-for-execution-systems.md) (declaration-grants-nothing, the pattern §6 copies); [ADR-0024](0024-decision-and-audit-retention.md) (the evidentiary classes §7 assigns); [ADR-0031](0031-domain-local-objects-never-federate.md) (locality is opt-in — `domain_local NOT NULL DEFAULT false` — so D9 selects the existing default rather than overriding anything); charter principles 2, 4, 5, 6.
 **Supersedes:** the *"adds no way to loosen"* invariant asserted in [ADR-0020](0020-first-class-commander-scanning.md) — see §9. **ADR-0020 is amended to point here.**
