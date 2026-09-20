@@ -28,5 +28,6 @@
     "replaces" (list
       (list "docker.gitea.com/gitea:1.26.1-rootless" $g.image)
     )
+    "resources" $g.resources
   ) }}
 {{- end }}

@@ -38,19 +38,46 @@ bundledExecutor:
     # The scoped, non-admin account SCP mints in the bundled Argo CD and coordinates through. The
     # auto-wire hook (in the MAIN chart) mints its token and stores it as an SCP secret.
     scpAccount: scp-coordinator
-    # Argo CD component resource requests/limits. Modest defaults sized for a coordination-tier install.
+    # Per-CONTAINER resource requests/limits. Modest defaults sized for a coordination-tier install.
+    #
+    # KEYED BY CONTAINER NAME, and RE-KEYED 2026-09-20 from the component names this block used to
+    # carry (`server`/`repoServer`/`applicationController`/`valkey`). The numbers are unchanged; the
+    # old keys were read by NOTHING — no template referenced this block, so every bundled Argo CD
+    # workload rendered with no requests and no limits while these values sat here looking applied.
+    # A knob that reads as configuration and is wired nowhere is worse than an absent one, because
+    # setting it produces no effect AND no error.
     resources:
-      server:
+      argocd-server:
         requests: { cpu: 100m, memory: 128Mi }
         limits: { cpu: 500m, memory: 256Mi }
-      repoServer:
+      argocd-repo-server:
         requests: { cpu: 100m, memory: 128Mi }
         limits: { cpu: 500m, memory: 256Mi }
-      applicationController:
+      argocd-application-controller:
         requests: { cpu: 250m, memory: 256Mi }
         limits: { cpu: "1", memory: 512Mi }
-      valkey:
+      argocd-applicationset-controller:
         requests: { cpu: 50m, memory: 64Mi }
+        limits: { cpu: 250m, memory: 128Mi }
+      argocd-notifications-controller:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { cpu: 250m, memory: 128Mi }
+      dex:
+        requests: { cpu: 25m, memory: 64Mi }
+        limits: { cpu: 200m, memory: 128Mi }
+      # The container is `redis`; the IMAGE is Valkey (an owned, tested deviation from upstream).
+      redis:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { cpu: 200m, memory: 128Mi }
+      # INIT containers. They run to completion rather than steady-state, but an unbounded one can
+      # still spike a single-node install at exactly the moment everything else is starting.
+      # Gitea's three init containers are NOT listed anywhere: upstream already sizes them, and an
+      # entry here would silently override that.
+      copyutil:
+        requests: { cpu: 25m, memory: 32Mi }
+        limits: { cpu: 200m, memory: 128Mi }
+      secret-init:
+        requests: { cpu: 25m, memory: 32Mi }
         limits: { cpu: 200m, memory: 128Mi }
   # Argo Workflows (Mode B — bundled CI / build / test). Vendored, unmodified upstream v4.0.7;
   # off by default; two retargetable images (fail-closed when empty). Coordinated via the generic
@@ -61,12 +88,26 @@ bundledExecutor:
     # Upstream defaults (connected enable works out of the box); air-gap install.sh retargets.
     serverImage: quay.io/argoproj/argocli:v4.0.7 # argo-server / UI
     controllerImage: quay.io/argoproj/workflow-controller:v4.0.7 # workflow-controller
+    # Per-CONTAINER resources. Upstream ships neither workload with any, which makes both
+    # BestEffort — unbounded, and first evicted under node pressure.
+    resources:
+      workflow-controller:
+        requests: { cpu: 100m, memory: 128Mi }
+        limits: { cpu: 500m, memory: 512Mi }
+      argo-server:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { cpu: 250m, memory: 256Mi }
   # Argo Events (Mode B — event sources/sensors that can feed SCP's observe() path). Vendored,
   # unmodified upstream v1.9.10; off by default; one retargetable image.
   argoEvents:
     enabled: false
     namespace: scp-argo-events
     image: quay.io/argoproj/argo-events:v1.9.10 # argo-events controller — retargeted by install.sh
+    # Per-CONTAINER resources; upstream ships none.
+    resources:
+      controller-manager:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { cpu: 250m, memory: 256Mi }
   # Gitea (Mode B — the DEFAULT bundled unified registry: image + code + package, ADR-0012).
   # Vendored, unmodified upstream chart v12.6.0 (app 1.26.1) in the SQLite / single-replica /
   # no-external-DB / no-valkey minimal profile — Gitea runs self-contained on SQLite + one PVC.
@@ -89,3 +130,9 @@ bundledExecutor:
     # The Gitea admin account SCP creates + coordinates through. The auto-wire hook basic-auths as
     # this account and mints a SCOPED (least-privilege, non-admin) API token, stored as an SCP secret.
     scpAccount: scp-gitea-admin
+    # Per-CONTAINER resources; upstream ships none. Sized above the others: Gitea is the bundled
+    # registry as well as the git server, so it serves blob pushes and pulls.
+    resources:
+      gitea:
+        requests: { cpu: 100m, memory: 256Mi }
+        limits: { cpu: "1", memory: 768Mi }

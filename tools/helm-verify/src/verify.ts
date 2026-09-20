@@ -867,6 +867,33 @@ function verifySocketInvariantMatrix(): void {
         );
       }
     }
+    // EVERY BUNDLED WORKLOAD IS BOUNDED. Upstream ships all four backends with no requests and no
+    // limits on any container, which makes every one BestEffort: unbounded, and the FIRST thing
+    // evicted under node pressure. On a single-node install that is SCP's own Postgres.
+    //
+    // `bundledExecutor.argocd.resources` existed in values.yaml before this was wired and was read
+    // by NOTHING — sized, commented, per-component, and dead. That is why this assertion reads the
+    // RENDER rather than the values: a knob is only real if it reaches a container.
+    for (const doc of parseAllDocuments(bundledRaw)
+      .map((d) => d.toJS() as K8sDoc | null)
+      .filter((d): d is K8sDoc => Boolean(d))) {
+      if (!["Deployment", "StatefulSet", "DaemonSet"].includes(doc.kind ?? "")) continue;
+      const podSpec = ((doc.spec as { template?: { spec?: Record<string, unknown> } })?.template
+        ?.spec ?? {}) as Record<string, unknown>;
+      for (const field of ["containers", "initContainers"]) {
+        const list = (podSpec[field] ?? []) as {
+          name?: string;
+          resources?: Record<string, unknown>;
+        }[];
+        for (const container of list) {
+          const r = container.resources ?? {};
+          assert(
+            Boolean(r.requests) && Boolean(r.limits),
+            `[${label}] bundled ${doc.kind} '${doc.metadata?.name}' ${field} '${container.name}' declares no ${!r.requests ? "requests" : "limits"} — an unbounded vendored container is BestEffort and is evicted before anything that declares a request, which on a single-node install means SCP's own Postgres. Add it to that backend's 'resources' map in deploy/helm-bundled/values.yaml, keyed by CONTAINER name`
+          );
+        }
+      }
+    }
   }
 
   // NON-VACUITY, IN THREE PARTS. Every assertion above is "nothing was found", which is exactly what

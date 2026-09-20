@@ -61,6 +61,26 @@ metadata:
 {{- end -}}
 {{- $_ := set $obj "data" $data -}}
 {{- end -}}
+{{- /* PER-CONTAINER RESOURCES. This file carries its own copy of the render loop rather than
+       calling `commanderscp.renderVendoredBackend` (it also patches Argo CD's ConfigMaps), so the
+       injection the helper does has to be repeated here. Upstream ships all seven Argo CD
+       workloads with no requests and no limits, which makes every one BestEffort: unbounded, and
+       first evicted under node pressure. Keyed by CONTAINER name — `argocd-redis`'s container is
+       `redis`. A container with no entry is left as upstream shipped it. */ -}}
+{{- if or (eq $kind "Deployment") (eq $kind "StatefulSet") (eq $kind "DaemonSet") -}}
+{{- $podSpec := ((($obj.spec).template).spec) -}}
+{{- if $podSpec -}}
+{{- range $field := (list "containers" "initContainers") -}}
+{{- $walked := list -}}
+{{- range $c := ((index $podSpec $field) | default (list)) -}}
+{{- $entry := index ($a.resources | default dict) ($c.name | default "") -}}
+{{- if $entry -}}{{- $_ := set $c "resources" $entry -}}{{- end -}}
+{{- $walked = append $walked $c -}}
+{{- end -}}
+{{- if $walked -}}{{- $_ := set $podSpec $field $walked -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $out = append $out (trim (toYaml $obj)) -}}
 {{- end -}}
 {{- end -}}
