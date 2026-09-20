@@ -15,6 +15,12 @@ import {
   type PipelineHookGateContext,
   type PipelineHookGateEntry
 } from "./pipeline-hook-gate.js";
+import {
+  deadTargetInputContext,
+  describeDeadTarget,
+  DEAD_TARGET_REMEDIATION,
+  readTargetLiveness
+} from "./target-liveness.js";
 
 /** The gate-binding SEAM. See docs/coordination.md §532. */
 export interface GateVerdict {
@@ -103,14 +109,45 @@ export async function evaluateLifecycleGate(
     );
   }
 
+  const changeObject = await getObjectByIdOrUrnAnyType(tx, ctx.orgId, ctx.changeObjectId);
+  const targetObjectIds = targetObjectIdsOf(changeObject.properties as Record<string, unknown>);
+
+  // IS EVERY TARGET THIS CHANGE NAMES STILL THERE? `validating->accepted` is the ONE edge this
+  // function governs, and it is reached two ways: a human's `POST /changes/:id/accept`
+  // (routes/changes.ts), and reconcile.ts's own auto-accept of a rollback change once its waves
+  // succeed. `advanceValidatingChanges` (reconcile.ts) already surfaces a target tombstoned while
+  // a change merely SITS in `validating` awaiting that human call — this is the other half: the
+  // call itself. Checked BEFORE the rollback exemption below on purpose — this is a factual
+  // precondition (is the thing still in the graph?), not a governance policy, so a rollback gets
+  // no pass on it either; rolling back to a dead target is exactly as incoherent as accepting a
+  // change onto one. Reuses target-liveness.ts's vocabulary verbatim (same helper functions, same
+  // remediation text as reconcile.ts's dead-target Decisions) rather than inventing a second way
+  // to say "this target is dead". See docs/coordination.md §982-984 (target-liveness.ts) and
+  // §1006-1007 (this function's caller, transition.ts).
+  for (const targetObjectId of targetObjectIds) {
+    const liveness = await readTargetLiveness(tx, ctx.orgId, targetObjectId);
+    if (!liveness.live) {
+      return {
+        verdict: "block",
+        inputContext: {
+          fromState: ctx.fromState,
+          toState: ctx.toState,
+          explicitGatesBound: explicitlyBound.length,
+          ...deadTargetInputContext(targetObjectId, liveness)
+        },
+        reasonTree: {
+          summary: describeDeadTarget(targetObjectId, liveness),
+          remediation: DEAD_TARGET_REMEDIATION
+        }
+      };
+    }
+  }
+
   if (ctx.isRollback) {
     return allowVerdict(
       "rollback changes are exempt from governance at validating->accepted (DESIGN §9.4 — no human-review step to wait for)"
     );
   }
-
-  const changeObject = await getObjectByIdOrUrnAnyType(tx, ctx.orgId, ctx.changeObjectId);
-  const targetObjectIds = targetObjectIdsOf(changeObject.properties as Record<string, unknown>);
 
   const outcome = await evaluateGovernanceGate(tx, deps.sandbox, deps.host, {
     orgId: ctx.orgId,
