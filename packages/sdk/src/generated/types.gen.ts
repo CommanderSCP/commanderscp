@@ -11825,12 +11825,16 @@ export type GraphIntegrityResponses = {
             ownerUrn: string;
             ownerName: string;
             detail: string;
+            repairable: boolean;
+            blockedReason: string | null;
         }>;
         orphanExecutorBindings: Array<{
             id: string;
             ownerUrn: string;
             ownerName: string;
             detail: string;
+            repairable: boolean;
+            blockedReason: string | null;
             targetType: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
             lane: 'build' | 'test';
             policyManaged: boolean;
@@ -11840,9 +11844,9 @@ export type GraphIntegrityResponses = {
             ownerUrn: string;
             ownerName: string;
             detail: string;
-            deadEnd: 'component' | 'deployment-target' | 'both' | 'malformed';
             repairable: boolean;
             blockedReason: string | null;
+            deadEnd: 'component' | 'deployment-target' | 'both' | 'malformed';
         }>;
     };
 };

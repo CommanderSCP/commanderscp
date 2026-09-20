@@ -46903,13 +46903,28 @@
                           },
                           "detail": {
                             "type": "string"
+                          },
+                          "repairable": {
+                            "type": "boolean"
+                          },
+                          "blockedReason": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
                           "id",
                           "ownerUrn",
                           "ownerName",
-                          "detail"
+                          "detail",
+                          "repairable",
+                          "blockedReason"
                         ],
                         "additionalProperties": false
                       }
@@ -46933,6 +46948,19 @@
                           },
                           "detail": {
                             "type": "string"
+                          },
+                          "repairable": {
+                            "type": "boolean"
+                          },
+                          "blockedReason": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "targetType": {
                             "type": "string",
@@ -46966,6 +46994,8 @@
                           "ownerUrn",
                           "ownerName",
                           "detail",
+                          "repairable",
+                          "blockedReason",
                           "targetType",
                           "lane",
                           "policyManaged"
@@ -46993,15 +47023,6 @@
                           "detail": {
                             "type": "string"
                           },
-                          "deadEnd": {
-                            "type": "string",
-                            "enum": [
-                              "component",
-                              "deployment-target",
-                              "both",
-                              "malformed"
-                            ]
-                          },
                           "repairable": {
                             "type": "boolean"
                           },
@@ -47014,6 +47035,15 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "deadEnd": {
+                            "type": "string",
+                            "enum": [
+                              "component",
+                              "deployment-target",
+                              "both",
+                              "malformed"
+                            ]
                           }
                         },
                         "required": [
@@ -47021,9 +47051,9 @@
                           "ownerUrn",
                           "ownerName",
                           "detail",
-                          "deadEnd",
                           "repairable",
-                          "blockedReason"
+                          "blockedReason",
+                          "deadEnd"
                         ],
                         "additionalProperties": false
                       }

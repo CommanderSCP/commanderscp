@@ -386,12 +386,26 @@ export const DanglingRelationshipSchema = z.object({
 export type DanglingRelationship = z.infer<typeof DanglingRelationshipSchema>;
 
 /** One projection row (`source_mappings` / `executor_bindings`) or placement whose owning object
- *  is soft-deleted. Neither table carries a foreign key to `objects`, which is why these persist. */
+ *  is soft-deleted. Neither table carries a foreign key to `objects`, which is why these persist.
+ *
+ *  `repairable`/`blockedReason` are declared ONCE here, not once per kind, so every arm of the
+ *  integrity report answers "would `--repair` act on this?" the same way — a non-CLI consumer of
+ *  `GET /graph/integrity` used to have to reimplement `orphanExecutorBindings`' rule
+ *  (`!policyManaged`) itself, since the server only carried `policyManaged` and left the CLI to
+ *  compute `repairable` client-side (the fix `OrphanPlacementSchema` already applied for the
+ *  placement arm — see its own doc comment — generalized here to the base every kind shares). */
 export const OrphanProjectionRowSchema = z.object({
   id: z.string().uuid(),
   ownerUrn: UrnSchema,
   ownerName: z.string(),
-  detail: z.string()
+  detail: z.string(),
+  /** FALSE when the row's own delete door would refuse it, OR — for a mapping — when there is no
+   *  id-addressed door at all. See `blockedReason`. */
+  repairable: z.boolean(),
+  /** Why not, in the operator's own vocabulary and (where one exists) naming the command that
+   *  unblocks it; null when `repairable` is true. Nullable rather than absent so a client never has
+   *  to branch on presence. */
+  blockedReason: z.string().nullable()
 });
 export type OrphanProjectionRow = z.infer<typeof OrphanProjectionRowSchema>;
 
@@ -406,7 +420,9 @@ export const OrphanExecutorBindingRowSchema = OrphanProjectionRowSchema.extend({
   /** TRUE when `managed_by_policy_id` is set. Such a row is re-derived from the live placements
    *  every reconcile tick and pruned by `pruneUnwanted` once its target is a tombstone, so a repair
    *  run must SKIP it and say so — the same reason `DanglingRelationship.repairable` is false for a
-   *  replica edge. Read off the column, never inferred from the plugin or the detail text. */
+   *  replica edge. Read off the column, never inferred from the plugin or the detail text. Kept
+   *  alongside the inherited `repairable` (which is simply `!policyManaged` for this arm) because
+   *  `--repair`'s skip message names the reconciler, not just "false". */
   policyManaged: z.boolean()
 });
 export type OrphanExecutorBindingRow = z.infer<typeof OrphanExecutorBindingRowSchema>;
@@ -423,16 +439,12 @@ export type OrphanExecutorBindingRow = z.infer<typeof OrphanExecutorBindingRowSc
  *  delete), false while an executor binding still names it (orphan-guard route 6 refuses), and
  *  unwanted for a stack-managed row (the IaC apply prune is its reaper). Same rule the edge arm has
  *  carried since it was written: a row must never be offered as actionable if its door would refuse
- *  it. */
+ *  it. `repairable`/`blockedReason` now live on the shared base (`OrphanProjectionRowSchema`); this
+ *  extends it with only the field that IS placement-specific. */
 export const OrphanPlacementSchema = OrphanProjectionRowSchema.extend({
   /** WHICH end died. `malformed` means the row does not name two resolvable object ids at all —
    *  reported rather than skipped, because a row nothing can explain is the one worth seeing. */
-  deadEnd: z.enum(["component", "deployment-target", "both", "malformed"]),
-  /** FALSE when `DELETE /placements/{idOrUrn}` would refuse this row — see `blockedReason`. */
-  repairable: z.boolean(),
-  /** Why not, in the operator's own vocabulary and naming the command that unblocks it; null when
-   *  `repairable` is true. Nullable rather than absent so a client never has to branch on presence. */
-  blockedReason: z.string().nullable()
+  deadEnd: z.enum(["component", "deployment-target", "both", "malformed"])
 });
 export type OrphanPlacement = z.infer<typeof OrphanPlacementSchema>;
 

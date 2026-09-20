@@ -25,6 +25,11 @@ export interface OrphanProjectionRow {
   ownerUrn: string;
   ownerName: string;
   detail: string;
+  /** FALSE when the row's own delete door would refuse it, or when there is no id-addressed door at
+   *  all (the mapping arm). See docs/schemas.md §296c. */
+  repairable: boolean;
+  /** Why not, in the operator's own vocabulary; null when `repairable` is true. */
+  blockedReason: string | null;
 }
 
 /** The one projection row `--repair` can act on, so the one that carries its door's whole key.
@@ -116,7 +121,16 @@ export async function findGraphIntegrityIssues(
     id: r.id,
     ownerUrn: r.ownerUrn,
     ownerName: r.ownerName,
-    detail: `${r.sourceKind}:${r.repoPattern ?? "*"}:${r.pathPattern ?? "*"} (${r.type})`
+    detail: `${r.sourceKind}:${r.repoPattern ?? "*"}:${r.pathPattern ?? "*"} (${r.type})`,
+    // NEVER repairable, unconditionally — the one arm with no id-addressed delete door. A mapping
+    // is addressed by a five-part identity tuple (org, component, sourceKind, repoPattern,
+    // pathPattern) this report does not carry, so `--repair` has always skipped this arm; this just
+    // says so on the wire instead of leaving every consumer but the CLI to guess a bare `false`.
+    repairable: false,
+    blockedReason:
+      "no id-addressed delete door — a mapping is removed via `scp change-source delete-mapping " +
+      "<sourceKind> --component <urn> --repo <pattern> --path <pattern>`, matching this row's " +
+      'detail verbatim (an omitted glob means it matched null, not "any")'
   }));
 
   const orphanExecutorBindings = (
@@ -152,7 +166,16 @@ export async function findGraphIntegrityIssues(
     // tick, and an operator who races it gets a 404 that looks like a bug.
     detail:
       `${r.type}/${r.lane} -> ${r.externalRef ?? "(no external ref)"}` +
-      (r.managedByPolicyId === null ? "" : " [policy-managed: the reconciler prunes this]")
+      (r.managedByPolicyId === null ? "" : " [policy-managed: the reconciler prunes this]"),
+    // Exactly `!policyManaged` — the CLI used to compute this same expression client-side (owner
+    // decision 2026-09-19), which left a non-CLI consumer of this endpoint with no way to tell a
+    // policy-managed row from a genuinely repairable one without knowing that rule itself.
+    repairable: r.managedByPolicyId === null,
+    blockedReason:
+      r.managedByPolicyId === null
+        ? null
+        : "policy-managed — the binding reconciler prunes this itself once its target is a " +
+          "tombstone; deleting it by hand here would only race that reconciler"
   }));
 
   // A placement reads its pair from `properties` (ADR-0026 D17), so no foreign key can express

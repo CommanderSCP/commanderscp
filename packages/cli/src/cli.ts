@@ -3046,16 +3046,23 @@ export function buildProgram(): Command {
           detail: `${r.typeId} (${r.deadEnd} dead)`,
           repairable: r.repairable
         })),
+        // `repairable`/`blockedReason` are read off the report for all THREE kinds below, never
+        // recomputed here. This used to be three different rules living in three different places —
+        // a hardcoded `false` for mappings, a client-side `!r.policyManaged` for bindings, and (only
+        // after that arm's own fix) a real server-computed value for placements — so a non-CLI
+        // caller of `GET /graph/integrity` had no way to learn what `--repair` would act on except by
+        // reverse-engineering this file. One definition now (`OrphanProjectionRowSchema`), read here
+        // and nowhere computed — `blockedReason` rather than a bare flag: a row the operator is told
+        // not to touch is useless unless it also says why (and, where one exists, who will fix it).
+        // See docs/cli.md §69a.
         ...report.orphanSourceMappings.map((r) => ({
           kind: "orphan-source-mapping",
           id: r.id,
           owner: r.ownerUrn,
           type: "",
           lane: "",
-          detail: `${r.ownerName}: ${r.detail}`,
-          // `--repair` does NOT touch mappings: the delete door matches a five-part identity tuple
-          // this report does not carry. Saying `true` here would advertise a repair that never runs.
-          repairable: false
+          detail: `${r.ownerName}: ${r.detail}${r.blockedReason === null ? "" : ` [blocked: ${r.blockedReason}]`}`,
+          repairable: r.repairable
         })),
         ...report.orphanExecutorBindings.map((r) => ({
           kind: "orphan-executor-binding",
@@ -3063,11 +3070,8 @@ export function buildProgram(): Command {
           owner: r.ownerUrn,
           type: r.targetType,
           lane: r.lane,
-          detail: `${r.ownerName}: ${r.detail}`,
-          // A policy-managed row is NOT repairable by this command — the binding reconciler reaps it
-          // once the target is a tombstone, so `--repair` skips it. Exactly what `repairable` already
-          // means for a replica edge, which is what lets one filter select the whole actionable set.
-          repairable: !r.policyManaged
+          detail: `${r.ownerName}: ${r.detail}${r.blockedReason === null ? "" : ` [blocked: ${r.blockedReason}]`}`,
+          repairable: r.repairable
         })),
         ...report.orphanPlacements.map((r) => ({
           kind: "orphan-placement",
@@ -3075,8 +3079,6 @@ export function buildProgram(): Command {
           owner: r.ownerUrn,
           type: "",
           lane: "",
-          // `blockedReason` rather than a bare flag: a row the operator is told not to touch is
-          // useless unless it also says who will. See docs/cli.md §69a.
           detail: `${r.ownerName}: ${r.detail}${r.blockedReason === null ? "" : ` [blocked: ${r.blockedReason}]`}`,
           // COMPUTED by the server, not asserted here. This column has been the literal `true` and
           // then the literal `false` for this arm, and both were wrong: a placement DOES have a door
@@ -3130,8 +3132,13 @@ export function buildProgram(): Command {
       // tombstone), so clearing bindings first is what lets such a placement go in a LATER run. It
       // cannot help within this one — `repairable` was computed server-side before either loop ran —
       // and reversing the order would guarantee a 409 in a run where the two populations overlap.
-      const bindingsToRepair = report.orphanExecutorBindings.filter((b) => !b.policyManaged);
-      const skippedManagedBindings = report.orphanExecutorBindings.length - bindingsToRepair.length;
+      //
+      // FILTERED ON `repairable`, not `!policyManaged` — the two are identical for this arm today
+      // (the server computes `repairable: !policyManaged` for a binding), but reading the report's
+      // own verdict rather than recomputing the rule here is what keeps this loop and a non-CLI
+      // caller of the same endpoint from ever being able to disagree about what counts as actionable.
+      const bindingsToRepair = report.orphanExecutorBindings.filter((b) => b.repairable);
+      const skippedBindings = report.orphanExecutorBindings.filter((b) => !b.repairable);
       const removedBindings: { owner: string; name: string; type: string; lane: string }[] = [];
       for (const binding of bindingsToRepair) {
         // Addressed by the OWNER urn plus the row's own `(targetType, lane)`, read from the report's
@@ -3178,6 +3185,15 @@ export function buildProgram(): Command {
           count: 1
         }));
 
+      // Same per-row shape the placement arm already prints — each skip names the server's own
+      // stated reason rather than assuming every skip is "policy-managed" (true for every row this
+      // arm can produce today, but the report's `blockedReason` is what future kinds would speak
+      // through, not this loop re-deriving a reason from `policyManaged`).
+      const bindingsSkipped = skippedBindings.map((b) => ({
+        outcome: `executor-binding-skipped ${b.targetType}/${b.lane} on '${b.ownerName}' (${b.ownerUrn}): ${b.blockedReason ?? "no reason given"}`,
+        count: 1
+      }));
+
       const remaining = report.orphanSourceMappings.length;
       printResult(
         [
@@ -3191,12 +3207,8 @@ export function buildProgram(): Command {
             outcome: "executor-bindings-deleted (EXECUTION ROUTES removed; audited per row)",
             count: removedBindings.length
           },
-          {
-            outcome:
-              "policy-managed-bindings-skipped (the binding reconciler prunes these itself next " +
-              "tick; deleting one here would only race it)",
-            count: skippedManagedBindings
-          },
+          { outcome: "executor-bindings-skipped", count: bindingsSkipped.length },
+          ...bindingsSkipped,
           {
             outcome:
               "source-mapping-rows-left (the ONE arm with no id-addressed door — a mapping is " +
