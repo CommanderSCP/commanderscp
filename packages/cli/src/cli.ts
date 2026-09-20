@@ -6292,6 +6292,104 @@ export function buildProgram(): Command {
       }
     );
 
+  connectCmd
+    .command("argo-workflows")
+    .description(
+      "Register an Argo Workflows server for the build/test lanes (stores the token, creates an " +
+        "execution-system). Use this for the BUNDLED Argo Workflows (Mode B) as well as a BYO one"
+    )
+    .requiredOption(
+      "--url <url>",
+      "Argo Workflows API base URL, e.g. https://argo-server.ns.svc:2746"
+    )
+    .requiredOption("--token <token>", "an Argo Workflows API token (scoped per its RBAC)")
+    .requiredOption(
+      "--namespace <namespace>",
+      "the Kubernetes namespace its workflows run in. REQUIRED by the plugin, which puts it in " +
+        "every API path — a system registered without it cannot submit a workflow"
+    )
+    .option("--name <name>", "name for the execution-system object", "argo-workflows")
+    .option(
+      "--token-key <key>",
+      "secrets-store key to hold the token (default: <name>-argo-workflows-token)"
+    )
+    .option("--no-validate", "skip the best-effort connectivity check")
+    .option(
+      "--allow-internal-egress",
+      "declare that this system may be reached at a private/in-cluster address (the bundled " +
+        "Argo Workflows is an in-cluster Service, so this is the usual case). This is a " +
+        "DECLARATION, not a grant: the server also requires its host to be in the operator's " +
+        "SCP_INTERNAL_EGRESS_HOSTS allowlist, or egress stays blocked (ADR-0003)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          url: string;
+          token: string;
+          namespace: string;
+          name: string;
+          tokenKey?: string;
+          validate: boolean;
+          allowInternalEgress?: boolean;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const serverUrl = opts.url.replace(/\/+$/, "");
+        const tokenKey = opts.tokenKey ?? `${opts.name}-argo-workflows-token`;
+
+        if (opts.validate) {
+          // Best-effort, exactly as `connect argocd`: a failure warns but does not block, since an
+          // air-gapped or in-cluster server is frequently unreachable from the operator's shell.
+          try {
+            const res = await fetch(`${serverUrl}/api/v1/version`, {
+              headers: { authorization: `Bearer ${opts.token}` }
+            });
+            if (!res.ok) {
+              console.warn(
+                `WARN: Argo Workflows ${serverUrl}/api/v1/version returned HTTP ${res.status} — registering anyway`
+              );
+            } else {
+              console.log(`Connectivity to ${serverUrl}: OK`);
+            }
+          } catch (err) {
+            console.warn(
+              `WARN: could not reach ${serverUrl} (${String(err)}) — registering anyway`
+            );
+          }
+        }
+
+        await client.secrets.put(tokenKey, { value: opts.token });
+        const created = await client.object("execution-system").create(
+          {
+            name: opts.name,
+            properties: {
+              kind: "argo-workflows",
+              serverUrl,
+              namespace: opts.namespace,
+              tokenSecretKey: tokenKey,
+              ...(opts.allowInternalEgress ? { allowInternalEgress: true } : {})
+            }
+          },
+          { idempotencyKey: randomUUID() }
+        );
+        console.log(
+          `Registered execution-system '${opts.name}' (${created.id}). Token stored as secret '${tokenKey}'.`
+        );
+        console.log(
+          `NOTE: that token is held by THIS instance — anyone with access here can reach ${serverUrl}.`
+        );
+        // The build lane is what makes the pipeline's Build step non-empty; `--type image` is the
+        // load-bearing half (Category `build`), and build/test are SEPARATE bindings because the
+        // table is unique on (org, target, type, lane).
+        console.log(
+          `Next: scp executor bind <component> --execution-system ${created.id} --type image --lane build`
+        );
+        printResult(created, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
+
   const executorCmd = program
     .command("executor")
     .description("Configure ExecutorPlugin instances (DESIGN §12)");

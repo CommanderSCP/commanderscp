@@ -17,12 +17,53 @@ import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
 import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
-import { assertEveryModuleHasManifest } from "../plugin-host/plugin-manifests.js";
+import {
+  assertEveryModuleHasManifest,
+  declaredConfigKeys
+} from "../plugin-host/plugin-manifests.js";
 
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
  *  the same execution system shares this id, so they share one observe() poll + cursor. */
 export function executionSystemInstanceId(executionSystemId: string): string {
   return `${EXECUTION_SYSTEM_INSTANCE_PREFIX}${executionSystemId}`;
+}
+
+/** The plugin config a SYSTEM-BACKED binding runs with, derived from the execution-system object.
+ *
+ *  `serverUrl` + `tokenSecretKey` are not the whole config surface: argo-workflows REQUIRES
+ *  `namespace` and interpolates it into every API path, so a config built from those two keys alone
+ *  submitted to `/api/v1/workflows/undefined/submit` — silently, with no error at bind or resolve.
+ *
+ *  Only keys the module's manifest DECLARES are carried. An execution-system's `properties` are
+ *  tenant-writable, so intersecting with the declared set is what keeps this safe: a tenant cannot
+ *  introduce a config key the plugin never advertised, and server-injected keys (`statePath`,
+ *  `runnerImage`, …) are absent from every `configSchema` by construction. `serverUrl` is always
+ *  written from the system itself, so egress stays pinned to the system's own host.
+ *
+ *  NOT VALIDATED AGAINST THE MODULE'S SCHEMA, deliberately. This branch REPLACES the binding's own
+ *  `config` rather than merging it, and several modules' required keys are per-BINDING rather than
+ *  per-system — `gitea` requires `owner`/`repo`, `github` adds `appId`/`installationId`,
+ *  `terraform` and `pipeline-generic` require `triggerUrl`. A system-derived config therefore
+ *  cannot satisfy those schemas, and running `validatePluginConfig` here refuses every gitea and
+ *  github system-backed binding (caught by `executors.integration.test.ts`'s M15.1b gitea case).
+ *  That those modules resolve to a config missing their own required keys is a REAL pre-existing
+ *  gap, and a separate one: closing it means deciding whether a system-backed binding may merge
+ *  binding-level config, which is a design question, not a rename. Tracked, not smuggled in here. */
+export function executionSystemPluginConfig(
+  props: { serverUrl?: string; tokenSecretKey?: string },
+  pluginModule: string
+): Record<string, unknown> {
+  const carried: Record<string, unknown> = {};
+  for (const key of declaredConfigKeys(pluginModule)) {
+    if (key === "serverUrl" || key === "tokenSecretKey") continue;
+    const value = (props as Record<string, unknown>)[key];
+    if (value !== undefined) carried[key] = value;
+  }
+  return {
+    ...carried,
+    serverUrl: props.serverUrl,
+    ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
+  };
 }
 
 /** RESERVED plugin-instance-id namespace: only `executionSystemInstanceId()` may mint ids under it. */
@@ -861,12 +902,10 @@ export async function resolveExecutorPluginInstance(
     }
     pluginModule = (props.kind ?? "").trim();
     pluginInstanceId = executionSystemInstanceId(sys.id);
-    // The plugin reads its token via `ctx.secrets.get(<tokenSecretKey>)` (e.g. the Argo CD plugin);
+    // Carries the module's DECLARED settings off the system object — `namespace` for argo-workflows
+    // is the case that forced it. The plugin reads its token via `ctx.secrets.get(<tokenSecretKey>)`;
     // the system's tokenSecretKey is both the config field name AND the secrets-table key.
-    tenantConfig = {
-      serverUrl: props.serverUrl,
-      ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
-    };
+    tenantConfig = executionSystemPluginConfig(props, pluginModule);
     secretRefs = props.tokenSecretKey ? { [props.tokenSecretKey]: props.tokenSecretKey } : {};
   }
 

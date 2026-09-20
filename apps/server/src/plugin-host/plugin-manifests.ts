@@ -120,6 +120,22 @@ export function validatePluginConfig(module: string, config: unknown): void {
   validateProperties(manifest.configSchema, config ?? {});
 }
 
+/** The config keys a module's own manifest DECLARES.
+ *
+ *  Used to carry module-specific settings from an `execution-system` object into a system-backed
+ *  binding's plugin config. Intersecting with this list is what makes that safe: an
+ *  execution-system's `properties` are tenant-writable, so copying them wholesale would let a
+ *  tenant choose config keys the plugin never advertised. Server-injected keys (`statePath`,
+ *  `runnerImage`, …) are deliberately absent from every `configSchema`, so they can never be
+ *  reached this way — the same invariant `validatePluginConfig` already rests on.
+ *
+ *  Returns `[]` for a module with no manifest or no declared properties. */
+export function declaredConfigKeys(module: string): string[] {
+  const schema = MANIFEST_BY_MODULE[module]?.configSchema as
+    { properties?: Record<string, unknown> } | undefined;
+  return Object.keys(schema?.properties ?? {});
+}
+
 /** Fails loud at load if an allowlisted module has none. See docs/plugin-host.md §91. */
 export function assertEveryModuleHasManifest(modules: readonly string[], label: string): void {
   const missing = modules.filter((module) => !hasPluginManifest(module));
