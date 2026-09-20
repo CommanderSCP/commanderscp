@@ -1,6 +1,7 @@
 {{- if .Values.bundledExecutor.argoWorkflows.enabled -}}
 {{- $w := .Values.bundledExecutor.argoWorkflows -}}
 {{- if not $w.serverImage }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .serverImage is empty — the vendored, retargeted argocli image is required (set by the air-gap install.sh). Fail-closed." }}{{- end -}}
+{{- if not $w.tlsSecretName }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .tlsSecretName is empty — argo-server would mint a NEW self-signed certificate on every start, which makes its CA unpinnable and breaks SCP's executorTls trust at the first restart. Fail-closed." }}{{- end -}}
 {{- if not $w.controllerImage }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .controllerImage is empty — the vendored, retargeted workflow-controller image is required." }}{{- end -}}
 # =============================================================================================
 # Bundled Argo Workflows (Mode B — bundled CI/build/test). Vendored, UNMODIFIED upstream v4.0.7
@@ -25,5 +26,6 @@
       (list "quay.io/argoproj/workflow-controller:v4.0.7" $w.controllerImage)
     )
     "resources" $w.resources
+    "containerArgs" (dict "argo-server" (list (printf "--tls-certificate-secret-name=%s" $w.tlsSecretName)))
   ) }}
 {{- end }}

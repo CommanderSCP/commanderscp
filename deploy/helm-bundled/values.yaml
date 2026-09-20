@@ -23,6 +23,17 @@
 federationRole: commander
 
 bundledExecutor:
+  # The namespace the MAIN CommanderSCP chart is installed into. Used to scope the bundled
+  # backends' ingress NetworkPolicies to SCP's own pods rather than to any pod anywhere that
+  # happens to carry SCP's label. `scp-bundled.sh` passes this from its --scp-namespace flag.
+  #
+  # Empty is REFUSED where it is load-bearing (see argo-workflows-networkpolicy.yaml). An
+  # unscoped selector is `namespaceSelector: {}` ANDed with a pod label, and a pod label is
+  # writable by anyone who can create a pod in any namespace — so leaving it empty turns a network
+  # control into one its own subject can satisfy. Measured: adding
+  # `app.kubernetes.io/name=commanderscp` to a busybox pod in `default` was enough to reach
+  # argo-server:2746 through the policy.
+  scpNamespace: ""
   argocd:
     enabled: false
     # Own namespace so the bundled backend keeps its own RBAC + cluster credentials, isolated from
@@ -88,6 +99,17 @@ bundledExecutor:
     # Upstream defaults (connected enable works out of the box); air-gap install.sh retargets.
     serverImage: quay.io/argoproj/argocli:v4.0.7 # argo-server / UI
     controllerImage: quay.io/argoproj/workflow-controller:v4.0.7 # workflow-controller
+    # The Secret holding argo-server's TLS certificate, created by `scp-bundled.sh enable` if it
+    # does not exist and NEVER regenerated afterwards.
+    #
+    # Without it argo-server mints a fresh self-signed certificate ON EVERY START — measured across
+    # three restarts, three distinct fingerprints, each `valid_from` matching pod start. That makes
+    # the CA unpinnable: SCP's `executorTls` trust would work until the first restart of this pod
+    # and then fail verification with an error that looks like SCP's own misconfiguration. Plain
+    # HTTP was considered instead and rejected: argo-server runs `--auth-mode=client` (measured: an
+    # unauthenticated call returns 401), so every request carries a Kubernetes bearer token, and on
+    # a multi-node cluster with an unencrypted CNI that token crosses the wire in clear.
+    tlsSecretName: argo-server-tls
     # Per-CONTAINER resources. Upstream ships neither workload with any, which makes both
     # BestEffort — unbounded, and first evicted under node pressure.
     resources:

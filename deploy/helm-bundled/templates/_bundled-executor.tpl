@@ -28,11 +28,14 @@ Argo CD / Argo Workflows / Argo Events bundle templates so the 33k-line render l
 
 Args (dict): ctx (root context `.`), namespace, component (label), manifest (raw yaml string from
 `.Files.Get`), replaces (list of [from, to] pairs), resources (dict: container name -> resource
-block; optional, defaults to none).
+block; optional), containerArgs (dict: container name -> list of args APPENDED to the vendored
+ones; optional). Args are appended rather than replaced so upstream's own invocation is preserved
+and only augmented — a replace would silently drop whatever upstream adds in a later version.
 */}}
 {{- define "commanderscp.renderVendoredBackend" -}}
 {{- $ns := .namespace -}}
 {{- $res := (.resources | default dict) -}}
+{{- $extraArgs := (.containerArgs | default dict) -}}
 {{- $raw := .manifest -}}
 {{- range $pair := (.replaces | default (list)) -}}
 {{- $raw = $raw | replace (index $pair 0) (index $pair 1) -}}
@@ -65,6 +68,8 @@ block; optional, defaults to none).
 {{- range $c := ((index $podSpec $field) | default (list)) -}}
 {{- $entry := index $res ($c.name | default "") -}}
 {{- if $entry -}}{{- $_ := set $c "resources" $entry -}}{{- end -}}
+{{- $extra := index $extraArgs ($c.name | default "") -}}
+{{- if $extra -}}{{- $_ := set $c "args" (concat ($c.args | default (list)) $extra) -}}{{- end -}}
 {{- $walked = append $walked $c -}}
 {{- end -}}
 {{- if $walked -}}{{- $_ := set $podSpec $field $walked -}}{{- end -}}

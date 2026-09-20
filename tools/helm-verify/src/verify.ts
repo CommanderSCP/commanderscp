@@ -827,6 +827,10 @@ function verifySocketInvariantMatrix(): void {
       "--set",
       "bundledExecutor.argoWorkflows.enabled=true",
       "--set",
+      // Required once the argo-server ingress policy is namespace-scoped; the chart fails closed
+      // without it rather than falling back to "SCP's pod label in ANY namespace".
+      "bundledExecutor.scpNamespace=verify-scp-ns",
+      "--set",
       "bundledExecutor.argoEvents.enabled=true",
       "--set",
       "bundledExecutor.gitea.enabled=true"
@@ -867,6 +871,23 @@ function verifySocketInvariantMatrix(): void {
         );
       }
     }
+    // ARGO-SERVER IS HANDED A PERSISTENT CERTIFICATE. Without `--tls-certificate-secret-name` it
+    // mints a fresh self-signed cert on every start — measured across three restarts, three
+    // distinct fingerprints — which makes its CA unpinnable and breaks SCP's executorTls trust at
+    // the first restart of that pod, with an error that reads like SCP's own misconfiguration.
+    for (const doc of parseAllDocuments(bundledRaw)
+      .map((d) => d.toJS() as K8sDoc | null)
+      .filter((d): d is K8sDoc => Boolean(d))) {
+      if (doc.kind !== "Deployment" || doc.metadata?.name !== "argo-server") continue;
+      const containers = ((doc.spec as { template?: { spec?: { containers?: unknown[] } } })
+        ?.template?.spec?.containers ?? []) as { name?: string; args?: string[] }[];
+      const server = containers.find((c) => c.name === "argo-server");
+      assert(
+        (server?.args ?? []).some((a) => a.startsWith("--tls-certificate-secret-name=")),
+        `[${label}] bundled argo-server has no --tls-certificate-secret-name — it will mint a NEW self-signed certificate on every start, so nothing can pin its CA`
+      );
+    }
+
     // EVERY BUNDLED WORKLOAD IS BOUNDED. Upstream ships all four backends with no requests and no
     // limits on any container, which makes every one BestEffort: unbounded, and the FIRST thing
     // evicted under node pressure. On a single-node install that is SCP's own Postgres.
@@ -877,6 +898,26 @@ function verifySocketInvariantMatrix(): void {
     for (const doc of parseAllDocuments(bundledRaw)
       .map((d) => d.toJS() as K8sDoc | null)
       .filter((d): d is K8sDoc => Boolean(d))) {
+      if (doc.kind === "NetworkPolicy") {
+        // NO INGRESS RULE MAY ADMIT A POD LABEL FROM ANY NAMESPACE. `namespaceSelector: {}` ANDed
+        // with a podSelector reads as "SCP's pods", but a pod label is writable by anyone who can
+        // create a pod in any namespace — so the control is one its own subject can satisfy.
+        // Measured before this was scoped: adding `app.kubernetes.io/name=commanderscp` to a
+        // busybox pod in `default` took it from BLOCKED to REACHED, same pod, nothing else changed.
+        const ingress = ((doc.spec as { ingress?: unknown[] })?.ingress ?? []) as {
+          from?: { namespaceSelector?: Record<string, unknown>; podSelector?: unknown }[];
+        }[];
+        for (const rule of ingress) {
+          for (const peer of rule.from ?? []) {
+            if (!peer.podSelector || peer.namespaceSelector === undefined) continue;
+            assert(
+              Object.keys(peer.namespaceSelector).length > 0,
+              `[${label}] bundled NetworkPolicy '${doc.metadata?.name}' admits a pod label from an EMPTY namespaceSelector — that is any namespace, and a pod label is writable by anyone who can create a pod. Scope it with bundledExecutor.scpNamespace`
+            );
+          }
+        }
+        continue;
+      }
       if (!["Deployment", "StatefulSet", "DaemonSet"].includes(doc.kind ?? "")) continue;
       const podSpec = ((doc.spec as { template?: { spec?: Record<string, unknown> } })?.template
         ?.spec ?? {}) as Record<string, unknown>;
@@ -1922,6 +1963,10 @@ function main(): void {
       // renders against a chart where the backend is OFF and passes vacuously.
       "--set",
       "bundledExecutor.argoWorkflows.enabled=true",
+      "--set",
+      // Required once the argo-server ingress policy is namespace-scoped; the chart fails closed
+      // without it rather than falling back to "SCP's pod label in ANY namespace".
+      "bundledExecutor.scpNamespace=verify-scp-ns",
       // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
       // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
       "--set-json",
@@ -2496,6 +2541,10 @@ function main(): void {
       "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3",
       "--set",
       "bundledExecutor.argoWorkflows.enabled=true",
+      "--set",
+      // Required once the argo-server ingress policy is namespace-scoped; the chart fails closed
+      // without it rather than falling back to "SCP's pod label in ANY namespace".
+      "bundledExecutor.scpNamespace=verify-scp-ns",
       "--set",
       "bundledExecutor.argoWorkflows.serverImage=registry.example.com/scp/argocli:v4.0.7",
       "--set",

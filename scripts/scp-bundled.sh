@@ -80,9 +80,12 @@ case "$VERB" in enable|render) : ;; *) usage 2 ;; esac
 [ "$VERB" = "render" ] && DRY_RUN=1
 
 # backend name -> (values key, namespace, main-chart flag it flips on the SCP release or "")
+TLS_SECRET="argo-server-tls"
+CA_SECRET="scp-argo-workflows-ca"
 case "$BACKEND" in
   argocd)         KEY="argocd";        NS="scp-argocd";         SCP_FLAG="bundledExecutor.argocd.enabled" ;;
   argo-workflows) KEY="argoWorkflows"; NS="scp-argo-workflows"; SCP_FLAG="" ;;
+  # (TLS_SECRET/CA_SECRET are only consulted for argo-workflows; see ensure_argo_server_tls)
   argo-events)    KEY="argoEvents";    NS="scp-argo-events";    SCP_FLAG="" ;;
   gitea)          KEY="gitea";         NS="scp-gitea";          SCP_FLAG="bundledExecutor.gitea.enabled" ;;
   *) echo "scp-bundled: unknown backend '$BACKEND'" >&2; usage 2 ;;
@@ -108,10 +111,53 @@ command -v helm >/dev/null 2>&1 || fail "helm not found on PATH"
 command -v kubectl >/dev/null 2>&1 || fail "kubectl not found on PATH"
 [ -f "${CHART_DIR}/Chart.yaml" ] || fail "bundled chart not found at ${CHART_DIR} (pass --chart)"
 
+# ---- 0b. argo-workflows only: a PERSISTENT server certificate ---------------------------------
+# argo-server mints a fresh self-signed certificate on EVERY start unless handed one. Measured
+# across three restarts: three distinct fingerprints, each `valid_from` matching pod start. That
+# makes the CA unpinnable — SCP's `executorTls` trust works until this pod restarts and then fails
+# verification with an error that reads like SCP's own misconfiguration.
+#
+# So the certificate is generated ONCE, here, and never again: the guard is the Secret's existence,
+# so re-running `enable` is idempotent and does NOT rotate it. Rotating means deleting the Secret
+# deliberately and re-running, which is the only way it should ever happen, because the CA has to
+# be re-distributed to SCP in the same breath.
+ensure_argo_server_tls() {
+  kubectl get namespace "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS" >/dev/null
+  if kubectl -n "$NS" get secret "$TLS_SECRET" >/dev/null 2>&1; then
+    log "TLS secret ${TLS_SECRET} already present in ${NS} — reusing it (NOT rotating)"
+    return 0
+  fi
+  command -v openssl >/dev/null 2>&1 || fail "openssl not found on PATH — needed once, to mint argo-server's persistent certificate"
+  log "minting a persistent self-signed certificate for argo-server → secret ${TLS_SECRET}"
+  local dir; dir="$(mktemp -d)"
+  # SANs cover every name SCP may dial it by. `argo-server.<ns>.svc.cluster.local` is the one the
+  # SSRF allowlist and the executor config use; the shorter forms are included so an operator
+  # testing by hand does not hit a name mismatch and conclude the cert is broken.
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -subj "/O=CommanderSCP/CN=argo-server.${NS}.svc" \
+    -addext "subjectAltName=DNS:argo-server,DNS:argo-server.${NS},DNS:argo-server.${NS}.svc,DNS:argo-server.${NS}.svc.cluster.local" \
+    -keyout "${dir}/tls.key" -out "${dir}/tls.crt" >/dev/null 2>&1 \
+    || { rm -rf "$dir"; fail "openssl failed to mint the argo-server certificate"; }
+  kubectl -n "$NS" create secret tls "$TLS_SECRET" \
+    --cert "${dir}/tls.crt" --key "${dir}/tls.key" >/dev/null \
+    || { rm -rf "$dir"; fail "could not create secret ${TLS_SECRET} in ${NS}"; }
+  # The CA SCP verifies against. Self-signed, so the certificate IS its own CA. Placed in SCP's
+  # namespace under `ca.crt`, which is the key deploy/helm's executorTls mount requires.
+  kubectl -n "$SCP_NAMESPACE" create secret generic "$CA_SECRET" \
+    --from-file=ca.crt="${dir}/tls.crt" --dry-run=client -o yaml | kubectl apply -f - >/dev/null \
+    || { rm -rf "$dir"; fail "could not publish the CA to ${SCP_NAMESPACE}/${CA_SECRET}"; }
+  rm -rf "$dir"
+  log "CA published to ${SCP_NAMESPACE}/${CA_SECRET} — set executorTls.enabled=true and executorTls.existingSecret=${CA_SECRET} on the SCP release"
+}
+if [ "$BACKEND" = "argo-workflows" ]; then
+  ensure_argo_server_tls
+fi
+
 # ---- 1. Render just this backend from the bundled chart --------------------------------------
 log "rendering ${BACKEND} from ${CHART_DIR}"
 MANIFEST="$(helm template scp-bundled "$CHART_DIR" \
   --set "bundledExecutor.${KEY}.enabled=true" \
+  --set "bundledExecutor.scpNamespace=${SCP_NAMESPACE}" \
   ${HELM_EXTRA[@]+"${HELM_EXTRA[@]}"})"
 [ -n "$MANIFEST" ] || fail "render produced an empty manifest for '${BACKEND}' — is the backend name correct?"
 
