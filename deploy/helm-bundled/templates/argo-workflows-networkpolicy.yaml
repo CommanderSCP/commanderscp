@@ -1,19 +1,27 @@
 {{- if .Values.bundledExecutor.argoWorkflows.enabled -}}
 {{- $w := .Values.bundledExecutor.argoWorkflows -}}
 {{- $ns := $w.namespace -}}
+{{- $scpNs := .Values.bundledExecutor.scpNamespace -}}
+{{- if not $scpNs }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but bundledExecutor.scpNamespace is empty — the argo-server ingress policy would fall back to matching SCP's pod label in ANY namespace, and a pod label is writable by anyone who can create a pod. Pass --scp-namespace (scp-bundled.sh does this for you). Fail-closed." }}{{- end -}}
 # =============================================================================================
 # NetworkPolicy for the bundled Argo Workflows namespace (Mode B). Unlike vendor/argocd/install.yaml
 # (which ships seven NetworkPolicy objects of its own, re-homed by templates/argocd.yaml's generic
 # per-object namespace substitution), Argo Workflows' upstream install.yaml ships NONE — confirmed
 # by grepping "NetworkPolicy" across vendor/argo-workflows/install-part-0{1..4}.yaml: zero hits. The
-# vendored argo-server here also runs `args: [server]` with no `--auth-mode` flag, which is
-# upstream's DEFAULT `server` auth mode: the API server performs every Kubernetes operation as its
-# OWN ServiceAccount (pods/exec, pods/log, pods delete, secrets get/create, workflows create) and
-# requires no per-client bearer token (see the fuller writeup in deploy/helm/values.yaml's
-# `bundledExecutor.argoWorkflows` block, which is also why there is deliberately no auto-wire hook
-# for this backend). So — in upstream's own documented posture — access control for this backend is
-# NETWORK-LEVEL ONLY: anything with a route to argo-server:2746 gets that ServiceAccount's power.
-# These two policies are that missing control.
+# vendored argo-server runs `args: [server]` with no `--auth-mode` flag.
+#
+# CORRECTED 2026-09-20, by measurement against the running v4.0.7: that default is `client`, NOT
+# `server`. Its own startup log reports `authModes=[client]`, `argo server --help` reports
+# `(default [client])`, and an unauthenticated call to
+# `/api/v1/workflows/<ns>` returns **HTTP 401**. The previous text here asserted the opposite — that
+# no per-client bearer token was required and therefore "access control for this backend is
+# NETWORK-LEVEL ONLY". That was true of older Argo Workflows defaults and is not true of what this
+# chart vendors, and it mattered: a reader could reasonably have used it to justify weakening
+# something else on the grounds that the network was already the only control.
+#
+# So these policies are DEFENCE IN DEPTH over a token check, not the sole gate. They still earn
+# their place — an unauthenticated 401 is a much better failure than an open port — but the
+# security of this backend does not rest on them alone.
 #
 # Real labels below are READ, not guessed, from the vendored manifest (still namespaced `argo`
 # pre-render — commanderscp.renderVendoredBackend / this backend's own render loop re-homes
@@ -64,6 +72,16 @@ spec:
 # `fullnameOverride` on the MAIN chart changes its pods' `app.kubernetes.io/name` label away from
 # `commanderscp`, and this selector needs the matching update — there is no shared template include
 # between the two independently-rendered charts to keep them in sync automatically.
+#
+# NAMESPACE-SCOPED 2026-09-20. This `from` entry previously carried `namespaceSelector: {}` — ANY
+# namespace — on the documented grounds that the bundled chart does not know where SCP lives. It
+# does now: `scpNamespace` is passed by `scp-bundled.sh` from the same `--scp-namespace` flag it
+# already uses to find the SCP release. The old form made network reachability turn on a POD LABEL
+# ALONE, and a pod label is writable by anyone who can create a pod in any namespace. Measured
+# before the fix: adding `app.kubernetes.io/name=commanderscp` to a busybox pod in `default` took
+# it from BLOCKED to REACHED, with the same pod, changing nothing else. That is ADR-0034's property
+# one layer down — a decision whose match key is writable by its own subject — except the decision
+# here is network reach.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -80,7 +98,9 @@ spec:
     - Ingress
   ingress:
     - from:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $scpNs }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: commanderscp
