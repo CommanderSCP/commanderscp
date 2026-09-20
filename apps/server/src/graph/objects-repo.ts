@@ -7,7 +7,13 @@ import {
   type TrustDomainId
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { executorBindings, objects, relationships, sourceMappings } from "../db/schema.js";
+import {
+  executorBindings,
+  governanceMoveRungs,
+  objects,
+  relationships,
+  sourceMappings
+} from "../db/schema.js";
 import { badRequest, conflict, notFound, preconditionFailed } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
@@ -63,6 +69,13 @@ import {
   recordContainerDeletionReachChange,
   recordGovernanceReachChange
 } from "../governance/governance-reach.js";
+// ROUTE 7's carve-out asks the disable door's OWN question. No runtime cycle: move-enforcement.ts
+// reaches only drizzle, the tenant tx type, errors, db/schema, authz/resolve and graph/containment,
+// none of which imports this file.
+import {
+  moveRungTierForObjectType,
+  nearestEnabledUpperRung
+} from "../governance/move-enforcement.js";
 
 /** M6 single-writer authority. See docs/graph.md §74. */
 export interface FederationImportContext {
@@ -1253,6 +1266,40 @@ export async function deleteObject(
         )
       )
       .limit(6);
+    // A governance:move RUNG names its subject container by COLUMN. See docs/graph.md §125d.
+    //
+    // `governance_move_rungs` has a real FK to `objects` and still dangles, because the FK is
+    // NO ACTION and the delete is a tombstone — the same property routes 5 and 6 fixed on two tables
+    // that have no FK at all, which is worth stating: an FK is not the thing that protects here.
+    // The row is LIVE CONFIG, not history (drizzle/0083 "NOTHING CHANGES UNTIL A RUNG IS SET"), and
+    // its own history lives elsewhere — one Decision + one audit event per write — so nothing is
+    // lost by refusing to strand it.
+    //
+    // At most one row can match: the primary key is `subject_object_id` alone.
+    const rungBlockers =
+      moveRungTierForObjectType(input.typeId) === undefined
+        ? []
+        : await tx
+            .select({ tier: governanceMoveRungs.tier })
+            .from(governanceMoveRungs)
+            .where(
+              and(
+                eq(governanceMoveRungs.orgId, input.orgId),
+                eq(governanceMoveRungs.subjectObjectId, existing.id)
+              )
+            )
+            .limit(1);
+    // …AND WHETHER THE OPERATOR COULD ACT ON THAT REFUSAL AT ALL. This is the difference between a
+    // guard and a WALL, and it is route 6's `managed_by_policy_id` carve-out in a different costume:
+    // `disableGovernanceMoveRung` throws 409 while an upper rung (an ancestor's, or the INSTANCE
+    // rung) is enabled. Refusing the delete over a rung pinned that way would make the container
+    // permanently undeletable by anyone in the org — and when the pin is the instance rung, the only
+    // remedy is a deployment-wide operator switch that every other org shares. So a pinned rung is
+    // EXEMPT here and reported by `GET /graph/integrity` instead, with the same reason string.
+    const rungPinnedBy =
+      rungBlockers.length === 0
+        ? undefined
+        : await nearestEnabledUpperRung(tx, input.orgId, existing.id);
 
     const label = (rows: { urn: string; typeId: string }[]): string => {
       const shown = rows.slice(0, 5).map((r) => `${r.typeId} '${r.urn}'`);
@@ -1334,6 +1381,14 @@ export async function deleteObject(
         `${count(executorBindingBlockers)} executor binding(s) still name it as their target (execution route) — ` +
           `executor_bindings has no deleted_at of its own and no foreign key to objects, so nothing would tombstone them and they would be left pointing at a deleted target: the row keeps holding this target's (type, lane) slot, keeps its plugin config and secret refs, and keeps being resolvable by every reader that does not filter target liveness (getExecutorBinding, resolveLaneBinding). ` +
           `Delete them first (DELETE /executors/{idOrUrn}/binding?type=&lane=): ${bindingLabel(executorBindingBlockers)}`
+      );
+    }
+    if (rungBlockers.length > 0 && rungPinnedBy === undefined) {
+      clauses.push(
+        `a governance:move rung is still enabled at this ${rungBlockers[0]!.tier} (governance route) — ` +
+          `governance_move_rungs has no deleted_at of its own and its subject_object_id foreign key is NO ACTION, so nothing would remove the row: ` +
+          `GET /governance/move-enforcement/rungs would keep listing an enabled rung on a deleted container, under its old name, that governs nothing and that only \`scp graph integrity --repair\` can then clear. ` +
+          `Disable it first (DELETE /governance/move-enforcement/rungs/{idOrUrn}, i.e. \`scp governance move-enforcement disable ${existing.urn}\`)`
       );
     }
     if (clauses.length > 0) {

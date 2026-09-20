@@ -220,7 +220,18 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const body = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        const subject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
+        // `includeDeleted` ON THE DISABLE ALONE, and the asymmetry is the point (the same one
+        // `DELETE /executors/{idOrUrn}/binding` and `DELETE /change-sources/{kind}/mappings` carry):
+        // REMOVAL must reach further than creation, never the reverse. The ENABLE handler above
+        // stays live-only deliberately — resolving a tombstone there would mint the very orphan
+        // orphan-guard route 7 exists to prevent. Without this, a rung stranded before route 7
+        // landed answered 404 at the one door that could clear it, while
+        // `GET /governance/move-enforcement/rungs` went on listing it (that read LEFT JOINs
+        // `objects` with no liveness filter) — detection and repair disagreeing, which is exactly
+        // what `graph/integrity-repo.ts` now reports and `scp graph integrity --repair` clears.
+        const subject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn, {
+          includeDeleted: true
+        });
         const tier = assertRungSubjectType(subject.typeId, request.params.idOrUrn);
         await authorize(tx, {
           orgId: auth.orgId,

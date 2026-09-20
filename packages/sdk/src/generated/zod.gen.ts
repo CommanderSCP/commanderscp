@@ -3922,6 +3922,20 @@ export const zGraphIntegrityResponse = z.object({
             'both',
             'malformed'
         ])
+    })),
+    orphanGovernanceMoveRungs: z.array(z.object({
+        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        ownerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+        ownerName: z.string(),
+        detail: z.string(),
+        repairable: z.boolean(),
+        blockedReason: z.string().nullable(),
+        tier: z.enum([
+            'org',
+            'containment_domain',
+            'service',
+            'assembly'
+        ])
     }))
 });
 

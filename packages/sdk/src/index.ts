@@ -31,7 +31,10 @@ export type {
   GraphIntegrityReport,
   DanglingRelationship,
   OrphanProjectionRow,
-  OrphanPlacement
+  OrphanPlacement,
+  // Same reason, one arm later: `OrphanGovernanceMoveRung` adds `tier`, and a consumer that narrowed
+  // it to `OrphanProjectionRow` would compile and lose it.
+  OrphanGovernanceMoveRung
 } from "@scp/schemas";
 
 // `scp doctor` report types — same SEPARATE step as the graph-integrity line above (schema types are
