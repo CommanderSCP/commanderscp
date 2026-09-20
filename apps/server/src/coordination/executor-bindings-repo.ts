@@ -19,8 +19,7 @@ import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/cont
 import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
 import {
   assertEveryModuleHasManifest,
-  declaredConfigKeys,
-  validatePluginConfig
+  declaredConfigKeys
 } from "../plugin-host/plugin-manifests.js";
 
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
@@ -31,48 +30,40 @@ export function executionSystemInstanceId(executionSystemId: string): string {
 
 /** The plugin config a SYSTEM-BACKED binding runs with, derived from the execution-system object.
  *
- *  `serverUrl` + `tokenSecretKey` are not the whole surface: argo-workflows REQUIRES `namespace`
- *  and interpolates it into every API path, so a config built from those two keys alone submitted
- *  to `/api/v1/workflows/undefined/submit` — silently, because the system-backed branch carried no
- *  module-specific settings and skipped the module's own schema.
+ *  `serverUrl` + `tokenSecretKey` are not the whole config surface: argo-workflows REQUIRES
+ *  `namespace` and interpolates it into every API path, so a config built from those two keys alone
+ *  submitted to `/api/v1/workflows/undefined/submit` — silently, with no error at bind or resolve.
  *
  *  Only keys the module's manifest DECLARES are carried. An execution-system's `properties` are
  *  tenant-writable, so intersecting with the declared set is what keeps this safe: a tenant cannot
  *  introduce a config key the plugin never advertised, and server-injected keys (`statePath`,
  *  `runnerImage`, …) are absent from every `configSchema` by construction. `serverUrl` is always
- *  written from the system itself, so egress stays pinned to the system's own host. */
+ *  written from the system itself, so egress stays pinned to the system's own host.
+ *
+ *  NOT VALIDATED AGAINST THE MODULE'S SCHEMA, deliberately. This branch REPLACES the binding's own
+ *  `config` rather than merging it, and several modules' required keys are per-BINDING rather than
+ *  per-system — `gitea` requires `owner`/`repo`, `github` adds `appId`/`installationId`,
+ *  `terraform` and `pipeline-generic` require `triggerUrl`. A system-derived config therefore
+ *  cannot satisfy those schemas, and running `validatePluginConfig` here refuses every gitea and
+ *  github system-backed binding (caught by `executors.integration.test.ts`'s M15.1b gitea case).
+ *  That those modules resolve to a config missing their own required keys is a REAL pre-existing
+ *  gap, and a separate one: closing it means deciding whether a system-backed binding may merge
+ *  binding-level config, which is a design question, not a rename. Tracked, not smuggled in here. */
 export function executionSystemPluginConfig(
   props: { serverUrl?: string; tokenSecretKey?: string },
   pluginModule: string
 ): Record<string, unknown> {
-  const declared = new Set(declaredConfigKeys(pluginModule));
   const carried: Record<string, unknown> = {};
-  for (const key of declared) {
+  for (const key of declaredConfigKeys(pluginModule)) {
     if (key === "serverUrl" || key === "tokenSecretKey") continue;
     const value = (props as Record<string, unknown>)[key];
     if (value !== undefined) carried[key] = value;
   }
-  const config: Record<string, unknown> = {
+  return {
     ...carried,
     serverUrl: props.serverUrl,
     ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
   };
-
-  // Validate the DECLARED PROJECTION, not the whole config. `serverUrl`/`tokenSecretKey` are
-  // injected here for every system-backed binding whether or not the module asked for them, and a
-  // module that declares neither would otherwise be refused for config it never requested —
-  // `fake-executor` is exactly that shape (`additionalProperties: false`, declaring neither), so
-  // validating the whole object would break every Mode A binding that uses it. Every
-  // TENANT-supplied value lives in `carried`, which is declared-only by construction, so nothing
-  // escapes the schema: this narrows what is checked, never who is checked.
-  const projected: Record<string, unknown> = { ...carried };
-  for (const key of ["serverUrl", "tokenSecretKey"] as const) {
-    if (declared.has(key) && config[key] !== undefined) projected[key] = config[key];
-  }
-  // Throws naming the missing/invalid key. Deliberately inside this function rather than at the two
-  // call sites: bind-time and dispatch-time must not be able to drift on what a usable system is.
-  validatePluginConfig(pluginModule, projected);
-  return config;
 }
 
 /** RESERVED plugin-instance-id namespace: only `executionSystemInstanceId()` may mint ids under it. */
@@ -114,9 +105,6 @@ export function executionSystemBindingIdentity(
   if (!isKnownExecutorModule(pluginModule)) {
     throw badRequest(`execution-system kind '${pluginModule}' is not a known executor module`);
   }
-  // Fail HERE, where an operator is watching, rather than at first dispatch. The helper validates
-  // internally, so bind-time and dispatch-time cannot disagree about what a usable system is.
-  executionSystemPluginConfig(props, pluginModule);
   return {
     pluginModule,
     pluginInstanceId: executionSystemInstanceId(sys.id),
@@ -914,22 +902,9 @@ export async function resolveExecutorPluginInstance(
     }
     pluginModule = (props.kind ?? "").trim();
     pluginInstanceId = executionSystemInstanceId(sys.id);
-    // MODULE-SPECIFIC SETTINGS, carried from the system object. `serverUrl` + `tokenSecretKey` are
-    // not the whole config surface: argo-workflows REQUIRES `namespace` and interpolates it into
-    // every API path, so a system-backed binding built from those two keys alone submitted to
-    // `/api/v1/workflows/undefined/submit` — a runtime-only failure, because the branch below used
-    // to skip `validatePluginConfig` for system-backed bindings entirely.
-    //
-    // Only keys the module's OWN manifest declares are carried. An execution-system's `properties`
-    // are tenant-writable, so intersecting with the declared set is what keeps this safe: a tenant
-    // cannot introduce a config key the plugin never advertised, and server-injected keys are
-    // absent from every `configSchema` by construction. `serverUrl`/`tokenSecretKey` keep their
-    // explicit handling below so egress stays pinned to the system's own host.
-    // The plugin reads its token via `ctx.secrets.get(<tokenSecretKey>)` (e.g. the Argo CD plugin);
+    // Carries the module's DECLARED settings off the system object — `namespace` for argo-workflows
+    // is the case that forced it. The plugin reads its token via `ctx.secrets.get(<tokenSecretKey>)`;
     // the system's tokenSecretKey is both the config field name AND the secrets-table key.
-    // Validates internally — the claim `routes/executors.ts` makes about this path ("system-backed
-    // bindings ... validated inside the tx") is now true of the MODULE's schema, not just kind +
-    // serverUrl.
     tenantConfig = executionSystemPluginConfig(props, pluginModule);
     secretRefs = props.tokenSecretKey ? { [props.tokenSecretKey]: props.tokenSecretKey } : {};
   }

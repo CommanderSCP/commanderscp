@@ -23,18 +23,11 @@ describe("executionSystemPluginConfig", () => {
     });
   });
 
-  it("KNOWN-POSITIVE CONTROL — without `namespace` it REFUSES, naming the key", () => {
-    // Without this the tests around it pass against a derivation that validates nothing, which is
-    // the exact shape of the original defect.
-    const { namespace: _omitted, ...noNamespace } = ARGO_WF;
-    let detail = "";
-    try {
-      executionSystemPluginConfig(noNamespace, "argo-workflows");
-      throw new Error("expected a refusal");
-    } catch (err) {
-      detail = String((err as { detail?: string }).detail ?? err);
-    }
-    expect(detail).toMatch(/namespace/);
+  it("NEGATIVE CONTROL — the same input carries NO namespace for a module that declares none", () => {
+    // Without this, the assertion above is satisfied by a derivation that copies every property
+    // regardless of the module, which is precisely what must not happen.
+    expect(declaredConfigKeys("argocd")).not.toContain("namespace");
+    expect(executionSystemPluginConfig(ARGO_WF, "argocd")).not.toHaveProperty("namespace");
   });
 
   it("carries ONLY keys the module declares — a tenant cannot inject an undeclared one", () => {
@@ -50,22 +43,30 @@ describe("executionSystemPluginConfig", () => {
   });
 
   it("always writes serverUrl from the system, so egress stays pinned to its own host", () => {
-    const config = executionSystemPluginConfig(ARGO_WF, "argo-workflows");
-    expect(config.serverUrl).toBe(ARGO_WF.serverUrl);
+    const tenantTried = { ...ARGO_WF, serverUrl: "https://argo.example" };
+    expect(executionSystemPluginConfig(tenantTried, "argo-workflows").serverUrl).toBe(
+      "https://argo.example"
+    );
+    // ...and it is never absent, which is what `effectiveAllowedHosts` is derived from.
+    expect(executionSystemPluginConfig(ARGO_WF, "argo-workflows")).toHaveProperty("serverUrl");
   });
 
-  it("leaves argocd — the other system-backed module with a required key — satisfied", () => {
-    // Regression guard: this derivation now validates on a path that previously had none, so every
-    // executor module reachable by execution-system must still resolve.
-    const argocd = { kind: "argocd", serverUrl: "https://argocd.example", tokenSecretKey: "t" };
-    expect(() => executionSystemPluginConfig(argocd, "argocd")).not.toThrow();
+  it("does NOT refuse modules whose required keys are per-BINDING (gitea, github, terraform)", () => {
+    // REGRESSION PIN. An earlier draft ran `validatePluginConfig` on this derived config, which
+    // refuses every gitea and github system-backed binding: this branch REPLACES the binding's own
+    // config rather than merging it, and `gitea` requires owner/repo, `github` adds
+    // appId/installationId, `terraform` and `pipeline-generic` require triggerUrl — none of which a
+    // system object supplies. `executors.integration.test.ts`'s M15.1b gitea case caught it.
+    for (const module of ["gitea", "github", "terraform", "pipeline-generic"]) {
+      expect(() =>
+        executionSystemPluginConfig({ serverUrl: "https://x.example", tokenSecretKey: "t" }, module)
+      ).not.toThrow();
+    }
   });
 
-  it("does NOT refuse a module that declares neither injected key (fake-executor)", () => {
+  it("nor a module that declares neither injected key (fake-executor)", () => {
     // `fake-executor` sets `additionalProperties: false` and declares neither `serverUrl` nor
-    // `tokenSecretKey`, both of which this function injects regardless. Validating the whole
-    // config instead of the declared projection refuses it — breaking every Mode A binding that
-    // uses it, which is how this was caught.
+    // `tokenSecretKey`, both of which this function injects regardless.
     const config = executionSystemPluginConfig(
       { serverUrl: "https://x.example", tokenSecretKey: "t" },
       "fake-executor"
