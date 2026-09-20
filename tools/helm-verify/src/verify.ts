@@ -839,6 +839,34 @@ function verifySocketInvariantMatrix(): void {
         `[${label}] the bundled-backends render contains '${pattern}' — a vendored backend mounting a container runtime socket is the same escape, one chart along`
       );
     }
+    // EVERY ROLE-BINDING SUBJECT IS RE-HOMED. `_bundled-executor.tpl` re-homes each vendored
+    // backend into its own namespace; until 2026-09-20 it walked the subjects of a
+    // ClusterRoleBinding but not of a RoleBinding, which took the metadata-only branch. Upstream
+    // Argo Workflows ships `argo-binding` naming `ServiceAccount argo` in namespace `argo`, so the
+    // binding moved to `scp-argo-workflows` while still pointing at a namespace that does not
+    // exist — and it carries `coordination.k8s.io/leases`, the workflow-controller's LEADER
+    // ELECTION. The bundle deployed a controller that could never take leadership, and nothing
+    // failed loudly: the Deployment is Ready either way.
+    //
+    // Checked on SUBJECTS ONLY, never on a blanket scan for the upstream name: a config VALUE may
+    // legitimately mention it, which is the exact distinction the helper is careful about.
+    for (const doc of parseAllDocuments(bundledRaw)
+      .map((d) => d.toJS() as K8sDoc | null)
+      .filter((d): d is K8sDoc => Boolean(d))) {
+      if (doc.kind !== "RoleBinding" && doc.kind !== "ClusterRoleBinding") continue;
+      const subjects = (doc.subjects ?? []) as {
+        kind?: string;
+        name?: string;
+        namespace?: string;
+      }[];
+      for (const subject of subjects) {
+        if (!subject.namespace) continue;
+        assert(
+          subject.namespace.startsWith("scp-"),
+          `[${label}] bundled ${doc.kind} '${doc.metadata?.name}' names subject '${subject.name}' in namespace '${subject.namespace}', which is not a re-homed 'scp-*' namespace — the vendored manifest's upstream namespace survived the re-home, so this grant lands on a ServiceAccount that does not exist`
+        );
+      }
+    }
   }
 
   // NON-VACUITY, IN THREE PARTS. Every assertion above is "nothing was found", which is exactly what
