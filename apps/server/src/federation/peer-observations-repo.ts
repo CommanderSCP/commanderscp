@@ -6,7 +6,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { federationPeerObservations } from "../db/schema.js";
 import { isTerminalHookRunStatus } from "../coordination/pipeline-hook-runs.js";
 import { isTerminalWaveTargetStatus } from "../coordination/wave-targets-repo.js";
-import { OBSERVED_WEIGHT_FRESHNESS_MS } from "../coordination/stage-dependency-hold.js";
+import { OBSERVED_WEIGHT_FRESHNESS_MS } from "../coordination/observed-weight-freshness.js";
 
 /**
  * THE RECEIVER HALF of the `wave_target_observed` journal kind (pipeline-mockup-data.md §5.3, owner

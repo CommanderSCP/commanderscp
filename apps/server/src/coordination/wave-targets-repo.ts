@@ -34,6 +34,81 @@ import {
 export type WaveRow = typeof changeWaves.$inferSelect;
 export type WaveTargetRow = typeof changeWaveTargets.$inferSelect;
 
+/** Which domain OWNS (executes) a wave target's `targetObjectId` — the same two shapes
+ *  `component-pipeline.ts`'s placement resolution distinguishes:
+ *  - **Stage mode**: `targetObjectId` names a `placement` object (`plan-compiler.ts`'s
+ *    `compileStages`), whose OWN `originDomainId` is who imported the PLACEMENT record, not who
+ *    runs it. The real answer is one hop further, at `properties.deploymentTargetId`'s own object
+ *    (`component-pipeline.ts`'s `outpostOf` makes the identical hop) — a placement's origin is never
+ *    read directly for this.
+ *  - **Legacy/no-topology mode**: `targetObjectId` IS the component (`plan-compiler.ts`'s toposort
+ *    path never creates a placement). There is no deployment-target to hop to, so the component's
+ *    own `originDomainId` is the only signal this shape has.
+ *
+ *  THE ONE DEFINITION of "driven elsewhere" (memory: reuse, never invent a second copy) — both
+ *  `plan-service.ts`'s `resolveWaveTargetFreshness` (`observedFreshness`'s `not_reported`) and
+ *  `wave-target-checks.ts`'s `resolveWaveTargetChecks` (`evidenceOrigin`) call this SAME function
+ *  rather than each re-deriving the domain check. */
+export async function resolveWaveTargetOriginDomains(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectIds: string[]
+): Promise<Map<string, string | undefined>> {
+  const result = new Map<string, string | undefined>();
+  if (targetObjectIds.length === 0) return result;
+
+  const rows = await tx
+    .select({
+      id: objects.id,
+      typeId: objects.typeId,
+      properties: objects.properties,
+      originDomainId: objects.originDomainId
+    })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), inArray(objects.id, targetObjectIds)));
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+
+  const deploymentTargetIds = new Set<string>();
+  for (const row of rows) {
+    if (row.typeId !== "placement") continue;
+    const deploymentTargetId = (row.properties as { deploymentTargetId?: unknown })
+      .deploymentTargetId;
+    if (typeof deploymentTargetId === "string") deploymentTargetIds.add(deploymentTargetId);
+  }
+  const deploymentTargetRows =
+    deploymentTargetIds.size === 0
+      ? []
+      : await tx
+          .select({ id: objects.id, originDomainId: objects.originDomainId })
+          .from(objects)
+          .where(and(eq(objects.orgId, orgId), inArray(objects.id, [...deploymentTargetIds])));
+  const originByDeploymentTargetId = new Map(
+    deploymentTargetRows.map((r) => [r.id, r.originDomainId as string])
+  );
+
+  for (const targetObjectId of targetObjectIds) {
+    const row = rowById.get(targetObjectId);
+    if (!row) {
+      result.set(targetObjectId, undefined); // dangling/deleted — unresolved, never "ours"
+      continue;
+    }
+    if (row.typeId === "placement") {
+      const deploymentTargetId = (row.properties as { deploymentTargetId?: unknown })
+        .deploymentTargetId;
+      const resolved =
+        typeof deploymentTargetId === "string"
+          ? originByDeploymentTargetId.get(deploymentTargetId)
+          : undefined;
+      // A placement with no resolvable deployment-target object degrades to the placement's own
+      // origin rather than "unresolved" — an honest best-effort, not a crash.
+      result.set(targetObjectId, resolved ?? (row.originDomainId as string));
+      continue;
+    }
+    result.set(targetObjectId, row.originDomainId as string);
+  }
+  return result;
+}
+
 /** The current `status` column of one wave, fresh — used by `reconcile.ts`'s pending-wave-gate
  *  branch (M8 hardening MINOR #5) to re-check, INSIDE the per-change advisory lock, whether a
  *  racing tick already evaluated this wave's gate before this one acquired the lock. */
