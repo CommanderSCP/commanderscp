@@ -5,9 +5,16 @@ Argo CD / Argo Workflows / Argo Events bundle templates so the 33k-line render l
 
   - Applies the caller's image-retarget substitutions (`replaces`: a list of [from, to] pairs) —
     the ONLY changes to upstream; bumping a backend = bumping its pinned vendored file.
-  - Re-homes every NAMESPACED resource (metadata.namespace) AND every ClusterRoleBinding SUBJECT to
-    the target namespace — surgically, via fromYaml, so no config VALUE that happens to mention the
-    upstream namespace is clobbered.
+  - Re-homes every NAMESPACED resource (metadata.namespace) AND every RoleBinding/ClusterRoleBinding
+    SUBJECT to the target namespace — surgically, via fromYaml, so no config VALUE that happens to
+    mention the upstream namespace is clobbered.
+    RoleBinding subjects were MISSED until 2026-09-20: a RoleBinding fell through to the
+    metadata-only branch, so upstream Argo Workflows' `argo-binding` moved into the target namespace
+    while still naming `ServiceAccount argo` in namespace `argo`, which does not exist here. That
+    binding carries `coordination.k8s.io/leases` create/get/update — LEADER ELECTION for the
+    workflow-controller — so the bundled backend deployed a controller that could never take
+    leadership. A ClusterRoleBinding is cluster-scoped and must NOT gain a metadata.namespace, which
+    is why the two kinds share the subject walk but not the metadata write.
   - Passes CustomResourceDefinitions through byte-for-byte (never fromYaml'd — they carry multi-MB
     schemas); ClusterRoles pass through unchanged (cluster-scoped, no namespace).
   - Emits the Namespace, then every resource, join'd with clean "\n---\n".
@@ -30,13 +37,14 @@ Args (dict): ctx (root context `.`), namespace, component (label), manifest (raw
 {{- $out = append $out $t -}}
 {{- else if $kind -}}
 {{- $obj := fromYaml $t -}}
-{{- if eq $kind "ClusterRoleBinding" -}}
+{{- if or (eq $kind "ClusterRoleBinding") (eq $kind "RoleBinding") -}}
 {{- $subs := list -}}
 {{- range $s := ($obj.subjects | default (list)) -}}
 {{- if $s.namespace -}}{{- $_ := set $s "namespace" $ns -}}{{- end -}}
 {{- $subs = append $subs $s -}}
 {{- end -}}
 {{- $_ := set $obj "subjects" $subs -}}
+{{- if eq $kind "RoleBinding" -}}{{- $_ := set $obj.metadata "namespace" $ns -}}{{- end -}}
 {{- else if ne $kind "ClusterRole" -}}
 {{- $_ := set $obj.metadata "namespace" $ns -}}
 {{- end -}}
