@@ -13,7 +13,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 const { PipelineChecksRail } = await import("./PipelineChecksRail");
 const { PipelineWaveCard } = await import("./PipelineWaveCard");
 
-import type { PipelineHookStateLike, WaveTargetChecksLike } from "./PipelineChecksRail";
+import type {
+  PipelineHookStateLike,
+  WaveTargetCheckEvidenceOriginLike,
+  WaveTargetChecksLike
+} from "./PipelineChecksRail";
 import type { PipelineWaveLike, PipelineWaveTargetLike } from "./PipelineWaveCard";
 
 const SLOT_KINDS = ["postMerge", "postDeploy", "continuous", "bakeAlarms"] as const;
@@ -25,9 +29,11 @@ const GRAIN: Record<string, string> = {
   bakeAlarms: "per_target"
 };
 
-/** A `resolved` rail with every slot empty (= nothing declared), except the ones named. */
+/** A `resolved` rail with every slot empty (= nothing declared), except the ones named.
+ *  `evidenceOrigin` defaults to absent — the locally-driven, six-existing-states case. */
 function checksWith(
-  declared: Partial<Record<(typeof SLOT_KINDS)[number], PipelineHookStateLike[]>>
+  declared: Partial<Record<(typeof SLOT_KINDS)[number], PipelineHookStateLike[]>>,
+  evidenceOrigin?: WaveTargetCheckEvidenceOriginLike
 ): WaveTargetChecksLike {
   return {
     basis: "resolved",
@@ -35,7 +41,8 @@ function checksWith(
       kind,
       grain: GRAIN[kind]!,
       hooks: declared[kind] ?? []
-    }))
+    })),
+    ...(evidenceOrigin ? { evidenceOrigin } : {})
   };
 }
 
@@ -441,6 +448,139 @@ describe("PipelineChecksRail: states this bundle cannot interpret", () => {
     // thing this instance could not determine.
     expect(html).not.toContain('data-testid="pipeline-wave-checks-rail"');
     expect(html).not.toContain('data-state="not_declared"');
+  });
+});
+
+describe("PipelineChecksRail: evidenceOrigin — the seventh, honesty case (2026-09-20)", () => {
+  it("with NO evidenceOrigin (locally-driven), no_evidence keeps saying 'check the prober' exactly as before", () => {
+    const html = renderRail(
+      checksWith({
+        continuous: [{ state: "no_evidence", hookId: "smoke", maxAgeSeconds: 300 }]
+      })
+    );
+    const chip = chipOf(html, "continuous");
+    expect(chip).toContain("check the prober");
+    expect(html).not.toContain("data-evidence-origin=");
+  });
+
+  it("not_reported turns 'check the prober' into 'not reported to this commander' — never a claim about a broken prober", () => {
+    const html = renderRail(
+      checksWith(
+        { continuous: [{ state: "no_evidence", hookId: "smoke", maxAgeSeconds: 300 }] },
+        { state: "not_reported" }
+      )
+    );
+    const chip = chipOf(html, "continuous");
+
+    expect(html).toContain('data-evidence-origin="not_reported"');
+    // THE HONESTY CASE, verbatim: this instance genuinely has nothing, and must not say so as if a
+    // prober failed or went silent.
+    expect(chip).toContain("not reported to this commander");
+    expect(chip).toContain("not a silent or failed prober");
+    expect(chip).not.toContain("check the prober");
+    expect(chip).not.toContain("Nobody is looking");
+    // The chip's TONE and WORD are unchanged — only the claim behind them softened.
+    expect(chip).toContain('data-state="no_evidence"');
+    expect(chip).toContain('data-tone="watch"');
+    expect(chip).toContain("no evidence");
+  });
+
+  it("a FRESH federated observation says the other domain reported recently, not 'nobody is looking'", () => {
+    const html = renderRail(
+      checksWith(
+        { postDeploy: [{ state: "not_run", hookId: "e2e" }] },
+        { state: "fresh", ageSeconds: 42 }
+      )
+    );
+    const chip = chipOf(html, "postDeploy");
+
+    expect(html).toContain('data-evidence-origin="fresh"');
+    expect(chip).toContain("executes at another domain instance");
+    expect(chip).toContain("42 s ago");
+    expect(chip).not.toContain("nothing has reached it yet");
+  });
+
+  it("a STALE federated observation names its freshness bound, still never 'nobody is looking'", () => {
+    const html = renderRail(
+      checksWith(
+        { bakeAlarms: [{ state: "no_source", hookId: "sev1", quietWindowSeconds: 600 }] },
+        { state: "stale", ageSeconds: 900, staleAfterSeconds: 300 }
+      )
+    );
+    const chip = chipOf(html, "bakeAlarms");
+
+    expect(html).toContain('data-evidence-origin="stale"');
+    expect(chip).toContain("15 min ago");
+    expect(chip).toContain("5 m freshness bound");
+    expect(chip).not.toContain("check that an alarm source is wired up");
+  });
+
+  it("window_not_covered and bake_not_started ALSO soften — the caveat is not special-cased to one kind", () => {
+    const notReported: WaveTargetCheckEvidenceOriginLike = { state: "not_reported" };
+    const gap = chipOf(
+      renderRail(
+        checksWith(
+          {
+            bakeAlarms: [
+              {
+                state: "window_not_covered",
+                hookId: "sev1",
+                quietWindowSeconds: 600,
+                windowEndsAt: "2026-09-19T10:10:00.000Z"
+              }
+            ]
+          },
+          notReported
+        )
+      ),
+      "bakeAlarms"
+    );
+    const notStarted = chipOf(
+      renderRail(
+        checksWith(
+          { bakeAlarms: [{ state: "bake_not_started", hookId: "sev1", quietWindowSeconds: 600 }] },
+          notReported
+        )
+      ),
+      "bakeAlarms"
+    );
+
+    expect(gap).toContain("not reported to this commander");
+    expect(gap).not.toContain("Something is reporting and stopped");
+    expect(notStarted).toContain("not reported to this commander");
+    expect(notStarted).not.toContain("this target has not deployed");
+  });
+
+  it("passed/failed/quiet/alarm_firing carry NO caveat — a real reading arrived, and the marker must not soften a verdict", () => {
+    const origin: WaveTargetCheckEvidenceOriginLike = { state: "not_reported" };
+    const passed = chipOf(
+      renderRail(
+        checksWith(
+          {
+            continuous: [
+              {
+                state: "passed",
+                hookId: "smoke",
+                concludedAt: "2026-09-19T10:00:00.000Z",
+                externalUrl: null
+              }
+            ]
+          },
+          origin
+        )
+      ),
+      "continuous"
+    );
+    expect(passed).not.toContain("not reported to this commander");
+    expect(passed).toContain('data-tone="pass"');
+  });
+
+  it("an UNRESOLVABLE rail has no evidenceOrigin attribute at all — the marker only exists on `resolved`", () => {
+    const html = renderRail({
+      basis: "unresolvable",
+      reason: "this wave target's object could not be resolved to a component"
+    });
+    expect(html).not.toContain("data-evidence-origin");
   });
 });
 

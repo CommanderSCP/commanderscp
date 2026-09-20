@@ -32,8 +32,23 @@ export interface WaveTargetCheckSlotLike {
   hooks: PipelineHookStateLike[];
 }
 
+/** `WaveTargetCheckEvidenceOriginSchema` (2026-09-20 owner decision) — present only when this
+ *  target's declaring component executes at ANOTHER domain instance. Every slot above is built
+ *  from tables local to THIS instance, which is correct when this target executes here but is not
+ *  a claim this instance can make about a prober it does not run. This marker is what lets the
+ *  rail tell "genuinely never reported, anywhere" apart from "reported elsewhere, just not to us
+ *  yet" — the honesty case `chipFor` reads below. */
+export type WaveTargetCheckEvidenceOriginLike =
+  | { state: "fresh"; ageSeconds: number }
+  | { state: "stale"; ageSeconds: number; staleAfterSeconds: number }
+  | { state: "not_reported" };
+
 export type WaveTargetChecksLike =
-  | { basis: "resolved"; slots: WaveTargetCheckSlotLike[] }
+  | {
+      basis: "resolved";
+      slots: WaveTargetCheckSlotLike[];
+      evidenceOrigin?: WaveTargetCheckEvidenceOriginLike;
+    }
   | { basis: "unresolvable"; reason: string };
 
 /** The rail's own label for a kind. An unrecognised kind falls back to the raw wire word rather
@@ -116,15 +131,22 @@ function num(state: PipelineHookStateLike, key: string): number | undefined {
   return typeof v === "number" ? v : undefined;
 }
 
+/** `40` -> "40 s" / `720` -> "12 min" / `10800` -> "3 h". Shared by `formatEvidenceAge` (which
+ *  parses a server instant into seconds) and `evidenceOriginCaveat` (which reads a server-computed
+ *  `ageSeconds` directly, the same as `observedFreshness`'s own age already does on this card). */
+function formatSecondsAsAge(seconds: number): string {
+  if (!Number.isFinite(seconds)) return "unknown age";
+  if (seconds < 90) return `${seconds} s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+  return `${Math.round(seconds / 3600)} h`;
+}
+
 /** `2026-09-19T…` -> "40 s" / "12 min" / "3 h". The client's own clock contextualizes a
  *  server-stated instant; `now` never crosses the API seam (the same rule `hold`'s `staleAfter`
  *  follows). */
 export function formatEvidenceAge(iso: string, now: number = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
-  if (!Number.isFinite(seconds)) return "unknown age";
-  if (seconds < 90) return `${seconds} s`;
-  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
-  return `${Math.round(seconds / 3600)} h`;
+  return formatSecondsAsAge(seconds);
 }
 
 function formatWindow(seconds: number): string {
@@ -139,10 +161,55 @@ interface Chip {
   title: string;
 }
 
+/** THE STATES WHOSE COPY OTHERWISE ASSERTS A FACT ABOUT A PROBER, OR ABOUT PIPELINE/DEPLOY
+ *  PROGRESS, THIS INSTANCE CANNOT VOUCH FOR when the target executes at another domain — "nobody
+ *  is looking", "nothing has reached it yet", "check that a source is wired up". A `passed` /
+ *  `failed` / `running` / `quiet` / `alarm_firing` state is a real reading that arrived by SOME
+ *  path (continuous/bake evidence already federates via the older `pipeline_evidence_upsert`
+ *  journal) and needs no caveat; these six are the ones an absence can misrepresent as a broken
+ *  LOCAL prober rather than an evidence path this instance simply is not on (owner decision
+ *  2026-09-20: soften the copy, not add an eighth `PipelineHookStateSchema` member). */
+const PROBER_ASSERTION_STATES = new Set([
+  "not_run",
+  "no_evidence",
+  "stale",
+  "no_source",
+  "window_not_covered",
+  "bake_not_started"
+]);
+
+/** The honest replacement for the "check the prober" / "nothing has happened" clause, once this
+ *  target is known to execute at another domain (`WaveTargetCheckEvidenceOriginLike`). Mirrors
+ *  `observedFreshness`'s own vocabulary and the rollout badge's established phrase (this file's
+ *  sibling, `PipelineWaveCard.tsx`'s "rolling out elsewhere — not reported to this commander"),
+ *  rather than inventing new words for the same fact. */
+function evidenceOriginCaveat(origin: WaveTargetCheckEvidenceOriginLike): string {
+  if (origin.state === "not_reported") {
+    return "This target executes at another domain instance, and nothing has been reported to this commander for it yet — not reported to this commander, not a silent or failed prober.";
+  }
+  const age = formatSecondsAsAge(origin.ageSeconds);
+  const staleSuffix =
+    origin.state === "stale"
+      ? ` (older than its ${formatWindow(origin.staleAfterSeconds)} freshness bound)`
+      : "";
+  return `This target executes at another domain instance, which last reported hook activity ${age} ago${staleSuffix} — this slot's own record may not yet reflect it.`;
+}
+
 /** ONE HOOK STATE -> ONE CHIP. Every branch is a distinct (tone, word) pair; no two of the six
- *  absences in the schema's doc share both. */
-function chipFor(state: PipelineHookStateLike, kind: string, kindLabel: string): Chip {
+ *  absences in the schema's doc share both. `evidenceOrigin` is `WaveTargetChecksLike`'s own
+ *  target-level marker, present only for a target driven at another domain — see
+ *  `PROBER_ASSERTION_STATES` for which branches read it. */
+function chipFor(
+  state: PipelineHookStateLike,
+  kind: string,
+  kindLabel: string,
+  evidenceOrigin?: WaveTargetCheckEvidenceOriginLike
+): Chip {
   const who = `${kindLabel} hook '${state.hookId}'`;
+  const caveat =
+    evidenceOrigin && PROBER_ASSERTION_STATES.has(state.state)
+      ? evidenceOriginCaveat(evidenceOrigin)
+      : undefined;
   switch (state.state) {
     case "not_applicable":
       return {
@@ -153,11 +220,15 @@ function chipFor(state: PipelineHookStateLike, kind: string, kindLabel: string):
       };
     case "not_run":
       // DECLARED AND WAITING. The word differs from the em-dash of an undeclared slot precisely
-      // because one is waiting and the other will never happen.
+      // because one is waiting and the other will never happen. Elsewhere-driven: "nothing has
+      // reached it yet" is a claim about a pipeline this instance does not run — `caveat` replaces
+      // it rather than riding alongside it.
       return {
         tone: "waiting",
         value: "not run",
-        title: `${who} is declared and has not run — nothing has reached it yet. This is not "no such check": something promised it.`
+        title: caveat
+          ? `${who} is declared. ${caveat}`
+          : `${who} is declared and has not run — nothing has reached it yet. This is not "no such check": something promised it.`
       };
     case "running": {
       const runStatus = str(state, "runStatus");
@@ -206,7 +277,7 @@ function chipFor(state: PipelineHookStateLike, kind: string, kindLabel: string):
       return {
         tone: "watch",
         value: "no evidence",
-        title: `${who} is declared and has NEVER reported for this target${maxAge === undefined ? "" : ` (it must report at least every ${formatWindow(maxAge)})`}. Nobody is looking — check the prober, not the target.`
+        title: `${who} is declared and has NEVER reported for this target${maxAge === undefined ? "" : ` (it must report at least every ${formatWindow(maxAge)})`}. ${caveat ?? "Nobody is looking — check the prober, not the target."}`
       };
     }
     case "stale": {
@@ -219,7 +290,8 @@ function chipFor(state: PipelineHookStateLike, kind: string, kindLabel: string):
         value: newest ? `stale · ${formatEvidenceAge(newest)}` : "stale",
         title:
           `${who} last reported ${newest ? new Date(newest).toLocaleString() : "at an unrecorded time"}, which is older than its ${maxAge === undefined ? "declared" : formatWindow(maxAge)} freshness bound. ` +
-          "Evidence that old is ABSENT, not a pass and not a fail — nobody is looking; check the prober."
+          (caveat ??
+            "Evidence that old is ABSENT, not a pass and not a fail — nobody is looking; check the prober.")
       };
     }
     case "bake_not_started": {
@@ -229,7 +301,9 @@ function chipFor(state: PipelineHookStateLike, kind: string, kindLabel: string):
       return {
         tone: "waiting",
         value: window === undefined ? "not started" : `${formatWindow(window)} — not started`,
-        title: `${who} is declared, and its quiet window has not opened: the window starts when this target deploys, and this target has not deployed. Not a pass, and not an undeclared check.`
+        title: caveat
+          ? `${who} is declared, and its quiet window has not opened. ${caveat}`
+          : `${who} is declared, and its quiet window has not opened: the window starts when this target deploys, and this target has not deployed. Not a pass, and not an undeclared check.`
       };
     }
     case "baking": {
@@ -265,14 +339,14 @@ function chipFor(state: PipelineHookStateLike, kind: string, kindLabel: string):
       return {
         tone: "watch",
         value: "window gap",
-        title: `${who}'s quiet window${endsAt ? ` (closed ${new Date(endsAt).toLocaleString()})` : ""} elapsed with reports that leave a GAP. Something is reporting and stopped — this is not a pass.`
+        title: `${who}'s quiet window${endsAt ? ` (closed ${new Date(endsAt).toLocaleString()})` : ""} elapsed with reports that leave a GAP. ${caveat ?? "Something is reporting and stopped — this is not a pass."}`
       };
     }
     case "no_source":
       return {
         tone: "watch",
         value: "no source",
-        title: `${who} is declared and NOTHING reported alarm state for its window at all. A declared bake gate with no evidence source — check that an alarm source is wired up.`
+        title: `${who} is declared and NOTHING reported alarm state for its window at all. ${caveat ?? "A declared bake gate with no evidence source — check that an alarm source is wired up."}`
       };
     default:
       // A STATE THIS BUNDLE DOES NOT KNOW — a server from a later increment. Say so; never fall
@@ -350,6 +424,7 @@ export function PipelineChecksRail({
     <div
       className="mt-2 grid grid-cols-2 gap-1.5 border-t border-dashed border-slate-200 pt-2"
       data-testid={`${testIdPrefix}-checks-rail`}
+      data-evidence-origin={checks.evidenceOrigin?.state}
     >
       {checks.slots.map((slot) => {
         const kindLabel = KIND_LABEL[slot.kind] ?? slot.kind;
@@ -397,7 +472,7 @@ export function PipelineChecksRail({
               </span>
             ) : (
               slot.hooks.map((hookState) => {
-                const chip = chipFor(hookState, slot.kind, kindLabel);
+                const chip = chipFor(hookState, slot.kind, kindLabel, checks.evidenceOrigin);
                 return (
                   <ChecksChip
                     key={hookState.hookId}
