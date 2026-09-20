@@ -1,6 +1,7 @@
 import type {
   PipelineHookKind,
   PipelineHookState,
+  WaveTargetCheckEvidenceOrigin,
   WaveTargetCheckSlot,
   WaveTargetChecks
 } from "@scp/schemas";
@@ -17,6 +18,13 @@ import {
 import { evaluateBakeGate, evaluateContinuousHold } from "./pipeline-hook-verdicts.js";
 import { waveTargetDeployedAt } from "./pipeline-hook-gate.js";
 import { listHookRunsForChange, type PipelineHookRunRow } from "./pipeline-hook-runs.js";
+import { resolveWaveTargetOriginDomains } from "./wave-targets-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
+import {
+  classifyPeerObservationFreshness,
+  listPeerObservationsForChanges,
+  type PeerObservationRow
+} from "../federation/peer-observations-repo.js";
 
 /** THE PER-TARGET CHECKS RAIL, projected — `ChangeWaveTargetSchema.checks`
  *  (docs/schemas.md §67a, docs/proposals/pipeline-mockup-data.md §3, increment 3).
@@ -97,6 +105,32 @@ export async function resolveWaveTargetChecks(
 
   const waveById = new Map(input.waves.map((w) => [w.id, w]));
 
+  // `evidenceOrigin` support (§2026-09-20 owner decision): ONE domain check, shared with
+  // `observedFreshness` (`resolveWaveTargetOriginDomains`, moved out of `plan-service.ts` so both
+  // callers hit the same function rather than each deciding "driven elsewhere" its own way), and
+  // ONE peer-observation read for the whole change — skipped entirely when nothing is declared,
+  // the same inertness gate `hooks`/`runs` above already follow.
+  const self = hooks.length > 0 ? await ensureFederationSelf(tx, orgId) : undefined;
+  const originByObjectId =
+    hooks.length > 0
+      ? await resolveWaveTargetOriginDomains(tx, orgId, targetObjectIds)
+      : new Map<string, string | undefined>();
+  const isDrivenElsewhere = (targetObjectId: string): boolean => {
+    if (!self) return false;
+    const origin = originByObjectId.get(targetObjectId);
+    // Unresolved reads the same as "not ours" (mirrors `resolveWaveTargetFreshness` exactly).
+    return origin === undefined || origin !== self.domainId;
+  };
+  const anyElsewhere =
+    hooks.length > 0 && input.targets.some((t) => isDrivenElsewhere(t.targetObjectId));
+  const peerHookRunRows: PeerObservationRow[] = anyElsewhere
+    ? (
+        (await listPeerObservationsForChanges(tx, orgId, [input.changeObjectId])).get(
+          input.changeObjectId
+        ) ?? []
+      ).filter((r) => r.subject === "hook_run")
+    : [];
+
   for (const target of input.targets) {
     const subject = subjects.get(target.targetObjectId);
     if (!subject) {
@@ -134,7 +168,30 @@ export async function resolveWaveTargetChecks(
       }
       slots.push({ kind, grain: SLOT_GRAIN[kind], hooks: states });
     }
-    result.set(target.id, { basis: "resolved", slots });
+
+    let evidenceOrigin: WaveTargetCheckEvidenceOrigin | undefined;
+    if (isDrivenElsewhere(target.targetObjectId)) {
+      // Any hook_run observation federated for THIS target's component — `postMerge`'s NULL
+      // `targetObjectId` (it belongs to no target, `WaveTargetObservedPayloadSchema`'s own comment)
+      // applies to every target of the change, so it counts here too.
+      const relevant = peerHookRunRows.filter(
+        (r) =>
+          r.componentObjectId === subject.componentObjectId &&
+          (r.targetObjectId === target.targetObjectId || r.targetObjectId === null)
+      );
+      if (relevant.length === 0) {
+        evidenceOrigin = { state: "not_reported" };
+      } else {
+        const newest = relevant.reduce((a, b) => (a.observedAt > b.observedAt ? a : b));
+        evidenceOrigin = classifyPeerObservationFreshness(newest.observedAt, now);
+      }
+    }
+
+    result.set(target.id, {
+      basis: "resolved",
+      slots,
+      ...(evidenceOrigin ? { evidenceOrigin } : {})
+    });
   }
 
   return result;

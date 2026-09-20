@@ -13765,6 +13765,16 @@ export type ExplainChangeResponses = {
                                 windowEndsAt: string;
                             }>;
                         }>;
+                        evidenceOrigin?: {
+                            state: 'fresh';
+                            ageSeconds: number;
+                        } | {
+                            state: 'stale';
+                            ageSeconds: number;
+                            staleAfterSeconds: number;
+                        } | {
+                            state: 'not_reported';
+                        };
                     } | {
                         basis: 'unresolvable';
                         reason: string;
