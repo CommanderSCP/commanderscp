@@ -871,6 +871,36 @@ function verifySocketInvariantMatrix(): void {
         );
       }
     }
+    // THE ACCOUNT SCP COORDINATES AS STAYS NARROW. argo-server runs `--auth-mode=client`, so it
+    // performs every Kubernetes action AS THE CALLER — which means this Role is not "SCP's
+    // permissions in a namespace", it is what SCP can make argo-server do on its behalf. Granting
+    // `secrets` here would hand SCP the ability to read every Secret in the backend's namespace
+    // through the very API it coordinates with, and `pods/exec` would hand it a shell. The plugin
+    // needs neither: its calls are workflows, workflowtemplates and cronworkflows, nothing else.
+    const FORBIDDEN_COORDINATOR_RESOURCES = ["secrets", "pods", "pods/exec", "pods/log", "*"];
+    for (const doc of parseAllDocuments(bundledRaw)
+      .map((d) => d.toJS() as K8sDoc | null)
+      .filter((d): d is K8sDoc => Boolean(d))) {
+      if (doc.kind !== "Role" || !String(doc.metadata?.name ?? "").includes("coordinator"))
+        continue;
+      const rules = ((doc as { rules?: unknown[] }).rules ?? []) as {
+        resources?: string[];
+        verbs?: string[];
+      }[];
+      for (const rule of rules) {
+        for (const resource of rule.resources ?? []) {
+          assert(
+            !FORBIDDEN_COORDINATOR_RESOURCES.includes(resource),
+            `[${label}] the bundled coordinator Role '${doc.metadata?.name}' grants '${resource}' — argo-server acts AS the caller, so this would let SCP read every Secret (or exec into pods) in that namespace through the API it coordinates with. The plugin calls workflows/workflowtemplates/cronworkflows only`
+          );
+          assert(
+            !(rule.verbs ?? []).includes("*"),
+            `[${label}] the bundled coordinator Role '${doc.metadata?.name}' grants verb '*' on '${resource}' — enumerate the verbs the plugin actually calls`
+          );
+        }
+      }
+    }
+
     // ARGO-SERVER IS HANDED A PERSISTENT CERTIFICATE. Without `--tls-certificate-secret-name` it
     // mints a fresh self-signed cert on every start — measured across three restarts, three
     // distinct fingerprints — which makes its CA unpinnable and breaks SCP's executorTls trust at
