@@ -43,6 +43,11 @@ import {
 import { OBSERVED_WEIGHT_FRESHNESS_MS } from "./stage-dependency-hold.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { resolveWaveTargetChecks } from "./wave-target-checks.js";
+import {
+  classifyPeerObservationFreshness,
+  listPeerObservationsForChanges,
+  type PeerObservationRow
+} from "../federation/peer-observations-repo.js";
 
 /** Reads the dependency edges among targets from the graph. See docs/coordination.md §687. */
 export async function loadDependsOnEdges(
@@ -233,9 +238,15 @@ export async function compileAndPersistPlan(
   // exactly like a subsequent `explain` would (`resolveWaveTargetExecutors` handles both cases;
   // here every row happens to have a null `executorPluginId`).
   const executors = await resolveWaveTargetExecutors(tx, input.orgId, targetRows);
-  // Same reasoning for freshness: every row is unobserved, so this is `never` (self) or
-  // `not_reported` (another domain) from the first response onward, never absent.
-  const freshness = await resolveWaveTargetFreshness(tx, input.orgId, targetRows);
+  // Same reasoning for freshness: every row is unobserved, so this is `never` (self) or, for an
+  // elsewhere-driven target, `not_reported` until a peer observation arrives — from the first
+  // response onward, never absent.
+  const freshness = await resolveWaveTargetFreshness(
+    tx,
+    input.orgId,
+    input.changeObjectId,
+    targetRows
+  );
   // Same reasoning again for the checks rail: on a freshly compiled plan every declared hook is
   // `not_run` / `bake_not_started` and every undeclared kind is an empty slot, which is a real and
   // useful first answer — "these four checks exist, none has been reached". Resolving it here keeps
@@ -644,16 +655,26 @@ export async function resolveWaveTargetExecutors(
  *  ONE domain check, ONE staleness bound — never a second copy of either:
  *  - **Domain.** `resolveWaveTargetOriginDomains` above, mirroring `component-pipeline.ts`'s
  *    `outpostOf`. Not this instance's own domain -> the target executes at another domain instance,
- *    and this instance's reconcile loop never polls status() for it — so it is `not_reported`, not
- *    merely `never`, because "never" would promise a reading might still arrive from OUR OWN
- *    observation loop, which it cannot.
+ *    and this instance's reconcile loop never polls status() for it directly — but that is no
+ *    longer the end of the story (increment 6, PR #374): a `wave_target_observed` (subject
+ *    `target`) journal entry now really does federate the executing domain's own reading up here,
+ *    exactly as `wave-target-checks.ts`'s `evidenceOrigin` (PR #386) reads for the `hook_run`
+ *    subject of the SAME kind. `not_reported` is therefore no longer inferred from topology alone —
+ *    it means no such entry has ARRIVED, checked below against `listPeerObservationsForChanges`,
+ *    never merely "this instance does not drive it". `never` stays reserved for a locally-driven
+ *    target with no reading yet, because only that case promises a reading might still arrive from
+ *    OUR OWN observation loop.
  *  - **Staleness.** `OBSERVED_WEIGHT_FRESHNESS_MS` (`stage-dependency-hold.ts`), applied to the
- *    reading's OWN stamped `observed_state.observedAt` (`observedStateForRow`) — never
- *    `lastObservedAt`, the row-level column that also moves on transitions the observed-state
- *    payload itself did not touch. */
+ *    reading's OWN stamped `observed_state.observedAt` (`observedStateForRow`) for a locally-driven
+ *    target — never `lastObservedAt`, the row-level column that also moves on transitions the
+ *    observed-state payload itself did not touch. For an elsewhere-driven target, the identical
+ *    bound is shared via `classifyPeerObservationFreshness`'s default
+ *    (`PEER_OBSERVATION_FRESHNESS_MS === OBSERVED_WEIGHT_FRESHNESS_MS`), applied to the ARRIVED
+ *    observation's own `observedAt` — never `receivedAt`, for the same reason. */
 export async function resolveWaveTargetFreshness(
   tx: TenantTx,
   orgId: string,
+  changeObjectId: string,
   targets: (typeof changeWaveTargets.$inferSelect)[],
   now: Date = new Date()
 ): Promise<Map<string, ChangeWaveTarget["observedFreshness"]>> {
@@ -663,13 +684,37 @@ export async function resolveWaveTargetFreshness(
   const self = await ensureFederationSelf(tx, orgId);
   const targetObjectIds = [...new Set(targets.map((t) => t.targetObjectId))];
   const originByObjectId = await resolveWaveTargetOriginDomains(tx, orgId, targetObjectIds);
-
-  for (const t of targets) {
-    const originDomainId = originByObjectId.get(t.targetObjectId);
+  const isDrivenElsewhere = (targetObjectId: string): boolean => {
+    const origin = originByObjectId.get(targetObjectId);
     // Unresolved (a dangling/deleted target object) reads the same as "not ours" — never a claim
     // this instance will ever observe it.
-    if (originDomainId === undefined || originDomainId !== self.domainId) {
-      result.set(t.id, { state: "not_reported" });
+    return origin === undefined || origin !== self.domainId;
+  };
+
+  // ONE peer-observation read for the whole change, skipped entirely unless at least one target
+  // needs it — the same inertness gate `wave-target-checks.ts`'s `evidenceOrigin` follows for the
+  // `hook_run` half of this same journal kind. No `peerDomainId` filter against the target's own
+  // origin domain, deliberately: `evidenceOrigin` (PR #386) does not filter by it either (a
+  // `hook_run` observation is accepted from whichever peer signed it), and the two markers reading
+  // the same kind by two different rules would let the rail and the rollout badge disagree about
+  // one arrived entry.
+  const anyElsewhere = targets.some((t) => isDrivenElsewhere(t.targetObjectId));
+  const peerTargetRows: PeerObservationRow[] = anyElsewhere
+    ? (
+        (await listPeerObservationsForChanges(tx, orgId, [changeObjectId])).get(changeObjectId) ??
+        []
+      ).filter((r) => r.subject === "target")
+    : [];
+
+  for (const t of targets) {
+    if (isDrivenElsewhere(t.targetObjectId)) {
+      const relevant = peerTargetRows.filter((r) => r.targetObjectId === t.targetObjectId);
+      if (relevant.length === 0) {
+        result.set(t.id, { state: "not_reported" });
+      } else {
+        const newest = relevant.reduce((a, b) => (a.observedAt > b.observedAt ? a : b));
+        result.set(t.id, classifyPeerObservationFreshness(newest.observedAt, now));
+      }
       continue;
     }
     const observed = t.observedState as WaveTargetObservedState | null;
@@ -727,7 +772,7 @@ export async function getLatestPlanForChange(
 
   const topologyName = await topologyNameOf(tx, orgId, planRow.topologyObjectId);
   const executors = await resolveWaveTargetExecutors(tx, orgId, targetRows);
-  const freshness = await resolveWaveTargetFreshness(tx, orgId, targetRows);
+  const freshness = await resolveWaveTargetFreshness(tx, orgId, changeObjectId, targetRows);
 
   if (options?.withFreezeHolds === false) {
     // NO CHECKS RAIL ON THIS PATH, deliberately, and for the same reason neither hold half is

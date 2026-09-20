@@ -512,10 +512,14 @@ export const ChangeWaveTargetSchema = z.object({
    *  (`scp-oasdiff-oneof-vs-enum`). Shares ONE definition with `stage-dependency-hold.ts`'s
    *  `OBSERVED_WEIGHT_FRESHNESS_MS` and reads the reading's OWN stamped `observed_state.observedAt`
    *  — never `lastObservedAt`, the row-level column, which is a second, coarser clock.
-   *  `not_reported`: this target executes at another domain instance and no observation has been
-   *  federated up to this one — a permanent state until the wave-target-observation journal kind
-   *  ships (docs/proposals/pipeline-mockup-data.md §5.3, increment 6), never a stale claim about a
-   *  reading that in fact never reaches this instance. Absent = a server predating this field. */
+   *  `not_reported`: this target executes at another domain instance and no observation has yet
+   *  ARRIVED via the `wave_target_observed` journal kind, subject `target`
+   *  (docs/proposals/pipeline-mockup-data.md §5.3, increment 6, PR #374) — checked against
+   *  `listPeerObservationsForChanges` (`plan-service.ts`'s `resolveWaveTargetFreshness`), never
+   *  inferred from topology alone. Once one arrives, `fresh`/`stale` follow from ITS OWN stamped
+   *  time, exactly like a locally-driven reading, mirroring `WaveTargetCheckEvidenceOriginSchema`'s
+   *  vocabulary for the same journal kind's `hook_run` subject. Absent = a server predating this
+   *  field. */
   observedFreshness: z
     .discriminatedUnion("state", [
       z.object({ state: z.literal("never") }),

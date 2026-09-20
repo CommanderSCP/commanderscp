@@ -807,6 +807,53 @@ describe("PipelineWaveCard: the rollout pip-stepper (pipeline-mockup-data.md §5
     expect(html).not.toContain("not reported to this commander");
     expect(html).toContain('data-testid="pipeline-wave-observed-rollout"');
   });
+
+  // A target driven elsewhere whose observedFreshness is no longer forever 'not_reported'
+  // (increment 6's wave_target_observed, subject `target`, has arrived) — `observed` stays this
+  // instance's own (null) snapshot, so the badge must say something honest from the ARRIVED
+  // reading's age alone, never fabricate rollout content this instance was never sent, and never
+  // silently render nothing (the regression a naive fix would introduce).
+  it("elsewhere-driven + FRESH: 'observed: null' with a fresh observedFreshness renders 'reported Ns ago', no stale badge, no pips", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: null,
+      observedFreshness: { state: "fresh", ageSeconds: 5 }
+    });
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout-elsewhere"');
+    expect(html).toContain("rolling out elsewhere");
+    expect(html).toContain("reported 5s ago");
+    expect(html).not.toContain('data-testid="pipeline-wave-observed-rollout-elsewhere-stale"');
+    expect(html).not.toContain('data-testid="pipeline-wave-rollout-stepper"');
+    expect(html).not.toContain("not reported to this commander");
+  });
+
+  it("elsewhere-driven + STALE: 'observed: null' with a stale observedFreshness renders the age AND the stale badge, sharing the same freshness bound wording as the local stale case", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: null,
+      observedFreshness: { state: "stale", ageSeconds: 900, staleAfterSeconds: 600 }
+    });
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout-elsewhere"');
+    expect(html).toContain("reported 15 min ago");
+    expect(html).toContain('data-testid="pipeline-wave-observed-rollout-elsewhere-stale"');
+    expect(html).toContain("stale");
+  });
+
+  // MUTATION-PROVE THE DISCRIMINATOR: a LOCAL target (observed non-null) that happens to have no
+  // rollout content (e.g. a non-canary executor) must NOT be mistaken for the elsewhere-driven
+  // case just because its freshness state is 'fresh'/'stale' — flipping `observed: null` to a
+  // real (rollout-less) object here is what distinguishes the two branches; this test goes red if
+  // that check is ever dropped in favour of freshness state alone.
+  it("a LOCAL target with a real (rollout-less) observed snapshot and 'fresh' freshness renders NEITHER the elsewhere badge NOR any rollout content — RULE 6, unaffected", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      observed: { revision: "abc1234" },
+      observedFreshness: { state: "fresh", ageSeconds: 5 }
+    });
+    expect(html).not.toContain('data-testid="pipeline-wave-observed-rollout-elsewhere"');
+    expect(html).not.toContain('data-testid="pipeline-wave-observed-rollout-not-reported"');
+    expect(html).not.toContain("rolling out elsewhere");
+  });
 });
 
 describe("PipelineWaveCard: the infrastructure plan chip (pipeline-mockup-data.md §6)", () => {
