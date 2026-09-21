@@ -119,6 +119,45 @@ bundledExecutor:
     # Role bound to it is therefore the exact set `@scp/plugin-argo-workflows` calls and nothing
     # more — see the template for the endpoint-by-endpoint derivation.
     scpAccount: scp-coordinator
+    # THE SHIPPED CATALOG (owner decision 2026-09-20). Vetted, parameterised templates every
+    # organization gets, rather than a build definition authored per component. Only possible
+    # because a build trigger now carries its source identity and destination (#398).
+    catalog:
+      # The Secret the catalog reads credentials from, in this backend's namespace. Every key is
+      # OPTIONAL at mount so the template can refuse with a sentence rather than crashloop on a
+      # missing Secret — but the build step exits non-zero without registry credentials,
+      # deliberately BEFORE the expensive step rather than after it.
+      #   gitToken          — read access to the source repo (omit for a public repo)
+      #   registryUsername  — registry push identity
+      #   registryPassword  — registry push token (for GHCR: a PAT with `packages:write`)
+      # NOT created by this chart: minting a forge credential is an operator act, and a chart that
+      # generated one would either be wrong or would need the forge's own credentials to do it.
+      credentialsSecret: scp-build-registry
+      # The identity catalog BUILD PODS run as — bound to no Role, token not mounted. Separate from
+      # `scpAccount` on purpose: that one can create and terminate workflows, and a build pod runs
+      # the tenant's own Dockerfile.
+      buildServiceAccount: scp-build
+      buildImage:
+        # VENDORED, RETARGETABLE images, same rule as the backends themselves: upstream refs so a
+        # CONNECTED install works out of the box; the air-gap install.sh rewrites them.
+        builderImage: quay.io/buildah/stable:v1.38 # buildah (Apache-2.0)
+        gitImage: alpine/git:2.47.2 # git (MIT)
+        # The forge the source repo lives on. `sourceRepo` arrives as `owner/name`, so the host is
+        # configuration rather than something to parse out of it.
+        sourceHost: github.com
+        # Path to the Dockerfile WITHIN the source repo. A component that builds another way needs
+        # its own template — this one is deliberately the common case, not every case.
+        dockerfile: Dockerfile
+        resources:
+          fetch:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          # Sized for a real image build. `vfs` copies layers rather than overlaying them, which
+          # costs disk and time — the accepted price of not handing a build pod the node's
+          # container runtime (see the socket invariant in tools/helm-verify).
+          build:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "2", memory: 4Gi }
     # Per-CONTAINER resources. Upstream ships neither workload with any, which makes both
     # BestEffort — unbounded, and first evicted under node pressure.
     resources:
