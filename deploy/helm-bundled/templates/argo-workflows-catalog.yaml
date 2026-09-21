@@ -68,6 +68,13 @@ spec:
       - name: imageRepository
       - name: registryUrl
         value: https://ghcr.io
+      # WHERE THIS COMPONENT'S DOCKERFILE IS, relative to the repo root. A monorepo puts each
+      # component's under its own directory (`apps/profile-web/Dockerfile`), so this is a fact
+      # about the COMPONENT and arrives as a parameter — SCP reads it off the component's own
+      # `properties.dockerfile`. The default below is the single-service repo case; carrying it
+      # only in chart values would force every component in an organization to share one path.
+      - name: dockerfile
+        value: {{ $c.buildImage.dockerfile }}
       - name: sourceRef
         value: ""
       - name: registryName
@@ -88,6 +95,7 @@ spec:
           - name: sourceCommit
           - name: imageRepository
           - name: registryUrl
+          - name: dockerfile
           - name: sourceRef
           - name: registryName
           - name: changeObjectId
@@ -142,16 +150,17 @@ spec:
         args:
           - |
             set -eu
-            repository="$0"; registryUrl="$1"; commit="$2"
+            repository="$0"; registryUrl="$1"; commit="$2"; dockerfile="$3"
             # The registry HOST, from the URL SCP passed. Derived here rather than configured, so
             # a component publishing somewhere other than the default still works.
             host="${registryUrl#https://}"; host="${host#http://}"; host="${host%%/*}"
             tag="${host}/${repository}:${commit}"
             cd /work/src
-            [ -f "{{ $c.buildImage.dockerfile }}" ] || {
-              echo "no {{ $c.buildImage.dockerfile }} at the repository root — this catalog template" >&2
-              echo "builds a Dockerfile-based image; a component that builds another way needs its own" >&2
-              echo "template" >&2
+            [ -f "$dockerfile" ] || {
+              echo "no $dockerfile in ${repository} at ${commit}. This catalog template builds a" >&2
+              echo "Dockerfile-based image; set the component's properties.dockerfile if it lives" >&2
+              echo "somewhere other than the repository root (a monorepo usually does), or use a" >&2
+              echo "template of your own if it does not build from a Dockerfile at all." >&2
               exit 2
             }
             if [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
@@ -162,13 +171,18 @@ spec:
               exit 2
             fi
             # vfs + chroot: no daemon, no socket, no /dev/fuse. See the header.
+            # CONTEXT IS THE REPO ROOT, dockerfile path relative to it — which is what a monorepo
+            # needs: apps/profile-web/Dockerfile routinely COPYs from packages/ and the workspace
+            # lockfile at the root, so a context narrowed to the component's directory would fail
+            # to resolve them.
             buildah --storage-driver vfs bud --isolation chroot \
-              -f "{{ $c.buildImage.dockerfile }}" -t "$tag" .
+              -f "$dockerfile" -t "$tag" .
             buildah --storage-driver vfs push "$tag"
             echo "pushed $tag"
           - "{{`{{inputs.parameters.imageRepository}}`}}"
           - "{{`{{inputs.parameters.registryUrl}}`}}"
           - "{{`{{inputs.parameters.sourceCommit}}`}}"
+          - "{{`{{inputs.parameters.dockerfile}}`}}"
         env:
           - name: REGISTRY_USERNAME
             valueFrom:

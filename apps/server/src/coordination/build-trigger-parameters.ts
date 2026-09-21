@@ -1,5 +1,7 @@
 import { categoryOfType, type ExecutorType } from "@scp/schemas";
+import { and, eq } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
+import { objects } from "../db/schema.js";
 import { registryForComponent } from "./component-pipeline.js";
 
 /** WHAT A BUILD-LANE TRIGGER TELLS ITS EXECUTOR.
@@ -59,6 +61,21 @@ export async function buildLaneTriggerParameters(
   // The SAME resolution the pipeline view renders, not a second one. `declared` is the only state
   // that names a destination: `none` has no edge and `ambiguous` has more than one, and picking
   // one of several would be exactly the silent guess the pipeline view refuses to make.
+  // WHERE THIS COMPONENT'S DOCKERFILE LIVES, when it says. A monorepo puts each component's
+  // Dockerfile under its own directory (`apps/profile-web/Dockerfile`), so the path is a fact
+  // ABOUT THE COMPONENT, not a property of the build tooling — carrying it in chart values would
+  // force every component in an organization to share one path. Absent ⇒ the catalog template's
+  // own default, which is the single-service repo case.
+  const [component] = await tx
+    .select({ properties: objects.properties })
+    .from(objects)
+    .where(and(eq(objects.orgId, input.orgId), eq(objects.id, input.targetObjectId)))
+    .limit(1);
+  // Untyped for the same reason `sourceRef` is: a replicated row from an older peer was never
+  // checked against a shape here.
+  const dockerfile = readString(component?.properties, "dockerfile");
+  if (dockerfile) params.dockerfile = dockerfile;
+
   const registry = await registryForComponent(tx, input.orgId, input.targetObjectId);
   if (registry.state === "declared") {
     if (registry.repository) params.imageRepository = registry.repository;

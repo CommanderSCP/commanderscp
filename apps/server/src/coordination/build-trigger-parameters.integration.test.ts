@@ -79,6 +79,28 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
     });
   });
 
+  it("carries the component's OWN dockerfile path when it declares one", async () => {
+    // A monorepo puts each component's Dockerfile under its own directory
+    // (`apps/profile-web/Dockerfile` in AgentKitProject/agentkit), so this is a fact about the
+    // COMPONENT. Chart-wide configuration would force every component in an organization onto one
+    // path — which is how the catalog template first shipped, and it was wrong for the very first
+    // real build attempted against it.
+    const component = await createTestComponent(admin, { name: `df-${randomUUID().slice(0, 8)}` });
+    // The TYPED route. The generic /objects/component door refuses a component outright ("must
+    // belong to a service"), which is what this test hit on its first run.
+    await admin.components.update(component.id, {
+      properties: { dockerfile: "apps/profile-web/Dockerfile" }
+    });
+    expect(await resolve(component.id, SOURCE_REF)).toMatchObject({
+      dockerfile: "apps/profile-web/Dockerfile"
+    });
+  });
+
+  it("and omits it when the component says nothing, leaving the template default to apply", async () => {
+    const id = await componentPublishingTo("acme/one-service");
+    expect(await resolve(id, SOURCE_REF)).not.toHaveProperty("dockerfile");
+  });
+
   it("NEGATIVE CONTROL — a configuration Type gets none of it", async () => {
     // Without this, the assertion above is equally satisfied by a resolver that returns these
     // parameters for EVERY trigger, which would put build inputs on every deploy.
