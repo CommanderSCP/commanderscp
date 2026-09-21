@@ -381,6 +381,7 @@ if [[ "$MODE" == "helm" ]]; then
   # hardcoded template ref — avoiding the eval-postgres air-gap trap noted below).
   BUNDLED_APPLY=()
   BUNDLED_SET_ARGOCD=(); BUNDLED_SET_WORKFLOWS=(); BUNDLED_SET_EVENTS=(); BUNDLED_SET_GITEA=()
+  BUNDLED_SET_ROLLOUTS=()
   if [[ -n "${ARGOCD_DIGEST:-}" ]]; then
     BUNDLED_SET_ARGOCD=(--set "bundledExecutor.argocd.image=${ARGOCD_RETARGETED_REF:-${REGISTRY}/argocd:${BUNDLE_VERSION}@${ARGOCD_DIGEST}}"
       --set "bundledExecutor.argocd.valkeyImage=${VALKEY_RETARGETED_REF:-${REGISTRY}/valkey:${BUNDLE_VERSION}@${VALKEY_DIGEST}}")
@@ -399,6 +400,10 @@ if [[ "$MODE" == "helm" ]]; then
       BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.buildImage.gitImage=${CATALOG_GIT_RETARGETED_REF:-${REGISTRY}/catalog-git:${BUNDLE_VERSION}@${CATALOG_GIT_DIGEST}}")
     fi
     BUNDLED_APPLY+=(argo-workflows)
+  fi
+  if [[ -n "${ARGO_ROLLOUTS_DIGEST:-}" ]]; then
+    BUNDLED_SET_ROLLOUTS=(--set "bundledExecutor.argoRollouts.image=${ARGO_ROLLOUTS_RETARGETED_REF:-${REGISTRY}/argo-rollouts:${BUNDLE_VERSION}@${ARGO_ROLLOUTS_DIGEST}}")
+    BUNDLED_APPLY+=(argo-rollouts)
   fi
   if [[ -n "${ARGO_EVENTS_DIGEST:-}" ]]; then
     BUNDLED_SET_EVENTS=(--set "bundledExecutor.argoEvents.image=${ARGO_EVENTS_RETARGETED_REF:-${REGISTRY}/argo-events:${BUNDLE_VERSION}@${ARGO_EVENTS_DIGEST}}")
@@ -486,6 +491,7 @@ if [[ "$MODE" == "helm" ]]; then
       case "$be" in
         argocd)         BSET=(${BUNDLED_SET_ARGOCD[@]+"${BUNDLED_SET_ARGOCD[@]}"}) ;;
         argo-workflows) BSET=(${BUNDLED_SET_WORKFLOWS[@]+"${BUNDLED_SET_WORKFLOWS[@]}"}) ;;
+        argo-rollouts)  BSET=(${BUNDLED_SET_ROLLOUTS[@]+"${BUNDLED_SET_ROLLOUTS[@]}"}) ;;
         argo-events)    BSET=(${BUNDLED_SET_EVENTS[@]+"${BUNDLED_SET_EVENTS[@]}"}) ;;
         gitea)          BSET=(${BUNDLED_SET_GITEA[@]+"${BUNDLED_SET_GITEA[@]}"}) ;;
       esac

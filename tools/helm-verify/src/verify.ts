@@ -833,6 +833,13 @@ function verifySocketInvariantMatrix(): void {
       "--set",
       "bundledExecutor.argoEvents.enabled=true",
       "--set",
+      // Argo Rollouts belongs in the all-backends render even though SCP never coordinates it
+      // (ADR-0008 §3 — observed via the Argo CD Application, never driven). It is 3 MB of vendored
+      // upstream that this chart applies to a cluster; leaving it out would mean the socket scan,
+      // the RoleBinding-subject re-homing check and the container guards below never look at it.
+      // "What this chart can render" is the question, not "what SCP talks to".
+      "bundledExecutor.argoRollouts.enabled=true",
+      "--set",
       "bundledExecutor.gitea.enabled=true"
     ]
   ]) {

@@ -134,6 +134,14 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     flagDescription: "bundled Argo Events image",
     doc: "bundled Argo Events"
   },
+  {
+    name: "argo-rollouts",
+    optionStem: "argo-rollouts",
+    defaultRef: "quay.io/argoproj/argo-rollouts:v1.10.0",
+    defaultSource: "docker",
+    flagDescription: "bundled Argo Rollouts image",
+    doc: "bundled Argo Rollouts controller (progressive delivery; observed, never driven)"
+  },
   // Bundled Gitea (Mode B — the DEFAULT unified registry, ADR-0012). See docs/airgap.md §18.
   {
     name: "gitea",
