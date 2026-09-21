@@ -904,8 +904,7 @@ function verifySocketInvariantMatrix(): void {
       .map((d) => d.toJS() as K8sDoc | null)
       .filter((d): d is K8sDoc => Boolean(d))) {
       if (doc.kind !== "WorkflowTemplate") continue;
-      const templates = ((doc as { spec?: { templates?: unknown[] } }).spec?.templates ??
-        []) as {
+      const templates = ((doc as { spec?: { templates?: unknown[] } }).spec?.templates ?? []) as {
         name?: string;
         container?: Container;
         initContainers?: Container[];
