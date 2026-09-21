@@ -871,6 +871,24 @@ function verifySocketInvariantMatrix(): void {
         );
       }
     }
+    // THE BUILD IDENTITY GRANTS THE EXECUTOR FLOOR AND NOTHING ELSE. A catalog build pod runs the
+    // TENANT'S OWN Dockerfile, and Argo refuses to run it tokenless ("executor.serviceAccountName
+    // must not be empty if automountServiceAccountToken is false"), so a token is readable from
+    // inside that build by construction. What it can DO is the only lever left — and the floor is
+    // `workflowtaskresults: create, patch`, which is how the emissary executor reports step status.
+    // Any other resource here is authority a malicious build could reach.
+    for (const doc of parseAllDocuments(bundledRaw)
+      .map((d) => d.toJS() as K8sDoc | null)
+      .filter((d): d is K8sDoc => Boolean(d))) {
+      if (doc.kind !== "Role" || doc.metadata?.name !== "scp-build") continue;
+      const rules = ((doc as { rules?: unknown[] }).rules ?? []) as { resources?: string[] }[];
+      const granted = rules.flatMap((r) => r.resources ?? []).sort();
+      assert(
+        granted.length === 1 && granted[0] === "workflowtaskresults",
+        `[${label}] the catalog build Role grants ${JSON.stringify(granted)} — it may grant workflowtaskresults and nothing else. That pod runs the tenant's own Dockerfile and can read its own token, so every extra resource here is authority a malicious build inherits`
+      );
+    }
+
     // THE ACCOUNT SCP COORDINATES AS STAYS NARROW. argo-server runs `--auth-mode=client`, so it
     // performs every Kubernetes action AS THE CALLER — which means this Role is not "SCP's
     // permissions in a namespace", it is what SCP can make argo-server do on its behalf. Granting
