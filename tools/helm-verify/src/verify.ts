@@ -889,6 +889,57 @@ function verifySocketInvariantMatrix(): void {
       );
     }
 
+    // THE BUILD CONTAINER'S RELAXATIONS ARE EXACTLY THE FOUR THAT WERE MEASURED, AND NO MORE.
+    // scp-build-image-v1 cannot be a hardened container: rootless BuildKit has to create a user
+    // namespace, and seccomp RuntimeDefault, the default AppArmor profile, no_new_privs and
+    // `drop: [ALL]` each independently prevent that (see the template header for the failure each
+    // one produces). That makes this the one workload in the chart whose securityContext is
+    // deliberately weaker — which is precisely why it needs a guard rather than trust. A later
+    // edit reaching for `privileged: true` or dropping runAsNonRoot would look, in a diff, exactly
+    // like the four relaxations already here.
+    //
+    // WorkflowTemplate containers are invisible to assertHardenedContainer (it walks Deployments
+    // and Jobs), so without this check nothing constrains them at all.
+    for (const doc of parseAllDocuments(bundledRaw)
+      .map((d) => d.toJS() as K8sDoc | null)
+      .filter((d): d is K8sDoc => Boolean(d))) {
+      if (doc.kind !== "WorkflowTemplate") continue;
+      const templates = ((doc as { spec?: { templates?: unknown[] } }).spec?.templates ?? []) as {
+        name?: string;
+        container?: Container;
+        initContainers?: Container[];
+      }[];
+      for (const tpl of templates) {
+        for (const container of [tpl.container, ...(tpl.initContainers ?? [])].filter(
+          (c): c is Container => Boolean(c)
+        )) {
+          const where = `${doc.metadata?.name}/${tpl.name}/${container.name}`;
+          const sc = (container.securityContext ?? {}) as {
+            privileged?: boolean;
+            runAsUser?: number;
+            runAsNonRoot?: boolean;
+            readOnlyRootFilesystem?: boolean;
+            capabilities?: { drop?: string[]; add?: string[] };
+          };
+          assert(
+            sc.privileged !== true,
+            `[${label}] catalog container '${where}' is privileged. Nothing in this chart may be: a build pod runs the tenant's own Dockerfile, and privileged hands it the node's kernel`
+          );
+          assert(
+            sc.runAsUser !== 0,
+            `[${label}] catalog container '${where}' runs as uid 0. The builder is rootless by construction; running it as root does not work and would not be acceptable if it did`
+          );
+          // The builder needs SETUID/SETGID for newuidmap; nothing may need more than that.
+          const added = (sc.capabilities?.add ?? []).slice().sort();
+          const ALLOWED_ADDED = ["SETGID", "SETUID"];
+          assert(
+            added.every((cap) => ALLOWED_ADDED.includes(cap)),
+            `[${label}] catalog container '${where}' adds capabilities ${JSON.stringify(added)} — only ${JSON.stringify(ALLOWED_ADDED)} are justified (newuidmap/newgidmap). Anything else is new authority inside a pod running an untrusted Dockerfile`
+          );
+        }
+      }
+    }
+
     // THE ACCOUNT SCP COORDINATES AS STAYS NARROW. argo-server runs `--auth-mode=client`, so it
     // performs every Kubernetes action AS THE CALLER — which means this Role is not "SCP's
     // permissions in a namespace", it is what SCP can make argo-server do on its behalf. Granting
