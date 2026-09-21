@@ -96753,6 +96753,13 @@
                       "infrastructure",
                       "configuration"
                     ]
+                  },
+                  "lane": {
+                    "type": "string",
+                    "enum": [
+                      "build",
+                      "test"
+                    ]
                   }
                 },
                 "additionalProperties": false

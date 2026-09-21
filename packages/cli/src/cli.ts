@@ -2539,6 +2539,13 @@ export function buildProgram(): Command {
     .option("--domain-id <id>", "containing object id (defaults to the org root)")
     .option("--properties <json>", "JSON object")
     .option("--labels <json>", "JSON object")
+    .option(
+      "--domain-local",
+      "mark the object DOMAIN-LOCAL: it never federates to a peer (ADR-0031). Locality is opt-in " +
+        "(`domain_local NOT NULL DEFAULT false`), so omitting this leaves the object shared. A " +
+        "REGISTRY is the canonical case — one per domain by construction, because an edge with a " +
+        "domain-local endpoint never journals"
+    )
     .option("--org <org>", "explicit /orgs/{org} path override")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -2550,6 +2557,7 @@ export function buildProgram(): Command {
           id?: string;
           urn?: string;
           domainId?: string;
+          domainLocal?: boolean;
           properties?: string;
           labels?: string;
           baseUrl?: string;
@@ -2563,6 +2571,7 @@ export function buildProgram(): Command {
             id: opts.id,
             urn: opts.urn,
             domainId: opts.domainId,
+            ...(opts.domainLocal ? { domainLocal: true } : {}),
             properties: parseJsonOption(opts.properties, "--properties"),
             labels: parseJsonOption(opts.labels, "--labels")
           },
@@ -6427,6 +6436,12 @@ export function buildProgram(): Command {
         "infrastructure | configuration (default: configuration). A target may hold ONE binding per " +
         "Type, so this ADDS a pipeline of that Type alongside the others rather than replacing one"
     )
+    .option(
+      "--lane <lane>",
+      "which lane this binding serves: build|test (default: build). The table is keyed " +
+        "(org, target, type, lane), so build and test are SEPARATE bindings on the same target — " +
+        "this is how a test-lane binding is created without authoring a policy"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -6441,6 +6456,7 @@ export function buildProgram(): Command {
           allowedHosts?: string;
           targetRef?: string;
           type?: ExecutorType;
+          lane?: ExecutorLane;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -6450,7 +6466,8 @@ export function buildProgram(): Command {
             ? {
                 executionSystemId: opts.executionSystem,
                 externalRef: opts.targetRef,
-                type: opts.type
+                type: opts.type,
+                lane: opts.lane
               }
             : {
                 pluginModule: opts.module,
@@ -6461,7 +6478,8 @@ export function buildProgram(): Command {
                   Record<string, string> | undefined,
                 allowedHosts: parseList(opts.allowedHosts),
                 externalRef: opts.targetRef,
-                type: opts.type
+                type: opts.type,
+                lane: opts.lane
               }
         );
         printResult(result, opts.output, (item) => item as Record<string, unknown>);

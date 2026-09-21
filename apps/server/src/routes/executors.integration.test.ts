@@ -9,6 +9,9 @@ import {
   type ListeningTestServer
 } from "../test-support/harness.js";
 import { MANIFEST_BY_MODULE } from "../plugin-host/plugin-manifests.js";
+import { eq } from "drizzle-orm";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { executorBindings } from "../db/schema.js";
 
 /** M7 plugin-configuration surface. See docs/routes.md §162. */
 describe("M7: executor/notification bindings, secrets, plugin manifests, discovery (never auto-commits)", () => {
@@ -38,6 +41,52 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     await admin.secrets.delete(key);
     const afterDelete = await admin.secrets.listKeys();
     expect(afterDelete.keys).not.toContain(key);
+  });
+
+  it("a TEST-lane binding is creatable through the API, and coexists with the build lane", async () => {
+    // `executor_bindings` is keyed (org, target, type, lane) and the binding-policy reconciler has
+    // always written `test` rows — but the PUT door accepted no lane, so a test-lane binding could
+    // only ever be produced by authoring a POLICY. The DELETE door already took `?lane=` (added
+    // because those policy-written rows were otherwise undeletable), which is the asymmetry that
+    // gave this away: a row the API could delete but never create.
+    const org = await createTestOrg(server, "m7-lane");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await createTestComponent(admin, {
+      name: `lane-${randomUUID().slice(0, 8)}`
+    });
+
+    const build = await admin.executors.putBinding(component.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-b-${randomUUID().slice(0, 8)}`,
+      type: "image",
+      externalRef: "build-ref"
+    });
+    const test = await admin.executors.putBinding(component.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-t-${randomUUID().slice(0, 8)}`,
+      type: "image",
+      lane: "test",
+      externalRef: "test-ref"
+    });
+
+    // Two DISTINCT rows on the same (target, type) — which is the whole point of the lane being
+    // part of the key. If lane were ignored, the second PUT would have UPDATED the first and these
+    // ids would match.
+    expect(build.id).not.toBe(test.id);
+    expect(build.externalRef).toBe("build-ref");
+    expect(test.externalRef).toBe("test-ref");
+
+    // ...and the absent lane means `build`, which is what every caller got before this was added.
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ lane: executorBindings.lane, externalRef: executorBindings.externalRef })
+        .from(executorBindings)
+        .where(eq(executorBindings.targetObjectId, component.id))
+    );
+    expect(rows.map((r) => `${r.lane}:${r.externalRef}`).sort()).toEqual([
+      "build:build-ref",
+      "test:test-ref"
+    ]);
   });
 
   it("executor binding PUT/GET round-trips against a real Component target", async () => {

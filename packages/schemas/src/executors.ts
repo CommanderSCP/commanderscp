@@ -33,6 +33,18 @@ export type ExecutorType = z.infer<typeof ExecutorTypeSchema>;
 export const ArtifactClassSchema = ExecutorTypeSchema.exclude(["infrastructure", "configuration"]);
 export type ArtifactClass = z.infer<typeof ArtifactClassSchema>;
 
+/** Which LANE a binding serves.
+ *
+ *  DEFINED HERE, not in `binding-policy.ts`, although the policy effect is its other consumer:
+ *  `binding-policy.ts` already imports `ExecutorTypeSchema` from this module, so defining the lane
+ *  there and importing it back created a CYCLE — and a cycle between two Zod modules does not fail
+ *  at import, it leaves the const `undefined` at initialisation. It surfaced as
+ *  "Cannot access 'ExecutorTypeSchema' before initialization" from `openapi-emit`, which was the
+ *  lucky version; the documented failure mode is a schema that silently validates nothing.
+ *  `binding-policy.ts` re-exports it, so every existing importer is unaffected. */
+export const ExecutorLaneSchema = z.enum(["build", "test"]);
+export type ExecutorLane = z.infer<typeof ExecutorLaneSchema>;
+
 /** The executor **Category**. See docs/schemas.md §184. */
 export const ExecutorCategorySchema = z.enum(["build", "infrastructure", "configuration"]);
 export type ExecutorCategory = z.infer<typeof ExecutorCategorySchema>;
@@ -133,7 +145,15 @@ export const CreateExecutorBindingRequestSchema = z
     /** WHICH pipeline this binding drives — the routing Type (ADR-0007). A target may hold one
      *  binding per Type (e.g. a `configuration` sync AND an `image` build AND an `infrastructure`
      *  apply), so this is what distinguishes them. Omitted ⇒ 'configuration' (the server default). */
-    type: ExecutorTypeSchema.optional()
+    type: ExecutorTypeSchema.optional(),
+    /** Which LANE this binding serves (ADR-0007 sits beside it: Type says which pipeline, lane says
+     *  which arm of it). Absent ⇒ `build`, which is what every caller got before this was
+     *  accepted — `executor_bindings` is keyed `(org, target, type, lane)` with a `build` column
+     *  default. The DELETE door already took `?lane=`, precisely because the binding-policy
+     *  reconciler writes `test` rows; until this was added they could be deleted through the API
+     *  but never CREATED through it, so a test-lane binding was reachable only by authoring a
+     *  policy. */
+    lane: ExecutorLaneSchema.optional()
   })
   .refine(
     (b) => (b.executionSystemId ? !b.pluginModule : Boolean(b.pluginModule && b.pluginInstanceId)),
