@@ -19,6 +19,33 @@
 # steps ships as `-v2` beside it, and existing bindings keep running what they were bound to
 # rather than silently acquiring new behaviour.
 #
+# KNOWN LIMITATION, MEASURED 2026-09-20 — READ THIS BEFORE DEBUGGING A FAILED BUILD.
+# On k3s/containerd this template cannot complete a build. `buildah` fails extracting the FIRST
+# layer of any base image with:
+#
+#     While applying layer: ApplyLayer stderr: remount /, flags: 0x44000: permission denied
+#
+# 0x44000 is MS_PRIVATE|MS_REC — `mount --make-rprivate /`, which containers/storage does before
+# chroot-extracting a layer. The container's `/` belongs to the PARENT mount namespace, so its
+# propagation cannot be changed from inside, and no amount of privilege short of `privileged: true`
+# changes that. Ruled out by direct measurement, so nobody repeats it:
+#
+#   Ubuntu 24.04 AppArmor userns restriction  NOT IT — `unshare -U` is allowed on the node
+#   missing uid mapping                       NOT IT — newuidmap carries cap_setuid=ep
+#   running as root instead of uid 1000       NOT IT — fails identically either way
+#   adding CAP_SYS_ADMIN                      NOT IT — fails with it added
+#   seccomp blocking mount()                  NOT IT — fails under seccompProfile: Unconfined
+#
+# The options are a userspace-extracting builder (kaniko, which is unmaintained), `privileged:
+# true` (which hands a pod running the tenant's own Dockerfile the node's kernel — the exact thing
+# the socket invariant below exists to prevent), or NOT building in-cluster at all and coordinating
+# the organization's existing CI, which is Mode A and what an org with a pipeline should do anyway.
+# That choice is an owner decision and is deliberately NOT made here.
+#
+# Everything else in this template is verified working: parameters flow, the commit-pinned fetch
+# succeeds, registry login succeeds against real credentials, and a missing credential refuses
+# before the expensive step.
+#
 # NO CONTAINER RUNTIME SOCKET, and this is enforced rather than intended: `tools/helm-verify`
 # scans the RAW bundled render for the well-known runtime socket paths and fails the build on any
 # of them — "a vendored backend mounting a container runtime socket is the same escape, one chart
@@ -68,6 +95,13 @@ spec:
       - name: imageRepository
       - name: registryUrl
         value: https://ghcr.io
+      # WHERE THIS COMPONENT'S DOCKERFILE IS, relative to the repo root. A monorepo puts each
+      # component's under its own directory (`apps/profile-web/Dockerfile`), so this is a fact
+      # about the COMPONENT and arrives as a parameter — SCP reads it off the component's own
+      # `properties.dockerfile`. The default below is the single-service repo case; carrying it
+      # only in chart values would force every component in an organization to share one path.
+      - name: dockerfile
+        value: {{ $c.buildImage.dockerfile }}
       - name: sourceRef
         value: ""
       - name: registryName
@@ -88,6 +122,7 @@ spec:
           - name: sourceCommit
           - name: imageRepository
           - name: registryUrl
+          - name: dockerfile
           - name: sourceRef
           - name: registryName
           - name: changeObjectId
@@ -135,6 +170,19 @@ spec:
       # ---- 2. BUILD + PUSH, ROOTLESS ---------------------------------------------------------
       container:
         image: {{ $c.buildImage.builderImage }}
+        # ROOTLESS MEANS NON-ROOT, which is not the same as "no privileged flag". Running buildah
+        # as root WITHOUT capabilities is the worst of both worlds and is what this template did
+        # first: layer extraction died with `remount /, flags: 0x44000: permission denied`, because
+        # applying a layer needs privileges that uid 0 in a container does not actually hold.
+        #
+        # As uid 1000 buildah UNSHARES A USER NAMESPACE and holds those privileges INSIDE it,
+        # using the subuid/subgid ranges the image ships for this user (`build:1001:64535`). No
+        # added capabilities, no privileged, no socket — the node's container runtime is never
+        # reachable from here, which is the invariant the whole design rests on.
+        securityContext:
+          runAsUser: {{ $c.buildImage.runAsUser }}
+          runAsGroup: {{ $c.buildImage.runAsUser }}
+          allowPrivilegeEscalation: false
         volumeMounts:
           - name: workspace
             mountPath: /work
@@ -142,16 +190,17 @@ spec:
         args:
           - |
             set -eu
-            repository="$0"; registryUrl="$1"; commit="$2"
+            repository="$0"; registryUrl="$1"; commit="$2"; dockerfile="$3"
             # The registry HOST, from the URL SCP passed. Derived here rather than configured, so
             # a component publishing somewhere other than the default still works.
             host="${registryUrl#https://}"; host="${host#http://}"; host="${host%%/*}"
             tag="${host}/${repository}:${commit}"
             cd /work/src
-            [ -f "{{ $c.buildImage.dockerfile }}" ] || {
-              echo "no {{ $c.buildImage.dockerfile }} at the repository root — this catalog template" >&2
-              echo "builds a Dockerfile-based image; a component that builds another way needs its own" >&2
-              echo "template" >&2
+            [ -f "$dockerfile" ] || {
+              echo "no $dockerfile in ${repository} at ${commit}. This catalog template builds a" >&2
+              echo "Dockerfile-based image; set the component's properties.dockerfile if it lives" >&2
+              echo "somewhere other than the repository root (a monorepo usually does), or use a" >&2
+              echo "template of your own if it does not build from a Dockerfile at all." >&2
               exit 2
             }
             if [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
@@ -162,13 +211,18 @@ spec:
               exit 2
             fi
             # vfs + chroot: no daemon, no socket, no /dev/fuse. See the header.
+            # CONTEXT IS THE REPO ROOT, dockerfile path relative to it — which is what a monorepo
+            # needs: apps/profile-web/Dockerfile routinely COPYs from packages/ and the workspace
+            # lockfile at the root, so a context narrowed to the component's directory would fail
+            # to resolve them.
             buildah --storage-driver vfs bud --isolation chroot \
-              -f "{{ $c.buildImage.dockerfile }}" -t "$tag" .
+              -f "$dockerfile" -t "$tag" .
             buildah --storage-driver vfs push "$tag"
             echo "pushed $tag"
           - "{{`{{inputs.parameters.imageRepository}}`}}"
           - "{{`{{inputs.parameters.registryUrl}}`}}"
           - "{{`{{inputs.parameters.sourceCommit}}`}}"
+          - "{{`{{inputs.parameters.dockerfile}}`}}"
         env:
           - name: REGISTRY_USERNAME
             valueFrom:
