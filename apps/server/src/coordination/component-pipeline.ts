@@ -1062,8 +1062,11 @@ async function correlatedInfraForComponent(
   return { changes: changesOut };
 }
 
-/** THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE. See docs/coordination.md §320. */
-async function registryForComponent(
+/** THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE. See docs/coordination.md §320.
+ *  Exported because the build-lane trigger needs the SAME answer the pipeline view renders — a
+ *  second resolution would be a second definition of "where does this component publish", and the
+ *  two would drift the first time `ambiguous` or a soft-deleted edge came up. */
+export async function registryForComponent(
   tx: TenantTx,
   orgId: string,
   componentId: string
