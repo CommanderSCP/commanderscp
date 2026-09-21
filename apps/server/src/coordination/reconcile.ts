@@ -122,6 +122,7 @@ import { ensureFederationSelf } from "../federation/self-repo.js";
 import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook-runs.js";
 import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
+import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1601,9 +1602,34 @@ async function triggerWaveTarget(
       let kind: TriggerIntent["kind"];
       let priorStateRef: unknown = null;
       /** M25.4 — what rides on `TriggerIntent.parameters`. See docs/coordination.md §806. */
-      const parameters =
+      const recipeParameters =
         !isRollback && recipe.outcome === "recipe"
           ? recipeTriggerParameters(recipe.recipe)
+          : undefined;
+      // BUILD-LANE SOURCE IDENTITY. Until this, a build trigger carried `targetRef` and nothing
+      // else unless a campaign recipe supplied parameters by hand — so a shipped, parameterised
+      // build template had no repo, no commit and no destination to work from. The test lane
+      // already sends its declared workflow ref for the same reason ("SCP coordinates, the
+      // executor executes", pipeline-hook-runs.ts); this is that rule applied to the build lane.
+      //
+      // A ROLLBACK gets none of it: there is nothing to rebuild, and handing a rollback the
+      // forward commit is how you rebuild the thing you are rolling back from.
+      const sourceParameters = isRollback
+        ? undefined
+        : await buildLaneTriggerParameters(tx, {
+            orgId,
+            targetObjectId,
+            type,
+            sourceRef: change.sourceRef,
+            changeObjectId: change.objectId
+          });
+      // The RECIPE WINS on a key collision, deliberately: a recipe is an operator's explicit
+      // instruction for this campaign, and silently overriding it with a derived value would make
+      // the authored document a lie. Merged rather than either/or so a recipe-driven build still
+      // gets the source identity it would otherwise have to restate.
+      const parameters =
+        sourceParameters || recipeParameters
+          ? { ...(sourceParameters ?? {}), ...(recipeParameters ?? {}) }
           : undefined;
 
       // The executor-specific target id. See docs/coordination.md §807.
