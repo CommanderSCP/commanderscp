@@ -1,7 +1,7 @@
 {{- if .Values.bundledExecutor.argoWorkflows.enabled -}}
 {{- $w := .Values.bundledExecutor.argoWorkflows -}}
 {{- $c := $w.catalog -}}
-{{- if not $c.buildImage.builderImage }}{{ fail "bundledExecutor.argoWorkflows.catalog.buildImage.builderImage is empty — the vendored, retargetable buildah image is required (the air-gap install.sh sets it). Fail-closed." }}{{- end -}}
+{{- if not $c.buildImage.builderImage }}{{ fail "bundledExecutor.argoWorkflows.catalog.buildImage.builderImage is empty — the vendored, retargetable rootless BuildKit image is required (the air-gap install.sh sets it). Fail-closed." }}{{- end -}}
 {{- if not $c.buildImage.gitImage }}{{ fail "bundledExecutor.argoWorkflows.catalog.buildImage.gitImage is empty — the vendored, retargetable git image is required. Fail-closed." }}{{- end -}}
 # =============================================================================================
 # THE SHIPPED BUILD CATALOG (owner decision 2026-09-20: "make it a catalog template SCP ships").
@@ -19,32 +19,58 @@
 # steps ships as `-v2` beside it, and existing bindings keep running what they were bound to
 # rather than silently acquiring new behaviour.
 #
-# KNOWN LIMITATION, MEASURED 2026-09-20 — READ THIS BEFORE DEBUGGING A FAILED BUILD.
-# On k3s/containerd this template cannot complete a build. `buildah` fails extracting the FIRST
-# layer of any base image with:
+# ---------------------------------------------------------------------------------------------
+# WHY ROOTLESS BUILDKIT, AND WHAT IT COSTS (owner decision 2026-09-21).
 #
-#     While applying layer: ApplyLayer stderr: remount /, flags: 0x44000: permission denied
+# `promotion-and-execution-model.md` specifies "Images use Kaniko/Buildkit" for this hop. Three
+# builders were tried on this cluster; the choice is a measurement, not a preference.
 #
-# 0x44000 is MS_PRIVATE|MS_REC — `mount --make-rprivate /`, which containers/storage does before
-# chroot-extracting a layer. The container's `/` belongs to the PARENT mount namespace, so its
-# propagation cannot be changed from inside, and no amount of privilege short of `privileged: true`
-# changes that. Ruled out by direct measurement, so nobody repeats it:
+#   buildah   — CANNOT build here. Extracting the first layer of any base image dies with
+#               `remount /, flags: 0x44000: permission denied`, because containers/storage makes
+#               `/` rprivate before chroot-extracting and the container's `/` belongs to the
+#               PARENT mount namespace. Only `privileged: true` would fix it, which hands a pod
+#               running the TENANT'S OWN Dockerfile the node's kernel.
+#   kaniko    — works, and needs no relaxation at all (it extracts layers in userspace). But
+#               Google ARCHIVED it in June 2025 and ships no CVE patches. Chainguard's fork is
+#               genuinely maintained, and publishes SOURCE ONLY — `cgr.dev/chainguard/kaniko` is
+#               403 Forbidden even on `:latest`, and nothing is mirrored to ghcr or release
+#               assets. "Maintained kaniko" therefore means building and re-building kaniko
+#               ourselves forever. Owner ruled out the unmaintained image; the fork's cost was
+#               judged higher than the relaxations below.
+#   buildkit  — chosen. moby/buildkit is the most actively maintained builder there is, and the
+#               rootless image is freely pullable, so it can be vendored like any other backend.
 #
-#   Ubuntu 24.04 AppArmor userns restriction  NOT IT — `unshare -U` is allowed on the node
-#   missing uid mapping                       NOT IT — newuidmap carries cap_setuid=ep
-#   running as root instead of uid 1000       NOT IT — fails identically either way
-#   adding CAP_SYS_ADMIN                      NOT IT — fails with it added
-#   seccomp blocking mount()                  NOT IT — fails under seccompProfile: Unconfined
+# THE PRICE, MEASURED RATHER THAN COPIED. Every published recipe for rootless BuildKit on
+# Kubernetes lists `procMount: Unmasked`. That is WRONG here and actively harmful: Kubernetes now
+# requires `hostUsers: false` alongside it, and that breaks rootlesskit's own uid mapping
+# (`newuidmap: write to uid_map failed: Operation not permitted`). It is not set below.
 #
-# The options are a userspace-extracting builder (kaniko, which is unmaintained), `privileged:
-# true` (which hands a pod running the tenant's own Dockerfile the node's kernel — the exact thing
-# the socket invariant below exists to prevent), or NOT building in-cluster at all and coordinating
-# the organization's existing CI, which is Mode A and what an org with a pipeline should do anyway.
-# That choice is an owner decision and is deliberately NOT made here.
+# What IS required was established by building the same Dockerfile under one varied setting at a
+# time. Each of these was observed to BREAK the build when hardened, so each is load-bearing:
 #
-# Everything else in this template is verified working: parameters flow, the commit-pinned fetch
-# succeeds, registry login succeeds against real credentials, and a missing credential refuses
-# before the expensive step.
+#   seccompProfile: Unconfined      RuntimeDefault blocks the clone/unshare rootlesskit needs
+#                                   (`fork/exec /proc/self/exe: operation not permitted`).
+#   appArmorProfile: Unconfined     containerd's default profile denies sharing the mount of `/`
+#                                   (`failed to share mount point: /: permission denied`) — the
+#                                   same denial that makes buildah impossible.
+#   allowPrivilegeEscalation: true  `no_new_privs` voids the file capabilities on `newuidmap`
+#                                   (`newuidmap: Could not set caps`). Adding SETUID/SETGID does
+#                                   NOT substitute: for a non-root uid they land in the bounding
+#                                   set with no ambient caps, and it still fails.
+#   capabilities SETUID, SETGID     retained for `newuidmap`/`newgidmap`; `drop: [ALL]` alone
+#                                   fails with `newuidmap: operation not permitted`.
+#
+# And what is NOT given up, because it was measured to be unnecessary: the container still runs
+# NON-ROOT as uid 1000, still has `readOnlyRootFilesystem: true`, still drops every capability
+# but the two above, is never privileged, and mounts no container runtime socket. The writable
+# state lives entirely on emptyDirs that vanish with the pod.
+#
+# THE HONEST RESIDUAL RISK: `--oci-worker-no-process-sandbox` means the Dockerfile's RUN steps
+# share a namespace with buildkitd rather than being sandboxed from it. A hostile Dockerfile can
+# therefore interfere with its OWN build. It cannot reach the node, the API SCP coordinates, or
+# another build: the pod is one-shot, its token grants only `workflowtaskresults`, and the only
+# credential present is the push secret for the image being built. For genuinely untrusted
+# tenant Dockerfiles, building kaniko from the Chainguard fork remains the stronger posture.
 #
 # NO CONTAINER RUNTIME SOCKET, and this is enforced rather than intended: `tools/helm-verify`
 # scans the RAW bundled render for the well-known runtime socket paths and fails the build on any
@@ -52,9 +78,6 @@
 # along". (That scan is a plain substring match over the rendered text, so even NAMING those paths
 # in a comment trips it. This paragraph used to list them and turned the gate red; the list lives
 # in RUNTIME_SOCKET_PATTERNS in tools/helm-verify/src/verify.ts, which is the one place it should.)
-# So this builds with ROOTLESS BUILDAH over the `vfs` storage driver: no daemon, no socket, no
-# /dev/fuse. vfs is slower than overlay and that is the accepted cost of not handing a build pod
-# the node container runtime.
 # =============================================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
@@ -85,7 +108,7 @@ spec:
   # WHAT SCP SENDS (apps/server/src/coordination/build-trigger-parameters.ts). Every one of these
   # is something SCP already held and passed on; none is resolved by this template.
   #
-  # The three with no default are REQUIRED: Argo refuses to submit without them. That is the point
+  # The four with no default are REQUIRED: Argo refuses to submit without them. That is the point
   # — #398 omits an absent key rather than sending it empty, so a missing `sourceCommit` refuses
   # the run instead of building whatever HEAD happens to be. A refused run beats a wrong artifact.
   arguments:
@@ -93,6 +116,10 @@ spec:
       - name: sourceRepo
       - name: sourceCommit
       - name: imageRepository
+      # THE FULLY-FORMED PUSH TARGET (`host/repository`), assembled by SCP. Required, and with no
+      # default ON PURPOSE: a default would mean a component whose registry SCP could not resolve
+      # pushes to someone else's registry rather than refusing.
+      - name: imageDestination
       - name: registryUrl
         value: https://ghcr.io
       # WHERE THIS COMPONENT'S DOCKERFILE IS, relative to the repo root. A monorepo puts each
@@ -121,13 +148,33 @@ spec:
           - name: sourceRepo
           - name: sourceCommit
           - name: imageRepository
+          - name: imageDestination
           - name: registryUrl
           - name: dockerfile
           - name: sourceRef
           - name: registryName
           - name: changeObjectId
+      # fsGroup, or nothing below works: an emptyDir is created root-owned, and with
+      # `readOnlyRootFilesystem: true` these mounts are the ONLY writable paths the build has.
+      securityContext:
+        fsGroup: {{ $c.buildImage.runAsUser }}
+      # EVERY WRITABLE PATH BUILDKIT NEEDS, and no more. Each was found by running the build and
+      # reading what it was denied — not by guessing:
+      #   workspace  the source checkout, buildkit's own state (--root) and DOCKER_CONFIG
+      #   tmp        `buildctl-daemonless.sh` calls mktemp before any env var can redirect it
+      #   xdg        the daemon's socket, at the $XDG_RUNTIME_DIR the image compiles in
+      #   home-local rootlesskit resolves the home dir from /etc/passwd and IGNORES $HOME, so it
+      #              insists on /home/user/.local/tmp. Mounted at `.local` rather than at
+      #              `/home/user`, because the image ships a root-owned `.local` that a mount one
+      #              level up does not hide.
       volumes:
         - name: workspace
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: xdg
+          emptyDir: {}
+        - name: home-local
           emptyDir: {}
       # ---- 1. SOURCE, PINNED TO THE COMMIT ---------------------------------------------------
       # Fetched by COMMIT, never by branch: the artifact SCP will scan and sign has to correspond
@@ -170,60 +217,87 @@ spec:
       # ---- 2. BUILD + PUSH, ROOTLESS ---------------------------------------------------------
       container:
         image: {{ $c.buildImage.builderImage }}
-        # ROOTLESS MEANS NON-ROOT, which is not the same as "no privileged flag". Running buildah
-        # as root WITHOUT capabilities is the worst of both worlds and is what this template did
-        # first: layer extraction died with `remount /, flags: 0x44000: permission denied`, because
-        # applying a layer needs privileges that uid 0 in a container does not actually hold.
-        #
-        # As uid 1000 buildah UNSHARES A USER NAMESPACE and holds those privileges INSIDE it,
-        # using the subuid/subgid ranges the image ships for this user (`build:1001:64535`). No
-        # added capabilities, no privileged, no socket — the node's container runtime is never
-        # reachable from here, which is the invariant the whole design rests on.
+        # See the header for why each of these four is load-bearing and what was measured. The
+        # short version: rootlesskit has to create a user namespace and map uids into it, and
+        # every one of seccomp RuntimeDefault, the default AppArmor profile, no_new_privs and
+        # `drop: [ALL]` independently prevents that. Non-root, read-only root filesystem and the
+        # absence of any runtime socket are kept — those cost nothing.
         securityContext:
           runAsUser: {{ $c.buildImage.runAsUser }}
           runAsGroup: {{ $c.buildImage.runAsUser }}
-          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: true
+          seccompProfile:
+            type: Unconfined
+          appArmorProfile:
+            type: Unconfined
+          capabilities:
+            drop: ["ALL"]
+            add: ["SETUID", "SETGID"]
         volumeMounts:
           - name: workspace
             mountPath: /work
+          - name: tmp
+            mountPath: /tmp
+          - name: xdg
+            mountPath: /run/user/{{ $c.buildImage.runAsUser }}
+          - name: home-local
+            mountPath: /home/user/.local
         command: [sh, -eu, -c]
         args:
           - |
             set -eu
-            repository="$0"; registryUrl="$1"; commit="$2"; dockerfile="$3"
-            # The registry HOST, from the URL SCP passed. Derived here rather than configured, so
-            # a component publishing somewhere other than the default still works.
-            host="${registryUrl#https://}"; host="${host#http://}"; host="${host%%/*}"
-            tag="${host}/${repository}:${commit}"
+            destination="$0"; commit="$1"; dockerfile="$2"
+            # The registry HOST is the first path segment of the destination SCP assembled. Taken
+            # from there rather than re-derived from registryUrl, so the host we AUTHENTICATE to
+            # is by construction the host we PUSH to.
+            host="${destination%%/*}"
+            tag="${destination}:${commit}"
+            mkdir -p "$HOME/.local/tmp" "$HOME/.local/share/buildkit" "$DOCKER_CONFIG"
             cd /work/src
             [ -f "$dockerfile" ] || {
-              echo "no $dockerfile in ${repository} at ${commit}. This catalog template builds a" >&2
+              echo "no $dockerfile in this repository at ${commit}. This catalog template builds a" >&2
               echo "Dockerfile-based image; set the component's properties.dockerfile if it lives" >&2
               echo "somewhere other than the repository root (a monorepo usually does), or use a" >&2
               echo "template of your own if it does not build from a Dockerfile at all." >&2
               exit 2
             }
             if [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
-              buildah login --username "$REGISTRY_USERNAME" --password "$REGISTRY_PASSWORD" "$host"
+              # buildkit reads registry credentials from DOCKER_CONFIG; there is no `login` verb.
+              # Written with printf rather than a heredoc so the password never becomes a token
+              # the shell might re-split, and 0600 because $DOCKER_CONFIG is a shared emptyDir.
+              umask 077
+              printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
+                "$host" \
+                "$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" | base64 -w0)" \
+                > "$DOCKER_CONFIG/config.json"
             else
               echo "no registry credentials in secret {{ $c.credentialsSecret }} — refusing to build" >&2
               echo "an image that cannot be pushed, rather than failing after the expensive step" >&2
               exit 2
             fi
-            # vfs + chroot: no daemon, no socket, no /dev/fuse. See the header.
             # CONTEXT IS THE REPO ROOT, dockerfile path relative to it — which is what a monorepo
             # needs: apps/profile-web/Dockerfile routinely COPYs from packages/ and the workspace
             # lockfile at the root, so a context narrowed to the component's directory would fail
-            # to resolve them.
-            buildah --storage-driver vfs bud --isolation chroot \
-              -f "$dockerfile" -t "$tag" .
-            buildah --storage-driver vfs push "$tag"
+            # to resolve them. `--opt filename` carries the path within that context.
+            buildctl-daemonless.sh build \
+              --frontend dockerfile.v0 \
+              --local context=/work/src \
+              --local dockerfile=/work/src \
+              --opt filename="$dockerfile" \
+              --output type=image,name="$tag",push=true
             echo "pushed $tag"
-          - "{{`{{inputs.parameters.imageRepository}}`}}"
-          - "{{`{{inputs.parameters.registryUrl}}`}}"
+          - "{{`{{inputs.parameters.imageDestination}}`}}"
           - "{{`{{inputs.parameters.sourceCommit}}`}}"
           - "{{`{{inputs.parameters.dockerfile}}`}}"
         env:
+          # --root keeps buildkit's layer store on the workspace emptyDir rather than the
+          # container's writable layer, which `readOnlyRootFilesystem: true` denies outright.
+          - name: BUILDKITD_FLAGS
+            value: "--oci-worker-no-process-sandbox --root /work/buildkit"
+          - name: DOCKER_CONFIG
+            value: /work/.docker
           - name: REGISTRY_USERNAME
             valueFrom:
               secretKeyRef:

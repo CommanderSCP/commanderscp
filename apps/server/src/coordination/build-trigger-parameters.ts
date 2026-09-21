@@ -81,6 +81,22 @@ export async function buildLaneTriggerParameters(
     if (registry.repository) params.imageRepository = registry.repository;
     if (registry.url) params.registryUrl = registry.url;
     if (registry.name) params.registryName = registry.name;
+    // THE FULLY-FORMED PUSH TARGET, `host/repository`, with the tag left to the executor.
+    //
+    // Derived HERE rather than in the workflow template, because a template that assembles it has
+    // to strip the scheme off a URL in a templating language — and the failure mode of getting
+    // that wrong is not an error, it is a push to the wrong registry. `registryUrl` is a BROWSABLE
+    // url (`executionSystemConsoleBase` prefers `webUrl` and falls back to `serverUrl`), so the
+    // hostname is the only part that addresses the registry.
+    //
+    // No try/catch here, and that is load-bearing rather than optimistic: `registry.url` is
+    // `executionSystemConsoleBase(...)`, which returns a string only after `new URL()` has already
+    // parsed it AND its protocol was http(s) — so a registry whose serverUrl is malformed arrives
+    // with url `null` and names no destination at all, which is the refusal we want. Should this
+    // ever be re-sourced from a RAW property, the parse becomes fallible and needs handling again.
+    if (registry.repository && registry.url) {
+      params.imageDestination = `${new URL(registry.url).host}/${registry.repository}`;
+    }
   }
 
   return Object.keys(params).length > 1 ? params : undefined;

@@ -106,6 +106,26 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     flagDescription: "bundled Argo Workflows controller image",
     doc: "bundled Argo Workflows controller"
   },
+  // The build catalog's two images (scp-build-image-v1). Pulled only where
+  // bundledExecutor.argoWorkflows is enabled AND a build lane actually runs — but bundled
+  // unconditionally alongside the controller, because an air-gapped domain that can submit the
+  // workflow and then cannot pull its builder has a template that fails at the last moment.
+  {
+    name: "buildkit-rootless",
+    optionStem: "buildkit-rootless",
+    defaultRef: "moby/buildkit:v0.33.0-rootless",
+    defaultSource: "docker",
+    flagDescription: "build catalog's rootless BuildKit image",
+    doc: "build catalog's rootless BuildKit builder (scp-build-image-v1)"
+  },
+  {
+    name: "catalog-git",
+    optionStem: "catalog-git",
+    defaultRef: "alpine/git:2.47.2",
+    defaultSource: "docker",
+    flagDescription: "build catalog's git image (source checkout)",
+    doc: "build catalog's git client, for the pinned source checkout"
+  },
   {
     name: "argo-events",
     optionStem: "argo-events",

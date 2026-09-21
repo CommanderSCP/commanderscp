@@ -139,17 +139,20 @@ bundledExecutor:
       buildServiceAccount: scp-build
       buildImage:
         # VENDORED, RETARGETABLE images, same rule as the backends themselves: upstream refs so a
-        # CONNECTED install works out of the box; the air-gap install.sh rewrites them.
-        builderImage: quay.io/buildah/stable:v1.38 # buildah (Apache-2.0)
+        # CONNECTED install works out of the box; the air-gap install.sh rewrites them onto the
+        # bundle registry (deploy/airgap/src/bundle-images.ts carries both, so `scp-airgap bundle`
+        # mirrors them — without that an air-gapped build pod would pull from the internet, which
+        # is the one thing the bundle exists to prevent).
+        builderImage: moby/buildkit:v0.33.0-rootless # BuildKit, rootless (Apache-2.0)
         gitImage: alpine/git:2.47.2 # git (MIT)
         # The forge the source repo lives on. `sourceRepo` arrives as `owner/name`, so the host is
         # configuration rather than something to parse out of it.
         sourceHost: github.com
-        # The NON-ROOT uid buildah runs as. `quay.io/buildah/stable` ships user `build` (1000) with
-        # the subuid/subgid ranges rootless operation needs; running as root instead fails layer
-        # extraction with "remount /: permission denied", because uid 0 in a container does not
-        # hold the privileges applying a layer requires. Retarget this if the builder image is
-        # swapped for one whose rootless user differs.
+        # The NON-ROOT uid the builder runs as, and the fsGroup its emptyDirs are created under.
+        # `moby/buildkit:*-rootless` ships user `user` (1000) with the subuid/subgid ranges
+        # rootlesskit needs; running as root instead fails buildkitd startup outright. It also
+        # names the $XDG_RUNTIME_DIR mount path (/run/user/<uid>), which the image compiles in —
+        # so retargeting this to a builder image whose rootless user differs means checking both.
         runAsUser: 1000
         # Path to the Dockerfile WITHIN the source repo. A component that builds another way needs
         # its own template — this one is deliberately the common case, not every case.
@@ -158,9 +161,9 @@ bundledExecutor:
           fetch:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 500m, memory: 512Mi }
-          # Sized for a real image build. `vfs` copies layers rather than overlaying them, which
-          # costs disk and time — the accepted price of not handing a build pod the node's
-          # container runtime (see the socket invariant in tools/helm-verify).
+          # Sized for a real image build. Everything buildkit writes — the layer store, the
+          # checkout, the temp dirs — lives on emptyDirs, so the node's ephemeral storage is the
+          # real ceiling here rather than these limits.
           build:
             requests: { cpu: 500m, memory: 1Gi }
             limits: { cpu: "2", memory: 4Gi }

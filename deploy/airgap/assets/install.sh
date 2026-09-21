@@ -389,6 +389,15 @@ if [[ "$MODE" == "helm" ]]; then
   if [[ -n "${ARGO_WORKFLOWS_CLI_DIGEST:-}" ]]; then
     BUNDLED_SET_WORKFLOWS=(--set "bundledExecutor.argoWorkflows.serverImage=${ARGO_WORKFLOWS_CLI_RETARGETED_REF:-${REGISTRY}/argo-workflows-cli:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CLI_DIGEST}}"
       --set "bundledExecutor.argoWorkflows.controllerImage=${ARGO_WORKFLOWS_CONTROLLER_RETARGETED_REF:-${REGISTRY}/argo-workflows-controller:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CONTROLLER_DIGEST}}")
+    # The build catalog's images travel with the controller. Retargeted here rather than left at
+    # their upstream defaults, because scp-build-image-v1's chart values point at docker.io — a
+    # value an air-gapped build pod cannot reach, and which would fail only once a build ran.
+    if [[ -n "${BUILDKIT_ROOTLESS_DIGEST:-}" ]]; then
+      BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.buildImage.builderImage=${BUILDKIT_ROOTLESS_RETARGETED_REF:-${REGISTRY}/buildkit-rootless:${BUNDLE_VERSION}@${BUILDKIT_ROOTLESS_DIGEST}}")
+    fi
+    if [[ -n "${CATALOG_GIT_DIGEST:-}" ]]; then
+      BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.buildImage.gitImage=${CATALOG_GIT_RETARGETED_REF:-${REGISTRY}/catalog-git:${BUNDLE_VERSION}@${CATALOG_GIT_DIGEST}}")
+    fi
     BUNDLED_APPLY+=(argo-workflows)
   fi
   if [[ -n "${ARGO_EVENTS_DIGEST:-}" ]]; then

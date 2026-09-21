@@ -52,13 +52,16 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
     );
   }
 
-  async function componentPublishingTo(repository: string | null): Promise<string> {
+  async function componentPublishingTo(
+    repository: string | null,
+    serverUrl = "https://ghcr.io"
+  ): Promise<string> {
     const component = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
     if (repository === null) return component.id;
     const registry = await admin.object("execution-system").create({
       name: `ghcr-${randomUUID().slice(0, 8)}`,
       domainLocal: true,
-      properties: { kind: "ghcr", serverUrl: "https://ghcr.io" }
+      properties: { kind: "ghcr", serverUrl }
     });
     await admin.relationships.create({
       typeId: "publishes_to",
@@ -75,8 +78,28 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
       sourceRepo: "AgentKitProject/agentkit",
       sourceRef: "refs/heads/main",
       sourceCommit: "a".repeat(40),
-      imageRepository: "agentkitproject/agentkitprofile-app"
+      imageRepository: "agentkitproject/agentkitprofile-app",
+      // ASSEMBLED, not passed through: the catalog template requires `host/repository` and must
+      // not have to strip a scheme in a templating language, where getting it wrong pushes to the
+      // wrong registry rather than erroring.
+      imageDestination: "ghcr.io/agentkitproject/agentkitprofile-app"
     });
+  });
+
+  it("names no destination when the registry's serverUrl is not a usable http(s) url", async () => {
+    // `serverUrl` is operator-supplied. It reaches here only through executionSystemConsoleBase,
+    // which yields null unless the value parses AND is http(s) — so a malformed one produces no
+    // registryUrl and therefore no destination, and the catalog template (which REQUIRES
+    // imageDestination) refuses the run rather than pushing somewhere guessed. Both the
+    // unparseable and the wrong-scheme case are checked, because only the second is a string a
+    // URL parser accepts — and that is the one a naive `new URL()` guard would let through.
+    for (const serverUrl of ["not a url", "ftp://ghcr.io"]) {
+      const id = await componentPublishingTo("agentkitproject/agentkitprofile-app", serverUrl);
+      const params = await resolve(id, SOURCE_REF);
+      expect(params).toMatchObject({ imageRepository: "agentkitproject/agentkitprofile-app" });
+      expect(params).not.toHaveProperty("registryUrl");
+      expect(params).not.toHaveProperty("imageDestination");
+    }
   });
 
   it("carries the component's OWN dockerfile path when it declares one", async () => {
@@ -124,6 +147,7 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
     const params = await resolve(id, SOURCE_REF);
     expect(params).toMatchObject({ sourceCommit: "a".repeat(40) });
     expect(params).not.toHaveProperty("imageRepository");
+    expect(params).not.toHaveProperty("imageDestination");
   });
 
   it("tolerates a sourceRef that is not an object at all", async () => {
