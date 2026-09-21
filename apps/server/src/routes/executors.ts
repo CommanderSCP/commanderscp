@@ -83,7 +83,8 @@ async function bindTargetToExecutionSystem(
   targetObjectId: string,
   executionSystemId: string,
   externalRef?: string,
-  type?: ExecutorType
+  type?: ExecutorType,
+  lane?: ExecutorLane
 ) {
   const sys = await getObjectByIdOrUrnAnyType(tx, orgId, executionSystemId);
   // Authorize first, so an unauthorized caller learns nothing. See docs/routes.md §171.
@@ -100,6 +101,7 @@ async function bindTargetToExecutionSystem(
     type,
     ...identity,
     externalRef,
+    lane,
     actorObjectId: subjectObjectId,
     requestId
   });
@@ -286,7 +288,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             target.id,
             body.executionSystemId,
             body.externalRef,
-            body.type
+            body.type,
+            body.lane
           );
         }
 
@@ -300,6 +303,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           secretRefs: body.secretRefs,
           allowedHosts: body.allowedHosts,
           externalRef: body.externalRef,
+          lane: body.lane,
           actorObjectId: auth.subjectObjectId,
           requestId: request.id
         });

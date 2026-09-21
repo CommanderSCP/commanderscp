@@ -1,11 +1,13 @@
 import { z } from "zod";
-import { ExecutorTypeSchema } from "./executors.js";
+import { ExecutorLaneSchema, ExecutorTypeSchema, type ExecutorLane } from "./executors.js";
 
 /** THE `executorBinding` POLICY EFFECT. See docs/schemas.md §10. */
 
-/** Which lane a binding serves. See docs/schemas.md §11. */
-export const ExecutorLaneSchema = z.enum(["build", "test"]);
-export type ExecutorLane = z.infer<typeof ExecutorLaneSchema>;
+/** Which lane a binding serves. See docs/schemas.md §11.
+ *  RE-EXPORTED: the definition moved to `executors.ts` to break an import cycle (this module
+ *  already imports `ExecutorTypeSchema` from there). Kept exported here so every existing importer
+ *  keeps working. */
+export { ExecutorLaneSchema, type ExecutorLane };
 
 /** One `executorBinding` effect. See docs/schemas.md §12. */
 export const ExecutorBindingEffectSchema = z.object({
