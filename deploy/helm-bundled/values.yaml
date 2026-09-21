@@ -145,6 +145,12 @@ bundledExecutor:
         # The forge the source repo lives on. `sourceRepo` arrives as `owner/name`, so the host is
         # configuration rather than something to parse out of it.
         sourceHost: github.com
+        # The NON-ROOT uid buildah runs as. `quay.io/buildah/stable` ships user `build` (1000) with
+        # the subuid/subgid ranges rootless operation needs; running as root instead fails layer
+        # extraction with "remount /: permission denied", because uid 0 in a container does not
+        # hold the privileges applying a layer requires. Retarget this if the builder image is
+        # swapped for one whose rootless user differs.
+        runAsUser: 1000
         # Path to the Dockerfile WITHIN the source repo. A component that builds another way needs
         # its own template — this one is deliberately the common case, not every case.
         dockerfile: Dockerfile
