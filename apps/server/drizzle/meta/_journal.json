@@ -827,6 +827,13 @@
       "when": 1789860332645,
       "tag": "0117_pipeline_hook_run_closed_on_terminal",
       "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1789860333645,
+      "tag": "0118_ssh_certificate_authorities",
+      "breakpoints": true
     }
   ]
 }
