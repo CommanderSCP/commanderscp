@@ -1,4 +1,10 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import {
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  randomUUID,
+  type KeyObject
+} from "node:crypto";
 
 /**
  * M27.4 — SSH credentials for `scp-runner-ops`, requested from an existing authority.
@@ -41,15 +47,28 @@ function sshString(bytes: Buffer): Buffer {
  */
 export function generateEphemeralSshKeypair(): EphemeralSshKeypair {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  return {
+    privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    openSshPublicKey: openSshPublicKey(publicKey)
+  };
+}
+
+/** The `ssh-ed25519 AAAA...` form of an ed25519 public key.
+ *
+ *  Exported so the ssh-keygen equivalence vectors exercise THIS code rather than a copy of it. A
+ *  test that re-implements the derivation inline proves the algorithm and nothing about the
+ *  module — mutating the module would leave it green. */
+export function openSshPublicKey(publicKey: KeyObject): string {
   const spki = publicKey.export({ type: "spki", format: "der" });
   const raw = spki.subarray(spki.length - 32);
-  const algorithm = Buffer.from("ssh-ed25519");
-  const blob = Buffer.concat([sshString(algorithm), sshString(raw)]);
-  return {
-    privateKeyPem,
-    openSshPublicKey: `ssh-ed25519 ${blob.toString("base64")}`
-  };
+  const blob = Buffer.concat([sshString(Buffer.from("ssh-ed25519")), sshString(raw)]);
+  return `ssh-ed25519 ${blob.toString("base64")}`;
+}
+
+/** The OpenSSH public key that corresponds to a PKCS#8 PEM private key — the same derivation
+ *  `ssh-keygen -y` performs. */
+export function openSshPublicKeyFromPrivatePem(privateKeyPem: string): string {
+  return openSshPublicKey(createPublicKey(createPrivateKey(privateKeyPem)));
 }
 
 export interface SshCertificateRequest {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import vectors from "./ssh-keygen-vectors.json" with { type: "json" };
 import {
   VaultSshAuthority,
   generateEphemeralSshKeypair,
+  openSshPublicKeyFromPrivatePem,
   type SshCertificateRequest
 } from "./ssh-credentials.js";
 
@@ -38,6 +40,33 @@ describe("generateEphemeralSshKeypair", () => {
     expect(a.openSshPublicKey).not.toBe(b.openSshPublicKey);
     expect(a.privateKeyPem).not.toBe(b.privateKeyPem);
   });
+});
+
+describe("the public-key derivation agrees with OpenSSH", () => {
+  /**
+   * THE CLAIM THIS MODULE RESTS ON, checked against a SECOND IMPLEMENTATION.
+   *
+   * The public key is derived by reading the last 32 bytes out of an ed25519 SPKI and re-wrapping
+   * them in SSH's encoding. That is an assertion about a binary layout, and the tests above can
+   * only show it is SELF-consistent — they decode what this module encoded. Only OpenSSH can say
+   * whether OpenSSH agrees.
+   *
+   * `ssh-keygen-vectors.json` holds real `ssh-keygen -y` output for three PKCS#8 PEM keys. The
+   * fixture is FROZEN rather than generated at test time on purpose: an earlier version ran
+   * `ssh-keygen` in a container, which needed `apk add openssh-client` and therefore the internet
+   * — and CI blackholes egress ("tests never touch the internet"), so it failed there while
+   * passing locally. Recording OpenSSH's answer once keeps the cross-check and costs no network.
+   *
+   * These vectors also pin the measurement the whole design depends on: OpenSSH reads a PKCS#8 PEM
+   * ed25519 private key directly, which is why this codebase has no OpenSSH private-key encoder.
+   */
+  it.each(vectors.map((v, i) => [i, v] as const))(
+    "vector %i: derives exactly what ssh-keygen -y printed",
+    (_i, vector) => {
+      // Calls the MODULE, not a copy of its algorithm — so a change to the derivation fails here.
+      expect(openSshPublicKeyFromPrivatePem(vector.privateKeyPem)).toBe(vector.sshKeygenPublicKey);
+    }
+  );
 });
 
 describe("VaultSshAuthority", () => {
