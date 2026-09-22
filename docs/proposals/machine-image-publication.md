@@ -1,6 +1,8 @@
 # Machine-image publication at the destination — and what the commander's signature attests to
 
-**Status:** Draft — proposed 2026-07-31, **pending owner review**. Docs-first per the working conventions; nothing here is built.
+**Status:** **Accepted-in-part** — proposed 2026-07-31; the §4 questions were ruled by the owner 2026-09-22 and are recorded in [ADR-0049](../adr/0049-machine-image-publication.md). The DESIGN is settled; nothing here is built yet.
+
+**What the rulings changed.** Publication runs through `scp-managed-iac` inside the existing Managed Execution Exception (no new charter paragraph — it is host-free); the destination model is shaped for **air-gapped and on-prem** destinations (vSphere, bare metal) alongside AWS from the first increment, not retrofitted; a publishing executor's egress allowlist is a **deployment-level operator setting**, never a field on the executor binding. §4 question 3 was answered by events rather than by ruling: `derived_from` shipped with the artifact object type (migration 0095, ADR-0045 D4), so the provenance half of this proposal is already in place and publication is what remains. Read §2 (Problem A) with the non-cloud destination in mind — it is written AWS-first and ADR-0049 §2 widens it.
 
 **Origin.** Raised by the owner while resolving M13.3a's machine-image scan arm: *"if we're pushing an AMI, we want it to end up in AWS EC2 AMIs as an option… though there's usually some extra work needed on the AMI (ex: bake in additional crypto now that it's in the air-gap env)."* Those are two distinct problems, both **destination-side**, and neither belongs to the commander's scan step — which is why 13.3a closed without them.
 
