@@ -22,6 +22,11 @@
 # because this image needs `openssh-client` and a Python interpreter and nothing else — Alpine's
 # openssh-client carries no perl chain. Re-measure before changing base distros; the deciding
 # factor is the dependency shape of the packages actually installed, not distro reputation.
+# The vendored cosign pin (tools/cosign/pin.env) — the catalog's signature is verified INSIDE the
+# runner, before any role is parsed, so cosign has to be here rather than on the orchestrator side.
+ARG COSIGN_IMAGE=ghcr.io/sigstore/cosign/cosign@sha256:bea051df6a6d3bc84288b6db098df38a81d87b7ed226f34d22aaae1bc329c2b7
+FROM ${COSIGN_IMAGE} AS cosign
+
 FROM python:3.12-alpine3.21
 
 # PINNED, and the pin is load-bearing twice over: `upstream-inventory.json` records the exact
@@ -46,7 +51,12 @@ RUN python /tmp/prune.py /tmp/allowlist.json \
  # interactive shell onto the fleet. Neither belongs in a single-shot catalog runner.
  && rm -f /usr/local/bin/ansible-pull /usr/local/bin/ansible-console
 
+COPY --from=cosign /ko-app/cosign /usr/local/bin/cosign
 COPY params_to_vars.py /usr/local/bin/params_to_vars.py
+COPY verify_catalog_digests.py /usr/local/bin/verify_catalog_digests.py
+# The catalog SCP ships. An operator may mount their own over /catalog; either way run.sh verifies
+# the signature and the per-role digests before anything is parsed.
+COPY catalog /catalog
 COPY ansible.cfg /etc/ansible/ansible.cfg
 COPY run.sh /usr/local/bin/run.sh
 RUN chmod 0755 /usr/local/bin/run.sh

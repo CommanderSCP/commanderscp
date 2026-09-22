@@ -1,0 +1,19 @@
+# Every tenant-supplied value is declared and typed here. `validate_argument_spec` runs this before
+# the role's first task, so a malformed parameter is refused at admission rather than part-applied.
+#
+# NOTE ON TYPES: `name` is `str`, not `raw`. Tenant strings arrive !unsafe-wrapped (M27.2) and stay
+# strings through validation — the wrapper is a str subclass, so this does not undo the hardening.
+argument_specs:
+  main:
+    short_description: Install, upgrade or version-pin an OS package.
+    options:
+      package_name:
+        type: str
+        required: true
+      package_state:
+        type: str
+        required: true
+        choices: [present, latest, absent]
+      package_version:
+        type: str
+        required: false

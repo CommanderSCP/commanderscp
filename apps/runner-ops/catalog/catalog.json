@@ -1,0 +1,37 @@
+{
+  "$comment": [
+    "THE CLOSED TASK CATALOG (M27.3). The complete set of operations scp-runner-ops can perform.",
+    "cosign-signed as a blob; run.sh verifies the signature before any role is loaded and refuses",
+    "outright if verification fails.",
+    "",
+    "`charterClass` on every entry is not documentation \u2014 run.sh checks it against the three classes",
+    "the 2026-07-12 host-reaching amendment enumerates and refuses anything else, so adding a role",
+    "outside them is a charter conversation rather than a catalog edit."
+  ],
+  "catalogVersion": "1",
+  "charterClasses": [
+    "osPackage",
+    "configRenderPush",
+    "cronSystemd"
+  ],
+  "roles": [
+    {
+      "name": "os_package",
+      "charterClass": "osPackage",
+      "summary": "Install, upgrade or version-pin an OS package.",
+      "digest": "sha256:3621a35248a9128c2d693712d29cdf952774f7f28e8120d2bd59175fc197ee8b"
+    },
+    {
+      "name": "config_file",
+      "charterClass": "configRenderPush",
+      "summary": "Render a template or push a configuration file.",
+      "digest": "sha256:6008582999a989bffb5f97cbbbe6e1404fd692180565a37cbb5ebc3a34f84408"
+    },
+    {
+      "name": "scheduled_unit",
+      "charterClass": "cronSystemd",
+      "summary": "Manage a cron entry or a systemd unit's enabled/started state.",
+      "digest": "sha256:d05196b219ec436c528b5eeebdf3f746a6c62669da7b4515dfe2dfb07486bbd5"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+# CLASS 1 of the charter's three: OS package install, upgrade and version pinning.
+#
+# Parameters are validated before the first task runs by `meta/argument_specs.yml`, which Ansible
+# applies automatically — there is deliberately no explicit `validate_argument_spec` task here. An
+# earlier draft added one that read the spec via `lookup('file', ...)`, which would have failed
+# outright: the `file` lookup is one of the plugins M27.1 deletes from the image.
+#
+# `package` is the generic front-end (apt/dnf selected from the target's own facts), so one role
+# covers both families without the catalog branching on distro. A pinned version is expressed as
+# `name=version`, which both back-ends understand.
+- name: apply the package state
+  ansible.builtin.package:
+    # `package_name` and `package_version` are tenant data and arrive !unsafe (M27.2), so this
+    # concatenation yields a literal string — it cannot become a template.
+    name: "{{ package_name if package_version is not defined or package_version is none else package_name ~ '=' ~ package_version }}"
+    state: "{{ package_state }}"
+  become: true
