@@ -176,6 +176,34 @@ bundledExecutor:
       argo-server:
         requests: { cpu: 50m, memory: 64Mi }
         limits: { cpu: 250m, memory: 256Mi }
+  # Bundled Argo Rollouts (Mode B). Vendored, unmodified upstream v1.10.0; off by default; one
+  # retargetable image.
+  #
+  # THE ONE BUNDLE THAT IS NOT AN EXECUTOR. Every other backend here is a system SCP coordinates —
+  # it has a plugin, a binding and a verb set. Argo Rollouts has none, by decision: ADR-0008 §3
+  # reads progressive-delivery state off the Argo CD Application resource tree ("no new credential,
+  # no new executor") and pins that rollout state is "OBSERVED (mirrored), never DRIVEN". Enabling
+  # this installs the controller so that state EXISTS; SCP then reads it through the Argo CD plugin
+  # it already has, and never speaks to this. There is nothing to bind and nothing to import.
+  #
+  # OPTIONAL, AND NARROWER THAN WAVES. This is the WITHIN-a-target canary (what fraction of one
+  # deployment's pods run the new version) and it is Kubernetes-only. SCP's own progressive
+  # rollout — ACROSS targets, with soak gates between them — is `waves.widening`/`linear`/`byDomain`
+  # plus the `bakeAlarms` quiet window, and that is executor-agnostic: it orders static instances,
+  # VMs or anything else with no container runtime in sight. An org not running Kubernetes leaves
+  # this off and loses none of that.
+  argoRollouts:
+    enabled: false
+    namespace: scp-argo-rollouts
+    image: quay.io/argoproj/argo-rollouts:v1.10.0 # Argo Rollouts (Apache-2.0)
+    resources:
+      # Upstream ships ONLY an ephemeral-storage limit on this container and no cpu/memory at all,
+      # which leaves it BestEffort and first to be evicted. The injection REPLACES the whole
+      # resources block by container name, so upstream's ephemeral-storage limit is repeated here
+      # deliberately — omitting it would silently drop a bound upstream chose to set.
+      argo-rollouts:
+        requests: { cpu: 100m, memory: 128Mi }
+        limits: { cpu: 500m, memory: 512Mi, ephemeral-storage: 1Gi }
   # Argo Events (Mode B — event sources/sensors that can feed SCP's observe() path). Vendored,
   # unmodified upstream v1.9.10; off by default; one retargetable image.
   argoEvents:

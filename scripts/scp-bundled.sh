@@ -46,7 +46,7 @@ declare -a HELM_EXTRA=()
 
 usage() {
   cat >&2 <<EOF
-Usage: scp-bundled.sh <enable|render> <argocd|argo-workflows|argo-events|gitea> [options]
+Usage: scp-bundled.sh <enable|render> <argocd|argo-workflows|argo-rollouts|argo-events|gitea> [options]
 
   enable   render the backend, kubectl apply --server-side, wait for readiness, and (argocd/gitea)
            turn on the SCP release's auto-wire hook + NetworkPolicy
@@ -86,6 +86,9 @@ case "$BACKEND" in
   argocd)         KEY="argocd";        NS="scp-argocd";         SCP_FLAG="bundledExecutor.argocd.enabled" ;;
   argo-workflows) KEY="argoWorkflows"; NS="scp-argo-workflows"; SCP_FLAG="" ;;
   # (TLS_SECRET/CA_SECRET are only consulted for argo-workflows; see ensure_argo_server_tls)
+  # Rollouts is NOT an executor SCP coordinates (ADR-0008 §3), so it flips no SCP-release flag:
+  # there is no auto-wire hook to run and no NetworkPolicy to open, because SCP never calls it.
+  argo-rollouts)  KEY="argoRollouts";  NS="scp-argo-rollouts";  SCP_FLAG="" ;;
   argo-events)    KEY="argoEvents";    NS="scp-argo-events";    SCP_FLAG="" ;;
   gitea)          KEY="gitea";         NS="scp-gitea";          SCP_FLAG="bundledExecutor.gitea.enabled" ;;
   *) echo "scp-bundled: unknown backend '$BACKEND'" >&2; usage 2 ;;

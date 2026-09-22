@@ -1,0 +1,40 @@
+{{- if .Values.bundledExecutor.argoRollouts.enabled -}}
+{{- $r := .Values.bundledExecutor.argoRollouts -}}
+{{- if not $r.image }}{{ fail "bundledExecutor.argoRollouts.enabled=true but .image is empty — the vendored, retargeted argo-rollouts image is required (set by the air-gap install.sh). Fail-closed." }}{{- end -}}
+# =============================================================================================
+# Bundled Argo Rollouts (Mode B). Vendored, UNMODIFIED upstream v1.10.0
+# (deploy/helm-bundled/vendor/argo-rollouts/install.yaml,
+# sha256:ca8a1785391026023627c8a12db5422e227d7a7a6ec7c01f99f7d5b1726ed53c, Apache-2.0) rendered
+# into {{ $r.namespace }} via commanderscp.renderVendoredBackend, with only the controller image
+# retargeted.
+#
+# THIS BUNDLE IS NOT AN EXECUTOR, and that makes it the odd one out. Argo CD, Argo Workflows,
+# Argo Events and Gitea are all systems SCP COORDINATES — each has a plugin, a binding and a verb
+# set. Argo Rollouts has none of those, deliberately: ADR-0008 decision 3 reads progressive-
+# delivery state off the Argo CD Application resource tree ("no new credential, no new executor")
+# and states that rollout state is "OBSERVED (mirrored), never DRIVEN", with no promote/abort/
+# retry verb added to the executor interface. So SCP installs this controller and then never
+# speaks to it: Argo Rollouts drives the canary, Argo CD syncs, and SCP reads the resulting
+# phase/step/weight through the plugin it already has (packages/plugins/argocd/src/index.ts).
+#
+# The consequence worth stating: there is nothing to BIND here and nothing to import. Enabling
+# this backend is what makes `observed.rollout` start carrying real values in the pipeline view;
+# no executor binding follows, and `scp connect` has no verb for it because there is no API SCP
+# would authenticate to.
+#
+# CLUSTER-SCOPED BY CHOICE. Upstream ships two manifests; this vendors the cluster-wide one, not
+# `namespace-install.yaml`, because the Rollout CRs live in the WORKLOAD namespaces (the
+# applications Argo CD syncs), not beside the controller. A namespaced install would only manage
+# rollouts in {{ $r.namespace }}, which is the one namespace that has none.
+# =============================================================================================
+{{- include "commanderscp.renderVendoredBackend" (dict
+    "ctx" .
+    "namespace" $r.namespace
+    "component" "bundled-argo-rollouts"
+    "manifest" (.Files.Get "vendor/argo-rollouts/install.yaml")
+    "replaces" (list
+      (list "quay.io/argoproj/argo-rollouts:v1.10.0" $r.image)
+    )
+    "resources" $r.resources
+  ) }}
+{{- end }}
