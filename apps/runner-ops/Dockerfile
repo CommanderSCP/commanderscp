@@ -46,6 +46,7 @@ RUN python /tmp/prune.py /tmp/allowlist.json \
  # interactive shell onto the fleet. Neither belongs in a single-shot catalog runner.
  && rm -f /usr/local/bin/ansible-pull /usr/local/bin/ansible-console
 
+COPY params_to_vars.py /usr/local/bin/params_to_vars.py
 COPY ansible.cfg /etc/ansible/ansible.cfg
 COPY run.sh /usr/local/bin/run.sh
 RUN chmod 0755 /usr/local/bin/run.sh
