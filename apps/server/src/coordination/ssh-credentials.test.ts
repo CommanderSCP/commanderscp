@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import vectors from "./ssh-keygen-vectors.json" with { type: "json" };
+import { SSH_KEYGEN_VECTORS as vectors } from "./ssh-keygen-vectors.js";
 import {
   VaultSshAuthority,
   generateEphemeralSshKeypair,
