@@ -1,10 +1,4 @@
-import {
-  createPrivateKey,
-  createPublicKey,
-  randomBytes,
-  sign as cryptoSign,
-  type KeyObject
-} from "node:crypto";
+import { createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
 import { openSshPublicKey } from "./ssh-credentials.js";
 
 /**
@@ -67,12 +61,6 @@ function sshOptions(entries: [string, string][]): Buffer {
         )
     )
   );
-}
-
-/** The raw 32 bytes of an ed25519 public key, from its SPKI DER. */
-function rawEd25519(publicKey: KeyObject): Buffer {
-  const spki = publicKey.export({ type: "spki", format: "der" });
-  return spki.subarray(spki.length - 32);
 }
 
 export interface SignSshCertificateInput {
