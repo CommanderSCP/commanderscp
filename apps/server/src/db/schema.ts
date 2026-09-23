@@ -2335,3 +2335,83 @@ export const instanceOperatorCredentials = pgTable(
     uniqueIndex("instance_operator_credentials_token_id_key").on(table.tokenId)
   ]
 );
+
+/**
+ * ONE SSH CERTIFICATE AUTHORITY PER DOMAIN — never fleet-wide (ADR-0051 D2).
+ *
+ * The tier proposal already forbids a runner bridging network segments; a fleet-wide CA would
+ * contradict that at the credential layer, so a compromise here is bounded to one domain's hosts.
+ *
+ * THE PRIVATE KEY IS NOT IN THIS TABLE. `privateKeySecretKey` is a reference into the org-scoped
+ * encrypted secret store (AES-256-GCM, decrypted only at use). ADR-0051 D3 records the owner's
+ * deliberate relaxation of ADR-0002's HSM/KMS clause and what it costs; keeping the material one
+ * indirection away at least means a row leak is not a key leak.
+ */
+export const sshCertificateAuthorities = pgTable(
+  "ssh_certificate_authorities",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** The trust domain / network segment this CA serves. */
+    domainId: uuid("domain_id").notNull().$type<TrustDomainId>(),
+    /** The OpenSSH public key hosts put in `TrustedUserCAKeys`. Stored so enrolment and rotation
+     *  can hand it out without ever touching the private half. */
+    publicKey: text("public_key").notNull(),
+    /** Key into the encrypted secret store — NOT the key. */
+    privateKeySecretKey: text("private_key_secret_key").notNull(),
+    /** `active` | `retiring` | `retired`. Rotation is TWO pushes, not one: hosts must trust the
+     *  incoming CA before the outgoing one is withdrawn, so a domain mid-rotation legitimately has
+     *  an `active` and a `retiring` row — and doubled blast radius for that window (ADR-0051). */
+    status: text("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    retiredAt: timestamp("retired_at", { withTimezone: true })
+  },
+  (t) => [
+    index("ssh_ca_org_domain_idx").on(t.orgId, t.domainId, t.status),
+    /** At most ONE active CA per domain. PARTIAL, so the `retiring` row a rotation needs is still
+     *  allowed beside it — the invariant is "never two things minting at once", not "one row". */
+    uniqueIndex("ssh_ca_one_active_per_domain")
+      .on(t.orgId, t.domainId)
+      .where(sql`${t.status} = 'active'`),
+    check("ssh_ca_status_known", sql`${t.status} IN ('active', 'retiring', 'retired')`)
+  ]
+);
+
+/**
+ * EVERY CERTIFICATE SCP ISSUED, BY SERIAL (ADR-0051 D5).
+ *
+ * The detective control that makes CA compromise visible. sshd logs the serial of every
+ * certificate it accepts — measured, in ordinary `Accepted publickey` output, needing no special
+ * logging — so a serial a host honoured that has no row here IS evidence of forgery.
+ *
+ * COVERS BOTH PATHS. BYO issuances are recorded too, even though SCP did not mint them: the
+ * reconciliation asks "did SCP cause this?", and on the BYO path SCP still requested it. A row is
+ * written for every certificate that reaches a runner, or the control has a blind spot exactly
+ * where the stronger credential path is used.
+ */
+export const sshCertificateIssuances = pgTable(
+  "ssh_certificate_issuances",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** NULL on the BYO path — no SCP-held authority minted it. */
+    authorityId: uuid("authority_id"),
+    /** `vault-ssh`, `scp-ca`, … — which authority answered. Kept beside `authorityId` so BYO rows,
+     *  which have no id, still say what issued them. */
+    authorityName: text("authority_name").notNull(),
+    /** TEXT, not a bigint: Vault returns decimal strings and SCP generates `scp-local:<uuid>` when
+     *  an authority returns none. One column that holds every real serial beats a numeric column
+     *  plus a nullable fallback that reconciliation would have to check twice. */
+    serial: text("serial").notNull(),
+    keyId: text("key_id").notNull(),
+    principals: text("principals").array().notNull(),
+    targetHosts: text("target_hosts").array().notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull()
+  },
+  (t) => [
+    /** Reconciliation looks a serial up by (org, serial); uniqueness also stops a double-record
+     *  from making one certificate look like two issuances. */
+    uniqueIndex("ssh_issuance_org_serial_uq").on(t.orgId, t.serial)
+  ]
+);
