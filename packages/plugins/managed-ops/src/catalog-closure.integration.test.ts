@@ -121,7 +121,16 @@ beforeAll(async () => {
       'export COSIGN_PASSWORD=""; cosign generate-key-pair && ' +
         "cosign sign-blob --key cosign.key --tlog-upload=false --new-bundle-format=false " +
         "--use-signing-config=false --output-signature catalog/catalog.json.sig --yes " +
-        "catalog/catalog.json && [ -s catalog/catalog.json.sig ]"
+        "catalog/catalog.json && [ -s catalog/catalog.json.sig ] && " +
+        // THE CONTAINER OPENS ITS OWN OUTPUTS, because only it can. cosign writes the signature
+        // and the keypair 0600 as the image's uid — and NOT because of umask, which it overrides —
+        // so the test process, a DIFFERENT uid on CI, cannot even READ them to copy the fixture
+        // per case (`EACCES ... copyfile`). chmod needs ownership, which the test process lacks.
+        //
+        // NAMED FILES, not `-R .`: the mount root is owned by the test process, so a recursive
+        // chmod starting there fails with `Operation not permitted` and takes the whole step with
+        // it. The container may only reopen what it created.
+        "chmod a+r catalog/catalog.json.sig cosign.key cosign.pub"
     ],
     { timeout: 180_000 }
   );
