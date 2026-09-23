@@ -38,11 +38,23 @@ export interface DeriveOpsRunMaterialInput {
   productObjectId: string;
   /** The catalog role to invoke. Resolved from the lane, never from a recipe. */
   role: string;
+  /** The CHANGE this run serves. It rides in the certificate's key id, which is the one field
+   *  `sshd` writes to the host's own auth log on every authentication — so a login on the host can
+   *  be attributed to a specific change without consulting SCP. ADR-0051 D5's reconciliation is
+   *  otherwise comparing bare serials. */
   subjectObjectId: string;
   masterKey: Buffer;
 }
 
 export class OpsMaterialUnavailable extends Error {}
+
+/** The key id REQUESTED of the authority. `sshd` logs this string on every authentication, so it
+ *  is the only place a host's own records can name the change that reached it. The authority appends
+ *  the serial and reports the result, so this is a prefix rather than the final value — which is why
+ *  the issuance row records `issued.keyId` and not a second call to this. */
+function opsKeyId(subjectObjectId: string): string {
+  return `scp-ops:${OPS_PRINCIPAL}:${subjectObjectId}`;
+}
 
 /**
  * Derive one run's material, and record the issuance in the SAME transaction.
@@ -108,6 +120,7 @@ export async function deriveOpsRunMaterial(
   const issued = await authority.issue({
     openSshPublicKey: keypair.openSshPublicKey,
     principals: [OPS_PRINCIPAL],
+    keyId: opsKeyId(input.subjectObjectId),
     validForSeconds: RUN_CERTIFICATE_TTL_SECONDS,
     targetHosts: [...opsEgressAllowlist]
   });
@@ -134,7 +147,10 @@ export async function deriveOpsRunMaterial(
     authorityId: authorityRow.id,
     authorityName: issued.authority,
     serial: issued.serial,
-    keyId: `scp-ops:${OPS_PRINCIPAL}:${issued.serial}`,
+    // What was ACTUALLY signed, not a second formatting of it. `ScpCaAuthority` appends the serial
+    // to the requested id, so re-deriving the string here is exactly the divergence `keyId` on the
+    // response exists to prevent.
+    keyId: issued.keyId ?? opsKeyId(input.subjectObjectId),
     principals: [OPS_PRINCIPAL],
     targetHosts: [...opsEgressAllowlist],
     expiresAt: issued.expiresAt

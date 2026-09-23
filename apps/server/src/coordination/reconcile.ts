@@ -123,6 +123,7 @@ import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook
 import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
+import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1623,13 +1624,44 @@ async function triggerWaveTarget(
             sourceRef: change.sourceRef,
             changeObjectId: change.objectId
           });
+      // HOST-REACHING MATERIAL (M27.9). This call is the whole of the seam: M27 built
+      // `deriveOpsRunMaterial`'s parts and `managed-ops`'s refusal to run without them, and nothing
+      // in between, so a census for production callers found the producers at ZERO and every gate
+      // still green. Deleting this line must make a test red — that is the only check that finds
+      // "built, never installed" (§4.4a).
+      //
+      // A ROLLBACK derives nothing, for a sharper reason than the build lane's: there is no
+      // "previous package version" recorded anywhere, so a rollback here would re-run the FORWARD
+      // operation against the same hosts. Refusing to derive means `managed-ops` refuses the run.
+      const opsParameters =
+        isRollback || executorModule !== "managed-ops"
+          ? undefined
+          : await opsLaneTriggerParameters(tx, {
+              orgId,
+              targetObjectId,
+              changeObjectId: change.objectId,
+              pluginModule: executorModule,
+              masterKey
+            });
       // The RECIPE WINS on a key collision, deliberately: a recipe is an operator's explicit
       // instruction for this campaign, and silently overriding it with a derived value would make
       // the authored document a lie. Merged rather than either/or so a recipe-driven build still
       // gets the source identity it would otherwise have to restate.
+      //
+      // EXCEPT for host-reaching material, which is spread LAST and therefore wins (ADR-0052).
+      // These are not conveniences an operator might reasonably restate: `opsInventory` is which
+      // machines get touched and `opsEgressAllowlist` is what the run can reach at all, so a recipe
+      // winning here would replace the bound with an assertion. A recipe cannot in fact reach this
+      // point — `managed-ops` is in RECIPE_FORBIDDEN_EXECUTOR_MODULES and terminalises the target
+      // first — and the ordering is still written this way rather than relying on that, because the
+      // two refusals are in different files and only one of them is about this invariant.
       const parameters =
-        sourceParameters || recipeParameters
-          ? { ...(sourceParameters ?? {}), ...(recipeParameters ?? {}) }
+        sourceParameters || recipeParameters || opsParameters
+          ? {
+              ...(sourceParameters ?? {}),
+              ...(recipeParameters ?? {}),
+              ...(opsParameters ?? {})
+            }
           : undefined;
 
       // The executor-specific target id. See docs/coordination.md §807.
