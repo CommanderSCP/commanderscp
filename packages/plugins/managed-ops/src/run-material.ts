@@ -22,7 +22,8 @@ export const SERVER_DERIVED_OPS_KEYS = [
   "opsInventory",
   "opsEgressAllowlist",
   "opsPrincipals",
-  "opsRole"
+  "opsRole",
+  "opsCredentialSecretKey"
 ] as const;
 
 export type ServerDerivedOpsKey = (typeof SERVER_DERIVED_OPS_KEYS)[number];
@@ -60,6 +61,15 @@ export interface ServerDerivedOpsMaterial {
   opsEgressAllowlist: readonly string[];
   /** Who the per-run certificate authorizes. */
   opsPrincipals: readonly string[];
+  /**
+   * A SECRET REFERENCE, never the certificate itself.
+   *
+   * Trigger parameters are persisted and surfaced in evidence, so a private key placed here would
+   * be written to the database and into every backup of it. The server mints the credential, puts
+   * it in the encrypted store under a short-lived key, and passes only the NAME — the plugin
+   * resolves it through `ctx.secrets`, which is the channel that exists for exactly this.
+   */
+  opsCredentialSecretKey: string;
 }
 
 /**
@@ -77,6 +87,7 @@ export function readServerDerivedMaterial(
   const inventory = p["opsInventory"];
   const allowlist = p["opsEgressAllowlist"];
   const principals = p["opsPrincipals"];
+  const credentialSecretKey = p["opsCredentialSecretKey"];
 
   const missing = SERVER_DERIVED_OPS_KEYS.filter((k) => p[k] === undefined);
   if (missing.length > 0) {
@@ -97,10 +108,25 @@ export function readServerDerivedMaterial(
   if (!Array.isArray(principals) || principals.length === 0) {
     throw new RecipeOverrideRefused("managed-ops: opsPrincipals must be a non-empty array");
   }
+  if (typeof credentialSecretKey !== "string" || credentialSecretKey.length === 0) {
+    throw new RecipeOverrideRefused(
+      "managed-ops: opsCredentialSecretKey must be a non-empty string"
+    );
+  }
+  // A CHEAP GUARD AGAINST THE WRONG THING BEING PASSED. If a caller ever puts the certificate here
+  // instead of its key, the value carries PEM/OpenSSH markers — refusing is far better than
+  // writing key material into a parameter bag that gets persisted.
+  if (/BEGIN |ssh-ed25519|-cert-v01@/.test(credentialSecretKey)) {
+    throw new RecipeOverrideRefused(
+      "managed-ops: opsCredentialSecretKey looks like credential MATERIAL, not a secret key name. " +
+        "Trigger parameters are persisted; the material must stay in the secret store."
+    );
+  }
   return {
     opsRole: role,
     opsInventory: inventory,
     opsEgressAllowlist: allowlist as string[],
-    opsPrincipals: principals as string[]
+    opsPrincipals: principals as string[],
+    opsCredentialSecretKey: credentialSecretKey
   };
 }

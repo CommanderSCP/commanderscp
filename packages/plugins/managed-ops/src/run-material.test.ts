@@ -10,7 +10,8 @@ const complete = {
   opsRole: "os_package",
   opsInventory: "[all]\ni-001 ansible_host=10.0.0.1\n",
   opsEgressAllowlist: ["10.0.0.1"],
-  opsPrincipals: ["scp-ops"]
+  opsPrincipals: ["scp-ops"],
+  opsCredentialSecretKey: "ops/run/abc123"
 };
 
 describe("ADR-0052: a recipe may not author the bound", () => {
@@ -45,6 +46,7 @@ describe("ADR-0052: a recipe may not author the bound", () => {
     // Pinned as a LITERAL so adding a derived key without deciding whether it belongs to the bound
     // is a failing test rather than an accident.
     expect([...SERVER_DERIVED_OPS_KEYS].sort()).toEqual([
+      "opsCredentialSecretKey",
       "opsEgressAllowlist",
       "opsInventory",
       "opsPrincipals",
@@ -87,5 +89,18 @@ describe("readServerDerivedMaterial", () => {
 
   it("refuses principals that are empty — a certificate must authorize someone", () => {
     expect(() => readServerDerivedMaterial({ ...complete, opsPrincipals: [] })).toThrow();
+  });
+
+  it.each([
+    ["a PKCS#8 private key", "-----BEGIN PRIVATE KEY-----\nMC4C"],
+    ["an OpenSSH public key", "ssh-ed25519 AAAAC3Nza"],
+    ["a certificate", "ssh-ed25519-cert-v01@openssh.com AAAA"]
+  ])("refuses %s passed where the secret KEY NAME belongs", (_label, value) => {
+    // Trigger parameters are persisted and surfaced in evidence. Material placed here would be
+    // written to the database and into every backup of it, so the shape is checked rather than
+    // trusted — this is the one mistake whose cost is unrecoverable.
+    expect(() => readServerDerivedMaterial({ ...complete, opsCredentialSecretKey: value })).toThrow(
+      /credential MATERIAL/
+    );
   });
 });
