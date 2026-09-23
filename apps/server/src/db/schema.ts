@@ -2366,7 +2366,15 @@ export const sshCertificateAuthorities = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     retiredAt: timestamp("retired_at", { withTimezone: true })
   },
-  (t) => [index("ssh_ca_org_domain_idx").on(t.orgId, t.domainId, t.status)]
+  (t) => [
+    index("ssh_ca_org_domain_idx").on(t.orgId, t.domainId, t.status),
+    /** At most ONE active CA per domain. PARTIAL, so the `retiring` row a rotation needs is still
+     *  allowed beside it — the invariant is "never two things minting at once", not "one row". */
+    uniqueIndex("ssh_ca_one_active_per_domain")
+      .on(t.orgId, t.domainId)
+      .where(sql`${t.status} = 'active'`),
+    check("ssh_ca_status_known", sql`${t.status} IN ('active', 'retiring', 'retired')`)
+  ]
 );
 
 /**
