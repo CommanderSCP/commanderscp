@@ -137,18 +137,21 @@ describe("host-reaching run, end to end against a real sshd (Testcontainers + Do
 
     // PUBLISHED IN CI, BUILT LOCALLY — the runner's Dockerfile carries a `# syntax=` directive,
     // so BuildKit would fetch a frontend from Docker Hub and CI blackholes egress.
-    [runnerImage, sshdImage] = await Promise.all([
-      resolveRunnerImage({
-        refEnvVar: "SCP_RUNNER_OPS_IMAGE_REF",
-        localTag: "scp-runner-ops:m27-9-e2e",
-        context: RUNNER_OPS_CONTEXT
-      }),
-      resolveRunnerImage({
-        refEnvVar: "SCP_SSHD_FIXTURE_IMAGE_REF",
-        localTag: "scp-sshd-fixture:m27-9-e2e",
-        context: SSHD_FIXTURE_CONTEXT
-      })
-    ]);
+    // SEQUENTIAL, and each assignment written next to its own `refEnvVar`. A `Promise.all` with
+    // destructuring is tidier and defeats `ci-offline-mirror`'s mirror gate: that gate resolves the
+    // identifier handed to a Container constructor by reading the source, and with both calls in one
+    // array it matched `sshdImage` against the FIRST ref it found — so a bogus env var on the second
+    // call still passed. Adjacency is what makes the association checkable.
+    runnerImage = await resolveRunnerImage({
+      refEnvVar: "SCP_RUNNER_OPS_IMAGE_REF",
+      localTag: "scp-runner-ops:m27-9-e2e",
+      context: RUNNER_OPS_CONTEXT
+    });
+    sshdImage = await resolveRunnerImage({
+      refEnvVar: "SCP_SSHD_FIXTURE_IMAGE_REF",
+      localTag: "scp-sshd-fixture:m27-9-e2e",
+      context: SSHD_FIXTURE_CONTEXT
+    });
 
     // ENROL FIRST — and the CA public key comes from the enrolment, not from the test. If the test
     // minted its own CA the fixture would trust a key the product never issued from, and the run
@@ -227,10 +230,18 @@ describe("host-reaching run, end to end against a real sshd (Testcontainers + Do
     await writeFile(join(inDir, "inventory.ini"), material.opsInventory as string);
     await writeFile(join(inDir, "params.json"), JSON.stringify(args));
     await writeFile(join(inDir, "ssh-credential"), credential ?? "");
-    // The image runs as a non-root uid that is not this suite's. On a developer box the two
-    // frequently coincide, so nothing here is exercised locally until CI — which is exactly how
-    // four rounds went in #409.
-    await execFileAsync("chmod", ["-R", "a+rwX", workDir]);
+    // ONLY WHAT THIS TEST OWNS. The image runs as a non-root uid that is not this suite's, and on a
+    // developer box the two frequently coincide — so a recursive chmod over the whole workspace
+    // passes locally and fails in CI with "chmod: changing permissions of '.../id': Operation not
+    // permitted", because `id`, `id-cert.pub`, `vars.yml`, `play.yml` and `known_hosts` are created
+    // by the CONTAINER and owned by it. The first run passes (nothing container-owned exists yet)
+    // and every run after it fails, which is how this presented.
+    //
+    // The workspace root is opened so the container can create its files there; the copy-in inputs
+    // are opened so it can read them. Nothing else needs touching, and the container reclaims its
+    // own files each run because `run.sh` unlinks before writing.
+    await execFileAsync("chmod", ["a+rwX", workDir]);
+    await execFileAsync("chmod", ["-R", "a+rwX", inDir]);
     return material.opsCredentialSecretKey as string;
   }
 
