@@ -94,11 +94,13 @@ beforeAll(async () => {
     context: RUNNER_OPS_CONTEXT
   });
   signedFixture = await mkdtemp(join(tmpdir(), "scp-catalog-signed-"));
-  // cosign writes its keypair at the root AND the signature inside catalog/, both as uid 1000.
-  await makeWritableByContainer(signedFixture);
   await cp(join(RUNNER_OPS_CONTEXT, "catalog"), join(signedFixture, "catalog"), {
     recursive: true
   });
+  // AFTER the copy, not before. `cp` recreates the tree at its SOURCE modes, so chmod-ing first is
+  // undone by the very next line — which is what actually happened: the keypair landed at the
+  // writable root while `catalog/catalog.json.sig` was refused inside the freshly-copied subtree.
+  await makeWritableByContainer(signedFixture);
   // Sign with the SAME flag set as packages/cosign/src/cosign.ts `signBlobFlags` — detached,
   // legacy format, nothing uploaded to Rekor. `--use-signing-config=false` is the flag that makes
   // `--tlog-upload=false` legal on cosign 3.x; without it cosign refuses and demands a signing
