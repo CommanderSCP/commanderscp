@@ -334,3 +334,54 @@ export const ArtifactClassVerificationSchema = z.object({
   verdict: z.enum(["match", "mismatch", "unverified"])
 });
 export type ArtifactClassVerification = z.infer<typeof ArtifactClassVerificationSchema>;
+
+// Infrastructure membership (team-pipeline-iac D25(a), M27.6)
+
+/** One observed member of an infrastructure product. See docs/schemas.md §360. */
+export const ObservedMemberSchema = z.strictObject({
+  /** The PROVIDER's identifier — an EC2 instance id, a VM name. This is the identity, because an
+   *  instance keeps it across a reboot that changes its address. */
+  memberId: z.string().min(1).max(400),
+  /** Where a runner would connect. */
+  address: z.string().min(1).max(400)
+});
+export type ObservedMember = z.infer<typeof ObservedMemberSchema>;
+
+/**
+ * A membership report is the product's CURRENT FULL SET, never a delta.
+ *
+ * A delta protocol would let one dropped or reordered message leave a host in the inventory that no
+ * longer exists — and for a host-reaching runner that means connecting to an address which may by
+ * then belong to someone else. `members` is therefore the whole truth as observed, and the server
+ * replaces what it held.
+ *
+ * An EMPTY array is meaningful and accepted: a fleet scaled to zero must stop converging its last
+ * known hosts, which "absent means unchanged" would prevent.
+ */
+export const ReportInfrastructureMembersRequestSchema = z.strictObject({
+  members: z.array(ObservedMemberSchema).max(10_000)
+});
+export type ReportInfrastructureMembersRequest = z.infer<
+  typeof ReportInfrastructureMembersRequestSchema
+>;
+
+/** What changed, so a caller can see what a report did. See docs/schemas.md §361. */
+export const InfrastructureMembershipDiffSchema = z.strictObject({
+  added: z.array(ObservedMemberSchema),
+  removed: z.array(ObservedMemberSchema),
+  /** Same member, new address — one host to re-apply to, not one leaving and another arriving. */
+  readdressed: z.array(
+    z.strictObject({
+      memberId: z.string(),
+      from: z.string(),
+      to: z.string()
+    })
+  )
+});
+export type InfrastructureMembershipDiff = z.infer<typeof InfrastructureMembershipDiffSchema>;
+
+export const InfrastructureMembersViewSchema = z.strictObject({
+  productObjectId: z.string().uuid(),
+  members: z.array(ObservedMemberSchema)
+});
+export type InfrastructureMembersView = z.infer<typeof InfrastructureMembersViewSchema>;

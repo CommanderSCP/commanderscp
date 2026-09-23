@@ -834,6 +834,13 @@
       "when": 1790122194045,
       "tag": "0118_ssh_certificate_authorities",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1790123882571,
+      "tag": "0119_infrastructure_members",
+      "breakpoints": true
     }
   ]
 }
