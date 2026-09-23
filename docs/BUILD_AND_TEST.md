@@ -1620,7 +1620,7 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **`overridable: true` is reachable only for deployment-wide platform freezes** (ADR-0040 §9) — an open owner question, because closing it means either giving the wave boundary an override path or expanding component targets to placements at the accept edge, and the second is a real tightening.
 
 
-### M27 — `scp-runner-ops`: host-reaching managed execution (the last Mode-C runner) — **DONE, 2026-09-23** (PRs #403–#410)
+### M27 — `scp-runner-ops`: host-reaching managed execution (the last Mode-C runner) — **M27.1–M27.8 DONE (PRs #403–#410); M27.9 OPEN**
 
 *Owner direction 2026-09-22: "we need everything as the deliverable" — BYO credential integration, the SCP-CA fallback, the locked-down image, the catalog and the gates all land as one capability, not a first slice followed by a maybe.*
 
@@ -1667,6 +1667,92 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **M27.8 — enrolment, the standing footprint, and delivery.** Host enrolment writes `TrustedUserCAKeys` plus a restricted sudoers naming exactly the catalog's commands (never `NOPASSWD:ALL`), justified per ADR-0051 D4 as static configuration with no daemon, no callback and no listener beyond the `sshd` already running. **An independent break-glass is a precondition of enrolment** (ADR-0051): an estate whose only access route is SCP's CA cannot recover from SCP's CA being compromised. Air-gap bundle image entry + retarget, Helm wiring, runner-image tag formula.
     - **DoD:** enrolling a domain without a recorded independent access path is **refused**; the air-gap bundle carries the image and `install.sh` retargets it (the gap found in #401 for the build catalog — a values comment claiming retargeting is not retargeting).
 
+  - **M27.9 — THE SEAM: the server actually produces what the runner requires.** M27.1–8 each met a
+    definition of done that never required the capability to be *reachable*. A census for production
+    callers found `compileInventory`, `egressAllowlistFor`, `enrolDomain`, `recordIssuance` and
+    `reconcileSerials` with **zero** — nothing in `apps/server` wrote the `ops*` keys the plugin
+    refuses to run without, so a `managed-ops` trigger would have been refused by its own plugin,
+    enrolment had no API door, and ADR-0051 D5's detective control could never fire. This is
+    §4.4a's "built, never installed" exactly, and it is the reason M27 does not close at M27.8.
+    Scope: (a) reconcile derives the run material for a host-reaching run; (b) enrolment reaches the
+    outside world API → SDK → CLI; (c) issuance and serial reconciliation get a read surface;
+    (d) an end-to-end run against a real `sshd`.
+    - **DoD:** the **real producer's** output is fed to the **real consumer's** reader, and the
+      consumer decides — `readServerDerivedMaterial` accepts `deriveOpsRunMaterial`'s result, rather
+      than either side asserting a shape this test invented. Deleting the reconcile wiring makes a
+      test go red (the only check that finds "built, never installed"). A domain with no enrolment
+      is **refused** derivation, and each issuance writes a row the reconciliation can read.
+
+
+
+### M28 — every kind of work reaches a real executor: RPM builds, infrastructure buildout, host ops, deployment — **OPEN**
+
+*Owner direction 2026-09-23: "this commanderscp platform is meant for all types of systems … it should
+be driving things through tools like ArgoWorkflow", and — on finding this scope deferred repeatedly —
+"I'm tired of this getting put off again and again after each agent takes it on." **No sub-milestone
+below may be deferred to a successor milestone.** Deferring one is what this milestone exists to prevent.*
+
+- **The gap, measured (2026-09-23), not assumed.** The rails are general; the *catalog* is not:
+  - `packages/plugins/argo-workflows/src/index.ts` submits whatever `WorkflowTemplate` the binding's
+    `targetRef` names. Nothing in it is image-specific — an org-authored RPM or infra template already
+    works through it today (Mode A/B).
+  - The Type taxonomy already names the work: `image, rpm, deb, npm, maven, python, go, chart,
+    vm-image, infrastructure, configuration` (`packages/schemas/src/executors.ts`). `rpm` is a
+    first-class `build`-Category Type that **routes** — it simply has no template to route to.
+  - **One shipped template exists**: `scp-build-image-v1`. That, and only that, is what is scoped to images.
+  - **`buildLaneTriggerParameters` derives container-shaped destinations for the whole `build`
+    Category** — `imageRepository`, `imageDestination` (`host/repository`), `dockerfile`. An `rpm`
+    trigger is therefore handed a *container registry* as its destination: a wrong answer, not a
+    missing one. This is the defect that makes M28.1 a correction rather than an addition.
+  - **`infrastructure` is given no parameters at all**, deliberately — *"an `infrastructure` one has
+    no artifact at all"* (`build-trigger-parameters.ts`). There is no server-side derivation for an
+    infrastructure buildout, so no infra lane exists to drive.
+  - **Hosting is done, driving is not.** `deploy/helm-bundled/templates/` ships argocd,
+    argo-rollouts, argo-events, argo-workflows and gitea. Argo Rollouts is **observe-only**
+    (`argocd/src/index.ts` reads the Rollout node out of `status.resources[]`; ADR-0008 §3 forbids
+    driving its state), and nothing creates one.
+
+- **Decisions taken 2026-09-23 so they are not re-litigated per increment** (owner invited to overrule;
+  record an ADR per increment as it lands):
+  - **D1 — an RPM's destination is a `registry` object with a package-repo kind**, reached by the
+    existing `publishes_to` edge. Charter principle 2: new concepts arrive as registry/relationship
+    data, never as a new top-level table.
+  - **D2 — infrastructure executes as Argo Workflows catalog templates** (`plan` → approve → `apply`).
+    `managed-iac` remains the Mode C fallback for organizations with no execution system — the same
+    fork M27 established for ops, not a replacement for it. The OpenTofu state backend is a
+    **deployment-level operator setting** (the ADR-0049 precedent for the egress allowlist).
+  - **D3 — SCP authors the Rollout manifest, and still only observes its steps.** ADR-0008 §3 forbids
+    *driving* rollout state; writing the manifest as part of the deployment config SCP already emits
+    does not. Authoring the steps and then observing them is what preserves the invariant.
+
+- **Contents:**
+  - **M28.1 — RPM builds: `scp-build-rpm-v1` + destination derivation by Type.** Split
+    `buildLaneTriggerParameters` so a destination is derived from the Type's *artifact class*, not
+    assumed to be a container registry; package-repo registry kind (D1); a signed catalog template
+    that builds an SRPM/RPM and publishes it.
+    - **DoD:** an `rpm`-Typed component promotes end-to-end through Argo Workflows to a package repo.
+      Mutation: an `rpm` binding handed a container-registry destination is **refused**, not silently
+      pushed — the present behaviour, asserted red.
+  - **M28.2 — host ops through Argo Workflows: `scp-ops-v1`.** The same Ansible catalog and the same
+    `deriveOpsRunMaterial` output M27.9 produces, submitted as a Workflow where the org runs Argo
+    rather than launched by `@scp/runner-launcher`. Mode C stays the no-execution-system fallback.
+    - **DoD:** one material derivation feeds both executors; the Mode A/B path never launches a
+      container from `scpd`, asserted by the absence of a launcher call on that path.
+  - **M28.3 — infrastructure buildout for an environment.** An `infraLaneTriggerParameters` seam
+    (the lane that does not exist today) and `scp-infra-plan-v1` / `scp-infra-apply-v1`, scoped to a
+    `deployment-target` carrying `properties.environment` — the `prod-us-east-1` case. Plan is
+    surfaced for approval before apply; state backend per D2.
+    - **DoD:** a plan is persisted and rendered as evidence, and **apply cannot run without an
+      approved plan** (mutation-proved, not documented). Re-apply of an unchanged plan is a no-op.
+  - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
+    import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
+    Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.
+    - **DoD:** SCP creates an Application and a Rollout for a component it did not import, and
+      **still only reads** rollout state — ADR-0008 §3 asserted by a test that goes red if any write
+      verb reaches a Rollout's status.
+  - **M28.5 — the cross-cutting proof.** One estate exercising all four paths, so no increment can
+    be green while the capability is unreachable — the M27.9 lesson as a standing gate.
+    - **DoD:** deleting the wiring for any one lane makes a test red.
 
 ## 9. Verification Mapping
 
