@@ -277,13 +277,15 @@ describe("host-reaching run, end to end against a real sshd (Testcontainers + Do
     // The two halves of ADR-0051 D5 have never met: SCP records a serial at issuance, and hosts log
     // the serial they accepted. Until they are compared against each other, "reconciliation" is an
     // assertion about a table rather than a control.
-    const logs = await sshd!.logs();
-    const text = await new Promise<string>((resolveText) => {
-      let acc = "";
-      logs.on("data", (chunk) => (acc += String(chunk)));
-      logs.on("end", () => resolveText(acc));
-      setTimeout(() => resolveText(acc), 5_000);
+    // `docker logs` and NOT Testcontainers' streaming `logs()`. The stream has no natural end while
+    // the container runs, so reading it means racing a fixed timeout against output that has
+    // already been written — a sleep standing in for a signal, which `integration-sleep-census`
+    // exists to refuse. A one-shot read returns everything written so far, and everything this
+    // asserts on was written by the runs above before this test started.
+    const { stdout, stderr } = await execFileAsync("docker", ["logs", sshd!.getId()], {
+      maxBuffer: 16 * 1024 * 1024
     });
+    const text = stdout + stderr;
     const serials = [...text.matchAll(/serial (\d+)/g)].map((m) => m[1]!);
     expect(
       serials.length,
