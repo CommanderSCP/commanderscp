@@ -58,6 +58,13 @@ let dockerReady = false;
 let runnerImage = "";
 let sshdImage = "";
 let sshd: StartedTestContainer | undefined;
+/** The docker network the sshd fixture landed on, and the one the runner must JOIN.
+ *
+ *  Not assumed to be the default bridge. Testcontainers is free to place a container on its own
+ *  network, and the runner is started with a plain `docker run` — so on a host where those differ,
+ *  the runner would be given an address it cannot route to and the failure would look like a
+ *  refused connection rather than a misconfigured test. Read from the container, never guessed. */
+let sshdNetwork = "";
 let server: ListeningTestServer;
 let org: TestOrg;
 let workDir: string;
@@ -90,6 +97,9 @@ async function runRunner(role: string): Promise<{ output: string; ok: boolean }>
   const args = [
     "run",
     "--rm",
+    // JOIN THE FIXTURE'S NETWORK — see `sshdNetwork`.
+    "--network",
+    sshdNetwork,
     // `/work` and not `/work/in`: the runner writes its rendered vars and play into `/work`, and
     // bind-mounting only the subdirectory leaves `/work` root-owned for a non-root image.
     "-v",
@@ -166,18 +176,19 @@ describe("host-reaching run, end to end against a real sshd (Testcontainers + Do
     const { stdout } = await execFileAsync("docker", [
       "inspect",
       "-f",
-      "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+      "{{range $name, $net := .NetworkSettings.Networks}}{{$name}} {{$net.IPAddress}}{{end}}",
       sshd.getId()
     ]);
-    const hostAddress = stdout.trim();
-    expect(hostAddress, "the sshd fixture must have a bridge address").not.toBe("");
+    const [networkName, hostAddress] = stdout.trim().split(/\s+/);
+    expect(hostAddress, "the sshd fixture must have an address on its network").toBeTruthy();
+    sshdNetwork = networkName!;
 
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       replaceMembership(tx, {
         orgId: org.orgId,
         productObjectId: productId,
         reportedBySubjectId: randomUUID(),
-        members: [{ memberId: "host1", address: hostAddress }]
+        members: [{ memberId: "host1", address: hostAddress! }]
       })
     );
 
