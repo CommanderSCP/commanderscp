@@ -385,3 +385,100 @@ export const InfrastructureMembersViewSchema = z.strictObject({
   members: z.array(ObservedMemberSchema)
 });
 export type InfrastructureMembersView = z.infer<typeof InfrastructureMembersViewSchema>;
+
+// ---------------------------------------------------------------------------------------------
+// SSH CA enrolment and issuance evidence (M27.9, ADR-0051). See docs/schemas.md §189.
+// ---------------------------------------------------------------------------------------------
+
+/** WHAT ENROLLING A DOMAIN ASKS FOR. One field, and it is the precondition rather than the
+ *  credential: ADR-0051's recovery paragraph is a circularity — an estate whose only route in is
+ *  SCP's CA cannot recover from that CA being compromised — so a CA cannot come into existence
+ *  without a recorded way in that does not depend on it. The keypair is MINTED server-side and is
+ *  deliberately not in this request: a caller-supplied public key could name a private half SCP
+ *  does not hold. */
+export const EnrolTrustDomainRequestSchema = z.strictObject({
+  breakGlass: z
+    .string()
+    .min(1)
+    .describe(
+      "How an operator reaches these hosts WITHOUT this CA: an out-of-band console, a jump host " +
+        "outside the trust domain, a hardware KVM. Non-empty, or the enrolment is refused."
+    )
+});
+export type EnrolTrustDomainRequest = z.infer<typeof EnrolTrustDomainRequestSchema>;
+
+/** The enrolment, plus the two files an operator must install for it to mean anything.
+ *
+ *  THE FILES ARE RETURNED, not merely described. An enrolment whose CA public key the operator
+ *  cannot get hold of has changed nothing on any host — the "built, never installed" shape one
+ *  layer out — so the response carries the exact `TrustedUserCAKeys` content and the exact sudoers
+ *  fragment, generated from the same catalog the runner executes. */
+export const TrustDomainEnrolmentSchema = z.strictObject({
+  domainId: z.string().uuid(),
+  authorityId: z.string().uuid(),
+  breakGlass: z.string(),
+  enrolledAt: z.string(),
+  /** `ssh-ed25519 AAAA...` — the CA public half, for `TrustedUserCAKeys` on every host. */
+  caPublicKey: z.string(),
+  /** The literal file content, ready to write. */
+  trustedUserCaKeysFile: z.string()
+  // NO `sudoersFragment` YET, and its absence is a finding rather than an omission. M27.8 generates
+  // one naming the catalog's commands (`/usr/bin/apt-get`, `/usr/bin/dnf`, `/usr/bin/systemctl`),
+  // and wiring enrolment up showed those are commands Ansible NEVER INVOKES. Measured against the
+  // shipped image, `become: true` runs:
+  //     sudo -H -S -n -u root /bin/sh -c 'echo BECOME-SUCCESS-... ; /usr/bin/python3 .../AnsiballZ_*.py'
+  // so a host enrolled with that fragment fails every privileged task, and making it work means
+  // granting sudo to `/bin/sh` — unrestricted root — with the module path under the connecting
+  // account's own writable `~/.ansible/tmp`. ADR-0051 D4's "restricted sudoers naming exactly the
+  // catalog's commands" is therefore not achievable with Ansible `become` as configured; it is an
+  // owner decision, not an implementation detail (the charter invariant M27 must not break).
+  // Returning a file that cannot work would be worse than returning none, so this ships without it
+  // and the field is added back once D4 is resolved — additive to a response, which oasdiff allows.
+});
+export type TrustDomainEnrolment = z.infer<typeof TrustDomainEnrolmentSchema>;
+
+/** One certificate SCP recorded issuing (ADR-0051 D5). */
+export const SshCertificateIssuanceSchema = z.strictObject({
+  serial: z.string(),
+  keyId: z.string(),
+  authorityName: z.string(),
+  principals: z.array(z.string()),
+  targetHosts: z.array(z.string()),
+  issuedAt: z.string(),
+  expiresAt: z.string()
+});
+export type SshCertificateIssuance = z.infer<typeof SshCertificateIssuanceSchema>;
+
+/** SERIALS A HOST ACCEPTED, offered for reconciliation. Read from the host's own `sshd` log; the
+ *  question this answers is "did SCP issue this?", and a `no` is the forgery signal. */
+export const ReconcileSshSerialsRequestSchema = z.strictObject({
+  serials: z.array(z.string().min(1)).min(1).max(1000)
+});
+export type ReconcileSshSerialsRequest = z.infer<typeof ReconcileSshSerialsRequestSchema>;
+
+/** One serial's verdict. `unrecognised` is the whole point of the surface.
+ *
+ *  THIS IS THE ONLY THING THAT BOUNDS CA COMPROMISE. Short TTLs provably do not: `sshd` honours the
+ *  validity interval INSIDE the certificate, which an attacker holding the signing key chooses
+ *  (ADR-0051's blast-radius analysis). Detection is the control. */
+export const SshSerialVerdictSchema = z.strictObject({
+  serial: z.string(),
+  unrecognised: z.boolean(),
+  keyId: z.string().nullable(),
+  authorityName: z.string().nullable(),
+  issuedAt: z.string().nullable()
+});
+export type SshSerialVerdict = z.infer<typeof SshSerialVerdictSchema>;
+
+export const SshSerialReconciliationSchema = z.strictObject({
+  verdicts: z.array(SshSerialVerdictSchema),
+  /** How many of the offered serials SCP has no record of issuing. Carried so a caller cannot
+   *  report "reconciled" by reading a 200 and never inspecting the array. */
+  unrecognisedCount: z.number().int()
+});
+export type SshSerialReconciliation = z.infer<typeof SshSerialReconciliationSchema>;
+
+export const SshCertificateIssuanceListSchema = z.strictObject({
+  issuances: z.array(SshCertificateIssuanceSchema)
+});
+export type SshCertificateIssuanceList = z.infer<typeof SshCertificateIssuanceListSchema>;

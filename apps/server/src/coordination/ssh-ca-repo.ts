@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import {
   sshCaEnrolments,
   sshCertificateAuthorities,
@@ -240,6 +240,47 @@ export async function enrolDomain(
   // `TrustedUserCAKeys` on every host in the domain, and an enrolment they cannot act on is an
   // enrolment that never reaches a host.
   return { authorityId, enrolmentId, caPublicKey: keypair.openSshPublicKey };
+}
+
+/** Every certificate SCP recorded issuing, newest first — ADR-0051 D5's evidence side.
+ *
+ *  Bounded rather than unbounded: this table grows once per host-reaching RUN, and an unbounded
+ *  read is how `decisions` reached 1.44 GB/day. A caller reconciling a host's log wants the recent
+ *  window, and a caller auditing a specific serial has `reconcileSerials`. */
+export async function listIssuances(
+  tx: TenantTx,
+  orgId: string,
+  limit = 200
+): Promise<
+  {
+    serial: string;
+    keyId: string;
+    authorityName: string;
+    principals: string[];
+    targetHosts: string[];
+    issuedAt: Date;
+    expiresAt: Date;
+  }[]
+> {
+  const rows = await tx
+    .select({
+      serial: sshCertificateIssuances.serial,
+      keyId: sshCertificateIssuances.keyId,
+      authorityName: sshCertificateIssuances.authorityName,
+      principals: sshCertificateIssuances.principals,
+      targetHosts: sshCertificateIssuances.targetHosts,
+      issuedAt: sshCertificateIssuances.issuedAt,
+      expiresAt: sshCertificateIssuances.expiresAt
+    })
+    .from(sshCertificateIssuances)
+    .where(eq(sshCertificateIssuances.orgId, orgId))
+    .orderBy(desc(sshCertificateIssuances.issuedAt))
+    .limit(Math.min(Math.max(limit, 1), 1000));
+  return rows.map((r) => ({
+    ...r,
+    principals: (r.principals as string[]) ?? [],
+    targetHosts: (r.targetHosts as string[]) ?? []
+  }));
 }
 
 export interface EnrolmentRow {

@@ -51,6 +51,7 @@ import { registerPlacementRoutes } from "./routes/placements.js";
 import { registerServiceRoutes } from "./routes/services.js";
 import { registerChangeSourceRoutes } from "./routes/change-sources.js";
 import { registerInfrastructureMemberRoutes } from "./routes/infrastructure-members.js";
+import { registerSshCaRoutes } from "./routes/ssh-ca.js";
 import { registerPipelineRoutes } from "./routes/pipelines.js";
 import { registerCampaignRoutes } from "./routes/campaigns.js";
 import { registerFederationRoutes } from "./routes/federation.js";
@@ -264,6 +265,7 @@ export async function buildApp(
   registerPipelineRoutes(app, deps);
   // M27.6 — the membership door a host-reaching run compiles its inventory from.
   registerInfrastructureMemberRoutes(app, deps);
+  registerSshCaRoutes(app, deps);
   // M4: Policy/Control typed-registry resources (routes/typed-registries.ts's module doc) +
   // control bindings/runs, approvals, freezes, and `scp policy evaluate` (BUILD_AND_TEST.md §8 M4).
   for (const resource of GOVERNANCE_TYPED_REGISTRY_RESOURCES) {

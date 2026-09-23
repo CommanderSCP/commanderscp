@@ -3935,6 +3935,105 @@ export function buildProgram(): Command {
       );
     });
 
+  // `scp ssh-ca` (M27.9, ADR-0051). See docs/cli.md §81.
+  //
+  // The enrolment door and the detective control, at the surface an operator actually has. M27.8
+  // built both and neither had a caller: no domain could be enrolled, and the reconciliation that
+  // is the ONLY bound on CA compromise could not be invoked by anyone.
+  const sshCaCmd = program
+    .command("ssh-ca")
+    .description("Per-domain SSH certificate authorities and the certificates they issued");
+
+  sshCaCmd
+    .command("enrol")
+    .alias("enroll")
+    .description(
+      "Enrol a trust domain for host-reaching managed execution: mint its per-domain CA and record the independent access path, in one transaction. --break-glass is a PRECONDITION and not documentation — an estate whose only route in is SCP's CA cannot recover from that CA being compromised, so an empty one is refused"
+    )
+    .argument("<domainId>", "the trust domain to enrol")
+    .requiredOption(
+      "--break-glass <how>",
+      "how an operator reaches these hosts WITHOUT this CA: an out-of-band console, a jump host outside the trust domain, a hardware KVM"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .action(async (domainId: string, opts: { breakGlass: string; baseUrl?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const enrolment = await client.sshCa.enrol(domainId, opts.breakGlass);
+      console.log(`enrolled ${enrolment.domainId} (authority ${enrolment.authorityId})`);
+      // PRINTED, not merely returned. An enrolment whose CA public key the operator never sees has
+      // changed nothing on any host — the capability would exist and reach nothing.
+      console.log("");
+      console.log("Install on every host in this domain, as /etc/ssh/scp-trusted-user-ca.pub:");
+      console.log("");
+      process.stdout.write(enrolment.trustedUserCaKeysFile);
+      console.log("");
+      console.log("and add to sshd_config:  TrustedUserCAKeys /etc/ssh/scp-trusted-user-ca.pub");
+    });
+
+  sshCaCmd
+    .command("enrolment")
+    .description(
+      "Read a trust domain's enrolment, its CA public key and its recorded break-glass path"
+    )
+    .argument("<domainId>", "the trust domain")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (domainId: string, opts: { baseUrl?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const enrolment = await client.sshCa.enrolment(domainId);
+      console.log(`domain       ${enrolment.domainId}`);
+      console.log(`authority    ${enrolment.authorityId}`);
+      console.log(`enrolled at  ${enrolment.enrolledAt}`);
+      console.log(`break-glass  ${enrolment.breakGlass}`);
+      console.log(`ca public    ${enrolment.caPublicKey}`);
+    });
+
+  sshCaCmd
+    .command("issuances")
+    .description("Every SSH certificate SCP recorded issuing, newest first (ADR-0051 D5)")
+    .option("--limit <n>", "how many to read", (v: string) => Number.parseInt(v, 10))
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: { limit?: number; baseUrl?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const list = await client.sshCa.issuances(opts.limit);
+      if (list.issuances.length === 0) {
+        console.log("(no certificates recorded — no host-reaching run has issued one)");
+        return;
+      }
+      for (const i of list.issuances) {
+        console.log(`${i.serial}\t${i.issuedAt}\t${i.authorityName}\t${i.keyId}`);
+      }
+    });
+
+  sshCaCmd
+    .command("reconcile")
+    .description(
+      "Given certificate serials read from a host's own sshd log, report which SCP has no record of issuing. This is the ONLY control that bounds CA compromise — short TTLs provably do not, because sshd honours the validity interval inside the certificate, which an attacker holding the signing key chooses"
+    )
+    .requiredOption(
+      "--serial <serial...>",
+      "a serial observed on the host, repeatable",
+      (value: string, previous: string[]) => [...(previous ?? []), value],
+      [] as string[]
+    )
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: { serial: string[]; baseUrl?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.sshCa.reconcile(opts.serial);
+      for (const v of result.verdicts) {
+        console.log(`${v.serial}\t${v.unrecognised ? "UNRECOGNISED" : "issued by SCP"}`);
+      }
+      if (result.unrecognisedCount > 0) {
+        // A NON-ZERO EXIT, because this is the forgery signal and a script that only reads stdout
+        // would treat a detection as a successful check.
+        console.error(
+          `\n${result.unrecognisedCount} of ${result.verdicts.length} serial(s) were NOT issued by ` +
+            `SCP. A certificate a host accepted that SCP never issued is evidence the CA signing ` +
+            `key is being used outside SCP (ADR-0051 D5).`
+        );
+        process.exitCode = 1;
+      }
+    });
+
   const auditCmd = program.command("audit").description("Audit log");
 
   auditCmd
