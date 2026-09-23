@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,17 @@ import { resolveRunnerImage } from "@scp/plugin-testkit";
  */
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Make a whole tree writable by the image's non-root user.
+ *
+ * RECURSIVE, and that is the fix rather than a flourish: chmod-ing only the mount root left
+ * `catalog/` at its copied mode, and cosign writes `catalog/catalog.json.sig` INSIDE it. The first
+ * attempt at this fix opened the door and not the room behind it.
+ */
+async function makeWritableByContainer(dir: string): Promise<void> {
+  await execFileAsync("chmod", ["-R", "a+rwX", dir]);
+}
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_OPS_CONTEXT = resolve(__dirname, "../../../../apps/runner-ops");
 const IMAGE_TAG = "scp-runner-ops:m27-3-catalog-test";
@@ -65,7 +76,7 @@ async function freshCatalog(): Promise<{ dir: string; catalog: string; keys: str
   const dir = await mkdtemp(join(tmpdir(), "scp-catalog-"));
   await cp(signedFixture, dir, { recursive: true });
   // See the note in ssti-closure: the image is non-root and the mount is owned by the suite's user.
-  await chmod(dir, 0o777);
+  await makeWritableByContainer(dir);
   return { dir, catalog: join(dir, "catalog"), keys: dir };
 }
 
@@ -83,8 +94,8 @@ beforeAll(async () => {
     context: RUNNER_OPS_CONTEXT
   });
   signedFixture = await mkdtemp(join(tmpdir(), "scp-catalog-signed-"));
-  // cosign writes its keypair and the signature INTO this mount, as uid 1000.
-  await chmod(signedFixture, 0o777);
+  // cosign writes its keypair at the root AND the signature inside catalog/, both as uid 1000.
+  await makeWritableByContainer(signedFixture);
   await cp(join(RUNNER_OPS_CONTEXT, "catalog"), join(signedFixture, "catalog"), {
     recursive: true
   });
@@ -105,10 +116,10 @@ beforeAll(async () => {
       "sh",
       imageRef,
       "-c",
-      'export COSIGN_PASSWORD=""; cosign generate-key-pair >/dev/null 2>&1 && ' +
+      'export COSIGN_PASSWORD=""; cosign generate-key-pair && ' +
         "cosign sign-blob --key cosign.key --tlog-upload=false --new-bundle-format=false " +
         "--use-signing-config=false --output-signature catalog/catalog.json.sig --yes " +
-        "catalog/catalog.json >/dev/null 2>&1"
+        "catalog/catalog.json && [ -s catalog/catalog.json.sig ]"
     ],
     { timeout: 180_000 }
   );

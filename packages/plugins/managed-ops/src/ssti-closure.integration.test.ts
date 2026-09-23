@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,7 +58,9 @@ async function render(params: unknown, harden: boolean): Promise<string> {
   // 0777, because the image runs as NON-ROOT uid 1000 and this mount is owned by whoever runs the
   // suite. That is uid 1000 on a developer box and a different uid on a CI runner — which is
   // exactly why this passed locally and failed in CI, with the play unable to write its output.
-  await chmod(dir, 0o777);
+  // `a+rwX` on the tree, for the same reason the catalog suite needs it — the container is
+  // non-root and writes into this mount.
+  await execFileAsync("chmod", ["-R", "a+rwX", dir]);
   try {
     await writeFile(join(dir, "params.json"), JSON.stringify(params));
     await writeFile(join(dir, "play.yml"), PLAY);
@@ -139,7 +141,9 @@ describe("scp-runner-ops SSTI closure (M27.2)", () => {
   it("refuses a parameter that would reconfigure the run rather than feed it", async () => {
     if (!dockerReady) return expectSkipped();
     const dir = await mkdtemp(join(tmpdir(), "scp-ssti-reserved-"));
-    await chmod(dir, 0o777);
+    // `a+rwX` on the tree, for the same reason the catalog suite needs it — the container is
+    // non-root and writes into this mount.
+    await execFileAsync("chmod", ["-R", "a+rwX", dir]);
     try {
       await writeFile(
         join(dir, "params.json"),
