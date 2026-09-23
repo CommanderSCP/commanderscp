@@ -136,17 +136,23 @@ describe("every CI job blocks merge through 5z, or is non-gating by documented n
  * Derived from the SHELL SCRIPT rather than from a list here, so the next runner joins this gate
  * by existing.
  */
-describe("every runner image ref is published, pulled, and passed through", () => {
+describe("every test-tier image ref is published, pulled, and passed through", () => {
   const tagsScript = readFileSync(resolve(REPO_ROOT, "scripts/runner-image-tags.sh"), "utf8");
   const workflow = readFileSync(resolve(REPO_ROOT, ".github/workflows/ci.yml"), "utf8");
   const turbo = readFileSync(resolve(REPO_ROOT, "turbo.json"), "utf8");
 
-  /** The refs the script actually emits — the authoritative population. */
-  const refs = [...tagsScript.matchAll(/echo "(SCP_RUNNER_[A-Z]+_IMAGE_REF)=/g)].map((m) => m[1]!);
+  /** The refs the script actually emits — the authoritative population.
+   *
+   *  `SCP_[A-Z_]+_IMAGE_REF` and not `SCP_RUNNER_[A-Z]+_IMAGE_REF`. The narrower pattern encoded a
+   *  naming convention rather than the property, and the first image that was not a *runner* — the
+   *  M27.9 `SCP_SSHD_FIXTURE_IMAGE_REF` test host — would have slipped past this gate silently,
+   *  which is precisely the failure the gate was written for. The property is "every image ref this
+   *  script emits", and nothing about it depends on the word `RUNNER`. */
+  const refs = [...tagsScript.matchAll(/echo "(SCP_[A-Z_]+_IMAGE_REF)=/g)].map((m) => m[1]!);
 
   it("the census read the script (it is not an empty list)", () => {
     // A regex that matched nothing would make every loop below pass vacuously.
-    expect(refs.length).toBeGreaterThanOrEqual(4);
+    expect(refs.length).toBeGreaterThanOrEqual(5);
   });
 
   it.each(refs)("%s is built and pushed by the publish job", (ref) => {

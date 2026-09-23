@@ -9,11 +9,7 @@
     "outside them is a charter conversation rather than a catalog edit."
   ],
   "catalogVersion": "1",
-  "charterClasses": [
-    "osPackage",
-    "configRenderPush",
-    "cronSystemd"
-  ],
+  "charterClasses": ["osPackage", "configRenderPush", "cronSystemd"],
   "roles": [
     {
       "name": "os_package",
