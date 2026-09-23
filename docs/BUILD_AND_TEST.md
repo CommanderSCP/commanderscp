@@ -1620,7 +1620,7 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **`overridable: true` is reachable only for deployment-wide platform freezes** (ADR-0040 §9) — an open owner question, because closing it means either giving the wave boundary an override path or expanding component targets to placements at the accept edge, and the second is a real tightening.
 
 
-### M27 — `scp-runner-ops`: host-reaching managed execution (the last Mode-C runner)
+### M27 — `scp-runner-ops`: host-reaching managed execution (the last Mode-C runner) — **DONE, 2026-09-23** (PRs #403–#410)
 
 *Owner direction 2026-09-22: "we need everything as the deliverable" — BYO credential integration, the SCP-CA fallback, the locked-down image, the catalog and the gates all land as one capability, not a first slice followed by a maybe.*
 
@@ -1629,6 +1629,25 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 - **Goal:** the long tail of small operational changes on hosts, for domains with no execution system of their own — OS package install/upgrade/pin; config-file and template render+push; cron and systemd unit changes. **Never tenant-supplied shell.** Both ADR-0002 preconditions are now closed (ADR-0050, ADR-0051), so what remains is build, not decision.
 - **INCREMENT ORDER CORRECTED (2026-09-22).** M27.1–M27.3 are built and proved but **cannot land alone**, and the repo is right to refuse them: `@scp/airgap` enforces that every `apps/runner-*` directory is carried by the bundle, given an `install.sh` knob, and documented with an activation cell naming an env var *the server reads* — and that env var's path runs through `executor-bindings-repo`, which needs the orchestrator to exist. **A runner image and its orchestrator are one landable unit.** So M27.1–M27.3 land together with M27.7, and the server-side increments (M27.4–M27.6) were resequenced ahead of them because they touch nothing in `apps/`. The gate caught an image nobody could turn on, which is the anti-"built but never installed" invariant doing its job.
 - **The invariant this milestone must not break:** SCP holding host login-grade credentials is defensible *only* because the operations it can perform are a bounded, reviewed, auditable vocabulary. Every increment that widens what a run can do is a charter question, not an implementation detail. A tenant value must never be evaluated as Jinja2, at any increment.
+- **What the build taught, recorded because the milestone text did not predict it:**
+  - **A runner image and its orchestrator are ONE landable unit.** `@scp/airgap` refuses an
+    `apps/runner-*` directory that is not bundled, knob-documented and activatable by an env var the
+    server reads — so M27.1–M27.3 sat proved-but-unlanded until M27.7 existed, and all four shipped
+    together in #409. The increment order in this document was corrected mid-flight.
+  - **M27.6 had no source of truth.** Nothing in the model answered *which machines are in this
+    fleet*, so it split: 27.6a built the observation D25(a) had designed and never had, and only
+    then could 27.6b compile an inventory from it.
+  - **Three enumerations and one chart predicate each needed a fourth member** — the managed-module
+    list, the post-deadline teardown budget, the RBAC census, and `commanderscp.anyManagedClass`.
+    The last meant a deployment enabling ONLY `managedOps` on Kubernetes was refused as "no managed
+    executor class is enabled": a valid configuration the chart would not render.
+  - **Eight CI rounds on #409, seven of them one class** — a test harness meeting an environment the
+    developer machine does not reproduce: a BuildKit frontend fetched from Docker Hub, a committed
+    `.pyc`, turbo's strict env stripping an image ref, and a uid mismatch on bind mounts (this box's
+    uid happens to equal the image's, so every permission interaction works locally and none is
+    exercised until CI). The ref-reachability case is now a permanent gate in `ci-gate-census`; the
+    rest are verified cross-uid rather than by reasoning.
+
 - **Contents:**
   - **M27.1 — the locked-down image + the set-equality gate (ADR-0050).** `apps/runner-ops/` (Dockerfile + `run.sh` + README), following the `runner-iac`/`runner-scan`/`runner-dep` pattern; entry in `scripts/runner-image-tags.sh` and the CI runner-image publish job. Ansible modules, lookup plugins and action plugins are **deleted** down to an allowlist derived from the three charter classes — deletion, not configuration, because `ANSIBLE_CONFIG`, a cwd `ansible.cfg` and per-play settings all compete while an absent file cannot be loaded. A lockdown `ansible.cfg` ships as defence in depth, not as the control.
     - **DoD (machine-checked):** a test asserts the **complete set** of modules / lookup plugins / action plugins present *inside the built image* equals the allowlist **in both directions**. Mutation: add any module to the image and the gate goes red; remove one the catalog needs and it goes red. A spot check of the six names ADR-0002 originally listed is **not** sufficient and must not be what is written — `lines`, `expect`, `pip`, `git`, `subversion` and the whole `include_*`/`import_*` task-loading family are all outside those six and all reach code execution or task injection.
