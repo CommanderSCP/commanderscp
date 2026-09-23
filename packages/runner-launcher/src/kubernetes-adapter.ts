@@ -201,6 +201,10 @@ function slotSubPath(runId: string, slot: string): string {
 const JOBS_PATH = (ns: string): string => `/apis/batch/v1/namespaces/${ns}/jobs`;
 const SECRETS_PATH = (ns: string): string => `/api/v1/namespaces/${ns}/secrets`;
 const PODS_PATH = (ns: string): string => `/api/v1/namespaces/${ns}/pods`;
+/** M27.6b — the per-run egress allowlist lives here. A THIRD API group, which is why
+ *  `kubernetesRbacRequirement` parses `networking.k8s.io` alongside core and batch. */
+const NETWORK_POLICIES_PATH = (ns: string): string =>
+  `/apis/networking.k8s.io/v1/namespaces/${ns}/networkpolicies`;
 /** THE JOB'S OWN EVENTS — the only place a pod-creation refusal is ever written down. See
  *  {@link kubernetesJobTermination}: when a Job cannot create a pod, no pod exists to carry a
  *  status, the Job's own `status` says nothing, and the controller's `FailedCreate` event carries
@@ -220,9 +224,14 @@ function logRequestPath(ns: string, podName: string, maxBuffer: number): string 
 
 // THE RBAC CONTRACT — WHAT THIS ADAPTER ASKS FOR, AS DATA, SO THE CHART CAN BE DIFFED AGAINST IT
 /** The chart grants exactly what the adapter calls. See docs/runner-launcher.md §249. */
+/** The three API groups this adapter ever addresses. A union rather than `string`, so adding a
+ *  fourth is a deliberate edit here and not an accident at a call site. */
+export type KubernetesRbacApiGroup = "" | "batch" | "networking.k8s.io";
+
 export interface KubernetesRbacRule {
-  /** `""` for the core group, `"batch"` for Jobs — spelled as the Role's `apiGroups` entry is. */
-  readonly apiGroup: "" | "batch";
+  /** `""` for the core group, `"batch"` for Jobs, `"networking.k8s.io"` for the per-run egress
+   *  NetworkPolicy (M27.6b) — spelled exactly as the Role's `apiGroups` entry is. */
+  readonly apiGroup: KubernetesRbacApiGroup;
   /** The resource, subresources included and NAMED SEPARATELY: `pods` and `pods/log` are two
    *  distinct RBAC resources and collapsing them into one rule grants each the other's verbs. */
   readonly resource: string;
@@ -236,8 +245,74 @@ export function kubernetesRbacKey(rule: { apiGroup: string; resource: string }):
 }
 
 /** Every rule this adapter's requests require. See docs/runner-launcher.md §250. */
+/**
+ * THE PER-RUN POSITIVE EGRESS ALLOWLIST (M27.6b), as a NetworkPolicy selecting one run's pod.
+ *
+ * WHY A POLICY PER RUN RATHER THAN ONE STANDING POLICY. The allowed set is the addresses THIS run
+ * resolved — a different fleet, or the same fleet after it scaled, is a different set. A standing
+ * policy would have to be the union of every fleet any run might touch, which is the opposite of
+ * the bound this is for.
+ *
+ * DENY IS BY CONSTRUCTION, NOT BY A RULE SOMEONE REMEMBERED. A NetworkPolicy carrying an egress
+ * section denies every destination it does not name, so link-local and the cloud metadata endpoint
+ * (169.254.169.254) are unreachable without an explicit block rule — and a block rule is exactly
+ * the kind of thing that gets dropped in a refactor and noticed years later.
+ *
+ * DNS IS ALLOWED, and it is the one deliberate widening: kube-dns/CoreDNS is needed for the pod to
+ * start cleanly, and the allowlist entries are IP literals, so name resolution cannot be used to
+ * reach anything outside the set. It is scoped to UDP/TCP 53, not to an address, because the DNS
+ * service's ClusterIP is a deployment detail this adapter does not know.
+ */
+function egressNetworkPolicyManifest(
+  spec: RunnerSpec,
+  opts: { namespace: string; policyName: string }
+): Record<string, unknown> {
+  const allow = [...new Set(spec.egressAllowlist ?? [])].sort();
+  return {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: {
+      name: opts.policyName,
+      namespace: opts.namespace,
+      labels: {
+        [RUNNER_LAUNCHER_OWNER_LABEL]: LAUNCHER_OWNER_ID,
+        [RUNNER_RUN_ID_LABEL]: spec.runId
+      }
+    },
+    spec: {
+      // THIS RUN'S POD ONLY. Selecting on the run id is what makes the policy per-run; a broader
+      // selector would apply one run's allowlist to another's pod.
+      podSelector: { matchLabels: { [RUNNER_RUN_ID_LABEL]: spec.runId } },
+      policyTypes: ["Egress"],
+      egress: [
+        ...(allow.length > 0
+          ? [
+              {
+                to: allow.map((address) => ({
+                  ipBlock: { cidr: address.includes("/") ? address : `${address}/32` }
+                }))
+              }
+            ]
+          : []),
+        // An EMPTY allowlist yields a policy with only this rule — which is a real state, not a
+        // bug: a fleet scaled to zero has nothing to reach, and the run should be able to start
+        // and do nothing rather than fail to schedule.
+        {
+          ports: [
+            { protocol: "UDP", port: 53 },
+            { protocol: "TCP", port: 53 }
+          ]
+        }
+      ]
+    }
+  };
+}
+
 export function kubernetesRunnerRbac(opts: {
   perRunSecrets: boolean;
+  /** M27.6b — host-reaching classes only. Off by default, so a deployment that never runs one is
+   *  not granted NetworkPolicy write it has no use for. */
+  perRunEgressAllowlist?: boolean;
 }): readonly KubernetesRbacRule[] {
   const rules: KubernetesRbacRule[] = [
     // create (POST), get (GET one), list (GET the collection, for the reap sweep), patch (the
@@ -255,6 +330,16 @@ export function kubernetesRunnerRbac(opts: {
     // namespace — see this file's `perRunSecrets` doc for why that one is a refusal, not an omission.
     rules.push({ apiGroup: "", resource: "secrets", verbs: ["create", "delete"] });
   }
+  if (opts.perRunEgressAllowlist) {
+    // One POST per run and one DELETE at teardown. NO `get`/`list`/`patch`: the adapter never reads
+    // a policy back or edits one, and `patch` in particular would let a compromised launcher WIDEN
+    // an existing policy rather than only create its own narrow one.
+    rules.push({
+      apiGroup: "networking.k8s.io",
+      resource: "networkpolicies",
+      verbs: ["create", "delete"]
+    });
+  }
   return rules;
 }
 
@@ -262,14 +347,32 @@ export function kubernetesRunnerRbac(opts: {
 export function kubernetesRbacRequirement(
   method: string,
   rawPath: string
-): { apiGroup: "" | "batch"; resource: string; verb: string } | null {
+): { apiGroup: KubernetesRbacApiGroup; resource: string; verb: string } | null {
   const path = rawPath.split("?")[0] ?? "";
+  // `/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies[/{name}]` — M27.6b's per-run
+  // egress allowlist. Matched FIRST because it is the most specific of the three shapes.
+  const networking =
+    /^\/apis\/networking\.k8s\.io\/v1\/namespaces\/[^/]+\/([^/]+)(?:\/([^/]+))?$/.exec(path);
+  if (networking) {
+    const [, resource, name] = networking;
+    const verb =
+      method === "POST"
+        ? "create"
+        : method === "DELETE" && name
+          ? "delete"
+          : method === "GET" && name
+            ? "get"
+            : method === "GET"
+              ? "list"
+              : null;
+    return verb && resource ? { apiGroup: "networking.k8s.io", resource, verb } : null;
+  }
   // `/apis/batch/v1/namespaces/{ns}/jobs[/{name}]` and `/api/v1/namespaces/{ns}/{res}[/{name}[/{sub}]]`
   const batch = /^\/apis\/batch\/v1\/namespaces\/[^/]+\/([^/]+)(?:\/([^/]+))?$/.exec(path);
   const core = /^\/api\/v1\/namespaces\/[^/]+\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?$/.exec(path);
   const m = batch ?? core;
   if (!m) return null;
-  const apiGroup: "" | "batch" = batch ? "batch" : "";
+  const apiGroup: KubernetesRbacApiGroup = batch ? "batch" : "";
   const collection = m[1]!;
   const name = m[2];
   const subresource = m[3];
@@ -1084,6 +1187,9 @@ export function createKubernetesRunnerLauncher(
 
       /** A second, narrower ownership flag. See docs/runner-launcher.md §282. */
       let secretIsOurs = false;
+      /** Whether THIS run created the egress policy — the same ownership question `secretIsOurs`
+       *  asks, and for the same reason: teardown must not delete an object a different run owns. */
+      let networkPolicyIsOurs = false;
 
       // The refusal standing in when no grant was made. See docs/runner-launcher.md §283.
       if (spec.secretEnv.length > 0 && !config.perRunSecrets) {
@@ -1103,6 +1209,27 @@ export function createKubernetesRunnerLauncher(
       }
 
       try {
+        // 1b. THE PER-RUN EGRESS ALLOWLIST (M27.6b), BEFORE the Job exists.
+        //
+        // Ordering is the control: the Job is created suspended, so nothing runs until the
+        // unsuspend below — but creating the policy first means a failure here leaves NOTHING
+        // staked, and there is no window in which a host-reaching pod exists unconstrained.
+        // A failure REFUSES the run rather than proceeding: a host-reaching runner with no egress
+        // policy is precisely the thing the allowlist exists to prevent.
+        if (spec.egressAllowlist !== undefined) {
+          await api(
+            {
+              step: "create",
+              method: "POST",
+              path: NETWORK_POLICIES_PATH(namespace),
+              contentType: "application/json",
+              body: egressNetworkPolicyManifest(spec, { namespace, policyName: jobName })
+            },
+            (res) => (res.status >= 200 && res.status < 300) || res.status === 409
+          );
+          networkPolicyIsOurs = true;
+        }
+
         // 2. CREATE — the Job object, SUSPENDED. The name is now staked and nothing is running.
         const created = await api(
           {
@@ -1482,6 +1609,25 @@ export function createKubernetesRunnerLauncher(
                 timeoutMs
               })
           }).catch((cause) => debug("teardown: DELETE job %s failed: %O", jobName, cause));
+          if (networkPolicyIsOurs) {
+            // Deleted with the Job. A policy that outlived its run would accumulate one object per
+            // run in the namespace, and each names addresses that estate once had — which is both
+            // clutter and a slowly-growing disclosure of fleet topology.
+            await withPostDeadlineBound({
+              kind: "kubernetes",
+              call: "teardown DELETE networkpolicy",
+              what: jobName,
+              work: (timeoutMs) =>
+                io.request({
+                  step: "teardown",
+                  method: "DELETE",
+                  path: `${NETWORK_POLICIES_PATH(namespace)}/${jobName}`,
+                  timeoutMs
+                })
+            }).catch((cause) =>
+              debug("teardown: DELETE networkpolicy %s failed: %O", jobName, cause)
+            );
+          }
           if (secretIsOurs) {
             await withPostDeadlineBound({
               kind: "kubernetes",

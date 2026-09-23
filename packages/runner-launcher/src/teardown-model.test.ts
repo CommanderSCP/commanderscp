@@ -205,7 +205,13 @@ async function countKubernetesPostDeadline(): Promise<number> {
     perRunSecrets: true,
     io,
     pollIntervalMs: 5
-  }).run(spec());
+    // THE WORST CASE FOR THIS ADAPTER, and it cannot live in `spec()` like `secretEnv` does: the
+    // DOCKER counter shares that factory, and the docker launcher REFUSES a spec carrying an
+    // egress allowlist outright (it has no primitive that can enforce one). So the override is
+    // here, where it is the kubernetes worst case — without it the per-run NetworkPolicy is never
+    // created, its teardown DELETE never fires, and the model is over by one in exactly the way
+    // `secretEnv`'s comment describes it having been under by one.
+  }).run(spec({ egressAllowlist: ["10.0.0.1", "10.0.0.2"] }));
   await whenKubernetesReapSettled(NAMESPACE).catch(() => undefined);
   // NOT VACUOUS: the run reached its deadline and failed there, so the `finally` ran on the path
   // this file is about rather than on a fast success where teardown precedes the deadline entirely.
