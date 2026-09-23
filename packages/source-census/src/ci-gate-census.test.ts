@@ -119,3 +119,49 @@ describe("every CI job blocks merge through 5z, or is non-gating by documented n
     }
   });
 });
+
+/**
+ * EVERY RUNNER IMAGE REF REACHES THE TEST THAT NEEDS IT.
+ *
+ * A runner image is useless to the test tier unless THREE separate files agree about its ref:
+ * `runner-image-tags.sh` emits it, ci.yml builds+pushes it and pulls it, and turbo.json passes it
+ * through. Miss any one and `resolveRunnerImage` silently falls back to building locally — which
+ * succeeds on a developer's machine and fails only in CI, only because CI has no egress.
+ *
+ * That is not hypothetical: adding `scp-runner-ops` hit it TWICE in one PR. First the build was
+ * attempted inside the integration job at all; then, with the publish and pull in place, turbo's
+ * STRICT env mode stripped `SCP_RUNNER_OPS_IMAGE_REF` because it was not in `passThroughEnv`, so
+ * the fallback ran again and failed with the identical Docker Hub error.
+ *
+ * Derived from the SHELL SCRIPT rather than from a list here, so the next runner joins this gate
+ * by existing.
+ */
+describe("every runner image ref is published, pulled, and passed through", () => {
+  const tagsScript = readFileSync(resolve(REPO_ROOT, "scripts/runner-image-tags.sh"), "utf8");
+  const workflow = readFileSync(resolve(REPO_ROOT, ".github/workflows/ci.yml"), "utf8");
+  const turbo = readFileSync(resolve(REPO_ROOT, "turbo.json"), "utf8");
+
+  /** The refs the script actually emits — the authoritative population. */
+  const refs = [...tagsScript.matchAll(/echo "(SCP_RUNNER_[A-Z]+_IMAGE_REF)=/g)].map((m) => m[1]!);
+
+  it("the census read the script (it is not an empty list)", () => {
+    // A regex that matched nothing would make every loop below pass vacuously.
+    expect(refs.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it.each(refs)("%s is built and pushed by the publish job", (ref) => {
+    expect(workflow).toContain(`build_and_push "$${ref}"`);
+  });
+
+  it.each(refs)("%s is pulled by the integration job", (ref) => {
+    // The pull loop names each ref explicitly; a ref missing from it is an image the test tier
+    // never has locally, and the blackhole makes that a hard failure rather than a slow pull.
+    expect(workflow).toContain(`"$${ref}"`);
+  });
+
+  it.each(refs)("%s survives turbo's STRICT env mode", (ref) => {
+    // turbo strips anything not declared, so an undeclared ref reaches the test as undefined and
+    // `resolveRunnerImage` builds instead — the exact silent fallback this gate exists to stop.
+    expect(turbo).toContain(`"${ref}"`);
+  });
+});
