@@ -16,6 +16,8 @@ const INTEGRATION_FLAG_ALLOWLIST: Record<string, string> = {
   "@scp/server": "CI shards test:integration 4 ways; a shard may draw zero files",
   "@scp/plugin-managed-iac": "single-file suite; the other shard legitimately draws zero files",
   "@scp/plugin-managed-dep": "single-file suite; the other shard legitimately draws zero files",
+  "@scp/plugin-managed-ops":
+    "M27 — docker-backed suite (lockdown, SSTI closure, catalog); a shard may draw zero files",
   "@scp/plugin-managed-scan": "single-file suite; the other shard legitimately draws zero files",
   "@scp/runner-launcher":
     "single-file suite (reaper.integration.test.ts, M23.1 phase 4); the other shard legitimately draws zero files"
