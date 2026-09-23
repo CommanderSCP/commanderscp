@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { sshCertificateAuthorities, sshCertificateIssuances } from "../db/schema.js";
+import {
+  sshCaEnrolments,
+  sshCertificateAuthorities,
+  sshCertificateIssuances
+} from "../db/schema.js";
 import type { TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 
@@ -154,4 +158,86 @@ export async function reconcileSerials(
         }
       : { serial, unrecognised: true };
   });
+}
+
+export interface EnrolDomainInput {
+  orgId: string;
+  domainId: TrustDomainId;
+  publicKey: string;
+  privateKeySecretKey: string;
+  /** HOW TO GET IN WITHOUT SCP'S CA (ADR-0051). Non-empty, or the enrolment is refused. */
+  breakGlass: string;
+  recordedBySubjectId: string;
+}
+
+export class BreakGlassRequired extends Error {}
+
+/**
+ * Enrol a domain: stand up its CA and record the independent access path, in ONE transaction.
+ *
+ * The two are inseparable ON PURPOSE. ADR-0051's recovery paragraph is a circularity — an estate
+ * whose only route in is SCP's CA cannot recover from that CA being compromised — so the fix is
+ * that a CA cannot come into existence without a recorded way in that does not depend on it. Split
+ * across two calls, the first could succeed and the second be forgotten, which is exactly the
+ * estate the ADR describes.
+ *
+ * The emptiness check lives HERE as well as in the CHECK constraint, so the caller gets a sentence
+ * rather than a constraint-violation string. The constraint is what makes it true; this is what
+ * makes it legible.
+ */
+export async function enrolDomain(
+  tx: TenantTx,
+  input: EnrolDomainInput
+): Promise<{ authorityId: string; enrolmentId: string }> {
+  if (input.breakGlass.trim().length === 0) {
+    throw new BreakGlassRequired(
+      "refusing to enrol this domain: no independent access path was recorded. An estate whose " +
+        "only route in is SCP's CA cannot recover from SCP's CA being compromised — revocation is " +
+        "a fleet-wide push and the push needs access (ADR-0051). Record how you would reach these " +
+        "hosts WITHOUT this CA: an out-of-band console, a jump host outside the trust domain, a " +
+        "hardware KVM."
+    );
+  }
+  const { id: authorityId } = await createAuthority(tx, {
+    orgId: input.orgId,
+    domainId: input.domainId,
+    publicKey: input.publicKey,
+    privateKeySecretKey: input.privateKeySecretKey
+  });
+  const enrolmentId = randomUUID();
+  await tx.insert(sshCaEnrolments).values({
+    id: enrolmentId,
+    orgId: input.orgId,
+    domainId: input.domainId,
+    authorityId,
+    breakGlass: input.breakGlass.trim(),
+    recordedBySubjectId: input.recordedBySubjectId
+  });
+  return { authorityId, enrolmentId };
+}
+
+export interface EnrolmentRow {
+  domainId: TrustDomainId;
+  authorityId: string;
+  breakGlass: string;
+  enrolledAt: Date;
+}
+
+/** The recovery story for a domain, or none — which means it is not enrolled. */
+export async function enrolmentForDomain(
+  tx: TenantTx,
+  orgId: string,
+  domainId: TrustDomainId
+): Promise<EnrolmentRow | undefined> {
+  const [row] = await tx
+    .select({
+      domainId: sshCaEnrolments.domainId,
+      authorityId: sshCaEnrolments.authorityId,
+      breakGlass: sshCaEnrolments.breakGlass,
+      enrolledAt: sshCaEnrolments.enrolledAt
+    })
+    .from(sshCaEnrolments)
+    .where(and(eq(sshCaEnrolments.orgId, orgId), eq(sshCaEnrolments.domainId, domainId)))
+    .limit(1);
+  return row as EnrolmentRow | undefined;
 }

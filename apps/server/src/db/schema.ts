@@ -2459,3 +2459,41 @@ export const infrastructureMembers = pgTable(
     uniqueIndex("infrastructure_members_identity").on(t.orgId, t.productObjectId, t.memberId)
   ]
 );
+
+/**
+ * ENROLMENT OF A DOMAIN INTO SCP'S OWN SSH CA (M27.8, ADR-0051).
+ *
+ * THE ROW EXISTS TO CARRY THE BREAK-GLASS PATH, and that is the whole point of having a table
+ * rather than just a CA. ADR-0051's blast-radius analysis ends on a circularity: an estate whose
+ * ONLY access route is SCP's CA cannot recover from SCP's CA being compromised — revocation is a
+ * fleet-wide push, and the push needs access. The ADR therefore makes an independent access path a
+ * PRECONDITION OF ENROLMENT rather than an incident-time discovery, and this row is where that
+ * precondition is recorded and enforced.
+ *
+ * `breakGlass` is free text on purpose. SCP cannot verify that an out-of-band console, a
+ * jump host or a hardware KVM actually works — asserting a structure over it would be theatre. What
+ * SCP can do is refuse to enrol a domain where nobody has written the answer down, and keep that
+ * answer next to the credential it is the recovery for.
+ */
+export const sshCaEnrolments = pgTable(
+  "ssh_ca_enrolments",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    domainId: uuid("domain_id").notNull().$type<TrustDomainId>(),
+    /** The CA this enrolment stood up. One per enrolment, by construction. */
+    authorityId: uuid("authority_id").notNull(),
+    /** HOW TO GET IN WITHOUT SCP'S CA. Required, non-empty, checked at the write door. */
+    breakGlass: text("break_glass").notNull(),
+    /** Stamped server-side. Who accepted the recovery story is part of the record. */
+    recordedBySubjectId: uuid("recorded_by_subject_id").notNull(),
+    enrolledAt: timestamp("enrolled_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    /** One enrolment per domain. A second would mean two CAs minting for one segment, which the
+     *  partial index on `ssh_certificate_authorities` already forbids — stated here too, because a
+     *  reader of this table should not have to infer it from another one. */
+    uniqueIndex("ssh_ca_enrolment_one_per_domain").on(t.orgId, t.domainId),
+    check("ssh_ca_enrolment_break_glass_present", sql`length(btrim(${t.breakGlass})) > 0`)
+  ]
+);

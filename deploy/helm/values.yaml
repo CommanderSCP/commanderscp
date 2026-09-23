@@ -463,6 +463,26 @@ managedDep:
   workspaceRoot: /var/lib/scp/managed-dep
 
 # -------------------------------------------------------------------------------------------
+# Managed-ops (M27 — host-reaching, charter 2026-07-12 amendment). OFF BY DEFAULT, and the most
+# consequential of the four to turn on: this is the only class that holds HOST login-grade
+# credentials and changes OS packages, config files and cron/systemd units on real machines.
+#
+# TWO SETTINGS, BOTH REQUIRED TO ENABLE IT. `runnerImage` is the on/off control as for every other
+# class. `catalogPubkeySecretKey` names the cosign public key the runner verifies its task catalog
+# against — and a binding is REFUSED without it, because ADR-0050 makes the signed catalog the
+# thing that bounds what a run can do. An image without a key would run an unverified catalog with
+# host credentials, which is the whole hazard rather than a rough edge.
+#
+# BEFORE ENABLING, read ADR-0051. Its recovery finding is a refusal in the product: enrolling a
+# domain into SCP's own CA requires recording an independent access path, because an estate whose
+# only route in is SCP's CA cannot recover from SCP's CA being compromised. Prefer the BYO path
+# (Vault's SSH engine, Teleport, your own CA) — on it SCP holds no signing key at all.
+managedOps:
+  runnerImage: ""
+  catalogPubkeySecretKey: ""
+  workspaceRoot: /var/lib/scp/managed-ops
+
+# -------------------------------------------------------------------------------------------
 # Managed-scan (M13.3b — ADR-0020). OFF BY DEFAULT, same control as managedDep: with `runnerImage`
 # empty nothing is rendered, `SCP_MANAGED_SCAN_RUNNER_IMAGE` is unset, and a managed-scan binding
 # fails closed at dispatch with "managed scanning is not enabled".
