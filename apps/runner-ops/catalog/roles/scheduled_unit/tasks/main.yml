@@ -1,10 +1,15 @@
 # CLASS 3: cron entries and systemd unit changes.
+#
+# THE CONNECTION IS ALREADY ROOT, so there is no `become:` here (owner decision 2026-09-23,
+# amending ADR-0051 D4). It used to say `become: true`, which was never reachable: Ansible's become
+# runs `sudo ... /bin/sh -c '... python3 .../AnsiballZ_*.py'`, so the restricted sudoers fragment
+# M27.8 generated — naming apt-get/dnf/systemctl — granted nothing this role invokes, and the rule
+# that would have worked is a root shell. The certificate's principal is `root` and says so.
 - name: manage the systemd unit
   ansible.builtin.systemd_service:
     name: "{{ unit_name }}"
     state: "{{ unit_state | default(omit) }}"
     enabled: "{{ enabled | default(omit) }}"
-  become: true
   when: kind == 'systemd'
 
 - name: manage the cron entry
@@ -18,5 +23,4 @@
     day: "{{ cron_schedule.split(' ')[2] }}"
     month: "{{ cron_schedule.split(' ')[3] }}"
     weekday: "{{ cron_schedule.split(' ')[4] }}"
-  become: true
   when: kind == 'cron'

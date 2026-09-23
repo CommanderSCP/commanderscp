@@ -422,18 +422,16 @@ export const TrustDomainEnrolmentSchema = z.strictObject({
   caPublicKey: z.string(),
   /** The literal file content, ready to write. */
   trustedUserCaKeysFile: z.string()
-  // NO `sudoersFragment` YET, and its absence is a finding rather than an omission. M27.8 generates
-  // one naming the catalog's commands (`/usr/bin/apt-get`, `/usr/bin/dnf`, `/usr/bin/systemctl`),
-  // and wiring enrolment up showed those are commands Ansible NEVER INVOKES. Measured against the
-  // shipped image, `become: true` runs:
+  // NO `sudoersFragment`, and its absence is a DECISION rather than an omission (owner, 2026-09-23,
+  // amending ADR-0051 D4). M27.8 generated one naming the catalog's commands, and wiring enrolment
+  // up showed those are commands Ansible never invokes: `become: true` runs
   //     sudo -H -S -n -u root /bin/sh -c 'echo BECOME-SUCCESS-... ; /usr/bin/python3 .../AnsiballZ_*.py'
-  // so a host enrolled with that fragment fails every privileged task, and making it work means
-  // granting sudo to `/bin/sh` — unrestricted root — with the module path under the connecting
-  // account's own writable `~/.ansible/tmp`. ADR-0051 D4's "restricted sudoers naming exactly the
-  // catalog's commands" is therefore not achievable with Ansible `become` as configured; it is an
-  // owner decision, not an implementation detail (the charter invariant M27 must not break).
-  // Returning a file that cannot work would be worse than returning none, so this ships without it
-  // and the field is added back once D4 is resolved — additive to a response, which oasdiff allows.
+  // so the fragment grants nothing a run calls, and the rule that would work grants `/bin/sh` with
+  // the module path under the connecting account's own writable `~/.ansible/tmp`. The certificate's
+  // principal is therefore `root`, stated plainly, and the restricted-sudoers control is deleted
+  // rather than kept in a form that only reads as one. What bounds a run is unchanged: the signed
+  // closed catalog, the modules deleted from the image, non-templatable parameters, a minutes-TTL
+  // certificate and the per-run egress allowlist.
 });
 export type TrustDomainEnrolment = z.infer<typeof TrustDomainEnrolmentSchema>;
 

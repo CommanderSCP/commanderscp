@@ -32,6 +32,28 @@ type EntryClass = (typeof ENTRY_CLASSES)[number];
  * in `why` what makes this door org-level, or which increment owns re-scoping it.
  */
 const ORG_ROOT_PINNED: readonly CensusEntry[] = [
+  // ---- host-reaching credential custody (M27.9, ADR-0051) ---------------------------------------
+  {
+    site: "routes/ssh-ca.ts :: POST /api/v1/trust-domains/:domainId/ssh-ca/enrolment :: secret:write",
+    cls: "org-level",
+    why: "enrolling a trust domain MINTS an SSH signing key into the encrypted store — a credential operation, not an edit to a graph object, so there is no narrower object it belongs to. A trust domain is not an object in the graph (it is the `origin_domain_id` stamped ON objects), so no per-domain scope exists to pin this to. Same shape and same bar as `change-sources.ts` and `executors.ts`, which pin `secret:write` at the org root for the same reason"
+  },
+  {
+    site: "routes/ssh-ca.ts :: GET /api/v1/trust-domains/:domainId/ssh-ca/enrolment :: audit:read",
+    cls: "org-level",
+    why: "reads the domain's CA public key and its recorded break-glass path. Org-root for the same reason the write is: a trust domain carries no graph object to scope to. `audit:read` rather than `object:read` because the break-glass string describes how an operator reaches an estate WITHOUT SCP, which is evidence about the deployment rather than about any one object"
+  },
+  {
+    site: "routes/ssh-ca.ts :: GET /api/v1/ssh-certificate-issuances :: audit:read",
+    cls: "org-level",
+    why: "every certificate SCP recorded issuing, across every domain and both credential paths. The set is org-wide by construction — that is what makes it reconcilable — and narrowing it per-domain would let a holder of one domain's read conclude 'SCP issued nothing' while another domain's issuances are what a host actually saw"
+  },
+  {
+    site: "routes/ssh-ca.ts :: POST /api/v1/ssh-certificate-issuances/reconcile :: audit:read",
+    cls: "org-level",
+    why: "ADR-0051 D5's detective control, and the ONLY thing that bounds CA compromise — short TTLs provably do not, because sshd honours the validity interval inside the certificate, which an attacker holding the signing key chooses. It answers 'did SCP issue this serial?' against the org's whole issuance record; scoped narrower it would answer 'not in this slice', which reads identically to the forgery signal it exists to raise"
+  },
+
   // ---- not a permission check at all: the two production writers of `role_bindings` -------------
   {
     site: "auth/local-auth.ts :: ensureBootstrapAdmin() :: -",

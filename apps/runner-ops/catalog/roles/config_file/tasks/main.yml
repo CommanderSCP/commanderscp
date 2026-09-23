@@ -3,6 +3,12 @@
 # `copy` with `content:`, NOT `template:`. The distinction is the whole point — `template` would run
 # the tenant's bytes through Jinja on the target, which is the SSTI path M27.2 closes at the other
 # end. Content arrives already rendered and !unsafe-wrapped, so it is written verbatim.
+#
+# THE CONNECTION IS ALREADY ROOT, so there is no `become:` here (owner decision 2026-09-23,
+# amending ADR-0051 D4). It used to say `become: true`, which was never reachable: Ansible's become
+# runs `sudo ... /bin/sh -c '... python3 .../AnsiballZ_*.py'`, so the restricted sudoers fragment
+# M27.8 generated — naming apt-get/dnf/systemctl — granted nothing this role invokes, and the rule
+# that would have worked is a root shell. The certificate's principal is `root` and says so.
 - name: push the configuration file
   ansible.builtin.copy:
     dest: "{{ dest_path }}"
@@ -10,4 +16,3 @@
     owner: "{{ owner | default(omit) }}"
     group: "{{ group | default(omit) }}"
     mode: "{{ mode | default('0644') }}"
-  become: true

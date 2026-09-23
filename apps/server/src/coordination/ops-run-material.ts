@@ -26,9 +26,28 @@ import { activeAuthorityForDomain, enrolmentForDomain, recordIssuance } from "./
  *  certificate an attacker holding the key would mint (ADR-0051's blast-radius analysis). */
 const RUN_CERTIFICATE_TTL_SECONDS = 600;
 
-/** The login the certificate authorizes, and the account host enrolment grants sudo to. A literal:
- *  a configurable principal would be a second place for "who may change this host" to be decided. */
-export const OPS_PRINCIPAL = "scp-ops";
+/**
+ * The login the certificate authorizes. A literal: a configurable principal would be a second place
+ * for "who may change this host" to be decided.
+ *
+ * `root`, and NOT a `scp-ops` account escalating through sudo (owner decision 2026-09-23, amending
+ * ADR-0051 D4). The sudo design did not survive contact with the runner: Ansible's `become` does
+ * not invoke the catalog's commands, it invokes
+ *
+ *     sudo -H -S -n -u root /bin/sh -c 'echo BECOME-SUCCESS-... ; /usr/bin/python3 .../AnsiballZ_*.py'
+ *
+ * so a sudoers fragment naming `apt-get`/`dnf`/`systemctl` grants nothing Ansible ever calls, and
+ * the rule that WOULD work grants `/bin/sh` — with the module path under the connecting account's
+ * own writable `~/.ansible/tmp`, which that account can therefore rewrite before root runs it.
+ * Sudo-to-a-shell IS root; the restricted-sudoers design was a control in name only.
+ *
+ * So the privilege is named honestly instead of laundered. What actually bounds a run is unchanged
+ * and is written down elsewhere: the signed, closed task catalog (M27.3), the modules DELETED from
+ * the image so no escape hatch exists to reach (M27.1, ADR-0050), tenant parameters that can never
+ * be evaluated as Jinja2 (M27.2), a minutes-TTL per-run certificate, and the positive egress
+ * allowlist that bounds which hosts a run can reach at all (M27.6b).
+ */
+export const OPS_PRINCIPAL = "root";
 
 export interface DeriveOpsRunMaterialInput {
   orgId: string;

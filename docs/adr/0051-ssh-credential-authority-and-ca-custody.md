@@ -1,6 +1,6 @@
 # ADR-0051: SSH credentials are requested where possible and minted per-domain where not — and the CA-compromise analysis ADR-0002 requires
 
-**Status:** Accepted (owner rulings 2026-09-22)
+**Status:** Accepted (owner rulings 2026-09-22; **D4 amended 2026-09-23** — see the amendment note under D4)
 **Amends:** [ADR-0002](0002-execution-strategy.md) — the "Mode C — SSH-CA discipline" precondition, specifically its *"CA-key protection commensurate with a fleet root of trust (HSM/KMS or offline signing)"* clause. That clause is **relaxed by explicit owner decision**; §D3 below records what was traded and what compensates. The precondition's other clauses (blast-radius analysis, short lifetimes, air-gap-workable rotation and revocation, justification of the standing footprint) are **satisfied here, not waived**.
 **Relates to:** [ADR-0050](0050-runner-ops-lockdown-is-an-allowlist.md) (the other open `scp-runner-ops` precondition); [PROJECT_CHARTER.md](../../PROJECT_CHARTER.md) Managed Execution Exception (2026-07-12 host-reaching amendment) and principle 5 (air-gap first-class); [docs/proposals/managed-execution-tier.md](../proposals/managed-execution-tier.md) §2 and its [MAJOR] guardian caveat; [DESIGN.md](../DESIGN.md) §12
 
@@ -63,11 +63,47 @@ This is a deliberate relaxation of ADR-0002, taken with the trade stated rather 
   is the most likely to run the weaker custody path.
 
 **D4 — The standing host footprint is accepted and justified, not engineered away.** Hosts carry
-`TrustedUserCAKeys` in `sshd_config` and a restricted sudoers entry naming exactly the catalog's
-commands (never `NOPASSWD:ALL`). This is categorically smaller than the AWX/Salt agent shape the
-charter rejects: it is **static configuration** — no running daemon, no scheduled callback, no
+`TrustedUserCAKeys` in `sshd_config`. This is categorically smaller than the AWX/Salt agent shape
+the charter rejects: it is **static configuration** — no running daemon, no scheduled callback, no
 standing network listener beyond the `sshd` the host already runs, and no SCP code resident on the
-host. The footprint is two files, and the host initiates nothing.
+host. The footprint is one file and one `sshd_config` line, and the host initiates nothing.
+
+> **D4 AMENDED 2026-09-23 (owner decision). The certificate's principal is `root`; there is no
+> sudoers entry.** As originally written, D4 required "a restricted sudoers entry naming exactly the
+> catalog's commands (never `NOPASSWD:ALL`)", and M27.8 generated one listing `/usr/bin/apt-get`,
+> `/usr/bin/dnf` and `/usr/bin/systemctl`. Wiring enrolment to a real caller in M27.9 showed that
+> entry **grants nothing the runner ever invokes**. Measured against the shipped image, Ansible's
+> `become: true` executes:
+>
+> ```
+> sudo -H -S -n -u root /bin/sh -c 'echo BECOME-SUCCESS-… ; /usr/bin/python3 …/AnsiballZ_*.py'
+> ```
+>
+> A host enrolled per the original D4 would fail **every** privileged task. And the rule that would
+> make it work grants `/bin/sh` — unrestricted root — with the executed module sitting in the
+> connecting account's own writable `~/.ansible/tmp`, so that account can rewrite what root then
+> runs. Sudo-to-a-shell *is* root; the restricted-sudoers clause was a control in name only, and a
+> narrower-looking variant (granting `/usr/bin/python3`) is the same escape with better optics.
+>
+> The owner's ruling was to **delete the control rather than keep a version of it that only reads
+> as one**, and to name the privilege honestly: the per-run certificate authorizes `root`, and the
+> catalog roles no longer carry `become:` at all — which also removes any dependency on `sudo`
+> existing on the target.
+>
+> **This removes a false statement about the posture; it removes no security.** Everything that
+> actually bounds a host-reaching run is unchanged and lives elsewhere: the signed, closed task
+> catalog (M27.3); the modules, lookup plugins and action plugins **deleted** from the image so
+> there is no escape hatch to reach (M27.1, [ADR-0050](0050-runner-ops-lockdown-is-an-allowlist.md));
+> tenant parameters that can never be evaluated as Jinja2 (M27.2); the minutes-TTL per-run
+> certificate (D1/D2); and the positive per-run egress allowlist bounding which hosts a run can
+> reach at all (M27.6b). The containment argument was never the sudoers line — that line was
+> load-bearing in the prose and inert in the product.
+>
+> **The general lesson, recorded because it is the second time in M27:** a capability with no
+> production caller is not merely unreachable, it is *unfalsified*. Both the unverifiable
+> `privateKeySecretKey` on enrolment and this sudoers fragment were specified, implemented, tested
+> and wrong, and both survived because every test called them directly. The reachability gate added
+> in M27.9 (`packages/source-census/src/host-reaching-reachability.test.ts`) exists for that class.
 
 **D5 — Every issued certificate carries a serial SCP records, and forgery is detectable.** SCP
 allocates a serial per certificate and writes it to the hash-chained audit log in the same

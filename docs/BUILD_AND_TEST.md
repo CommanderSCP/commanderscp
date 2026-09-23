@@ -1666,6 +1666,19 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     - **DoD:** the plugin-testkit conformance suite passes; the capability is reachable from the CLI through the generated SDK with nothing bypassing the public API.
   - **M27.8 — enrolment, the standing footprint, and delivery.** Host enrolment writes `TrustedUserCAKeys` plus a restricted sudoers naming exactly the catalog's commands (never `NOPASSWD:ALL`), justified per ADR-0051 D4 as static configuration with no daemon, no callback and no listener beyond the `sshd` already running. **An independent break-glass is a precondition of enrolment** (ADR-0051): an estate whose only access route is SCP's CA cannot recover from SCP's CA being compromised. Air-gap bundle image entry + retarget, Helm wiring, runner-image tag formula.
     - **DoD:** enrolling a domain without a recorded independent access path is **refused**; the air-gap bundle carries the image and `install.sh` retargets it (the gap found in #401 for the build catalog — a values comment claiming retargeting is not retargeting).
+    - **CORRECTED 2026-09-23 (owner decision, ADR-0051 D4 amendment).** The restricted sudoers half
+      of this increment **could not work and has been deleted**. It named the catalog's commands
+      (`/usr/bin/apt-get`, `/usr/bin/dnf`, `/usr/bin/systemctl`); measured against the shipped
+      image, Ansible's `become: true` invokes
+      `sudo -H -S -n -u root /bin/sh -c '… /usr/bin/python3 …/AnsiballZ_*.py'`, so a host enrolled
+      that way fails **every** privileged task — and the rule that would work grants `/bin/sh`,
+      with the executed module in the connecting account's own writable `~/.ansible/tmp`. The
+      certificate's principal is now `root`, said plainly, and the roles carry no `become:`.
+      Enrolment is **one** file plus an `sshd_config` line. This removes a false statement about the
+      posture, not a control: what bounds a run is the signed closed catalog, the deleted module
+      set, non-templatable parameters, the minutes-TTL certificate and the per-run egress allowlist.
+      **It was found only by giving `enrolDomain` a production caller** — which is the whole point
+      of M27.9, and the reason its gate is written over reachability rather than over this bug.
 
   - **M27.9 — THE SEAM: the server actually produces what the runner requires.** M27.1–8 each met a
     definition of done that never required the capability to be *reachable*. A census for production

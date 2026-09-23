@@ -8,10 +8,15 @@
 # `package` is the generic front-end (apt/dnf selected from the target's own facts), so one role
 # covers both families without the catalog branching on distro. A pinned version is expressed as
 # `name=version`, which both back-ends understand.
+#
+# THE CONNECTION IS ALREADY ROOT, so there is no `become:` here (owner decision 2026-09-23,
+# amending ADR-0051 D4). It used to say `become: true`, which was never reachable: Ansible's become
+# runs `sudo ... /bin/sh -c '... python3 .../AnsiballZ_*.py'`, so the restricted sudoers fragment
+# M27.8 generated — naming apt-get/dnf/systemctl — granted nothing this role invokes, and the rule
+# that would have worked is a root shell. The certificate's principal is `root` and says so.
 - name: apply the package state
   ansible.builtin.package:
     # `package_name` and `package_version` are tenant data and arrive !unsafe (M27.2), so this
     # concatenation yields a literal string — it cannot become a template.
     name: "{{ package_name if package_version is not defined or package_version is none else package_name ~ '=' ~ package_version }}"
     state: "{{ package_state }}"
-  become: true
