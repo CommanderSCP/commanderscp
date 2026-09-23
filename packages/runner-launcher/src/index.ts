@@ -110,6 +110,21 @@ export interface RunnerSpec {
   operands: string[];
   /** The network the runner gets. See docs/runner-launcher.md §52. */
   networkMode: string;
+  /**
+   * A PER-RUN POSITIVE EGRESS ALLOWLIST — the only addresses this run may reach (M27.6b).
+   *
+   * Present only for host-reaching classes. `networkMode` cannot express this: it is one docker
+   * `--network` string, so it can say "none" or name a network, but not "exactly these IPs". The
+   * Kubernetes adapter enforces it as a per-run NetworkPolicy selecting this run's pod; because a
+   * NetworkPolicy with an egress rule denies everything it does not allow, link-local and the
+   * cloud metadata endpoint (169.254.169.254) are blocked BY CONSTRUCTION rather than by a rule
+   * someone has to remember to write.
+   *
+   * The DOCKER adapter REFUSES a spec carrying one. Docker has no equivalent primitive, and a
+   * launcher that accepted the field and ignored it would report a constrained run that was not —
+   * which is worse than having no feature at all.
+   */
+  egressAllowlist?: readonly string[];
   /** Ordered environment entries that are not secret. See docs/runner-launcher.md §53. */
   env: string[];
   /** Ordered environment entries that carry a secret. See docs/runner-launcher.md §54. */
@@ -1291,7 +1306,15 @@ export type RunnerLauncherKind = "docker" | "kubernetes";
 export const RUNNER_POST_DEADLINE_CALLS = {
   /** `unlink` of the staged env-file in `create`'s `finally`, then `docker rm -f <name>`. */
   docker: ["secret-env unlink", "teardown rm -f"],
-  kubernetes: ["teardown DELETE job", "teardown DELETE secret", "teardown removeDir"]
+  kubernetes: [
+    "teardown DELETE job",
+    // M27.6b — the per-run egress policy is deleted with the Job it constrained. Present only for
+    // host-reaching runs, but listed unconditionally because this model is the BUDGET: the bound
+    // must cover the worst case, not the common one.
+    "teardown DELETE networkpolicy",
+    "teardown DELETE secret",
+    "teardown removeDir"
+  ]
 } as const satisfies Readonly<Record<RunnerLauncherKind, readonly string[]>>;
 
 /** The names `kind` may hand {@link withPostDeadlineBound} — anything else is a compile error, which
@@ -1400,6 +1423,20 @@ export function whenReapSettled(
 export function createDockerRunnerLauncher(
   dockerBinary: string = DEFAULT_DOCKER_BINARY
 ): RunnerLauncher {
+  // M27.6b — DOCKER CANNOT EXPRESS A PER-RUN IP ALLOWLIST, so it refuses rather than pretending.
+  // `--network` names a network; it cannot say "exactly these addresses". A launcher that accepted
+  // `egressAllowlist` and dropped it would report a constrained host-reaching run that was not
+  // constrained, which is strictly worse than not offering the class on this launcher at all.
+  const refuseUnenforceableEgress = (spec: RunnerSpec): void => {
+    if (spec.egressAllowlist !== undefined) {
+      throw new Error(
+        "runner-launcher(docker): this spec carries a per-run egress allowlist, which the docker " +
+          "launcher cannot enforce — `--network` names a network, not a set of addresses. Host-" +
+          "reaching runs require managedRunners.launcher=kubernetes, where the allowlist is a " +
+          "per-run NetworkPolicy. REFUSING rather than running unconstrained."
+      );
+    }
+  };
   /** See {@link RunnerLauncher.reap}. See docs/runner-launcher.md §151. */
   const reapOnce = async (): Promise<string[]> => {
     /** THE PASS's OWN DEADLINE — see {@link RUNNER_REAP_BUDGET_MS}. Bounding the individual calls
@@ -1541,6 +1578,9 @@ export function createDockerRunnerLauncher(
   return {
     reap,
     async run(spec: RunnerSpec): Promise<RunnerResult> {
+      // BEFORE ANYTHING IS CREATED. A refusal after the container exists would leave a running,
+      // unconstrained host-reaching runner to tear down.
+      refuseUnenforceableEgress(spec);
       // SCHEDULED AT THE TOP, BEFORE `create`, AND NOT AWAITED. See docs/runner-launcher.md §154.
       void reap(spec.secretEnvDir).catch((cause) =>
         debug("reap: background pass rejected: %O", cause)
@@ -1905,6 +1945,7 @@ export {
 } from "./kubernetes-adapter.js";
 export type {
   KubernetesApiRequest,
+  KubernetesRbacApiGroup,
   KubernetesRbacRule,
   KubernetesApiResponse,
   KubernetesStartFacts,

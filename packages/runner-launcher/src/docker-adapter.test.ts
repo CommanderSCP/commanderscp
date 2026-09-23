@@ -482,6 +482,32 @@ describe("M23.1 conformance: what the Docker adapter puts on the command line", 
   });
 });
 
+describe("M27.6b: docker REFUSES a per-run egress allowlist rather than ignoring it", () => {
+  it("refuses a spec carrying one, naming the launcher that CAN enforce it", async () => {
+    // Docker has no primitive for "exactly these addresses" — `--network` names a network. A
+    // launcher that accepted the field and dropped it would report a CONSTRAINED host-reaching run
+    // that was not constrained, which is strictly worse than not offering the class here at all.
+    // The message points at the remedy, because a refusal that does not is a dead end for whoever
+    // reads it.
+    await expect(
+      createDockerRunnerLauncher("docker").run(spec({ egressAllowlist: ["10.0.0.1"] }))
+    ).rejects.toThrow(/cannot enforce[\s\S]*managedRunners\.launcher=kubernetes/);
+  });
+
+  it("NEGATIVE CONTROL: a spec without one is not refused by this guard", async () => {
+    // Without this, a guard that refused EVERY spec would satisfy the case above. The run still
+    // fails here (there is no docker daemon in a unit test) — the assertion is only that it does
+    // not fail for THIS reason.
+    let message = "";
+    try {
+      await createDockerRunnerLauncher("docker").run(spec({}));
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).not.toMatch(/cannot enforce/);
+  });
+});
+
 describe("M23.1 conformance: the per-call timeout and maxBuffer are the CALLER's, never a shared default", () => {
   // The three callers disagree, and the disagreement is load-bearing (BUILD_AND_TEST.md §8 M23.1;
   // `RunnerSpec.maxBuffer`'s doc comment). Driven as data so that "managed-dep quietly got

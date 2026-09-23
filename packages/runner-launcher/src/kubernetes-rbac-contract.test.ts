@@ -14,6 +14,7 @@ import {
 import type {
   KubernetesApiRequest,
   KubernetesApiResponse,
+  KubernetesRbacApiGroup,
   KubernetesRbacRule,
   KubernetesRunnerIo,
   RunnerSpec
@@ -41,6 +42,8 @@ function recorder(opts: { podAppears: boolean; foreignPastDeadline?: boolean }) 
   const jobsRoot = `/apis/batch/v1/namespaces/${NAMESPACE}/jobs`;
   const secretsRoot = `/api/v1/namespaces/${NAMESPACE}/secrets`;
   const podsRoot = `/api/v1/namespaces/${NAMESPACE}/pods`;
+  /** M27.6b — the per-run egress allowlist's own route. */
+  const netpolRoot = `/apis/networking.k8s.io/v1/namespaces/${NAMESPACE}/networkpolicies`;
   const eventsRoot = `/api/v1/namespaces/${NAMESPACE}/events`;
 
   /** A peer's Job, past its stamped deadline — the only thing `reap()` may destroy, and the reason
@@ -58,6 +61,12 @@ function recorder(opts: { podAppears: boolean; foreignPastDeadline?: boolean }) 
 
   const route = (req: KubernetesApiRequest): KubernetesApiResponse => {
     const path = req.path.split("?")[0]!;
+    // M27.6b. Accepted, not recorded in a store: the contract this file derives is the VERBS the
+    // adapter issues, and a policy body nothing reads back would add no signal.
+    if (req.method === "POST" && path === netpolRoot) return { status: 201, body: "{}" };
+    if (req.method === "DELETE" && path.startsWith(`${netpolRoot}/`)) {
+      return { status: 200, body: "{}" };
+    }
     if (req.method === "GET" && path === jobsRoot) {
       const items = [...jobs.values()];
       if (opts.foreignPastDeadline) items.push(foreign);
@@ -173,7 +182,10 @@ function spec(over: Partial<RunnerSpec> = {}): RunnerSpec {
 
 /** Collapse a wire log into the RBAC rules it requires, failing loudly on a path nothing maps. */
 function requiredRules(wire: readonly Wire[]): KubernetesRbacRule[] {
-  const byKey = new Map<string, { apiGroup: "" | "batch"; resource: string; verbs: Set<string> }>();
+  const byKey = new Map<
+    string,
+    { apiGroup: KubernetesRbacApiGroup; resource: string; verbs: Set<string> }
+  >();
   const unmapped: string[] = [];
   for (const { method, path } of wire) {
     const need = kubernetesRbacRequirement(method, path);
@@ -374,6 +386,38 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
     ).toStrictEqual(Object.fromEntries([...declared].sort()));
   });
 
+  it("M27.6b: an egress allowlist derives the networking rule, and its ABSENCE does not", async () => {
+    // The rule is CONDITIONAL, like `secrets`, so it is proved the same way: drive a run that uses
+    // the feature and check the grant appears; drive one that does not and check it stays away.
+    // A deployment that never runs a host-reaching class must not be granted NetworkPolicy write.
+    const withAllowlist = recorder({ podAppears: true });
+    const result = await launcher(withAllowlist.io, true).run(
+      spec({ secretEnv: ["TOKEN=shhh"], egressAllowlist: ["10.0.0.1"] })
+    );
+    expect(result.succeeded, "the run must succeed or it drove nothing").toBe(true);
+
+    const derived = requiredRules(withAllowlist.wire).map((r) => kubernetesRbacKey(r));
+    expect(derived).toContain("networking.k8s.io/networkpolicies");
+    // And the declaration says the same when the flag is on — the two halves of the contract.
+    expect(
+      kubernetesRunnerRbac({ perRunSecrets: true, perRunEgressAllowlist: true }).map((r) =>
+        kubernetesRbacKey(r)
+      )
+    ).toContain("networking.k8s.io/networkpolicies");
+
+    // NOT granted by default. `create` alone would be bad enough; note there is deliberately no
+    // `patch`, which would let a compromised launcher WIDEN an existing policy instead of only
+    // creating its own narrow one.
+    expect(
+      kubernetesRunnerRbac({ perRunSecrets: true }).map((r) => kubernetesRbacKey(r))
+    ).not.toContain("networking.k8s.io/networkpolicies");
+    const networking = kubernetesRunnerRbac({
+      perRunSecrets: true,
+      perRunEgressAllowlist: true
+    }).find((r) => r.apiGroup === "networking.k8s.io");
+    expect([...(networking?.verbs ?? [])].sort()).toStrictEqual(["create", "delete"]);
+  }, 30_000);
+
   it("THE CENSUS SLOT: every request the adapter can build is one this matrix drove", () => {
     /** The matrix cannot, on its own, prove the rest. See docs/runner-launcher.md §320. */
     const source = readFileSync(resolve(__dirname, "kubernetes-adapter.ts"), "utf8");
@@ -388,6 +432,7 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
         "DELETE",
         "DELETE",
         "DELETE",
+        "DELETE", // teardown: the per-run egress NetworkPolicy (M27.6b)
         "GET",
         "GET",
         "GET",
@@ -395,7 +440,8 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
         "GET",
         "PATCH",
         "POST",
-        "POST" // create: the per-run Secret
+        "POST", // create: the per-run Secret
+        "POST" // create: the per-run egress NetworkPolicy (M27.6b)
       ].sort()
     );
   });
