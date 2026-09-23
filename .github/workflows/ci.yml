@@ -352,6 +352,13 @@ jobs:
           # IMAGE, and an image nothing builds enforces nothing. `runner-image.integration.test.ts`
           # is what asks the built artifact those questions, and it needs this ref to exist.
           build_and_push "$SCP_RUNNER_DEP_IMAGE_REF" apps/runner-dep
+          # M27 — scp-runner-ops, the host-reaching catalog runner. Published here for the same
+          # reason as its siblings and one more: its charter properties are enforced by DELETION
+          # from the image (ADR-0050's allowlist), so `lockdown.integration.test.ts` can only ask
+          # the BUILT ARTIFACT what it contains. It also cannot be built inside the integration
+          # job — this Dockerfile's `# syntax=` directive makes BuildKit fetch a frontend from
+          # Docker Hub, and that job has no egress.
+          build_and_push "$SCP_RUNNER_OPS_IMAGE_REF" apps/runner-ops
 
   testcontainer-images:
     name: "4d. Mirror every third-party test image to GHCR (tools/ci-mirror/images.list)"
@@ -689,10 +696,10 @@ jobs:
       # instead of building. (Local dev, with these env vars unset, still legacy-builds as before.)
       - name: Compute the content-hash runner image tags (same formula as the publish job)
         run: scripts/runner-image-tags.sh >> "$GITHUB_ENV"
-      - name: Pull the pre-built runner images (in parallel — the three pulls share no layers)
+      - name: Pull the pre-built runner images (in parallel — the four pulls share no layers)
         run: |
           pids=""
-          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF"; do
+          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF"; do
             docker pull "$ref" & pids="$pids $!"
           done
           # `wait` PER PID, not a bare `wait`: a bare one exits 0 even when a pull failed.

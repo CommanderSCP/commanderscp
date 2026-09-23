@@ -1,0 +1,26 @@
+{
+  "name": "@scp/plugin-managed-ops",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b -w",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests ${SCP_INTEGRATION_SHARD:-}"
+  },
+  "devDependencies": {
+    "@scp/plugin-testkit": "workspace:*",
+    "@scp/source-census": "workspace:*",
+    "@scp/test-tmpdir": "workspace:*",
+    "typescript": "~5.8.0",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@scp/plugin-api": "workspace:*",
+    "@scp/runner-launcher": "workspace:*"
+  }
+}

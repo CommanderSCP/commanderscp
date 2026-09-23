@@ -15,3 +15,9 @@ blob-report/
 playwright/.cache/
 .claude/
 .tmp-ts-harness-*/
+
+# Python bytecode. apps/runner-ops ships .py helpers, and `pin_catalog_digests.py` imports
+# `verify_catalog_digests` to share ONE digest definition — which materialises __pycache__ beside
+# them. A .pyc carries NUL bytes, so committing one also trips the nul-census.
+__pycache__/
+*.pyc

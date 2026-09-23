@@ -1,0 +1,24 @@
+argument_specs:
+  main:
+    short_description: Manage a cron entry or a systemd unit's enabled/started state.
+    options:
+      kind:
+        type: str
+        required: true
+        choices: [cron, systemd]
+      unit_name:
+        type: str
+        required: true
+      unit_state:
+        type: str
+        required: false
+        choices: [started, stopped, restarted, reloaded]
+      enabled:
+        type: bool
+        required: false
+      cron_schedule:
+        type: str
+        required: false
+      cron_command:
+        type: str
+        required: false

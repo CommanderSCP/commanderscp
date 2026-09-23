@@ -25,6 +25,7 @@ const NON_UNIT_CONFIGS = [
   "apps/server/vitest.integration.config.ts",
   "packages/plugins/managed-dep/vitest.integration.config.ts",
   "packages/plugins/managed-iac/vitest.integration.config.ts",
+  "packages/plugins/managed-ops/vitest.integration.config.ts",
   "packages/plugins/managed-scan/vitest.integration.config.ts",
   "packages/runner-launcher/vitest.integration.config.ts",
   "packages/runner-launcher/vitest.kind.config.ts"
@@ -278,6 +279,13 @@ const NON_UNIT_HOOK_BUDGETS: Record<string, { ms: number; why: string }> = {
   "packages/plugins/managed-dep/vitest.integration.config.ts": {
     ms: 600_000,
     why: "builds/pulls the scp-runner-dep image in beforeAll (the site itself declares 600_000)"
+  },
+  "packages/plugins/managed-ops/vitest.integration.config.ts": {
+    ms: 900_000,
+    why:
+      "beforeAll BUILDS scp-runner-ops (not just pulls it): a python:alpine base, an ansible-core " +
+      "install, the prune layer and a cosign COPY --from. Measured ~95s cold and ~8s warm locally; " +
+      "900_000 is the cold-cache case on a CI runner with no layer cache at all"
   },
   "packages/plugins/managed-iac/vitest.integration.config.ts": {
     ms: 300_000,

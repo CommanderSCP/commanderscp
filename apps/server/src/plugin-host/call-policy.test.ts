@@ -113,7 +113,11 @@ describe("resolveCallPolicy", () => {
     expect(budgets).toEqual([
       10 * 60_000 + MANAGED_TRIGGER_GRACE_MS,
       10 * 60_000 + MANAGED_TRIGGER_GRACE_MS,
-      5 * 60_000 + MANAGED_TRIGGER_GRACE_MS // managed-dep
+      5 * 60_000 + MANAGED_TRIGGER_GRACE_MS, // managed-dep
+      // managed-ops: 15 minutes, the longest of the four. An Ansible play walks a whole fleet —
+      // one package transaction per host, serialised by the rollout's batching — so the budget is
+      // proportional to fleet size in a way the other three never are.
+      15 * 60_000 + MANAGED_TRIGGER_GRACE_MS
     ]);
   });
 

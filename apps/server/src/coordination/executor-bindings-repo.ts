@@ -498,7 +498,10 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "managed-iac",
   "managed-scan",
   // M21.5 — the third managed executor. See docs/coordination.md §450.
-  "managed-dep"
+  "managed-dep",
+  // M27 — host-reaching managed execution. Unlike the three above, a run holds host login-grade
+  // credentials, so its server-injected config carries the bound as well as the image.
+  "managed-ops"
 ];
 
 /** Being allowlisted and having a config schema differ. See docs/coordination.md §451. */
@@ -819,6 +822,40 @@ export function managedDepServerSettings(): {
   };
 }
 
+/**
+ * SERVER/OPERATOR-GOVERNED `scp-managed-ops` runner settings (M27, charter 2026-07-12 amendment) —
+ * the same never-tenant-suppliable tier as the three managed runners above.
+ *
+ *  - SCP_MANAGED_OPS_RUNNER_IMAGE — the vetted, pinned `scp-runner-ops` image. UNSET IS THE DEFAULT
+ *    AND IT MEANS OFF: with no image a managed-ops dispatch fails closed here, before a container
+ *    could be launched or a certificate minted. That is "managed execution is never a default"
+ *    (ADR-0006) for the one class that holds HOST login-grade credentials.
+ *  - SCP_MANAGED_OPS_CATALOG_PUBKEY_SECRET_KEY — the cosign public key the runner verifies the task
+ *    catalog against (ADR-0050). Carried as a SECRET KEY, not a path: the runner resolves it
+ *    through the secret store like every other credential-shaped value.
+ *
+ * THERE IS DELIBERATELY NO NETWORK-MODE SETTING, and its absence is the charter rather than an
+ * omission — the same argument `managedDepServerSettings` makes, reaching the opposite shape. That
+ * class's clause is an unqualified `--network none`; this one's is QUALIFIED ("a scoped network
+ * path to the hosts it changes"), and the scope is the per-run egress allowlist derived from
+ * observed membership (M27.6b). A knob here could only widen that, so there is none.
+ */
+export function managedOpsServerSettings(): {
+  runnerImage: string | undefined;
+  catalogPubkeySecretKey: string | undefined;
+  workspaceRoot: string;
+  dockerBinary: string;
+  runnerLauncher: "docker" | "kubernetes";
+  kubernetes?: KubernetesLauncherSettings;
+} {
+  return {
+    runnerImage: process.env.SCP_MANAGED_OPS_RUNNER_IMAGE,
+    catalogPubkeySecretKey: process.env.SCP_MANAGED_OPS_CATALOG_PUBKEY_SECRET_KEY,
+    workspaceRoot: process.env.SCP_MANAGED_OPS_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-ops"),
+    ...managedRunnerSettings()
+  };
+}
+
 /** Root for every executor instance's durable dedup file. See docs/coordination.md §464. */
 export function pluginStateDir(): string {
   return process.env.SCP_PLUGIN_STATE_DIR ?? join(tmpdir(), "scp-plugin-state");
@@ -944,6 +981,31 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
+    Object.assign(serverInjected, managedRunnerSettings());
+  }
+
+  if (pluginModule === "managed-ops") {
+    const settings = managedOpsServerSettings();
+    if (!settings.runnerImage) {
+      throw new Error(
+        "managed-ops binding used but host-reaching managed execution is not enabled " +
+          "(SCP_MANAGED_OPS_RUNNER_IMAGE is unset)"
+      );
+    }
+    // REFUSES WITHOUT A CATALOG KEY. ADR-0050 makes the signed catalog the thing that bounds what a
+    // run can DO; a deployment that enabled the image but no verification key would run an
+    // unverified catalog with host credentials, which is the whole hazard rather than a rough edge.
+    if (!settings.catalogPubkeySecretKey) {
+      throw new Error(
+        "managed-ops binding used but no catalog verification key is configured " +
+          "(SCP_MANAGED_OPS_CATALOG_PUBKEY_SECRET_KEY is unset). The signed task catalog is what " +
+          "bounds a host-reaching run; refusing rather than running an unverified one."
+      );
+    }
+    serverInjected.runnerImage = settings.runnerImage;
+    serverInjected.catalogPubkeySecretKey = settings.catalogPubkeySecretKey;
+    serverInjected.workspaceRoot = settings.workspaceRoot;
+    // No `networkMode` — see `managedOpsServerSettings`. The bound is the per-run allowlist.
     Object.assign(serverInjected, managedRunnerSettings());
   }
 

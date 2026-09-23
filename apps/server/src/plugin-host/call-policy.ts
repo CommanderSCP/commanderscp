@@ -5,7 +5,13 @@ import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 /** PER-METHOD RPC POLICY FOR THE SUBPROCESS PLUGIN HOST. See docs/plugin-host.md §10. */
 
 /** The managed-execution classes. See docs/plugin-host.md §11. */
-export const MANAGED_EXECUTOR_MODULES = ["managed-iac", "managed-scan", "managed-dep"] as const;
+export const MANAGED_EXECUTOR_MODULES = [
+  "managed-iac",
+  "managed-scan",
+  "managed-dep",
+  // M27 — the fourth, and the only HOST-REACHING one (charter 2026-07-12 amendment).
+  "managed-ops"
+] as const;
 
 /** How much longer the host waits than the plugin's budget. See docs/plugin-host.md §12. */
 export const MANAGED_OUTCOME_TAIL_MS = 30_000;

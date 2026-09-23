@@ -20,7 +20,12 @@ export interface BundleImageSpec {
 }
 
 /** The three ephemeral runner images the exception is built in. See docs/airgap.md §17. */
-export const RUNNER_IMAGE_NAMES = ["scp-runner-iac", "scp-runner-scan", "scp-runner-dep"] as const;
+export const RUNNER_IMAGE_NAMES = [
+  "scp-runner-iac",
+  "scp-runner-scan",
+  "scp-runner-dep",
+  "scp-runner-ops"
+] as const;
 
 /** Derive the `apps/` directory that builds a given runner image (`scp-runner-scan` -> `runner-scan`). */
 export function runnerAppDirName(imageName: string): string {
@@ -62,6 +67,14 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     defaultSource: "docker-daemon",
     flagDescription: "scp-runner-dep image reference to bundle",
     doc: "the isolated managed-dep manifest editor image (env: SCP_MANAGED_DEP_RUNNER_IMAGE)"
+  },
+  {
+    name: "scp-runner-ops",
+    optionStem: "runner-ops",
+    defaultRef: "scp-runner-ops:dev",
+    defaultSource: "docker-daemon",
+    flagDescription: "scp-runner-ops image reference to bundle",
+    doc: "the isolated host-reaching Ansible catalog runner, charter-allowlisted (env: SCP_MANAGED_OPS_RUNNER_IMAGE)"
   },
   {
     name: "postgres-eval",
