@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { mkdtempTracked, mkdtempTrackedForFile } from "@scp/test-tmpdir";
 import { resolveRunnerImage } from "@scp/plugin-testkit";
 
 /**
@@ -73,7 +74,8 @@ async function runInImage(catalogDir: string, keysDir: string, role: string): Pr
 
 /** A fresh copy of the signed fixture, so each case can tamper without affecting the others. */
 async function freshCatalog(): Promise<{ dir: string; catalog: string; keys: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "scp-catalog-"));
+  // PER-TEST, swept in afterEach. Raw `mkdtemp` leaks, and the leak sweep is a CI gate.
+  const dir = await mkdtempTracked(join(tmpdir(), "scp-catalog-"));
   await cp(signedFixture, dir, { recursive: true });
   // See the note in ssti-closure: the image is non-root and the mount is owned by the suite's user.
   await makeWritableByContainer(dir);
@@ -93,7 +95,10 @@ beforeAll(async () => {
     localTag: IMAGE_TAG,
     context: RUNNER_OPS_CONTEXT
   });
-  signedFixture = await mkdtemp(join(tmpdir(), "scp-catalog-signed-"));
+  // PER-FILE, swept in afterAll — NOT the per-test allocator, whose afterEach sweep would
+  // delete this fixture the moment the first case finished while every later case still needs it.
+  // That distinction is why @scp/test-tmpdir ships two functions and refuses the wrong one.
+  signedFixture = await mkdtempTrackedForFile(join(tmpdir(), "scp-catalog-signed-"));
   await cp(join(RUNNER_OPS_CONTEXT, "catalog"), join(signedFixture, "catalog"), {
     recursive: true
   });

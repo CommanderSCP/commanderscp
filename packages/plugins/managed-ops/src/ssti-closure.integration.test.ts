@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { mkdtempTracked } from "@scp/test-tmpdir";
 import { resolveRunnerImage } from "@scp/plugin-testkit";
 
 /**
@@ -54,7 +55,7 @@ const PLAY = `- hosts: localhost
  *  task actually rendered. Removes the output file first so a failed play cannot be read as a
  *  passing literal. */
 async function render(params: unknown, harden: boolean): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "scp-ssti-"));
+  const dir = await mkdtempTracked(join(tmpdir(), "scp-ssti-"));
   // 0777, because the image runs as NON-ROOT uid 1000 and this mount is owned by whoever runs the
   // suite. That is uid 1000 on a developer box and a different uid on a CI runner — which is
   // exactly why this passed locally and failed in CI, with the play unable to write its output.
@@ -140,7 +141,7 @@ describe("scp-runner-ops SSTI closure (M27.2)", () => {
 
   it("refuses a parameter that would reconfigure the run rather than feed it", async () => {
     if (!dockerReady) return expectSkipped();
-    const dir = await mkdtemp(join(tmpdir(), "scp-ssti-reserved-"));
+    const dir = await mkdtempTracked(join(tmpdir(), "scp-ssti-reserved-"));
     // `a+rwX` on the tree, for the same reason the catalog suite needs it — the container is
     // non-root and writes into this mount.
     await execFileAsync("chmod", ["-R", "a+rwX", dir]);

@@ -15,6 +15,7 @@
   "devDependencies": {
     "@scp/plugin-testkit": "workspace:*",
     "@scp/source-census": "workspace:*",
+    "@scp/test-tmpdir": "workspace:*",
     "typescript": "~5.8.0",
     "vitest": "^3.0.0"
   },
