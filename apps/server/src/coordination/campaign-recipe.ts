@@ -28,6 +28,7 @@ export const WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION =
 /** CommanderSCP's OWN actuators. See docs/coordination.md §159. */
 export const RECIPE_FORBIDDEN_EXECUTOR_MODULES: readonly string[] = [
   "managed-dep",
+  "managed-ops",
   "managed-iac",
   "managed-scan"
 ];

@@ -23,7 +23,7 @@ permitted to contain, grouped by the charter class each belongs to. `prune.py` *
 else** at build time.
 
 This is the actual security control. `ansible.cfg` ships beside it as defence in depth and is
-explicitly *not* the control: `ANSIBLE_CONFIG`, a working-directory `ansible.cfg` and per-play
+explicitly _not_ the control: `ANSIBLE_CONFIG`, a working-directory `ansible.cfg` and per-play
 settings all compete for what a play may load, and a run's working directory is not something this
 image can guarantee. A plugin file that is not present cannot be loaded by any configuration an
 attacker can reach.
@@ -34,7 +34,7 @@ ADR-0002 originally specified disabling six names (`pipe/command/shell/raw/scrip
 - **`lines`** executes a shell command exactly as `pipe` does, and was not on the list.
 - **`expect`, `pip`, `git`, `subversion`, `async_wrapper`** all reach code execution.
 - **`include_vars` / `include_role` / `include_tasks` / `import_role` / `import_tasks` /
-  `import_playbook`** turn tenant-influenced *data* into *tasks*. A tenant who can steer one
+  `import_playbook`** turn tenant-influenced _data_ into _tasks_. A tenant who can steer one
   argument chooses what code runs — defeating "no shell module reachable" without touching a shell
   module.
 
@@ -47,7 +47,7 @@ Hence an allowlist derived from charter text rather than a blocklist of observed
 1. **built image == `allowlist.json`**, in both directions — proves the deletion happened in the
    shipped artifact, not just in the Dockerfile's intent.
 2. **`allowlist.json` ⊆ `upstream-inventory.json`** — the recorded surface of the pinned
-   `ansible-core`. A version bump changes that file, and *that diff is the review*.
+   `ansible-core`. A version bump changes that file, and _that diff is the review_.
 
 Comparing only (1) would prove the prune script ran and nothing more. Worse, a new upstream
 code-execution module would be silently deleted by the prune and the gate would stay green — safe,

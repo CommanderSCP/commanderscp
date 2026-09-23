@@ -21,6 +21,7 @@ import { manifest as managedIacManifest } from "@scp/plugin-managed-iac";
 import { manifest as managedScanManifest } from "@scp/plugin-managed-scan";
 import { manifest as fakeExecutorManifest } from "@scp/plugin-fake-executor";
 import { manifest as managedDepManifest } from "@scp/plugin-managed-dep";
+import { manifest as managedOpsManifest } from "@scp/plugin-managed-ops";
 import { manifest as webhookNotifyManifest } from "@scp/plugin-webhook-notify";
 import { manifest as smtpNotifyManifest } from "@scp/plugin-smtp-notify";
 import {
@@ -91,6 +92,7 @@ export const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   "managed-scan": managedScanManifest,
   /** This entry is the whole point of authoring a schema. See docs/plugin-host.md §89. */
   "managed-dep": managedDepManifest,
+  "managed-ops": managedOpsManifest,
   "webhook-notify": webhookNotifyManifest,
   "smtp-notify": smtpNotifyManifest,
   "dependency-index-go": goIndexManifest,

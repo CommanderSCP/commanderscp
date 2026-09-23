@@ -126,6 +126,9 @@ importers:
       '@scp/plugin-managed-iac':
         specifier: workspace:*
         version: link:../../packages/plugins/managed-iac
+      '@scp/plugin-managed-ops':
+        specifier: workspace:*
+        version: link:../../packages/plugins/managed-ops
       '@scp/plugin-managed-scan':
         specifier: workspace:*
         version: link:../../packages/plugins/managed-scan

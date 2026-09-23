@@ -309,7 +309,8 @@ echo
 # =================================================================================================
 # THE MANAGED-EXECUTION RUNNERS — WHICH LEVER EXISTS IN WHICH MODE
 # =================================================================================================
-# All three runners (`scp-runner-iac`, `scp-runner-scan`, `scp-runner-dep`) ride every bundle
+# All four runners (`scp-runner-iac`, `scp-runner-scan`, `scp-runner-dep`, `scp-runner-ops`)
+# ride every bundle
 # (deploy/airgap/src/bundle-images.ts explains why unconditionally), and the generic
 # BUNDLE_IMAGE_NAMES loops above have already verified, pushed and digest-re-confirmed every one of
 # them. None of them is switched on by this script. What each mode's step-4 block prints below is
@@ -471,6 +472,10 @@ if [[ "$MODE" == "helm" ]]; then
       echo "     scp-runner-dep   ${SCP_RUNNER_DEP_RETARGETED_REF:-${REGISTRY}/scp-runner-dep:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_DIGEST}}"
       echo "                      (this class WRITES to your repositories — ADR-0032 §8)"
     fi
+    if [[ -n "${SCP_RUNNER_OPS_DIGEST:-}" ]]; then
+      echo "     scp-runner-ops   ${SCP_RUNNER_OPS_RETARGETED_REF:-${REGISTRY}/scp-runner-ops:${BUNDLE_VERSION}@${SCP_RUNNER_OPS_DIGEST}}"
+      echo "                      (the only HOST-REACHING class — it holds host login credentials)"
+    fi
     echo
   fi
 
@@ -534,6 +539,15 @@ else
     if [[ -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
       echo "     scp-runner-dep   SCP_MANAGED_DEP_RUNNER_IMAGE=${SCP_RUNNER_DEP_RETARGETED_REF:-${REGISTRY}/scp-runner-dep:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_DIGEST}}"
       echo "                      (this class WRITES to your repositories — ADR-0032 §8)"
+    fi
+    if [[ -n "${SCP_RUNNER_OPS_DIGEST:-}" ]]; then
+      echo "     scp-runner-ops   SCP_MANAGED_OPS_RUNNER_IMAGE=${SCP_RUNNER_OPS_RETARGETED_REF:-${REGISTRY}/scp-runner-ops:${BUNDLE_VERSION}@${SCP_RUNNER_OPS_DIGEST}}"
+      echo "                      (the only HOST-REACHING class: host login credentials, changing"
+      echo "                       OS packages, config files and cron/systemd units.)"
+      echo "                      It ALSO needs SCP_MANAGED_OPS_CATALOG_PUBKEY_SECRET_KEY and"
+      echo "                      refuses to run without it — the cosign-signed catalog is what"
+      echo "                      bounds the run (ADR-0050), and an unverified catalog holding"
+      echo "                      host credentials is the hazard itself, not a rough edge."
     fi
     echo "   TWO PREREQUISITES, or none of the above starts anything — both are yours to decide,"
     echo "   because both widen what the 'scp' container can do to its host:"

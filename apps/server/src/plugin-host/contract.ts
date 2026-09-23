@@ -112,6 +112,8 @@ export type PluginModule =
   | "managed-scan"
   // M21.5 — the third managed executor (charter `scp-managed-dep` amendment 2026-08-13).
   | "managed-dep"
+  // M27 — the fourth, and the only host-reaching one (charter 2026-07-12 amendment).
+  | "managed-ops"
   | "webhook-notify"
   | "smtp-notify"
   | "federation-https"

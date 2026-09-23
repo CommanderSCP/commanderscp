@@ -21,17 +21,45 @@
   "ansibleCore": "2.18.6",
   "modules": {
     "osPackages": [
-      "apt", "apt_key", "apt_repository", "deb822_repository", "dnf", "dnf5",
-      "dpkg_selections", "package", "package_facts", "rpm_key", "yum_repository"
+      "apt",
+      "apt_key",
+      "apt_repository",
+      "deb822_repository",
+      "dnf",
+      "dnf5",
+      "dpkg_selections",
+      "package",
+      "package_facts",
+      "rpm_key",
+      "yum_repository"
     ],
     "configRenderPush": [
-      "assemble", "blockinfile", "copy", "file", "lineinfile", "replace", "stat", "template"
+      "assemble",
+      "blockinfile",
+      "copy",
+      "file",
+      "lineinfile",
+      "replace",
+      "stat",
+      "template"
     ],
     "cronAndSystemd": [
-      "cron", "service", "service_facts", "systemd", "systemd_service", "sysvinit"
+      "cron",
+      "service",
+      "service_facts",
+      "systemd",
+      "systemd_service",
+      "sysvinit"
     ],
     "playMinimum": [
-      "assert", "debug", "fail", "gather_facts", "meta", "ping", "set_fact", "setup",
+      "assert",
+      "debug",
+      "fail",
+      "gather_facts",
+      "meta",
+      "ping",
+      "set_fact",
+      "setup",
       "validate_argument_spec"
     ]
   },
@@ -43,8 +71,15 @@
       "from a tenant parameter."
     ],
     "allowed": [
-      "dict", "first_found", "indexed_items", "items", "list", "nested", "sequence",
-      "subelements", "together"
+      "dict",
+      "first_found",
+      "indexed_items",
+      "items",
+      "list",
+      "nested",
+      "sequence",
+      "subelements",
+      "together"
     ]
   },
   "action": {
@@ -53,8 +88,19 @@
       "REQUIRED — without it no module runs at all. The rest pair with an allowed module."
     ],
     "allowed": [
-      "assemble", "assert", "copy", "debug", "dnf", "fail", "gather_facts", "normal", "package",
-      "service", "set_fact", "template", "validate_argument_spec"
+      "assemble",
+      "assert",
+      "copy",
+      "debug",
+      "dnf",
+      "fail",
+      "gather_facts",
+      "normal",
+      "package",
+      "service",
+      "set_fact",
+      "template",
+      "validate_argument_spec"
     ]
   }
 }
