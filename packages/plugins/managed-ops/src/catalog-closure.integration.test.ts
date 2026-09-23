@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +64,8 @@ async function runInImage(catalogDir: string, keysDir: string, role: string): Pr
 async function freshCatalog(): Promise<{ dir: string; catalog: string; keys: string }> {
   const dir = await mkdtemp(join(tmpdir(), "scp-catalog-"));
   await cp(signedFixture, dir, { recursive: true });
+  // See the note in ssti-closure: the image is non-root and the mount is owned by the suite's user.
+  await chmod(dir, 0o777);
   return { dir, catalog: join(dir, "catalog"), keys: dir };
 }
 
@@ -81,6 +83,8 @@ beforeAll(async () => {
     context: RUNNER_OPS_CONTEXT
   });
   signedFixture = await mkdtemp(join(tmpdir(), "scp-catalog-signed-"));
+  // cosign writes its keypair and the signature INTO this mount, as uid 1000.
+  await chmod(signedFixture, 0o777);
   await cp(join(RUNNER_OPS_CONTEXT, "catalog"), join(signedFixture, "catalog"), {
     recursive: true
   });

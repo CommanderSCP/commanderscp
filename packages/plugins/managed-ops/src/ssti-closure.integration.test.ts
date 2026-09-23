@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +55,10 @@ const PLAY = `- hosts: localhost
  *  passing literal. */
 async function render(params: unknown, harden: boolean): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "scp-ssti-"));
+  // 0777, because the image runs as NON-ROOT uid 1000 and this mount is owned by whoever runs the
+  // suite. That is uid 1000 on a developer box and a different uid on a CI runner — which is
+  // exactly why this passed locally and failed in CI, with the play unable to write its output.
+  await chmod(dir, 0o777);
   try {
     await writeFile(join(dir, "params.json"), JSON.stringify(params));
     await writeFile(join(dir, "play.yml"), PLAY);
@@ -73,8 +77,10 @@ async function render(params: unknown, harden: boolean): Promise<string> {
         imageRef,
         "-c",
         `rm -f /work/out.txt; ${varsStep} && ` +
-          `ansible-playbook -i localhost, -e @/tmp/v.yml /work/play.yml >/dev/null 2>&1; ` +
-          `cat /work/out.txt 2>/dev/null || echo "__PLAY_PRODUCED_NOTHING__"`
+          `ansible-playbook -i localhost, -e @/tmp/v.yml /work/play.yml >/tmp/play.log 2>&1; ` +
+          // The play's own output is KEPT on failure. Suppressing it with `2>&1 >/dev/null` is
+          // how the first CI failure here reported only "produced nothing" — true, and useless.
+          `cat /work/out.txt 2>/dev/null || { echo "__PLAY_PRODUCED_NOTHING__"; cat /tmp/play.log 2>/dev/null; }`
       ],
       { timeout: 180_000 }
     );
@@ -133,6 +139,7 @@ describe("scp-runner-ops SSTI closure (M27.2)", () => {
   it("refuses a parameter that would reconfigure the run rather than feed it", async () => {
     if (!dockerReady) return expectSkipped();
     const dir = await mkdtemp(join(tmpdir(), "scp-ssti-reserved-"));
+    await chmod(dir, 0o777);
     try {
       await writeFile(
         join(dir, "params.json"),
