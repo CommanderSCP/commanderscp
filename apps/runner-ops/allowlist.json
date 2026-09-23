@@ -1,0 +1,60 @@
+{
+  "$comment": [
+    "THE LOCKDOWN ALLOWLIST (ADR-0050). Every Ansible module, lookup plugin and action plugin the",
+    "scp-runner-ops image is permitted to contain. The Dockerfile DELETES everything not named here;",
+    "`lockdown.test.ts` asserts the set present in the built image equals this file exactly, in both",
+    "directions.",
+    "",
+    "DERIVED FROM CHARTER TEXT, not from convenience. The Managed Execution Exception's 2026-07-12",
+    "host-reaching amendment enumerates exactly three classes, and each entry below belongs to one of",
+    "them or to the minimum needed to run a play at all. Adding an entry because a role wants it is",
+    "either within those three classes or it is a charter question — the set-equality gate exists to",
+    "force that conversation rather than let it happen in a Dockerfile diff.",
+    "",
+    "WHAT IS ABSENT AND WHY IT MATTERS: command, shell, raw, script, expect, pip, git, subversion and",
+    "async_wrapper all reach code execution. include_vars/include_role/include_tasks/import_role/",
+    "import_tasks/import_playbook turn data into TASKS, which defeats 'no shell module reachable'",
+    "without touching a shell module. uri/get_url/fetch/slurp/unarchive reach the network or move",
+    "arbitrary bytes. The `pipe` and `lines` LOOKUPS execute commands during template rendering, which",
+    "is the SSTI->RCE path the whole lockdown exists to close."
+  ],
+  "ansibleCore": "2.18.6",
+  "modules": {
+    "osPackages": [
+      "apt", "apt_key", "apt_repository", "deb822_repository", "dnf", "dnf5",
+      "dpkg_selections", "package", "package_facts", "rpm_key", "yum_repository"
+    ],
+    "configRenderPush": [
+      "assemble", "blockinfile", "copy", "file", "lineinfile", "replace", "stat", "template"
+    ],
+    "cronAndSystemd": [
+      "cron", "service", "service_facts", "systemd", "systemd_service", "sysvinit"
+    ],
+    "playMinimum": [
+      "assert", "debug", "fail", "gather_facts", "meta", "ping", "set_fact", "setup",
+      "validate_argument_spec"
+    ]
+  },
+  "lookup": {
+    "$comment": [
+      "Pure data transforms for loops, plus first_found. NOTHING that executes, reads the filesystem",
+      "by tenant-influenced path, or reaches the network. first_found is included because OS-family",
+      "template selection genuinely needs it and its search paths come from the signed role, never",
+      "from a tenant parameter."
+    ],
+    "allowed": [
+      "dict", "first_found", "indexed_items", "items", "list", "nested", "sequence",
+      "subelements", "together"
+    ]
+  },
+  "action": {
+    "$comment": [
+      "Action plugins are the client-side half of a module. `normal` is the default dispatcher and is",
+      "REQUIRED — without it no module runs at all. The rest pair with an allowed module."
+    ],
+    "allowed": [
+      "assemble", "assert", "copy", "debug", "dnf", "fail", "gather_facts", "normal", "package",
+      "service", "set_fact", "template", "validate_argument_spec"
+    ]
+  }
+}

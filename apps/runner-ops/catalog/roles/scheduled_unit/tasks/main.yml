@@ -1,0 +1,22 @@
+# CLASS 3: cron entries and systemd unit changes.
+- name: manage the systemd unit
+  ansible.builtin.systemd_service:
+    name: "{{ unit_name }}"
+    state: "{{ unit_state | default(omit) }}"
+    enabled: "{{ enabled | default(omit) }}"
+  become: true
+  when: kind == 'systemd'
+
+- name: manage the cron entry
+  ansible.builtin.cron:
+    name: "{{ unit_name }}"
+    job: "{{ cron_command }}"
+    # Five fields, split positionally. `cron_schedule` is tenant data and arrives !unsafe, so the
+    # split operates on a literal string and each field is written verbatim into the crontab.
+    minute: "{{ cron_schedule.split(' ')[0] }}"
+    hour: "{{ cron_schedule.split(' ')[1] }}"
+    day: "{{ cron_schedule.split(' ')[2] }}"
+    month: "{{ cron_schedule.split(' ')[3] }}"
+    weekday: "{{ cron_schedule.split(' ')[4] }}"
+  become: true
+  when: kind == 'cron'

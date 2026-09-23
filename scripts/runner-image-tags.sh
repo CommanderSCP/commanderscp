@@ -26,6 +26,12 @@ scan_hash=$(
 # scp-runner-iac: its build context alone determines the image.
 iac_hash=$(find apps/runner-iac -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)
 
+# scp-runner-ops (M27.1): its build context alone determines the image — the ansible-core version
+# is an ARG with a default IN the Dockerfile, so it is already inside the hashed context, and the
+# allowlist + upstream inventory are context files too. A lockdown change therefore yields a new
+# image, which is the property that matters: the pruned surface must never be served from a stale tag.
+ops_hash=$(find apps/runner-ops -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)
+
 # scp-runner-dep (M21.5): the Dockerfile/run.sh build context PLUS the pinned BusyBox base — same
 # reasoning as scp-runner-scan's pin inclusion. The base is a LITERAL digest in the Dockerfile (it is
 # deliberately not a build arg — see apps/runner-dep/Dockerfile), so a pin bump already changes
@@ -41,3 +47,4 @@ dep_hash=$(
 echo "SCP_RUNNER_SCAN_IMAGE_REF=${registry}/scp-runner-scan:${scan_hash}"
 echo "SCP_RUNNER_IAC_IMAGE_REF=${registry}/scp-runner-iac:${iac_hash}"
 echo "SCP_RUNNER_DEP_IMAGE_REF=${registry}/scp-runner-dep:${dep_hash}"
+echo "SCP_RUNNER_OPS_IMAGE_REF=${registry}/scp-runner-ops:${ops_hash}"
