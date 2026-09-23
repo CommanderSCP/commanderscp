@@ -2415,3 +2415,47 @@ export const sshCertificateIssuances = pgTable(
     uniqueIndex("ssh_issuance_org_serial_uq").on(t.orgId, t.serial)
   ]
 );
+
+/**
+ * THE OBSERVED MEMBERSHIP OF AN INFRASTRUCTURE PRODUCT (team-pipeline-iac D25(a), M27.6).
+ *
+ * "Inventory is derived from the product, never authored — *which hosts* comes from the product's
+ * observed membership at execution time, deleting the TF-outputs→inventory-file sync toil and its
+ * drift class outright."
+ *
+ * A REPORT IS A SNAPSHOT, NOT A DELTA. The reporter sends the product's CURRENT full membership and
+ * the server replaces what it held. A delta protocol would let a dropped or reordered message leave
+ * a host in the inventory that no longer exists — which for `scp-runner-ops` means SSHing at an
+ * address that may now belong to someone else. Replacement makes the stored set converge to the
+ * truth on every report instead of accumulating error.
+ *
+ * NO HOST CREDENTIAL LIVES HERE. A member is an address and the provider's own id for it. What may
+ * be done to that address is the catalog's business (ADR-0050) and what may reach it is the per-run
+ * network allowlist's (M27.6b).
+ */
+export const infrastructureMembers = pgTable(
+  "infrastructure_members",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** The InstanceGroup / cluster object whose membership this is. */
+    productObjectId: uuid("product_object_id")
+      .notNull()
+      .references(() => objects.id),
+    /** The provider's identifier — an EC2 instance id, a VM name. Stable across an address change,
+     *  which an address is not, so this is the identity and `address` is an attribute of it. */
+    memberId: text("member_id").notNull(),
+    /** Where the runner would connect. */
+    address: text("address").notNull(),
+    /** Stamped server-side from the authenticated reporter, never from the payload — the same rule
+     *  pipeline evidence follows, for the same reason: a self-declared producer is not provenance. */
+    reportedBySubjectId: uuid("reported_by_subject_id").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    index("infrastructure_members_product_idx").on(t.orgId, t.productObjectId),
+    /** The provider's id is the identity within a product; two rows for one instance would put the
+     *  same host in an inventory twice and converge it twice. */
+    uniqueIndex("infrastructure_members_identity").on(t.orgId, t.productObjectId, t.memberId)
+  ]
+);

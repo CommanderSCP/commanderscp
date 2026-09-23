@@ -35,6 +35,8 @@ import {
   pushObjectHealth as pushObjectHealthRequest,
   getObjectHealth as getObjectHealthRequest,
   graphHealth as graphHealthRequest,
+  getInfrastructureMembers as getInfrastructureMembersRequest,
+  reportInfrastructureMembers as reportInfrastructureMembersRequest,
   listAuditEvents as listAuditEventsRequest,
   // M2 typed registries (routes/typed-registries.ts) — 8 resources × create/list/get/update/
   // delete/upsertByUrn, generated from BUILD_AND_TEST.md §8 M2 item 1's operationIds.
@@ -505,7 +507,10 @@ import type {
   EffectivePermissionsResponse,
   CreateOperatorCredentialRequest,
   CreatedOperatorCredential,
-  OperatorCredentialListResponse
+  OperatorCredentialListResponse,
+  InfrastructureMembersView,
+  InfrastructureMembershipDiff,
+  ObservedMember
 } from "@scp/schemas";
 import { ScpApiError, ScpResponseValidationError } from "./errors.js";
 import { installResponseValidationErrors } from "./response-validation.js";
@@ -1322,6 +1327,37 @@ export class ScpClient {
     batchGet: async (params: HealthBatchParams): Promise<HealthBatchResult> => {
       const result = await graphHealthRequest({ client: this.client, body: params });
       return unwrap(result);
+    }
+  };
+
+  /**
+   * Infrastructure membership (team-pipeline-iac D25(a), M27.6) — the observed set a host-reaching
+   * run compiles its inventory from.
+   *
+   * Present on this hand-written wrapper as well as in `generated/`, because the CLI and UI import
+   * THIS and nothing gates the two against each other: a route reachable in the generated client
+   * but absent here is unreachable from every surface a user actually touches.
+   */
+  readonly infrastructureMembers = {
+    /** Replace the product's observed membership with this snapshot, returning what changed.
+     *  `members: []` is meaningful — a fleet scaled to zero must stop converging its last hosts. */
+    report: async (
+      idOrUrn: string,
+      members: ObservedMember[]
+    ): Promise<InfrastructureMembershipDiff> => {
+      const result = await reportInfrastructureMembersRequest({
+        client: this.client,
+        path: { idOrUrn },
+        body: { members }
+      });
+      return unwrap(result) as InfrastructureMembershipDiff;
+    },
+    get: async (idOrUrn: string): Promise<InfrastructureMembersView> => {
+      const result = await getInfrastructureMembersRequest({
+        client: this.client,
+        path: { idOrUrn }
+      });
+      return unwrap(result) as InfrastructureMembersView;
     }
   };
 

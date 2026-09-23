@@ -6131,6 +6131,36 @@ export const zSubmitPipelineEvidenceResponse = z.object({
 /**
  * Success
  */
+export const zGetInfrastructureMembersResponse = z.object({
+    productObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    members: z.array(z.object({
+        memberId: z.string().min(1).max(400),
+        address: z.string().min(1).max(400)
+    }))
+});
+
+/**
+ * Success
+ */
+export const zReportInfrastructureMembersResponse = z.object({
+    added: z.array(z.object({
+        memberId: z.string().min(1).max(400),
+        address: z.string().min(1).max(400)
+    })),
+    removed: z.array(z.object({
+        memberId: z.string().min(1).max(400),
+        address: z.string().min(1).max(400)
+    })),
+    readdressed: z.array(z.object({
+        memberId: z.string(),
+        from: z.string(),
+        to: z.string()
+    }))
+});
+
+/**
+ * Success
+ */
 export const zListPolicysResponse = z.object({
     items: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),

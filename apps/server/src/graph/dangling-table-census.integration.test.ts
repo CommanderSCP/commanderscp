@@ -83,6 +83,21 @@ interface TableVerdict {
  * docs/graph.md §125f rather than here, because a count goes stale and a verdict should not.
  */
 const VERDICTS: TableVerdict[] = [
+  // ---- M27.6a: observed infrastructure membership ---------------------------------------------
+  {
+    table: "infrastructure_members",
+    column: "product_object_id",
+    verdict: "reader-fails-closed",
+    why: "membership IS keyed to the product's life, so a dangling row is meaningless — and the only door resolves the product through `getObjectByIdOrUrnAnyType`, which excludes tombstones, so both the read and the report 404 once it is deleted. That matters more here than elsewhere: a stale inventory is a list of addresses a HOST-REACHING runner would connect to, and those may since have been reassigned. Any future reader (the M27.6b inventory compiler) must resolve the product live for the same reason, not read this table by id alone",
+    deleteGrant: true
+  },
+  {
+    table: "infrastructure_members",
+    column: "reported_by_subject_id",
+    verdict: "attribution-only",
+    why: "WHO reported the membership, stamped server-side. Deliberately unguarded: refusing to delete a subject while any observation they reported still stands would be a wall, and the attribution must survive them exactly as `audit_events.actor_id` does",
+    deleteGrant: true
+  },
   // ---- the four that have been closed, and the two the graph itself handles -------------------
   {
     table: "source_mappings",
@@ -567,7 +582,8 @@ describe("the dangling-row census, as a gate", () => {
           where c.table_schema = 'public'
             and c.data_type = 'uuid'
             and (c.column_name like '%object\\_id%'
-                 or c.column_name in ('subject_id', 'actor_id', 'producer_subject_id'))
+                 or c.column_name in ('subject_id', 'actor_id', 'producer_subject_id',
+                                      'reported_by_subject_id'))
         ) s
         order by 1, 2
       `)

@@ -3881,6 +3881,60 @@ export function buildProgram(): Command {
       printResult(page.items, opts.output, (item) => decisionRow(item as Decision));
     });
 
+  // `scp infrastructure members` (team-pipeline-iac D25(a), M27.6). See docs/cli.md §80.
+  const infraCmd = program
+    .command("infrastructure")
+    .description("Infrastructure products and their observed membership");
+
+  infraCmd
+    .command("members")
+    .description(
+      "Read an infrastructure product's OBSERVED membership — the set a host-reaching run compiles its Ansible inventory from (D25(a)). Inventory is derived, never authored: a tenant cannot name the hosts a run reaches"
+    )
+    .argument("<idOrUrn>", "the infrastructure product (InstanceGroup / cluster)")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (idOrUrn: string, opts: { baseUrl?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const view = await client.infrastructureMembers.get(idOrUrn);
+      if (view.members.length === 0) {
+        // An empty fleet is a REAL state, not an error or a missing read — a group scaled to zero
+        // must stop converging its last known hosts, so say so rather than printing nothing.
+        console.log("(no observed members — this product is empty or has never been reported)");
+        return;
+      }
+      for (const member of view.members) console.log(`${member.memberId}\t${member.address}`);
+    });
+
+  infraCmd
+    .command("report-members")
+    .description(
+      "Replace an infrastructure product's observed membership with a full snapshot. The payload is the WHOLE truth, never a delta — a dropped delta would leave a host in the inventory that no longer exists, and a host-reaching run would connect to an address that may since have been reassigned"
+    )
+    .argument("<idOrUrn>", "the infrastructure product (InstanceGroup / cluster)")
+    .requiredOption(
+      "--member <id=address...>",
+      "an observed member, repeatable. Pass none with --empty to record a fleet scaled to zero",
+      (value: string, previous: string[]) => [...(previous ?? []), value],
+      [] as string[]
+    )
+    .option("--base-url <url>", "API base URL override")
+    .action(async (idOrUrn: string, opts: { member: string[]; baseUrl?: string }) => {
+      const members = opts.member.map((entry) => {
+        const at = entry.indexOf("=");
+        if (at <= 0) {
+          // Refused rather than guessed: a member with no address would be written as an empty
+          // string and then SSHed to.
+          throw new Error(`--member must be <id>=<address>, got '${entry}'`);
+        }
+        return { memberId: entry.slice(0, at), address: entry.slice(at + 1) };
+      });
+      const client = await clientFromStoredCredentials(opts);
+      const diff = await client.infrastructureMembers.report(idOrUrn, members);
+      console.log(
+        `added ${diff.added.length}, removed ${diff.removed.length}, readdressed ${diff.readdressed.length}`
+      );
+    });
+
   const auditCmd = program.command("audit").description("Audit log");
 
   auditCmd

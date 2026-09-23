@@ -15119,6 +15119,154 @@ export type SubmitPipelineEvidenceResponses = {
 
 export type SubmitPipelineEvidenceResponse = SubmitPipelineEvidenceResponses[keyof SubmitPipelineEvidenceResponses];
 
+export type GetInfrastructureMembersData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/infrastructure-products/{idOrUrn}/members';
+};
+
+export type GetInfrastructureMembersErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetInfrastructureMembersError = GetInfrastructureMembersErrors[keyof GetInfrastructureMembersErrors];
+
+export type GetInfrastructureMembersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        productObjectId: string;
+        members: Array<{
+            memberId: string;
+            address: string;
+        }>;
+    };
+};
+
+export type GetInfrastructureMembersResponse = GetInfrastructureMembersResponses[keyof GetInfrastructureMembersResponses];
+
+export type ReportInfrastructureMembersData = {
+    body: {
+        members: Array<{
+            memberId: string;
+            address: string;
+        }>;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/infrastructure-products/{idOrUrn}/members';
+};
+
+export type ReportInfrastructureMembersErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ReportInfrastructureMembersError = ReportInfrastructureMembersErrors[keyof ReportInfrastructureMembersErrors];
+
+export type ReportInfrastructureMembersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        added: Array<{
+            memberId: string;
+            address: string;
+        }>;
+        removed: Array<{
+            memberId: string;
+            address: string;
+        }>;
+        readdressed: Array<{
+            memberId: string;
+            from: string;
+            to: string;
+        }>;
+    };
+};
+
+export type ReportInfrastructureMembersResponse = ReportInfrastructureMembersResponses[keyof ReportInfrastructureMembersResponses];
+
 export type ListPolicysData = {
     body?: never;
     path?: never;
