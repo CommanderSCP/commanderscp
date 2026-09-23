@@ -40,7 +40,10 @@ import {
  */
 
 const DEFAULT_TIMEOUT_MS = 900_000;
-const MIN_TIMEOUT_MS = 30_000;
+// 1,000ms, matching every other managed module. `call-policy.test.ts` asserts this exact floor
+// across MANAGED_EXECUTOR_MODULES: a per-module floor would make "what is the minimum" a question
+// with four answers. The real protection is the MAXIMUM, which is the sane ceiling.
+const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 3_600_000;
 
 export interface ManagedOpsConfig {

@@ -214,17 +214,20 @@ describe("M23.2: every production construction path carries the selection", () =
     expect(settings.kubernetes?.namespace).toBe("scp");
   });
 
-  it("THE THREE BINDING INJECTION SITES SPREAD THE WHOLE SLICE, not one field of it", () => {
+  it("THE FOUR BINDING INJECTION SITES SPREAD THE WHOLE SLICE, not one field of it", () => {
     // A source assertion, and the honest instrument here. See docs/coordination.md §557.
     const here = dirname(fileURLToPath(import.meta.url));
     const source = readFileSync(resolve(here, "executor-bindings-repo.ts"), "utf8");
     const spreads = source.match(/Object\.assign\(serverInjected, managedRunnerSettings\(\)\);/g);
-    expect(spreads, "a managed binding stopped taking the whole launcher slice").toHaveLength(3);
+    // FOUR since M27: managed-ops joined the set. The count is the point — a new managed binding
+    // that names one field instead of spreading the slice is exactly the defect this caught once,
+    // when `dockerBinary` was missing from one path for a release.
+    expect(spreads, "a managed binding stopped taking the whole launcher slice").toHaveLength(4);
     // And nothing may go back to naming one field of it.
     expect(source).not.toMatch(/serverInjected\.dockerBinary\s*=/);
   });
 
-  it("THE PLUGIN HOST SUBPROCESS CONSTRUCTS ALL THREE WITH NO RESOLVER ARGUMENT", () => {
+  it("THE PLUGIN HOST SUBPROCESS CONSTRUCTS ALL FOUR WITH NO RESOLVER ARGUMENT", () => {
     // This is what makes each plugin's DEFAULT PARAMETER the production wiring, and therefore what
     // makes those packages' `runner-launcher-selection.test.ts` files meaningful. Pass an explicit
     // `resolveDockerRunnerLauncher` here and every one of them would go on passing while every
@@ -234,7 +237,8 @@ describe("M23.2: every production construction path carries the selection", () =
     for (const factory of [
       "createManagedIacExecutorPlugin",
       "createManagedScanExecutorPlugin",
-      "createManagedDepExecutorPlugin"
+      "createManagedDepExecutorPlugin",
+      "createManagedOpsExecutorPlugin"
     ]) {
       expect(
         source,

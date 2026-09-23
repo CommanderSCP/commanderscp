@@ -13,6 +13,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests ${SCP_INTEGRATION_SHARD:-}"
   },
   "devDependencies": {
+    "@scp/plugin-testkit": "workspace:*",
     "@scp/source-census": "workspace:*",
     "typescript": "~5.8.0",
     "vitest": "^3.0.0"

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { resolveRunnerImage } from "@scp/plugin-testkit";
 
 /**
  * M27.2 / ADR-0002 — "tenant parameters are data-only, never rendered as Jinja2", asked of a REAL
@@ -29,6 +30,7 @@ const RUNNER_OPS_CONTEXT = resolve(__dirname, "../../../../apps/runner-ops");
 const IMAGE_TAG = "scp-runner-ops:m27-2-ssti-test";
 
 let dockerReady = false;
+let imageRef = "";
 
 async function dockerAvailable(): Promise<boolean> {
   try {
@@ -68,7 +70,7 @@ async function render(params: unknown, harden: boolean): Promise<string> {
         `${dir}:/work`,
         "--entrypoint",
         "sh",
-        IMAGE_TAG,
+        imageRef,
         "-c",
         `rm -f /work/out.txt; ${varsStep} && ` +
           `ansible-playbook -i localhost, -e @/tmp/v.yml /work/play.yml >/dev/null 2>&1; ` +
@@ -85,9 +87,15 @@ async function render(params: unknown, harden: boolean): Promise<string> {
 beforeAll(async () => {
   dockerReady = await dockerAvailable();
   if (!dockerReady) return;
-  await execFileAsync("docker", ["build", "-t", IMAGE_TAG, RUNNER_OPS_CONTEXT], {
-    timeout: 540_000,
-    maxBuffer: 32 * 1024 * 1024
+  // PUBLISHED IN CI, BUILT LOCALLY. CI job 4c builds and pushes the runner images and the
+  // integration jobs pull them — building here instead failed outright, because this Dockerfile's
+  // `# syntax=docker/dockerfile:1.7` directive makes BuildKit fetch a frontend from Docker Hub and
+  // CI blackholes egress. `resolveRunnerImage` uses the published ref when one is set and otherwise
+  // builds with DOCKER_BUILDKIT=0, which ignores the directive.
+  imageRef = await resolveRunnerImage({
+    refEnvVar: "SCP_RUNNER_OPS_IMAGE_REF",
+    localTag: IMAGE_TAG,
+    context: RUNNER_OPS_CONTEXT
   });
 }, 600_000);
 
@@ -139,7 +147,7 @@ describe("scp-runner-ops SSTI closure (M27.2)", () => {
           `${dir}:/work`,
           "--entrypoint",
           "sh",
-          IMAGE_TAG,
+          imageRef,
           "-c",
           "python /usr/local/bin/params_to_vars.py /work/params.json >/dev/null 2>&1 && echo ACCEPTED || echo REFUSED"
         ],

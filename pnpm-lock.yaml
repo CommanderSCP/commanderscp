@@ -721,6 +721,9 @@ importers:
         specifier: workspace:*
         version: link:../../runner-launcher
     devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
       '@scp/source-census':
         specifier: workspace:*
         version: link:../../source-census

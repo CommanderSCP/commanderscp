@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { resolveRunnerImage } from "@scp/plugin-testkit";
 
 /**
  * M27.1 / ADR-0050 — the lockdown gate, asked of the BUILT ARTIFACT.
@@ -34,6 +35,7 @@ const IMAGE_TAG = "scp-runner-ops:m27-1-lockdown-test";
 type Surface = { modules: string[]; lookup: string[]; action: string[] };
 
 let dockerReady = false;
+let imageRef = "";
 let imageSurface: Surface;
 let allowlist: Surface;
 let recordedUpstream: Surface & { ansibleCore: string };
@@ -72,13 +74,19 @@ beforeAll(async () => {
     await readFile(resolve(RUNNER_OPS_CONTEXT, "upstream-inventory.json"), "utf8")
   );
 
-  await execFileAsync("docker", ["build", "-t", IMAGE_TAG, RUNNER_OPS_CONTEXT], {
-    timeout: 540_000,
-    maxBuffer: 32 * 1024 * 1024
+  // PUBLISHED IN CI, BUILT LOCALLY. CI job 4c builds and pushes the runner images and the
+  // integration jobs pull them — building here instead failed outright, because this Dockerfile's
+  // `# syntax=docker/dockerfile:1.7` directive makes BuildKit fetch a frontend from Docker Hub and
+  // CI blackholes egress. `resolveRunnerImage` uses the published ref when one is set and otherwise
+  // builds with DOCKER_BUILDKIT=0, which ignores the directive.
+  imageRef = await resolveRunnerImage({
+    refEnvVar: "SCP_RUNNER_OPS_IMAGE_REF",
+    localTag: IMAGE_TAG,
+    context: RUNNER_OPS_CONTEXT
   });
   const { stdout } = await execFileAsync(
     "docker",
-    ["run", "--rm", IMAGE_TAG, "--lockdown-inventory"],
+    ["run", "--rm", imageRef, "--lockdown-inventory"],
     { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }
   );
   imageSurface = JSON.parse(stdout) as Surface;
@@ -167,7 +175,7 @@ describe("scp-runner-ops lockdown (ADR-0050)", () => {
           "--rm",
           "--entrypoint",
           "sh",
-          IMAGE_TAG,
+          imageRef,
           "-c",
           `command -v ${binary} || echo ABSENT`
         ],
@@ -181,7 +189,7 @@ describe("scp-runner-ops lockdown (ADR-0050)", () => {
     if (!dockerReady) return expectSkipped();
     const { stdout } = await execFileAsync(
       "docker",
-      ["run", "--rm", "--entrypoint", "id", IMAGE_TAG, "-u"],
+      ["run", "--rm", "--entrypoint", "id", imageRef, "-u"],
       { timeout: 60_000 }
     );
     expect(stdout.trim()).not.toBe("0");

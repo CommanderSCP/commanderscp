@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { resolveRunnerImage } from "@scp/plugin-testkit";
 
 /**
  * M27.3 — the closed, cosign-signed task catalog, asked of the built image.
@@ -23,6 +24,7 @@ const RUNNER_OPS_CONTEXT = resolve(__dirname, "../../../../apps/runner-ops");
 const IMAGE_TAG = "scp-runner-ops:m27-3-catalog-test";
 
 let dockerReady = false;
+let imageRef = "";
 /** A signed catalog + keypair, made once and copied per case. */
 let signedFixture: string;
 
@@ -46,7 +48,7 @@ async function runInImage(catalogDir: string, keysDir: string, role: string): Pr
       : []),
     "-e",
     `SCP_OPS_ROLE=${role}`,
-    IMAGE_TAG
+    imageRef
   ];
   try {
     const { stdout, stderr } = await execFileAsync("docker", args, { timeout: 180_000 });
@@ -68,9 +70,15 @@ async function freshCatalog(): Promise<{ dir: string; catalog: string; keys: str
 beforeAll(async () => {
   dockerReady = await dockerAvailable();
   if (!dockerReady) return;
-  await execFileAsync("docker", ["build", "-t", IMAGE_TAG, RUNNER_OPS_CONTEXT], {
-    timeout: 600_000,
-    maxBuffer: 32 * 1024 * 1024
+  // PUBLISHED IN CI, BUILT LOCALLY. CI job 4c builds and pushes the runner images and the
+  // integration jobs pull them — building here instead failed outright, because this Dockerfile's
+  // `# syntax=docker/dockerfile:1.7` directive makes BuildKit fetch a frontend from Docker Hub and
+  // CI blackholes egress. `resolveRunnerImage` uses the published ref when one is set and otherwise
+  // builds with DOCKER_BUILDKIT=0, which ignores the directive.
+  imageRef = await resolveRunnerImage({
+    refEnvVar: "SCP_RUNNER_OPS_IMAGE_REF",
+    localTag: IMAGE_TAG,
+    context: RUNNER_OPS_CONTEXT
   });
   signedFixture = await mkdtemp(join(tmpdir(), "scp-catalog-signed-"));
   await cp(join(RUNNER_OPS_CONTEXT, "catalog"), join(signedFixture, "catalog"), {
@@ -91,7 +99,7 @@ beforeAll(async () => {
       "/w",
       "--entrypoint",
       "sh",
-      IMAGE_TAG,
+      imageRef,
       "-c",
       'export COSIGN_PASSWORD=""; cosign generate-key-pair >/dev/null 2>&1 && ' +
         "cosign sign-blob --key cosign.key --tlog-upload=false --new-bundle-format=false " +
