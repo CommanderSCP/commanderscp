@@ -417,6 +417,25 @@ since those three differ between the migrations Job and the api/worker Deploymen
 - name: SCP_MANAGED_DEP_WORKSPACE_ROOT
   value: {{ .Values.managedDep.workspaceRoot | quote }}
 {{- end }}
+{{- if .Values.managedOps.runnerImage }}
+{{- /* M27 — host-reaching managed execution (charter 2026-07-12 amendment). Gated on the image
+       like the three above, AND on a catalog verification key: ADR-0050 makes the cosign-signed
+       task catalog the thing that bounds what a run can DO, so `executor-bindings-repo` refuses a
+       binding when the key is unset rather than running an unverified catalog with host
+       credentials. Both are rendered here; neither has a default.
+
+       NO NETWORK-MODE VAR, and for a third distinct reason. managed-dep omits one because its
+       egress clause is unqualified `--network none`; managed-scan resolves one because its clause
+       is qualified by registry pulls. This class's clause is qualified by the HOSTS IT CHANGES,
+       and that scope is the per-run egress allowlist derived from observed membership (M27.6b) —
+       a value no operator can usefully set, and one a knob could only widen. */}}
+- name: SCP_MANAGED_OPS_RUNNER_IMAGE
+  value: {{ .Values.managedOps.runnerImage | quote }}
+- name: SCP_MANAGED_OPS_CATALOG_PUBKEY_SECRET_KEY
+  value: {{ .Values.managedOps.catalogPubkeySecretKey | quote }}
+- name: SCP_MANAGED_OPS_WORKSPACE_ROOT
+  value: {{ .Values.managedOps.workspaceRoot | quote }}
+{{- end }}
 {{- if eq .Values.managedRunners.launcher "kubernetes" }}
 {{- /* M23.2 — WHICH LAUNCHER ADAPTER, and the Kubernetes adapter's deployment settings. Same
        host-level, never-tenant-suppliable trust tier as SCP_MANAGED_IAC_*: the plugin subprocess
@@ -641,7 +660,7 @@ So the message names the requirement explicitly rather than implying the chart v
 {{- fail "managedRunners.launcher=kubernetes requires managedRunners.kubernetes.workspace.claimName — the name of an EXISTING ReadWriteMany PersistentVolumeClaim shared by the worker and every runner Job. Kubernetes has no `docker cp`, so the runner's inputs and evidence move through this volume; this chart does not create it because RWX is a storage-class capability you provision (NFS/CephFS/EFS/Azure Files). The chart's own PVCs are ReadWriteOnce and cannot be reused." -}}
 {{- end -}}
 {{- if ne (include "commanderscp.anyManagedClass" .) "true" -}}
-{{- fail "managedRunners.launcher=kubernetes is set but no managed executor class is enabled, so nothing will ever launch. Enable managedIac.enabled (with managedIac.runnerImage) and/or set managedDep.runnerImage and/or set managedScan.runnerImage, or leave managedRunners.launcher at its default of `docker`." -}}
+{{- fail "managedRunners.launcher=kubernetes is set but no managed executor class is enabled, so nothing will ever launch. Enable managedIac.enabled (with managedIac.runnerImage) and/or set managedDep.runnerImage and/or set managedScan.runnerImage and/or set managedOps.runnerImage (host-reaching — it also requires managedOps.catalogPubkeySecretKey), or leave managedRunners.launcher at its default of `docker`." -}}
 {{- end -}}
 {{/*
   M23.5 MEDIUM-7 — THE DEFAULT POSTURE, MADE SAFE RATHER THAN MERELY RECOMMENDED.
@@ -735,7 +754,7 @@ that means "a managed run can happen here" has to name all three, or the class l
 half of the wiring that is keyed on something else and fails at the first call it makes.
 */}}
 {{- define "commanderscp.anyManagedClass" -}}
-{{- if or .Values.managedIac.enabled (ne (.Values.managedDep.runnerImage | default "") "") (ne (.Values.managedScan.runnerImage | default "") "") -}}
+{{- if or .Values.managedIac.enabled (ne (.Values.managedDep.runnerImage | default "") "") (ne (.Values.managedScan.runnerImage | default "") "") (ne (.Values.managedOps.runnerImage | default "") "") -}}
 true
 {{- else -}}
 false
