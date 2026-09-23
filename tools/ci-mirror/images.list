@@ -108,6 +108,11 @@ docker.io/minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39b
 # integration gate's path and was the one Testcontainers image job 4d never covered — and it is not
 # even a Docker Hub pull, which is how it stayed invisible to a sweep that looked only for docker.io.
 quay.io/keycloak/keycloak@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858    quay.io/keycloak/keycloak:26.0
+# HashiCorp Vault — M27.4's BYO SSH credential authority. Mirrored because the DoD is a run
+# against a REAL SSH secrets engine: SCP asks an authority it does not control for a short-lived
+# certificate, and a fake `fetch` proves only that we send what we think we send, never that Vault
+# accepts it or that what comes back is a usable certificate.
+docker.io/hashicorp/vault@sha256:3d6aade4847c9642ac7ef1ab770cfa46f47874a24996dfde5d9cfb48f4118a73   hashicorp/vault:1.20
 
 # --- Managed-scan SUBJECT fixtures ----------------------------------------------------------------
 # Pushed into the test's own local registry:2 by `skopeo copy` (consumer form 2), and — for the
