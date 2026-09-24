@@ -475,6 +475,32 @@ describe(
         { describe: `change ${changeId}'s wave target reaches '${status}'`, timeoutMs: 60_000 }
       );
 
+    /** For a target that must NOT reach its executor (a refusal) or must succeed WITHOUT it (a
+     *  no-op): wait until it SETTLES — its verdict, or a trigger — and then assert. A broken gate
+     *  then fails as "the template was submitted", not as a timeout that says nothing about why. */
+    const settle = async (changeId: string, expected: string) => {
+      const t = await settled(changeId, expected);
+      expect(
+        submissions.filter((s) => s.parameters["changeObjectId"] === changeId),
+        "a workflow was SUBMITTED for this change — the gate did not hold"
+      ).toEqual([]);
+      expect(t.status).toBe(expected);
+      return t;
+    };
+    const settled = (changeId: string, expected: string) =>
+      waitUntil(
+        async () => {
+          const t = await waveTargetOf(changeId);
+          return t &&
+            (t.status === expected ||
+              t.status.endsWith("_refused") ||
+              ["triggered", "observing", "succeeded", "failed"].includes(t.status))
+            ? t
+            : undefined;
+        },
+        { describe: `change ${changeId}'s wave target settles`, timeoutMs: 60_000 }
+      );
+
     const waitForState = (changeId: string, state: string) =>
       waitUntil(
         async () => ((await admin.changes.get(changeId)).state === state ? true : undefined),
@@ -562,7 +588,7 @@ describe(
     it("APPLY IS REFUSED before the plan is approved — never submitted, Decision + audit", async () => {
       expect(approved, "the plan test ran").toBeDefined();
       const apply = await proposeApply(prodTargetId, approved!.planChangeId);
-      const t = await waitForTarget(apply.id, "infra_apply_refused");
+      const t = await settle(apply.id, "infra_apply_refused");
       expect(t.executorRef ?? null).toBeNull();
       expect(submissions.filter((s) => s.parameters["changeObjectId"] === apply.id)).toEqual([]);
 
@@ -609,7 +635,7 @@ describe(
     it("RE-APPLY of the applied plan is a NO-OP — succeeded, nothing submitted, the reason recorded", async () => {
       const before = submissions.length;
       const again = await proposeApply(prodTargetId, approved!.planChangeId);
-      const t = await waitForTarget(again.id, "succeeded");
+      const t = await settle(again.id, "succeeded");
       expect(submissions.length, "no second apply was submitted").toBe(before);
       expect(t.observed?.plan?.ref).toBe(approved!.digest);
       const noop = byGate(await decisionsOf(again.id), "infra_apply_noop");
@@ -633,7 +659,7 @@ describe(
       await waitForTarget(newer.id, "succeeded");
 
       const apply = await proposeApply(target.id, first.plan.id);
-      await waitForTarget(apply.id, "infra_apply_refused");
+      await settle(apply.id, "infra_apply_refused");
       expect(submissions.filter((s) => s.parameters["changeObjectId"] === apply.id)).toEqual([]);
       const refusal = byGate(await decisionsOf(apply.id), "infra_plan_superseded");
       expect(refusal?.inputContext).toMatchObject({ supersededBy: newer.id });
@@ -652,12 +678,20 @@ describe(
       const apply = await proposeApply(target.id, plan.id, {
         recipe: { version: 1, trigger: { kind: "workflow_dispatch", parameters: hostile } }
       });
-      await waitForTarget(apply.id, "infra_declaration_refused");
-      expect(submissions.filter((s) => s.parameters["changeObjectId"] === apply.id)).toEqual([]);
+      // TWO LAYERS, asserted in the order that lets a mutation tell them apart. The refusal is the
+      // first: nothing is submitted at all. Behind it the lane's values are spread LAST, so even with
+      // the refusal deleted the recipe's digest never reaches the executor — the first assertion
+      // stays green and the second goes red; delete BOTH and the first goes red too.
+      const t = await settled(apply.id, "infra_declaration_refused");
       expect(
         submissions.filter((s) => s.parameters["planDigest"] === "f".repeat(64)),
-        "no apply carrying the recipe's digest was ever submitted"
+        "an apply carrying the RECIPE's digest was submitted — the lane's bound did not win"
       ).toEqual([]);
+      expect(
+        submissions.filter((s) => s.parameters["changeObjectId"] === apply.id),
+        "the apply was submitted at all — a recipe restating the lane's bounds must be refused"
+      ).toEqual([]);
+      expect(t.status).toBe("infra_declaration_refused");
       const refusal = byGate(await decisionsOf(apply.id), "infra_recipe_restates_bound");
       expect(refusal?.inputContext).toMatchObject({
         restated: [...INFRA_LANE_RESERVED_PARAMETERS].sort()
@@ -681,7 +715,7 @@ describe(
           }
         }
       });
-      await waitForTarget(change.id, "infra_apply_refused");
+      await settle(change.id, "infra_apply_refused");
       expect(submissions.filter((s) => s.parameters["planDigest"] === "f".repeat(64))).toEqual([]);
       expect(
         byGate(await decisionsOf(change.id), "infra_apply_template_outside_lane")
@@ -691,7 +725,7 @@ describe(
     it("a PLAN is refused — never submitted — for a target with no environment, or a source with no pinned commit", async () => {
       const noEnv = await environmentTarget({ infrastructurePath: "infra" });
       const a = await proposePlan(noEnv.id);
-      await waitForTarget(a.id, "infra_declaration_refused");
+      await settle(a.id, "infra_declaration_refused");
       expect(byGate(await decisionsOf(a.id), "infra_environment_missing")).toBeDefined();
 
       const env = await environmentTarget({ environment: "prod-us-east-1", region: "unpinned" });
@@ -701,7 +735,7 @@ describe(
         type: "infrastructure",
         sourceRef: { repo: REPO, ref: "refs/heads/main" }
       });
-      await waitForTarget(b.id, "infra_declaration_refused");
+      await settle(b.id, "infra_declaration_refused");
       expect(byGate(await decisionsOf(b.id), "infra_source_unpinned")).toBeDefined();
       for (const id of [a.id, b.id]) {
         expect(submissions.filter((s) => s.parameters["changeObjectId"] === id)).toEqual([]);
