@@ -67,20 +67,28 @@ describe("executionSystemRoutingFingerprint — versions and URL spelling (#417 
       executionSystemRoutingFingerprint({ ...withWeb, webUrl: "https://REGISTRY.example.invalid/" })
     ).toBe(executionSystemRoutingFingerprint(withWeb));
     expect(
-      executionSystemRoutingFingerprint({ ...SYSTEM, authoring: { repoUrl: "https://git.x.invalid" } })
+      executionSystemRoutingFingerprint({
+        ...SYSTEM,
+        authoring: { repoUrl: "https://git.x.invalid" }
+      })
     ).toBe(
-      executionSystemRoutingFingerprint({ ...SYSTEM, authoring: { repoUrl: "https://git.x.invalid/" } })
+      executionSystemRoutingFingerprint({
+        ...SYSTEM,
+        authoring: { repoUrl: "https://git.x.invalid/" }
+      })
     );
     // …and a different URL is still a different value.
-    expect(executionSystemRoutingFingerprint({ ...SYSTEM, webUrl: "https://other.invalid" })).not.toBe(
-      executionSystemRoutingFingerprint(withWeb)
-    );
+    expect(
+      executionSystemRoutingFingerprint({ ...SYSTEM, webUrl: "https://other.invalid" })
+    ).not.toBe(executionSystemRoutingFingerprint(withWeb));
   });
 
   it("v1 is #415's four-field fingerprint, kept so an existing row still verifies until re-set", () => {
     const v1 = executionSystemRoutingFingerprint(SYSTEM, 1);
     // Blind to the fields v1 never covered…
-    expect(executionSystemRoutingFingerprint({ ...SYSTEM, webUrl: "https://x.invalid" }, 1)).toBe(v1);
+    expect(executionSystemRoutingFingerprint({ ...SYSTEM, webUrl: "https://x.invalid" }, 1)).toBe(
+      v1
+    );
     // …still bound to the four it did.
     expect(
       executionSystemRoutingFingerprint({ ...SYSTEM, serverUrl: "https://argo.prod.invalid" }, 1)

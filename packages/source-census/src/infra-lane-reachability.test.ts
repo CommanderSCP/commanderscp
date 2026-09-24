@@ -218,6 +218,35 @@ describe("the infrastructure lane is INSTALLED, not merely built", () => {
     );
   });
 
+  it("MODE C: ONE workspace identity — the lane, the binding door and the plugin all call managedIacWorkspaceKey (#417 probe G)", () => {
+    expect(callersOf("managedIacWorkspaceKey").sort()).toEqual([
+      "apps/server/src/coordination/executor-bindings-repo.ts",
+      "apps/server/src/coordination/infra-lane-trigger-parameters.ts"
+    ]);
+    const plugin = read("packages/plugins/managed-iac/src/index.ts");
+    // The plugin's own directory goes through it too (same file as the definition, so read directly).
+    expect(plugin).toMatch(
+      /join\(config\.workspaceRoot, safe\(orgId\), managedIacWorkspaceKey\(targetRef\)\)/
+    );
+    // …and it REFUSES rather than maps: no sanitizing replace on the ref.
+    expect(plugin).toMatch(
+      /if \(!MANAGED_IAC_WORKSPACE_REF\.test\(ref\)\) throw new ManagedIacWorkspaceRefInvalid\(ref\);/
+    );
+  });
+
+  it("MODE C: the runner re-derives the digest from the .tfplan it applies, BEFORE `tofu apply` (#417)", () => {
+    const runSh = readFileSync(resolve(REPO_ROOT, "apps/runner-iac/run.sh"), "utf8");
+    const check = runSh.indexOf('if [ "$in_workspace" != "$SCP_APPROVED_PLAN_DIGEST" ]; then');
+    const apply = runSh.indexOf("tofu apply -input=false -no-color -auto-approve .tfplan");
+    expect(runSh).toContain(
+      "in_workspace=\"$(tofu show -json .tfplan | sha256sum | cut -d' ' -f1)\""
+    );
+    expect(check).toBeGreaterThan(0);
+    expect(apply).toBeGreaterThan(check);
+    const plugin = read("packages/plugins/managed-iac/src/index.ts");
+    expect(plugin).toMatch(/SCP_APPROVED_PLAN_DIGEST: String\(intent\.parameters\?\.planDigest\)/);
+  });
+
   it("MODE C: the managed-iac plugin checks the approved digest against the workspace's plan BEFORE it launches", () => {
     const plugin = read("packages/plugins/managed-iac/src/index.ts");
     expect(plugin).toMatch(/const approved = intent\.parameters\?\.planDigest;/);

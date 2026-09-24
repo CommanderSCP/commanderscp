@@ -364,6 +364,34 @@ managed-iac workspace as it did before; a campaign recipe cannot target managed-
 execution system's WHOLE canonical `properties`. The first version named four fields and so missed
 `webUrl`, `allowInternalEgress`, `authoring` and every manifest-declared key.
 
+**The #417 verification round.**
+- **The workspace identity is one non-lossy function** (BLOCKING, probes G and H).
+  - The lane keyed its collision check on the raw ref, while the plugin sanitized that ref into a
+    directory name. So `alias/X` and `alias_X` shared one directory past `infra_workspace_collision`,
+    and `..` resolved to the workspace root.
+  - `managedIacWorkspaceKey` (exported by `@scp/plugin-managed-iac`) now REFUSES any ref that is not
+    already a plain name. It never maps one. It is used in three places: the plugin, the lane (for
+    rows that predate the door; gate `infra_workspace_ref_invalid`), and the binding write door (400).
+  - Collisions compare case-insensitively, since a case-insensitive filesystem would join `Net` and
+    `net`.
+- **The runner verifies the file it applies** (SHOULD-FIX).
+  - The plugin's pre-launch check reads `plan.json`, which is only evidence; `run.sh apply` applies
+    `.tfplan`. So the runner now re-derives `sha256(tofu show -json .tfplan)`, the same bytes the
+    plan action wrote to `plan.json`, and refuses (exit 3) unless it equals `SCP_APPROVED_PLAN_DIGEST`.
+  - A `.tfplan` swapped under an unchanged `plan.json` is refused against the real runner.
+- **The fingerprint is VERSIONED rather than a re-set upgrade step** (SHOULD-FIX).
+  - Each allowlist row carries `routing_fingerprint_version` (0124, `DEFAULT 1`). Rows written by
+    #415's code are v1 and are still checked under v1's four fields. Every write stamps v2.
+  - Upgrading therefore voids nothing, and a row gains the wider binding at its next `secret:write`
+    re-set. Versioning was chosen because it was cheap (one column) and a mandatory re-set of every
+    allowlist is an upgrade step an operator could miss and see as an outage.
+  - Until the re-set, a v1 row is blind to the fields v1 never covered. That is accepted because the
+    routing door (addendum 3) is the primary control on those fields and the fingerprint is the
+    second one.
+  - An unknown version never verifies.
+- **URL spelling** (NIT). v2 normalises every http(s) URL-valued property at any depth, so
+  `https://x` and `https://x/` are one value.
+
 **Proved by** `managed-iac-apply.integration.test.ts`. It runs the real reconcile loop and the real
 plugin in the real subprocess host, with each run in the real `scp-runner-iac` container on
 OpenTofu's local backend. It covers:

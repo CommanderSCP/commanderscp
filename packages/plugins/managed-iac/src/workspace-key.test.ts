@@ -19,14 +19,30 @@ import {
 
 describe("managedIacWorkspaceKey", () => {
   it("keeps a plain name EXACTLY — the identity is the name, not a mapping of it", () => {
-    for (const ref of ["t1", "alias_X", "prod-eu-west-1", "a.b", "01a0d162-ee05-750e-b552-59c0ff6222a1"]) {
+    for (const ref of [
+      "t1",
+      "alias_X",
+      "prod-eu-west-1",
+      "a.b",
+      "01a0d162-ee05-750e-b552-59c0ff6222a1"
+    ]) {
       expect(managedIacWorkspaceKey(ref)).toBe(ref);
     }
     expect(managedIacWorkspaceKey(undefined)).toBe("default");
   });
 
   it("REFUSES what sanitizing used to alias or escape: separators, '.', '..', empty, leading dot", () => {
-    for (const ref of ["alias/X", "a\\b", ".", "..", "", ".hidden", "a b", "a:b", "x".repeat(129)]) {
+    for (const ref of [
+      "alias/X",
+      "a\\b",
+      ".",
+      "..",
+      "",
+      ".hidden",
+      "a b",
+      "a:b",
+      "x".repeat(129)
+    ]) {
       expect(() => managedIacWorkspaceKey(ref), JSON.stringify(ref)).toThrow(
         ManagedIacWorkspaceRefInvalid
       );

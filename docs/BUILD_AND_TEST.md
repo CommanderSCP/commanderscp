@@ -1958,6 +1958,16 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         NIT). *Not proved:* a managed-iac plan's configuration still arrives as it always did, by
         being present in the workspace, because a recipe cannot target managed-iac. How an org
         populates that workspace is unchanged and out of scope.
+        - *Verification of #417 found three more gaps.*
+          - The lane and the plugin disagreed on what a workspace is: the lane keyed collisions on
+            the raw ref, the plugin sanitized it, so `alias/X` and `alias_X` shared one directory.
+            One non-lossy `managedIacWorkspaceKey` is now used by the lane, the plugin and the
+            binding door. It refuses a non-plain ref (including `..`) and never maps one.
+          - The digest bound the evidence file rather than the applied one. `run.sh apply` now
+            re-derives it from `.tfplan` and refuses a mismatch, proved against the real runner with
+            a swapped `.tfplan`.
+          - The widened fingerprint would have voided every #415-era allowlist on upgrade. It is now
+            versioned (0124): old rows are checked under v1 until someone re-sets them.
   - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
     import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
     Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.

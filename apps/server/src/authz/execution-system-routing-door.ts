@@ -138,7 +138,9 @@ export function executionSystemRoutingFingerprint(
     // An unknown version never verifies: a row from a newer server fails closed here.
     return `unknown-fingerprint-version-${version}`;
   }
-  return createHash("sha256").update(canonicalJson(normaliseUrls(props))).digest("hex");
+  return createHash("sha256")
+    .update(canonicalJson(normaliseUrls(props)))
+    .digest("hex");
 }
 
 /** A REPLICATED execution system is never executable here. Its routing was written by another

@@ -332,7 +332,9 @@ describe("M28.3b: managed-iac (Mode C) apply of an accepted plan", { timeout: 30
       tx
         .update(executorBindings)
         .set({ externalRef: ".." })
-        .where(and(eq(executorBindings.orgId, org.orgId), eq(executorBindings.targetObjectId, t.id)))
+        .where(
+          and(eq(executorBindings.orgId, org.orgId), eq(executorBindings.targetObjectId, t.id))
+        )
     );
     const p = await proposePlan(t.id);
     expect((await settled(p.id)).status).toBe("infra_declaration_refused");
