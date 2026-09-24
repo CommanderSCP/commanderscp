@@ -888,9 +888,16 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
         targets: [component.id],
         topology: topo.id
       });
-      await new Promise((r) => setTimeout(r, 10_000));
-      const row = await waveTargetRow(placement.id);
-      expect(row?.status).not.toBe("executor_refused");
+      // A POSITIVE signal, not a fixed sleep: the failed trigger was RETRIED (attempt counts up only
+      // on the retryable path), and the target is still not terminal.
+      const row = await waitUntil(
+        async () => {
+          const r = await waveTargetRow(placement.id);
+          return r && r.attempt >= 2 ? r : undefined;
+        },
+        { describe: "the DNS failure is retried", timeoutMs: 60_000, intervalMs: 250 }
+      );
+      expect(row.status).not.toBe("executor_refused");
     }, 90_000);
 
     it("item 2: a PLUGIN refusal is a terminal verdict with a Decision — not a trigger retried forever", async () => {

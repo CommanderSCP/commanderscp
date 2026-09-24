@@ -71,9 +71,10 @@ export function executionSystemPluginConfig(
 /** RESERVED plugin-instance-id namespace: only `executionSystemInstanceId()` may mint ids under it. */
 export const EXECUTION_SYSTEM_INSTANCE_PREFIX = "execution-system:";
 
-/** The charset a caller-supplied plugin instance id must match. No ':' — that is the reserved
- *  `execution-system:` namespace's separator — and no whitespace or brackets. */
-export const SAFE_INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** The charset a caller-supplied plugin instance id must match: no whitespace, quotes or
+ *  brackets, so an id can never carry text a reader of an error message could mistake for anything
+ *  else. (':' is allowed; the reserved `execution-system:` prefix is refused separately.) */
+export const SAFE_INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 /** Refuse an instance id inside the reserved namespace. See docs/coordination.md §434. */
 export function assertNotReservedInstanceId(pluginInstanceId: string): void {
@@ -89,7 +90,7 @@ export function assertNotReservedInstanceId(pluginInstanceId: string): void {
   // WRITE only — the /v1 schemas are unchanged, so no stored row or response shape moves.
   if (!SAFE_INSTANCE_ID.test(pluginInstanceId)) {
     throw badRequest(
-      `pluginInstanceId must be 1–128 characters of letters, digits, '.', '_' or '-', starting ` +
+      `pluginInstanceId must be 1–128 characters of letters, digits, '.', '_', ':' or '-', starting ` +
         `with a letter or digit`
     );
   }
