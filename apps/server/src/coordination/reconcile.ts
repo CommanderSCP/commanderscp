@@ -126,10 +126,12 @@ import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
 import { TriggerParameterRefusal } from "./trigger-parameter-refusal.js";
 import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 import {
-  assertNotAnUngatedInfraApply,
+  assertNotAnUngatedInfraTemplate,
   infraLaneTriggerParameters,
+  recordInfraTrigger,
   type InfraLaneOutcome
 } from "./infra-lane-trigger-parameters.js";
+import { authorizeInfraLaneIntent } from "../plugin-host/infra-template-guard.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1807,11 +1809,12 @@ async function triggerWaveTarget(
         });
         return null;
       }
-      // Every trigger this lane did NOT derive is held away from the shipped apply template: a
-      // binding of another Type, or a recipe, pointing there would be an apply nobody approved.
+      // Every trigger this lane did NOT derive is held away from BOTH shipped infra templates: a
+      // binding of another Type, or a recipe, pointing there would be a plan in a workspace nobody
+      // derived or an apply nobody approved.
       if (infra === undefined) {
         try {
-          assertNotAnUngatedInfraApply(externalRef);
+          assertNotAnUngatedInfraTemplate(externalRef);
         } catch (err) {
           await refuseTrigger(tx, asRefusal(err));
           return null;
@@ -1887,8 +1890,26 @@ async function triggerWaveTarget(
       }
 
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
+      // WHAT THIS INFRA TRIGGER SUBMITS IS RECORDED, in the claim transaction, before it is sent:
+      // an apply is built from its plan's record, never re-derived (ADR-0056 §2).
+      if (claimed && infra?.kind === "trigger") {
+        await recordInfraTrigger(tx, {
+          orgId,
+          changeObjectId: change.objectId,
+          waveTargetId,
+          targetObjectId,
+          executorPluginId: instanceId,
+          outcome: { ...infra, parameters: triggerParameters ?? infra.parameters }
+        });
+      }
       return claimed
-        ? { kind, priorStateRef, externalRef: triggerRef, parameters: triggerParameters }
+        ? {
+            kind,
+            priorStateRef,
+            externalRef: triggerRef,
+            parameters: triggerParameters,
+            infraLane: infra?.kind === "trigger"
+          }
         : null;
     });
 
@@ -1897,14 +1918,18 @@ async function triggerWaveTarget(
     // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
     let ref;
     try {
-      ref = await client.trigger({
+      const intent: TriggerIntent = {
         kind: claim.kind,
         targetRef: claim.externalRef ?? targetObjectId,
         priorStateRef: claim.priorStateRef,
         idempotencyKey,
         // M25.4 — THE CHANNEL THAT WAS NEVER WIRED. See docs/coordination.md §810.
         ...(claim.parameters !== undefined ? { parameters: claim.parameters } : {})
-      });
+      };
+      // Only the infrastructure lane may put an infra catalog template through the plugin host's
+      // door (`infra-template-guard.ts`); the authority is this exact intent object, nothing a
+      // parameter or a recipe can carry.
+      ref = await client.trigger(claim.infraLane ? authorizeInfraLaneIntent(intent) : intent);
     } catch (err) {
       // Step 3' — the executor REACHED and REFUSED this trigger. See docs/coordination.md §811.
       await withTenantTx(db, orgId, (tx) =>

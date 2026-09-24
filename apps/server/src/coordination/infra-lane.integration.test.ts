@@ -13,6 +13,7 @@ import { resolveRunnerImage } from "@scp/plugin-testkit";
 import { mkdtempTrackedForFile } from "@scp/test-tmpdir";
 import {
   createTestOrg,
+  createTestUser,
   listenTestServer,
   waitUntil,
   type ListeningTestServer,
@@ -59,6 +60,22 @@ const NAMESPACE = "scp-argo-workflows";
 const ENVIRONMENT = "prod-us-east-1";
 const REPO = "acme/infra";
 const FAKE_COMMIT = "c".repeat(40);
+/** One environment's network: `terraform_data` is built into OpenTofu, so the plan is real and
+ *  needs no provider download (the run has no network at all). */
+const NETWORK_TF = [
+  'variable "environment" {',
+  "  type = string",
+  "}",
+  "",
+  'resource "terraform_data" "network" {',
+  '  input = "network-${var.environment}"',
+  "}",
+  "",
+  'output "network" {',
+  "  value = terraform_data.network.output",
+  "}",
+  ""
+].join("\n");
 
 /** The output FILE each template writes → the GLOBAL output name it is exported as (the template's
  *  `outputs.parameters`, held to this by tools/helm-verify). */
@@ -112,8 +129,16 @@ async function dockerAvailable(): Promise<boolean> {
     return false;
   }
 }
-/** A VISIBLE skip — `it.runIf` reports skipped with exit 0 before `beforeAll` decides anything. */
+/** A VISIBLE skip — `it.runIf` reports skipped with exit 0 before `beforeAll` decides anything.
+ *  And NEVER a skip in CI: the integration job has Docker, so a missing daemon there is a broken
+ *  job, and a green "skip" would be the real-counterparty proof quietly not running. */
 function expectSkipped(): void {
+  if (process.env.CI) {
+    throw new Error(
+      "[infra-lane] CI is set and no Docker daemon is reachable — the real OpenTofu counterparty " +
+        "MUST run in CI; this is a broken job, not a skip"
+    );
+  }
   console.warn(
     "[infra-lane] no reachable Docker daemon — the real OpenTofu counterparty did NOT run"
   );
@@ -127,6 +152,8 @@ describe(
     let server: ListeningTestServer;
     let org: TestOrg;
     let admin: ScpClient;
+    /** A second subject with `change:accept`: a plan's proposer (admin) may not accept it. */
+    let approver: ScpClient;
     let argo: Server;
     let argoSystemId: string;
     const submissions: Submission[] = [];
@@ -326,6 +353,10 @@ describe(
       });
       org = await createTestOrg(server, "m28-3-infra");
       admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const approverUser = await createTestUser(server, org, [
+        { role: "Administrator", scope: org.orgId }
+      ]);
+      approver = new ScpClient({ baseUrl: server.baseUrl, token: approverUser.token });
       const system = await admin.object("execution-system").create({
         name: `argo-workflows-${randomUUID().slice(0, 8)}`,
         properties: {
@@ -348,30 +379,22 @@ describe(
       // served as a bare repo the script fetches BY COMMIT. `terraform_data` is built into OpenTofu,
       // so the plan is real and needs no provider download (the run has no network at all).
       workDir = await mkdtempTrackedForFile(join(tmpdir(), "scp-infra-lane-"));
-      await mkdir(join(workDir, "seed/infra"), { recursive: true });
       await mkdir(join(workDir, "repos/acme"), { recursive: true });
       await mkdir(join(workDir, "state"), { recursive: true });
-      await writeFile(
-        join(workDir, "seed/infra/main.tf"),
-        [
-          'variable "environment" {',
-          "  type = string",
-          "}",
-          "",
-          'resource "terraform_data" "network" {',
-          '  input = "network-${var.environment}"',
-          "}",
-          "",
-          'output "network" {',
-          "  value = terraform_data.network.output",
-          "}",
-          ""
-        ].join("\n")
-      );
       await writeFile(
         join(workDir, "backend.tfbackend"),
         'path = "/state/terraform.tfstate"\nworkspace_dir = "/state/workspaces"\n'
       );
+      commit = await seedRepo("acme/infra", { "infra/main.tf": NETWORK_TF });
+    }, 600_000);
+
+    /** One bare repo under repos/, committed from `files`, served to the script as file:///repos. */
+    async function seedRepo(name: string, files: Record<string, string>): Promise<string> {
+      const seed = await mkdtempTrackedForFile(join(tmpdir(), "scp-infra-seed-"));
+      for (const [path, content] of Object.entries(files)) {
+        await mkdir(dirname(join(seed, path)), { recursive: true });
+        await writeFile(join(seed, path), content);
+      }
       const uid = `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`;
       const seeded = await execFileAsync(
         "docker",
@@ -385,7 +408,7 @@ describe(
           "-e",
           "HOME=/tmp",
           "-v",
-          `${workDir}/seed:/seed`,
+          `${seed}:/seed`,
           "-v",
           `${workDir}/repos:/repos`,
           "--entrypoint",
@@ -397,16 +420,17 @@ describe(
             "cd /seed",
             "git init -q -b main .",
             "git -c user.email=scp@example.invalid -c user.name=scp add -A",
-            "git -c user.email=scp@example.invalid -c user.name=scp commit -q -m 'prod-us-east-1 network'",
-            "git clone -q --bare /seed /repos/acme/infra.git",
+            "git -c user.email=scp@example.invalid -c user.name=scp commit -q -m seed",
+            `git clone -q --bare /seed /repos/${name}.git`,
             "git rev-parse HEAD"
           ].join("\n")
         ],
         { timeout: 120_000 }
       );
-      commit = seeded.stdout.trim();
-      expect(commit).toMatch(/^[0-9a-f]{40}$/);
-    }, 600_000);
+      const head = seeded.stdout.trim();
+      expect(head).toMatch(/^[0-9a-f]{40}$/);
+      return head;
+    }
 
     afterAll(async () => {
       await server?.close();
@@ -427,7 +451,11 @@ describe(
     ) {
       const target = await admin.deploymentTargets.create({
         name: `${String(properties["environment"] ?? "no-env")}-${randomUUID().slice(0, 6)}`,
-        properties
+        // The repo this environment's infrastructure lives in — declared ON THE TARGET, never taken
+        // from the change (verification probe C). `null` in `properties` means "declare none".
+        properties: Object.fromEntries(
+          Object.entries({ infrastructureRepo: REPO, ...properties }).filter(([, v]) => v !== null)
+        )
       });
       await admin.executors.putBinding(target.id, {
         executionSystemId: argoSystemId,
@@ -543,7 +571,7 @@ describe(
       await runSubmittedWorkflow(plan.id);
       const t = await waitForTarget(plan.id, "succeeded");
       await waitForState(plan.id, "validating");
-      await admin.changes.accept(plan.id, "reviewed the plan");
+      await approver.changes.accept(plan.id, "reviewed the plan");
       return { plan, digest: t.observed!.plan!.ref! };
     }
 
@@ -560,7 +588,9 @@ describe(
       expect(sub.resourceName).toBe("scp-infra-plan-v1");
       expect(sub.parameters).toMatchObject({
         environment: ENVIRONMENT,
-        stateWorkspace: ENVIRONMENT,
+        // One state per TARGET, carrying the org and the target (item 10): never shared between two
+        // regions of an environment, nor two orgs' `prod`.
+        stateWorkspace: `${ENVIRONMENT}--o${org.orgId}--t${target.id}`,
         infraPath: "infra",
         sourceRepo: REPO,
         sourceCommit: commit,
@@ -605,8 +635,26 @@ describe(
       ).toBe(refusal!.id);
     });
 
+    it("SEPARATION OF DUTIES — the plan's proposer cannot accept (approve) it; someone else can", async () => {
+      const refused = await admin.changes
+        .accept(approved!.planChangeId, "approving my own plan")
+        .then(() => undefined)
+        .catch((err: unknown) => err as { status?: number; problem?: Record<string, unknown> });
+      expect(refused, "the proposer's accept was NOT refused").toBeDefined();
+      expect(refused!.status).toBe(409);
+      expect((await admin.changes.get(approved!.planChangeId)).state).toBe("validating");
+      // The transition's Decision carries the gate's verdict under `gate` (transition.ts).
+      const block = (await decisionsOf(approved!.planChangeId)).find(
+        (d) =>
+          (d.inputContext as { gate?: { gate?: string } } | null)?.gate?.gate ===
+          "infra_plan_separation_of_duties"
+      );
+      expect(block?.verdict).toBe("block");
+      expect(refused!.problem?.["decisionId"] ?? block!.id).toBe(block!.id);
+    });
+
     it("APPLY of the ACCEPTED plan submits scp-infra-apply-v1 bound to that plan's digest and source", async () => {
-      await admin.changes.accept(approved!.planChangeId, "reviewed the plan");
+      await approver.changes.accept(approved!.planChangeId, "reviewed the plan");
       const apply = await proposeApply(prodTargetId, approved!.planChangeId);
       applySubmission = await runSubmittedWorkflow(apply.id);
       expect(applySubmission.resourceName).toBe("scp-infra-apply-v1");
@@ -617,7 +665,7 @@ describe(
         sourceRepo: REPO,
         sourceCommit: commit,
         environment: ENVIRONMENT,
-        stateWorkspace: ENVIRONMENT,
+        stateWorkspace: `${ENVIRONMENT}--o${org.orgId}--t${prodTargetId}`,
         infraPath: "infra",
         changeObjectId: apply.id
       });
@@ -698,6 +746,143 @@ describe(
       });
     });
 
+    it("PROBE A — the target re-scoped after approval (region r1 → r2): the apply is refused, never sent to the new workspace", async () => {
+      const target = await environmentTarget({
+        environment: ENVIRONMENT,
+        region: "r1",
+        infrastructurePath: "infra"
+      });
+      const { plan } = await acceptedPlanAt(target.id);
+      const current = await admin.deploymentTargets.get(target.id);
+      await admin.deploymentTargets.update(target.id, {
+        properties: { ...(current.properties as Record<string, unknown>), region: "r2" }
+      });
+      const apply = await proposeApply(target.id, plan.id);
+      await settle(apply.id, "infra_apply_refused");
+      const refusal = byGate(await decisionsOf(apply.id), "infra_plan_scope_changed");
+      expect(refusal?.inputContext).toMatchObject({ changed: ["stateWorkspace", "region"] });
+    });
+
+    it("PROBE B — the binding's plan template swapped after approval: refused, never sent to the new template's sibling", async () => {
+      const target = await environmentTarget({
+        environment: ENVIRONMENT,
+        region: "r3",
+        infrastructurePath: "infra"
+      });
+      const { plan } = await acceptedPlanAt(target.id);
+      await admin.executors.putBinding(target.id, {
+        executionSystemId: argoSystemId,
+        type: "infrastructure",
+        externalRef: "acme-evil-plan"
+      });
+      const apply = await proposeApply(target.id, plan.id);
+      await settle(apply.id, "infra_apply_refused");
+      expect(submissions.filter((s) => s.resourceName === "acme-evil-apply")).toEqual([]);
+      const refusal = byGate(await decisionsOf(apply.id), "infra_plan_scope_changed");
+      expect(refusal?.inputContext).toMatchObject({ changed: ["templateRef"] });
+    });
+
+    it("PROBE C — a plan from a repo the target does not declare is refused, never run with the operator's credentials", async () => {
+      const target = await environmentTarget({
+        environment: ENVIRONMENT,
+        region: "r4",
+        infrastructurePath: "infra"
+      });
+      const plan = await admin.changes.propose({
+        name: `evil ${randomUUID().slice(0, 6)}`,
+        targets: [target.id],
+        type: "infrastructure",
+        sourceRef: { repo: "attacker/evil", commit: "d".repeat(40) }
+      });
+      await settle(plan.id, "infra_declaration_refused");
+      expect(submissions.filter((s) => s.parameters["sourceRepo"] === "attacker/evil")).toEqual([]);
+      expect(
+        byGate(await decisionsOf(plan.id), "infra_source_not_declared")?.inputContext
+      ).toMatchObject({
+        requestedRepo: "attacker/evil",
+        declaredRepo: REPO
+      });
+
+      // And a target that declares NO repo refuses every plan.
+      const undeclared = await environmentTarget({
+        environment: ENVIRONMENT,
+        region: "r4b",
+        infrastructureRepo: null
+      });
+      const b = await proposePlan(undeclared.id);
+      await settle(b.id, "infra_declaration_refused");
+      expect(byGate(await decisionsOf(b.id), "infra_source_undeclared")).toBeDefined();
+    });
+
+    it("PROBE D — a configuration binding naming the PLAN template, recipe steering the workspace, is refused", async () => {
+      const target = await environmentTarget(
+        { environment: ENVIRONMENT, region: "r5" },
+        "scp-infra-plan-v1",
+        "configuration"
+      );
+      const change = await admin.changes.propose({
+        name: `cfg ${randomUUID().slice(0, 6)}`,
+        targets: [target.id],
+        type: "configuration",
+        properties: {
+          recipe: {
+            version: 1,
+            trigger: {
+              kind: "workflow_dispatch",
+              parameters: {
+                environment: "x",
+                stateWorkspace: "other-org-prod",
+                sourceRepo: "attacker/evil",
+                sourceCommit: "e".repeat(40),
+                infraPath: "."
+              }
+            }
+          }
+        }
+      });
+      await settle(change.id, "infra_apply_refused");
+      expect(
+        submissions.filter((s) => s.parameters["stateWorkspace"] === "other-org-prod")
+      ).toEqual([]);
+      expect(byGate(await decisionsOf(change.id), "infra_template_outside_lane")).toBeDefined();
+    });
+
+    it("THE PLUGIN HOST'S DOOR — no server path can submit or schedule an infra template except the lane", async () => {
+      // Every other caller (hook runs, continuous probes, bumps) reaches Argo through this client.
+      const t = await waveTargetOf(approved!.planChangeId);
+      const instanceId = t!.executorPluginId!;
+      const client = server.pluginHost!.executor(instanceId);
+      const before = submissions.length;
+      for (const template of ["scp-infra-plan-v1", "scp-infra-apply-v1"]) {
+        await expect(
+          client.trigger({
+            kind: "workflow_dispatch",
+            targetRef: template,
+            parameters: { stateWorkspace: "anything", planDigest: "f".repeat(64) }
+          })
+        ).rejects.toThrow(/submitted only by the infrastructure lane/);
+        await expect(
+          client.ensureSchedule!({
+            scheduleId: `probe-${randomUUID().slice(0, 6)}`,
+            targetRef: template,
+            cadenceSeconds: 300
+          })
+        ).rejects.toThrow(/submitted only by the infrastructure lane/);
+      }
+      expect(submissions.length, "an infra template reached Argo outside the lane").toBe(before);
+    });
+
+    it("a declared APPLY on a target whose pipeline is NOT the Argo lane is refused, never run as something else", async () => {
+      const target = await admin.deploymentTargets.create({
+        name: `unbound-${randomUUID().slice(0, 6)}`,
+        properties: { environment: ENVIRONMENT, infrastructureRepo: REPO }
+      });
+      const apply = await proposeApply(target.id, approved!.planChangeId);
+      const t = await settled(apply.id, "infra_apply_refused");
+      expect(t.status).toBe("infra_apply_refused");
+      expect(byGate(await decisionsOf(apply.id), "infra_apply_lane_absent")).toBeDefined();
+    });
+
     it("the shipped APPLY template is unreachable outside the lane — a binding naming it directly is refused", async () => {
       const target = await environmentTarget(
         { environment: "prod-us-east-1", region: "side-door" },
@@ -717,9 +902,7 @@ describe(
       });
       await settle(change.id, "infra_apply_refused");
       expect(submissions.filter((s) => s.parameters["planDigest"] === "f".repeat(64))).toEqual([]);
-      expect(
-        byGate(await decisionsOf(change.id), "infra_apply_template_outside_lane")
-      ).toBeDefined();
+      expect(byGate(await decisionsOf(change.id), "infra_template_outside_lane")).toBeDefined();
     });
 
     it("a PLAN is refused — never submitted — for a target with no environment, or a source with no pinned commit", async () => {
@@ -782,6 +965,46 @@ describe(
       const p2 = await runScript("plan", fresh);
       expect(p1.outputs["planDigest"]).toMatch(/^[0-9a-f]{64}$/);
       expect(p2.outputs["planDigest"]).toBe(p1.outputs["planDigest"]);
+
+      // THE DIGEST COVERS THE PLACE (item 1): the same changes planned into another workspace are a
+      // different plan, so an approval of one cannot apply the other — measured, not argued.
+      const elsewhere = await runScript("plan", {
+        ...fresh,
+        stateWorkspace: "prod-us-east-1-other"
+      });
+      expect(elsewhere.outputs["planAdd"]).toBe(p1.outputs["planAdd"]);
+      expect(elsewhere.outputs["planDigest"]).not.toBe(p1.outputs["planDigest"]);
+      const crossApply = await runScript("apply", {
+        ...fresh,
+        stateWorkspace: "prod-us-east-1-other",
+        planDigest: p1.outputs["planDigest"]!
+      });
+      expect(crossApply.rc, crossApply.stdout).toBe(3);
+      expect(crossApply.outputs["applied"]).toBe("false");
+
+      // THE BACKEND IS THE OPERATOR'S (item 5): a repo carrying its own override file, `backend`
+      // block or `cloud` block is refused before init — `zz_override.tf` sorts after the script's
+      // override and would otherwise win (measured by the verification probe).
+      for (const [name, extra] of [
+        [
+          "acme/infra-override",
+          {
+            "infra/zz_override.tf":
+              'terraform {\n  backend "local" {\n    path = "/tmp/elsewhere.tfstate"\n  }\n}\n'
+          }
+        ],
+        ["acme/infra-backend", { "infra/backend.tf": 'terraform {\n  backend "s3" {}\n}\n' }],
+        [
+          "acme/infra-cloud",
+          { "infra/cloud.tf": 'terraform {\n  cloud {\n    organization = "x"\n  }\n}\n' }
+        ]
+      ] as const) {
+        const head = await seedRepo(name, { "infra/main.tf": NETWORK_TF, ...extra });
+        const run = await runScript("plan", { ...fresh, sourceRepo: name, sourceCommit: head });
+        expect(run.rc, `${name}: ${run.stdout}`).toBe(2);
+        expect(run.stdout).toMatch(/override file|backend or cloud block/);
+        expect(run.outputs["planDigest"], `${name} got as far as a plan`).toBeUndefined();
+      }
     }, 900_000);
 
     it("(the wave-target rows agree with the API — the observed plan is PERSISTED, not computed on read)", async () => {

@@ -32,7 +32,8 @@ import {
   WAVE_TARGET_DESTINATION_REFUSED_STATUS,
   WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS,
   WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS,
-  WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS
+  WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS,
+  WAVE_TARGET_SOURCE_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
 
 /** The wave-target access the reconcile loop needs. See docs/coordination.md §1051. */
@@ -499,7 +500,9 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   // apply whose plan is not approved/current. The second is the one that keeps an unapproved plan
   // from ever reaching scp-infra-apply-v1.
   WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS,
-  WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS
+  WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS,
+  // A build whose source is not the component's declared source (ADR-0053 addendum).
+  WAVE_TARGET_SOURCE_REFUSED_STATUS
 ] as const;
 export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
 

@@ -9,12 +9,16 @@ import {
 } from "@scp/schemas";
 import { and, eq } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { objects } from "../db/schema.js";
+import { objects, sourceMappings } from "../db/schema.js";
 import { registryForComponent } from "./component-pipeline.js";
+import { insertDecision } from "./decisions-repo.js";
+import { globMatch } from "./glob-match.js";
 import {
   TriggerParameterRefusal,
   WAVE_TARGET_DESTINATION_REFUSED_AUDIT_ACTION,
-  WAVE_TARGET_DESTINATION_REFUSED_STATUS
+  WAVE_TARGET_DESTINATION_REFUSED_STATUS,
+  WAVE_TARGET_SOURCE_REFUSED_AUDIT_ACTION,
+  WAVE_TARGET_SOURCE_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
 
 /** WHAT A BUILD-LANE TRIGGER TELLS ITS EXECUTOR.
@@ -113,6 +117,15 @@ export async function buildLaneTriggerParameters(
   if (ref) params.sourceRef = ref;
   if (commit) params.sourceCommit = commit;
 
+  // WHOSE CODE IS BUILT (M28.3 verification, ADR-0053 addendum). The build runs the repo's own
+  // Dockerfile/spec and pushes the result with the operator's credentials, so the repo must be one
+  // this component DECLARES — its source mappings for this Type — never simply the proposer's
+  // choice. A recipe's `sourceRepo` wins the merge in reconcile, so it is checked too.
+  await assertSourceIsDeclared(tx, input, type, [
+    repo,
+    readString(input.recipeParameters, "sourceRepo")
+  ]);
+
   // WHERE THIS COMPONENT'S BUILD DEFINITION LIVES, when it says. A monorepo puts each component's
   // Dockerfile (or spec) under its own directory (`apps/profile-web/Dockerfile`), so the path is a
   // fact ABOUT THE COMPONENT, not a property of the build tooling — carrying it in chart values
@@ -150,6 +163,79 @@ export async function buildLaneTriggerParameters(
   }
 
   return Object.keys(params).length > 1 ? params : undefined;
+}
+
+/** The build lane's source refusal: the repo is not one the component declares for this Type. */
+export class BuildSourceRefused extends TriggerParameterRefusal {
+  readonly status = WAVE_TARGET_SOURCE_REFUSED_STATUS;
+  readonly action = WAVE_TARGET_SOURCE_REFUSED_AUDIT_ACTION;
+}
+
+/** A component's DECLARED sources for one Type are its source mappings of that Type: the same rows
+ *  that route a push to it (`correlation.ts`), matched the same way — a glob on the repo, a NULL
+ *  pattern meaning every repo. Disabled rows still declare: a paused source is still the component's.
+ *
+ *  A component with NO mapping for this Type has declared nothing, and that is where the live
+ *  estate is today (API-proposed builds with a hand-supplied sourceRef). Refusing them would stop
+ *  builds that work, so that case is a `warn` Decision naming the undeclared repo and the build
+ *  proceeds — an owner question recorded in ADR-0053's addendum, not a silent pass. */
+async function assertSourceIsDeclared(
+  tx: TenantTx,
+  input: BuildTriggerParameterInput,
+  type: ArtifactClass,
+  candidates: (string | undefined)[]
+): Promise<void> {
+  const repos = [...new Set(candidates.filter((r): r is string => r !== undefined))];
+  if (repos.length === 0) return;
+  const rows = await tx
+    .select({ repoPattern: sourceMappings.repoPattern })
+    .from(sourceMappings)
+    .where(
+      and(
+        eq(sourceMappings.orgId, input.orgId),
+        eq(sourceMappings.componentObjectId, input.targetObjectId),
+        eq(sourceMappings.type, type)
+      )
+    );
+  const inputContext = {
+    gate: "build_source_declared",
+    type,
+    requestedRepos: repos,
+    declaredRepoPatterns: rows.map((r) => r.repoPattern)
+  };
+  if (rows.length === 0) {
+    await insertDecision(tx, {
+      orgId: input.orgId,
+      kind: "wave_target",
+      subjectId: input.changeObjectId,
+      verdict: "warn",
+      inputContext: { ...inputContext, gate: "build_source_undeclared" },
+      reasonTree: {
+        summary:
+          `building ${repos.join(", ")} for component ${input.targetObjectId}, which declares no ` +
+          `'${type}' source mapping — the repo is the proposer's word alone`,
+        remediation: `declare this component's '${type}' source with a source mapping`
+      }
+    });
+    return;
+  }
+  const undeclared = repos.filter(
+    (r) => !rows.some((row) => row.repoPattern === null || globMatch(row.repoPattern, r))
+  );
+  if (undeclared.length > 0) {
+    throw new BuildSourceRefused(
+      `refusing to build ${undeclared.map((r) => `'${r}'`).join(", ")} for this '${type}' ` +
+        `component: its declared sources are ${rows.map((r) => `'${r.repoPattern}'`).join(", ")}. ` +
+        `The build runs that repository's own build definition and pushes the result with the ` +
+        `operator's credentials, so it builds only what the component declares.`,
+      {
+        remediation:
+          "propose the build from a repo the component's source mappings name, or add a source " +
+          "mapping for this repo if it really is this component's source",
+        inputContext
+      }
+    );
+  }
 }
 
 /** Only ever called with a `declared` resolution — the one state that names a destination. */

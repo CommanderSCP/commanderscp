@@ -36,8 +36,14 @@ export const WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS = "infra_apply_refused";
 export const WAVE_TARGET_INFRA_APPLY_REFUSED_AUDIT_ACTION =
   "change.wave_target.infra_apply_refused";
 
+/** Terminal status (M28.3, ADR-0053 addendum): a build whose source repo is not one the component
+ *  declares — built with the operator's push credentials, it would publish someone else's code. */
+export const WAVE_TARGET_SOURCE_REFUSED_STATUS = "source_refused";
+export const WAVE_TARGET_SOURCE_REFUSED_AUDIT_ACTION = "change.wave_target.source_refused";
+
 export type TriggerParameterRefusalStatus =
   | typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS
+  | typeof WAVE_TARGET_SOURCE_REFUSED_STATUS
   | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
   | typeof WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS
   | typeof WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS;

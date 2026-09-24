@@ -891,12 +891,17 @@ function verifyInfraCatalogTemplates(): void {
       "--set",
       "bundledExecutor.argoWorkflows.catalog.infra.stateBackend.type=s3"
     ]);
-  } catch {
-    failedClosed = true;
+  } catch (err) {
+    // THE RIGHT failure, not any failure: a render that died for some other reason (a typo in the
+    // template, a missing value elsewhere) would otherwise read as this guard holding.
+    const e = err as { message?: string; stderr?: unknown };
+    failedClosed = `${e.message ?? ""}${String(e.stderr ?? "")}`.includes(
+      "infra.stateBackend.type is set but infra.image is empty"
+    );
   }
   assert(
     failedClosed,
-    `[${label}] stateBackend.type set with an empty infra.image rendered — it must fail the render, not ship a template with no image`
+    `[${label}] stateBackend.type set with an empty infra.image did not fail the render WITH ITS OWN MESSAGE — it must refuse, not ship a template with no image`
   );
 
   const docs = renderBundledChart([...base, ...INFRA_VERIFY_SETS]);
@@ -937,7 +942,15 @@ function verifyInfraCatalogTemplates(): void {
       serviceAccountName?: string;
       arguments?: { parameters?: { name: string; value?: string }[] };
       templates?: WfTemplate[];
+      synchronization?: { mutexes?: { name?: string }[] };
     };
+    // ONE RUN PER STATE WORKSPACE, the same mutex name in both templates, so a plan and an apply
+    // of one workspace queue rather than race.
+    assert(
+      JSON.stringify(spec.synchronization?.mutexes) ===
+        JSON.stringify([{ name: "scp-infra-{{workflow.parameters.stateWorkspace}}" }]),
+      `[${label}] ${name} synchronization is ${JSON.stringify(spec.synchronization)} — it must hold the per-workspace mutex scp-infra-{{workflow.parameters.stateWorkspace}}`
+    );
     const tpl = spec.templates?.[0];
     const c = tpl?.container;
     assert(
@@ -945,8 +958,8 @@ function verifyInfraCatalogTemplates(): void {
       `[${label}] ${name} runs '${c?.image}', not infra.image`
     );
     assert(
-      spec.serviceAccountName === "scp-infra" && spec.serviceAccountName !== buildSa,
-      `[${label}] ${name} runs as '${spec.serviceAccountName}' — it must be the infra identity, never the build identity a tenant's Dockerfile runs as`
+      spec.serviceAccountName === `scp-infra-${phase}` && spec.serviceAccountName !== buildSa,
+      `[${label}] ${name} runs as '${spec.serviceAccountName}' — it must be the ${phase} identity scp-infra-${phase}: never the other phase's (a plan's identity must be read-only), never the build identity a tenant's Dockerfile runs as`
     );
     assert(
       (tpl?.initContainers ?? []).length === 0,
@@ -1038,8 +1051,8 @@ function verifyInfraCatalogTemplates(): void {
     );
     assert(
       JSON.stringify(c?.envFrom) ===
-        JSON.stringify([{ secretRef: { name: "scp-infra-credentials", optional: true } }]),
-      `[${label}] ${name} envFrom is ${JSON.stringify(c?.envFrom)}, not the operator's optional infra credentials Secret`
+        JSON.stringify([{ secretRef: { name: `scp-infra-${phase}-credentials`, optional: true } }]),
+      `[${label}] ${name} envFrom is ${JSON.stringify(c?.envFrom)}, not the operator's optional ${phase} credentials Secret scp-infra-${phase}-credentials (the plan's must be read-only, so the two are never one Secret)`
     );
     const backendEnv = (c?.env ?? []).find((e) => e.name === "SCP_STATE_BACKEND_TYPE");
     assert(
@@ -1048,22 +1061,25 @@ function verifyInfraCatalogTemplates(): void {
     );
   }
 
-  // The infra identity's Role is the executor floor and nothing more.
-  const role = docs.find((d) => d.kind === "Role" && d.metadata?.name === "scp-infra") as
-    { rules?: { apiGroups?: string[]; resources?: string[]; verbs?: string[] }[] } | undefined;
-  assert(
-    JSON.stringify(role?.rules) ===
-      JSON.stringify([
-        {
-          apiGroups: ["argoproj.io"],
-          resources: ["workflowtaskresults"],
-          verbs: ["create", "patch"]
-        }
-      ]),
-    `[${label}] the scp-infra Role grants ${JSON.stringify(role?.rules)} — the chart grants the infra identity the executor floor only; anything more (a kubernetes backend's Secrets) is the operator's to add`
-  );
+  // Each infra identity's Role is the executor floor and nothing more.
+  for (const phase of ["plan", "apply"] as const) {
+    const role = docs.find(
+      (d) => d.kind === "Role" && d.metadata?.name === `scp-infra-${phase}`
+    ) as { rules?: { apiGroups?: string[]; resources?: string[]; verbs?: string[] }[] } | undefined;
+    assert(
+      JSON.stringify(role?.rules) ===
+        JSON.stringify([
+          {
+            apiGroups: ["argoproj.io"],
+            resources: ["workflowtaskresults"],
+            verbs: ["create", "patch"]
+          }
+        ]),
+      `[${label}] the scp-infra-${phase} Role grants ${JSON.stringify(role?.rules)} — the chart grants each infra identity the executor floor only; anything more is the operator's to add`
+    );
+  }
   console.log(
-    "  absent until stateBackend.type is set; fails closed with no image; ships files/scp-infra.sh byte-identical; positional args + required params + evidence outputs match; fully hardened; infra identity at the executor floor; only gitToken + the infra Secret"
+    "  absent until stateBackend.type is set; fails closed with its own message when the image is missing; ships files/scp-infra.sh byte-identical; positional args + required params + evidence outputs match; per-workspace mutex; fully hardened; plan and apply identities + Secrets separate, each at the executor floor"
   );
 }
 

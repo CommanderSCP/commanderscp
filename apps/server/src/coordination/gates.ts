@@ -1,7 +1,7 @@
-import { and, eq, isNull, or } from "drizzle-orm";
-import type { ChangeState } from "@scp/schemas";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { INFRASTRUCTURE_DECLARATION_PROPERTY, type ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { gateBindings } from "../db/schema.js";
+import { decisions, gateBindings } from "../db/schema.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
 import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
@@ -149,6 +149,14 @@ export async function evaluateLifecycleGate(
     );
   }
 
+  // SEPARATION OF DUTIES FOR AN INFRASTRUCTURE PLAN (M28.3, ADR-0056 §1a). Accepting an
+  // infrastructure PLAN change is approving that plan for apply, and the person who asked for a plan
+  // must not be the one who approves it — otherwise "an approved plan" means only "a plan somebody
+  // wanted". Ahead of governance, and not a policy an org opts into: it is a property of what this
+  // acceptance MEANS, the default every install gets.
+  const separation = await infraPlanSeparationOfDuties(tx, ctx, changeObject.properties);
+  if (separation) return separation;
+
   const outcome = await evaluateGovernanceGate(tx, deps.sandbox, deps.host, {
     orgId: ctx.orgId,
     changeObjectId: ctx.changeObjectId,
@@ -256,5 +264,62 @@ export async function evaluateWaveGate(
           },
     frozenTargets: outcome.frozenTargets,
     ...(hookGate ? { pipelineHooks: hookGate.entries } : {})
+  };
+}
+
+/** Who proposed a change — its `propose` transition Decision's actor. `undefined` when no such
+ *  record exists (an imported change, a pruned Decision). */
+async function proposerOf(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string
+): Promise<string | undefined> {
+  const [row] = await tx
+    .select({ inputContext: decisions.inputContext })
+    .from(decisions)
+    .where(
+      and(
+        eq(decisions.orgId, orgId),
+        eq(decisions.subjectId, changeObjectId),
+        eq(decisions.kind, "transition"),
+        sql`${decisions.inputContext} ->> 'trigger' = 'propose'`
+      )
+    )
+    .orderBy(asc(decisions.id))
+    .limit(1);
+  const actor = (row?.inputContext as Record<string, unknown> | undefined)?.["actorId"];
+  return typeof actor === "string" ? actor : undefined;
+}
+
+/** THE SEPARATION-OF-DUTIES CHECK (ADR-0056 §1a). An infrastructure change that declares no apply is
+ *  a PLAN; its acceptor must not be its proposer. An unknown proposer is refused rather than assumed
+ *  different — "we could not tell" is not "someone else approved it". */
+async function infraPlanSeparationOfDuties(
+  tx: TenantTx,
+  ctx: EvaluateLifecycleGateContext,
+  properties: unknown
+): Promise<GateVerdict | undefined> {
+  const props = (properties ?? {}) as Record<string, unknown>;
+  if (props["type"] !== "infrastructure") return undefined;
+  if ((props[INFRASTRUCTURE_DECLARATION_PROPERTY] ?? null) !== null) return undefined;
+  const proposer = await proposerOf(tx, ctx.orgId, ctx.changeObjectId);
+  if (proposer !== undefined && proposer !== ctx.actorObjectId) return undefined;
+  return {
+    verdict: "block",
+    inputContext: {
+      fromState: ctx.fromState,
+      toState: ctx.toState,
+      gate: "infra_plan_separation_of_duties",
+      proposerObjectId: proposer ?? null,
+      acceptorObjectId: ctx.actorObjectId
+    },
+    reasonTree: {
+      summary:
+        proposer === undefined
+          ? "this infrastructure plan has no record of who proposed it, so its acceptance cannot be shown to be someone else's — refusing to treat it as approved"
+          : "the proposer of an infrastructure plan cannot also accept it: accepting the plan approves it for apply, and that approval must be someone else's",
+      remediation:
+        "have a different subject with change:accept at every target accept this plan change"
+    }
   };
 }

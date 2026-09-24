@@ -3,12 +3,20 @@ import {
   infraApplyTemplateFor,
   InfrastructureChangeDeclarationSchema,
   INFRASTRUCTURE_DECLARATION_PROPERTY,
-  INFRA_CATALOG_APPLY_TEMPLATE,
   type ExecutorType
 } from "@scp/schemas";
-import { and, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { changePlans, changes, changeWaves, changeWaveTargets, objects } from "../db/schema.js";
+import {
+  changePlans,
+  changes,
+  changeWaves,
+  changeWaveTargets,
+  decisions,
+  objects
+} from "../db/schema.js";
+import { canonicalJson } from "../util/canonical-json.js";
+import { insertDecision } from "./decisions-repo.js";
 import {
   TriggerParameterRefusal,
   WAVE_TARGET_INFRA_APPLY_REFUSED_AUDIT_ACTION,
@@ -30,24 +38,33 @@ import type { WaveTargetObservedState } from "./wave-targets-repo.js";
  *
  * THE APPROVAL IS THE CHANGE LIFECYCLE, NOT A NEW ONE. A plan runs as a change; its digest and tally
  * come back as `observed.plan` (the evidence managed-iac already reports, rendered by the existing
- * plan chip); accepting that change — `change:accept` at every target, plus any quorum policy on
- * the validating→accepted edge — IS approving that plan. An apply is a second change naming it.
- * That reuses the gate, the Decision records and the audit chain as they are, instead of growing a
- * parallel approval model with its own roles.
+ * plan chip); accepting that change — `change:accept` at every target, by someone OTHER than its
+ * proposer (`gates.ts`, separation of duties), plus any quorum policy on the validating→accepted
+ * edge — IS approving that plan. An apply is a second change naming it.
+ *
+ * WHAT A PLAN WAS IS RECORDED, NOT RE-DERIVED. Every plan trigger writes an `infra_plan_trigger`
+ * Decision carrying the exact template and parameters it submitted (`recordInfraTrigger`). The
+ * apply is built from THAT record — the same workspace, directory, repo, commit and the plan
+ * template's own `-apply` sibling — and is refused if the target or its binding now say something
+ * else. Re-deriving at apply time is how an approval of one place became an apply to another
+ * (verification probes A and B).
  *
  * THE APPLY GATE, all evaluated here, inside the trigger-claim transaction, BEFORE `trigger()`:
  *   1. the named plan change exists, is a PLAN (not an apply, not a rollback), and is `accepted`;
  *   2. it has a SUCCEEDED plan at THIS target, run by the SAME executor instance about to apply,
- *      with a digest — an apply is bound to a digest or it is not triggered;
- *   3. no NEWER plan has run at this target since (a plan approved and then superseded cannot be
- *      applied — the newer one is what reflects the configuration now);
- *   4. no other apply of this plan is in flight, and none has SUCCEEDED — a re-apply of an applied
+ *      with a digest and a recorded trigger — an apply is bound to both or it is not triggered;
+ *   3. the target's place and its binding still match what the plan recorded;
+ *   4. no NEWER plan has been DISPATCHED at this target since (dispatch order, from the time-ordered
+ *      ids of the plan-trigger Decisions — not row creation order);
+ *   5. no other apply of this plan is in flight, and none has SUCCEEDED — a re-apply of an applied
  *      plan is a no-op: no second trigger, a success recorded with the reason.
- * The template carries the second half: it re-plans and applies only if the digest still matches
- * (`deploy/helm-bundled/files/scp-infra.sh`).
+ * The template carries the second half: it re-plans and applies only if the digest — which covers
+ * the plan's place as well as its changes — still matches (`deploy/helm-bundled/files/scp-infra.sh`).
  *
  * ENGAGES ONLY FOR `argo-workflows`. `managed-iac` stays the Mode C fallback exactly as it was (D2),
- * and every other executor bound to an `infrastructure` Type keeps receiving what it received.
+ * and every other executor bound to an `infrastructure` Type keeps receiving what it received — but
+ * a change that DECLARES an apply is refused wherever this lane does not engage, because an apply
+ * declaration silently run as something else is the one misreading that must not happen.
  */
 
 export class InfraDeclarationRefused extends TriggerParameterRefusal {
@@ -63,8 +80,17 @@ export class InfraApplyRefused extends TriggerParameterRefusal {
 /** The only module this lane speaks for. */
 export const INFRA_LANE_EXECUTOR_MODULE = "argo-workflows";
 
+/** The SHIPPED infra catalog templates — reachable only through this lane (see
+ *  `assertNotAnUngatedInfraTemplate` and the plugin host's `infra-template-guard.ts`). */
+export const INFRA_CATALOG_TEMPLATE_PATTERN = /^scp-infra-(plan|apply)-v[0-9]+$/;
+
+/** The Decision gate every plan/apply trigger records its exact submission under. */
+export const INFRA_PLAN_TRIGGER_GATE = "infra_plan_trigger";
+export const INFRA_APPLY_TRIGGER_GATE = "infra_apply_trigger";
+
 /** A plain name: what OpenTofu accepts as a workspace and the template re-checks. */
-const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,89}$/;
+const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
+const WORKSPACE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
 const FULL_COMMIT = /^([0-9a-f]{40}|[0-9a-f]{64})$/;
 const REPO_SHAPE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -113,14 +139,27 @@ export const INFRA_LANE_RESERVED_PARAMETERS = [
   "targetObjectId"
 ] as const;
 
+/** The parameters that say WHERE and WHAT a plan planned — what an apply must reuse verbatim. */
+const PLAN_SCOPE_KEYS = [
+  "environment",
+  "stateWorkspace",
+  "region",
+  "infraPath",
+  "sourceRepo",
+  "sourceCommit",
+  "sourceRef"
+] as const;
+
 /** What reconcile does with a trigger this lane derived. */
 export type InfraLaneOutcome =
   | {
       kind: "trigger";
       phase: "plan" | "apply";
-      /** The WorkflowTemplate to submit — the binding's own for a plan, its `-apply` sibling for an
-       *  apply. Reconcile uses this in place of the binding's externalRef. */
+      /** The WorkflowTemplate to submit — the binding's own for a plan, the RECORDED plan's
+       *  `-apply` sibling for an apply. Reconcile uses this in place of the binding's externalRef. */
       templateRef: string;
+      /** For a plan: the apply template its approval will be applied with, recorded now. */
+      applyTemplateRef: string;
       parameters: Record<string, unknown>;
     }
   | {
@@ -157,17 +196,17 @@ function readDeclaration(properties: unknown): Declaration {
   return { phase: "apply", planChangeObjectId: parsed.data.applyPlan };
 }
 
-/** The deployment-target facts both phases need, read off the target at trigger time. */
-async function readEnvironment(
-  tx: TenantTx,
-  orgId: string,
-  targetObjectId: string
-): Promise<{
+interface Place {
   environment: string;
-  region?: string;
+  region: string;
   stateWorkspace: string;
-  infraPath?: string;
-}> {
+  infraPath: string;
+  /** `properties.infrastructureRepo` — the ONE repo this environment's infrastructure comes from. */
+  declaredRepo: string;
+}
+
+/** The deployment-target facts both phases need, read off the target. */
+async function readPlace(tx: TenantTx, orgId: string, targetObjectId: string): Promise<Place> {
   const [target] = await tx
     .select({ typeId: objects.typeId, properties: objects.properties })
     .from(objects)
@@ -203,50 +242,94 @@ async function readEnvironment(
       { inputContext: { gate: "infra_region_malformed", region } }
     );
   }
-  // ONE STATE WORKSPACE PER TARGET'S PLACE, not per environment alone: ADR-0044's region targets
-  // share an environment (`prod` in amer AND emea), and sharing one state between them would make
-  // the second region's plan a plan to destroy the first's.
-  const stateWorkspace = region ? `${environment}-${region}` : environment;
-  if (!PLAIN_NAME.test(stateWorkspace)) {
+  // ONE STATE WORKSPACE PER TARGET, carrying the org and the target's identity: ADR-0044's region
+  // targets share an environment (`prod` in amer AND emea), and two orgs on one operator backend
+  // can both call an environment `prod` — sharing a state between any of them would make one's
+  // plan a plan to destroy the other's. The readable part leads so an operator browsing the backend
+  // still sees `prod-us-east-1`.
+  const stateWorkspace = `${region ? `${environment}-${region}` : environment}--o${orgId}--t${targetObjectId}`;
+  if (!WORKSPACE_NAME.test(stateWorkspace)) {
     throw new InfraDeclarationRefused(
       `the state workspace '${stateWorkspace}' derived for ${targetObjectId} is not a plain name.`,
       { inputContext: { gate: "infra_workspace_malformed", stateWorkspace } }
     );
   }
   // Where in the repo this environment's configuration lives — a fact about the TARGET, the way a
-  // Dockerfile path is a fact about a component. Absent ⇒ the template's own default (the root).
-  const infraPath = readString(target.properties, "infrastructurePath");
-  if (infraPath !== undefined && (infraPath.startsWith("/") || `/${infraPath}/`.includes("/../"))) {
+  // Dockerfile path is a fact about a component. Absent ⇒ the repo root.
+  const infraPath = readString(target.properties, "infrastructurePath") ?? ".";
+  if (infraPath.startsWith("/") || `/${infraPath}/`.includes("/../")) {
     throw new InfraDeclarationRefused(
       `deployment-target ${targetObjectId} declares infrastructurePath '${infraPath}', which ` +
         `leaves the repository.`,
       { inputContext: { gate: "infra_path_escapes", infraPath } }
     );
   }
-  return {
-    environment,
-    ...(region ? { region } : {}),
-    stateWorkspace,
-    ...(infraPath ? { infraPath } : {})
-  };
+  // THE DECLARED SOURCE. A plan runs the repository's code — providers, `data "external"` — with the
+  // operator's credentials in the pod, so WHICH repository cannot be the proposer's choice. It is
+  // a fact about the target, set by whoever may write the target, and a plan from anywhere else is
+  // refused (`verification probe C`).
+  const declaredRepo = readString(target.properties, "infrastructureRepo");
+  if (!declaredRepo || !REPO_SHAPE.test(declaredRepo)) {
+    throw new InfraDeclarationRefused(
+      `deployment-target ${targetObjectId} ${declaredRepo ? `declares infrastructureRepo '${declaredRepo}', which is not owner/name` : "declares no properties.infrastructureRepo"}. ` +
+        `A plan runs its repository's code with the operator's credentials, so the repository is ` +
+        `declared on the target — never taken from the change that asks for the plan.`,
+      {
+        remediation:
+          "set the deployment-target's properties.infrastructureRepo to the owner/name of the repo " +
+          "its infrastructure lives in",
+        inputContext: { gate: "infra_source_undeclared", declaredRepo: declaredRepo ?? null }
+      }
+    );
+  }
+  return { environment, region: region ?? "", stateWorkspace, infraPath, declaredRepo };
 }
 
-function readSource(
-  sourceRef: unknown
-): { repo: string; commit: string; ref?: string } | undefined {
+function readSource(sourceRef: unknown): { repo: string; commit: string; ref: string } | undefined {
   const repo = readString(sourceRef, "repo");
   const commit = readString(sourceRef, "commit");
   if (!repo || !commit || !REPO_SHAPE.test(repo) || !FULL_COMMIT.test(commit)) return undefined;
-  const ref = readString(sourceRef, "ref");
-  return { repo, commit, ...(ref ? { ref } : {}) };
+  return { repo, commit, ref: readString(sourceRef, "ref") ?? "" };
 }
 
 export async function infraLaneTriggerParameters(
   tx: TenantTx,
   input: InfraLaneInput
 ): Promise<InfraLaneOutcome | undefined> {
-  if (categoryOfType(input.type) !== "infrastructure") return undefined;
-  if (input.pluginModule !== INFRA_LANE_EXECUTOR_MODULE) return undefined;
+  const [changeObject] = await tx
+    .select({ properties: objects.properties })
+    .from(objects)
+    .where(and(eq(objects.orgId, input.orgId), eq(objects.id, input.changeObjectId)))
+    .limit(1);
+  const declaration = readDeclaration(changeObject?.properties);
+  const engaged =
+    categoryOfType(input.type) === "infrastructure" &&
+    input.pluginModule === INFRA_LANE_EXECUTOR_MODULE;
+
+  // A DECLARED APPLY THE LANE WILL NOT SERVE IS REFUSED, never silently run as whatever the bound
+  // executor does by default (for managed-iac today: a PLAN, reported as success).
+  if (!engaged) {
+    if (declaration.phase === "apply") {
+      throw new InfraApplyRefused(
+        `this change declares an APPLY of plan ${declaration.planChangeObjectId}, but its target's ` +
+          `'${input.type}' pipeline resolves to '${input.pluginModule ?? "(none)"}', which the ` +
+          `apply gate does not serve. Running it anyway would do something other than the apply it ` +
+          `declares.`,
+        {
+          remediation:
+            "bind the deployment-target's 'infrastructure' pipeline to an Argo Workflows system with " +
+            "externalRef scp-infra-plan-v1, or remove properties.infrastructure",
+          inputContext: {
+            gate: "infra_apply_lane_absent",
+            planChangeObjectId: declaration.planChangeObjectId,
+            requestedType: input.type,
+            pluginModule: input.pluginModule
+          }
+        }
+      );
+    }
+    return undefined;
+  }
 
   // NO ROLLBACK REPLAY. Rolling infrastructure back is planning the prior commit and applying THAT
   // plan through the same gate; re-triggering a template with the forward change's inputs would be
@@ -290,24 +373,7 @@ export async function infraLaneTriggerParameters(
     );
   }
 
-  const [changeObject] = await tx
-    .select({ properties: objects.properties })
-    .from(objects)
-    .where(and(eq(objects.orgId, input.orgId), eq(objects.id, input.changeObjectId)))
-    .limit(1);
-  const declaration = readDeclaration(changeObject?.properties);
-  const place = await readEnvironment(tx, input.orgId, input.targetObjectId);
-  // EVERY KEY THE SCRIPT READS IS SENT, even at its default. An omitted `infraPath` would leave the
-  // template's default in force — and leave the key open for a recipe to fill, which is a way to
-  // plan one directory and apply another. Sent explicitly, the lane's value is the only value.
-  const placeParameters = {
-    environment: place.environment,
-    stateWorkspace: place.stateWorkspace,
-    region: place.region ?? "",
-    infraPath: place.infraPath ?? ".",
-    changeObjectId: input.changeObjectId,
-    targetObjectId: input.targetObjectId
-  };
+  const place = await readPlace(tx, input.orgId, input.targetObjectId);
 
   if (declaration.phase === "plan") {
     const source = readSource(input.sourceRef);
@@ -318,9 +384,23 @@ export async function infraLaneTriggerParameters(
           "between the plan an approver reads and the apply that follows it.",
         {
           remediation:
-            "propose the plan with sourceRef { repo: 'owner/name', commit: '<full sha>' } (a webhook-born " +
-            "change carries both)",
+            "propose the plan with sourceRef { repo: '<the target's infrastructureRepo>', commit: '<full sha>' }",
           inputContext: { gate: "infra_source_unpinned" }
+        }
+      );
+    }
+    if (source.repo !== place.declaredRepo) {
+      throw new InfraDeclarationRefused(
+        `this plan asks for '${source.repo}', and deployment-target ${input.targetObjectId} declares ` +
+          `its infrastructure lives in '${place.declaredRepo}'. A plan runs its repository's code ` +
+          `with the operator's credentials, so it runs only the repository the target declares.`,
+        {
+          remediation: `propose the plan from '${place.declaredRepo}', or change the target's infrastructureRepo`,
+          inputContext: {
+            gate: "infra_source_not_declared",
+            requestedRepo: source.repo,
+            declaredRepo: place.declaredRepo
+          }
         }
       );
     }
@@ -328,19 +408,25 @@ export async function infraLaneTriggerParameters(
       kind: "trigger",
       phase: "plan",
       templateRef: planTemplate,
+      applyTemplateRef: applyTemplate,
       parameters: {
-        ...placeParameters,
+        environment: place.environment,
+        stateWorkspace: place.stateWorkspace,
+        region: place.region,
+        infraPath: place.infraPath,
         sourceRepo: source.repo,
         sourceCommit: source.commit,
-        sourceRef: source.ref ?? ""
+        sourceRef: source.ref,
+        changeObjectId: input.changeObjectId,
+        targetObjectId: input.targetObjectId
       }
     };
   }
 
   return evaluateApplyGate(tx, input, {
     planChangeObjectId: declaration.planChangeObjectId,
-    applyTemplate,
-    placeParameters
+    planTemplate,
+    place
   });
 }
 
@@ -351,20 +437,24 @@ interface InfraWaveTargetRow {
   status: string;
   executorPluginId: string | null;
   observedState: WaveTargetObservedState | null;
-  createdAt: Date;
+}
+
+/** What a plan trigger recorded about itself (`recordInfraTrigger`). */
+interface PlanTriggerRecord {
+  decisionId: string;
+  templateRef: string;
+  applyTemplateRef: string;
+  executorPluginId: string;
+  parameters: Record<string, string>;
 }
 
 async function evaluateApplyGate(
   tx: TenantTx,
   input: InfraLaneInput,
-  args: {
-    planChangeObjectId: string;
-    applyTemplate: string;
-    placeParameters: Record<string, unknown>;
-  }
+  args: { planChangeObjectId: string; planTemplate: string; place: Place }
 ): Promise<InfraLaneOutcome> {
   const { orgId, targetObjectId } = input;
-  const { planChangeObjectId } = args;
+  const { planChangeObjectId, place } = args;
   const base = { planChangeObjectId, targetObjectId };
   // A function DECLARATION, not a const arrow: only a declared `never` narrows at its call sites.
   function refuse(
@@ -400,7 +490,6 @@ async function evaluateApplyGate(
     .select({
       state: changes.state,
       rollbackOfObjectId: changes.rollbackOfObjectId,
-      sourceRef: changes.sourceRef,
       properties: objects.properties
     })
     .from(changes)
@@ -408,7 +497,7 @@ async function evaluateApplyGate(
     .where(and(eq(changes.orgId, orgId), eq(changes.objectId, planChangeObjectId)))
     .limit(1);
   if (!planChange) {
-    return refuse(
+    refuse(
       "infra_plan_missing",
       `plan change ${planChangeObjectId} does not exist in this organization.`,
       "name the accepted plan change's id in properties.infrastructure.applyPlan"
@@ -430,12 +519,12 @@ async function evaluateApplyGate(
       "infra_plan_not_approved",
       `plan change ${planChangeObjectId} is '${planChange.state}', not accepted. Accepting the plan ` +
         `change IS approving its plan; until it is accepted there is no approved plan to apply.`,
-      "review the plan's evidence on the plan change, accept it (scp change accept), then re-propose this apply",
+      "review the plan's evidence on the plan change, have someone other than its proposer accept it (scp change accept), then re-propose this apply",
       { planChangeState: planChange.state }
     );
   }
 
-  // 2. Its plan AT THIS TARGET — succeeded, by this executor, with a digest.
+  // 2. Its plan AT THIS TARGET — succeeded, by this executor, with a digest and a record.
   const [planTarget] = await infraWaveTargetsAt(tx, orgId, targetObjectId, {
     changeObjectId: planChangeObjectId
   });
@@ -469,11 +558,57 @@ async function evaluateApplyGate(
     );
   }
   const planDigest = plan.ref;
+  const record = await latestPlanTriggerRecord(tx, orgId, planChangeObjectId, planTarget.id);
+  if (!record || record.executorPluginId !== planTarget.executorPluginId) {
+    refuse(
+      "infra_plan_record_missing",
+      `the plan at ${targetObjectId} carries no record of what it submitted, so there is no way to ` +
+        `apply exactly the place it planned.`,
+      "re-plan, accept it, and apply that plan",
+      { planDigest }
+    );
+  }
 
-  // 3. SUPERSEDED — a newer plan has run here since.
-  const newer = (
+  // 3. THE PLACE AND THE BINDING STILL MATCH WHAT WAS PLANNED. The apply reuses the record either
+  // way; a mismatch is refused because the approver approved a plan for a place that no longer is.
+  const now: Record<string, string> = {
+    environment: place.environment,
+    stateWorkspace: place.stateWorkspace,
+    region: place.region,
+    infraPath: place.infraPath,
+    sourceRepo: place.declaredRepo,
+    templateRef: args.planTemplate
+  };
+  const recorded: Record<string, string> = {
+    environment: record.parameters["environment"] ?? "",
+    stateWorkspace: record.parameters["stateWorkspace"] ?? "",
+    region: record.parameters["region"] ?? "",
+    infraPath: record.parameters["infraPath"] ?? "",
+    sourceRepo: record.parameters["sourceRepo"] ?? "",
+    templateRef: record.templateRef
+  };
+  const changed = Object.keys(now).filter((k) => now[k] !== recorded[k]);
+  if (changed.length > 0) {
+    refuse(
+      "infra_plan_scope_changed",
+      `the target or its binding changed since plan change ${planChangeObjectId} planned it ` +
+        `(${changed.map((k) => `${k}: '${recorded[k]}' → '${now[k]}'`).join("; ")}). The approval ` +
+        `was of a plan for the place as it was.`,
+      "re-plan the target as it is now, accept that plan, and apply it",
+      {
+        changed,
+        recorded: Object.fromEntries(changed.map((k) => [k, recorded[k]])),
+        now: Object.fromEntries(changed.map((k) => [k, now[k]])),
+        planDigest
+      }
+    );
+  }
+
+  // 4. SUPERSEDED — a newer plan has been DISPATCHED here since. Ordered by the plan-trigger
+  // Decisions' time-ordered ids, which is dispatch order; row creation order is plan-compile order,
+  // and a plan compiled earlier but dispatched later is the newer plan.
+  const others = (
     await infraWaveTargetsAt(tx, orgId, targetObjectId, {
-      createdAfter: planTarget.createdAt,
       excludeChangeObjectId: planChangeObjectId
     })
   ).filter(
@@ -481,9 +616,13 @@ async function evaluateApplyGate(
       (DISPATCHED_STATUSES as readonly string[]).includes(t.status) &&
       t.changeObjectId !== input.changeObjectId
   );
-  const newerPlans = await plansOnly(tx, orgId, newer);
-  if (newerPlans.length > 0) {
-    const latest = newerPlans[0]!;
+  const newer: { changeObjectId: string; status: string }[] = [];
+  for (const t of await plansOnly(tx, orgId, others)) {
+    const theirs = await latestPlanTriggerRecord(tx, orgId, t.changeObjectId, t.id);
+    if (theirs && theirs.decisionId > record.decisionId) newer.push(t);
+  }
+  if (newer.length > 0) {
+    const latest = newer[0]!;
     refuse(
       "infra_plan_superseded",
       `plan change ${planChangeObjectId} was superseded at ${targetObjectId} by plan change ` +
@@ -493,7 +632,7 @@ async function evaluateApplyGate(
     );
   }
 
-  // 4. ALREADY APPLIED, or being applied.
+  // 5. ALREADY APPLIED, or being applied.
   const applies = (
     await infraWaveTargetsAt(tx, orgId, targetObjectId, {
       excludeChangeObjectId: input.changeObjectId,
@@ -528,27 +667,117 @@ async function evaluateApplyGate(
     };
   }
 
-  // THE PLAN'S SOURCE, not this change's: the apply re-plans the revision that was approved.
-  const source = readSource(planChange.sourceRef);
-  if (!source) {
-    refuse(
-      "infra_plan_source_unpinned",
-      `plan change ${planChangeObjectId} carries no pinned source, so there is no revision to re-plan.`,
-      "re-plan from a pinned commit, accept it, and apply that plan"
-    );
-  }
+  // THE PLAN'S OWN SUBMISSION, REUSED: the same workspace, directory, repo, commit — and the plan
+  // template's recorded sibling, never whatever the binding names today.
   return {
     kind: "trigger",
     phase: "apply",
-    templateRef: args.applyTemplate,
+    templateRef: record.applyTemplateRef,
+    applyTemplateRef: record.applyTemplateRef,
     parameters: {
-      ...args.placeParameters,
-      sourceRepo: source.repo,
-      sourceCommit: source.commit,
-      sourceRef: source.ref ?? "",
+      ...Object.fromEntries(PLAN_SCOPE_KEYS.map((k) => [k, record.parameters[k] ?? ""])),
       planDigest,
-      planChangeObjectId
+      planChangeObjectId,
+      changeObjectId: input.changeObjectId,
+      targetObjectId
     }
+  };
+}
+
+/** RECORD WHAT A PLAN (OR APPLY) TRIGGER SUBMITS — called by reconcile once the claim is won, in the
+ *  claim transaction. A Decision (allow), because it is the lane's verdict on what this trigger may
+ *  carry, with the inputs that produced it (principle 6); and because Decisions are append-only,
+ *  which is what an apply needs of the thing it is bound to. A retry that would record the same
+ *  submission records nothing. */
+export async function recordInfraTrigger(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    changeObjectId: string;
+    waveTargetId: string;
+    targetObjectId: string;
+    executorPluginId: string;
+    outcome: Extract<InfraLaneOutcome, { kind: "trigger" }>;
+  }
+): Promise<void> {
+  const inputContext = {
+    gate: input.outcome.phase === "plan" ? INFRA_PLAN_TRIGGER_GATE : INFRA_APPLY_TRIGGER_GATE,
+    waveTargetId: input.waveTargetId,
+    targetObjectId: input.targetObjectId,
+    executorPluginId: input.executorPluginId,
+    templateRef: input.outcome.templateRef,
+    applyTemplateRef: input.outcome.applyTemplateRef,
+    parameters: input.outcome.parameters
+  };
+  const [latest] = await tx
+    .select({ inputContext: decisions.inputContext })
+    .from(decisions)
+    .where(
+      and(
+        eq(decisions.orgId, input.orgId),
+        eq(decisions.subjectId, input.changeObjectId),
+        eq(decisions.kind, "wave_target"),
+        sql`${decisions.inputContext} ->> 'gate' = ${inputContext.gate}`,
+        sql`${decisions.inputContext} ->> 'waveTargetId' = ${input.waveTargetId}`
+      )
+    )
+    .orderBy(desc(decisions.id))
+    .limit(1);
+  if (latest && canonicalJson(latest.inputContext) === canonicalJson(inputContext)) return;
+  await insertDecision(tx, {
+    orgId: input.orgId,
+    kind: "wave_target",
+    subjectId: input.changeObjectId,
+    verdict: "allow",
+    inputContext,
+    reasonTree: {
+      summary:
+        `${input.outcome.phase} of ${input.targetObjectId} submitted as '${input.outcome.templateRef}' ` +
+        `into workspace '${String(input.outcome.parameters["stateWorkspace"])}'`
+    }
+  });
+}
+
+async function latestPlanTriggerRecord(
+  tx: TenantTx,
+  orgId: string,
+  planChangeObjectId: string,
+  waveTargetId: string
+): Promise<PlanTriggerRecord | undefined> {
+  const [row] = await tx
+    .select({ id: decisions.id, inputContext: decisions.inputContext })
+    .from(decisions)
+    .where(
+      and(
+        eq(decisions.orgId, orgId),
+        eq(decisions.subjectId, planChangeObjectId),
+        eq(decisions.kind, "wave_target"),
+        sql`${decisions.inputContext} ->> 'gate' = ${INFRA_PLAN_TRIGGER_GATE}`,
+        sql`${decisions.inputContext} ->> 'waveTargetId' = ${waveTargetId}`
+      )
+    )
+    .orderBy(desc(decisions.id))
+    .limit(1);
+  if (!row) return undefined;
+  const ctx = row.inputContext as Record<string, unknown>;
+  const params = ctx["parameters"];
+  if (
+    typeof ctx["templateRef"] !== "string" ||
+    typeof ctx["applyTemplateRef"] !== "string" ||
+    typeof ctx["executorPluginId"] !== "string" ||
+    !params ||
+    typeof params !== "object"
+  ) {
+    return undefined;
+  }
+  return {
+    decisionId: row.id,
+    templateRef: ctx["templateRef"],
+    applyTemplateRef: ctx["applyTemplateRef"],
+    executorPluginId: ctx["executorPluginId"],
+    parameters: Object.fromEntries(
+      Object.entries(params as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+    )
   };
 }
 
@@ -560,7 +789,6 @@ async function infraWaveTargetsAt(
   filter: {
     changeObjectId?: string;
     excludeChangeObjectId?: string;
-    createdAfter?: Date;
     /** Only wave targets of APPLY changes naming this plan change. */
     appliesPlan?: string;
   }
@@ -571,8 +799,7 @@ async function infraWaveTargetsAt(
       changeObjectId: changePlans.changeObjectId,
       status: changeWaveTargets.status,
       executorPluginId: changeWaveTargets.executorPluginId,
-      observedState: changeWaveTargets.observedState,
-      createdAt: changeWaveTargets.createdAt
+      observedState: changeWaveTargets.observedState
     })
     .from(changeWaveTargets)
     .innerJoin(
@@ -599,7 +826,6 @@ async function infraWaveTargetsAt(
         filter.excludeChangeObjectId
           ? ne(changePlans.changeObjectId, filter.excludeChangeObjectId)
           : undefined,
-        filter.createdAfter ? gt(changeWaveTargets.createdAt, filter.createdAfter) : undefined,
         filter.appliesPlan
           ? sql`${objects.properties} -> ${INFRASTRUCTURE_DECLARATION_PROPERTY} ->> 'applyPlan' = ${filter.appliesPlan}`
           : undefined
@@ -643,25 +869,23 @@ async function plansOnly(
   return rows.filter((r) => isPlan.has(r.changeObjectId));
 }
 
-/** THE CATALOG APPLY TEMPLATE IS REACHABLE ONLY THROUGH THE GATE. A binding of any OTHER Type (or
- *  on any other lane) whose externalRef names a shipped infra apply template would submit it with
- *  whatever parameters that lane or a recipe supplied — an apply nobody approved. Reconcile calls
- *  this for every trigger this lane did not itself derive. */
-export function assertNotAnUngatedInfraApply(templateRef: string | null): void {
-  if (templateRef === null) return;
-  if (
-    templateRef === INFRA_CATALOG_APPLY_TEMPLATE ||
-    /^scp-infra-apply-v[0-9]+$/.test(templateRef)
-  ) {
-    throw new InfraApplyRefused(
-      `refusing to trigger '${templateRef}' outside the infrastructure lane: it applies infrastructure, ` +
-        `and it is triggered only for an accepted, current plan through that lane's gate.`,
-      {
-        remediation:
-          "bind the deployment-target's 'infrastructure' pipeline to scp-infra-plan-v1 and apply an " +
-          "accepted plan with properties.infrastructure.applyPlan",
-        inputContext: { gate: "infra_apply_template_outside_lane", externalRef: templateRef }
-      }
-    );
-  }
+/** THE SHIPPED INFRA TEMPLATES ARE REACHABLE ONLY THROUGH THIS LANE. A binding of any OTHER Type,
+ *  any other executor lane, or a recipe, pointing at `scp-infra-plan-v*` or `scp-infra-apply-v*`
+ *  would submit it with whatever parameters that path supplied — a plan in someone else's
+ *  workspace, or an apply nobody approved (verification probe D). Reconcile calls this, with a
+ *  Decision, for every trigger this lane did not itself derive; the plugin host's
+ *  `infra-template-guard.ts` refuses the same thing at the one door every submission passes. */
+export function assertNotAnUngatedInfraTemplate(templateRef: string | null): void {
+  if (templateRef === null || !INFRA_CATALOG_TEMPLATE_PATTERN.test(templateRef)) return;
+  throw new InfraApplyRefused(
+    `refusing to trigger '${templateRef}' outside the infrastructure lane: it plans or applies ` +
+      `infrastructure, and is triggered only by that lane — a plan for a declared target, an apply ` +
+      `of an accepted plan through its gate.`,
+    {
+      remediation:
+        "bind the deployment-target's 'infrastructure' pipeline to scp-infra-plan-v1 and apply an " +
+        "accepted plan with properties.infrastructure.applyPlan",
+      inputContext: { gate: "infra_template_outside_lane", externalRef: templateRef }
+    }
+  );
 }

@@ -12,10 +12,10 @@
 #   scp-infra.sh apply <environment> <workspace> <sourceRepo> <sourceCommit> <infraPath> <planDigest>
 #
 # THE PLAN IDENTITY (`planDigest`). sha256 over the plan's CHANGE SET — `resource_changes` and
-# `output_changes` of `tofu show -json`, keys sorted by jq — never over the whole document, which
+# `output_changes` of `tofu show -json`, keys sorted by jq — AND ITS PLACE: environment, workspace,
+# repo, commit, directory and the backend's type + settings. Never over the whole document, which
 # carries a timestamp and would differ between two plans of the same thing. Two plans with the same
-# digest make the same changes, before and after values included, which is exactly what an
-# approval approved.
+# digest make the same changes in the same state, which is exactly what an approval approved.
 #
 # WHY APPLY RE-PLANS rather than applying a stored plan file. There is nowhere to store one that
 # every organization has: an Argo artifact repository is optional (the build template's header says
@@ -28,9 +28,11 @@
 #
 # THE STATE BACKEND IS THE OPERATOR'S (D2, the ADR-0049 precedent): `SCP_STATE_BACKEND_TYPE` and
 # the non-secret `SCP_BACKEND_CONFIG_FILE` come from chart values, any backend credential from the
-# operator's own Secret. The org's configuration does not get to choose where state lives — an
-# override file replaces whatever backend block it declares, because a config with no backend would
-# otherwise keep its state in this pod's emptyDir and lose it when the pod exits.
+# operator's own Secret. The org's configuration does not get to choose where state lives: a
+# directory carrying its own override file, `backend` block or `cloud` block is REFUSED (an org
+# `zz_override.tf` would otherwise beat this script's override — measured), and this script's
+# override supplies the operator's backend, because a config with no backend would otherwise keep
+# its state in this pod's emptyDir and lose it when the pod exits.
 #
 # Never `set -x`: argv carries nothing secret, but provider credentials are in the environment and a
 # tracing habit is how that changes by accident.
@@ -60,9 +62,10 @@ esac
 
 # The same shape SCP validates before it triggers — checked again here because this script is also
 # runnable by anything that can submit the template.
-name_shape='^[A-Za-z0-9][A-Za-z0-9_.-]{0,89}$'
+name_shape='^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$'
+workspace_shape='^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$'
 [[ "$environment" =~ $name_shape ]] || refuse "environment '$environment' is not a plain name"
-[[ "$workspace" =~ $name_shape ]] || refuse "state workspace '$workspace' is not a plain name"
+[[ "$workspace" =~ $workspace_shape ]] || refuse "state workspace '$workspace' is not a plain name"
 [[ "$repo" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$ ]] || refuse "sourceRepo '$repo' is not owner/name"
 [[ "$commit" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] ||
   refuse "sourceCommit '$commit' is not a full commit id — a plan is pinned to one revision, never a branch"
@@ -101,6 +104,26 @@ echo "scp-infra: fetched $fetched from $repo"
 cd "$work/src/$infra_path" 2>/dev/null || refuse "no directory '$infra_path' in $repo at $commit"
 compgen -G '*.tf' >/dev/null || refuse "no .tf files in '$infra_path' of $repo at $commit"
 
+# THE BACKEND IS NOT THE REPOSITORY'S TO CHOOSE. OpenTofu merges override files in lexical order and
+# the LAST one wins, so an org `zz_override.tf` beats this script's own override (measured) — and a
+# `cloud` block or a backend declared in JSON is another way to move state. So none may be present:
+# the directory is refused rather than "corrected", because an author who wrote one meant something.
+shopt -s nullglob
+for f in [o]verride.tf [o]verride.tf.json *_override.tf *_override.tf.json; do
+  refuse "'$infra_path/$f' is an override file. The state backend is the operator's setting, and an override in the repository can replace it — remove it (a backend belongs in chart values, not in the repo)"
+done
+for f in *.tf; do
+  if grep -Eq '^[[:space:]]*(backend[[:space:]]+"|cloud[[:space:]]*\{)' "$f"; then
+    refuse "'$infra_path/$f' declares a backend or cloud block. The state backend is the operator's setting (catalog.infra.stateBackend) — remove the block"
+  fi
+done
+for f in *.tf.json; do
+  if jq -e '.. | objects | (has("backend") or has("cloud"))' "$f" >/dev/null 2>&1; then
+    refuse "'$infra_path/$f' declares a backend or cloud block. The state backend is the operator's setting — remove it"
+  fi
+done
+shopt -u nullglob
+
 # ---- 2. THE OPERATOR'S STATE BACKEND, ONE WORKSPACE PER ENVIRONMENT -----------------------------
 printf 'terraform {\n  backend "%s" {}\n}\n' "$SCP_STATE_BACKEND_TYPE" >_scp_state_backend_override.tf
 init_args=(-input=false -no-color)
@@ -127,7 +150,21 @@ case "$rc" in
 esac
 tofu show -json "$work/plan.tfplan" >"$work/plan.json"
 
-digest="$(jq -cS '{resource_changes: (.resource_changes // []), output_changes: (.output_changes // {})}' "$work/plan.json" | sha256sum | cut -c1-64)"
+# THE DIGEST COVERS THE PLAN'S PLACE, not only its changes: two plans that make the same changes in
+# DIFFERENT workspaces, directories, commits or backends are different plans, and an approval of one
+# must never apply the other. The backend's identity is its type plus the bytes of its settings.
+backend_config_sha="none"
+if [ -n "${SCP_BACKEND_CONFIG_FILE:-}" ] && [ -f "$SCP_BACKEND_CONFIG_FILE" ]; then
+  backend_config_sha="$(sha256sum "$SCP_BACKEND_CONFIG_FILE" | cut -c1-64)"
+fi
+digest="$(jq -cS \
+  --arg environment "$environment" --arg workspace "$workspace" --arg repo "$repo" \
+  --arg commit "$commit" --arg infraPath "$infra_path" \
+  --arg backendType "$SCP_STATE_BACKEND_TYPE" --arg backendConfig "$backend_config_sha" \
+  '{resource_changes: (.resource_changes // []), output_changes: (.output_changes // {}),
+    scope: {environment: $environment, workspace: $workspace, repo: $repo, commit: $commit,
+            infraPath: $infraPath, backendType: $backendType, backendConfig: $backendConfig}}' \
+  "$work/plan.json" | sha256sum | cut -c1-64)"
 # The tally rule managed-iac's plan-summary.ts uses, so the chip never disagrees between lanes: a
 # replace (create+delete) counts in ADD and DESTROY, never CHANGE.
 tally="$(jq -c '[.resource_changes[]? | (.change.actions // [])] | {

@@ -209,24 +209,37 @@ bundledExecutor:
         # THE STATE BACKEND IS A DEPLOYMENT-LEVEL OPERATOR SETTING (D2 — the ADR-0049 precedent for
         # the egress allowlist): chart values, never tenant data SCP holds. `type` is an OpenTofu
         # backend name (s3, gcs, azurerm, pg, kubernetes, http, …); `config` is its NON-SECRET
-        # settings, rendered to a `-backend-config` file. The template writes an override that
-        # replaces whatever backend block the org's own configuration declares, so an org config
-        # cannot move state somewhere the operator did not choose. Each environment gets its own
-        # workspace in this backend (`<environment>[-<region>]`, derived by SCP).
+        # settings, rendered to a `-backend-config` file. The template supplies the backend with an
+        # override of its own and REFUSES a directory that carries any other override file, a
+        # `backend` block or a `cloud` block — an org `zz_override.tf` would otherwise beat it
+        # (measured) — so an org config cannot move state somewhere the operator did not choose.
+        # Each deployment-target gets its own workspace in this backend,
+        # `<environment>[-<region>]--o<org id>--t<target id>`, derived by SCP: two regions of one
+        # environment, or two orgs' `prod`, never share a state.
         stateBackend:
           type: ""
           config: {}
-        # The Secret holding CLOUD and STATE-BACKEND credentials, mounted as environment variables
-        # (every key becomes one: AWS_ACCESS_KEY_ID, ARM_CLIENT_SECRET, PG_CONN_STR, …). OPTIONAL at
-        # mount. NOT created by this chart and never read by SCP — the operator provisions it in
-        # this namespace, exactly as the build template's push Secret (charter principle 1).
-        credentialsSecret: scp-infra-credentials
-        # The identity infra pods run as. Separate from `buildServiceAccount` ON PURPOSE: an
-        # operator using workload identity (IRSA, GKE WI) binds CLOUD authority to this account,
-        # and a build pod running a tenant's Dockerfile must never inherit it. The chart grants it
-        # only the executor's workflowtaskresults floor; a `kubernetes` state backend needs the
-        # operator to add a Role for its Secrets/Leases.
-        serviceAccount: scp-infra
+        # ONE IDENTITY AND ONE CREDENTIALS SECRET PER PHASE. A PLAN runs the repository's own code
+        # (providers, `data "external"`) BEFORE anyone approves anything, so the plan's cloud
+        # credentials MUST BE READ-ONLY — enough to refresh and plan, never to change infrastructure.
+        # Its state-backend access is read + lock (a consistent plan takes the state lock), plus
+        # creating the workspace on an environment's first plan. Only the APPLY identity, reached
+        # solely through SCP's apply gate, may change infrastructure.
+        #
+        # Each Secret is mounted as environment variables (every key becomes one: AWS_ACCESS_KEY_ID,
+        # ARM_CLIENT_SECRET, PG_CONN_STR, …), OPTIONAL at mount, NOT created by this chart and never
+        # read by SCP — the operator provisions both in this namespace, exactly as the build
+        # template's push Secret (charter principle 1). Each ServiceAccount is separate from
+        # `buildServiceAccount` ON PURPOSE: an operator using workload identity (IRSA, GKE WI) binds
+        # cloud authority to it, and a build pod running a tenant's Dockerfile must never inherit it.
+        # The chart grants each only the executor's workflowtaskresults floor; a `kubernetes` state
+        # backend needs the operator to add a Role for its Secrets/Leases.
+        plan:
+          serviceAccount: scp-infra-plan
+          credentialsSecret: scp-infra-plan-credentials
+        apply:
+          serviceAccount: scp-infra-apply
+          credentialsSecret: scp-infra-apply-credentials
         # Optional `.tofurc` (CLI configuration) — typically a `provider_installation` network
         # mirror, which is how an AIR-GAPPED install gets providers. Mounted as TF_CLI_CONFIG_FILE.
         cliConfig: ""
