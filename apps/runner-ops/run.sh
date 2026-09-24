@@ -40,6 +40,14 @@ die() { echo "scp-runner-ops: $1" >&2; exit "${2:-2}"; }
 # catalog never reaches Ansible's loader.
 [ -f "$CATALOG_DIR/catalog.json" ] || die "no catalog at $CATALOG_DIR/catalog.json"
 
+# ON THE ARGO PATH, VERIFICATION IS NOT OPTIONAL (M28.2 fix round). The environment of an Argo pod
+# is the Workflow's to write, and SCP mints a root certificate for whatever this pod runs — so an
+# `off` here would let a Workflow editor run an unsigned catalog with SCP's credential. Refused
+# before anything else, and before any token is redeemed.
+if [ -n "${SCP_OPS_API_URL:-}" ] && [ "${SCP_OPS_CATALOG_VERIFY:-required}" != "required" ]; then
+  die "catalog verification cannot be disabled on the Argo path (SCP_OPS_CATALOG_VERIFY=${SCP_OPS_CATALOG_VERIFY}) — refusing"
+fi
+
 if [ "${SCP_OPS_CATALOG_VERIFY:-required}" = "required" ]; then
   [ -n "${SCP_OPS_CATALOG_PUBKEY:-}" ] || die "SCP_OPS_CATALOG_PUBKEY is unset and catalog verification is required"
   [ -f "$CATALOG_DIR/catalog.json.sig" ] || die "catalog is unsigned (no catalog.json.sig) — refusing"
@@ -58,6 +66,18 @@ if [ "${SCP_OPS_CATALOG_VERIFY:-required}" = "required" ]; then
   # manifest alone would leave the ROLES unsigned, so the digests are checked too.
   python /usr/local/bin/verify_catalog_digests.py "$CATALOG_DIR" \
     || die "a catalog role does not match its pinned digest — refusing"
+fi
+
+# ---- 1b. THE ARGO PATH: REDEEM, AFTER THE CATALOG IS TRUSTED (M28.2, ADR-0054) ---------------
+# On an org's Argo Workflows (`scp-ops-v1`) nothing SCP controls stages /work/in, so the pod redeems
+# its sealed one-time token for the SAME files Mode C's orchestrator writes. Placed after catalog
+# verification on purpose: a tampered catalog must refuse before a credential is ever minted for it.
+# From here on both paths run identical code. The role is the SERVER's — an `SCP_OPS_ROLE` a
+# Workflow editor set is ignored rather than trusted, because on this path the environment is the
+# Workflow's to write.
+if [ -n "${SCP_OPS_API_URL:-}" ]; then
+  python /usr/local/bin/redeem.py || die "redemption refused"
+  SCP_OPS_ROLE=$(cat /work/in/role) || die "redemption wrote no role"
 fi
 
 # ---- 2. THE REQUESTED ROLE MUST BE IN THE CATALOG, IN AN ADMITTED CLASS ----------------------

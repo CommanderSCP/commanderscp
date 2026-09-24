@@ -6,6 +6,10 @@ import {
 import { AUTHORED_APPLICATION_PARAMETER } from "./deploy-lane-trigger-parameters.js";
 import { INFRA_LANE_TABLE_RESERVED_KEYS } from "./infra-lane-trigger-parameters.js";
 import {
+  OPS_RUN_ID_PARAMETER,
+  OPS_RUN_TOKEN_SEALED_PARAMETER
+} from "./ops-lane-trigger-parameters.js";
+import {
   TriggerParameterRefusal,
   WAVE_TARGET_RECIPE_RESERVED_PARAMETER_AUDIT_ACTION,
   WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS
@@ -56,6 +60,12 @@ export const RESERVED_BY_LANE: Readonly<Record<string, ReservedLane>> = {
       "opsPrincipals",
       "opsCredentialSecretKey"
     ]
+  },
+  // M28.2 (ADR-0054 D3) — the Argo host-ops delivery: a run id and the token SEALED to the pinned
+  // key. A recipe naming either could substitute a token SCP did not mint for this run.
+  "ops-argo": {
+    why: "the Argo host-ops run's sealed one-time token and its run id (ADR-0054)",
+    keys: [OPS_RUN_TOKEN_SEALED_PARAMETER, OPS_RUN_ID_PARAMETER]
   },
   "build-destination": {
     why: "where an artifact is published — the publishes_to edge is the only door (ADR-0053 §4a)",

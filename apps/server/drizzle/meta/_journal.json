@@ -852,8 +852,22 @@
     {
       "idx": 121,
       "version": "7",
-      "when": 1790255450330,
-      "tag": "0121_execution_system_source_allowlists",
+      "when": 1790213375361,
+      "tag": "0121_ops_run_redemptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1790248992887,
+      "tag": "0122_argo_ops_pins",
+      "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1790262946985,
+      "tag": "0123_execution_system_source_allowlists",
       "breakpoints": true
     }
   ]

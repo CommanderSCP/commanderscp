@@ -1,6 +1,6 @@
 {
-  "id": "f76cd5e1-4976-48eb-b135-18bde53f2407",
-  "prevId": "b3761d2b-b3d7-4f84-9c05-b76eb8b8e234",
+  "id": "5d53b461-c79d-497b-b24d-44a46e360923",
+  "prevId": "f76cd5e1-4976-48eb-b135-18bde53f2407",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -6300,6 +6300,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "certified_public_key": {
+          "name": "certified_public_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -6326,6 +6332,54 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ops_run_redemptions_org_target_idx": {
+          "name": "ops_run_redemptions_org_target_idx",
+          "columns": [
+            {
+              "expression": "org_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "wave_target_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ops_run_redemptions_org_pubkey_uq": {
+          "name": "ops_run_redemptions_org_pubkey_uq",
+          "columns": [
+            {
+              "expression": "org_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "certified_public_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -8507,6 +8561,119 @@
         "source_mappings_journey_kind_check": {
           "name": "source_mappings_journey_kind_check",
           "value": "\"source_mappings\".\"journey_kind\" IS NULL OR \"source_mappings\".\"journey_kind\" IN ('source', 'config')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.ssh_ca_argo_ops_pins": {
+      "name": "ssh_ca_argo_ops_pins",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "org_id": {
+          "name": "org_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "domain_id": {
+          "name": "domain_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_url": {
+          "name": "server_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "namespace": {
+          "name": "namespace",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "template_ref": {
+          "name": "template_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sealing_public_key": {
+          "name": "sealing_public_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_addresses": {
+          "name": "source_addresses",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "runner_image_digest": {
+          "name": "runner_image_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "redeem_url": {
+          "name": "redeem_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recorded_by_subject_id": {
+          "name": "recorded_by_subject_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ssh_ca_argo_ops_pin_one_per_domain": {
+          "name": "ssh_ca_argo_ops_pin_one_per_domain",
+          "columns": [
+            {
+              "expression": "org_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "domain_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ssh_ca_argo_ops_pin_source_addresses_present": {
+          "name": "ssh_ca_argo_ops_pin_source_addresses_present",
+          "value": "cardinality(\"ssh_ca_argo_ops_pins\".\"source_addresses\") > 0"
         }
       },
       "isRLSEnabled": false

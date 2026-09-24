@@ -510,3 +510,40 @@ describe("the operator-facing offline install doc lists what actually crossed th
     }
   );
 });
+
+/**
+ * scp-ops-v1's RUNNER IMAGE IS RETARGETED (M28.2). The template renders only when
+ * `catalog.ops.runnerImage` is set, so an air-gapped install that left it at its empty default would
+ * have no host-ops template — and one that left an upstream ref would pull from the internet. The
+ * image is the SAME scp-runner-ops the bundle already carries for Mode C, so the retarget must use
+ * the same digest variables and sit in the argo-workflows branch of the helm mode.
+ */
+describe("install.sh retargets scp-ops-v1's runner image onto the bundle registry", () => {
+  const installSh = readFileSync(path.join(PACKAGE_ROOT, "assets", "install.sh"), "utf8");
+  const EXPECTED =
+    '--set "bundledExecutor.argoWorkflows.catalog.ops.runnerImage=${SCP_RUNNER_OPS_RETARGETED_REF:-${REGISTRY}/scp-runner-ops:${BUNDLE_VERSION}@${SCP_RUNNER_OPS_DIGEST}}"';
+
+  it("sets catalog.ops.runnerImage exactly once, from the scp-runner-ops digest, digest-pinned", () => {
+    const hits = installSh.split(EXPECTED).length - 1;
+    expect(hits, "the ops runner retarget must appear exactly once").toBe(1);
+  });
+
+  it("inside the argo-workflows branch, guarded by the scp-runner-ops digest", () => {
+    const open = installSh.indexOf('if [[ -n "${ARGO_WORKFLOWS_CLI_DIGEST:-}" ]]; then');
+    const close = installSh.indexOf("BUNDLED_APPLY+=(argo-workflows)", open);
+    expect(open).toBeGreaterThan(0);
+    expect(close).toBeGreaterThan(open);
+    const branch = installSh.slice(open, close);
+    const at = branch.indexOf(EXPECTED);
+    expect(at, "the retarget must be in the argo-workflows branch").toBeGreaterThan(0);
+    const guard = branch.lastIndexOf('if [[ -n "${SCP_RUNNER_OPS_DIGEST:-}" ]]; then', at);
+    expect(
+      guard,
+      "guarded by SCP_RUNNER_OPS_DIGEST, like every other digest-pinned retarget"
+    ).toBeGreaterThan(0);
+  });
+
+  it("the image it names is one the bundle actually carries", () => {
+    expect(bundledNames).toContain("scp-runner-ops");
+  });
+});

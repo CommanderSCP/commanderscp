@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { trackedFiles } from "./tracked.js";
+import { stripComments } from "./ts.js";
 
 /**
  * THE INSTALLATION GATE for host-reaching execution (M27.9).
@@ -44,7 +45,28 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
   recordIssuance:
     "ADR-0051 D5's detective control — the ONLY thing that bounds CA compromise, since short " +
     "TTLs provably do not",
-  reconcileSerials: "surfaces a serial a host accepted that SCP never issued — the forgery signal"
+  reconcileSerials: "surfaces a serial a host accepted that SCP never issued — the forgery signal",
+  // M28.2 — host ops through an org's Argo Workflows (ADR-0054).
+  deriveOpsBound:
+    "the ONE derivation both executors share; if Mode C stopped calling it, the two paths could " +
+    "diverge on which hosts a run touches",
+  isOpsLane:
+    "decides which triggers are host-reaching at all; unreachable means the Argo path derives " +
+    "nothing and the pod has no token",
+  createOpsRunRedemption:
+    "stores the Argo run's bound and seals its one-time token; with no caller no scp-ops-v1 pod " +
+    "can ever reach its material",
+  redeemOpsRun:
+    "the redeem door's logic — single-use, windowed, audited; with no caller the Argo path " +
+    "cannot obtain a certificate",
+  registerOpsRunRedemptionRoutes: "puts the redeem door on the public API",
+  // M28.2 fix round — the pin that makes the charter grant enforceable (ADR-0054 D9).
+  putArgoOpsPin:
+    "the only write door for where a domain's CA may send an Argo run token; with no caller no " +
+    "domain can ever be pinned and every Argo host-ops run is refused",
+  argoOpsPinForDomain:
+    "the read the Argo lane and the template check are held to; with no caller the binding's own " +
+    "config would be the only thing deciding where a root certificate goes"
 };
 
 const isTest = (p: string): boolean =>
@@ -61,12 +83,28 @@ const PRODUCTION_SOURCES = trackedFiles(REPO_ROOT).filter(
     !isTest(p)
 );
 
+/** A source file with its COMMENTS STRIPPED (#414 adversarial round). The census used to match raw
+ *  text, so a caller that had been commented out — `// registerOpsRunRedemptionRoutes(app, deps);` —
+ *  still counted, and the gate stayed green over exactly the "built, never installed" shape it
+ *  exists to catch. `stripComments` is the repo's own reader (strings are preserved). */
+function readSource(file: string): string {
+  // MEMOISED. Every census name reads every production source; stripping each file once per name
+  // took this file to 75 s in CI and tripped vitest's worker RPC timeout (#414 CI).
+  let text = strippedSources.get(file);
+  if (text === undefined) {
+    text = stripComments(readFileSync(resolve(REPO_ROOT, file), "utf8"));
+    strippedSources.set(file, text);
+  }
+  return text;
+}
+const strippedSources = new Map<string, string>();
+
 /** Where each name is DEFINED — excluded when looking for callers, since a definition is not a use. */
 function definitionFiles(name: string): Set<string> {
   const defined = new Set<string>();
   const declaration = new RegExp(`export (?:async )?function ${name}\\b`);
   for (const path of PRODUCTION_SOURCES) {
-    if (declaration.test(readFileSync(resolve(REPO_ROOT, path), "utf8"))) defined.add(path);
+    if (declaration.test(readSource(path))) defined.add(path);
   }
   return defined;
 }
@@ -77,9 +115,7 @@ function callersOf(name: string): string[] {
   // costs nothing (the gate stays green on a real caller), while a false negative would fail a
   // build for a function that is genuinely wired.
   const used = new RegExp(`\\b${name}\\s*\\(`);
-  return PRODUCTION_SOURCES.filter((p) => !defined.has(p)).filter((p) =>
-    used.test(readFileSync(resolve(REPO_ROOT, p), "utf8"))
-  );
+  return PRODUCTION_SOURCES.filter((p) => !defined.has(p)).filter((p) => used.test(readSource(p)));
 }
 
 describe("host-reaching execution is INSTALLED, not merely built", () => {
@@ -95,6 +131,23 @@ describe("host-reaching execution is INSTALLED, not merely built", () => {
       ).not.toEqual([]);
     }
   );
+
+  it("CONTROL: a commented-out call is NOT a caller", () => {
+    // The known-positive/known-negative pair for the reader itself. If `readSource` stopped
+    // stripping comments, the second expectation would fail and name the regression.
+    const used = /\bregisterOpsRunRedemptionRoutes\s*\(/;
+    expect(used.test(stripComments("registerOpsRunRedemptionRoutes(app, deps);"))).toBe(true);
+    expect(used.test(stripComments("// registerOpsRunRedemptionRoutes(app, deps);"))).toBe(false);
+    expect(used.test(stripComments("/* registerOpsRunRedemptionRoutes(app, deps); */"))).toBe(
+      false
+    );
+    // AND THE READER THE CENSUS ACTUALLY USES strips them. This file's own comment below carries
+    // a marker; `readSource` of this file must not see it. A `readSource` that went back to raw
+    // text would leave every assertion above green and this one red.
+    // census-strip-control-marker
+    const self = readSource("packages/source-census/src/host-reaching-reachability.test.ts");
+    expect(self.includes(["census", "strip", "control", "marker"].join("-"))).toBe(false);
+  });
 
   it("every name in the census is actually DEFINED somewhere", () => {
     // Otherwise a rename silently empties the gate: `callersOf` on a name nothing defines returns

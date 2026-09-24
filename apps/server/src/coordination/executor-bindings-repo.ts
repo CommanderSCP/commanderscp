@@ -10,6 +10,7 @@ import { categoryOfType, type ExecutorType, type ExecutorCategory } from "@scp/s
 import type { ExecutorLane } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executorBindings, objects } from "../db/schema.js";
+import { argoOpsPinsForOrg } from "./ops-argo-pin.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
@@ -982,6 +983,16 @@ export async function resolveExecutorPluginInstance(
   const serverInjected: Record<string, unknown> = {
     statePath: join(pluginStateDir(), `${sanitizeInstanceId(pluginInstanceId)}.json`)
   };
+
+  // M28.2 (ADR-0054 D9) — THE TEMPLATE CHECK'S EXPECTATION, server-governed. Before submitting an
+  // SCP host-ops catalog template, `@scp/plugin-argo-workflows` checks ITS OWN endpoint against these
+  // pins and reads the template back against the pinned digest and SCP API URL. ORG-WIDE (every pin
+  // in the org, stably ordered), never per target: one instance serves every binding naming its id,
+  // and the host restarts an instance whose config changes. ALWAYS set (`[]` without pins), because
+  // tenant config spreads first and a tenant value must never stand in for the pins.
+  if (pluginModule === "argo-workflows") {
+    serverInjected.opsTemplatePins = await argoOpsPinsForOrg(tx, input.orgId);
+  }
 
   if (pluginModule === "managed-iac") {
     const settings = managedIacServerSettings();

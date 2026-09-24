@@ -36,7 +36,8 @@ import {
   WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS,
   WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS,
   WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS,
-  WAVE_TARGET_SOURCE_REFUSED_STATUS
+  WAVE_TARGET_SOURCE_REFUSED_STATUS,
+  WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
 
 /** The wave-target access the reconcile loop needs. See docs/coordination.md §1051. */
@@ -520,7 +521,9 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   // A build whose source is not the component's declared source (ADR-0053 addendum).
   WAVE_TARGET_SOURCE_REFUSED_STATUS,
   // M28.4 fix round — the executor's own terminal verdict (`TriggerRefused`).
-  WAVE_TARGET_EXECUTOR_REFUSED_STATUS
+  WAVE_TARGET_EXECUTOR_REFUSED_STATUS,
+  // M28.2 (ADR-0054) — host-reaching material that cannot be derived or delivered.
+  WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
 ] as const;
 export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
 

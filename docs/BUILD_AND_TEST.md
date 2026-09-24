@@ -1788,6 +1788,76 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     rather than launched by `@scp/runner-launcher`. Mode C stays the no-execution-system fallback.
     - **DoD:** one material derivation feeds both executors; the Mode A/B path never launches a
       container from `scpd`, asserted by the absence of a launcher call on that path.
+    - **FIX ROUND 2026-09-24 (adversarial verification of #414, owner ruling "honest wording +
+      pin").** The charter grant was **not enforced**: the Argo endpoint and sealing key were binding
+      config under `object:write`, and an Operator scoped to one product redirected a run token to
+      their own server and redeemed a `root` certificate (probe A). Closed by a per-domain **Argo ops
+      pin** (migration 0122) written only with `secret:write` at the org root — the enrolment door's
+      permission — which a binding must match and which alone supplies the sealing key and the now
+      MANDATORY source addresses; a template read-back before submit (pinned digest, verification
+      required; TOCTOU by cluster admins documented, not claimed away); `run.sh` refusing
+      verification off on the Argo path; every lane refusal made terminal with a Decision
+      (`ops_material_refused`); redemption bound to an in-flight target's newest row and one pod key
+      per run; a ceiling on burn auditing; equal-cost 401s; a comment-stripping reachability census;
+      and tightened egress (DNS to kube-system, operator-set kube API CIDRs, deadline ≤ cert TTL).
+      The charter amendment and ADR-0054 were reworded to what is ENFORCED, and name the residual
+      trust set: cluster admins, sealing-Secret readers and pod creators in the Argo namespace.
+      **What this found about the method:** the first version's tests all passed and proved the path
+      works; none asked who can move the path. Every prior "a binding editor cannot…" sentence was a
+      claim about config SCP did not guard.
+    - **SECOND VERIFICATION ROUND 2026-09-24.** The template read-back was a DENYLIST and four
+      bypasses went through it (a `command` override, a `steps`→external `templateRef`, the catalog
+      key/dir redirected, an `onExit` `dag`→`templateRef`) — so the reworded charter clause about it
+      was false. It is now an EXACT allowlist of the chart's shape, checked by the same function
+      helm-verify runs against the actual render, and a refusal is terminal with a Decision; the pin
+      gained `redeemUrl`. Separately, `PluginHost.start()` kept a stale instance running under a
+      re-pointed binding (same id), which no test could see because the lane test's fake host
+      overwrote config on every start: it now respawns an instance whose config fingerprint
+      changed, proved over the real subprocess host, and the plugin refuses unless its OWN running
+      endpoint is pinned. The census of that property found two things left for a plugin-host
+      increment (non-unique, org-unscoped instance ids) — recorded in ADR-0054.
+    - **STATUS 2026-09-23: BUILT — PR open, not yet merged.** Owner decision (Option 2 of
+      [ADR-0054](adr/0054-host-ops-through-argo-workflows-credential-delivery.md), now Accepted): SCP's
+      per-domain CA serves the Argo path, with a dated charter amendment in the same change. What was
+      found first, and why this needed the owner: "the same `deriveOpsRunMaterial` output" includes a
+      certificate from SCP's CA, and the charter as it stood scoped the host-login grant to a
+      *managed executor* and said bundled backends keep their own credentials.
+      - **How it works.** `deriveOpsBound` is the shared half of `deriveOpsRunMaterial`; reconcile
+        routes an `argo-workflows` binding on `scp-ops-v1` (`isOpsLane`) to it, stores the bound
+        with the hash of a single-use secret, and hands the Workflow only `opsRunId` and the token
+        SEALED (RSA-OAEP) to the operator's key. The pod unseals it, generates its own ed25519 key,
+        and redeems once at `POST /api/v1/ops-run-redemptions` for the bound plus a certificate over
+        its key — the per-run private key never exists in SCP.
+      - **DoD, and the test that proves each** (all mutation-proved; the log is in the PR):
+        one derivation — `ops-argo-lane.integration.test.ts` "ONE DERIVATION" (the Argo-redeemed
+        bound equals what the real `managed-ops` orchestrator staged into its container for the same
+        declaration, and equals `deriveOpsRunMaterial`); no launcher on the Mode A/B path — "submits
+        scp-ops-v1 … scpd launches nothing" (a throwing launcher at the plugin seam AND at the
+        `@scp/runner-launcher` module seam; adding a launcher call turns it red); the real consumer
+        reads the real producer — `ops-argo-run.e2e.integration.test.ts` (the real image, started as
+        the template starts it — read-only root, no capabilities — redeems and a real `sshd` accepts
+        the certificate; the host-logged serial is the redemption's); rollback derives nothing and
+        refusals are identical — the ROLLBACK and REFUSALS cases; reachability —
+        `host-reaching-reachability.test.ts` (five new names); helm-verify covers the template.
+      - **Hard, or surprising.** The single most dangerous object here was not the certificate but
+        the token: unsealed, a Workflow parameter is readable in the Argo UI, etcd and the archive,
+        and redeeming it first yields a `root` certificate valid on EVERY host trusting the domain
+        CA (certificates cannot be host-bound). Sealing closes Workflow readers; it does not close
+        readers of the sealing Secret, which includes anyone who can create a pod in that namespace.
+        That residual is loud (409, audited), not prevented — ADR-0054 says so. The per-run network
+        allowlist becomes per-deployment on this path (SCP creates no NetworkPolicy in a cluster it
+        reaches only through an Argo token); the amendment states this rather than claiming the
+        precondition is met unchanged. And `assertNoRecipeOverride` (ADR-0052) had **no production
+        caller** until this lane — `managed-ops` is recipe-forbidden so it never mattered; on
+        `argo-workflows` it does. CI's first round found two things the local run did not: the
+        dangling-row census needed a verdict for the new `ops_run_redemptions.change_object_id`
+        (which prompted refusing redemption for a change no longer `executing` — a cancelled
+        change's token must not buy a certificate), and the cross-uid class M27.9 recorded, met
+        again: a bind-mounted `/work` left container-owned files the CI uid could not sweep.
+      - **What the DoD did not prove.** Argo itself never ran: the runner was started with
+        `docker run` carrying the env and mounts the template renders, and helm-verify checks the
+        render, but no workflow-controller, emissary executor or real cluster NetworkPolicy
+        enforcement was exercised. The first real `scp-ops-v1` run on a cluster is still to come.
   - **M28.3 — infrastructure buildout for an environment.** An `infraLaneTriggerParameters` seam
     (the lane that does not exist today) and `scp-infra-plan-v1` / `scp-infra-apply-v1`, scoped to a
     `deployment-target` carrying `properties.environment` — the `prod-us-east-1` case. Plan is

@@ -6,6 +6,7 @@ import { readMembers } from "./infrastructure-members-repo.js";
 import { compileInventory, egressAllowlistFor } from "./ops-inventory.js";
 import { ScpCaAuthority } from "./scp-ca-authority.js";
 import { activeAuthorityForDomain, enrolmentForDomain, recordIssuance } from "./ssh-ca-repo.js";
+import { OpsMaterialRefusal } from "./trigger-parameter-refusal.js";
 
 /**
  * THE SEAM (M27.9): everything a host-reaching run needs, derived from resolved graph state.
@@ -19,12 +20,19 @@ import { activeAuthorityForDomain, enrolmentForDomain, recordIssuance } from "./
  * EVERY VALUE HERE IS DERIVED, NEVER AUTHORED (ADR-0052). That is the whole reason it lives on the
  * server rather than in a recipe: the inventory comes from observed membership, the allowlist from
  * the same membership, the principals from the enrolment, and the credential is minted per run.
+ *
+ * TWO EXECUTORS, ONE DERIVATION (M28.2, ADR-0054). `deriveOpsBound` is the part both share — every
+ * refusal and every value that bounds the run. `deriveOpsRunMaterial` adds Mode C's credential
+ * (a keypair minted here, staged by `managed-ops` into a container SCP launches);
+ * `ops-run-redemption.ts` adds the Argo path's (a certificate over a key the pod generates, issued
+ * when the pod redeems a one-time token). Neither re-derives the bound.
  */
 
 /** The per-run TTL. Minutes, not hours — this bounds a LEAKED CERTIFICATE. It does NOT bound CA
  *  compromise, which `sshd` cannot help with because the validity interval lives inside the
- *  certificate an attacker holding the key would mint (ADR-0051's blast-radius analysis). */
-const RUN_CERTIFICATE_TTL_SECONDS = 600;
+ *  certificate an attacker holding the key would mint (ADR-0051's blast-radius analysis). Shared by
+ *  both executors, so the Argo path's certificate is never looser than Mode C's. */
+export const RUN_CERTIFICATE_TTL_SECONDS = 600;
 
 /**
  * The login the certificate authorizes. A literal: a configurable principal would be a second place
@@ -65,28 +73,53 @@ export interface DeriveOpsRunMaterialInput {
   masterKey: Buffer;
 }
 
-export class OpsMaterialUnavailable extends Error {}
+/** TERMINAL, with a Decision and an audit event (M28.2 fix round). It used to be a bare Error, which
+ *  reconcile's per-target catch logged and retried every tick with no Decision — a verdict visible
+ *  only in a log line. None of its causes is transient: each needs a person (enrol the domain,
+ *  restore the CA key, pin the endpoint), after which the change is re-proposed. */
+export class OpsMaterialUnavailable extends OpsMaterialRefusal {}
+
+/** The closed set of reasons, so the Decision carries a cause and never an address or a key. */
+export function opsMaterialContext(reason: string): Record<string, unknown> {
+  return { gate: "ops_material", reason };
+}
 
 /** The key id REQUESTED of the authority. `sshd` logs this string on every authentication, so it
  *  is the only place a host's own records can name the change that reached it. The authority appends
  *  the serial and reports the result, so this is a prefix rather than the final value — which is why
  *  the issuance row records `issued.keyId` and not a second call to this. */
-function opsKeyId(subjectObjectId: string): string {
+export function opsKeyId(subjectObjectId: string): string {
   return `scp-ops:${OPS_PRINCIPAL}:${subjectObjectId}`;
 }
 
 /**
- * Derive one run's material, and record the issuance in the SAME transaction.
- *
- * Returned as a plain parameter bag because that is the channel `trigger()` has — but every key in
- * it is one `SERVER_DERIVED_OPS_KEYS` names, so a recipe carrying any of them is refused rather
- * than merged (ADR-0052). The bag holds a SECRET KEY, never credential material: trigger
- * parameters are persisted and surfaced in evidence.
+ * THE BOUND — the four keys that decide what a host-reaching run touches, and the only part of the
+ * material that is identical whichever executor runs it.
  */
-export async function deriveOpsRunMaterial(
+export interface OpsRunBound {
+  opsRole: string;
+  opsInventory: string;
+  opsEgressAllowlist: string[];
+  opsPrincipals: string[];
+}
+
+export interface DerivedOpsBound {
+  bound: OpsRunBound;
+  /** The ACTIVE CA the bound was derived against. */
+  authorityId: string;
+  /** Its signing key, resolved from the encrypted store. Never returned past the caller. */
+  caPrivateKeyPem: string;
+}
+
+/**
+ * Enrolment, the active CA, the CA key and the bound — what both executors share. Every refusal
+ * lives here, so "an unenrolled domain is refused identically on both paths" holds by construction
+ * rather than by two copies agreeing.
+ */
+export async function deriveOpsBound(
   tx: TenantTx,
-  input: DeriveOpsRunMaterialInput
-): Promise<Record<string, unknown>> {
+  input: Omit<DeriveOpsRunMaterialInput, "subjectObjectId">
+): Promise<DerivedOpsBound> {
   // 1. ENROLMENT FIRST. No enrolment means no recorded break-glass path, and ADR-0051 makes that a
   //    precondition of holding a CA at all. Deriving anyway would route around the refusal that
   //    enrolment exists to enforce — the check belongs here as well as at the enrolment door,
@@ -96,7 +129,8 @@ export async function deriveOpsRunMaterial(
     throw new OpsMaterialUnavailable(
       `domain ${input.domainId} is not enrolled for host-reaching execution. Enrol it first — ` +
         "which requires recording an independent access path, because an estate whose only route " +
-        "in is SCP's CA cannot recover from SCP's CA being compromised (ADR-0051)."
+        "in is SCP's CA cannot recover from SCP's CA being compromised (ADR-0051).",
+      { inputContext: opsMaterialContext("domain_not_enrolled") }
     );
   }
   const authorityRow = await activeAuthorityForDomain(tx, input.orgId, input.domainId);
@@ -104,7 +138,8 @@ export async function deriveOpsRunMaterial(
     // An enrolment without an active CA means the CA was retired without re-enrolment. Refusing is
     // the only safe reading: the alternative is minting from a `retiring` key nobody intended.
     throw new OpsMaterialUnavailable(
-      `domain ${input.domainId} is enrolled but has no ACTIVE certificate authority`
+      `domain ${input.domainId} is enrolled but has no ACTIVE certificate authority`,
+      { inputContext: opsMaterialContext("no_active_authority") }
     );
   }
 
@@ -112,9 +147,10 @@ export async function deriveOpsRunMaterial(
   //    the dangerous direction is an allowlist wider than the hosts the run was given.
   const members = await readMembers(tx, input.orgId, input.productObjectId);
   const opsInventory = compileInventory(members);
-  const opsEgressAllowlist = egressAllowlistFor(members);
+  const opsEgressAllowlist = [...egressAllowlistFor(members)];
 
-  // 3. A PER-RUN CERTIFICATE from the domain's own CA.
+  // 3. THE CA KEY MUST RESOLVE — checked before EITHER path commits to a run, so the Argo path
+  //    refuses at derivation exactly where Mode C does, rather than later, inside a pod.
   const caPrivateKeyPem = await getSecretValue(
     tx,
     input.orgId,
@@ -125,26 +161,55 @@ export async function deriveOpsRunMaterial(
     throw new OpsMaterialUnavailable(
       `the CA for domain ${input.domainId} names secret '${authorityRow.privateKeySecretKey}', ` +
         "which does not resolve. Refusing rather than running a host-reaching class with no " +
-        "credential."
+        "credential.",
+      { inputContext: opsMaterialContext("ca_key_unresolved") }
     );
   }
 
+  return {
+    bound: {
+      opsRole: input.role,
+      opsInventory,
+      opsEgressAllowlist,
+      opsPrincipals: [OPS_PRINCIPAL]
+    },
+    authorityId: authorityRow.id,
+    caPrivateKeyPem
+  };
+}
+
+/**
+ * Derive one MODE C run's material, and record the issuance in the SAME transaction.
+ *
+ * Returned as a plain parameter bag because that is the channel `trigger()` has — but every key in
+ * it is one `SERVER_DERIVED_OPS_KEYS` names, so a recipe carrying any of them is refused rather
+ * than merged (ADR-0052). The bag holds a SECRET KEY, never credential material: trigger
+ * parameters are persisted and surfaced in evidence.
+ */
+export async function deriveOpsRunMaterial(
+  tx: TenantTx,
+  input: DeriveOpsRunMaterialInput
+): Promise<Record<string, unknown>> {
+  const { bound, authorityId, caPrivateKeyPem } = await deriveOpsBound(tx, input);
+
+  // A PER-RUN CERTIFICATE from the domain's own CA, over a keypair minted HERE: Mode C launches the
+  // container itself, so the private half only ever reaches infrastructure SCP controls.
   const { generateEphemeralSshKeypair } = await import("./ssh-credentials.js");
   const keypair = generateEphemeralSshKeypair();
   const authority = new ScpCaAuthority({
     domainId: input.domainId,
-    authorityId: authorityRow.id,
+    authorityId,
     caPrivateKeyPem
   });
   const issued = await authority.issue({
     openSshPublicKey: keypair.openSshPublicKey,
-    principals: [OPS_PRINCIPAL],
+    principals: bound.opsPrincipals,
     keyId: opsKeyId(input.subjectObjectId),
     validForSeconds: RUN_CERTIFICATE_TTL_SECONDS,
-    targetHosts: [...opsEgressAllowlist]
+    targetHosts: bound.opsEgressAllowlist
   });
 
-  // 4. THE CREDENTIAL GOES TO THE SECRET STORE; only its KEY travels onward.
+  // THE CREDENTIAL GOES TO THE SECRET STORE; only its KEY travels onward.
   const opsCredentialSecretKey = `ops/run/${randomUUID()}`;
   await putSecret(tx, {
     orgId: input.orgId,
@@ -158,28 +223,30 @@ export async function deriveOpsRunMaterial(
     masterKey: input.masterKey
   });
 
-  // 5. THE ISSUANCE RECORD, in this transaction. ADR-0051 D5: a certificate a host accepted with no
-  //    row here IS evidence of forgery, so the record must not be able to fail independently of the
-  //    certificate it describes.
+  // THE ISSUANCE RECORD, in this transaction. ADR-0051 D5: a certificate a host accepted with no row
+  // here IS evidence of forgery, so the record must not be able to fail independently of the
+  // certificate it describes.
   await recordIssuance(tx, {
     orgId: input.orgId,
-    authorityId: authorityRow.id,
+    authorityId,
     authorityName: issued.authority,
     serial: issued.serial,
     // What was ACTUALLY signed, not a second formatting of it. `ScpCaAuthority` appends the serial
     // to the requested id, so re-deriving the string here is exactly the divergence `keyId` on the
     // response exists to prevent.
     keyId: issued.keyId ?? opsKeyId(input.subjectObjectId),
-    principals: [OPS_PRINCIPAL],
-    targetHosts: [...opsEgressAllowlist],
+    principals: bound.opsPrincipals,
+    targetHosts: bound.opsEgressAllowlist,
     expiresAt: issued.expiresAt
   });
 
+  // Spelled key by key rather than `...bound`: the reserved-trigger-parameters census reads a
+  // lane's keys out of this return, and a spread would hide them from it.
   return {
-    opsRole: input.role,
-    opsInventory,
-    opsEgressAllowlist,
-    opsPrincipals: [OPS_PRINCIPAL],
+    opsRole: bound.opsRole,
+    opsInventory: bound.opsInventory,
+    opsEgressAllowlist: bound.opsEgressAllowlist,
+    opsPrincipals: bound.opsPrincipals,
     opsCredentialSecretKey
   };
 }

@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
+  ArgoOpsPinRequestSchema,
+  ArgoOpsPinSchema,
   EnrolTrustDomainRequestSchema,
   ProblemSchema,
   ReconcileSshSerialsRequestSchema,
@@ -22,6 +24,13 @@ import {
   reconcileSerials
 } from "../coordination/ssh-ca-repo.js";
 import { trustedUserCaKeysFile } from "../coordination/ops-host-enrolment.js";
+import {
+  ArgoOpsPinInvalid,
+  argoOpsPinForDomain,
+  putArgoOpsPin
+} from "../coordination/ops-argo-pin.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 
 /**
  * THE ENROLMENT DOOR and ADR-0051 D5's EVIDENCE SURFACE (M27.9). See docs/routes.md §311.
@@ -76,13 +85,13 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
         // sentence rather than a constraint violation. The index is what makes it TRUE.
         const existing = await enrolmentForDomain(tx, auth.orgId, domainId);
         if (existing) {
-          const err = new Error(
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw conflict(
             `trust domain ${domainId} is already enrolled. One CA per domain is the bound ` +
               "ADR-0051 D2 sets; re-enrolling would stand up a second authority minting for the " +
               "same hosts."
           );
-          (err as Error & { statusCode?: number }).statusCode = 409;
-          throw err;
         }
         const result = await enrolDomain(tx, {
           orgId: auth.orgId,
@@ -139,19 +148,19 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
         });
         const row = await enrolmentForDomain(tx, auth.orgId, domainId);
         if (!row) {
-          const err = new Error(`trust domain ${domainId} is not enrolled`);
-          (err as Error & { statusCode?: number }).statusCode = 404;
-          throw err;
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw notFound(`trust domain ${domainId} is not enrolled`);
         }
         const authority = await activeAuthorityForDomain(tx, auth.orgId, domainId);
         if (!authority) {
           // Enrolled with no ACTIVE authority means the CA was retired without re-enrolment — the
           // same state `deriveOpsRunMaterial` refuses on, surfaced here rather than only at run time.
-          const err = new Error(
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw notFound(
             `trust domain ${domainId} is enrolled but has no ACTIVE certificate authority`
           );
-          (err as Error & { statusCode?: number }).statusCode = 404;
-          throw err;
         }
         return {
           domainId: String(domainId),
@@ -161,6 +170,120 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
           caPublicKey: authority.publicKey,
           trustedUserCaKeysFile: trustedUserCaKeysFile(authority.publicKey)
         };
+      });
+      return reply.code(200).send(view);
+    }
+  });
+
+  // THE ARGO HOST-OPS PIN (M28.2, ADR-0054 D9). The same door permission as enrolment —
+  // `secret:write` at the org root — because what it decides is where this domain's CA-minted
+  // certificates can go. #414's adversarial round showed the alternative: with these as binding
+  // config, an Operator scoped to one product redirected a run token to their own Argo and key.
+  typed.route({
+    method: "PUT",
+    url: "/api/v1/trust-domains/:domainId/ssh-ca/argo-ops-pin",
+    schema: {
+      params: z.object({ domainId: z.string().uuid() }),
+      body: ArgoOpsPinRequestSchema,
+      response: {
+        200: ArgoOpsPinSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "putTrustDomainArgoOpsPin",
+        summary:
+          "Pin where this domain's CA may send an Argo Workflows host-ops run token: the Argo server and namespace, SCP's catalog template ref, the RSA key the token is sealed to, the cluster's egress addresses (every certificate's `source-address`) and the scp-runner-ops digest the template must name. `secret:write` at the org root, like enrolment — a binding editor cannot move it, and an Argo-bound run whose binding does not match it is refused. SCP cannot attest the pod that redeems; this pins what it CAN control (ADR-0054)",
+        tags: ["infrastructure"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const domainId = asTrustDomainId(request.params.domainId);
+      const view = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "secret:write",
+          scopeObjectId: auth.orgId
+        });
+        if (!(await enrolmentForDomain(tx, auth.orgId, domainId))) {
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw notFound(
+            `trust domain ${domainId} is not enrolled — enrol it (and record its break-glass path) ` +
+              "before pinning where its certificates may go"
+          );
+        }
+        try {
+          await putArgoOpsPin(tx, {
+            ...request.body,
+            orgId: auth.orgId,
+            domainId,
+            recordedBySubjectId: auth.subjectObjectId
+          });
+        } catch (err) {
+          if (err instanceof ArgoOpsPinInvalid) throw badRequest(err.message);
+          throw err;
+        }
+        const pin = (await argoOpsPinForDomain(tx, auth.orgId, domainId))!;
+        await appendAuditEvent(tx, {
+          orgId: auth.orgId,
+          actorId: auth.subjectObjectId,
+          action: "ssh_ca.argo_ops_pin.put",
+          reason:
+            `pinned domain ${domainId}'s Argo host-ops endpoint to ${pin.serverUrl} ` +
+            `(namespace ${pin.namespace}, template ${pin.templateRef}, runner ` +
+            `${pin.runnerImageDigest}, source-address ${pin.sourceAddresses.join(",")})`,
+          requestId: request.id
+        });
+        return { ...pin, domainId: String(pin.domainId), updatedAt: pin.updatedAt.toISOString() };
+      });
+      return reply.code(200).send(view);
+    }
+  });
+
+  typed.route({
+    method: "GET",
+    url: "/api/v1/trust-domains/:domainId/ssh-ca/argo-ops-pin",
+    schema: {
+      params: z.object({ domainId: z.string().uuid() }),
+      response: {
+        200: ArgoOpsPinSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "getTrustDomainArgoOpsPin",
+        summary:
+          "Read this domain's Argo host-ops pin. 404 when none is set — the state in which every Argo-bound host-reaching run for the domain is refused",
+        tags: ["infrastructure"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const domainId = asTrustDomainId(request.params.domainId);
+      const view = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "audit:read",
+          scopeObjectId: auth.orgId
+        });
+        const pin = await argoOpsPinForDomain(tx, auth.orgId, domainId);
+        if (!pin) {
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw notFound(`trust domain ${domainId} has no Argo host-ops pin`);
+        }
+        return { ...pin, domainId: String(pin.domainId), updatedAt: pin.updatedAt.toISOString() };
       });
       return reply.code(200).send(view);
     }
@@ -201,6 +324,7 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
           authorityName: r.authorityName,
           principals: r.principals,
           targetHosts: r.targetHosts,
+          sourceAddress: r.sourceAddress,
           issuedAt: r.issuedAt.toISOString(),
           expiresAt: r.expiresAt.toISOString()
         }));

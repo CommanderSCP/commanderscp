@@ -60,7 +60,17 @@ const PRODUCTION_SOURCES = trackedFiles(REPO_ROOT).filter(
     !isTest(p)
 );
 
-const read = (p: string): string => stripComments(readFileSync(resolve(REPO_ROOT, p), "utf8"));
+// MEMOISED: every census entry scans every production source, and re-stripping ~1000 files per
+// entry kept the vitest worker busy long enough to time out its RPC in CI (`onTaskUpdate`).
+const stripped = new Map<string, string>();
+const read = (p: string): string => {
+  let text = stripped.get(p);
+  if (text === undefined) {
+    text = stripComments(readFileSync(resolve(REPO_ROOT, p), "utf8"));
+    stripped.set(p, text);
+  }
+  return text;
+};
 
 function definitionFiles(name: string): Set<string> {
   const declaration = new RegExp(`export (?:async )?function ${name}\\b`);

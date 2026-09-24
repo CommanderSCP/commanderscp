@@ -4053,6 +4053,81 @@ export function buildProgram(): Command {
       console.log(`ca public    ${enrolment.caPublicKey}`);
     });
 
+  // M28.2 (ADR-0054 D9) — the Argo host-ops pin, at the surface an operator has.
+  sshCaCmd
+    .command("pin-argo-ops")
+    .description(
+      "Pin where this domain's CA may send an Argo Workflows host-ops run token: the Argo server + namespace, SCP's catalog template ref, the RSA key the token is sealed to, the cluster's egress addresses (every certificate's source-address) and the scp-runner-ops digest the template must name. Needs secret:write at the org root; an Argo-bound run whose binding does not match is refused"
+    )
+    .argument("<domainId>", "the enrolled trust domain")
+    .requiredOption("--server-url <url>", "the Argo Workflows server SCP submits to")
+    .requiredOption("--namespace <ns>", "the Argo namespace holding scp-ops-v1")
+    .option("--template-ref <name>", "SCP's ops catalog template", "scp-ops-v1")
+    .requiredOption(
+      "--sealing-public-key-file <path>",
+      "RSA (>= 3072-bit) public key PEM; its private half is the scp-ops-v1 sealing Secret"
+    )
+    .requiredOption(
+      "--source-address <cidr...>",
+      "the cluster's egress address/CIDR, repeatable (MANDATORY)",
+      (value: string, previous: string[]) => [...(previous ?? []), value],
+      [] as string[]
+    )
+    .requiredOption("--runner-image-digest <sha256:...>", "the pinned scp-runner-ops digest")
+    .requiredOption(
+      "--redeem-url <url>",
+      "SCP's API base URL as the Argo cluster reaches it (the template's SCP_OPS_API_URL)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .action(
+      async (
+        domainId: string,
+        opts: {
+          serverUrl: string;
+          namespace: string;
+          templateRef: string;
+          sealingPublicKeyFile: string;
+          sourceAddress: string[];
+          runnerImageDigest: string;
+          redeemUrl: string;
+          baseUrl?: string;
+        }
+      ) => {
+        const { readFile } = await import("node:fs/promises");
+        const client = await clientFromStoredCredentials(opts);
+        const pin = await client.sshCa.pinArgoOps(domainId, {
+          serverUrl: opts.serverUrl,
+          namespace: opts.namespace,
+          templateRef: opts.templateRef,
+          sealingPublicKey: await readFile(opts.sealingPublicKeyFile, "utf8"),
+          sourceAddresses: opts.sourceAddress,
+          runnerImageDigest: opts.runnerImageDigest,
+          redeemUrl: opts.redeemUrl
+        });
+        console.log(
+          `pinned ${pin.domainId}: ${pin.serverUrl} ns=${pin.namespace} template=${pin.templateRef} ` +
+            `runner=${pin.runnerImageDigest} source-address=${pin.sourceAddresses.join(",")}`
+        );
+      }
+    );
+
+  sshCaCmd
+    .command("argo-ops-pin")
+    .description("Read a trust domain's Argo host-ops pin")
+    .argument("<domainId>", "the trust domain")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (domainId: string, opts: { baseUrl?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const pin = await client.sshCa.argoOpsPin(domainId);
+      console.log(`domain          ${pin.domainId}`);
+      console.log(`server          ${pin.serverUrl}`);
+      console.log(`namespace       ${pin.namespace}`);
+      console.log(`template        ${pin.templateRef}`);
+      console.log(`runner digest   ${pin.runnerImageDigest}`);
+      console.log(`source-address  ${pin.sourceAddresses.join(",")}`);
+      console.log(`updated         ${pin.updatedAt}`);
+    });
+
   sshCaCmd
     .command("issuances")
     .description("Every SSH certificate SCP recorded issuing, newest first (ADR-0051 D5)")

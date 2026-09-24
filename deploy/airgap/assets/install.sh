@@ -400,6 +400,12 @@ if [[ "$MODE" == "helm" ]]; then
     if [[ -n "${CATALOG_GIT_DIGEST:-}" ]]; then
       BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.buildImage.gitImage=${CATALOG_GIT_RETARGETED_REF:-${REGISTRY}/catalog-git:${BUNDLE_VERSION}@${CATALOG_GIT_DIGEST}}")
     fi
+    # The host-ops catalog template (scp-ops-v1, M28.2) runs the SAME scp-runner-ops image Mode C
+    # does, so the bundle already carries it; retargeted here so an operator who enables
+    # `catalog.ops` gets the bundle registry's digest-pinned ref rather than an empty value.
+    if [[ -n "${SCP_RUNNER_OPS_DIGEST:-}" ]]; then
+      BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.ops.runnerImage=${SCP_RUNNER_OPS_RETARGETED_REF:-${REGISTRY}/scp-runner-ops:${BUNDLE_VERSION}@${SCP_RUNNER_OPS_DIGEST}}")
+    fi
     # scp-build-rpm-v1's first-party builder (M28.1). Setting it is also what RENDERS that template:
     # it has no upstream default, so without this line an air-gapped install has no RPM build.
     if [[ -n "${SCP_BUILDER_RPM_DIGEST:-}" ]]; then
