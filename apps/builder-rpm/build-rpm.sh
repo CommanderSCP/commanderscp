@@ -4,7 +4,7 @@
 # THE BUILD STEP OF `scp-build-rpm-v1` (M28.1, ADR-0053): SRPM from the spec, RPM from the SRPM,
 # then a PUT of each binary RPM to the package-repo destination SCP derived. Baked into the image
 # rather than inlined in the WorkflowTemplate so the script that ships is the script the
-# real-counterparty test runs (`rpm-build.integration.test.ts`) — an inlined script can only be
+# real-counterparty test runs (`rpm-build-lane.integration.test.ts`) — an inlined script can only be
 # tested by extracting it from rendered YAML, which is a test of the extraction.
 #
 # Inputs, all positional so no parameter value is ever parsed as shell source:

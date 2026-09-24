@@ -3945,6 +3945,17 @@ function RegistryHeadline({
           <span className="font-mono">{registry.repository}</span>
         </>
       ) : null}
+      {/* WHAT IT SERVES, only when it SAYS (M28.1, ADR-0053). Absent is not rendered as "oci": the
+          build lane applies that default, but this line reports the declaration, and a registry
+          that declared nothing did not declare "oci". */}
+      {registry.packageFormats ? (
+        <span data-testid="pipeline-registry-formats">
+          {" · serves "}
+          {registry.packageFormats.length > 0
+            ? registry.packageFormats.join(", ")
+            : "nothing readable (packageFormats is not a list)"}
+        </span>
+      ) : null}
     </span>
   );
 }

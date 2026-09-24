@@ -1756,6 +1756,30 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     - **DoD:** an `rpm`-Typed component promotes end-to-end through Argo Workflows to a package repo.
       Mutation: an `rpm` binding handed a container-registry destination is **refused**, not silently
       pushed — the present behaviour, asserted red.
+    - **State (2026-09-23): built — [ADR-0053](adr/0053-build-destination-by-artifact-class.md).**
+      The defect was asserted red first, then fixed: the Type selects a destination format
+      (`DESTINATION_FORMAT_OF_TYPE`: `image`→`oci`, `rpm`→`rpm`, every other build Type → none), a
+      registry declares `properties.packageFormats` (absent ⇒ `["oci"]`, so every existing registry is
+      unchanged), and a mismatch throws `BuildDestinationRefused`, which reconcile terminalises as
+      `destination_refused` with a Decision and audit event. `scp-build-rpm-v1` ships in the catalog
+      with a first-party builder (`apps/builder-rpm`, EL9) that runs with **zero** securityContext
+      relaxations. Proved by `rpm-build-lane.integration.test.ts`: a real promotion through the real
+      reconcile loop and `argo-workflows` plugin, then the shipped builder run with exactly the
+      submitted parameters against a real Gitea, and `dnf install` of the result from it.
+      - *What was hard / surprising.* (a) The registry's `kind` is the PRODUCT, and ADR-0012's Gitea
+        serves several formats, so "package-repo kind" became a declared **list** on the registry, not
+        a kind. (b) No maintained public image ships `rpmbuild` — hence a first-party image, and a
+        template that is **off until its image is named**. (c) The "same refusal channel" the brief
+        pointed at (`OpsDeclarationRefused`) was itself a retry-forever with no Decision; it was
+        fixed by property in the same increment.
+      - *What the DoD did NOT prove.* Argo Workflows itself is a loopback stand-in in the test (it
+        records the submission and reports Succeeded); the template's argument wiring is held by
+        `tools/helm-verify` instead, and the source-fetch init container is shared with
+        `scp-build-image-v1` and not re-run here. The zero-relaxation securityContext was measured
+        under Docker's default seccomp/AppArmor, not yet on the cluster's own runtime — that needs an
+        owner-applied install. Types with no destination class (`chart`, `deb`, `npm`, …) are given
+        no destination and their registry edge is not consulted (ADR-0053 §3 — an owner call to
+        overrule if refusal was intended).
   - **M28.2 — host ops through Argo Workflows: `scp-ops-v1`.** The same Ansible catalog and the same
     `deriveOpsRunMaterial` output M27.9 produces, submitted as a Workflow where the org runs Argo
     rather than launched by `@scp/runner-launcher`. Mode C stays the no-execution-system fallback.
