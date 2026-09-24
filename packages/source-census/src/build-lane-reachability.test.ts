@@ -91,6 +91,19 @@ describe("the build lane's destination derivation is INSTALLED, not merely built
     );
   });
 
+  it("reconcile routes the OPS lane's refusal to the terminal path too (same property)", () => {
+    // `OpsDeclarationRefused` had the identical defect — thrown in the claim transaction and
+    // retried every tick with no Decision — and was moved onto the same typed path. The behavioural
+    // proof is `ops-declaration-refusal.integration.test.ts`; this is the cheap half.
+    const reconcile = read("apps/server/src/coordination/reconcile.ts");
+    expect(reconcile).toMatch(
+      /await opsLaneTriggerParameters\(tx, \{[^}]*\}\)\.catch\(asRefusal\)/
+    );
+    expect(reconcile).toMatch(
+      /if \(opsParameters instanceof TriggerParameterRefusal\) \{\s*await refuseTrigger\(tx, opsParameters\);/
+    );
+  });
+
   it("the derivation routes on the Type's destination CLASS, never on the Category alone", () => {
     // The M28.1 defect was a destination derived for the whole `build` Category. The table is
     // what replaced it; a derivation that stops reading it has reintroduced the defect.

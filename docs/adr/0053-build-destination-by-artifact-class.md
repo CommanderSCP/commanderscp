@@ -74,7 +74,7 @@ change parked — and `trigger()` is never called. Any other error still takes t
 
 **Census by property.** `OpsDeclarationRefused` (M27.9) had the same property — thrown inside the
 claim transaction, caught by the per-target handler, logged and retried every tick with no Decision.
-It now extends the same class and terminalises as `ops_declaration_refused`. Both statuses joined
+It now extends the same class and terminalises as `ops_declaration_refused`. Its Decision carries `{ gate: "ops_declaration", reason, role, hasArguments }` — the cause from a closed set, never the argument values (they can name hosts and paths) — and `ops-declaration-refusal.integration.test.ts` proves the path through the real reconcile loop with a real `managed-ops` binding. Both statuses joined
 `REFUSED_WAVE_TARGET_STATUSES`, which is what every terminal-skip and board projection reads.
 
 **5. `scp-build-rpm-v1` and its builder.** A catalog `WorkflowTemplate` beside `scp-build-image-v1`:
@@ -93,8 +93,11 @@ Gitea takes one identity); SCP holds none.
   `RuntimeDefault`. The only two denials were writes (`/var/tmp` scriptlets, `find-debuginfo`'s
   `/tmp`) and were fixed by pointing them at the workspace. Measured under Docker's defaults, not
   yet on the cluster's runtime (that needs an owner-applied install).
-- **Off until its image is named** (`catalog.buildRpm.builderImage`, empty by default): there is no
-  upstream ref to default to. The air-gap `install.sh` sets it from the bundle.
+- **Off until its image is named** (`catalog.buildRpm.builderImage`, empty by default). The air-gap
+  `install.sh` sets it from the bundle; a connected install passes the ref `publish-images` prints
+  (`scp-bundled.sh enable argo-workflows --set …builderImage=ghcr.io/commanderscp/scp-builder-rpm:sha-<commit>@sha256:<digest>`).
+  No chart default, like every managed runner image: first-party images are published only as
+  `sha-<commit>`, so no versioned ref a default could name is guaranteed to exist.
 - **"Signed"** means what it means for `scp-build-image-v1`: the template ships in
   `deploy/helm-bundled`, which the air-gap bundle carries under its cosign-signed `CHECKSUMS.txt` and
   signed tarball. Neither catalog template carries a per-template signature.
