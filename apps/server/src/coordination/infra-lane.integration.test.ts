@@ -20,6 +20,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { insertDecision } from "./decisions-repo.js";
 import { auditEvents, changeSourceEvents, changeWaveTargets, decisions } from "../db/schema.js";
 import {
   deriveStateWorkspace,
@@ -934,6 +935,41 @@ describe(
       expect(
         byGate(await decisionsOf(plan.id), "infra_source_not_allowed")?.inputContext
       ).toMatchObject({ repo: "attacker/evil", executionSystemId: argoSystemId });
+    });
+
+    it("a state workspace another target already planned in is REFUSED — a digest collision is checked, not assumed away", async () => {
+      const target = await environmentTarget({
+        environment: ENVIRONMENT,
+        region: "collide",
+        infrastructurePath: "infra"
+      });
+      const ws = deriveStateWorkspace({
+        orgId: org.orgId,
+        targetObjectId: target.id,
+        environment: ENVIRONMENT,
+        region: "collide"
+      });
+      // Stand in for the (astronomically unlikely) other target whose digest collided: its plan's
+      // record claims this workspace.
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        insertDecision(tx, {
+          orgId: org.orgId,
+          kind: "wave_target",
+          subjectId: randomUUID(),
+          verdict: "allow",
+          inputContext: {
+            gate: "infra_plan_trigger",
+            targetObjectId: randomUUID(),
+            parameters: { stateWorkspace: ws }
+          },
+          reasonTree: { summary: "a colliding target's plan" }
+        })
+      );
+      const plan = await proposePlan(target.id);
+      await settle(plan.id, "infra_declaration_refused");
+      expect(
+        byGate(await decisionsOf(plan.id), "infra_workspace_collision")?.inputContext
+      ).toMatchObject({ stateWorkspace: ws });
     });
 
     it("an INLINE infrastructure binding (no execution system, so no allowlist) is refused", async () => {
