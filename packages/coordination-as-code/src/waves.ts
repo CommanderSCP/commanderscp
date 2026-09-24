@@ -1,3 +1,4 @@
+import type { RolloutStrategy } from "@scp/schemas";
 import type { IResourceRef, ReleaseTopologyWaveSpec } from "./construct.js";
 
 /** Wave-organization guidance (team-pipeline-iac.md §8, D6 vocabulary). See docs/coordination-as-code.md §320. */
@@ -15,6 +16,8 @@ export type WaveItem =
       readonly targets: readonly WaveTarget[];
       readonly mode?: "parallel" | "sequential";
       readonly requiresFanIn?: boolean;
+      /** M28.4 (ADR-0055): the steps an SCP-authored Rollout at this wave's places runs. */
+      readonly rollout?: RolloutStrategy;
     };
 
 function isWaveObject(
@@ -41,7 +44,8 @@ export function normalizeWaveItems(items: readonly WaveItem[]): ReleaseTopologyW
         name: item.name ?? autoName,
         mode: item.mode ?? "parallel",
         targets: [...item.targets],
-        ...(item.requiresFanIn !== undefined ? { requiresFanIn: item.requiresFanIn } : {})
+        ...(item.requiresFanIn !== undefined ? { requiresFanIn: item.requiresFanIn } : {}),
+        ...(item.rollout !== undefined ? { rollout: item.rollout } : {})
       };
     }
     // A bare target (string or IResourceRef) — a single-member wave.

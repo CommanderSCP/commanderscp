@@ -1,5 +1,6 @@
 import {
   DesiredStateManifestSchema,
+  type AuthoredDeployment,
   type DependencyEcosystem,
   type DesiredStateManifest,
   type ExecutorType,
@@ -759,6 +760,11 @@ export const Policy = defineResourceConstruct("policy");
 export interface ComponentProps extends ResourceProps {
   /** The service this component belongs to, or a reference. See docs/coordination-as-code.md §239. */
   readonly service: IService | string;
+  /** M28.4 (ADR-0055): WHAT SCP authors when this component is bound to an Argo CD it was not
+   *  imported from — written to `properties.deployment`. Typed here; validated server-side at
+   *  trigger, where a bad one is refused with a Decision.
+   *  @default none — the component is imported-and-coordinated, never authored */
+  readonly deployment?: AuthoredDeployment;
 }
 
 /** Resolves the two constructor forms into one triple. See docs/coordination-as-code.md §240. */
@@ -788,7 +794,15 @@ export class Component extends ResourceConstruct<"component"> {
     maybeProps?: ComponentProps
   ) {
     const resolved = resolveComponentCtorArgs(scopeOrName, idOrProps, maybeProps);
-    super(resolved.scope, resolved.id, "component", resolved.props);
+    const { deployment, ...rest } = resolved.props;
+    super(
+      resolved.scope,
+      resolved.id,
+      "component",
+      deployment === undefined
+        ? rest
+        : { ...rest, properties: { ...(rest.properties ?? {}), deployment } }
+    );
     this.service = { urn: resolveUrn(resolved.props.service), typeId: "service" };
     resolved.scope._registerRelationship({
       typeId: "contains",
@@ -896,6 +910,9 @@ export interface ReleaseTopologyWaveSpec {
    *  a value.
    *  @default true server-side (except an implicit wave 0) */
   readonly requiresFanIn?: boolean;
+  /** M28.4 (ADR-0055): the steps an SCP-authored Argo Rollout at this wave's places is written with.
+   *  @default none — an authored Rollout here is a canary with no steps (a rolling update) */
+  readonly rollout?: RolloutStrategy;
 }
 
 export interface ReleaseTopologyProps extends Omit<ResourceProps, "properties"> {
@@ -909,7 +926,8 @@ export class ReleaseTopology extends ResourceConstruct {
       ...(wave.name !== undefined ? { name: wave.name } : {}),
       mode: wave.mode,
       targets: wave.targets.map(resolveUrn),
-      ...(wave.requiresFanIn !== undefined ? { requiresFanIn: wave.requiresFanIn } : {})
+      ...(wave.requiresFanIn !== undefined ? { requiresFanIn: wave.requiresFanIn } : {}),
+      ...(wave.rollout !== undefined ? { rollout: wave.rollout } : {})
     }));
     super(scope, id, "release-topology", {
       name: props.name,
