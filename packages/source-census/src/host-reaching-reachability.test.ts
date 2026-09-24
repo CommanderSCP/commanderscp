@@ -133,6 +133,12 @@ describe("host-reaching execution is INSTALLED, not merely built", () => {
     expect(used.test(stripComments("/* registerOpsRunRedemptionRoutes(app, deps); */"))).toBe(
       false
     );
+    // AND THE READER THE CENSUS ACTUALLY USES strips them. This file's own comment below carries
+    // a marker; `readSource` of this file must not see it. A `readSource` that went back to raw
+    // text would leave every assertion above green and this one red.
+    // census-strip-control-marker
+    const self = readSource("packages/source-census/src/host-reaching-reachability.test.ts");
+    expect(self.includes(["census", "strip", "control", "marker"].join("-"))).toBe(false);
   });
 
   it("every name in the census is actually DEFINED somewhere", () => {

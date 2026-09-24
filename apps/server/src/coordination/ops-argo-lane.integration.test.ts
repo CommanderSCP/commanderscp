@@ -773,14 +773,25 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     const attacker = generateKeyPairSync("rsa", { modulusLength: 3072 });
     const attackerPem = attacker.publicKey.export({ type: "spki", format: "pem" }).toString();
 
-    // (1) The pin itself is not theirs to move: secret:write at the org root.
-    await expect(
-      opClient.sshCa.pinArgoOps(domainId, {
-        ...PIN,
-        serverUrl: "https://evil.example.test",
-        sealingPublicKey: attackerPem
-      })
-    ).rejects.toMatchObject({ status: 403 });
+    // (1) The pin itself is not theirs to move: secret:write at the org root. Tried twice — by
+    //     this product-scoped Operator, and by an Operator bound at the ORG ROOT, who holds
+    //     object:write there and so could edit any binding in the org. Neither holds secret:write.
+    const orgOp = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+    for (const client of [
+      opClient,
+      new ScpClient({ baseUrl: server.baseUrl, token: orgOp.token })
+    ]) {
+      await expect(
+        client.sshCa.pinArgoOps(domainId, {
+          ...PIN,
+          serverUrl: "https://evil.example.test",
+          sealingPublicKey: attackerPem
+        })
+      ).rejects.toMatchObject({ status: 403 });
+    }
+    expect((await admin.sshCa.argoOpsPin(domainId)).serverUrl, "the pin did not move").toBe(
+      ARGO_URL
+    );
 
     // (2) Repointing THEIR BINDING at their own server (with their own key in its config) is refused
     //     at derivation, terminally, with a Decision — and nothing reaches the other server.
