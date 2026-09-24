@@ -1,0 +1,241 @@
+{{- if and .Values.bundledExecutor.argoWorkflows.enabled .Values.bundledExecutor.argoWorkflows.catalog.ops.enabled -}}
+{{- $w := .Values.bundledExecutor.argoWorkflows -}}
+{{- $o := $w.catalog.ops -}}
+{{- $scpNs := .Values.bundledExecutor.scpNamespace -}}
+{{- if not $o.runnerImage }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.runnerImage is empty — the vendored, retargetable scp-runner-ops image is required (the air-gap install.sh sets it). Fail-closed." }}{{- end -}}
+{{- if not $o.apiUrl }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.apiUrl is empty — a scp-ops-v1 pod redeems its one-time token at SCP's API and has no other way to its material. Fail-closed." }}{{- end -}}
+{{- if not $o.targetCidrs }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.targetCidrs is empty — the ops pods' egress policy would admit no host at all. Name the address ranges your managed hosts live in. Fail-closed." }}{{- end -}}
+{{- if not $scpNs }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.enabled=true but bundledExecutor.scpNamespace is empty — the ops pods' egress to SCP's API would have no namespace to be scoped to. Fail-closed." }}{{- end -}}
+# =============================================================================================
+# THE SHIPPED HOST-OPS CATALOG TEMPLATE (M28.2, ADR-0054, charter amendment 2026-09-23).
+#
+# The same closed, cosign-signed Ansible catalog and the same `scp-runner-ops` image Mode C runs,
+# executed by this Argo Workflows install instead of by a container SCP launches. OFF BY DEFAULT and
+# separate from the build catalog file on purpose: enabling it places a pod that will hold a root
+# certificate for this domain's hosts into this namespace, which is a decision, not a side effect
+# of enabling Argo Workflows.
+#
+# WHAT THE WORKFLOW CARRIES — two parameters, neither a secret. `opsRunTokenSealed` is a single-use
+# token ENCRYPTED to the RSA key in `sealingKeySecret`; `opsRunId` names the run. Hosts, the role,
+# the principals and the certificate are NOT here: a Workflow's arguments are persisted in the
+# Workflow object, shown in the Argo UI and kept in etcd and the archive. The pod unseals the token
+# with the Secret below and redeems it ONCE at SCP's API for the run's server-derived bound and a
+# certificate over a keypair it generates itself (apps/runner-ops/redeem.py).
+#
+# WHAT STILL HAS TO BE TRUSTED, said here because this file is where an operator decides:
+#   - anyone who can READ `sealingKeySecret` — which includes anyone who can CREATE A POD in this
+#     namespace, since a pod may mount any Secret in its namespace — can unseal a token in flight
+#     and race this pod to redeem it. The race is loud (the real run then fails with a 409 SCP has
+#     audited) but not prevented. Restrict pod creation here; Argo's
+#     `workflowRestrictions.templateReferencing: Strict` stops ad-hoc Workflows from mounting it.
+#   - the certificate is not host-bound: it authorizes `root` on every host trusting this domain's
+#     CA for its TTL. `targetCidrs` below is a per-DEPLOYMENT network bound, not Mode C's per-RUN one.
+# =============================================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: scp-ops-v1
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+    commanderscp.io/catalog: ops
+    commanderscp.io/catalog-version: v1
+spec:
+  # The executor floor and nothing else — the same shape, and the same reason, as `scp-build`:
+  # Argo refuses a tokenless pod, and the emissary reports step status through workflowtaskresults.
+  serviceAccountName: {{ $o.serviceAccount }}
+  entrypoint: run
+  # Bounded, because the certificate is. A run that outlives its certificate can only fail.
+  activeDeadlineSeconds: {{ $o.activeDeadlineSeconds }}
+  podMetadata:
+    labels:
+      # What `scp-ops-egress` selects. Set on the POD, so the policy follows the pod and not the
+      # Workflow object's labels, which an editor could change without touching the pod.
+      commanderscp.io/catalog: ops
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: {{ $o.runAsUser }}
+    runAsGroup: {{ $o.runAsUser }}
+    fsGroup: {{ $o.runAsUser }}
+    seccompProfile:
+      type: RuntimeDefault
+  arguments:
+    parameters:
+      # REQUIRED, no default: without a token there is no run, and a default would be a token.
+      - name: opsRunTokenSealed
+      - name: opsRunId
+        value: ""
+  templates:
+    - name: run
+      inputs:
+        parameters:
+          - name: opsRunTokenSealed
+          - name: opsRunId
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        # The private half of the key the run token is sealed to. OPERATOR-CREATED, never by this
+        # chart: a chart that generated it would put the key in every rendered manifest.
+        - name: sealing
+          secret:
+            secretName: {{ $o.sealingKeySecret }}
+            defaultMode: 0440
+        # The cosign public key the catalog is verified against INSIDE the runner (M27.3).
+        - name: catalog-pubkey
+          secret:
+            secretName: {{ $o.catalogPubkeySecret }}
+            defaultMode: 0440
+        {{- if $o.apiCaSecret }}
+        - name: api-ca
+          secret:
+            secretName: {{ $o.apiCaSecret }}
+            defaultMode: 0440
+        {{- end }}
+      container:
+        image: {{ $o.runnerImage }}
+        # Named, not inherited: the emissary executor otherwise looks the entrypoint up in the
+        # image registry, which an air-gapped cluster may not let it reach.
+        command: ["/usr/local/bin/run.sh"]
+        # HARDENED, with no relaxation at all — unlike the build template this runs no tenant code,
+        # only the closed catalog, so there is nothing it needs from the kernel.
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: {{ $o.runAsUser }}
+          runAsGroup: {{ $o.runAsUser }}
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          privileged: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+        env:
+          - name: SCP_OPS_API_URL
+            value: {{ $o.apiUrl | quote }}
+          - name: SCP_OPS_RUN_TOKEN_SEALED
+            value: "{{`{{inputs.parameters.opsRunTokenSealed}}`}}"
+          - name: SCP_OPS_SEALING_KEY_FILE
+            value: /var/run/scp-ops/sealing/sealing-key.pem
+          - name: SCP_OPS_CATALOG_VERIFY
+            value: required
+          - name: SCP_OPS_CATALOG_PUBKEY
+            value: /var/run/scp-ops/catalog/cosign.pub
+          {{- if $o.apiCaSecret }}
+          - name: SCP_OPS_API_CA_FILE
+            value: /var/run/scp-ops/api-ca/ca.crt
+          {{- end }}
+          # Ansible's local temp lives under $HOME; the root filesystem is read-only.
+          - name: HOME
+            value: /work
+        volumeMounts:
+          - name: work
+            mountPath: /work
+          - name: tmp
+            mountPath: /tmp
+          - name: sealing
+            mountPath: /var/run/scp-ops/sealing
+            readOnly: true
+          - name: catalog-pubkey
+            mountPath: /var/run/scp-ops/catalog
+            readOnly: true
+          {{- if $o.apiCaSecret }}
+          - name: api-ca
+            mountPath: /var/run/scp-ops/api-ca
+            readOnly: true
+          {{- end }}
+        resources:
+          {{- toYaml $o.resources | nindent 10 }}
+---
+# EGRESS FOR OPS PODS: DNS, SCP's API (to redeem), the Kubernetes API (the emissary executor's
+# status reports) and the operator's host ranges on SSH — nothing else. Per-DEPLOYMENT, not per-run:
+# the run's own inventory bounds which hosts Ansible connects to, and this bounds what the pod could
+# reach at all if something inside it tried.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: scp-ops-egress
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+    commanderscp.io/catalog: ops
+spec:
+  podSelector:
+    matchLabels:
+      commanderscp.io/catalog: ops
+  policyTypes: ["Egress"]
+  egress:
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $scpNs }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: commanderscp
+      ports:
+        - { protocol: TCP, port: {{ $o.apiPort }} }
+    - to:
+        {{- range $o.kubeApiCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range $o.kubeApiPorts }}
+        - { protocol: TCP, port: {{ . }} }
+        {{- end }}
+    - to:
+        {{- range $o.targetCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 22 }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $o.serviceAccount }}
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+    commanderscp.io/catalog: ops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $o.serviceAccount }}
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+rules:
+  # THE EXECUTOR'S FLOOR, and the whole of it. This pod will hold a root certificate; its
+  # Kubernetes token must be able to do nothing but report its own step's outcome.
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $o.serviceAccount }}
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $o.serviceAccount }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $o.serviceAccount }}
+    namespace: {{ $w.namespace }}
+{{- end }}

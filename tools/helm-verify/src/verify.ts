@@ -840,10 +840,23 @@ function verifySocketInvariantMatrix(): void {
       // "What this chart can render" is the question, not "what SCP talks to".
       "bundledExecutor.argoRollouts.enabled=true",
       "--set",
-      "bundledExecutor.gitea.enabled=true"
+      "bundledExecutor.gitea.enabled=true",
+      // M28.2 — the host-ops catalog template is OFF by default, so the all-backends render turns
+      // it on: the guards below must see the one workload in this chart that will hold a root
+      // certificate for a domain's hosts.
+      "--set",
+      "bundledExecutor.argoWorkflows.catalog.ops.enabled=true",
+      "--set",
+      "bundledExecutor.argoWorkflows.catalog.ops.runnerImage=registry.example.com/scp/scp-runner-ops:verify",
+      "--set",
+      "bundledExecutor.argoWorkflows.catalog.ops.apiUrl=http://commanderscp-api.verify-scp-ns.svc:8080",
+      "--set",
+      "bundledExecutor.argoWorkflows.catalog.ops.targetCidrs={10.20.0.0/16}"
     ]
   ]) {
     const bundledRaw = renderRaw(BUNDLED_CHART_DIR, "verify-socket-bundled", setArgs);
+    const opsEnabled = setArgs.includes("bundledExecutor.argoWorkflows.catalog.ops.enabled=true");
+    assertOpsCatalog(label, bundledRaw, opsEnabled);
     for (const pattern of RUNTIME_SOCKET_PATTERNS) {
       assert(
         !bundledRaw.includes(pattern),
@@ -1143,6 +1156,108 @@ function verifySocketInvariantMatrix(): void {
 
 function assert(condition: unknown, msg: string): void {
   if (!condition) fail(msg);
+}
+
+/**
+ * THE HOST-OPS CATALOG TEMPLATE (M28.2, ADR-0054). The one workload in the bundled chart whose pod
+ * will hold a root certificate for a domain's hosts — so each property its design rests on is
+ * checked against the RENDER, not the template text:
+ *   - OFF unless asked for (default render has no `scp-ops-v1` at all);
+ *   - the Workflow's parameters are exactly the sealed token and a run id — nothing a reader of
+ *     Workflows could use, and nothing a host list could hide in;
+ *   - the container is fully hardened (it runs no tenant code, so it needs no relaxation);
+ *   - its identity grants the executor floor and nothing more;
+ *   - its egress policy actually SELECTS the pod the template produces (subset match on the
+ *     podMetadata labels) and admits SSH only to the operator's ranges.
+ */
+function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean): void {
+  const docs = parseAllDocuments(bundledRaw)
+    .map((d) => d.toJS() as K8sDoc | null)
+    .filter((d): d is K8sDoc => Boolean(d));
+  const tpl = docs.find((d) => d.kind === "WorkflowTemplate" && d.metadata?.name === "scp-ops-v1");
+  if (!opsEnabled) {
+    assert(
+      !tpl,
+      `[${label}] scp-ops-v1 rendered with catalog.ops disabled — the host-ops template must be off unless an operator enables it`
+    );
+    return;
+  }
+  assert(tpl, `[${label}] catalog.ops.enabled=true rendered no scp-ops-v1 WorkflowTemplate`);
+  if (!tpl) return;
+  const spec = tpl.spec as {
+    arguments?: { parameters?: { name?: string }[] };
+    podMetadata?: { labels?: Record<string, string> };
+    serviceAccountName?: string;
+    templates?: {
+      container?: Container & {
+        securityContext?: Container["securityContext"] & {
+          privileged?: boolean;
+          runAsNonRoot?: boolean;
+          capabilities?: { drop?: string[]; add?: string[] };
+        };
+      };
+    }[];
+  };
+  const params = (spec.arguments?.parameters ?? []).map((p) => p.name).sort();
+  assert(
+    JSON.stringify(params) === JSON.stringify(["opsRunId", "opsRunTokenSealed"]),
+    `[${label}] scp-ops-v1 declares parameters ${JSON.stringify(params)} — it may declare exactly opsRunId and opsRunTokenSealed. A Workflow's arguments are persisted in etcd, the Argo UI and the archive; hosts, roles and credentials reach the pod by redemption, never as parameters`
+  );
+  for (const t of spec.templates ?? []) {
+    const c = t.container;
+    if (!c) continue;
+    const sc = c.securityContext ?? {};
+    assert(
+      sc.readOnlyRootFilesystem === true &&
+        sc.allowPrivilegeEscalation === false &&
+        sc.privileged !== true &&
+        sc.runAsNonRoot === true &&
+        (sc.capabilities?.drop ?? []).includes("ALL") &&
+        (sc.capabilities?.add ?? []).length === 0 &&
+        sc.seccompProfile?.type === "RuntimeDefault",
+      `[${label}] scp-ops-v1 container '${c.name ?? "main"}' is not fully hardened — it runs only the closed catalog and needs no relaxation, so any here is new authority beside a root certificate`
+    );
+    const envNames = (c.env ?? []).map((e) => e.name);
+    for (const required of ["SCP_OPS_API_URL", "SCP_OPS_RUN_TOKEN_SEALED", "SCP_OPS_SEALING_KEY_FILE"]) {
+      assert(
+        envNames.includes(required),
+        `[${label}] scp-ops-v1 container sets no ${required} — the runner cannot redeem without it`
+      );
+    }
+    const verify = (c.env ?? []).find((e) => e.name === "SCP_OPS_CATALOG_VERIFY");
+    assert(
+      verify?.value === "required",
+      `[${label}] scp-ops-v1 does not require catalog verification — the signed catalog is what bounds a host-reaching run`
+    );
+  }
+  const role = docs.find((d) => d.kind === "Role" && d.metadata?.name === spec.serviceAccountName);
+  const granted = (((role as { rules?: { resources?: string[] }[] } | undefined)?.rules ?? []).flatMap(
+    (r) => r.resources ?? []
+  )).sort();
+  assert(
+    granted.length === 1 && granted[0] === "workflowtaskresults",
+    `[${label}] the ops Role '${spec.serviceAccountName}' grants ${JSON.stringify(granted)} — workflowtaskresults and nothing else; this pod holds a root certificate`
+  );
+  const policy = docs.find((d) => d.kind === "NetworkPolicy" && d.metadata?.name === "scp-ops-egress");
+  assert(policy, `[${label}] catalog.ops.enabled rendered no scp-ops-egress NetworkPolicy`);
+  const selector =
+    ((policy?.spec as { podSelector?: { matchLabels?: Record<string, string> } } | undefined)
+      ?.podSelector?.matchLabels ?? {}) as Record<string, string>;
+  const podLabels = spec.podMetadata?.labels ?? {};
+  assert(
+    Object.keys(selector).length > 0 &&
+      Object.entries(selector).every(([k, v]) => podLabels[k] === v),
+    `[${label}] scp-ops-egress selects ${JSON.stringify(selector)}, which the scp-ops-v1 pod labels ${JSON.stringify(podLabels)} do not satisfy — the policy would select nothing`
+  );
+  const sshRules = (
+    ((policy?.spec as { egress?: { ports?: { port?: number }[]; to?: { ipBlock?: { cidr?: string } }[] }[] })
+      ?.egress ?? [])
+  ).filter((r) => (r.ports ?? []).some((p) => p.port === 22));
+  assert(
+    sshRules.length === 1 &&
+      (sshRules[0]!.to ?? []).every((t) => t.ipBlock?.cidr && t.ipBlock.cidr !== "0.0.0.0/0"),
+    `[${label}] scp-ops-egress must admit SSH to the operator's targetCidrs only (one rule, ipBlocks, never 0.0.0.0/0)`
+  );
 }
 
 /** The RAW `helm template` output. See docs/helm-verify.md §18. */
