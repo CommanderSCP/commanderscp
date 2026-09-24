@@ -28,3 +28,4 @@ export * from "./events.js";
 export * from "./doctor.js";
 export * from "./dependencies.js";
 export * from "./binding-policy.js";
+export * from "./infrastructure-lane.js";

@@ -24140,6 +24140,143 @@ export type ListSecretKeysResponses = {
 
 export type ListSecretKeysResponse = ListSecretKeysResponses[keyof ListSecretKeysResponses];
 
+export type GetExecutionSystemSourceAllowlistData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/execution-systems/{idOrUrn}/source-allowlist';
+};
+
+export type GetExecutionSystemSourceAllowlistErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetExecutionSystemSourceAllowlistError = GetExecutionSystemSourceAllowlistErrors[keyof GetExecutionSystemSourceAllowlistErrors];
+
+export type GetExecutionSystemSourceAllowlistResponses = {
+    /**
+     * Success
+     */
+    200: {
+        executionSystemId: string;
+        repos: Array<string>;
+        routingCurrent: boolean;
+        recordedBySubjectId: string | null;
+        updatedAt: string | null;
+    };
+};
+
+export type GetExecutionSystemSourceAllowlistResponse = GetExecutionSystemSourceAllowlistResponses[keyof GetExecutionSystemSourceAllowlistResponses];
+
+export type PutExecutionSystemSourceAllowlistData = {
+    body: {
+        repos: Array<string>;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/execution-systems/{idOrUrn}/source-allowlist';
+};
+
+export type PutExecutionSystemSourceAllowlistErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutExecutionSystemSourceAllowlistError = PutExecutionSystemSourceAllowlistErrors[keyof PutExecutionSystemSourceAllowlistErrors];
+
+export type PutExecutionSystemSourceAllowlistResponses = {
+    /**
+     * Success
+     */
+    200: {
+        executionSystemId: string;
+        repos: Array<string>;
+        routingCurrent: boolean;
+        recordedBySubjectId: string | null;
+        updatedAt: string | null;
+    };
+};
+
+export type PutExecutionSystemSourceAllowlistResponse = PutExecutionSystemSourceAllowlistResponses[keyof PutExecutionSystemSourceAllowlistResponses];
+
 export type DeleteExecutorBindingData = {
     body?: never;
     path: {

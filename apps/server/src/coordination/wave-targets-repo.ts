@@ -34,6 +34,9 @@ import {
   WAVE_TARGET_EXECUTOR_REFUSED_STATUS,
   WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS,
   WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS,
+  WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS,
+  WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS,
+  WAVE_TARGET_SOURCE_REFUSED_STATUS,
   WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
 
@@ -510,6 +513,13 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   // the claim transaction and were retried every tick with no Decision at all.
   WAVE_TARGET_DESTINATION_REFUSED_STATUS,
   WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS,
+  // M28.3 (ADR-0056) — the infrastructure lane's two refusals: a plan it cannot derive, and an
+  // apply whose plan is not approved/current. The second is the one that keeps an unapproved plan
+  // from ever reaching scp-infra-apply-v1.
+  WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS,
+  WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS,
+  // A build whose source is not the component's declared source (ADR-0053 addendum).
+  WAVE_TARGET_SOURCE_REFUSED_STATUS,
   // M28.4 fix round — the executor's own terminal verdict (`TriggerRefused`).
   WAVE_TARGET_EXECUTOR_REFUSED_STATUS,
   // M28.2 (ADR-0054) — host-reaching material that cannot be derived or delivered.

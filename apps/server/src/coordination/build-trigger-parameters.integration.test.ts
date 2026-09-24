@@ -1,16 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import type { ExecutorType } from "@scp/schemas";
+import { asTrustDomainId, type ExecutorType } from "@scp/schemas";
 import {
   createTestComponent,
   createTestOrg,
+  createTestUser,
   listenTestServer,
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { BuildDestinationRefused, buildLaneTriggerParameters } from "./build-trigger-parameters.js";
+import { upsertObjectByUrn } from "../graph/objects-repo.js";
+import {
+  BuildDestinationRefused,
+  BuildSourceRefused,
+  buildLaneTriggerParameters
+} from "./build-trigger-parameters.js";
 
 /** WHAT A BUILD-LANE TRIGGER TELLS ITS EXECUTOR.
  *
@@ -53,7 +59,9 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
         type,
         sourceRef,
         changeObjectId: "01a0c000-0000-7000-8000-000000000000",
-        recipeParameters
+        recipeParameters,
+        // These cases are about the DESTINATION; the source checks are their own describe below.
+        pluginModule: "fake-executor"
       })
     );
   }
@@ -95,6 +103,43 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
       // not have to strip a scheme in a templating language, where getting it wrong pushes to the
       // wrong registry rather than erroring.
       imageDestination: "ghcr.io/agentkitproject/agentkitprofile-app"
+    });
+  });
+
+  it("a REPLICATED registry is never a push destination — its address was written by another domain", async () => {
+    // ADR-0056 addendum 3: a peer's writer chose this `serverUrl`; following it would push this
+    // domain's build wherever that peer pointed it. Registries are created domainLocal per site.
+    const component = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
+    const { object: replica } = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "execution-system",
+        actorObjectId: org.orgId,
+        requestId: "replicated-registry",
+        urn: `urn:scp:${org.orgId}:execution-system:reg-replica-${randomUUID().slice(0, 8)}`,
+        name: "reg-replica",
+        properties: { kind: "ghcr", serverUrl: "https://registry.peer.invalid" },
+        federationImport: {
+          originDomainId: asTrustDomainId(randomUUID()),
+          revision: 1,
+          provenance: null
+        }
+      })
+    );
+    await admin.relationships.create({
+      typeId: "publishes_to",
+      fromId: component.id,
+      toId: replica.id,
+      properties: { repository: "acme/widget" }
+    });
+    const err = await resolve(component.id, SOURCE_REF).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(BuildDestinationRefused);
+    expect((err as BuildDestinationRefused).inputContext).toMatchObject({
+      gate: "build_destination_replicated_registry",
+      registryExecutionSystemId: replica.id
     });
   });
 
@@ -316,6 +361,175 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
       }
     }
   );
+
+  // M28.3 re-verify (owner rulings R1 + R2, ADR-0053 addendum) — WHOSE CODE IS BUILT. A repo runs
+  // only if the binding's EXECUTION SYSTEM allows it (its source allowlist, `secret:write`) AND the
+  // component DECLARES it (a source mapping of this Type). No mapping, no system, not allowed:
+  // each refused.
+  describe("the source repo must be ALLOWED by the execution system and DECLARED by the component", () => {
+    let systemId = "";
+    beforeAll(async () => {
+      const system = await admin.object("execution-system").create({
+        name: `argo-${randomUUID().slice(0, 8)}`,
+        properties: {
+          kind: "argo-workflows",
+          serverUrl: "https://argo.example.invalid",
+          namespace: "x"
+        }
+      });
+      systemId = system.id;
+      await admin.executors.putSourceAllowlist(systemId, [SOURCE_REF.repo, "acme/*"]);
+    });
+
+    async function declaredComponent(pattern: string | null | "none", type = "image") {
+      const id = await componentPublishingTo("acme/widget");
+      if (pattern !== "none") {
+        await admin.changeSources.createMapping("github", {
+          ...(pattern === null ? {} : { repoPattern: pattern }),
+          component: id,
+          type
+        } as Parameters<typeof admin.changeSources.createMapping>[1]);
+      }
+      return id;
+    }
+    const real = (
+      id: string,
+      sourceRef: unknown,
+      opts: { executionSystemId?: string | null; recipeParameters?: Record<string, unknown> } = {}
+    ) =>
+      withTenantTx(server.deps.db, org.orgId, (tx) =>
+        buildLaneTriggerParameters(tx, {
+          orgId: org.orgId,
+          targetObjectId: id,
+          type: "image",
+          sourceRef,
+          changeObjectId: randomUUID(),
+          pluginModule: "argo-workflows",
+          executionSystemId:
+            opts.executionSystemId === undefined ? systemId : opts.executionSystemId,
+          recipeParameters: opts.recipeParameters
+        })
+      );
+    const refusalOf = (p: Promise<unknown>) => p.then(() => undefined).catch((e: unknown) => e);
+
+    it("an allowed, declared repo builds", async () => {
+      const id = await declaredComponent("AgentKitProject/*");
+      expect(await real(id, SOURCE_REF)).toMatchObject({ sourceRepo: SOURCE_REF.repo });
+    });
+
+    it("a repo the component does NOT declare is REFUSED — never built with the push credentials", async () => {
+      const id = await declaredComponent("acme/widget");
+      const err = await refusalOf(real(id, { ...SOURCE_REF, repo: "acme/evil" }));
+      expect(err).toBeInstanceOf(BuildSourceRefused);
+      expect((err as BuildSourceRefused).inputContext).toMatchObject({
+        gate: "build_source_declared",
+        requestedRepos: ["acme/evil"],
+        declaredRepoPatterns: ["acme/widget"]
+      });
+    });
+
+    it("a repo the EXECUTION SYSTEM does not allow is REFUSED, even when the component declares it", async () => {
+      // The half a component's own editor cannot move: they can add a source mapping, not an entry.
+      const id = await declaredComponent("attacker/*");
+      const err = await refusalOf(real(id, { ...SOURCE_REF, repo: "attacker/evil" }));
+      expect(err).toBeInstanceOf(BuildSourceRefused);
+      expect((err as BuildSourceRefused).inputContext).toMatchObject({
+        gate: "build_source_not_allowed",
+        requestedRepos: ["attacker/evil"]
+      });
+    });
+
+    it("PROBE E (build) — an Operator cannot re-point the system; a secret:write re-point leaves its allowlist allowing NOTHING until re-set", async () => {
+      // Its own system, so re-pointing it cannot disturb the other cases.
+      const sandbox = await admin.object("execution-system").create({
+        name: `sandbox-${randomUUID().slice(0, 8)}`,
+        properties: { kind: "argo-workflows", serverUrl: "http://127.0.0.1:9", namespace: "x" }
+      });
+      await admin.executors.putSourceAllowlist(sandbox.id, ["attacker/evil"]);
+      const id = await declaredComponent("attacker/*");
+      const prod = {
+        kind: "argo-workflows",
+        serverUrl: "https://argo.example.invalid",
+        namespace: "x"
+      };
+
+      // THE DOOR: object:write alone does not move where the credentials go.
+      const opUser = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+      const op = new ScpClient({ baseUrl: server.baseUrl, token: opUser.token });
+      const repoint = await op
+        .object("execution-system")
+        .update(sandbox.id, { properties: prod })
+        .then(() => undefined)
+        .catch((e: unknown) => e as { status?: number });
+      expect(repoint?.status, "an Operator re-pointed the system").toBe(403);
+      expect((await admin.object("execution-system").get(sandbox.id)).properties).toMatchObject({
+        serverUrl: "http://127.0.0.1:9"
+      });
+
+      // THE BELT: even the legitimate re-point voids the list it was set for.
+      await admin.object("execution-system").update(sandbox.id, { properties: prod });
+      const err = await refusalOf(
+        real(id, { ...SOURCE_REF, repo: "attacker/evil" }, { executionSystemId: sandbox.id })
+      );
+      expect(err).toBeInstanceOf(BuildSourceRefused);
+      expect((err as BuildSourceRefused).inputContext).toMatchObject({
+        gate: "build_source_not_allowed",
+        allowlistRoutingCurrent: false
+      });
+      expect((await admin.executors.getSourceAllowlist(sandbox.id)).routingCurrent).toBe(false);
+
+      // CONTROL: re-set for the new endpoint, the same build passes — staleness was the only reason.
+      await admin.executors.putSourceAllowlist(sandbox.id, ["attacker/evil"]);
+      expect(
+        await real(id, { ...SOURCE_REF, repo: "attacker/evil" }, { executionSystemId: sandbox.id })
+      ).toMatchObject({ sourceRepo: "attacker/evil" });
+    });
+
+    it("an INLINE binding (no execution system, so no allowlist) is REFUSED", async () => {
+      const id = await declaredComponent("AgentKitProject/*");
+      const err = await refusalOf(real(id, SOURCE_REF, { executionSystemId: null }));
+      expect((err as BuildSourceRefused).inputContext).toMatchObject({
+        gate: "build_source_no_execution_system"
+      });
+    });
+
+    it("NO source mapping of this Type is REFUSED (R2) — a mapping of ANOTHER Type does not count", async () => {
+      for (const id of [
+        await declaredComponent("none"),
+        await declaredComponent("AgentKitProject/*", "configuration")
+      ]) {
+        const err = await refusalOf(real(id, SOURCE_REF));
+        expect(err).toBeInstanceOf(BuildSourceRefused);
+        expect((err as BuildSourceRefused).inputContext).toMatchObject({
+          gate: "build_source_undeclared"
+        });
+      }
+    });
+
+    it("a RECIPE's sourceRepo is checked too — it wins the merge in reconcile", async () => {
+      const id = await declaredComponent("AgentKitProject/*");
+      const err = await refusalOf(
+        real(id, SOURCE_REF, { recipeParameters: { sourceRepo: "acme/evil" } })
+      );
+      expect(err).toBeInstanceOf(BuildSourceRefused);
+    });
+
+    it("NEGATIVE CONTROL — the fake executor runs nothing, and is not checked", async () => {
+      const id = await declaredComponent("none");
+      const params = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        buildLaneTriggerParameters(tx, {
+          orgId: org.orgId,
+          targetObjectId: id,
+          type: "image",
+          sourceRef: SOURCE_REF,
+          changeObjectId: randomUUID(),
+          pluginModule: "fake-executor",
+          executionSystemId: null
+        })
+      );
+      expect(params).toMatchObject({ sourceRepo: SOURCE_REF.repo });
+    });
+  });
 
   it("tolerates a sourceRef that is not an object at all", async () => {
     // Replicated rows from an older peer, and changes proposed with a hand-supplied `sourceRef`,

@@ -304,6 +304,65 @@ describe("status()", () => {
     });
     expect(result.progress).toBe(0.5);
   });
+
+  // M28.3 (ADR-0056) — the plan-evidence contract: global outputs → observed.plan.
+  describe("plan evidence from the workflow's global outputs", () => {
+    const DIGEST = "a".repeat(64);
+    const planOutputs = (overrides: Record<string, string | undefined> = {}) => ({
+      parameters: Object.entries({
+        scpPlanDigest: DIGEST,
+        scpPlanAdd: "2",
+        scpPlanChange: "0",
+        scpPlanDestroy: "1",
+        scpPlanApplied: "false",
+        ...overrides
+      })
+        .filter(([, value]) => value !== undefined)
+        .map(([name, value]) => ({ name, value }))
+    });
+    async function statusOf(phase: string, outputs: unknown) {
+      const ctx = testCtx({ serverUrl: SERVER_URL, namespace: NAMESPACE, token: "test-token" });
+      nock(SERVER_URL)
+        .get(`/api/v1/workflows/${NAMESPACE}/plan-wf`)
+        .reply(200, { metadata: { name: "plan-wf", uid: "uid-plan" }, status: { phase, outputs } });
+      return createArgoWorkflowsExecutorPlugin().status(ctx, { externalId: "plan-wf::uid-plan" });
+    }
+
+    it("a succeeded workflow exporting the four scp outputs reports them as observed.plan", async () => {
+      const result = await statusOf("Succeeded", planOutputs());
+      expect(result.observed?.plan).toEqual({ ref: DIGEST, add: 2, change: 0, destroy: 1 });
+    });
+
+    it("a FAILED workflow keeps its plan — a refused apply still reports what it refused", async () => {
+      const result = await statusOf("Failed", planOutputs());
+      expect(result.phase).toBe("failed");
+      expect(result.observed?.plan?.ref).toBe(DIGEST);
+    });
+
+    it("a RUNNING workflow reports no plan, even if an output is already visible", async () => {
+      const result = await statusOf("Running", planOutputs());
+      expect(result.observed).toBeUndefined();
+    });
+
+    it("a workflow exporting none of them reports NO observed at all (absent, never zeroed)", async () => {
+      const result = await statusOf("Succeeded", undefined);
+      expect(result.observed).toBeUndefined();
+      expect(Object.prototype.hasOwnProperty.call(result, "observed")).toBe(false);
+    });
+
+    for (const [why, overrides] of [
+      ["a digest that is not a sha256", { scpPlanDigest: "7c1e" }],
+      ["an uppercase/garbled digest", { scpPlanDigest: "A".repeat(64) }],
+      ["a missing count", { scpPlanChange: undefined }],
+      ["a negative count", { scpPlanAdd: "-1" }],
+      ["a non-integer count", { scpPlanDestroy: "1.5" }]
+    ] as const) {
+      it(`${why} drops the WHOLE plan rather than reporting part of it`, async () => {
+        const result = await statusOf("Succeeded", planOutputs(overrides));
+        expect(result.observed).toBeUndefined();
+      });
+    }
+  });
 });
 
 describe("abort()", () => {

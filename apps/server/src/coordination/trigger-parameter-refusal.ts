@@ -24,6 +24,22 @@ export const WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS = "ops_declaration_refus
 export const WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION =
   "change.wave_target.ops_declaration_refused";
 
+/** Terminal status (M28.3, ADR-0056): an `infrastructure` change the Argo lane cannot derive a plan
+ *  trigger for — no environment on the target, no pinned commit, a binding with no plan template. */
+export const WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS = "infra_declaration_refused";
+export const WAVE_TARGET_INFRA_DECLARATION_REFUSED_AUDIT_ACTION =
+  "change.wave_target.infra_declaration_refused";
+
+/** Terminal status (M28.3, ADR-0056): an APPLY whose plan is not approved, not current, not this
+ *  target's, or already being applied. The apply template is never triggered. */
+export const WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS = "infra_apply_refused";
+export const WAVE_TARGET_INFRA_APPLY_REFUSED_AUDIT_ACTION =
+  "change.wave_target.infra_apply_refused";
+
+/** Terminal status (M28.3, ADR-0053 addendum): a build whose source repo is not one the component
+ *  declares — built with the operator's push credentials, it would publish someone else's code. */
+export const WAVE_TARGET_SOURCE_REFUSED_STATUS = "source_refused";
+export const WAVE_TARGET_SOURCE_REFUSED_AUDIT_ACTION = "change.wave_target.source_refused";
 /** Terminal status (M28.2, ADR-0054): a host-reaching run whose MATERIAL cannot be derived or
  *  delivered — an unenrolled domain, a CA key that does not resolve, no Argo ops pin, a binding that
  *  does not match the pin, a recipe restating the bound. Distinct from a bad declaration because
@@ -49,9 +65,12 @@ export const WAVE_TARGET_EXECUTOR_REFUSED_AUDIT_ACTION = "change.wave_target.exe
 
 export type TriggerParameterRefusalStatus =
   | typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS
+  | typeof WAVE_TARGET_SOURCE_REFUSED_STATUS
   | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
   | typeof WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS
   | typeof WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS
+  | typeof WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS
+  | typeof WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS
   | typeof WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS;
 
 export abstract class TriggerParameterRefusal extends Error {

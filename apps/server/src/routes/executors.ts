@@ -26,9 +26,17 @@ import {
   SecretKeyParamSchema,
   ExecutorTypeSchema,
   ExecutorLaneSchema,
+  PutSourceAllowlistRequestSchema,
+  SourceAllowlistSchema,
   type ExecutorType,
   type ExecutorLane
 } from "@scp/schemas";
+import { appendAuditEvent } from "../audit/audit-repo.js";
+import {
+  getSourceAllowlist,
+  putSourceAllowlist,
+  SourceAllowlistInvalid
+} from "../coordination/source-allowlist.js";
 import {
   BUNDLED_PLUGIN_MANIFESTS,
   assertNoSystemOnlyConfig,
@@ -67,6 +75,7 @@ import {
   listSecretKeys,
   resolveSecretRefs
 } from "../secrets/secrets-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 /** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `gitlab-discovery`,
  *  `argocd-discovery`) — same allowlist discipline as `executor-bindings-repo.ts`'s
@@ -98,7 +107,11 @@ async function bindTargetToExecutionSystem(
     permission: "object:write",
     scopeObjectId: sys.id
   });
-  const identity = executionSystemBindingIdentity(sys, executionSystemId);
+  const identity = executionSystemBindingIdentity(
+    sys,
+    executionSystemId,
+    (await ensureFederationSelf(tx, orgId)).domainId
+  );
   return upsertExecutorBinding(tx, {
     orgId,
     targetObjectId,
@@ -224,6 +237,124 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         await deleteSecret(tx, auth.orgId, request.params.key);
       });
       reply.status(204).send();
+    }
+  });
+
+  // An execution system's SOURCE-REPO ALLOWLIST (M28.3, owner ruling R1, ADR-0056 §7a): which repos
+  // may run with that system's credentials. `secret:write` at the org root — the class that sets a
+  // secret — because it bounds what runs WITH the secrets; never `object:write`, which a target's or
+  // component's own editor holds.
+
+  const sourceAllowlistShape = (
+    systemId: string,
+    row: Awaited<ReturnType<typeof getSourceAllowlist>>
+  ) => ({
+    executionSystemId: systemId,
+    repos: row?.repos ?? [],
+    routingCurrent: row?.routingCurrent ?? true,
+    recordedBySubjectId: row?.recordedBySubjectId ?? null,
+    updatedAt: row?.updatedAt.toISOString() ?? null
+  });
+
+  async function executionSystemOf(tx: TenantTx, orgId: string, idOrUrn: string) {
+    const sys = await getObjectByIdOrUrnAnyType(tx, orgId, idOrUrn);
+    if (sys.typeId !== "execution-system") {
+      throw badRequest(`'${idOrUrn}' is a '${sys.typeId}', not an execution-system`);
+    }
+    return sys;
+  }
+
+  typed.route({
+    method: "PUT",
+    url: "/api/v1/execution-systems/:idOrUrn/source-allowlist",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      body: PutSourceAllowlistRequestSchema,
+      response: {
+        200: SourceAllowlistSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "putExecutionSystemSourceAllowlist",
+        summary:
+          "Set which source repos may run with this execution system's credentials (an infra plan/apply, a build). Replaces the whole list. Requires 'secret:write' at the org root — never 'object:write', which a target's or component's own editor holds (ADR-0056 §7a)",
+        tags: ["executors"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const out = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "secret:write",
+          scopeObjectId: auth.orgId
+        });
+        const sys = await executionSystemOf(tx, auth.orgId, request.params.idOrUrn);
+        let row;
+        try {
+          row = await putSourceAllowlist(tx, {
+            orgId: auth.orgId,
+            executionSystemObjectId: sys.id,
+            repos: request.body.repos,
+            recordedBySubjectId: auth.subjectObjectId
+          });
+        } catch (err) {
+          if (err instanceof SourceAllowlistInvalid) throw badRequest(err.message);
+          throw err;
+        }
+        await appendAuditEvent(tx, {
+          orgId: auth.orgId,
+          actorId: auth.subjectObjectId,
+          action: "execution_system.source_allowlist.set",
+          subjectId: sys.id,
+          reason: `source allowlist set to [${row.repos.join(", ")}]`,
+          requestId: request.id
+        });
+        return sourceAllowlistShape(sys.id, row);
+      });
+      reply.status(200).send(out);
+    }
+  });
+
+  typed.route({
+    method: "GET",
+    url: "/api/v1/execution-systems/:idOrUrn/source-allowlist",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      response: {
+        200: SourceAllowlistSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "getExecutionSystemSourceAllowlist",
+        summary:
+          "Read which source repos may run with this execution system's credentials (empty = none)",
+        tags: ["executors"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const out = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const sys = await executionSystemOf(tx, auth.orgId, request.params.idOrUrn);
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: sys.id
+        });
+        return sourceAllowlistShape(sys.id, await getSourceAllowlist(tx, auth.orgId, sys.id));
+      });
+      reply.status(200).send(out);
     }
   });
 

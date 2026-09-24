@@ -9,12 +9,18 @@ import {
 } from "@scp/schemas";
 import { and, eq } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { objects } from "../db/schema.js";
+import { objects, sourceMappings } from "../db/schema.js";
 import { registryForComponent } from "./component-pipeline.js";
+import { getSourceAllowlist, repoAllowedBy } from "./source-allowlist.js";
+import { globMatch } from "./glob-match.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
+import { isLocallyAuthoredExecutionSystem } from "../authz/execution-system-routing-door.js";
 import {
   TriggerParameterRefusal,
   WAVE_TARGET_DESTINATION_REFUSED_AUDIT_ACTION,
-  WAVE_TARGET_DESTINATION_REFUSED_STATUS
+  WAVE_TARGET_DESTINATION_REFUSED_STATUS,
+  WAVE_TARGET_SOURCE_REFUSED_AUDIT_ACTION,
+  WAVE_TARGET_SOURCE_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
 
 /** WHAT A BUILD-LANE TRIGGER TELLS ITS EXECUTOR.
@@ -55,6 +61,12 @@ export interface BuildTriggerParameterInput {
   /** The campaign recipe's `trigger.parameters`, when the change carries one. Read ONLY to refuse a
    *  recipe that restates a destination key (ADR-0053 §4a); the merge itself stays in reconcile. */
   recipeParameters?: Record<string, unknown> | undefined;
+  /** The module the binding resolved to. The fake executor runs nothing, so it is the one module
+   *  whose source is not checked. */
+  pluginModule?: string | null;
+  /** The binding's execution system — whose SOURCE ALLOWLIST says which repos may run with its
+   *  credentials (owner ruling R1). `null` = an inline binding, which has no allowlist. */
+  executionSystemId?: string | null;
 }
 
 /** EVERY KEY `destinationParameters` CAN EMIT — the build lane's server-derived destination.
@@ -113,6 +125,15 @@ export async function buildLaneTriggerParameters(
   if (ref) params.sourceRef = ref;
   if (commit) params.sourceCommit = commit;
 
+  // WHOSE CODE IS BUILT (M28.3 verification, ADR-0053 addendum). The build runs the repo's own
+  // Dockerfile/spec and pushes the result with the operator's credentials, so the repo must be one
+  // this component DECLARES — its source mappings for this Type — never simply the proposer's
+  // choice. A recipe's `sourceRepo` wins the merge in reconcile, so it is checked too.
+  await assertSourceIsDeclared(tx, input, type, [
+    repo,
+    readString(input.recipeParameters, "sourceRepo")
+  ]);
+
   // WHERE THIS COMPONENT'S BUILD DEFINITION LIVES, when it says. A monorepo puts each component's
   // Dockerfile (or spec) under its own directory (`apps/profile-web/Dockerfile`), so the path is a
   // fact ABOUT THE COMPONENT, not a property of the build tooling — carrying it in chart values
@@ -144,12 +165,122 @@ export async function buildLaneTriggerParameters(
     // picking one of several would be exactly the silent guess the pipeline view refuses to make.
     const registry = await registryForComponent(tx, input.orgId, input.targetObjectId);
     if (registry.state === "declared") {
+      await assertRegistryLocallyAuthored(tx, input.orgId, registry, type);
       assertRegistryServes(registry, type, format);
       Object.assign(params, destinationParameters(registry, format));
     }
   }
 
   return Object.keys(params).length > 1 ? params : undefined;
+}
+
+/** The build lane's source refusal: the repo is not one the component declares for this Type. */
+export class BuildSourceRefused extends TriggerParameterRefusal {
+  readonly status = WAVE_TARGET_SOURCE_REFUSED_STATUS;
+  readonly action = WAVE_TARGET_SOURCE_REFUSED_AUDIT_ACTION;
+}
+
+/** WHOSE CODE IS BUILT (M28.3 verification; owner rulings R1 + R2, 2026-09-24; ADR-0053 addendum).
+ *
+ *  A build runs the repo's own Dockerfile or spec and pushes the result with the executor's
+ *  credentials, so a repo runs only if BOTH:
+ *   1. the binding's EXECUTION SYSTEM allows it — its source allowlist, written only with
+ *      `secret:write` at the org root (`source-allowlist.ts`). An inline binding has no system and
+ *      no allowlist: refused. This is the half a component's own editor cannot move;
+ *   2. the COMPONENT declares it — a source mapping of this Type, matched as `correlation.ts` matches
+ *      a push (a glob on the repo, NULL = every repo; a disabled row still declares). NO mapping of
+ *      this Type is refused too (R2) — "the proposer said so" is not a declaration.
+ *  The fake executor runs nothing and is not checked. */
+async function assertSourceIsDeclared(
+  tx: TenantTx,
+  input: BuildTriggerParameterInput,
+  type: ArtifactClass,
+  candidates: (string | undefined)[]
+): Promise<void> {
+  const repos = [...new Set(candidates.filter((r): r is string => r !== undefined))];
+  if (repos.length === 0) return;
+  if (input.pluginModule === "fake-executor") return;
+  const base = { type, requestedRepos: repos, executionSystemId: input.executionSystemId ?? null };
+  if (!input.executionSystemId) {
+    throw new BuildSourceRefused(
+      `refusing to build ${repos.map((r) => `'${r}'`).join(", ")}: this component's '${type}' ` +
+        `binding names no execution system, so there is no source allowlist saying which repos may ` +
+        `run with its credentials.`,
+      {
+        remediation:
+          "bind the component through an execution-system and set that system's source allowlist " +
+          "(scp execution-system source-allowlist set, secret:write)",
+        inputContext: { gate: "build_source_no_execution_system", ...base }
+      }
+    );
+  }
+  const allowlist = await getSourceAllowlist(tx, input.orgId, input.executionSystemId);
+  const notAllowed = repos.filter((r) => !repoAllowedBy(allowlist, r));
+  if (notAllowed.length > 0) {
+    const stale = allowlist !== undefined && !allowlist.routingCurrent;
+    throw new BuildSourceRefused(
+      `refusing to build ${notAllowed.map((r) => `'${r}'`).join(", ")}: execution system ` +
+        (stale
+          ? `${input.executionSystemId} was re-pointed after its source allowlist was set, so that list ` +
+            `allows nothing until someone re-sets it for the new endpoint (ADR-0056 addendum 3).`
+          : `${input.executionSystemId} does not allow ${notAllowed.length === 1 ? "that repo" : "those repos"} ` +
+            `to run with its credentials (its source allowlist is [${(allowlist?.repos ?? []).join(", ")}]).`),
+      {
+        remediation:
+          "add the repo to the execution system's source allowlist (secret:write at the org root) " +
+          "if it really may run there",
+        inputContext: {
+          gate: "build_source_not_allowed",
+          ...base,
+          allowedRepos: allowlist?.repos ?? [],
+          allowlistRoutingCurrent: allowlist?.routingCurrent ?? null
+        }
+      }
+    );
+  }
+  const rows = await tx
+    .select({ repoPattern: sourceMappings.repoPattern })
+    .from(sourceMappings)
+    .where(
+      and(
+        eq(sourceMappings.orgId, input.orgId),
+        eq(sourceMappings.componentObjectId, input.targetObjectId),
+        eq(sourceMappings.type, type)
+      )
+    );
+  const inputContext = {
+    gate: "build_source_declared",
+    ...base,
+    declaredRepoPatterns: rows.map((r) => r.repoPattern)
+  };
+  if (rows.length === 0) {
+    throw new BuildSourceRefused(
+      `refusing to build ${repos.map((r) => `'${r}'`).join(", ")}: component ` +
+        `${input.targetObjectId} declares no '${type}' source mapping, so nothing says this repo is ` +
+        `its source — only the proposer.`,
+      {
+        remediation: `declare this component's '${type}' source with a source mapping`,
+        inputContext: { ...inputContext, gate: "build_source_undeclared" }
+      }
+    );
+  }
+  const undeclared = repos.filter(
+    (r) => !rows.some((row) => row.repoPattern === null || globMatch(row.repoPattern, r))
+  );
+  if (undeclared.length > 0) {
+    throw new BuildSourceRefused(
+      `refusing to build ${undeclared.map((r) => `'${r}'`).join(", ")} for this '${type}' ` +
+        `component: its declared sources are ${rows.map((r) => `'${r.repoPattern}'`).join(", ")}. ` +
+        `The build runs that repository's own build definition and pushes the result with the ` +
+        `executor's credentials, so it builds only what the component declares.`,
+      {
+        remediation:
+          "propose the build from a repo the component's source mappings name, or add a source " +
+          "mapping for this repo if it really is this component's source",
+        inputContext
+      }
+    );
+  }
 }
 
 /** Only ever called with a `declared` resolution — the one state that names a destination. */
@@ -178,6 +309,41 @@ function assertRecipeDoesNotRestateDestination(
         `packageFormats), then cancel/rollback/re-propose the change`,
       // The keys only, never the values: a refused destination is not worth persisting verbatim.
       inputContext: { gate: "build_destination_recipe", type, recipeDestinationKeys: restated }
+    }
+  );
+}
+
+/** A REPLICATED registry never names a push destination here: its `webUrl`/`serverUrl` were written
+ *  by another domain's writer (`isLocallyAuthoredExecutionSystem`, ADR-0056 addendum 3). Registries
+ *  are created `domainLocal` per site, so this is the anomaly, refused rather than followed. */
+async function assertRegistryLocallyAuthored(
+  tx: TenantTx,
+  orgId: string,
+  registry: DeclaredRegistry,
+  type: ArtifactClass
+): Promise<void> {
+  if (!registry.executionSystemId) return;
+  const [row] = await tx
+    .select({ originDomainId: objects.originDomainId })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), eq(objects.id, registry.executionSystemId)))
+    .limit(1);
+  const self = await ensureFederationSelf(tx, orgId);
+  if (row && isLocallyAuthoredExecutionSystem(row, self.domainId)) return;
+  throw new BuildDestinationRefused(
+    `refusing to trigger this '${type}' build: its registry '${registry.name ?? registry.executionSystemId}' ` +
+      `is an execution system replicated from domain '${row?.originDomainId ?? "unknown"}', and a ` +
+      `replicated system's address is never a push destination here.`,
+    {
+      remediation:
+        "point this component's publishes_to edge at this domain's own registry (created domainLocal), " +
+        "then cancel/rollback/re-propose the change",
+      inputContext: {
+        gate: "build_destination_replicated_registry",
+        type,
+        registryExecutionSystemId: registry.executionSystemId,
+        originDomainId: row?.originDomainId ?? null
+      }
     }
   );
 }

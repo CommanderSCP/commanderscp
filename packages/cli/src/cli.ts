@@ -110,8 +110,11 @@ import {
   OutpostTrustTierSchema,
   ScanMethodSchema,
   SourceMappingScopeSchema,
-  JourneyKindSchema
+  JourneyKindSchema,
+  InfrastructureChangeDeclarationSchema,
+  INFRASTRUCTURE_DECLARATION_PROPERTY
 } from "@scp/schemas";
+import type { WaveTargetObserved } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
 import { verifyAuditChain } from "@scp/schemas/audit-chain";
@@ -177,6 +180,52 @@ function parseRequiresFlag(value: string | undefined): { key: string; at: string
     }
     return { key, at };
   });
+}
+
+/** `--apply-plan` (M28.3, ADR-0056): an APPLY is a change declaring the accepted plan it applies.
+ *  Folded into `properties` rather than sent as its own field because that is where the server
+ *  reads it (`properties.infrastructure`, beside `properties.recipe`), and forced to Type
+ *  `infrastructure` because only that lane has an apply at all. Refuses a contradiction rather than
+ *  picking a side: `--type image --apply-plan …`, or `--properties` already declaring a different
+ *  infrastructure block, would otherwise be proposed as something the author did not write. */
+export function infraApplyProposal(
+  applyPlan: string | undefined,
+  type: ExecutorType | undefined,
+  properties: Record<string, unknown> | undefined
+): { type: ExecutorType | undefined; properties: Record<string, unknown> | undefined } {
+  if (applyPlan === undefined) return { type, properties };
+  const declaration = InfrastructureChangeDeclarationSchema.safeParse({ applyPlan });
+  if (!declaration.success) {
+    throw new Error(`--apply-plan '${applyPlan}' is not a change id (a UUID)`);
+  }
+  if (type !== undefined && type !== "infrastructure") {
+    throw new Error(
+      `--apply-plan applies an infrastructure plan; it cannot be combined with --type ${type}`
+    );
+  }
+  if (properties?.[INFRASTRUCTURE_DECLARATION_PROPERTY] !== undefined) {
+    throw new Error(
+      `--apply-plan and --properties.${INFRASTRUCTURE_DECLARATION_PROPERTY} both declare the plan — pass one`
+    );
+  }
+  return {
+    type: "infrastructure",
+    properties: { ...(properties ?? {}), [INFRASTRUCTURE_DECLARATION_PROPERTY]: declaration.data }
+  };
+}
+
+/** The plan evidence on one wave target, as `scp change explain` prints it — the CLI half of the
+ *  plan chip (`PipelineWaveCard`). Absent plan ⇒ `undefined`, never a zeroed summary. */
+export function waveTargetPlanText(
+  observed: WaveTargetObserved | null | undefined
+): string | undefined {
+  const plan = observed?.plan;
+  if (!plan) return undefined;
+  const n = (v: number | undefined) => (v === undefined ? "?" : String(v));
+  return (
+    `plan ${plan.ref ? plan.ref.slice(0, 12) : "(no digest)"} · ` +
+    `${n(plan.add)} add / ${n(plan.change)} change / ${n(plan.destroy)} destroy`
+  );
 }
 
 /** Parse the stage-dependency flags into their request shape. See docs/cli.md §9. */
@@ -1487,7 +1536,8 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
       console.log(`  Wave ${label} — ${wave.status}`);
       for (const target of wave.targets) {
         const ref = target.targetUrn ?? target.targetName ?? target.targetObjectId;
-        console.log(`    - ${ref}: ${target.status}`);
+        const plan = waveTargetPlanText(target.observed);
+        console.log(`    - ${ref}: ${target.status}${plan ? ` — ${plan}` : ""}`);
       }
     }
   } else {
@@ -3674,6 +3724,13 @@ export function buildProgram(): Command {
         "to those places (omit for every stage the components share)"
     )
     .option("--properties <json>", "JSON object")
+    .option(
+      "--apply-plan <planChangeId>",
+      "M28.3 (ADR-0056): propose an APPLY of an accepted infrastructure plan — sets " +
+        "properties.infrastructure.applyPlan and Type infrastructure. The server triggers the " +
+        "apply template only if that plan change is accepted, is the latest plan at each target, " +
+        "and has not been applied; a re-apply of an applied plan succeeds as a no-op"
+    )
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -3682,6 +3739,7 @@ export function buildProgram(): Command {
         opts: BaseCliOpts & {
           name: string;
           targets: string;
+          applyPlan?: string;
           type?: ExecutorType;
           provides?: string;
           requires?: string;
@@ -3697,6 +3755,11 @@ export function buildProgram(): Command {
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const requires = parseRequiresFlag(opts.requires);
+        const { type, properties } = infraApplyProposal(
+          opts.applyPlan,
+          opts.type,
+          parseJsonOption(opts.properties, "--properties")
+        );
         const created = await client.changes.propose(
           {
             name: opts.name,
@@ -3705,14 +3768,14 @@ export function buildProgram(): Command {
             sourceKind: opts.sourceKind,
             correlationKey: opts.correlationKey,
             emergency: opts.emergency,
-            type: opts.type,
+            type,
             provides: parseList(opts.provides),
             requires,
             stageDependencies: parseStageDependenciesFlags(
               opts.stageDependsOn,
               opts.stageDependsAt
             ),
-            properties: parseJsonOption(opts.properties, "--properties"),
+            properties,
             labels: parseJsonOption(opts.labels, "--labels")
           },
           { idempotencyKey: randomUUID() }
@@ -6385,6 +6448,54 @@ export function buildProgram(): Command {
   const secretCmd = program
     .command("secret")
     .description("Manage encrypted org secrets (write-only — never readable back)");
+
+  // M28.3 (ADR-0056 §7a, owner ruling R1) — which source repos may run with an execution system's
+  // credentials. Beside `secret`, and behind the same permission, because it bounds what runs WITH
+  // the secrets.
+  const sourceAllowlistCmd = program
+    .command("execution-system")
+    .description("Execution-system settings that bound what runs with its credentials")
+    .command("source-allowlist")
+    .description(
+      "Which source repos may run with an execution system's credentials (an infra plan/apply, a build)"
+    );
+
+  sourceAllowlistCmd
+    .command("set <executionSystem>")
+    .description(
+      "Replace the allowlist (secret:write at the org root). Each --repo is 'owner/name' or 'owner/*'; " +
+        "none clears it, so nothing may run"
+    )
+    .option("--repo <repo...>", "an allowed repo, repeatable", [])
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (system: string, opts: BaseCliOpts & { repo: string[] }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.executors.putSourceAllowlist(system, opts.repo);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
+    });
+
+  sourceAllowlistCmd
+    .command("get <executionSystem>")
+    .description("Show the allowlist (empty = nothing may run with this system's credentials)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (system: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.executors.getSourceAllowlist(system);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      if (!result.routingCurrent) {
+        console.log(
+          "STALE — the system was re-pointed since this list was set, so NOTHING may run until it is " +
+            "set again (secret:write):"
+        );
+      }
+      if (result.repos.length === 0) console.log("(none — nothing may run with this system)");
+      for (const repo of result.repos) console.log(repo);
+    });
 
   secretCmd
     .command("put <key>")

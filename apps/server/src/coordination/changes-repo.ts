@@ -379,6 +379,12 @@ export async function proposeChange(
     inputContext: {
       trigger: "propose",
       actorId: input.actorObjectId,
+      // WHO DECLARED IT, when a system path proposed on a subject's behalf (a change-source report):
+      // separation of duties (gates.ts, ADR-0056 §1a) reads both, so the human who reported a plan
+      // cannot also approve it just because the change's actor is the system.
+      ...(input.declarationActorObjectId
+        ? { declarationActorId: input.declarationActorObjectId }
+        : {}),
       targets: targetObjectIds,
       topologyObjectId: topologyObjectId ?? null,
       // Principle 6: the topology alone cannot explain an inheritance surprise — someone attaches a

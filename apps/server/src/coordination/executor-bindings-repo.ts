@@ -15,6 +15,8 @@ import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
+import { isLocallyAuthoredExecutionSystem } from "../authz/execution-system-routing-door.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
 import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
@@ -37,9 +39,10 @@ export function executionSystemInstanceId(executionSystemId: string): string {
  *  `namespace` and interpolates it into every API path, so a config built from those two keys alone
  *  submitted to `/api/v1/workflows/undefined/submit` — silently, with no error at bind or resolve.
  *
- *  Only keys the module's manifest DECLARES are carried. An execution-system's `properties` are
- *  tenant-writable, so intersecting with the declared set is what keeps this safe: a tenant cannot
- *  introduce a config key the plugin never advertised, and server-injected keys (`statePath`,
+ *  Only keys the module's manifest DECLARES are carried. An execution-system's `properties` need
+ *  `secret:write` at the org root (ADR-0056 addendum 3), and a replicated system is refused above;
+ *  intersecting with the declared set still keeps even that writer from introducing a config key
+ *  the plugin never advertised, and server-injected keys (`statePath`,
  *  `runnerImage`, …) are absent from every `configSchema` by construction. `serverUrl` is always
  *  written from the system itself, so egress stays pinned to the system's own host.
  *
@@ -109,11 +112,21 @@ export const DEFAULT_BINDING_TYPE: BindingType = "configuration";
 
 /** Turns an execution-system object into a binding identity. See docs/coordination.md §436. */
 export function executionSystemBindingIdentity(
-  sys: { id: string; typeId: string; properties: unknown },
-  reference: string
+  sys: { id: string; typeId: string; properties: unknown; originDomainId: string },
+  reference: string,
+  selfDomainId: string
 ): { pluginModule: string; pluginInstanceId: string; executionSystemId: string } {
   if (sys.typeId !== "execution-system") {
     throw badRequest(`'${reference}' is a '${sys.typeId}', not an execution-system`);
+  }
+  // The write-door twin of the resolver's refusal: binding to a REPLICATED system would hand a
+  // peer's routing this instance's credentials (`isLocallyAuthoredExecutionSystem`).
+  if (!isLocallyAuthoredExecutionSystem(sys, selfDomainId)) {
+    throw badRequest(
+      `execution-system '${sys.id}' was authored by domain '${sys.originDomainId}' and replicated ` +
+        `here; a replicated system is not executable at this domain. Register this domain's own ` +
+        `system (scp connect) and bind to that.`
+    );
   }
   const props = sys.properties as { kind?: string; serverUrl?: string };
   if (!props.serverUrl) {
@@ -934,6 +947,16 @@ export async function resolveExecutorPluginInstance(
     if (sys.typeId !== "execution-system") {
       throw new Error(
         `executor binding for target '${input.targetObjectId}' references '${binding.executionSystemId}', which is a '${sys.typeId}', not an execution-system`
+      );
+    }
+    // A REPLICATED system is never executable here (`isLocallyAuthoredExecutionSystem`): its routing
+    // was written by another domain, and its `tokenSecretKey` would resolve THIS instance's secret.
+    const self = await ensureFederationSelf(tx, input.orgId);
+    if (!isLocallyAuthoredExecutionSystem(sys, self.domainId)) {
+      throw new Error(
+        `executor binding for target '${input.targetObjectId}' references execution-system '${sys.id}', ` +
+          `which domain '${sys.originDomainId}' authored — a replicated system is not executable at ` +
+          `this domain. Register this domain's own system (scp connect) and bind to that.`
       );
     }
     const props = sys.properties as {

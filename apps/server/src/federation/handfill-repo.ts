@@ -2,6 +2,7 @@ import type { GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { badRequest, forbidden } from "../errors.js";
 import { hasPermission } from "../authz/resolve.js";
+import { assertMayWriteExecutionSystemRouting } from "../authz/execution-system-routing-door.js";
 import { getPeerByIdOrName } from "./peers-repo.js";
 import {
   isGovernanceManagedObjectType,
@@ -164,6 +165,23 @@ export async function handFillObject(tx: TenantTx, input: HandFillInput): Promis
         })
       )?.labels as Record<string, unknown> | undefined) ?? {},
     after: input.labels ?? {},
+    subject: `hand-filled ${input.typeId} '${input.urn}'`
+  });
+  // THE EXECUTION-SYSTEM ROUTING DOOR (`authz/execution-system-routing-door.ts`). This door stamps
+  // `federationImport`, so the choke point's copy never runs; and a hand-filled shadow can later be
+  // ADOPTED as locally authored with its properties unchanged, which would launder them past it.
+  await assertMayWriteExecutionSystemRouting(tx, {
+    orgId: input.orgId,
+    actorObjectId: input.actorObjectId,
+    typeId: input.typeId,
+    before:
+      ((
+        await tx.query.objects.findFirst({
+          where: (t, { eq: eqOp, and: andOp }) =>
+            andOp(eqOp(t.orgId, input.orgId), eqOp(t.urn, input.urn))
+        })
+      )?.properties as Record<string, unknown> | undefined) ?? {},
+    after: input.properties ?? {},
     subject: `hand-filled ${input.typeId} '${input.urn}'`
   });
   // THE ESTATE-AUTHORING BAR. See docs/federation.md §245.

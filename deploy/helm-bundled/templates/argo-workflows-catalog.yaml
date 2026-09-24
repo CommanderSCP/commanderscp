@@ -551,4 +551,269 @@ subjects:
   - kind: ServiceAccount
     name: {{ $c.buildServiceAccount }}
     namespace: {{ $w.namespace }}
+{{- $i := $c.infra }}
+{{- if $i.stateBackend.type }}
+{{- if not $i.image }}{{ fail "bundledExecutor.argoWorkflows.catalog.infra.stateBackend.type is set but infra.image is empty — the infra templates run the scp-runner-iac image (the air-gap install.sh sets it; a connected install names the published ref). Fail-closed." }}{{- end }}
+{{- if not (regexMatch "^[a-z][a-z0-9_]*$" $i.stateBackend.type) }}{{ fail (printf "bundledExecutor.argoWorkflows.catalog.infra.stateBackend.type '%s' is not an OpenTofu backend name. Fail-closed." $i.stateBackend.type) }}{{- end }}
+---
+# =============================================================================================
+# INFRASTRUCTURE BUILDOUT FOR AN ENVIRONMENT (M28.3, ADR-0056): scp-infra-plan-v1 and
+# scp-infra-apply-v1.
+#
+# D2: infrastructure executes as Argo Workflows catalog templates, PLAN → APPROVE → APPLY, and
+# CommanderSCP only triggers and observes them. The approval is not in these templates. It is the
+# change lifecycle SCP already has: the plan runs as one change, its digest and tally come back as
+# evidence, and ACCEPTING that change is approving that plan (the existing accept gate, quorum and
+# all). An apply is a second change naming the accepted plan, and SCP refuses to trigger
+# scp-infra-apply-v1 at all unless that plan is accepted, is the latest plan for this target, and
+# has not already been applied — `infra-lane-trigger-parameters.ts`, before `trigger()`.
+#
+# The template's own half of the binding: apply re-plans at the same commit and applies ONLY if the
+# re-plan's digest is the approved one (files/scp-infra.sh says why it re-plans rather than storing
+# a plan file). A plan approved and then outrun by a change in state is refused here, not applied.
+#
+# BOTH TEMPLATES RUN ONE SCRIPT, shipped from files/scp-infra.sh in the ConfigMap below, in the
+# scp-runner-iac image — the same bytes `infra-lane.integration.test.ts` runs in the same image.
+# Parameters reach it POSITIONALLY, never interpolated into shell source.
+#
+# FULLY HARDENED, and `tools/helm-verify` holds it there: non-root, read-only root filesystem, no
+# privilege escalation, RuntimeDefault seccomp, every capability dropped. tofu, git and jq need no
+# relaxation; everything they write lives on one emptyDir.
+# =============================================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scp-infra-v1
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+    commanderscp.io/catalog: infra
+    commanderscp.io/catalog-version: v1
+data:
+  scp-infra.sh: |
+    {{- .Files.Get "files/scp-infra.sh" | nindent 4 }}
+  # The operator's NON-SECRET backend settings, one `key = value` per line (values JSON-encoded,
+  # which is valid HCL for strings, numbers and booleans). Secret settings go in credentialsSecret.
+  backend.tfbackend: |
+    {{- range $k, $v := $i.stateBackend.config }}
+    {{- if not (regexMatch "^[a-z_][a-z0-9_]*$" $k) }}{{ fail (printf "stateBackend.config key '%s' is not a backend argument name. Fail-closed." $k) }}{{- end }}
+    {{ $k }} = {{ toJson $v }}
+    {{- end }}
+  tofurc: |
+    {{- $i.cliConfig | nindent 4 }}
+{{- range $phase := list "plan" "apply" }}
+{{- $p := index $i $phase }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: scp-infra-{{ $phase }}-v1
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+    commanderscp.io/catalog: infra-{{ $phase }}
+    commanderscp.io/catalog-version: v1
+spec:
+  # ONE IDENTITY PER PHASE, and neither is the build identity. A PLAN runs the repository's code
+  # (providers, `data "external"`) before anyone has approved anything, so the plan identity and its
+  # Secret must be READ-ONLY for the cloud; only the apply identity — reached solely through SCP's
+  # apply gate — may change infrastructure. Cloud authority an operator binds by workload identity
+  # to one of these never reaches the other, nor a pod running a tenant's Dockerfile.
+  serviceAccountName: {{ $p.serviceAccount }}
+  entrypoint: {{ $phase }}
+  activeDeadlineSeconds: {{ $i.activeDeadlineSeconds }}
+  # ONE RUN PER STATE WORKSPACE AT A TIME, across both templates: a plan and an apply of one
+  # workspace, or two applies of different plans, queue behind each other instead of racing the
+  # backend's lock. `synchronization.mutexes` is in the vendored v4.0.7 Workflow CRD ("v3.6 and
+  # after"); a parameterised mutex name is Argo's documented form — not exercised by a live
+  # controller in this repo.
+  synchronization:
+    mutexes:
+      - name: "scp-infra-{{`{{workflow.parameters.stateWorkspace}}`}}"
+  # WHAT SCP SENDS (apps/server/src/coordination/infra-lane-trigger-parameters.ts). The ones with
+  # no default are REQUIRED and Argo refuses to submit without them — above all `planDigest` on
+  # apply, which SCP sends only for an accepted, current, unapplied plan.
+  arguments:
+    parameters:
+      - name: environment
+      - name: stateWorkspace
+      - name: sourceRepo
+      - name: sourceCommit
+      {{- if eq $phase "apply" }}
+      - name: planDigest
+      - name: planChangeObjectId
+        value: ""
+      {{- end }}
+      - name: infraPath
+        value: "."
+      - name: region
+        value: ""
+      - name: sourceRef
+        value: ""
+      - name: changeObjectId
+        value: ""
+      - name: targetObjectId
+        value: ""
+  templates:
+    - name: {{ $phase }}
+      inputs:
+        parameters:
+          - name: environment
+          - name: stateWorkspace
+          - name: sourceRepo
+          - name: sourceCommit
+          {{- if eq $phase "apply" }}
+          - name: planDigest
+          - name: planChangeObjectId
+          {{- end }}
+          - name: infraPath
+          - name: region
+          - name: sourceRef
+          - name: changeObjectId
+          - name: targetObjectId
+      securityContext:
+        fsGroup: {{ $i.runAsUser }}
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: scp-infra
+          configMap:
+            name: scp-infra-v1
+      # THE EVIDENCE CHANNEL. Global outputs land on the Workflow's own `status.outputs`, which is
+      # what `@scp/plugin-argo-workflows`'s status() already fetches — so the digest and tally
+      # reach SCP as `observed.plan` with no second call and no artifact repository.
+      outputs:
+        parameters:
+          - name: planDigest
+            globalName: scpPlanDigest
+            valueFrom:
+              path: /work/out/planDigest
+          - name: planAdd
+            globalName: scpPlanAdd
+            valueFrom:
+              path: /work/out/planAdd
+          - name: planChange
+            globalName: scpPlanChange
+            valueFrom:
+              path: /work/out/planChange
+          - name: planDestroy
+            globalName: scpPlanDestroy
+            valueFrom:
+              path: /work/out/planDestroy
+          - name: applied
+            globalName: scpPlanApplied
+            valueFrom:
+              path: /work/out/applied
+      container:
+        image: {{ $i.image }}
+        command: [bash, /scp/scp-infra.sh]
+        args:
+          - {{ $phase }}
+          - "{{`{{inputs.parameters.environment}}`}}"
+          - "{{`{{inputs.parameters.stateWorkspace}}`}}"
+          - "{{`{{inputs.parameters.sourceRepo}}`}}"
+          - "{{`{{inputs.parameters.sourceCommit}}`}}"
+          - "{{`{{inputs.parameters.infraPath}}`}}"
+          {{- if eq $phase "apply" }}
+          - "{{`{{inputs.parameters.planDigest}}`}}"
+          {{- end }}
+        securityContext:
+          runAsUser: {{ $i.runAsUser }}
+          runAsGroup: {{ $i.runAsUser }}
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+          - name: work
+            mountPath: /work
+          - name: scp-infra
+            mountPath: /scp
+            readOnly: true
+        env:
+          - name: HOME
+            value: /work/home
+          - name: SCP_WORK_DIR
+            value: /work
+          - name: SCP_OUTPUT_DIR
+            value: /work/out
+          - name: SCP_SOURCE_BASE_URL
+            value: https://{{ $c.buildImage.sourceHost }}
+          - name: SCP_STATE_BACKEND_TYPE
+            value: {{ $i.stateBackend.type | quote }}
+          - name: SCP_BACKEND_CONFIG_FILE
+            value: /scp/backend.tfbackend
+          {{- if $i.cliConfig }}
+          - name: TF_CLI_CONFIG_FILE
+            value: /scp/tofurc
+          {{- end }}
+          - name: TF_IN_AUTOMATION
+            value: "1"
+          - name: GIT_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ $c.credentialsSecret }}
+                key: gitToken
+                optional: true
+        # Cloud and state-backend credentials, from the operator's Secret FOR THIS PHASE — the plan's
+        # read-only, the apply's able to change infrastructure. SCP holds none of them.
+        envFrom:
+          - secretRef:
+              name: {{ $p.credentialsSecret }}
+              optional: true
+        resources:
+          {{- toYaml $i.resources | nindent 10 }}
+{{- end }}
+{{- range $phase := list "plan" "apply" }}
+{{- $p := index $i $phase }}
+---
+# The {{ $phase }} identity and the one grant Argo's executor cannot run without — the same floor as
+# the build identity. Anything else (a `kubernetes` state backend's Secrets, a cloud workload
+# identity) is the operator's to add, deliberately outside this chart — read-only for the plan.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $p.serviceAccount }}
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+    commanderscp.io/catalog: infra-{{ $phase }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $p.serviceAccount }}
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $p.serviceAccount }}
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $p.serviceAccount }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $p.serviceAccount }}
+    namespace: {{ $w.namespace }}
+{{- end }}
+{{- end }}
 {{- end }}

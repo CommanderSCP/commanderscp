@@ -134,3 +134,30 @@ Gitea takes one identity); SCP holds none.
   destination keys (§4a), which it may not name at all for an `image` or `rpm` target.
 - Registering an RPM destination is data only: add `rpm` to the registry's `packageFormats` and
   point the component's `publishes_to` edge at it with `repository: owner[/group]`.
+
+## Addendum (2026-09-24, M28.3 verification) — the build builds only a DECLARED source
+
+The adversarial verification of PR #415 found the infrastructure lane running whatever repo a
+proposer named with the operator's credentials; census by property found the build lane has the same
+property. `buildLaneTriggerParameters` passed `sourceRef.repo` straight through, and the build
+template runs that repo's own Dockerfile or spec and pushes the result with the operator's push
+credentials — a proposer could publish any repository under a component's name.
+
+**The repo is now checked against the component's declared sources for the build's Type**: its
+`source_mappings` rows of that Type (the same rows that route a push to it, matched the same way —
+a glob on the repo, a NULL pattern meaning every repo; disabled rows still declare). A repo — the
+change's `sourceRef.repo` or a recipe's `sourceRepo`, which wins the merge in reconcile — that no
+row matches is refused, terminal, `source_refused` with a Decision (`BuildSourceRefused`).
+
+**A component with NO source mapping of that Type is REFUSED** (`build_source_undeclared`) — owner
+ruling R2, 2026-09-24, replacing the first version's warn-and-proceed (which also wrote a warn
+Decision per claim).
+
+**And the repo must be in the binding's EXECUTION SYSTEM's source allowlist** (owner ruling R1;
+ADR-0056 §7a): a component's editor can add a source mapping, so the mapping alone would be the
+proposer vouching for themselves. The allowlist is written only with `secret:write` at the org root.
+An inline binding has no allowlist and is refused (`build_source_no_execution_system`); a repo the
+system does not allow is refused (`build_source_not_allowed`). The fake executor runs nothing and is
+not checked. Before deploying this, every build component coordinated through a real executor needs
+(a) a source mapping of its Type naming its repo, and (b) that repo in its execution system's
+allowlist — and must be bound through an execution system, not inline.

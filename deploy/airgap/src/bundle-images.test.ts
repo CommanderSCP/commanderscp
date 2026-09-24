@@ -286,6 +286,19 @@ describe("every knob install.sh prescribes is a lever in the mode it prints it i
     }
   });
 
+  it("the infra catalog runs the SAME retargeted scp-runner-iac ref managed-iac gets (M28.3)", () => {
+    // One tofu, pinned in one image, retargeted onto the bundle registry once. An infra template
+    // left at its empty default would not render; one pointed anywhere else would pull from outside
+    // the air gap — the one thing the bundle exists to prevent.
+    const sets = [...regions.helm.matchAll(/--set "([^"=]+)=([^"]+)"/g)].map(
+      (m) => [m[1]!, m[2]!] as const
+    );
+    const infra = sets.filter(([k]) => k === "bundledExecutor.argoWorkflows.catalog.infra.image");
+    expect(infra, "install.sh sets catalog.infra.image exactly once").toHaveLength(1);
+    expect(infra[0]![1]).toBe("${RUNNER_IAC_REF}");
+    expect(sets.find(([k]) => k === "managedIac.runnerImage")?.[1]).toBe("${RUNNER_IAC_REF}");
+  });
+
   it("the helm branch prints no env-var knob — the chart is the only lever there", () => {
     // THE ORIGINAL DEFECT. `SCP_MANAGED_SCAN_RUNNER_IMAGE=<ref>` was printed here as an
     // instruction; nothing in deploy/helm turns an operator-supplied env var into a pod env var,
