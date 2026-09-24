@@ -68,12 +68,17 @@ describe("server-reserved trigger parameters", () => {
   });
 
   it("no key is both", () => {
-    expect([...CONVENIENCES].filter((k) => SERVER_RESERVED_TRIGGER_PARAMETER_KEYS.has(k))).toEqual([]);
+    expect([...CONVENIENCES].filter((k) => SERVER_RESERVED_TRIGGER_PARAMETER_KEYS.has(k))).toEqual(
+      []
+    );
   });
 
   it("reservedKeysIn: universal keys always; build destination only where the Type derives one", () => {
     const bag = { workflowId: "x", scpAuthoredApplication: {}, opsInventory: [], registryUrl: "u" };
-    expect(reservedKeysIn(bag, "configuration")).toEqual(["opsInventory", "scpAuthoredApplication"]);
+    expect(reservedKeysIn(bag, "configuration")).toEqual([
+      "opsInventory",
+      "scpAuthoredApplication"
+    ]);
     expect(reservedKeysIn(bag, "image")).toEqual([
       "opsInventory",
       "registryUrl",
@@ -88,8 +93,14 @@ describe("server-reserved trigger parameters", () => {
   it("the choke point keeps ADR-0053's contract for a destination-only recipe and refuses the rest as reserved", () => {
     const dest = recipeReservedParameterRefusal({ rpmUploadUrl: "https://x.invalid" }, "rpm");
     expect(dest).toBeInstanceOf(BuildDestinationRefused);
-    expect(dest!.inputContext).toMatchObject({ gate: "build_destination_recipe", recipeDestinationKeys: ["rpmUploadUrl"] });
-    const smuggled = recipeReservedParameterRefusal({ scpAuthoredApplication: {} }, "configuration");
+    expect(dest!.inputContext).toMatchObject({
+      gate: "build_destination_recipe",
+      recipeDestinationKeys: ["rpmUploadUrl"]
+    });
+    const smuggled = recipeReservedParameterRefusal(
+      { scpAuthoredApplication: {} },
+      "configuration"
+    );
     expect(smuggled).toBeInstanceOf(RecipeReservedParameterRefused);
     expect(smuggled!.status).toBe("recipe_reserved_parameter");
     expect(smuggled!.inputContext).toEqual({

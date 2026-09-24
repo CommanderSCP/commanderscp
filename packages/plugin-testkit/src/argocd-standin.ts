@@ -75,7 +75,8 @@ export interface ArgoCdStandIn {
    *  the Rollout exists, and to every later sync of that Application until cleared with `undefined`. */
   setRolloutProgress(
     appName: string,
-    progress: { phase: "Paused" | "Progressing" | "Degraded" | "Healthy"; step?: number } | undefined
+    progress:
+      { phase: "Paused" | "Progressing" | "Degraded" | "Healthy"; step?: number } | undefined
   ): void;
   close(): Promise<void>;
 }
@@ -108,7 +109,8 @@ export function drivingProblems(app: StandInApplication): string[] {
       for (const s of steps as Record<string, unknown>[]) {
         if (s && "pause" in s) {
           const d = (s.pause as { duration?: unknown } | null)?.duration;
-          if (d === undefined || d === null || d === "" || d === 0) problems.push("indefinite pause");
+          if (d === undefined || d === null || d === "" || d === 0)
+            problems.push("indefinite pause");
         }
       }
     }
@@ -236,7 +238,9 @@ export async function startArgoCdStandIn(): Promise<ArgoCdStandIn> {
         const driving = drivingProblems(app);
         if (driving.length > 0) {
           violations.push({ ...record, path: `${path} [${driving.join("; ")}]` });
-          return send(403, { message: `stand-in: authored content refused (${driving.join("; ")})` });
+          return send(403, {
+            message: `stand-in: authored content refused (${driving.join("; ")})`
+          });
         }
         authoredBodies.push(structuredClone(app));
         const prior = applications.get(name);

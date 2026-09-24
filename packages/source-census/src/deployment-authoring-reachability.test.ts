@@ -85,7 +85,8 @@ describe("SCP-authored deployment is INSTALLED, not merely built", () => {
 
   it("a commented-out call is not a caller (known-positive control for the comment stripping)", () => {
     const used = /\bdeployLaneTriggerParameters\s*\(/;
-    const commentedOut = "// authored = await deployLaneTriggerParameters(tx, {\n/* deployLaneTriggerParameters( */";
+    const commentedOut =
+      "// authored = await deployLaneTriggerParameters(tx, {\n/* deployLaneTriggerParameters( */";
     expect(used.test(commentedOut)).toBe(true);
     expect(used.test(stripComments(commentedOut))).toBe(false);
   });

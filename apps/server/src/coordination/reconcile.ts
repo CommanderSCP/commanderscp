@@ -1832,7 +1832,10 @@ async function triggerWaveTarget(
       let deployTrigger = authored;
       if (authored && isRollback) {
         try {
-          deployTrigger = authoredRollbackTrigger(priorStateRef, authored, { orgId, targetObjectId });
+          deployTrigger = authoredRollbackTrigger(priorStateRef, authored, {
+            orgId,
+            targetObjectId
+          });
         } catch (err) {
           if (err instanceof TriggerParameterRefusal) {
             await refuseTrigger(tx, err);
@@ -1850,9 +1853,7 @@ async function triggerWaveTarget(
         : parameters;
 
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
-      return claimed
-        ? { kind, priorStateRef, externalRef, parameters: deployParameters }
-        : null;
+      return claimed ? { kind, priorStateRef, externalRef, parameters: deployParameters } : null;
     });
 
     if (!claim) return; // no longer pending/triggering — another tick already handled it.

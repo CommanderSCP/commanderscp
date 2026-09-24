@@ -28,7 +28,9 @@ const IDENTITY = {
 };
 
 /** A FRESH Rollout per call — tests mutate what they are handed (finding 10). */
-function rollout(steps: unknown[] = [{ setWeight: 10 }, { pause: { duration: "60s" } }, { setWeight: 100 }]) {
+function rollout(
+  steps: unknown[] = [{ setWeight: 10 }, { pause: { duration: "60s" } }, { setWeight: 100 }]
+) {
   return {
     apiVersion: "argoproj.io/v1alpha1",
     kind: "Rollout",
@@ -174,7 +176,9 @@ describe("argocd trigger — an SCP-authored Application", () => {
     );
     const anonymous = authoredApplication("checkout-gamma");
     delete anonymous.metadata.labels["commanderscp.io/target"];
-    await expect(authorAndSync(anonymous, "wt-6")).rejects.toThrow(/must name its org, component and target/);
+    await expect(authorAndSync(anonymous, "wt-6")).rejects.toThrow(
+      /must name its org, component and target/
+    );
     expect(standIn.requests).toEqual([]);
   });
 
@@ -188,15 +192,51 @@ describe("argocd trigger — an SCP-authored Application", () => {
 
 describe("the second layer — only a carrier render the operator declared is ever written (finding 1/2)", () => {
   const cases: [string, (d: any) => void, RegExp][] = [
-    ["a foreign source repository", (d) => (d.spec.source.repoURL = "https://evil.example/x.git"), /not the registered carrier/],
-    ["a floating carrier revision", (d) => (d.spec.source.targetRevision = "HEAD"), /not the registered carrier/],
-    ["the unscoped default project", (d) => (d.spec.project = "default"), /not the authoring project/],
-    ["kube-system", (d) => (d.spec.destination.namespace = "kube-system"), /not in the authoring allowlist/],
-    ["an un-allowlisted namespace", (d) => (d.spec.destination.namespace = "payments"), /not in the authoring allowlist/],
-    ["CreateNamespace", (d) => (d.spec.syncPolicy = { syncOptions: ["CreateNamespace=true"] }), /syncPolicy must be empty/],
-    ["an automated sync policy", (d) => (d.spec.syncPolicy = { automated: {} }), /syncPolicy must be empty/],
-    ["helm.values text beside valuesObject", (d) => (d.spec.source.helm.values = "x: 1"), /helm.values is not a field/],
-    ["a finalizer", (d) => (d.metadata.finalizers = ["resources-finalizer.argocd.argoproj.io"]), /metadata.finalizers is not a field/],
+    [
+      "a foreign source repository",
+      (d) => (d.spec.source.repoURL = "https://evil.example/x.git"),
+      /not the registered carrier/
+    ],
+    [
+      "a floating carrier revision",
+      (d) => (d.spec.source.targetRevision = "HEAD"),
+      /not the registered carrier/
+    ],
+    [
+      "the unscoped default project",
+      (d) => (d.spec.project = "default"),
+      /not the authoring project/
+    ],
+    [
+      "kube-system",
+      (d) => (d.spec.destination.namespace = "kube-system"),
+      /not in the authoring allowlist/
+    ],
+    [
+      "an un-allowlisted namespace",
+      (d) => (d.spec.destination.namespace = "payments"),
+      /not in the authoring allowlist/
+    ],
+    [
+      "CreateNamespace",
+      (d) => (d.spec.syncPolicy = { syncOptions: ["CreateNamespace=true"] }),
+      /syncPolicy must be empty/
+    ],
+    [
+      "an automated sync policy",
+      (d) => (d.spec.syncPolicy = { automated: {} }),
+      /syncPolicy must be empty/
+    ],
+    [
+      "helm.values text beside valuesObject",
+      (d) => (d.spec.source.helm.values = "x: 1"),
+      /helm.values is not a field/
+    ],
+    [
+      "a finalizer",
+      (d) => (d.metadata.finalizers = ["resources-finalizer.argocd.argoproj.io"]),
+      /metadata.finalizers is not a field/
+    ],
     [
       "a ClusterRoleBinding in the values",
       (d) =>
@@ -208,15 +248,48 @@ describe("the second layer — only a carrier render the operator declared is ev
         }),
       /ClusterRoleBinding .* carries only Rollout and Service/
     ],
-    ["a manifest in another namespace", (d) => (d.spec.source.helm.valuesObject.manifests[0].metadata.namespace = "kube-system"), /lands in namespace 'kube-system'/],
-    ["spec.paused", (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.paused = true), /would pause the Rollout/],
-    ["an indefinite pause", (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps[1] = { pause: {} }), /indefinite pause waits for `promote`/],
-    ["a status block", (d) => (d.spec.source.helm.valuesObject.manifests[0].status = { abort: true }), /status is not a field/],
-    ["an analysis step", (d) => d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps.push({ analysis: {} }), /analysis is not a field/],
-    ["a privileged pod", (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.template.spec.hostNetwork = true), /hostNetwork is not a field/],
+    [
+      "a manifest in another namespace",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].metadata.namespace = "kube-system"),
+      /lands in namespace 'kube-system'/
+    ],
+    [
+      "spec.paused",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.paused = true),
+      /would pause the Rollout/
+    ],
+    [
+      "an indefinite pause",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps[1] = {
+          pause: {}
+        }),
+      /indefinite pause waits for `promote`/
+    ],
+    [
+      "a status block",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].status = { abort: true }),
+      /status is not a field/
+    ],
+    [
+      "an analysis step",
+      (d) =>
+        d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps.push({
+          analysis: {}
+        }),
+      /analysis is not a field/
+    ],
+    [
+      "a privileged pod",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.template.spec.hostNetwork = true),
+      /hostNetwork is not a field/
+    ],
     [
       "blue-green that waits for promote",
-      (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.strategy = { blueGreen: { activeService: "a", previewService: "b", autoPromotionEnabled: false } }),
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.strategy = {
+          blueGreen: { activeService: "a", previewService: "b", autoPromotionEnabled: false }
+        }),
       /must auto-promote/
     ],
     [
@@ -233,20 +306,26 @@ describe("the second layer — only a carrier render the operator declared is ev
   ];
 
   it.each(cases)("refuses %s — before any write", async (_what, tweak, message) => {
-    await expect(authorAndSync(authoredApplication("checkout-gamma", { tweak }))).rejects.toThrow(message);
+    await expect(authorAndSync(authoredApplication("checkout-gamma", { tweak }))).rejects.toThrow(
+      message
+    );
     expect(standIn.requests).toEqual([]);
   });
 
   it("refuses to author at all into an Argo CD that declares no authoring (import-and-coordinate only)", async () => {
-    await expect(authorAndSync(authoredApplication("checkout-gamma"), "wt-7", ctxWith(undefined))).rejects.toThrow(
-      /declares no usable `authoring`/
-    );
+    await expect(
+      authorAndSync(authoredApplication("checkout-gamma"), "wt-7", ctxWith(undefined))
+    ).rejects.toThrow(/declares no usable `authoring`/);
     expect(standIn.requests).toEqual([]);
   });
 
   it("refuses an authoring declaration naming the unscoped `default` project", async () => {
     await expect(
-      authorAndSync(authoredApplication("checkout-gamma"), "wt-8", ctxWith({ ...AUTHORING, project: "default" }))
+      authorAndSync(
+        authoredApplication("checkout-gamma"),
+        "wt-8",
+        ctxWith({ ...AUTHORING, project: "default" })
+      )
     ).rejects.toThrow(/declares no usable `authoring`/);
   });
 });

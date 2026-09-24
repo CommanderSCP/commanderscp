@@ -2074,27 +2074,56 @@ function scpArgoCdPolicy(
       if (fields[0] === "g" && fields.slice(1).includes(account)) bindings.push(fields.join(", "));
     }
   }
-  return { grants: grants.sort(), bindings, policyDefault: (data?.["policy.default"] ?? "").trim() };
+  return {
+    grants: grants.sort(),
+    bindings,
+    policyDefault: (data?.["policy.default"] ?? "").trim()
+  };
 }
 
 /** Known-positive controls for `scpArgoCdPolicy`, run on every helm-verify: a parser that cannot
  *  see these would pass a chart that grants them (the "claim about a tool" rule, CLAUDE.md). */
 function selfTestScpArgoCdPolicy(): void {
-  const cases: [string, Record<string, string>, (p: ReturnType<typeof scpArgoCdPolicy>) => boolean][] = [
-    ["g binding", { "policy.csv": "g, scp-coordinator, role:admin" }, (p) => p.bindings.length === 1],
-    ["unspaced grant", { "policy.csv": "p,scp-coordinator,applications,action/*,*/*,allow" }, (p) =>
-      p.grants.includes("p, scp-coordinator, applications, action/*, */*, allow")],
-    ["overlay key", { "policy.extra.csv": "p, scp-coordinator, applications, delete, */*, allow" }, (p) =>
-      p.grants.length === 1],
-    ["permissive default", { "policy.default": "role:admin" }, (p) => p.policyDefault === "role:admin"]
+  const cases: [
+    string,
+    Record<string, string>,
+    (p: ReturnType<typeof scpArgoCdPolicy>) => boolean
+  ][] = [
+    [
+      "g binding",
+      { "policy.csv": "g, scp-coordinator, role:admin" },
+      (p) => p.bindings.length === 1
+    ],
+    [
+      "unspaced grant",
+      { "policy.csv": "p,scp-coordinator,applications,action/*,*/*,allow" },
+      (p) => p.grants.includes("p, scp-coordinator, applications, action/*, */*, allow")
+    ],
+    [
+      "overlay key",
+      { "policy.extra.csv": "p, scp-coordinator, applications, delete, */*, allow" },
+      (p) => p.grants.length === 1
+    ],
+    [
+      "permissive default",
+      { "policy.default": "role:admin" },
+      (p) => p.policyDefault === "role:admin"
+    ]
   ];
   for (const [what, data, seen] of cases) {
-    assert(seen(scpArgoCdPolicy(data)), `[argocd-rbac self-test] the policy parser cannot see a ${what}`);
+    assert(
+      seen(scpArgoCdPolicy(data)),
+      `[argocd-rbac self-test] the policy parser cannot see a ${what}`
+    );
   }
 }
 
 /** Pins the SCP account's Argo CD authority EXACTLY. `authoringProject` null ⇒ read/sync only. */
-function verifyScpArgoCdGrants(docs: K8sDoc[], label: string, authoringProject: string | null): void {
+function verifyScpArgoCdGrants(
+  docs: K8sDoc[],
+  label: string,
+  authoringProject: string | null
+): void {
   const rbacCm = docs.find(
     (d) => d.kind === "ConfigMap" && d.metadata?.name === "argocd-rbac-cm"
   ) as (K8sDoc & { data?: Record<string, string> }) | undefined;
@@ -2131,9 +2160,15 @@ function verifyAuthoringProject(
   expected: { project: string; carrierRepoURL: string; namespaces: string[] }
 ): void {
   const projects = docs.filter((d) => d.kind === "AppProject");
-  assert(projects.length === 1, `[${label}] expected exactly one AppProject, got ${projects.length}`);
+  assert(
+    projects.length === 1,
+    `[${label}] expected exactly one AppProject, got ${projects.length}`
+  );
   const spec = (projects[0]?.spec ?? {}) as Record<string, unknown>;
-  assert(projects[0]?.metadata?.name === expected.project, `[${label}] AppProject is not named '${expected.project}'`);
+  assert(
+    projects[0]?.metadata?.name === expected.project,
+    `[${label}] AppProject is not named '${expected.project}'`
+  );
   const want = {
     sourceRepos: [expected.carrierRepoURL],
     destinations: expected.namespaces.map((namespace) => ({
@@ -2159,7 +2194,10 @@ function verifyAuthoringProject(
   const extraKeys = Object.keys(spec).filter(
     (k) => !["description", ...Object.keys(want)].includes(k)
   );
-  assert(extraKeys.length === 0, `[${label}] the authoring AppProject carries unexpected spec keys ${extraKeys.join(", ")}`);
+  assert(
+    extraKeys.length === 0,
+    `[${label}] the authoring AppProject carries unexpected spec keys ${extraKeys.join(", ")}`
+  );
 }
 
 /** Assertions for the SEPARATE bundled-backends chart. See docs/helm-verify.md §30. */
@@ -2960,10 +2998,19 @@ function main(): void {
     );
     // Every unscoped configuration is REFUSED at render, not rendered and trusted.
     const refusals: [string, string[]][] = [
-      ["the unscoped default project", ["--set", "bundledExecutor.argocd.authoring.project=default"]],
+      [
+        "the unscoped default project",
+        ["--set", "bundledExecutor.argocd.authoring.project=default"]
+      ],
       ["kube-system", ["--set", "bundledExecutor.argocd.authoring.namespaces={kube-system}"]],
-      ["Argo CD's own namespace", ["--set", "bundledExecutor.argocd.authoring.namespaces={scp-argocd}"]],
-      ["a bundled backend's namespace", ["--set", "bundledExecutor.argocd.authoring.namespaces={scp-gitea}"]],
+      [
+        "Argo CD's own namespace",
+        ["--set", "bundledExecutor.argocd.authoring.namespaces={scp-argocd}"]
+      ],
+      [
+        "a bundled backend's namespace",
+        ["--set", "bundledExecutor.argocd.authoring.namespaces={scp-gitea}"]
+      ],
       ["the default namespace", ["--set", "bundledExecutor.argocd.authoring.namespaces={default}"]],
       ["no carrier", ["--set", "bundledExecutor.argocd.authoring.carrierRepoURL="]],
       ["no namespaces", ["--set", "bundledExecutor.argocd.authoring.namespaces=null"]]
@@ -2975,7 +3022,10 @@ function main(): void {
       } catch (err) {
         refused = /ADR-0055/.test(String((err as { stderr?: unknown }).stderr ?? err));
       }
-      assert(refused, `[authoring] the chart must REFUSE ${what} with an ADR-0055 error, and rendered it`);
+      assert(
+        refused,
+        `[authoring] the chart must REFUSE ${what} with an ADR-0055 error, and rendered it`
+      );
     }
     console.log(
       `  authoring project pinned exactly; ${refusals.length} unscoped configurations refused at render`

@@ -1,5 +1,8 @@
 import { DESTINATION_FORMAT_OF_TYPE, type ExecutorType } from "@scp/schemas";
-import { BUILD_DESTINATION_PARAMETER_KEYS, BuildDestinationRefused } from "./build-trigger-parameters.js";
+import {
+  BUILD_DESTINATION_PARAMETER_KEYS,
+  BuildDestinationRefused
+} from "./build-trigger-parameters.js";
 import { AUTHORED_APPLICATION_PARAMETER } from "./deploy-lane-trigger-parameters.js";
 import {
   TriggerParameterRefusal,
@@ -45,7 +48,13 @@ export const RESERVED_BY_LANE: Readonly<Record<string, ReservedLane>> = {
   },
   "ops-managed": {
     why: "which hosts a host-reaching run touches, what it may reach, and the credential it holds (ADR-0052)",
-    keys: ["opsRole", "opsInventory", "opsEgressAllowlist", "opsPrincipals", "opsCredentialSecretKey"]
+    keys: [
+      "opsRole",
+      "opsInventory",
+      "opsEgressAllowlist",
+      "opsPrincipals",
+      "opsCredentialSecretKey"
+    ]
   },
   "build-destination": {
     why: "where an artifact is published — the publishes_to edge is the only door (ADR-0053 §4a)",

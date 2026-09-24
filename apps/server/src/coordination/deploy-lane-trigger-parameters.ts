@@ -59,7 +59,8 @@ export class DeploymentAuthoringRefused extends TriggerParameterRefusal {
   readonly action = WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION;
   constructor(message: string, inputContext: Record<string, unknown> = {}) {
     super(message, {
-      remediation: "correct the declaration named above, then cancel/rollback/re-propose the change",
+      remediation:
+        "correct the declaration named above, then cancel/rollback/re-propose the change",
       inputContext
     });
   }
@@ -72,7 +73,6 @@ export const AUTHORED_APPLICATION_PARAMETER = "scpAuthoredApplication";
 /** The `status().stateRef` key under which the argocd plugin reports an SCP-authored Application's
  *  live manifest (JSON text) — the plugin's `PRIOR_AUTHORED_APPLICATION_KEY`, pinned equal by test. */
 export const PRIOR_AUTHORED_APPLICATION_KEY = "scpAuthoredApplicationJson";
-
 
 /** Argo CD's in-cluster destination — the default when the place names no registered cluster. */
 export const IN_CLUSTER_SERVER = "https://kubernetes.default.svc";
@@ -518,7 +518,9 @@ export async function deployLaneTriggerParameters(
     );
   }
   const image =
-    digests.length === 1 ? `${imageRepositoryOf(deployment.image)}@${digests[0]}` : deployment.image;
+    digests.length === 1
+      ? `${imageRepositoryOf(deployment.image)}@${digests[0]}`
+      : deployment.image;
 
   const externalRef = input.binding?.externalRef ?? null;
   const applicationName =
@@ -601,7 +603,9 @@ export function authoredRollbackTrigger(
   // stored (`boundPersistedJson`), and an Application is deeper than that — an object would come
   // back with its Rollout replaced by truncation markers. A string is depth 1; one too long for the
   // byte bound comes back cut, fails to parse, and is refused below rather than re-authored.
-  const priorJson = isRecord(priorStateRef) ? priorStateRef[PRIOR_AUTHORED_APPLICATION_KEY] : undefined;
+  const priorJson = isRecord(priorStateRef)
+    ? priorStateRef[PRIOR_AUTHORED_APPLICATION_KEY]
+    : undefined;
   let prior: unknown;
   try {
     prior = typeof priorJson === "string" ? JSON.parse(priorJson) : undefined;
@@ -616,7 +620,8 @@ export function authoredRollbackTrigger(
       { gate: "deployment_authoring", cause: "rollback_without_prior" }
     );
   }
-  const labels = isRecord(prior.metadata) && isRecord(prior.metadata.labels) ? prior.metadata.labels : {};
+  const labels =
+    isRecord(prior.metadata) && isRecord(prior.metadata.labels) ? prior.metadata.labels : {};
   if (
     labels["commanderscp.io/org"] !== expected.orgId ||
     labels["commanderscp.io/target"] !== expected.targetObjectId ||

@@ -197,11 +197,7 @@ function gateOnRollout(
   const nodeHealth = node.health?.status;
   const rolloutPhase =
     live?.phase ??
-    (nodeHealth === "Suspended"
-      ? "Paused"
-      : nodeHealth === "Missing"
-        ? "Degraded"
-        : nodeHealth);
+    (nodeHealth === "Suspended" ? "Paused" : nodeHealth === "Missing" ? "Degraded" : nodeHealth);
   if (rolloutPhase === "Degraded") return "failed";
   if (rolloutPhase !== "Healthy") return "running";
   if (live?.stepCount !== undefined && (live.step ?? 0) < live.stepCount) return "running";

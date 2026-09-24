@@ -132,7 +132,10 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     });
   }
 
-  async function waveTargetRow(targetObjectId: string, changeFilter?: (r: { waveId: string }) => boolean) {
+  async function waveTargetRow(
+    targetObjectId: string,
+    changeFilter?: (r: { waveId: string }) => boolean
+  ) {
     const rows = await inOrg((tx) =>
       tx
         .select()
@@ -154,7 +157,11 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
         const state = (await admin.changes.get(changeId)).state;
         return want.includes(state) ? state : undefined;
       },
-      { describe: `change ${changeId} reaches ${want.join("|")}`, timeoutMs: 60_000, intervalMs: 250 }
+      {
+        describe: `change ${changeId} reaches ${want.join("|")}`,
+        timeoutMs: 60_000,
+        intervalMs: 250
+      }
     );
   }
 
@@ -207,11 +214,17 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
         );
         return rows.find((r) => r.status === status);
       },
-      { describe: `wave target ${targetObjectId} refused as ${status}`, timeoutMs: 45_000, intervalMs: 250 }
+      {
+        describe: `wave target ${targetObjectId} refused as ${status}`,
+        timeoutMs: 45_000,
+        intervalMs: 250
+      }
     ).catch(async (err: unknown) => {
       const r = await waveTargetRow(targetObjectId);
       const c = await admin.changes.get(changeId);
-      const ds = await inOrg((tx) => tx.select().from(decisions).where(eq(decisions.subjectId, changeId)));
+      const ds = await inOrg((tx) =>
+        tx.select().from(decisions).where(eq(decisions.subjectId, changeId))
+      );
       throw new Error(
         `${String(err)} — change ${c.state}, target ${r?.status ?? "(no row)"}; decisions ${JSON.stringify(ds.map((d) => [d.verdict, d.reasonTree]))}`
       );
@@ -219,14 +232,26 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     expect(row.status).toBe(status);
     expect(row.executorRef, "trigger() was never called").toBeNull();
     const ds = await inOrg((tx) =>
-      tx.select().from(decisions).where(and(eq(decisions.orgId, org.orgId), eq(decisions.subjectId, changeId)))
+      tx
+        .select()
+        .from(decisions)
+        .where(and(eq(decisions.orgId, org.orgId), eq(decisions.subjectId, changeId)))
     );
     const block = ds.find(
-      (d) => d.verdict === "block" && Object.entries(match).every(([k, v]) => (d.inputContext as Record<string, unknown>)[k] === v || JSON.stringify((d.inputContext as Record<string, unknown>)[k]) === JSON.stringify(v))
+      (d) =>
+        d.verdict === "block" &&
+        Object.entries(match).every(
+          ([k, v]) =>
+            (d.inputContext as Record<string, unknown>)[k] === v ||
+            JSON.stringify((d.inputContext as Record<string, unknown>)[k]) === JSON.stringify(v)
+        )
     );
     expect(block, `a block Decision matching ${JSON.stringify(match)}`).toBeDefined();
     const audits = await inOrg((tx) =>
-      tx.select().from(auditEvents).where(and(eq(auditEvents.orgId, org.orgId), eq(auditEvents.subjectId, changeId)))
+      tx
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.orgId, org.orgId), eq(auditEvents.subjectId, changeId)))
     );
     expect(audits.some((a) => a.decisionId === block!.id)).toBe(true);
     expect(
@@ -242,15 +267,23 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     const gamma = await place("gamma", "shop-gamma");
     const prod = await place("production", "shop");
     const system = await argocdSystem();
-    const { component, placements } = await placedComponent(`checkout-${randomUUID().slice(0, 6)}`, [gamma, prod], system, {
-      deployment: { image: "ghcr.io/acme/checkout:1.4.0", containerPort: 8080, replicas: 4 }
-    });
+    const { component, placements } = await placedComponent(
+      `checkout-${randomUUID().slice(0, 6)}`,
+      [gamma, prod],
+      system,
+      {
+        deployment: { image: "ghcr.io/acme/checkout:1.4.0", containerPort: 8080, replicas: 4 }
+      }
+    );
     const topo = await topology([
       {
         name: "gamma",
         mode: "parallel",
         targets: [gamma.id],
-        rollout: { strategy: "canary", steps: [{ weightPercent: 50, pauseSeconds: 30 }, { weightPercent: 100 }] }
+        rollout: {
+          strategy: "canary",
+          steps: [{ weightPercent: 50, pauseSeconds: 30 }, { weightPercent: 100 }]
+        }
       },
       {
         name: "prod",
@@ -282,7 +315,11 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
 
     expect([...standIn.applications.keys()].filter((n) => !before.has(n))).toHaveLength(2);
     for (const [p, namespace, steps] of [
-      [gamma, "shop-gamma", [{ setWeight: 50 }, { pause: { duration: "30s" } }, { setWeight: 100 }]],
+      [
+        gamma,
+        "shop-gamma",
+        [{ setWeight: 50 }, { pause: { duration: "30s" } }, { setWeight: 100 }]
+      ],
       [
         prod,
         "shop",
@@ -302,7 +339,10 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       expect(app, `an Application authored for ${p.name}`).toBeDefined();
       expect(app.metadata.labels?.["commanderscp.io/org"]).toBe(org.orgId);
       expect(app.spec?.project).toBe("scp-authored");
-      expect(app.spec?.destination).toEqual({ server: "https://kubernetes.default.svc", namespace });
+      expect(app.spec?.destination).toEqual({
+        server: "https://kubernetes.default.svc",
+        namespace
+      });
       // EXACT: what reached Argo CD is what the server derives — nothing rewritten on the way.
       const sent = standIn.authoredBodies
         .slice(bodiesBefore)
@@ -310,7 +350,10 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       expect(sent).toEqual(await serverDerived(change.id, targetId, digest));
 
       const rollout = [...standIn.cluster.values()].find(
-        (m) => m.kind === "Rollout" && (m.metadata as { namespace?: string }).namespace === namespace && (m.metadata as { name: string }).name.startsWith(component.name)
+        (m) =>
+          m.kind === "Rollout" &&
+          (m.metadata as { namespace?: string }).namespace === namespace &&
+          (m.metadata as { name: string }).name.startsWith(component.name)
       )!;
       const spec = rollout.spec as {
         replicas: number;
@@ -321,9 +364,9 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       expect(spec.template.spec.containers[0]!.image).toBe(`ghcr.io/acme/checkout@${digest}`);
       const row = await waveTargetRow(targetId);
       expect(row?.status).toBe("succeeded");
-      expect((row?.observedState as { rollout?: { stepCount?: number } } | null)?.rollout?.stepCount).toBe(
-        steps.length
-      );
+      expect(
+        (row?.observedState as { rollout?: { stepCount?: number } } | null)?.rollout?.stepCount
+      ).toBe(steps.length);
     }
 
     // ADR-0008 §3 — the standing half.
@@ -331,7 +374,9 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     const writes = standIn.requests
       .slice(requestsBefore)
       .filter((r) => r.method !== "GET")
-      .map((r) => `${r.method} ${r.path.replace(/\/applications\/[^/]+\//, "/applications/:name/")}`);
+      .map(
+        (r) => `${r.method} ${r.path.replace(/\/applications\/[^/]+\//, "/applications/:name/")}`
+      );
     expect(writes.sort()).toEqual(
       [
         "POST /api/v1/applications",
@@ -345,27 +390,46 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
   it("D-a: the component's OWN rollout declaration wins over the wave plan's, and says so", async () => {
     const p = await place("gamma", "shop");
     const system = await argocdSystem();
-    const { component, placements } = await placedComponent(`own-${randomUUID().slice(0, 6)}`, [p], system, {
-      deployment: { image: "ghcr.io/acme/own:1.0.0" }
-    });
+    const { component, placements } = await placedComponent(
+      `own-${randomUUID().slice(0, 6)}`,
+      [p],
+      system,
+      {
+        deployment: { image: "ghcr.io/acme/own:1.0.0" }
+      }
+    );
     await inOrg((tx) =>
       upsertComponentRollout(tx, org.orgId, {
         componentObjectId: component.id,
         targetClass: "cluster",
-        rollout: { strategy: "canary", steps: [{ weightPercent: 30, pauseSeconds: 10 }, { weightPercent: 100 }] }
+        rollout: {
+          strategy: "canary",
+          steps: [{ weightPercent: 30, pauseSeconds: 10 }, { weightPercent: 100 }]
+        }
       })
     );
     const topo = await topology([
-      { name: "gamma", mode: "parallel", targets: [p.id], rollout: { strategy: "canary", steps: [{ weightPercent: 5 }] } }
+      {
+        name: "gamma",
+        mode: "parallel",
+        targets: [p.id],
+        rollout: { strategy: "canary", steps: [{ weightPercent: 5 }] }
+      }
     ]);
     const bodiesBefore = standIn.authoredBodies.length;
-    const change = await admin.changes.propose({ name: "own rollout", targets: [component.id], topology: topo.id });
+    const change = await admin.changes.propose({
+      name: "own rollout",
+      targets: [component.id],
+      topology: topo.id
+    });
     await settle(change.id);
-    const sent = standIn.authoredBodies.slice(bodiesBefore).find(
-      (b) => b.metadata.labels?.["commanderscp.io/target"] === placements[p.id]
-    )!;
+    const sent = standIn.authoredBodies
+      .slice(bodiesBefore)
+      .find((b) => b.metadata.labels?.["commanderscp.io/target"] === placements[p.id])!;
     expect(sent.metadata.annotations?.["commanderscp.io/rollout-source"]).toBe("component");
-    const manifests = sent.spec?.source?.helm?.valuesObject?.manifests as { spec: { strategy: unknown } }[];
+    const manifests = sent.spec?.source?.helm?.valuesObject?.manifests as {
+      spec: { strategy: unknown };
+    }[];
     expect(manifests[0]!.spec.strategy).toEqual({
       canary: { steps: [{ setWeight: 30 }, { pause: { duration: "10s" } }, { setWeight: 100 }] }
     });
@@ -374,9 +438,14 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
   it("D-b: blue-green authors the Rollout and its two Services, and always auto-promotes", async () => {
     const p = await place("gamma", "shop");
     const system = await argocdSystem();
-    const { component, placements } = await placedComponent(`bg-${randomUUID().slice(0, 6)}`, [p], system, {
-      deployment: { image: "ghcr.io/acme/bg:1.0.0", containerPort: 8080 }
-    });
+    const { component, placements } = await placedComponent(
+      `bg-${randomUUID().slice(0, 6)}`,
+      [p],
+      system,
+      {
+        deployment: { image: "ghcr.io/acme/bg:1.0.0", containerPort: 8080 }
+      }
+    );
     await inOrg((tx) =>
       upsertComponentRollout(tx, org.orgId, {
         componentObjectId: component.id,
@@ -386,11 +455,15 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     );
     const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
     const bodiesBefore = standIn.authoredBodies.length;
-    const change = await admin.changes.propose({ name: "blue-green", targets: [component.id], topology: topo.id });
+    const change = await admin.changes.propose({
+      name: "blue-green",
+      targets: [component.id],
+      topology: topo.id
+    });
     await settle(change.id);
-    const sent = standIn.authoredBodies.slice(bodiesBefore).find(
-      (b) => b.metadata.labels?.["commanderscp.io/target"] === placements[p.id]
-    )!;
+    const sent = standIn.authoredBodies
+      .slice(bodiesBefore)
+      .find((b) => b.metadata.labels?.["commanderscp.io/target"] === placements[p.id])!;
     const manifests = sent.spec?.source?.helm?.valuesObject?.manifests as Record<string, any>[];
     expect(manifests.map((m) => m.kind)).toEqual(["Rollout", "Service", "Service"]);
     expect(manifests[0]!.spec.strategy.blueGreen).toMatchObject({
@@ -403,9 +476,14 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
   it("D-b: blue-green WITHOUT autoPromotionSeconds is refused with a Decision", async () => {
     const p = await place("gamma", "shop");
     const system = await argocdSystem();
-    const { component, placements } = await placedComponent(`bgbad-${randomUUID().slice(0, 6)}`, [p], system, {
-      deployment: { image: "ghcr.io/acme/bg:1.0.0", containerPort: 8080 }
-    });
+    const { component, placements } = await placedComponent(
+      `bgbad-${randomUUID().slice(0, 6)}`,
+      [p],
+      system,
+      {
+        deployment: { image: "ghcr.io/acme/bg:1.0.0", containerPort: 8080 }
+      }
+    );
     // Written the way an older writer (or a hand edit) could: the schema would refuse it at apply.
     await inOrg((tx) =>
       upsertComponentRollout(tx, org.orgId, {
@@ -416,44 +494,75 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     );
     const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
     const mark = writeMark();
-    const change = await admin.changes.propose({ name: "bg bad", targets: [component.id], topology: topo.id });
-    await expectRefused(change.id, placements[p.id]!, "deployment_authoring_refused", { cause: "component_rollout_unreadable" }, mark);
+    const change = await admin.changes.propose({
+      name: "bg bad",
+      targets: [component.id],
+      topology: topo.id
+    });
+    await expectRefused(
+      change.id,
+      placements[p.id]!,
+      "deployment_authoring_refused",
+      { cause: "component_rollout_unreadable" },
+      mark
+    );
   }, 90_000);
 
   it("D-c: a rollback RE-AUTHORS the prior manifest; a rollback of the first-ever deployment is refused", async () => {
     const p = await place("gamma", "shop");
     const system = await argocdSystem();
-    const { component, placements } = await placedComponent(`rb-${randomUUID().slice(0, 6)}`, [p], system, {
-      deployment: { image: "ghcr.io/acme/rb:1.0.0" }
-    });
+    const { component, placements } = await placedComponent(
+      `rb-${randomUUID().slice(0, 6)}`,
+      [p],
+      system,
+      {
+        deployment: { image: "ghcr.io/acme/rb:1.0.0" }
+      }
+    );
     const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
     const targetId = placements[p.id]!;
     const bodyFor = (from: number) =>
-      standIn.authoredBodies.slice(from).filter((b) => b.metadata.labels?.["commanderscp.io/target"] === targetId);
+      standIn.authoredBodies
+        .slice(from)
+        .filter((b) => b.metadata.labels?.["commanderscp.io/target"] === targetId);
 
     const b1 = standIn.authoredBodies.length;
-    const v1 = await admin.changes.propose({ name: "v1", targets: [component.id], topology: topo.id, sourceRef: { artifact_digest: `sha256:${"1".repeat(64)}` } });
+    const v1 = await admin.changes.propose({
+      name: "v1",
+      targets: [component.id],
+      topology: topo.id,
+      sourceRef: { artifact_digest: `sha256:${"1".repeat(64)}` }
+    });
     if ((await settle(v1.id)) === "validating") await admin.changes.accept(v1.id);
     const v1Doc = bodyFor(b1)[0]!;
 
     const b2 = standIn.authoredBodies.length;
-    const v2 = await admin.changes.propose({ name: "v2", targets: [component.id], topology: topo.id, sourceRef: { artifact_digest: `sha256:${"2".repeat(64)}` } });
+    const v2 = await admin.changes.propose({
+      name: "v2",
+      targets: [component.id],
+      topology: topo.id,
+      sourceRef: { artifact_digest: `sha256:${"2".repeat(64)}` }
+    });
     if ((await settle(v2.id)) === "validating") await admin.changes.accept(v2.id);
     expect(bodyFor(b2)).toHaveLength(1);
     expect(JSON.stringify(bodyFor(b2)[0])).toContain("2".repeat(64));
 
     const b3 = standIn.authoredBodies.length;
     const rb = await admin.changes.rollback(v2.id, "undo v2");
-    await waitUntil(async () => ((await admin.changes.get(v2.id)).state === "rolled_back" ? true : undefined), {
-      describe: "v2 rolled back",
-      timeoutMs: 60_000,
-      intervalMs: 250
-    });
+    await waitUntil(
+      async () => ((await admin.changes.get(v2.id)).state === "rolled_back" ? true : undefined),
+      {
+        describe: "v2 rolled back",
+        timeoutMs: 60_000,
+        intervalMs: 250
+      }
+    );
     // The rollback re-authored EXACTLY v1's manifest, through the same door.
     expect(bodyFor(b3)).toEqual([v1Doc]);
     const liveImage = (
       [...standIn.cluster.values()].find(
-        (m) => m.kind === "Rollout" && (m.metadata as { name: string }).name.startsWith(component.name)
+        (m) =>
+          m.kind === "Rollout" && (m.metadata as { name: string }).name.startsWith(component.name)
       )!.spec as { template: { spec: { containers: { image: string }[] } } }
     ).template.spec.containers[0]!.image;
     expect(liveImage).toContain("1".repeat(64));
@@ -465,22 +574,43 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     const row = await waitUntil(
       async () => {
         const rows = await inOrg((tx) =>
-          tx.select().from(changeWaveTargets).where(and(eq(changeWaveTargets.orgId, org.orgId), eq(changeWaveTargets.targetObjectId, targetId)))
+          tx
+            .select()
+            .from(changeWaveTargets)
+            .where(
+              and(
+                eq(changeWaveTargets.orgId, org.orgId),
+                eq(changeWaveTargets.targetObjectId, targetId)
+              )
+            )
         );
         return rows.find((r) => r.status === "deployment_authoring_refused");
       },
       { describe: "the v1 rollback is refused", timeoutMs: 45_000, intervalMs: 250 }
     );
     expect(row.executorRef).toBeNull();
-    const ds = await inOrg((tx) => tx.select().from(decisions).where(eq(decisions.subjectId, rb1.id)));
-    expect(ds.some((d) => d.verdict === "block" && (d.inputContext as { cause?: string }).cause === "rollback_without_prior")).toBe(true);
+    const ds = await inOrg((tx) =>
+      tx.select().from(decisions).where(eq(decisions.subjectId, rb1.id))
+    );
+    expect(
+      ds.some(
+        (d) =>
+          d.verdict === "block" &&
+          (d.inputContext as { cause?: string }).cause === "rollback_without_prior"
+      )
+    ).toBe(true);
     expect(standIn.requests.slice(mark).filter((r) => r.method !== "GET")).toEqual([]);
   }, 180_000);
 
   it("finding 1: a RECIPE naming scpAuthoredApplication is refused — for a component that declares no deployment", async () => {
     const p = await place("gamma", "shop");
     const system = await argocdSystem();
-    const { component, placements } = await placedComponent(`smuggle-${randomUUID().slice(0, 6)}`, [p], system, {});
+    const { component, placements } = await placedComponent(
+      `smuggle-${randomUUID().slice(0, 6)}`,
+      [p],
+      system,
+      {}
+    );
     const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
     const evil: StandInApplication = {
       metadata: { name: "pwn", labels: { "commanderscp.io/authored": "true" } },
@@ -503,7 +633,12 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       name: "smuggle",
       targets: [component.id],
       topology: topo.id,
-      properties: { recipe: { version: 1, trigger: { kind: "sync", parameters: { scpAuthoredApplication: evil } } } }
+      properties: {
+        recipe: {
+          version: 1,
+          trigger: { kind: "sync", parameters: { scpAuthoredApplication: evil } }
+        }
+      }
     });
     await expectRefused(
       change.id,
@@ -518,65 +653,162 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
   it("finding 6: two components whose component-place names fold EQUAL get two Applications", async () => {
     const suffix = randomUUID().slice(0, 4);
     const system = await argocdSystem();
-    const west = await admin.deploymentTargets.create({ name: `west${suffix}`, properties: { environment: "gamma", namespace: "shop" } });
-    const euwest = await admin.deploymentTargets.create({ name: `eu-west${suffix}`, properties: { environment: "gamma", namespace: "shop" } });
-    const a = await placedComponent(`ca${suffix}-eu`, [west], system, { deployment: { image: "ghcr.io/acme/a:1" } });
-    const b = await placedComponent(`ca${suffix}`, [euwest], system, { deployment: { image: "ghcr.io/acme/b:1" } });
-    const topo = await topology([{ name: "gamma", mode: "parallel", targets: [west.id, euwest.id] }]);
-    const change = await admin.changes.propose({ name: "fold", targets: [a.component.id, b.component.id], topology: topo.id });
+    const west = await admin.deploymentTargets.create({
+      name: `west${suffix}`,
+      properties: { environment: "gamma", namespace: "shop" }
+    });
+    const euwest = await admin.deploymentTargets.create({
+      name: `eu-west${suffix}`,
+      properties: { environment: "gamma", namespace: "shop" }
+    });
+    const a = await placedComponent(`ca${suffix}-eu`, [west], system, {
+      deployment: { image: "ghcr.io/acme/a:1" }
+    });
+    const b = await placedComponent(`ca${suffix}`, [euwest], system, {
+      deployment: { image: "ghcr.io/acme/b:1" }
+    });
+    const topo = await topology([
+      { name: "gamma", mode: "parallel", targets: [west.id, euwest.id] }
+    ]);
+    const change = await admin.changes.propose({
+      name: "fold",
+      targets: [a.component.id, b.component.id],
+      topology: topo.id
+    });
     await settle(change.id);
     const apps = [...standIn.applications.values()].filter((x) =>
-      [a.placements[west.id], b.placements[euwest.id]].includes(x.metadata.labels?.["commanderscp.io/target"] as string)
+      [a.placements[west.id], b.placements[euwest.id]].includes(
+        x.metadata.labels?.["commanderscp.io/target"] as string
+      )
     );
     expect(apps).toHaveLength(2);
     expect(apps[0]!.metadata.name).not.toBe(apps[1]!.metadata.name);
   }, 90_000);
 
   describe("finding 7: every refusal branch — terminal, a Decision, an audit event, and trigger() never called", () => {
-    const cases: [string, string, (ctx: { p: GraphObject; system: GraphObject }) => Promise<{
-      properties: Record<string, unknown>;
-      waves?: (p: GraphObject) => unknown[];
-      sourceRef?: Record<string, unknown>;
-      system?: GraphObject;
-    }>][] = [
-      ["no authoring on the Argo CD", "no_authoring", async () => ({ properties: { deployment: { image: "x:1" } }, system: await argocdSystem(null) })],
-      ["an unscoped authoring (default project)", "authoring_unreadable", async () => ({ properties: { deployment: { image: "x:1" } }, system: await argocdSystem({ ...AUTHORING, project: "default" }) })],
-      ["an unreadable declaration", "deployment_unreadable", async () => ({ properties: { deployment: { image: "has space" } } })],
-      ["imported AND declared", "imported_and_declared", async () => ({ properties: { deployment: { image: "x:1" }, argocdApplication: "theirs" } })],
-      ["a namespace outside the allowlist", "namespace_not_allowed", async () => ({ properties: { deployment: { image: "x:1", namespace: "payments" } } })],
-      ["kube-system", "namespace_not_allowed", async () => ({ properties: { deployment: { image: "x:1", namespace: "kube-system" } } })],
-      ["two OCI digests", "multiple_digests", async () => ({ properties: { deployment: { image: "x:1" } }, sourceRef: { artifact_digest: [`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`] } })],
+    const cases: [
+      string,
+      string,
+      (ctx: { p: GraphObject; system: GraphObject }) => Promise<{
+        properties: Record<string, unknown>;
+        waves?: (p: GraphObject) => unknown[];
+        sourceRef?: Record<string, unknown>;
+        system?: GraphObject;
+      }>
+    ][] = [
+      [
+        "no authoring on the Argo CD",
+        "no_authoring",
+        async () => ({
+          properties: { deployment: { image: "x:1" } },
+          system: await argocdSystem(null)
+        })
+      ],
+      [
+        "an unscoped authoring (default project)",
+        "authoring_unreadable",
+        async () => ({
+          properties: { deployment: { image: "x:1" } },
+          system: await argocdSystem({ ...AUTHORING, project: "default" })
+        })
+      ],
+      [
+        "an unreadable declaration",
+        "deployment_unreadable",
+        async () => ({ properties: { deployment: { image: "has space" } } })
+      ],
+      [
+        "imported AND declared",
+        "imported_and_declared",
+        async () => ({ properties: { deployment: { image: "x:1" }, argocdApplication: "theirs" } })
+      ],
+      [
+        "a namespace outside the allowlist",
+        "namespace_not_allowed",
+        async () => ({ properties: { deployment: { image: "x:1", namespace: "payments" } } })
+      ],
+      [
+        "kube-system",
+        "namespace_not_allowed",
+        async () => ({ properties: { deployment: { image: "x:1", namespace: "kube-system" } } })
+      ],
+      [
+        "two OCI digests",
+        "multiple_digests",
+        async () => ({
+          properties: { deployment: { image: "x:1" } },
+          sourceRef: { artifact_digest: [`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`] }
+        })
+      ],
       [
         "an ambiguous wave plan",
         "ambiguous_wave_rollout",
         async () => ({
           properties: { deployment: { image: "x:1" } },
           waves: (p) => [
-            { name: "a", mode: "parallel", targets: [p.id], rollout: { strategy: "canary", steps: [{ weightPercent: 10 }] } },
-            { name: "b", mode: "parallel", targets: [p.id], rollout: { strategy: "canary", steps: [{ weightPercent: 20 }] } }
+            {
+              name: "a",
+              mode: "parallel",
+              targets: [p.id],
+              rollout: { strategy: "canary", steps: [{ weightPercent: 10 }] }
+            },
+            {
+              name: "b",
+              mode: "parallel",
+              targets: [p.id],
+              rollout: { strategy: "canary", steps: [{ weightPercent: 20 }] }
+            }
           ]
         })
       ],
-      ["blue-green with no port for its Services", "blue_green_needs_port", async () => ({
-        properties: { deployment: { image: "x:1" } },
-        waves: (p) => [{ name: "g", mode: "parallel", targets: [p.id], rollout: { strategy: "blueGreen", autoPromotionSeconds: 30 } }]
-      })]
+      [
+        "blue-green with no port for its Services",
+        "blue_green_needs_port",
+        async () => ({
+          properties: { deployment: { image: "x:1" } },
+          waves: (p) => [
+            {
+              name: "g",
+              mode: "parallel",
+              targets: [p.id],
+              rollout: { strategy: "blueGreen", autoPromotionSeconds: 30 }
+            }
+          ]
+        })
+      ]
     ];
 
-    it.each(cases)("%s ⇒ refused (%s)", async (_what, cause, setup) => {
-      const p = await place("gamma", "shop");
-      const defaultSystem = await argocdSystem();
-      const s = await setup({ p, system: defaultSystem });
-      const { component, placements } = await placedComponent(`ref-${randomUUID().slice(0, 6)}`, [p], s.system ?? defaultSystem, s.properties);
-      const topo = await topology(s.waves ? s.waves(p) : [{ name: "gamma", mode: "parallel", targets: [p.id] }]);
-      const mark = writeMark();
-      const change = await admin.changes.propose({
-        name: `refuse ${cause} ${randomUUID().slice(0, 6)}`,
-        targets: [component.id],
-        topology: topo.id,
-        ...(s.sourceRef ? { sourceRef: s.sourceRef } : {})
-      });
-      await expectRefused(change.id, placements[p.id]!, "deployment_authoring_refused", { gate: "deployment_authoring", cause }, mark);
-    }, 90_000);
+    it.each(cases)(
+      "%s ⇒ refused (%s)",
+      async (_what, cause, setup) => {
+        const p = await place("gamma", "shop");
+        const defaultSystem = await argocdSystem();
+        const s = await setup({ p, system: defaultSystem });
+        const { component, placements } = await placedComponent(
+          `ref-${randomUUID().slice(0, 6)}`,
+          [p],
+          s.system ?? defaultSystem,
+          s.properties
+        );
+        const topo = await topology(
+          s.waves ? s.waves(p) : [{ name: "gamma", mode: "parallel", targets: [p.id] }]
+        );
+        const mark = writeMark();
+        const change = await admin.changes.propose({
+          name: `refuse ${cause} ${randomUUID().slice(0, 6)}`,
+          targets: [component.id],
+          topology: topo.id,
+          ...(s.sourceRef ? { sourceRef: s.sourceRef } : {})
+        });
+        await expectRefused(
+          change.id,
+          placements[p.id]!,
+          "deployment_authoring_refused",
+          { gate: "deployment_authoring", cause },
+          mark
+        );
+      },
+      90_000
+    );
   });
 });

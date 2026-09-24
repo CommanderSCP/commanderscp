@@ -212,7 +212,10 @@ describe("renderAuthoredDeployment", () => {
           "commanderscp.io/component": "c",
           "commanderscp.io/target": "t"
         },
-        annotations: { "commanderscp.io/change": "ch", "commanderscp.io/rollout-source": "wave:gamma" }
+        annotations: {
+          "commanderscp.io/change": "ch",
+          "commanderscp.io/rollout-source": "wave:gamma"
+        }
       },
       spec: {
         project: "scp-authored",
@@ -233,7 +236,9 @@ describe("renderAuthoredDeployment", () => {
     const rendered = renderAuthoredDeployment(
       input({ strategy: { strategy: "blueGreen", autoPromotionSeconds: 60 } })
     );
-    expect(rendered.manifests.map((m) => `${String(m.kind)}/${(m.metadata as { name: string }).name}`)).toEqual([
+    expect(
+      rendered.manifests.map((m) => `${String(m.kind)}/${(m.metadata as { name: string }).name}`)
+    ).toEqual([
       "Rollout/checkout-5e6f7a8b",
       "Service/checkout-5e6f7a8b-active",
       "Service/checkout-5e6f7a8b-preview"
@@ -262,9 +267,14 @@ describe("authoredRollbackTrigger — D-c: a rollback re-authors the PRIOR manif
   it.each([
     ["no prior at all (a first-ever deployment)", null],
     ["a plain revision string (an imported app's state)", "abc123"],
-    ["a prior cut by the persistence bound", { [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(prior).slice(0, 200) }]
+    [
+      "a prior cut by the persistence bound",
+      { [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(prior).slice(0, 200) }
+    ]
   ])("REFUSES with %s", (_what, state) => {
-    expect(() => authoredRollbackTrigger(state, forward, expected)).toThrow(DeploymentAuthoringRefused);
+    expect(() => authoredRollbackTrigger(state, forward, expected)).toThrow(
+      DeploymentAuthoringRefused
+    );
     try {
       authoredRollbackTrigger(state, forward, expected);
     } catch (err) {
