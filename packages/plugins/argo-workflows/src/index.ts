@@ -502,7 +502,15 @@ export const manifest: PluginManifest = {
       serverUrl: { type: "string", format: "uri" },
       namespace: { type: "string" },
       tokenSecretKey: { type: "string" },
-      labelSelector: { type: "string" }
+      labelSelector: { type: "string" },
+      // M28.2 (ADR-0054) — read by the SERVER, never by this plugin. A binding to an SCP host-ops
+      // catalog template (`scp-ops-v1`) needs both halves of how the run's credential reaches the
+      // pod: the RSA public key its one-time token is sealed to (the private half is the namespace
+      // Secret mounted only into that pod), and optionally the cluster's egress addresses, which
+      // become the certificate's OpenSSH `source-address`. Declared here so an execution-system
+      // object carries them onto its bindings like `namespace`.
+      opsSealingPublicKey: { type: "string" },
+      opsSourceAddresses: { type: "array", items: { type: "string" }, minItems: 1 }
     }
   }
 };

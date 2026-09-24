@@ -60,6 +60,18 @@ if [ "${SCP_OPS_CATALOG_VERIFY:-required}" = "required" ]; then
     || die "a catalog role does not match its pinned digest — refusing"
 fi
 
+# ---- 1b. THE ARGO PATH: REDEEM, AFTER THE CATALOG IS TRUSTED (M28.2, ADR-0054) ---------------
+# On an org's Argo Workflows (`scp-ops-v1`) nothing SCP controls stages /work/in, so the pod redeems
+# its sealed one-time token for the SAME files Mode C's orchestrator writes. Placed after catalog
+# verification on purpose: a tampered catalog must refuse before a credential is ever minted for it.
+# From here on both paths run identical code. The role is the SERVER's — an `SCP_OPS_ROLE` a
+# Workflow editor set is ignored rather than trusted, because on this path the environment is the
+# Workflow's to write.
+if [ -n "${SCP_OPS_API_URL:-}" ]; then
+  python /usr/local/bin/redeem.py || die "redemption refused"
+  SCP_OPS_ROLE=$(cat /work/in/role) || die "redemption wrote no role"
+fi
+
 # ---- 2. THE REQUESTED ROLE MUST BE IN THE CATALOG, IN AN ADMITTED CLASS ----------------------
 ROLE="${SCP_OPS_ROLE:-}"
 [ -n "$ROLE" ] || die "SCP_OPS_ROLE is unset"

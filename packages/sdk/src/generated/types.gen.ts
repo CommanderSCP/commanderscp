@@ -15456,6 +15456,7 @@ export type ListSshCertificateIssuancesResponses = {
             authorityName: string;
             principals: Array<string>;
             targetHosts: Array<string>;
+            sourceAddress: string | null;
             issuedAt: string;
             expiresAt: string;
         }>;
@@ -15528,6 +15529,102 @@ export type ReconcileSshCertificateSerialsResponses = {
 };
 
 export type ReconcileSshCertificateSerialsResponse = ReconcileSshCertificateSerialsResponses[keyof ReconcileSshCertificateSerialsResponses];
+
+export type RedeemOpsRunData = {
+    body: {
+        token: string;
+        /**
+         * The pod's own ephemeral public key, `ssh-ed25519 AAAA...`.
+         */
+        publicKey: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/ops-run-redemptions';
+};
+
+export type RedeemOpsRunErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    410: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    429: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RedeemOpsRunError = RedeemOpsRunErrors[keyof RedeemOpsRunErrors];
+
+export type RedeemOpsRunResponses = {
+    /**
+     * Success
+     */
+    200: {
+        runId: string;
+        opsRole: string;
+        opsInventory: string;
+        opsEgressAllowlist: Array<string>;
+        opsPrincipals: Array<string>;
+        roleArguments: {
+            [key: string]: unknown;
+        };
+        certificate: string;
+        serial: string;
+        keyId: string;
+        expiresAt: string;
+        sourceAddress: string | null;
+    };
+};
+
+export type RedeemOpsRunResponse = RedeemOpsRunResponses[keyof RedeemOpsRunResponses];
 
 export type ListPolicysData = {
     body?: never;

@@ -123,7 +123,7 @@ import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook
 import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
-import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
+import { isOpsLane, opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1554,7 +1554,11 @@ async function triggerWaveTarget(
     // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
     // Component/DeploymentTarget with no binding configured falls back to the shared default
     // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
-    const { instanceId, module: executorModule } = await ensureExecutorInstanceStarted(
+    const {
+      instanceId,
+      module: executorModule,
+      config: executorConfig
+    } = await ensureExecutorInstanceStarted(
       db,
       orgId,
       host,
@@ -1633,14 +1637,26 @@ async function triggerWaveTarget(
       // A ROLLBACK derives nothing, for a sharper reason than the build lane's: there is no
       // "previous package version" recorded anywhere, so a rollback here would re-run the FORWARD
       // operation against the same hosts. Refusing to derive means `managed-ops` refuses the run.
+      //
+      // M28.2 widens the lane to an `argo-workflows` binding on an SCP ops catalog template
+      // (`isOpsLane`): the SAME derivation, delivered as a sealed one-time token instead of a staged
+      // credential, and `scpd` launches nothing. Deleting either half of this condition must make a
+      // test red (`ops-argo-lane.integration.test.ts`).
+      const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
+      const binding = resolution.binding;
+      const externalRef = binding?.externalRef ?? null;
       const opsParameters =
-        isRollback || executorModule !== "managed-ops"
+        isRollback || !isOpsLane(executorModule, externalRef)
           ? undefined
           : await opsLaneTriggerParameters(tx, {
               orgId,
               targetObjectId,
               changeObjectId: change.objectId,
               pluginModule: executorModule,
+              externalRef,
+              waveTargetId,
+              executorConfig,
+              ...(recipeParameters ? { recipeParameters } : {}),
               masterKey
             });
       // The RECIPE WINS on a key collision, deliberately: a recipe is an operator's explicit
@@ -1664,10 +1680,7 @@ async function triggerWaveTarget(
             }
           : undefined;
 
-      // The executor-specific target id. See docs/coordination.md §807.
-      const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
-      const binding = resolution.binding;
-      const externalRef = binding?.externalRef ?? null;
+      // The executor-specific target id (`resolution` above). See docs/coordination.md §807.
 
       // An indirect resolution is recorded, not left implicit. See docs/coordination.md §808.
       const provenance = resolutionProvenance(resolution);
@@ -1788,7 +1801,7 @@ async function ensureExecutorInstanceStarted(
    * currently-configured one) — and the refusal would then be reasoning about a module that is not
    * the one about to be triggered.
    */
-): Promise<{ instanceId: string; module: PluginModule }> {
+): Promise<{ instanceId: string; module: PluginModule; config: Record<string, unknown> }> {
   // MUST resolve the SAME routing Type the trigger will use. See docs/coordination.md §813.
   const resolved = await withTenantTx(db, orgId, async (tx) => {
     const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
@@ -1806,7 +1819,13 @@ async function ensureExecutorInstanceStarted(
     (!persistedExecutorPluginId || persistedExecutorPluginId === resolved.instanceConfig.id)
   ) {
     await host.start([resolved.instanceConfig]);
-    return { instanceId: resolved.instanceConfig.id, module: resolved.instanceConfig.module };
+    return {
+      instanceId: resolved.instanceConfig.id,
+      module: resolved.instanceConfig.module,
+      // The SAME resolved config the instance was started with, so the ops lane reads the sealing
+      // key off the binding the trigger will act on rather than re-resolving it.
+      config: (resolved.instanceConfig.config ?? {}) as Record<string, unknown>
+    };
   }
 
   // Either no binding is configured, or a persisted id from an earlier trigger no longer matches
@@ -1825,7 +1844,8 @@ async function ensureExecutorInstanceStarted(
   // `module` describes what was actually started HERE. See docs/coordination.md §814.
   return {
     instanceId: persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID,
-    module: DEFAULT_EXECUTOR_MODULE
+    module: DEFAULT_EXECUTOR_MODULE,
+    config: {}
   };
 }
 

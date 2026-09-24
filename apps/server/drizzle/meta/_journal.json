@@ -848,6 +848,13 @@
       "when": 1790185004621,
       "tag": "0120_ssh_ca_enrolments",
       "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1790213375361,
+      "tag": "0121_ops_run_redemptions",
+      "breakpoints": true
     }
   ]
 }

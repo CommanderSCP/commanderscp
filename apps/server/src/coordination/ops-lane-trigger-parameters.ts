@@ -2,7 +2,21 @@ import type { TrustDomainId } from "@scp/schemas";
 import { and, eq } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
+import {
+  RecipeOverrideRefused,
+  SERVER_DERIVED_OPS_KEYS,
+  assertNoRecipeOverride
+} from "@scp/plugin-managed-ops";
 import { deriveOpsRunMaterial } from "./ops-run-material.js";
+import { ARGO_OPS_DELIVERY_KEYS, createOpsRunRedemption } from "./ops-run-redemption.js";
+
+/** The role's own arguments with the closed set removed — the same operation `managed-ops`'s
+ *  `roleArguments()` performs for Mode C, so a declared argument named like a bound key reaches
+ *  neither runner. */
+function stripReserved(args: Record<string, unknown>): Record<string, unknown> {
+  const reserved = new Set<string>([...SERVER_DERIVED_OPS_KEYS, ...ARGO_OPS_DELIVERY_KEYS]);
+  return Object.fromEntries(Object.entries(args).filter(([k]) => !reserved.has(k)));
+}
 
 /**
  * WHAT A HOST-REACHING TRIGGER TELLS `managed-ops` — the production caller `deriveOpsRunMaterial`
@@ -36,9 +50,39 @@ export interface OpsLaneTriggerParameterInput {
    *  holds a `ChangeRow`, whose properties live on the underlying graph object, so a caller passing
    *  "the change's properties" would have had to fetch the object and could fetch the wrong one. */
   changeObjectId: string;
-  /** The module the binding resolved to. Anything but `managed-ops` derives nothing. */
+  /** The module the binding resolved to. See `isOpsLane` for what derives. */
   pluginModule: string | null;
+  /** The binding's executor-side target — for `argo-workflows`, the WorkflowTemplate name. */
+  externalRef?: string | null;
+  /** The wave target this trigger serves; the Argo path's redemption is bound to it. */
+  waveTargetId?: string;
+  /** The resolved executor config (tenant + execution-system declared settings). The Argo path
+   *  reads `opsSealingPublicKey` and `opsSourceAddresses` from it. */
+  executorConfig?: Record<string, unknown>;
+  /** The campaign recipe's parameters, if any — checked against the closed set (ADR-0052). */
+  recipeParameters?: Record<string, unknown>;
   masterKey: Buffer;
+}
+
+/** The SCP catalog templates that run the host-ops catalog on an org's Argo Workflows (M28.2).
+ *  Versioned in the name, like `scp-build-image-v1`: a new template ships beside the old one. */
+export const OPS_ARGO_CATALOG_TEMPLATES = ["scp-ops-v1"] as const;
+
+/**
+ * WHICH TRIGGERS ARE HOST-REACHING — and therefore get material derived at all.
+ *
+ * `managed-ops` (Mode C), or `argo-workflows` bound to an SCP ops catalog template (M28.2). An
+ * `argo-workflows` binding to ANY OTHER template gets nothing: an org-authored template is the org's
+ * own executor holding its own credentials, and deriving an SCP certificate for it would hand SCP's
+ * CA to code SCP never reviewed — exactly what the charter's 2026-09-23 amendment does not grant.
+ */
+export function isOpsLane(pluginModule: string | null, externalRef: string | null | undefined) {
+  if (pluginModule === "managed-ops") return true;
+  return (
+    pluginModule === "argo-workflows" &&
+    typeof externalRef === "string" &&
+    (OPS_ARGO_CATALOG_TEMPLATES as readonly string[]).includes(externalRef)
+  );
 }
 
 /** The declared operation, read out of `change.properties.ops`.
@@ -84,9 +128,25 @@ export async function opsLaneTriggerParameters(
   tx: TenantTx,
   input: OpsLaneTriggerParameterInput
 ): Promise<Record<string, unknown> | undefined> {
-  // Only the host-reaching actuator. Every other executor gets nothing from this lane — deriving a
+  // Only a host-reaching run. Every other executor gets nothing from this lane — deriving a
   // certificate for a run that will never use one would mint host credentials for no reason.
-  if (input.pluginModule !== "managed-ops") return undefined;
+  if (!isOpsLane(input.pluginModule, input.externalRef)) return undefined;
+
+  // ADR-0052's refusal, WIRED. A recipe naming a bound key is an operator believing they can choose
+  // hosts or reach; refusing keeps that belief from surviving. `managed-ops` never gets here with a
+  // recipe (it is recipe-forbidden), but `argo-workflows` is not, so this is the door that holds.
+  if (input.recipeParameters) {
+    assertNoRecipeOverride(input.recipeParameters);
+    const delivery = ARGO_OPS_DELIVERY_KEYS.filter((k) =>
+      Object.prototype.hasOwnProperty.call(input.recipeParameters, k)
+    );
+    if (delivery.length > 0) {
+      throw new RecipeOverrideRefused(
+        `a campaign recipe may not set ${delivery.join(", ")} — the run token is minted per run by ` +
+          "the server and sealed to the operator's key (ADR-0054)."
+      );
+    }
+  }
 
   const [changeObject] = await tx
     .select({ properties: objects.properties })
@@ -107,6 +167,30 @@ export async function opsLaneTriggerParameters(
     throw new OpsDeclarationRefused(
       `refusing to derive host-reaching material: target ${input.targetObjectId} does not resolve.`
     );
+  }
+
+  if (input.pluginModule === "argo-workflows") {
+    // THE ARGO PATH (M28.2). The SAME bound derivation as Mode C — `createOpsRunRedemption` calls
+    // `deriveOpsBound`, the function `deriveOpsRunMaterial` is built on — stored server-side and
+    // handed to the pod only on redemption. The Workflow carries ciphertext and a row id; nothing a
+    // Workflow editor can change reaches what the pod is given.
+    if (!input.waveTargetId) {
+      throw new OpsDeclarationRefused("an Argo host-ops trigger must name its wave target");
+    }
+    const config = input.executorConfig ?? {};
+    const { opsRunTokenSealed, opsRunId } = await createOpsRunRedemption(tx, {
+      orgId: input.orgId,
+      domainId: target.originDomainId as TrustDomainId,
+      productObjectId: input.targetObjectId,
+      role: declaration.role,
+      roleArguments: stripReserved(declaration.arguments),
+      changeObjectId: input.changeObjectId,
+      waveTargetId: input.waveTargetId,
+      sealingPublicKeyPem: config["opsSealingPublicKey"],
+      sourceAddresses: config["opsSourceAddresses"],
+      masterKey: input.masterKey
+    });
+    return { opsRunTokenSealed, opsRunId };
   }
 
   const material = await deriveOpsRunMaterial(tx, {

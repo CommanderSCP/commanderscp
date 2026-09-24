@@ -54,6 +54,9 @@ RUN python /tmp/prune.py /tmp/allowlist.json \
 COPY --from=cosign /ko-app/cosign /usr/local/bin/cosign
 COPY params_to_vars.py /usr/local/bin/params_to_vars.py
 COPY verify_catalog_digests.py /usr/local/bin/verify_catalog_digests.py
+# The Argo path's way in (M28.2): unseal the one-time token, generate this run's keypair, redeem.
+# Uses only `cryptography`, which ansible-core already depends on — no new package in the image.
+COPY redeem.py /usr/local/bin/redeem.py
 # The catalog SCP ships. An operator may mount their own over /catalog; either way run.sh verifies
 # the signature and the per-role digests before anything is parsed.
 COPY catalog /catalog

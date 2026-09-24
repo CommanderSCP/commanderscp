@@ -2406,6 +2406,11 @@ export const sshCertificateIssuances = pgTable(
     keyId: text("key_id").notNull(),
     principals: text("principals").array().notNull(),
     targetHosts: text("target_hosts").array().notNull(),
+    /** The OpenSSH `source-address` critical option the certificate CARRIES, when one was set
+     *  (M28.2: an Argo-path issuance whose binding declared the cluster's egress CIDRs). NULL means
+     *  the certificate is usable from any address — recorded so evidence cannot claim a
+     *  restriction the certificate does not have. */
+    sourceAddress: text("source_address"),
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull()
   },
@@ -2495,5 +2500,59 @@ export const sshCaEnrolments = pgTable(
      *  reader of this table should not have to infer it from another one. */
     uniqueIndex("ssh_ca_enrolment_one_per_domain").on(t.orgId, t.domainId),
     check("ssh_ca_enrolment_break_glass_present", sql`length(btrim(${t.breakGlass})) > 0`)
+  ]
+);
+
+/**
+ * ONE-TIME REDEMPTIONS FOR HOST OPS RUN BY AN ORG'S ARGO WORKFLOWS (M28.2, ADR-0054).
+ *
+ * On the Argo path the runner pod lives in a cluster SCP does not control, so SCP cannot stage a
+ * credential into it the way `managed-ops` does for a container SCP launched. Reconcile derives the
+ * run's bound — the SAME derivation Mode C uses — and stores it here beside the HASH of a
+ * single-use secret; the Workflow carries that secret SEALED to a key the operator registered, and
+ * the pod redeems it once, inside a short window, for a certificate over a key it generated
+ * itself. The per-run private key never exists in SCP.
+ *
+ * THE BOUND IS STORED, NOT RE-DERIVED AT REDEMPTION. The redeeming request carries only the secret
+ * and a public key, so nothing the pod or the Workflow sends can widen what it receives.
+ */
+export const opsRunRedemptions = pgTable(
+  "ops_run_redemptions",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** The change this run serves — rides in the certificate's key id, which sshd logs. */
+    changeObjectId: uuid("change_object_id").notNull(),
+    /** The wave target this redemption was minted for. One run, one row. */
+    waveTargetId: uuid("wave_target_id").notNull(),
+    domainId: uuid("domain_id").notNull().$type<TrustDomainId>(),
+    /** The CA active when the bound was derived. Redemption refuses if it is no longer active. */
+    authorityId: uuid("authority_id").notNull(),
+    role: text("role").notNull(),
+    inventory: text("inventory").notNull(),
+    egressAllowlist: text("egress_allowlist").array().notNull(),
+    principals: text("principals").array().notNull(),
+    roleArguments: jsonb("role_arguments").notNull().default({}),
+    /** Optional OpenSSH `source-address` value from the binding (the cluster's egress CIDRs). */
+    sourceAddress: text("source_address"),
+    /** sha256 of the single-use secret, hex. The secret itself is never stored. */
+    secretHash: text("secret_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
+    /** Serial of the certificate issued at redemption — the join to `ssh_certificate_issuances`. */
+    issuedSerial: text("issued_serial"),
+    /** Wrong-secret presentations against this row. At the limit the row is BURNED. */
+    failedAttempts: integer("failed_attempts").notNull().default(0),
+    burnedAt: timestamp("burned_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    index("ops_run_redemptions_org_change_idx").on(t.orgId, t.changeObjectId),
+    /** A redeemed row names exactly one serial, and a serial is issued once. */
+    uniqueIndex("ops_run_redemptions_org_serial_uq").on(t.orgId, t.issuedSerial),
+    check(
+      "ops_run_redemptions_redeemed_has_serial",
+      sql`(${t.redeemedAt} IS NULL) = (${t.issuedSerial} IS NULL)`
+    )
   ]
 );

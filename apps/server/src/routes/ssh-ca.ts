@@ -201,6 +201,7 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
           authorityName: r.authorityName,
           principals: r.principals,
           targetHosts: r.targetHosts,
+          sourceAddress: r.sourceAddress,
           issuedAt: r.issuedAt.toISOString(),
           expiresAt: r.expiresAt.toISOString()
         }));
