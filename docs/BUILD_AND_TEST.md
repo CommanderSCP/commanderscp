@@ -1927,6 +1927,21 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         its Type is refused. **Deploying this needs estate data first** — every real-executor build
         or infra target bound through an execution system whose allowlist names its repo, with a
         source mapping of its Type (see the M28.3 PR for the list).
+      - *And R1 was defeated one level up (final re-verification, 2026-09-24, probe E).* The
+        allowlist bounded WHICH repos may run with a system's credentials, but `object:write` could
+        move WHERE those credentials go. An Operator re-pointed an admin's permissive sandbox system
+        at the prod Argo, and the attacker repo was planned there with the prod plan credentials. The
+        build lane had the same hole. The fix is by property (ADR-0056 addendum 3): ANY change to an
+        execution-system's properties needs `secret:write` at the org root. That is every property,
+        not a list of keys, because the schema is open, the carried keys grow with each manifest, and
+        `webUrl` turned out to address a registry push. The rule is enforced at the repo's write
+        choke point and at hand-fill, and each door has a permanent test: generic
+        POST/PATCH/PUT, IaC apply, overlays, hand-fill, and `scp connect`. M28.4's `authoring` was
+        editable by an Operator through the same doors and is closed by the same rule. A replicated
+        system is never bindable, never resolvable and never a push destination at the receiver,
+        because its `tokenSecretKey` names the receiver's secret. Belt and braces: each allowlist row
+        is bound to the system's routing fingerprint, so any re-point voids it until someone sets it
+        again. The workspace digest is now 24 hex over org + target + environment + region.
   - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
     import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
     Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.

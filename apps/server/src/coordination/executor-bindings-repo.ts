@@ -39,9 +39,10 @@ export function executionSystemInstanceId(executionSystemId: string): string {
  *  `namespace` and interpolates it into every API path, so a config built from those two keys alone
  *  submitted to `/api/v1/workflows/undefined/submit` — silently, with no error at bind or resolve.
  *
- *  Only keys the module's manifest DECLARES are carried. An execution-system's `properties` are
- *  tenant-writable, so intersecting with the declared set is what keeps this safe: a tenant cannot
- *  introduce a config key the plugin never advertised, and server-injected keys (`statePath`,
+ *  Only keys the module's manifest DECLARES are carried. An execution-system's `properties` need
+ *  `secret:write` at the org root (ADR-0056 addendum 3), and a replicated system is refused above;
+ *  intersecting with the declared set still keeps even that writer from introducing a config key
+ *  the plugin never advertised, and server-injected keys (`statePath`,
  *  `runnerImage`, …) are absent from every `configSchema` by construction. `serverUrl` is always
  *  written from the system itself, so egress stays pinned to the system's own host.
  *

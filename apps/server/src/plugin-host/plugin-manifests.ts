@@ -123,7 +123,8 @@ export function validatePluginConfig(module: string, config: unknown): void {
 }
 
 /** Config keys a module DECLARES that only the privileged `execution-system` object may supply
- *  (M28.4 fix round, ADR-0055 D9). `authoring` is the operator's bound on what SCP may author into
+ *  (M28.4 fix round, ADR-0055 D9). Privileged because its properties need `secret:write` at the
+ *  org root — which, until ADR-0056 addendum 3, they did not: `object:write` could set them. `authoring` is the operator's bound on what SCP may author into
  *  that Argo CD — carrier, project, namespaces — so a tenant writing an INLINE binding's config must
  *  never be able to set it: that would let `object:write` choose its own bound. The same rule
  *  ADR-0003 applies to `allowInternalEgress`. */
@@ -159,8 +160,9 @@ export function withoutSystemOnlyConfig(
  *
  *  Used to carry module-specific settings from an `execution-system` object into a system-backed
  *  binding's plugin config. Intersecting with this list is what makes that safe: an
- *  execution-system's `properties` are tenant-writable, so copying them wholesale would let a
- *  tenant choose config keys the plugin never advertised. Server-injected keys (`statePath`,
+ *  execution-system's `properties` are free-form (writable with `secret:write` at the org root,
+ *  ADR-0056 addendum 3), so copying them wholesale would let their writer choose config keys the
+ *  plugin never advertised. Server-injected keys (`statePath`,
  *  `runnerImage`, …) are deliberately absent from every `configSchema`, so they can never be
  *  reached this way — the same invariant `validatePluginConfig` already rests on.
  *

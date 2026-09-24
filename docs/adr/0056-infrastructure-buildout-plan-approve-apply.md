@@ -266,3 +266,54 @@ workspace now fits a Kubernetes label (≤ 63, finding 10); separation of duties
 system-proposed plan (finding 9); the plan's record carries the execution system's identity (NIT);
 the lane's keys are registered in M28.4's reserved-key table (§6); and the build lane refuses a
 component with no source mapping of its Type (owner ruling R2, ADR-0053 addendum).
+
+## Addendum 3 (2026-09-24) — the execution system's routing is `secret:write`, at every write door
+
+**Final re-verification, probe E**, defeated R1 without touching the allowlist. An admin registers a
+sandbox execution system and allows a scratch repo on it. An Operator, holding only `object:write`,
+then re-points the system's `serverUrl` at the prod Argo, binds a target to it, re-declares the
+target's repo and proposes. The attacker repo was submitted to the prod Argo with the prod plan
+credentials, and the build lane had the same hole. The allowlist bounded *which repos* could run
+with a system's credentials, but `object:write` could move *where those credentials went*.
+
+**The property.** An `execution-system` object's `properties` decide where its triggers go and which
+credential they carry, so **any change to them needs `secret:write` at the org root**. That is the
+bar for setting the credential itself (`authz/execution-system-routing-door.ts`). The rule covers
+every property, not a named list of routing keys, because the census found three reasons a list
+would fail:
+- The type's schema is open (`{"type":"object"}`, drizzle/0019).
+- Every key a module's manifest declares is copied into that module's plugin config
+  (`executionSystemPluginConfig`), so the routing set grows with the manifests.
+- `webUrl`, which reads as a display link, addresses a registry push (`imageDestination`).
+
+The census covered: `kind`, `serverUrl`, `tokenSecretKey`, `namespace`, `allowInternalEgress`,
+M28.4's `authoring`, `webUrl`, `packageFormats`, and any future declared key. An Operator could edit
+`authoring` through the generic object PATCH/PUT and through IaC; this rule closes that hole.
+`allowInternalEgress` already had a second, operator-side layer (`SCP_INTERNAL_EGRESS_HOSTS`, ADR-0003).
+That layer offered no API door to reuse, and it did not help here because the prod Argo host is on
+the env allowlist. `name`, `labels` and containment stay at `object:write`. The M28.2 argo-ops pin
+was already a separate `secret:write` table; a re-pointed system fails its pin match.
+
+**The doors**, each with a permanent test (`execution-system-routing-door.integration.test.ts`):
+- The repo's local write choke point, `createObject`/`updateObject`. The generic object routes, the
+  upsert-by-URN (both branches), IaC apply, federation overlays and the `scp connect` flows all
+  funnel through it.
+- Federation hand-fill. It stamps `federationImport` and so bypasses the choke point, and its shadow
+  can later be adopted as locally authored with its properties unchanged.
+
+A signed federation import is the origin domain's authority, and that domain enforces the same door.
+But a replicated system's `tokenSecretKey` names a secret in the RECEIVER's store. So the receiver
+never executes a replicated system:
+- Binding to one is refused (400).
+- A binding row that already names one does not resolve.
+- A replicated registry is never a build's push destination (`build_destination_replicated_registry`).
+
+**Belt and braces.** Each source-allowlist row records a fingerprint of the system's `kind`,
+`serverUrl` (normalised), `namespace` and `tokenSecretKey` at the moment it was set. When the live
+system no longer matches, readers see NOTHING ALLOWED (`routingCurrent: false` on the GET, and the
+CLI and the UI say so). A legitimate re-point, whether by a `secret:write` holder or by a replicated
+revision, therefore voids the list until someone sets it again for the new endpoint.
+
+**Also.** The state workspace digest is now 24 hex characters (96 bits) over org + target +
+environment + region. Two environments whose slugs truncate to the same prefix no longer rely on the
+target id alone to be told apart.
