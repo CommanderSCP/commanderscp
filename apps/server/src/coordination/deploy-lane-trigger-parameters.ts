@@ -43,6 +43,10 @@ import { parseTopologyWaves } from "./topology-waves.js";
 
 export class DeploymentAuthoringRefused extends Error {}
 
+/** The trigger parameter the argocd plugin reads the authored Application from — the plugin's
+ *  `AUTHORED_APPLICATION_PARAMETER`, pinned equal by `deploy-lane-trigger-parameters.test.ts`. */
+export const AUTHORED_APPLICATION_PARAMETER = "scpAuthoredApplication";
+
 export const WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION =
   "change.wave_target.deployment_authoring_refused";
 
@@ -73,7 +77,7 @@ export interface DeployLaneTriggerParameterInput {
 export interface AuthoredDeploymentTrigger {
   /** The Application name — sent as `trigger().targetRef`, so status/abort address what was made. */
   targetRef: string;
-  parameters: { scpAuthoredApplication: Record<string, unknown> };
+  parameters: Record<typeof AUTHORED_APPLICATION_PARAMETER, Record<string, unknown>>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -388,6 +392,6 @@ export async function deployLaneTriggerParameters(
   });
   return {
     targetRef: applicationName,
-    parameters: { scpAuthoredApplication: rendered.application }
+    parameters: { [AUTHORED_APPLICATION_PARAMETER]: rendered.application }
   };
 }
