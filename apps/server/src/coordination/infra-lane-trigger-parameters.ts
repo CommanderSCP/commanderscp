@@ -643,7 +643,13 @@ export async function infraLaneTriggerParameters(
     }),
     // The repo must STILL be allowed: an allowlist narrowed since the plan withdraws the permission.
     recheck: (record) =>
-      assertRepoAllowed(tx, input, system, record.parameters["sourceRepo"] ?? "", InfraApplyRefused),
+      assertRepoAllowed(
+        tx,
+        input,
+        system,
+        record.parameters["sourceRepo"] ?? "",
+        InfraApplyRefused
+      ),
     // THE PLAN'S OWN SUBMISSION, REUSED: the same workspace, directory, repo, commit — and the plan
     // template's recorded sibling, never whatever the binding names today.
     build: (record, planDigest) => {
@@ -1091,7 +1097,11 @@ async function latestPlanTriggerRecord(
     executionSystem:
       sys === null
         ? null
-        : { id: sys.id as string, serverUrl: sys.serverUrl as string, namespace: sys.namespace as string },
+        : {
+            id: sys.id as string,
+            serverUrl: sys.serverUrl as string,
+            namespace: sys.namespace as string
+          },
     parameters: Object.fromEntries(
       Object.entries(params as Record<string, unknown>).map(([k, v]) => [k, String(v)])
     )

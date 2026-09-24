@@ -98,7 +98,11 @@ describe("M28.3b: managed-iac (Mode C) apply of an accepted plan", { timeout: 30
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 120_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 120_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
     org = await createTestOrg(server, "m28-3b-managed-iac");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -123,7 +127,9 @@ describe("M28.3b: managed-iac (Mode C) apply of an accepted plan", { timeout: 30
   };
 
   async function managedIacTarget(content: string) {
-    const target = await admin.deploymentTargets.create({ name: `miac-${randomUUID().slice(0, 6)}` });
+    const target = await admin.deploymentTargets.create({
+      name: `miac-${randomUUID().slice(0, 6)}`
+    });
     await admin.executors.putBinding(target.id, {
       pluginModule: "managed-iac",
       pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,

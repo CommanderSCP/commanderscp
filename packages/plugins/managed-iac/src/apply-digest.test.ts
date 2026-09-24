@@ -63,7 +63,12 @@ function ctx(): PluginContext {
 async function run(parameters: Record<string, unknown>, key: string) {
   const plugin = createManagedIacExecutorPlugin(() => launcher());
   const c = ctx();
-  const ref = await plugin.trigger(c, { kind: "sync", targetRef: "t1", parameters, idempotencyKey: key });
+  const ref = await plugin.trigger(c, {
+    kind: "sync",
+    targetRef: "t1",
+    parameters,
+    idempotencyKey: key
+  });
   return plugin.status(c, ref);
 }
 
@@ -78,7 +83,9 @@ describe("managed-iac apply is bound to the approved plan's digest", () => {
   it("a DIFFERENT digest (a newer plan in the workspace) is refused, and nothing launches", async () => {
     const status = await run({ iacAction: "apply", planDigest: "f".repeat(64) }, "other");
     expect(status.phase).toBe("failed");
-    expect(status.detail).toMatch(/FAILED CLOSED — the workspace's plan is .* and the approved plan is ffffffffffff/);
+    expect(status.detail).toMatch(
+      /FAILED CLOSED — the workspace's plan is .* and the approved plan is ffffffffffff/
+    );
     expect(seen).toEqual([]);
   });
 
@@ -110,13 +117,19 @@ describe("managed-iac apply is bound to the approved plan's digest", () => {
     expect(seen).toEqual([]);
   });
 
-  it.each([".tfplan", "plan.json", "terraform.tfstate", "terraform.tfstate.backup", ".terraform.lock.hcl"])(
-    "a plan may not overwrite the workspace-owned '%s'",
-    async (name) => {
-      const status = await run({ iacAction: "plan", sourceFiles: { [name]: "forged" } }, `own-${name}`);
-      expect(status.phase).toBe("failed");
-      expect(status.detail).toMatch(/names a file the workspace owns/);
-      expect(seen).toEqual([]);
-    }
-  );
+  it.each([
+    ".tfplan",
+    "plan.json",
+    "terraform.tfstate",
+    "terraform.tfstate.backup",
+    ".terraform.lock.hcl"
+  ])("a plan may not overwrite the workspace-owned '%s'", async (name) => {
+    const status = await run(
+      { iacAction: "plan", sourceFiles: { [name]: "forged" } },
+      `own-${name}`
+    );
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/names a file the workspace owns/);
+    expect(seen).toEqual([]);
+  });
 });

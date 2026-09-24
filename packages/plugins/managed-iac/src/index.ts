@@ -69,7 +69,8 @@ const SAFE_FILENAME = /^[A-Za-z0-9._-]+$/;
 /** Names the WORKSPACE owns, never a tenant's source: the saved plan an apply applies, its evidence
  *  (whose digest the apply gate approved), the state and its history, OpenTofu's own directory. A
  *  source file with one of these names would replace what the approval was about. */
-const WORKSPACE_OWNED = /^(\.tfplan|plan\.json|terraform\.tfstate(\.backup)?|state-history|\.terraform.*)$/;
+const WORKSPACE_OWNED =
+  /^(\.tfplan|plan\.json|terraform\.tfstate(\.backup)?|state-history|\.terraform.*)$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 function asConfig(config: unknown): ManagedIacConfig {
