@@ -73,6 +73,10 @@ export function executionSystemPluginConfig(
   };
 }
 
+/** managed-iac's one Type (ADR-0056 addendum 4) and the index that makes its workspace one binding's. */
+export const MANAGED_IAC_BINDING_TYPE: BindingType = "infrastructure";
+const MANAGED_IAC_WORKSPACE_INDEX = "executor_bindings_managed_iac_workspace_uq";
+
 /** RESERVED plugin-instance-id namespace: only `executionSystemInstanceId()` may mint ids under it. */
 export const EXECUTION_SYSTEM_INSTANCE_PREFIX = "execution-system:";
 
@@ -334,6 +338,18 @@ export async function upsertExecutorBinding(
       throw err;
     }
   }
+  // …and managed-iac serves ONE pipeline: `infrastructure`, where the apply gate is. Bound as any
+  // other Type its trigger bypasses the lane — and the workspace collision check with it (probe I).
+  if (
+    input.pluginModule === "managed-iac" &&
+    (input.type ?? DEFAULT_BINDING_TYPE) !== MANAGED_IAC_BINDING_TYPE
+  ) {
+    throw badRequest(
+      `a managed-iac binding drives the '${MANAGED_IAC_BINDING_TYPE}' pipeline only — its plans and ` +
+        `applies go through the infrastructure lane's gate (ADR-0056 addendum 4); bind it with type ` +
+        `'${MANAGED_IAC_BINDING_TYPE}'`
+    );
+  }
   // Key the "is this an update or an insert" lookup on (target, TYPE). Without the Type the lookup
   // found "the" binding and UPDATED it — which is exactly how binding a component's second pipeline
   // silently destroyed the first one before P3.
@@ -344,43 +360,54 @@ export async function upsertExecutorBinding(
   const lane = input.lane ?? "build";
   const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId, type, lane);
   let row: ExecutorBindingRow;
-  if (existing) {
-    const [updated] = await tx
-      .update(executorBindings)
-      .set({
-        pluginModule: input.pluginModule,
-        pluginInstanceId: input.pluginInstanceId,
-        config: input.config ?? {},
-        secretRefs: input.secretRefs ?? {},
-        allowedHosts: input.allowedHosts ?? [],
-        externalRef: input.externalRef ?? null,
-        executionSystemId: input.executionSystemId ?? null,
-        managedByPolicyId: input.managedByPolicyId ?? null,
-        updatedAt: new Date()
-      })
-      .where(eq(executorBindings.id, existing.id))
-      .returning();
-    row = toRow(updated!);
-  } else {
-    const [inserted] = await tx
-      .insert(executorBindings)
-      .values({
-        id: uuidv7(),
-        orgId: input.orgId,
-        targetObjectId: input.targetObjectId,
-        type,
-        pluginModule: input.pluginModule,
-        pluginInstanceId: input.pluginInstanceId,
-        config: input.config ?? {},
-        secretRefs: input.secretRefs ?? {},
-        allowedHosts: input.allowedHosts ?? [],
-        externalRef: input.externalRef ?? null,
-        executionSystemId: input.executionSystemId ?? null,
-        lane,
-        managedByPolicyId: input.managedByPolicyId ?? null
-      })
-      .returning();
-    row = toRow(inserted!);
+  try {
+    if (existing) {
+      const [updated] = await tx
+        .update(executorBindings)
+        .set({
+          pluginModule: input.pluginModule,
+          pluginInstanceId: input.pluginInstanceId,
+          config: input.config ?? {},
+          secretRefs: input.secretRefs ?? {},
+          allowedHosts: input.allowedHosts ?? [],
+          externalRef: input.externalRef ?? null,
+          executionSystemId: input.executionSystemId ?? null,
+          managedByPolicyId: input.managedByPolicyId ?? null,
+          updatedAt: new Date()
+        })
+        .where(eq(executorBindings.id, existing.id))
+        .returning();
+      row = toRow(updated!);
+    } else {
+      const [inserted] = await tx
+        .insert(executorBindings)
+        .values({
+          id: uuidv7(),
+          orgId: input.orgId,
+          targetObjectId: input.targetObjectId,
+          type,
+          pluginModule: input.pluginModule,
+          pluginInstanceId: input.pluginInstanceId,
+          config: input.config ?? {},
+          secretRefs: input.secretRefs ?? {},
+          allowedHosts: input.allowedHosts ?? [],
+          externalRef: input.externalRef ?? null,
+          executionSystemId: input.executionSystemId ?? null,
+          lane,
+          managedByPolicyId: input.managedByPolicyId ?? null
+        })
+        .returning();
+      row = toRow(inserted!);
+    }
+  } catch (err) {
+    if (isUniqueViolation(err, MANAGED_IAC_WORKSPACE_INDEX)) {
+      throw conflict(
+        `another managed-iac binding in this organization already uses the workspace ` +
+          `'${input.externalRef ?? input.targetObjectId}' (case-insensitively) — one workspace belongs ` +
+          `to one binding, or one target's plan would overwrite another's (ADR-0056 addendum 4)`
+      );
+    }
+    throw err;
   }
   // NEVER config/secrets — `reason` carries only the identity a binding is keyed on (target, Type,
   // which plugin), the same restraint `beforeHash`/`afterHash` observe for object mutations (those
@@ -468,6 +495,13 @@ export async function setExecutorBindingType(
   const existing = await getExecutorBinding(tx, orgId, targetObjectId, fromType);
   if (!existing) return undefined;
   if (fromType === toType) return existing; // idempotent no-op relabel
+  // The relabel door is a binding write too: managed-iac drives `infrastructure` only (probe I).
+  if (existing.pluginModule === "managed-iac" && toType !== MANAGED_IAC_BINDING_TYPE) {
+    throw conflict(
+      `a managed-iac binding drives the '${MANAGED_IAC_BINDING_TYPE}' pipeline only — it cannot be ` +
+        `relabelled '${toType}'`
+    );
+  }
 
   const clash = await getExecutorBinding(tx, orgId, targetObjectId, toType);
   if (clash) {

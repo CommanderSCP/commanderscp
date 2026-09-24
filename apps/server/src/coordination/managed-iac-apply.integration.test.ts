@@ -267,23 +267,28 @@ describe("M28.3b: managed-iac (Mode C) apply of an accepted plan", { timeout: 30
     expect(await stateOf(target.id)).toBeUndefined();
   });
 
-  it("two targets resolving to ONE workspace: the second target's plan is refused (they would apply each other's)", async () => {
+  /** Binds (or RE-binds) a target's managed-iac pipeline to a workspace ref. */
+  const bindRef = async (targetId: string, externalRef: string) =>
+    admin.executors.putBinding(targetId, {
+      pluginModule: "managed-iac",
+      pluginInstanceId: `miac-${targetId.slice(0, 8)}`,
+      config: {},
+      type: "infrastructure",
+      externalRef
+    });
+
+  it("two targets over TIME in ONE workspace: the second target's plan is refused (they would apply each other's)", async () => {
+    // Two LIVE bindings cannot share a workspace (probe I, the unique index). Across time they can:
+    // the first target planned there, then moved away, and the workspace still holds its plan and
+    // state. The lane's collision check reads the recorded plans, and is what refuses this.
     const shared = `shared-${randomUUID().slice(0, 6)}`;
-    const bind = async () => {
-      const t = await admin.deploymentTargets.create({ name: `ws-${randomUUID().slice(0, 6)}` });
-      await admin.executors.putBinding(t.id, {
-        pluginModule: "managed-iac",
-        pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,
-        config: {},
-        type: "infrastructure",
-        externalRef: shared
-      });
-      return t;
-    };
-    const first = await bind();
-    const second = await bind();
+    const first = await admin.deploymentTargets.create({ name: `ws-${randomUUID().slice(0, 6)}` });
+    const second = await admin.deploymentTargets.create({ name: `ws-${randomUUID().slice(0, 6)}` });
+    await bindRef(first.id, shared);
     const p1 = await proposePlan(first.id);
     await settled(p1.id);
+    await bindRef(first.id, `moved-${randomUUID().slice(0, 6)}`);
+    await bindRef(second.id, shared);
     const p2 = await proposePlan(second.id);
     expect((await settled(p2.id)).status).toBe("infra_declaration_refused");
     expect(await gatesOf(p2.id)).toContain("infra_workspace_collision");
@@ -312,11 +317,15 @@ describe("M28.3b: managed-iac (Mode C) apply of an accepted plan", { timeout: 30
     const err = await refusalOf(bindTo(`alias/${id}`));
     expect(err?.status, "a managed-iac binding named a non-plain workspace").toBe(400);
     expect(err?.problem?.detail).toMatch(/not a plain workspace name/);
-    // A case-insensitive filesystem would make these one directory — so the lane treats them as one.
+    // A case-insensitive filesystem would make these one directory — so the door (live bindings)…
     const first = await bindTo(`alias_${id}`);
-    const second = await bindTo(`ALIAS_${id}`);
+    const live = await refusalOf(bindTo(`ALIAS_${id}`));
+    expect(live?.status, "a case-alias of a live binding's workspace was accepted").toBe(409);
+    // …and the lane (a workspace a moved-away target planned in) both treat them as one.
     const p1 = await proposePlan(first.id);
     await settled(p1.id);
+    await bindRef(first.id, `moved-${id}`);
+    const second = await bindTo(`ALIAS_${id}`);
     const p2 = await proposePlan(second.id);
     expect((await settled(p2.id)).status).toBe("infra_declaration_refused");
     expect(await gatesOf(p2.id)).toContain("infra_workspace_collision");
@@ -343,6 +352,69 @@ describe("M28.3b: managed-iac (Mode C) apply of an accepted plan", { timeout: 30
       [".tfplan", "plan.json", "state-history", "terraform.tfstate"].includes(f)
     );
     expect(atRoot, "a run wrote into the workspace ROOT").toEqual([]);
+  });
+
+  it("PROBE I — no OTHER binding can reach a target's workspace: another Type, another target's ref, a hook lane, a relabel", async () => {
+    const victim = await managedIacTarget("victim-v1");
+    const attacker = await admin.deploymentTargets.create({
+      name: `atk-${randomUUID().slice(0, 6)}`
+    });
+    const put = (targetId: string, body: Record<string, unknown>) =>
+      refusalOf(
+        admin.executors.putBinding(targetId, {
+          pluginModule: "managed-iac",
+          pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,
+          config: {},
+          ...body
+        } as Parameters<typeof admin.executors.putBinding>[1])
+      );
+    // (a) managed-iac drives `infrastructure` only — a `configuration` binding bypassed the lane.
+    const typed = await put(attacker.id, {
+      type: "configuration",
+      externalRef: `own-${randomUUID().slice(0, 6)}`
+    });
+    expect(typed?.status, "a non-infrastructure managed-iac binding was accepted").toBe(400);
+    // (b) one workspace, one binding: another target naming the victim's workspace key, in any case…
+    for (const ref of [victim.id, victim.id.toUpperCase()]) {
+      const taken = await put(attacker.id, { type: "infrastructure", externalRef: ref });
+      expect(taken?.status, `another target bound to the victim's workspace '${ref}'`).toBe(409);
+    }
+    // …and a second LANE of the victim itself (a hook lane never goes through the infra lane).
+    const hook = await put(victim.id, { type: "infrastructure", lane: "test" });
+    expect(hook?.status, "a hook-lane managed-iac binding shared the workspace").toBe(409);
+    // A relabel is a binding write too.
+    const relabel = await server.app.inject({
+      method: "PATCH",
+      url: `/api/v1/executors/${victim.id}/binding?type=infrastructure`,
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { type: "configuration" }
+    });
+    expect(relabel.statusCode, relabel.body).toBe(409);
+
+    // A row that predates the door (written straight to the table) is refused by the lane at trigger.
+    const legacy = await admin.deploymentTargets.create({
+      name: `legacy-${randomUUID().slice(0, 6)}`
+    });
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.insert(executorBindings).values({
+        id: randomUUID(),
+        orgId: org.orgId,
+        targetObjectId: legacy.id,
+        type: "configuration",
+        pluginModule: "managed-iac",
+        pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,
+        config: {},
+        secretRefs: {},
+        allowedHosts: []
+      })
+    );
+    const c = await admin.changes.propose({
+      name: `cfg ${randomUUID().slice(0, 6)}`,
+      targets: [legacy.id],
+      type: "configuration"
+    });
+    expect((await settled(c.id)).status).toBe("infra_declaration_refused");
+    expect(await gatesOf(c.id)).toContain("managed_iac_not_infrastructure");
   });
 
   it("the runner applies ONLY the approved `.tfplan`: a saved plan swapped under an unchanged plan.json is refused", async (ctx) => {

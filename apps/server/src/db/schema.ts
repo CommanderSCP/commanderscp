@@ -1418,6 +1418,14 @@ export const executorBindings = pgTable(
       table.type,
       table.lane
     ),
+    /** ONE managed-iac binding per WORKSPACE (#417 re-verify, probe I). managed-iac's workspace is
+     *  its externalRef, else the target id (`managedIacWorkspaceKey`), and a second binding naming the
+     *  same one — another target's, another Type, a hook lane — would plan into it, rewriting the plan
+     *  an approver accepted there. Lowercased, as the lane's collision check is. Partial on the module;
+     *  bindings are hard-deleted, so there is no tombstoned row for it to keep claiming the key. */
+    uniqueIndex("executor_bindings_managed_iac_workspace_uq")
+      .on(table.orgId, sql`lower(coalesce(${table.externalRef}, ${table.targetObjectId}::text))`)
+      .where(sql`${table.pluginModule} = 'managed-iac'`),
     index("executor_bindings_org").on(table.orgId),
     /** drizzle/0105 — the reconciler's own sweep: every row it manages, for one policy or across
      *  the domain. Partial, because a hand-bound row is never a candidate for it. */

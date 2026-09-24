@@ -490,8 +490,24 @@ export async function infraLaneTriggerParameters(
   const engaged =
     categoryOfType(input.type) === "infrastructure" && isInfraApplyGateModule(input.pluginModule);
 
+  // A managed-iac binding of any other Type (a row written before the binding door refused it) would
+  // run past this lane — and its workspace collision check — into a workspace (probe I). Refused.
+  if (
+    input.pluginModule === MANAGED_IAC_LANE_MODULE &&
+    categoryOfType(input.type) !== "infrastructure"
+  ) {
+    throw new InfraDeclarationRefused(
+      `this target's '${input.type}' pipeline is bound to managed-iac, which drives the ` +
+        `'infrastructure' pipeline only — its plans and applies go through this lane's gate.`,
+      {
+        remediation: "re-bind managed-iac with type 'infrastructure'",
+        inputContext: { gate: "managed_iac_not_infrastructure", requestedType: input.type }
+      }
+    );
+  }
+
   // A DECLARED APPLY THE LANE WILL NOT SERVE IS REFUSED, never silently run as whatever the bound
-  // executor does by default (for managed-iac today: a PLAN, reported as success).
+  // executor does by default.
   if (!engaged) {
     if (declaration.phase === "apply") {
       throw new InfraApplyRefused(

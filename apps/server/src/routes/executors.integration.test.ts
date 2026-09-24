@@ -542,6 +542,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
         admin.executors.putBinding(component.id, {
           pluginModule: "managed-iac",
           pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+          // managed-iac drives `infrastructure` only — set it, so the refusal is about the CONFIG.
+          type: "infrastructure",
           config: evilConfig
         }),
         `expected config ${JSON.stringify(evilConfig)} to be rejected`
@@ -552,10 +554,15 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     const ok = await admin.executors.putBinding(component.id, {
       pluginModule: "managed-iac",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+      type: "infrastructure",
       config: { infraCredsSecretKeys: { AWS_ACCESS_KEY_ID: "aws-key-secret" }, timeoutMs: 60000 }
     });
     expect(ok.pluginModule).toBe("managed-iac");
   });
+
+  /** managed-iac drives the `infrastructure` pipeline only (ADR-0056 addendum 4, #417 probe I). */
+  const typeFor = (module: string): { type?: "infrastructure" } =>
+    module === "managed-iac" ? { type: "infrastructure" } : {};
 
   /** Restore an env var to its prior state. `process.env.X = undefined` stores the STRING
    *  `"undefined"`, which would leak a bogus runtime path into every later test in this file, so an
@@ -599,6 +606,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
           targetObjectId: component.id,
           pluginModule: "managed-iac",
           pluginInstanceId: "inst-inject",
+          type: "infrastructure",
           config: { runnerImage: "attacker/evil", networkMode: "host", workspaceRoot: "/" },
           actorObjectId: org.orgId,
           requestId: "test-setup"
@@ -606,7 +614,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
         return resolveExecutorPluginInstance(tx, {
           orgId: org.orgId,
           targetObjectId: component.id,
-          masterKey: server.deps.config.secretsMasterKey
+          masterKey: server.deps.config.secretsMasterKey,
+          type: "infrastructure"
         });
       });
 
@@ -668,6 +677,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
             targetObjectId: component.id,
             pluginModule: module,
             pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+            // managed-iac drives `infrastructure` only (ADR-0056 addendum 4).
+            ...typeFor(module),
             // The tenant's own attempt at choosing the executable, to prove the server value WINS
             // rather than merely filling a gap.
             config: { dockerBinary: "/tmp/tenant-chosen-binary" },
@@ -677,7 +688,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
           return resolveExecutorPluginInstance(tx, {
             orgId: org.orgId,
             targetObjectId: component.id,
-            masterKey: server.deps.config.secretsMasterKey
+            masterKey: server.deps.config.secretsMasterKey,
+            ...typeFor(module)
           });
         });
 
@@ -789,6 +801,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
           admin.executors.putBinding(component.id, {
             pluginModule: module,
             pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+            ...typeFor(module),
             config: { timeoutMs }
           }),
           `expected ${module} timeoutMs=${timeoutMs} to be rejected by PUT binding`
@@ -802,6 +815,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
         const ok = await admin.executors.putBinding(component.id, {
           pluginModule: module,
           pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+          ...typeFor(module),
           config: { timeoutMs }
         });
         expect(ok.pluginModule, `${module} timeoutMs=${timeoutMs}`).toBe(module);

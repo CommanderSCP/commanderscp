@@ -876,6 +876,13 @@
       "when": 1790273765307,
       "tag": "0124_allowlist_fingerprint_version",
       "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "7",
+      "when": 1790276122583,
+      "tag": "0125_managed_iac_workspace_unique",
+      "breakpoints": true
     }
   ]
 }
