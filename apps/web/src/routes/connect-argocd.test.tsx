@@ -281,3 +281,50 @@ describe("the review screen counts the proposal it was given", () => {
     ]);
   });
 });
+
+describe("M28.4 (ADR-0055): the optional authoring carrier", () => {
+  const base = {
+    name: "prod",
+    serverUrl: "https://argocd.example.com",
+    token: SENTINEL,
+    tokenKey: "",
+    allowInternalEgress: false
+  };
+
+  it("records the carrier as properties.authoring, the same document `--authoring-*` writes", async () => {
+    const doors = doorsDouble();
+    await registerExecutionSystem(doors, {
+      ...base,
+      authoringRepo: " https://gitea.example/platform/gitops.git ",
+      authoringPath: "charts/scp-authored-manifests",
+      authoringRevision: "carrier-v1"
+    });
+    const props = doors.createExecutionSystem.mock.calls[0]![0].properties as Record<
+      string,
+      unknown
+    >;
+    expect(props.authoring).toEqual({
+      repoURL: "https://gitea.example/platform/gitops.git",
+      path: "charts/scp-authored-manifests",
+      targetRevision: "carrier-v1"
+    });
+  });
+
+  it("left empty, declares no authoring — import-and-coordinate only", async () => {
+    const doors = doorsDouble();
+    await registerExecutionSystem(doors, base);
+    const props = doors.createExecutionSystem.mock.calls[0]![0].properties as Record<
+      string,
+      unknown
+    >;
+    expect(props).not.toHaveProperty("authoring");
+  });
+
+  it("a half-declared carrier is refused BEFORE the token is stored or the system created", async () => {
+    const doors = doorsDouble();
+    await expect(
+      registerExecutionSystem(doors, { ...base, authoringRepo: "https://gitea.example/x.git" })
+    ).rejects.toThrow(/needs all three/);
+    expect(doors.calls).toEqual([]);
+  });
+});
