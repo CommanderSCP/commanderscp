@@ -10,7 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
+import { BuildDestinationRefused, buildLaneTriggerParameters } from "./build-trigger-parameters.js";
 
 /** WHAT A BUILD-LANE TRIGGER TELLS ITS EXECUTOR.
  *
@@ -54,14 +54,20 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
 
   async function componentPublishingTo(
     repository: string | null,
-    serverUrl = "https://ghcr.io"
+    serverUrl = "https://ghcr.io",
+    /** Extra registry properties — `kind` and `packageFormats` are what M28.1 routes on. */
+    registryProperties: Record<string, unknown> = {},
+    componentProperties?: Record<string, unknown>
   ): Promise<string> {
     const component = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
+    if (componentProperties) {
+      await admin.components.update(component.id, { properties: componentProperties });
+    }
     if (repository === null) return component.id;
     const registry = await admin.object("execution-system").create({
-      name: `ghcr-${randomUUID().slice(0, 8)}`,
+      name: `reg-${randomUUID().slice(0, 8)}`,
       domainLocal: true,
-      properties: { kind: "ghcr", serverUrl }
+      properties: { kind: "ghcr", serverUrl, ...registryProperties }
     });
     await admin.relationships.create({
       typeId: "publishes_to",
@@ -149,6 +155,128 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
     expect(params).not.toHaveProperty("imageRepository");
     expect(params).not.toHaveProperty("imageDestination");
   });
+
+  it("M28.1 — an `rpm` component whose registry is a CONTAINER registry is REFUSED, not handed an image destination", async () => {
+    // The defect M28.1 exists to correct: the destination was derived for the whole `build`
+    // Category, so an RPM build was told to push to a container registry. Written before the fix
+    // and observed red against it: `expected { handed: { …(8) } } to not have property
+    // "handed.imageDestination"`, received `"ghcr.io/acme/widget"`.
+    const id = await componentPublishingTo("acme/widget");
+    const outcome = await resolve(id, SOURCE_REF, "rpm").then(
+      (handed) => ({ handed }),
+      (refused: unknown) => ({ refused })
+    );
+    expect(outcome).not.toHaveProperty("handed.imageDestination");
+    expect(outcome).not.toHaveProperty("handed.imageRepository");
+    // The REFUSAL, by class and by its sentence — not any throw. A TypeError from a wrong call
+    // shape would satisfy `toHaveProperty("refused")`, which is why the class is asserted.
+    const refused = (outcome as { refused?: unknown }).refused;
+    expect(refused).toBeInstanceOf(BuildDestinationRefused);
+    expect((refused as Error).message).toContain("publishes 'rpm' packages");
+    expect((refused as Error).message).toContain("a container registry");
+    expect((refused as BuildDestinationRefused).inputContext).toMatchObject({
+      type: "rpm",
+      requiredFormat: "rpm",
+      declaredPackageFormats: null,
+      effectivePackageFormats: ["oci"]
+    });
+  });
+
+  it("M28.1 — an `rpm` component publishing to a gitea that serves rpm gets the PACKAGE-REPO destination", async () => {
+    const id = await componentPublishingTo(
+      "acme/el9",
+      "https://gitea.example.test",
+      { kind: "gitea", packageFormats: ["oci", "rpm"] },
+      { rpmSpec: "packaging/widget.spec", dockerfile: "Dockerfile" }
+    );
+    const params = await resolve(id, SOURCE_REF, "rpm");
+    expect(params).toMatchObject({
+      sourceRepo: "AgentKitProject/agentkit",
+      sourceCommit: "a".repeat(40),
+      packageRepository: "acme/el9",
+      // Gitea's RPM registry is per OWNER with an optional GROUP: `acme/el9` is owner acme, group el9.
+      rpmUploadUrl: "https://gitea.example.test/api/packages/acme/rpm/el9/upload",
+      rpmRepositoryUrl: "https://gitea.example.test/api/packages/acme/rpm/el9",
+      rpmSpec: "packaging/widget.spec"
+    });
+    // None of the container shape, and not the image Type's build definition either.
+    for (const key of ["imageDestination", "imageRepository", "dockerfile"]) {
+      expect(params).not.toHaveProperty(key);
+    }
+  });
+
+  it("M28.1 — an owner-only repository addresses the owner's ungrouped RPM registry", async () => {
+    const id = await componentPublishingTo("acme", "https://gitea.example.test/", {
+      kind: "gitea",
+      packageFormats: ["rpm"]
+    });
+    expect(await resolve(id, SOURCE_REF, "rpm")).toMatchObject({
+      rpmUploadUrl: "https://gitea.example.test/api/packages/acme/rpm/upload"
+    });
+  });
+
+  it("M28.1 — an `rpm` registry of a kind SCP cannot address is refused rather than guessed", async () => {
+    const id = await componentPublishingTo("acme/el9", "https://nexus.example.test", {
+      kind: "nexus",
+      packageFormats: ["rpm"]
+    });
+    const err = await resolve(id, SOURCE_REF, "rpm").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BuildDestinationRefused);
+    expect((err as Error).message).toContain("SCP derives an RPM upload address only for 'gitea'");
+  });
+
+  it("M28.1 — an `image` component publishing to an rpm-only registry is refused the other way round", async () => {
+    const id = await componentPublishingTo("acme/widget", "https://gitea.example.test", {
+      kind: "gitea",
+      packageFormats: ["rpm"]
+    });
+    const err = await resolve(id, SOURCE_REF, "image").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BuildDestinationRefused);
+    expect((err as Error).message).toContain("declares packageFormats [rpm]");
+  });
+
+  it("M28.1 — a malformed packageFormats serves nothing (a bare string is not repaired into a list)", async () => {
+    const id = await componentPublishingTo("acme/widget", "https://ghcr.io", {
+      packageFormats: "oci"
+    });
+    const err = await resolve(id, SOURCE_REF, "image").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BuildDestinationRefused);
+    expect((err as Error).message).toContain("not a list of strings");
+  });
+
+  it("M28.1 — a registry that declares nothing is still a container registry, so `image` is unchanged", async () => {
+    // The no-operator-action guarantee: every registry that existed before M28.1 has no
+    // packageFormats, and an image build against it gets exactly what it got before.
+    const id = await componentPublishingTo("acme/widget");
+    expect(await resolve(id, SOURCE_REF, "image")).toMatchObject({
+      imageDestination: "ghcr.io/acme/widget",
+      imageRepository: "acme/widget",
+      registryUrl: "https://ghcr.io"
+    });
+  });
+
+  it.each(["npm", "deb", "maven", "python", "go", "chart", "vm-image"] as const)(
+    "M28.1 — `%s` has no destination class: no destination parameters, and the registry is not consulted",
+    async (type) => {
+      // Neither handed a container registry (the defect) nor refused over one (a guess the other
+      // way): SCP models no destination for this Type, so it derives none. Source identity only.
+      const id = await componentPublishingTo("acme/widget", "https://ghcr.io", {}, {
+        dockerfile: "Dockerfile"
+      });
+      const params = await resolve(id, SOURCE_REF, type);
+      expect(params).toMatchObject({ sourceCommit: "a".repeat(40) });
+      for (const key of [
+        "imageDestination",
+        "imageRepository",
+        "registryUrl",
+        "registryName",
+        "rpmUploadUrl",
+        "dockerfile"
+      ]) {
+        expect(params).not.toHaveProperty(key);
+      }
+    }
+  );
 
   it("tolerates a sourceRef that is not an object at all", async () => {
     // Replicated rows from an older peer, and changes proposed with a hand-supplied `sourceRef`,

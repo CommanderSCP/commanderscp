@@ -1062,6 +1062,17 @@ async function correlatedInfraForComponent(
   return { changes: changesOut };
 }
 
+/** `properties.packageFormats`, READ verbatim (M28.1, ADR-0053). Absent ⇒ `null` — the caller
+ *  applies the documented default, so the view can still say the registry declared nothing. Present
+ *  but not a list of strings ⇒ `[]`: a malformed declaration serves NOTHING rather than being
+ *  repaired into a guess (a bare `"rpm"` string is not silently promoted to `["rpm"]`). */
+function readPackageFormats(props: Record<string, unknown> | null): string[] | null {
+  const raw = props?.["packageFormats"];
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw) || !raw.every((f): f is string => typeof f === "string")) return [];
+  return raw;
+}
+
 /** THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE. See docs/coordination.md §320.
  *  Exported because the build-lane trigger needs the SAME answer the pipeline view renders — a
  *  second resolution would be a second definition of "where does this component publish", and the
@@ -1102,7 +1113,8 @@ export async function registryForComponent(
     name: null,
     kind: null,
     url: null,
-    repository: null
+    repository: null,
+    packageFormats: null
   };
   if (rows.length === 0) return { state: "none", ...none, edgeCount: 0 };
   if (rows.length > 1) return { state: "ambiguous", ...none, edgeCount: rows.length };
@@ -1119,6 +1131,7 @@ export async function registryForComponent(
     url: executionSystemConsoleBase(sysProps),
     repository:
       typeof edgeProps?.["repository"] === "string" ? (edgeProps["repository"] as string) : null,
-    edgeCount: 1
+    edgeCount: 1,
+    packageFormats: readPackageFormats(sysProps)
   };
 }

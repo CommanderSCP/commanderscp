@@ -1,8 +1,21 @@
-import { categoryOfType, type ExecutorType } from "@scp/schemas";
+import {
+  categoryOfType,
+  DEFAULT_REGISTRY_PACKAGE_FORMATS,
+  DESTINATION_FORMAT_OF_TYPE,
+  type ArtifactClass,
+  type ComponentPipelineRegistry,
+  type ExecutorType,
+  type PackageFormat
+} from "@scp/schemas";
 import { and, eq } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
 import { registryForComponent } from "./component-pipeline.js";
+import {
+  TriggerParameterRefusal,
+  WAVE_TARGET_DESTINATION_REFUSED_AUDIT_ACTION,
+  WAVE_TARGET_DESTINATION_REFUSED_STATUS
+} from "./trigger-parameter-refusal.js";
 
 /** WHAT A BUILD-LANE TRIGGER TELLS ITS EXECUTOR.
  *
@@ -20,7 +33,14 @@ import { registryForComponent } from "./component-pipeline.js";
  *
  *  ABSENT KEYS ARE OMITTED, never sent empty. A template that needs `sourceCommit` should fail
  *  because the parameter is missing, loudly, rather than receive "" and build whatever HEAD happens
- *  to be — which is the difference between a refused run and a wrong artifact. */
+ *  to be — which is the difference between a refused run and a wrong artifact.
+ *
+ *  THE DESTINATION IS DERIVED FROM THE TYPE'S CLASS, NOT FROM THE CATEGORY (M28.1, ADR-0053). It used
+ *  to be derived for the whole `build` Category, so an `rpm` build was handed `imageDestination` — a
+ *  container registry, which is a wrong answer rather than a missing one. Now the Type selects a
+ *  destination format (`DESTINATION_FORMAT_OF_TYPE`), the registry declares the formats it serves,
+ *  and a registry that cannot hold what this Type builds is REFUSED here, with a sentence, rather
+ *  than handed over for a template to push into. */
 export interface BuildTriggerParameterInput {
   orgId: string;
   /** The component being built. */
@@ -33,6 +53,20 @@ export interface BuildTriggerParameterInput {
   sourceRef: unknown;
   changeObjectId: string;
 }
+
+/** The build lane's refusal: the declared destination cannot hold what this Type builds. */
+export class BuildDestinationRefused extends TriggerParameterRefusal {
+  readonly status = WAVE_TARGET_DESTINATION_REFUSED_STATUS;
+  readonly action = WAVE_TARGET_DESTINATION_REFUSED_AUDIT_ACTION;
+}
+
+/** The component property that names WHERE this Type's build definition lives in the repo. A fact
+ *  about the component (a monorepo puts each one under its own directory), keyed by Type because a
+ *  Dockerfile path handed to an RPM build is the same class of wrong answer as an image destination. */
+const BUILD_DEFINITION_PROPERTY: Partial<Record<ArtifactClass, string>> = {
+  image: "dockerfile",
+  rpm: "rpmSpec"
+};
 
 function readString(bag: unknown, key: string): string | undefined {
   if (!bag || typeof bag !== "object") return undefined;
@@ -48,6 +82,7 @@ export async function buildLaneTriggerParameters(
   // is deploying, and an `infrastructure` one has no artifact at all; sending build parameters
   // there would be noise the executor cannot act on.
   if (categoryOfType(input.type) !== "build") return undefined;
+  const type = input.type as ArtifactClass;
 
   const params: Record<string, unknown> = { changeObjectId: input.changeObjectId };
 
@@ -58,29 +93,111 @@ export async function buildLaneTriggerParameters(
   if (ref) params.sourceRef = ref;
   if (commit) params.sourceCommit = commit;
 
-  // The SAME resolution the pipeline view renders, not a second one. `declared` is the only state
-  // that names a destination: `none` has no edge and `ambiguous` has more than one, and picking
-  // one of several would be exactly the silent guess the pipeline view refuses to make.
-  // WHERE THIS COMPONENT'S DOCKERFILE LIVES, when it says. A monorepo puts each component's
-  // Dockerfile under its own directory (`apps/profile-web/Dockerfile`), so the path is a fact
-  // ABOUT THE COMPONENT, not a property of the build tooling — carrying it in chart values would
-  // force every component in an organization to share one path. Absent ⇒ the catalog template's
-  // own default, which is the single-service repo case.
-  const [component] = await tx
-    .select({ properties: objects.properties })
-    .from(objects)
-    .where(and(eq(objects.orgId, input.orgId), eq(objects.id, input.targetObjectId)))
-    .limit(1);
-  // Untyped for the same reason `sourceRef` is: a replicated row from an older peer was never
-  // checked against a shape here.
-  const dockerfile = readString(component?.properties, "dockerfile");
-  if (dockerfile) params.dockerfile = dockerfile;
+  // WHERE THIS COMPONENT'S BUILD DEFINITION LIVES, when it says. A monorepo puts each component's
+  // Dockerfile (or spec) under its own directory (`apps/profile-web/Dockerfile`), so the path is a
+  // fact ABOUT THE COMPONENT, not a property of the build tooling — carrying it in chart values
+  // would force every component in an organization to share one path. Absent ⇒ the catalog
+  // template's own default, which is the single-service repo case.
+  const definitionKey = BUILD_DEFINITION_PROPERTY[type];
+  if (definitionKey) {
+    const [component] = await tx
+      .select({ properties: objects.properties })
+      .from(objects)
+      .where(and(eq(objects.orgId, input.orgId), eq(objects.id, input.targetObjectId)))
+      .limit(1);
+    // Untyped for the same reason `sourceRef` is: a replicated row from an older peer was never
+    // checked against a shape here.
+    const definition = readString(component?.properties, definitionKey);
+    if (definition) params[definitionKey] = definition;
+  }
 
-  const registry = await registryForComponent(tx, input.orgId, input.targetObjectId);
-  if (registry.state === "declared") {
-    if (registry.repository) params.imageRepository = registry.repository;
-    if (registry.url) params.registryUrl = registry.url;
-    if (registry.name) params.registryName = registry.name;
+  // A Type with no destination class derives NO destination and does not consult the registry: SCP
+  // has nothing to hand it, so there is nothing it could hand wrongly (ADR-0053's table).
+  const format = DESTINATION_FORMAT_OF_TYPE[type];
+  if (format !== null) {
+    // The SAME resolution the pipeline view renders, not a second one. `declared` is the only
+    // state that names a destination: `none` has no edge and `ambiguous` has more than one, and
+    // picking one of several would be exactly the silent guess the pipeline view refuses to make.
+    const registry = await registryForComponent(tx, input.orgId, input.targetObjectId);
+    if (registry.state === "declared") {
+      assertRegistryServes(registry, type, format);
+      Object.assign(params, destinationParameters(registry, format));
+    }
+  }
+
+  return Object.keys(params).length > 1 ? params : undefined;
+}
+
+/** Only ever called with a `declared` resolution — the one state that names a destination. */
+type DeclaredRegistry = ComponentPipelineRegistry;
+
+/** Refuse a registry that does not declare the format this Type publishes. See ADR-0053 §refusal. */
+function assertRegistryServes(
+  registry: DeclaredRegistry,
+  type: ArtifactClass,
+  format: PackageFormat
+): void {
+  const declared = registry.packageFormats ?? null;
+  const serves = declared ?? DEFAULT_REGISTRY_PACKAGE_FORMATS;
+  const inputContext = {
+    gate: "build_destination_format",
+    type,
+    requiredFormat: format,
+    registryExecutionSystemId: registry.executionSystemId,
+    registryName: registry.name,
+    registryKind: registry.kind,
+    declaredPackageFormats: declared,
+    effectivePackageFormats: [...serves]
+  };
+  const who = `registry '${registry.name ?? registry.executionSystemId}'`;
+  if (!serves.includes(format)) {
+    const what =
+      declared === null
+        ? `declares no packageFormats, which means [${DEFAULT_REGISTRY_PACKAGE_FORMATS.join(", ")}] — a container registry`
+        : declared.length === 0
+          ? `declares packageFormats that are not a list of strings, so it serves nothing SCP can read`
+          : `declares packageFormats [${declared.join(", ")}]`;
+    throw new BuildDestinationRefused(
+      `refusing to trigger a '${type}' build: it publishes '${format}' packages, and its ${who} ` +
+        `${what}. Handing it that registry would push a '${type}' artifact somewhere that cannot hold it.`,
+      {
+        remediation:
+          `point this component's publishes_to edge at a registry that serves '${format}', or add ` +
+          `'${format}' to the registry's properties.packageFormats if it really serves that format ` +
+          `(a unified Gitea serves both: ["oci","rpm"]), then cancel/rollback/re-propose the change`,
+        inputContext
+      }
+    );
+  }
+  // An RPM upload address is PRODUCT-shaped, unlike an OCI reference: Gitea takes a PUT to
+  // `/api/packages/{owner}/rpm[/{group}]/upload`, Pulp and Nexus each take something else. Only the
+  // shape SCP actually knows is derived; anything else is refused rather than guessed at.
+  if (format === "rpm" && registry.kind !== "gitea") {
+    throw new BuildDestinationRefused(
+      `refusing to trigger a '${type}' build: its ${who} serves 'rpm' but is kind ` +
+        `'${registry.kind ?? "(none)"}', and SCP derives an RPM upload address only for 'gitea'. ` +
+        `Guessing another product's upload API would push to an address nobody declared.`,
+      {
+        remediation:
+          `publish this component to a gitea registry, or drive it with a workflow template of your ` +
+          `own that knows this registry's upload API (bind that template instead of scp-build-rpm-v1)`,
+        inputContext
+      }
+    );
+  }
+}
+
+/** The destination parameters for one format — the part that used to be container-shaped for all. */
+function destinationParameters(
+  registry: DeclaredRegistry,
+  format: PackageFormat
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (registry.url) out.registryUrl = registry.url;
+  if (registry.name) out.registryName = registry.name;
+
+  if (format === "oci") {
+    if (registry.repository) out.imageRepository = registry.repository;
     // THE FULLY-FORMED PUSH TARGET, `host/repository`, with the tag left to the executor.
     //
     // Derived HERE rather than in the workflow template, because a template that assembles it has
@@ -95,9 +212,27 @@ export async function buildLaneTriggerParameters(
     // with url `null` and names no destination at all, which is the refusal we want. Should this
     // ever be re-sourced from a RAW property, the parse becomes fallible and needs handling again.
     if (registry.repository && registry.url) {
-      params.imageDestination = `${new URL(registry.url).host}/${registry.repository}`;
+      out.imageDestination = `${new URL(registry.url).host}/${registry.repository}`;
     }
+    return out;
   }
 
-  return Object.keys(params).length > 1 ? params : undefined;
+  // rpm, on gitea (the only kind `assertRegistryServes` lets through). The edge's `repository` is
+  // `owner[/group]`: Gitea's RPM registry is per OWNER, optionally split into groups (`el9`,
+  // `el9/stable`), so the first segment is the owner and the rest, if any, is the group.
+  if (registry.repository) out.packageRepository = registry.repository;
+  if (registry.repository && registry.url) {
+    const [owner, ...group] = registry.repository.split("/").filter((s) => s !== "");
+    if (owner) {
+      // Each segment encoded on its own, so an owner or group can never smuggle in a path.
+      const path = [owner, "rpm", ...group].map(encodeURIComponent).join("/");
+      const base = `${registry.url}/api/packages/${path}`;
+      // Assembled here for the same reason `imageDestination` is: a template that concatenates it
+      // gets a wrong URL rather than an error. `rpmRepositoryUrl` is the dnf baseurl the result is
+      // installable from, carried so the run can name where it published.
+      out.rpmUploadUrl = `${base}/upload`;
+      out.rpmRepositoryUrl = base;
+    }
+  }
+  return out;
 }

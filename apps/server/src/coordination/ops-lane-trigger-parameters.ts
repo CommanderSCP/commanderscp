@@ -3,6 +3,11 @@ import { and, eq } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
 import { deriveOpsRunMaterial } from "./ops-run-material.js";
+import {
+  TriggerParameterRefusal,
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION,
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
+} from "./trigger-parameter-refusal.js";
 
 /**
  * WHAT A HOST-REACHING TRIGGER TELLS `managed-ops` — the production caller `deriveOpsRunMaterial`
@@ -26,7 +31,12 @@ import { deriveOpsRunMaterial } from "./ops-run-material.js";
 export const OPS_CATALOG_ROLES = ["os_package", "config_file", "scheduled_unit"] as const;
 export type OpsCatalogRole = (typeof OPS_CATALOG_ROLES)[number];
 
-export class OpsDeclarationRefused extends Error {}
+/** Typed so `reconcile.ts` terminalises the target with a Decision instead of retrying a verdict
+ *  every tick (ADR-0053 — the same property the build lane's destination refusal has). */
+export class OpsDeclarationRefused extends TriggerParameterRefusal {
+  readonly status = WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS;
+  readonly action = WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION;
+}
 
 export interface OpsLaneTriggerParameterInput {
   orgId: string;
