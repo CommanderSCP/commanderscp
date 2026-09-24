@@ -127,7 +127,7 @@ describe("the infrastructure lane is INSTALLED, not merely built", () => {
   it("the lane chooses the TEMPLATE and its bounds are spread LAST (a recipe cannot restate them)", () => {
     const source = reconcile();
     expect(source).toContain("const triggerRef = infra ? infra.templateRef : externalRef;");
-    expect(source).toContain("{ ...(parameters ?? {}), ...(infra?.parameters ?? {}) }");
+    expect(source).toContain("? { ...(parameters ?? {}), ...infra.parameters }");
     expect(source).toMatch(/externalRef: triggerRef,\s*parameters: triggerParameters/);
   });
 

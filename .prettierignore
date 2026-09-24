@@ -22,6 +22,7 @@ docs/
 # 4b, tools/helm-verify) is what actually validates these files.
 deploy/helm/templates/
 deploy/helm-bundled/templates/
+deploy/helm-bundled/authoring/scp-authored-manifests/templates/
 
 # VENDORED UPSTREAM MANIFESTS — verbatim copies of Argo CD / Argo Workflows / Argo Events / Gitea
 # install YAML, kept byte-identical to the release they were pulled from (charter principle 5: no

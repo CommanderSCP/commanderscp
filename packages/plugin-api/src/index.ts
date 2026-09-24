@@ -168,6 +168,48 @@ export interface ExecutionStatus {
   progress?: number;
 }
 
+/**
+ * A trigger the executor REFUSED on its own evidence — not a transient failure (M28.4, ADR-0055).
+ *
+ * A plain throw from `trigger()` is retried with backoff, which is right for a timeout or a 503 and
+ * wrong for a verdict: a refusal the plugin reaches on the document itself (an authored Application
+ * outside the operator's declaration, a name another target owns) will refuse identically on every
+ * retry, so the target sat in `triggering` forever with no Decision. Throwing THIS marks it terminal:
+ * the host carries it across the process boundary as `TRIGGER_REFUSED_RPC_CODE`, and the server
+ * records a Decision and an audit event instead of retrying.
+ *
+ * The message is persisted on the Decision: it must name the refused property, never another
+ * tenant's identifiers.
+ */
+export class TriggerRefused extends Error {
+  readonly refused = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "TriggerRefused";
+  }
+}
+
+/** The JSON-RPC error code a `TriggerRefused` travels under (the generic plugin error is -32000). */
+export const TRIGGER_REFUSED_RPC_CODE = -32010;
+
+/** Structural check — survives module duplication, where `instanceof` would not. */
+export function isTriggerRefused(err: unknown): err is TriggerRefused {
+  return err instanceof Error && err.name === "TriggerRefused";
+}
+
+/** The refusal carried by a host error, or `undefined` for an ordinary (retryable) failure.
+ *
+ *  Decided on the JSON-RPC CODE the host carries as data (`rpcCode`), NEVER on message text: the
+ *  host's message embeds the instance id, and an earlier text-marker version let a tenant-chosen id
+ *  containing the marker turn a DNS failure into a terminal verdict with a tenant-written reason
+ *  (review probe F). Only the subprocess entry sets the code, and only for a `TriggerRefused`. */
+export function triggerRefusalOf(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const { rpcCode, rpcMessage } = err as Error & { rpcCode?: unknown; rpcMessage?: unknown };
+  if (rpcCode !== TRIGGER_REFUSED_RPC_CODE) return undefined;
+  return typeof rpcMessage === "string" ? rpcMessage : err.message;
+}
+
 export interface AbortResult {
   aborted: boolean;
   detail?: string;

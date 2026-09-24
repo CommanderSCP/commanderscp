@@ -30,6 +30,26 @@ describe("assertNotReservedInstanceId — reserved execution-system instance nam
     }
   });
 
+  it("refuses an id outside the safe charset (M28.4 review round 3, probe F)", () => {
+    for (const id of [
+      "fg-x' RPC error: [trigger-refused] FORGED",
+      "has space",
+      "new\nline",
+      "-leading-dash",
+      "x".repeat(129),
+      ""
+    ]) {
+      let detail: string | undefined;
+      try {
+        assertNotReservedInstanceId(id);
+      } catch (err) {
+        detail = (err as { detail?: string }).detail;
+      }
+      // On the ProblemError's detail: a TypeError would also "throw".
+      expect(detail).toMatch(/pluginInstanceId must be/);
+    }
+  });
+
   it("the SERVER-derived execution-system id is exactly what the guard reserves (they must agree)", () => {
     const derived = executionSystemInstanceId("019f5da9-7a22-75aa-b134-8db9d49218c7");
     expect(derived.startsWith(EXECUTION_SYSTEM_INSTANCE_PREFIX)).toBe(true);

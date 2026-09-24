@@ -4,6 +4,7 @@ import type {
   GraphObject,
   InfraKind,
   Relationship,
+  AuthoredRolloutStrategy,
   SourceMapping
 } from "@scp/schemas";
 import {
@@ -147,6 +148,7 @@ async function readComponentSpec(
       mode?: "parallel" | "sequential";
       targets: string[];
       requiresFanIn?: boolean;
+      rollout?: AuthoredRolloutStrategy;
     }>;
 
     const mapping = mappings.find((m) => (m.type ?? "configuration") === kind);
@@ -181,7 +183,10 @@ async function readComponentSpec(
         ...(w.name !== undefined ? { name: w.name } : {}),
         mode: w.mode ?? "parallel",
         targets: w.targets,
-        ...(w.requiresFanIn !== undefined ? { requiresFanIn: w.requiresFanIn } : {})
+        ...(w.requiresFanIn !== undefined ? { requiresFanIn: w.requiresFanIn } : {}),
+        // M28.4 (ADR-0055): an exported program that dropped this would re-apply a wave plan
+        // whose authored Rollouts silently lose their steps.
+        ...(w.rollout !== undefined ? { rollout: w.rollout } : {})
       })),
       ...(source ? { source } : {}),
       ...(publishesTo ? { publishesTo } : {}),

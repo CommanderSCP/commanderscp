@@ -1,6 +1,13 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import type { CreateObjectRequest, DiscoveryProposal, GraphObject } from "@scp/schemas";
+import {
+  ARGOCD_AUTHORING_PROPERTY,
+  ArgoCdAuthoringSchema,
+  type ArgoCdAuthoring,
+  type CreateObjectRequest,
+  type DiscoveryProposal,
+  type GraphObject
+} from "@scp/schemas";
 import { client } from "../lib/client";
 import { Badge } from "../components/ui/badge";
 import { ScaffoldPanel } from "../components/scaffold/scaffold-panel";
@@ -32,6 +39,43 @@ export interface ConnectDraft {
   token: string;
   tokenKey: string;
   allowInternalEgress: boolean;
+  /** M28.4 (ADR-0055) — `scp connect argocd --authoring-*`. All empty ⇒ no authoring: SCP imports
+   *  and coordinates this Argo CD's Applications and creates none. */
+  authoringRepo?: string;
+  authoringPath?: string;
+  authoringRevision?: string;
+  /** The SCOPED project (never `default`) and the namespaces it allows, comma-separated. */
+  authoringProject?: string;
+  authoringNamespaces?: string;
+}
+
+/** The carrier the draft declares, validated with the SERVER's schema; `undefined` when the operator
+ *  left every field empty. Throws BEFORE anything is written, so a half-declared carrier never
+ *  registers cleanly and surfaces later as a refused first deploy. */
+export function authoringFromDraft(draft: ConnectDraft): ArgoCdAuthoring | undefined {
+  const repo = draft.authoringRepo?.trim() ?? "";
+  const path = draft.authoringPath?.trim() ?? "";
+  const revision = draft.authoringRevision?.trim() ?? "";
+  const project = draft.authoringProject?.trim() ?? "";
+  const namespaces = (draft.authoringNamespaces ?? "")
+    .split(",")
+    .map((n) => n.trim())
+    .filter((n) => n.length > 0);
+  if (!repo && !path && !revision && !project && namespaces.length === 0) return undefined;
+  const parsed = ArgoCdAuthoringSchema.safeParse({
+    repoURL: repo || undefined,
+    ...(path ? { path } : {}),
+    targetRevision: revision || undefined,
+    project: project || undefined,
+    namespaces
+  });
+  if (!parsed.success) {
+    throw new Error(
+      "Authoring needs all five: the carrier's repository, its chart path, a pinned revision, a " +
+        "scoped project (not `default`), and the namespaces it may deploy into (no control namespaces)."
+    );
+  }
+  return parsed.data;
 }
 
 export function emptyDraft(): ConnectDraft {
@@ -67,6 +111,7 @@ export async function registerExecutionSystem(
   const name = draft.name.trim();
   const serverUrl = normalizeServerUrl(draft.serverUrl);
   const tokenKey = draft.tokenKey.trim() || defaultTokenKey(name);
+  const authoring = authoringFromDraft(draft);
 
   await doors.putSecret(tokenKey, draft.token);
 
@@ -79,7 +124,8 @@ export async function registerExecutionSystem(
       // Omitted rather than written `false`, exactly as the CLI does: an absent property and a
       // declared-false one mean the same thing to `resolveInternalEgress`, and writing the negative
       // makes an untouched checkbox look like a decision someone made.
-      ...(draft.allowInternalEgress ? { allowInternalEgress: true } : {})
+      ...(draft.allowInternalEgress ? { allowInternalEgress: true } : {}),
+      ...(authoring ? { [ARGOCD_AUTHORING_PROPERTY]: authoring } : {})
     }
   });
 }
@@ -255,6 +301,64 @@ export function RegisterStep({
               </span>
             </label>
           </div>
+
+          {/* M28.4 (ADR-0055) — the create half of import-or-create, opt-in per Argo CD. */}
+          <fieldset className="rounded border border-slate-200 p-3" data-testid="argocd-authoring">
+            <legend className="px-1 text-sm font-medium text-slate-700">
+              Let SCP create Applications here (optional)
+            </legend>
+            <p className="mb-2 text-xs text-slate-500">
+              Where this Argo CD reads the <code className="font-mono">scp-authored-manifests</code>{" "}
+              carrier chart. With it, a component that declares{" "}
+              <code className="font-mono">properties.deployment</code> gets an Application SCP
+              creates, with a Rollout whose steps come from the wave plan. SCP still only reads the
+              Rollout afterwards — it never promotes or aborts it. A chart in a Helm repository: use{" "}
+              <code className="font-mono">scp connect argocd --authoring-chart</code>.
+            </p>
+            <div className="flex flex-col gap-2">
+              <Input
+                aria-label="Carrier repository"
+                data-testid="argocd-authoring-repo-input"
+                value={draft.authoringRepo ?? ""}
+                onChange={(e) => setDraft((prev) => ({ ...prev, authoringRepo: e.target.value }))}
+                placeholder="https://gitea.example/platform/gitops.git"
+              />
+              <Input
+                aria-label="Carrier chart path"
+                data-testid="argocd-authoring-path-input"
+                value={draft.authoringPath ?? ""}
+                onChange={(e) => setDraft((prev) => ({ ...prev, authoringPath: e.target.value }))}
+                placeholder="charts/scp-authored-manifests"
+              />
+              <Input
+                aria-label="Carrier revision"
+                data-testid="argocd-authoring-revision-input"
+                value={draft.authoringRevision ?? ""}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, authoringRevision: e.target.value }))
+                }
+                placeholder="carrier-v1"
+              />
+              <Input
+                aria-label="Authoring project"
+                data-testid="argocd-authoring-project-input"
+                value={draft.authoringProject ?? ""}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, authoringProject: e.target.value }))
+                }
+                placeholder="scp-authored (a scoped AppProject — never default)"
+              />
+              <Input
+                aria-label="Authoring namespaces"
+                data-testid="argocd-authoring-namespaces-input"
+                value={draft.authoringNamespaces ?? ""}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, authoringNamespaces: e.target.value }))
+                }
+                placeholder="shop, shop-gamma"
+              />
+            </div>
+          </fieldset>
 
           {register.isError && (
             <ErrorNotice error={register.error} testId="argocd-register-error" />

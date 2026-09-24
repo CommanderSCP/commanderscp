@@ -12,6 +12,7 @@ export * from "./audit.js";
 export * from "./registries.js";
 export * from "./coordination-as-code.js";
 export * from "./pipeline-behaviors.js";
+export * from "./deployment-authoring.js";
 export * from "./changes.js";
 export * from "./governance.js";
 export * from "./governance-move.js";

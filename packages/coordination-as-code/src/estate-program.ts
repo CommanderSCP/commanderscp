@@ -262,12 +262,15 @@ function renderWaveItem(item: WaveItem): string {
       mode?: "parallel" | "sequential";
       targets: readonly WaveTarget[];
       requiresFanIn?: boolean;
+      rollout?: unknown;
     };
     const parts: string[] = [];
     if (obj.name !== undefined) parts.push(`name: ${jsString(obj.name)}`);
     if (obj.mode !== undefined) parts.push(`mode: ${jsString(obj.mode)}`);
     parts.push(`targets: [${obj.targets.map(renderWaveTarget).join(", ")}]`);
     if (obj.requiresFanIn !== undefined) parts.push(`requiresFanIn: ${String(obj.requiresFanIn)}`);
+    // M28.4 (ADR-0055): plain JSON data, rendered as a literal so the program round-trips it.
+    if (obj.rollout !== undefined) parts.push(`rollout: ${JSON.stringify(obj.rollout)}`);
     return `{ ${parts.join(", ")} }`;
   }
   return renderWaveTarget(item as WaveTarget);

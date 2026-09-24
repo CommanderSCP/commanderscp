@@ -55,6 +55,12 @@ metadata:
 {{- else if eq $cmName "argocd-rbac-cm" -}}
 {{- $existing := default "" (get $data "policy.csv") -}}
 {{- $scoped := printf "p, %s, applications, get, */*, allow\np, %s, applications, sync, */*, allow" $a.scpAccount $a.scpAccount -}}
+{{- /* M28.4 (ADR-0055): create/update of Applications in the ONE dedicated authoring project,
+       rendered below. Never `action/*`, `update/*` or `delete`: ADR-0008 §3 at the credential. */ -}}
+{{- $authProject := (($a.authoring | default dict).project | default "") -}}
+{{- if $authProject -}}
+{{- $scoped = printf "%s\np, %s, applications, create, %s/*, allow\np, %s, applications, update, %s/*, allow" $scoped $a.scpAccount $authProject $a.scpAccount $authProject -}}
+{{- end -}}
 {{- $_ := set $data "policy.csv" (printf "%s\n%s\n" (trim $existing) $scoped) -}}
 {{- else if eq $cmName "argocd-cmd-params-cm" -}}
 {{- $_ := set $data "server.insecure" "true" -}}
@@ -87,4 +93,40 @@ metadata:
 {{- end }}
 ---
 {{ $out | join "\n---\n" }}
+{{- /* M28.4 (ADR-0055): THE AUTHORING PROJECT — the bound on everything SCP may author here. */ -}}
+{{- $auth := $a.authoring | default dict -}}
+{{- if $auth.project }}
+{{- if eq $auth.project "default" }}{{ fail "bundledExecutor.argocd.authoring.project must not be `default` — upstream's default AppProject is unscoped (ADR-0055)" }}{{- end }}
+{{- if not $auth.carrierRepoURL }}{{ fail "bundledExecutor.argocd.authoring.project is set but carrierRepoURL is empty — the project's only source is the carrier chart's repository (ADR-0055)" }}{{- end }}
+{{- if not $auth.namespaces }}{{ fail "bundledExecutor.argocd.authoring.project is set but namespaces is empty — the project must name the namespaces SCP may author into (ADR-0055)" }}{{- end }}
+{{- $v := .Values.bundledExecutor -}}
+{{- $control := list "default" $ns ($v.scpNamespace | default "") (($v.argoWorkflows | default dict).namespace | default "") (($v.argoEvents | default dict).namespace | default "") (($v.argoRollouts | default dict).namespace | default "") (($v.gitea | default dict).namespace | default "") -}}
+{{- range $n := $auth.namespaces }}
+{{- if or (has $n $control) (hasPrefix "kube-" $n) }}{{ fail (printf "bundledExecutor.argocd.authoring.namespaces names '%s' — a control namespace (default, kube-*, Argo CD's, SCP's or a bundled backend's) is never an authoring destination (ADR-0055)" $n) }}{{- end }}
+{{- end }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ $auth.project }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argocd-authoring
+spec:
+  description: CommanderSCP-authored Applications only (ADR-0055). Carrier source, allowlisted namespaces, Rollout and Service kinds, nothing cluster-scoped.
+  sourceRepos:
+    - {{ $auth.carrierRepoURL | quote }}
+  destinations:
+    {{- range $n := $auth.namespaces }}
+    - server: https://kubernetes.default.svc
+      namespace: {{ $n | quote }}
+    {{- end }}
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: Rollout
+    - group: ""
+      kind: Service
+{{- end }}
 {{- end }}
