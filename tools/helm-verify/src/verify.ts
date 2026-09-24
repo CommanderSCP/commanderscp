@@ -1218,7 +1218,11 @@ function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean
       `[${label}] scp-ops-v1 container '${c.name ?? "main"}' is not fully hardened — it runs only the closed catalog and needs no relaxation, so any here is new authority beside a root certificate`
     );
     const envNames = (c.env ?? []).map((e) => e.name);
-    for (const required of ["SCP_OPS_API_URL", "SCP_OPS_RUN_TOKEN_SEALED", "SCP_OPS_SEALING_KEY_FILE"]) {
+    for (const required of [
+      "SCP_OPS_API_URL",
+      "SCP_OPS_RUN_TOKEN_SEALED",
+      "SCP_OPS_SEALING_KEY_FILE"
+    ]) {
       assert(
         envNames.includes(required),
         `[${label}] scp-ops-v1 container sets no ${required} — the runner cannot redeem without it`
@@ -1231,18 +1235,20 @@ function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean
     );
   }
   const role = docs.find((d) => d.kind === "Role" && d.metadata?.name === spec.serviceAccountName);
-  const granted = (((role as { rules?: { resources?: string[] }[] } | undefined)?.rules ?? []).flatMap(
-    (r) => r.resources ?? []
-  )).sort();
+  const granted = ((role as { rules?: { resources?: string[] }[] } | undefined)?.rules ?? [])
+    .flatMap((r) => r.resources ?? [])
+    .sort();
   assert(
     granted.length === 1 && granted[0] === "workflowtaskresults",
     `[${label}] the ops Role '${spec.serviceAccountName}' grants ${JSON.stringify(granted)} — workflowtaskresults and nothing else; this pod holds a root certificate`
   );
-  const policy = docs.find((d) => d.kind === "NetworkPolicy" && d.metadata?.name === "scp-ops-egress");
+  const policy = docs.find(
+    (d) => d.kind === "NetworkPolicy" && d.metadata?.name === "scp-ops-egress"
+  );
   assert(policy, `[${label}] catalog.ops.enabled rendered no scp-ops-egress NetworkPolicy`);
-  const selector =
-    ((policy?.spec as { podSelector?: { matchLabels?: Record<string, string> } } | undefined)
-      ?.podSelector?.matchLabels ?? {}) as Record<string, string>;
+  const selector = ((
+    policy?.spec as { podSelector?: { matchLabels?: Record<string, string> } } | undefined
+  )?.podSelector?.matchLabels ?? {}) as Record<string, string>;
   const podLabels = spec.podMetadata?.labels ?? {};
   assert(
     Object.keys(selector).length > 0 &&
@@ -1250,8 +1256,11 @@ function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean
     `[${label}] scp-ops-egress selects ${JSON.stringify(selector)}, which the scp-ops-v1 pod labels ${JSON.stringify(podLabels)} do not satisfy — the policy would select nothing`
   );
   const sshRules = (
-    ((policy?.spec as { egress?: { ports?: { port?: number }[]; to?: { ipBlock?: { cidr?: string } }[] }[] })
-      ?.egress ?? [])
+    (
+      policy?.spec as {
+        egress?: { ports?: { port?: number }[]; to?: { ipBlock?: { cidr?: string } }[] }[];
+      }
+    )?.egress ?? []
   ).filter((r) => (r.ports ?? []).some((p) => p.port === 22));
   assert(
     sshRules.length === 1 &&

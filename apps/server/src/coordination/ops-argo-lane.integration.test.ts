@@ -125,23 +125,24 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     ).toString("utf8");
   }
 
-  const recordingLauncher: ResolveRunnerLauncher = () => ({
-    run: async (spec: RunnerSpec) => {
-      if (launcherArmed) {
-        launcherTouches.push("managed-ops launcher.run");
-        throw new Error("the managed-ops launcher was reached (test double, armed)");
-      }
-      const dir = spec.copyIn![0]!.hostDir;
-      modeCStaged.push({
-        spec,
-        inventory: await readFile(join(dir, "inventory.ini"), "utf8"),
-        params: JSON.parse(await readFile(join(dir, "params.json"), "utf8")),
-        credential: JSON.parse(await readFile(join(dir, "ssh-credential"), "utf8"))
-      });
-      return { succeeded: true, stdout: "", stderr: "", exitCode: 0 } as never;
-    },
-    reap: async () => undefined
-  }) as never;
+  const recordingLauncher: ResolveRunnerLauncher = () =>
+    ({
+      run: async (spec: RunnerSpec) => {
+        if (launcherArmed) {
+          launcherTouches.push("managed-ops launcher.run");
+          throw new Error("the managed-ops launcher was reached (test double, armed)");
+        }
+        const dir = spec.copyIn![0]!.hostDir;
+        modeCStaged.push({
+          spec,
+          inventory: await readFile(join(dir, "inventory.ini"), "utf8"),
+          params: JSON.parse(await readFile(join(dir, "params.json"), "utf8")),
+          credential: JSON.parse(await readFile(join(dir, "ssh-credential"), "utf8"))
+        });
+        return { succeeded: true, stdout: "", stderr: "", exitCode: 0 } as never;
+      },
+      reap: async () => undefined
+    }) as never;
 
   /** The fake Argo server — the only fake in the path. */
   async function argoHttp(req: { method: string; url: string; body?: unknown }) {
@@ -160,11 +161,17 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
       return {
         status: 200,
         headers: {},
-        body: { metadata: { name: `${body.resourceName}-${randomUUID().slice(0, 5)}`, uid: randomUUID() } }
+        body: {
+          metadata: { name: `${body.resourceName}-${randomUUID().slice(0, 5)}`, uid: randomUUID() }
+        }
       };
     }
     if (req.method === "GET") {
-      return { status: 200, headers: {}, body: { metadata: { name: "x" }, status: { phase: "Succeeded" } } };
+      return {
+        status: 200,
+        headers: {},
+        body: { metadata: { name: "x" }, status: { phase: "Succeeded" } }
+      };
     }
     return { status: 404, headers: {}, body: {} };
   }
@@ -249,7 +256,9 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
       config: {
         serverUrl: ARGO_URL,
         namespace: NAMESPACE,
-        ...(extra.sealing === null ? {} : { opsSealingPublicKey: extra.sealing ?? sealingPublicPem }),
+        ...(extra.sealing === null
+          ? {}
+          : { opsSealingPublicKey: extra.sealing ?? sealingPublicPem }),
         ...(extra.sourceAddresses ? { opsSourceAddresses: extra.sourceAddresses } : {})
       }
     });
@@ -446,7 +455,10 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
 
   it("carries the binding's source addresses as the certificate's `source-address`, and records it", async () => {
     const { token } = await argoRun(["10.42.0.0/16", "192.168.5.7"]);
-    const redeemed = await anonymous.opsRuns.redeem(token, generateEphemeralSshKeypair().openSshPublicKey);
+    const redeemed = await anonymous.opsRuns.redeem(
+      token,
+      generateEphemeralSshKeypair().openSshPublicKey
+    );
     expect(redeemed.sourceAddress).toBe("10.42.0.0/16,192.168.5.7");
     const blob = Buffer.from(redeemed.certificate.split(" ")[1]!, "base64");
     expect(blob.includes(Buffer.from("source-address"))).toBe(true);
@@ -568,7 +580,10 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
       ops: DECLARATION,
       recipe: {
         version: 1,
-        trigger: { kind: "workflow_dispatch", parameters: { opsInventory: "evil ansible_host=1.2.3.4" } }
+        trigger: {
+          kind: "workflow_dispatch",
+          parameters: { opsInventory: "evil ansible_host=1.2.3.4" }
+        }
       }
     });
     await tick();

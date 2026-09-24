@@ -255,7 +255,12 @@ describe("host-reaching run through the ARGO path, against a real sshd (Testcont
     expect(output).toContain("changed=1");
 
     // THE HOST ITSELF — and the M27.2 closure holds on this path too: the payload lands literally.
-    const probe = await execFileAsync("docker", ["exec", sshd!.getId(), "cat", "/etc/scp-argo-e2e.conf"]);
+    const probe = await execFileAsync("docker", [
+      "exec",
+      sshd!.getId(),
+      "cat",
+      "/etc/scp-argo-e2e.conf"
+    ]);
     expect(probe.stdout).toContain("via=argo {{ lookup('pipe', 'id') }}");
     expect(probe.stdout).not.toContain("uid=");
 
@@ -279,7 +284,10 @@ describe("host-reaching run through the ARGO path, against a real sshd (Testcont
 
   it("the SAME sealed token a second time is refused before Ansible starts — single-use against the real runner", async () => {
     if (!dockerReady) return expectSkipped();
-    const run = await mintArgoRun({ role: "os_package", arguments: { package_name: "cowsay", package_state: "present" } });
+    const run = await mintArgoRun({
+      role: "os_package",
+      arguments: { package_name: "cowsay", package_state: "present" }
+    });
     const first = await runArgoRunner(run.sealed);
     expect(first.ok, first.output).toBe(true);
     const second = await runArgoRunner(run.sealed);

@@ -226,13 +226,7 @@ export async function createOpsRunRedemption(
 }
 
 export type RedemptionRefusal =
-  | "malformed"
-  | "unknown"
-  | "bad_secret"
-  | "burned"
-  | "replayed"
-  | "expired"
-  | "authority_changed";
+  "malformed" | "unknown" | "bad_secret" | "burned" | "replayed" | "expired" | "authority_changed";
 
 export interface RedeemedMaterial extends OpsRunBound {
   runId: string;

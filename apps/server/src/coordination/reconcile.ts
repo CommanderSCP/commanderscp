@@ -1558,15 +1558,7 @@ async function triggerWaveTarget(
       instanceId,
       module: executorModule,
       config: executorConfig
-    } = await ensureExecutorInstanceStarted(
-      db,
-      orgId,
-      host,
-      targetObjectId,
-      type,
-      null,
-      masterKey
-    );
+    } = await ensureExecutorInstanceStarted(db, orgId, host, targetObjectId, type, null, masterKey);
     const client = host.executor(instanceId);
     // Deterministic across every retry of this exact wave target — no separate storage needed, the
     // row's own id already satisfies "IDENTICAL across retries of the same target."
