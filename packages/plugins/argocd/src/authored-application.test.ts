@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { PluginContext } from "@scp/plugin-api";
+import { isTriggerRefused, type PluginContext } from "@scp/plugin-api";
 import { startArgoCdStandIn, type ArgoCdStandIn } from "@scp/plugin-testkit";
 import {
   AUTHORED_APPLICATION_PARAMETER,
@@ -26,6 +26,7 @@ const AUTHORING = {
 };
 
 const IDENTITY = {
+  "app.kubernetes.io/managed-by": "commanderscp",
   "commanderscp.io/org": "org-1",
   "commanderscp.io/component": "component-1",
   "commanderscp.io/target": "target-1"
@@ -161,10 +162,16 @@ describe("argocd trigger — an SCP-authored Application", () => {
   it.each(["commanderscp.io/org", "commanderscp.io/component", "commanderscp.io/target"])(
     "REFUSES to overwrite an Application SCP authored for a different %s (a name collision)",
     async (label) => {
-      standIn.seed(authoredApplication("checkout-gamma", { labels: { [label]: "someone-else" } }));
-      await expect(authorAndSync(authoredApplication("checkout-gamma"), "wt-4")).rejects.toThrow(
-        /for a different org, component or target/
+      standIn.seed(
+        authoredApplication("checkout-gamma", { labels: { [label]: "someone-elses-uuid" } })
       );
+      const err = await authorAndSync(authoredApplication("checkout-gamma"), "wt-4").catch(
+        (e: unknown) => e
+      );
+      expect(isTriggerRefused(err)).toBe(true);
+      expect((err as Error).message).toMatch(/for a different org, component or target/);
+      // Persisted on THIS org's Decision: never the other identity.
+      expect((err as Error).message).not.toContain("someone-elses-uuid");
       expect(writes()).toEqual([]);
     }
   );
@@ -255,7 +262,7 @@ describe("the second layer — only a carrier render the operator declared is ev
     [
       "a manifest in another namespace",
       (d) => (d.spec.source.helm.valuesObject.manifests[0].metadata.namespace = "kube-system"),
-      /lands in namespace 'kube-system'/
+      /does not land in the Application's destination namespace/
     ],
     [
       "spec.paused",
@@ -306,10 +313,110 @@ describe("the second layer — only a carrier render the operator declared is ev
           spec: { type: "LoadBalancer", ports: [] }
         }),
       /must be ClusterIP/
+    ],
+    // REVIEW ROUND 2 — the allowlist is value-level, not key-level.
+    [
+      "hostPort on the container",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.template.spec.containers[0].ports = [
+          { containerPort: 8080, hostPort: 80 }
+        ]),
+      /ports\[\]\.hostPort is not a field/
+    ],
+    [
+      "hostIP on the container",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.template.spec.containers[0].ports = [
+          { containerPort: 8080, hostIP: "0.0.0.0" }
+        ]),
+      /ports\[\]\.hostIP is not a field/
+    ],
+    [
+      "a pod-template annotation (AppArmor unconfined)",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.template.metadata.annotations = {
+          "container.apparmor.security.beta.kubernetes.io/app": "unconfined"
+        }),
+      /template.metadata.annotations is not a field/
+    ],
+    [
+      "another cluster by server URL",
+      (d) => (d.spec.destination = { server: "https://prod.example:6443", namespace: "shop" }),
+      /not the in-cluster server or an allowlisted cluster/
+    ],
+    [
+      "a cluster name the operator never listed",
+      (d) => (d.spec.destination = { name: "prod", namespace: "shop" }),
+      /not the in-cluster server or an allowlisted cluster/
+    ],
+    [
+      "both server and name",
+      (d) => (d.spec.destination = { server: "https://kubernetes.default.svc", name: "prod", namespace: "shop" }),
+      /not the in-cluster server or an allowlisted cluster/
+    ],
+    [
+      "an Argo CD notifications annotation",
+      (d) =>
+        (d.metadata.annotations = { "notifications.argoproj.io/subscribe.on-sync.webhook": "evil" }),
+      /metadata.annotations.notifications.argoproj.io\/subscribe.on-sync.webhook is not a field/
+    ],
+    [
+      "a forged managed-by label value",
+      (d) => (d.metadata.labels["app.kubernetes.io/managed-by"] = "someone-else"),
+      /managed-by is not the value SCP authors/
+    ],
+    [
+      "canary AND blueGreen together",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.strategy.blueGreen = {
+          activeService: "a",
+          previewService: "b",
+          autoPromotionEnabled: true,
+          autoPromotionSeconds: 30
+        }),
+      /exactly one of canary or blueGreen/
+    ],
+    [
+      "an empty step list",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps = []),
+      /non-empty list when present/
+    ],
+    [
+      "a pause with a non-duration value",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps[1] = { pause: { duration: "0s" } }),
+      /not a timed pause/
+    ],
+    [
+      "a step carrying two actions",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps[0] = {
+          setWeight: 10,
+          pause: { duration: "5s" }
+        }),
+      /exactly one of setWeight or pause/
+    ],
+    [
+      "a Rollout at an unknown apiVersion",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].apiVersion = "argoproj.io/v9"),
+      /apiVersion must be argoproj.io\/v1alpha1/
+    ],
+    [
+      "a Service with no blue-green to switch it",
+      (d) =>
+        d.spec.source.helm.valuesObject.manifests.push({
+          apiVersion: "v1",
+          kind: "Service",
+          metadata: { name: "x", namespace: "shop" },
+          spec: { type: "ClusterIP", selector: {}, ports: [{ port: 80, targetPort: 80 }] }
+        }),
+      /only a blue-green Rollout switches between/
     ]
   ];
 
-  it.each(cases)("refuses %s — before any write", async (_what, tweak, message) => {
+  it.each(cases)("refuses %s — before any write, as a TERMINAL verdict", async (_what, tweak, message) => {
+    await expect(authorAndSync(authoredApplication("checkout-gamma", { tweak }))).rejects.toSatisfy(
+      (e: unknown) => isTriggerRefused(e)
+    );
     await expect(authorAndSync(authoredApplication("checkout-gamma", { tweak }))).rejects.toThrow(
       message
     );

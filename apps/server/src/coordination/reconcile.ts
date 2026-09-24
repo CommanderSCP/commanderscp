@@ -123,7 +123,12 @@ import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook
 import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
-import { TriggerParameterRefusal } from "./trigger-parameter-refusal.js";
+import {
+  TriggerParameterRefusal,
+  WAVE_TARGET_EXECUTOR_REFUSED_AUDIT_ACTION,
+  WAVE_TARGET_EXECUTOR_REFUSED_STATUS
+} from "./trigger-parameter-refusal.js";
+import { PluginTriggerRefusedError } from "../plugin-host/host.js";
 import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 import {
   authoredRollbackTrigger,
@@ -1869,6 +1874,34 @@ async function triggerWaveTarget(
         ...(claim.parameters !== undefined ? { parameters: claim.parameters } : {})
       });
     } catch (err) {
+      // A VERDICT, not a failure (M28.4 fix round): the executor refused on its own evidence and
+      // will refuse identically on every retry, so the target is terminalised with a Decision and an
+      // audit event instead of sitting in `triggering` behind an ever-growing backoff.
+      if (err instanceof PluginTriggerRefusedError) {
+        await withTenantTx(db, orgId, (tx) =>
+          blockWaveTarget(tx, {
+            orgId,
+            change,
+            waveId,
+            waveTargetId,
+            targetObjectId,
+            status: WAVE_TARGET_EXECUTOR_REFUSED_STATUS,
+            action: WAVE_TARGET_EXECUTOR_REFUSED_AUDIT_ACTION,
+            summary: `the executor refused this trigger: ${err.refusal}`,
+            remediation:
+              "correct what the executor names, then cancel/rollback/re-propose the change",
+            reason: err.refusal,
+            inputContext: {
+              waveId,
+              targetObjectId,
+              requestedType: type,
+              executorPluginId: instanceId,
+              gate: "executor_refused"
+            }
+          })
+        );
+        return;
+      }
       // Step 3' — the executor REACHED and REFUSED this trigger. See docs/coordination.md §811.
       await withTenantTx(db, orgId, (tx) =>
         markWaveTargetTriggerFailed(tx, orgId, waveTargetId)

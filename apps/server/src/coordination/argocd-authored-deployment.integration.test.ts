@@ -590,8 +590,17 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
         intervalMs: 250
       }
     );
-    // The rollback re-authored EXACTLY v1's manifest, through the same door.
-    expect(bodyFor(b3)).toEqual([v1Doc]);
+    // The rollback re-authored EXACTLY v1's CONTENT (its Rollout, image and steps), through the same
+    // door, under today's envelope — stamped as a rollback.
+    const rolledBack = bodyFor(b3);
+    expect(rolledBack).toHaveLength(1);
+    expect(rolledBack[0]!.spec?.source?.helm?.valuesObject?.manifests).toEqual(
+      v1Doc.spec?.source?.helm?.valuesObject?.manifests
+    );
+    expect(rolledBack[0]!.spec?.source?.repoURL).toBe(v1Doc.spec?.source?.repoURL);
+    expect(rolledBack[0]!.metadata.annotations?.["commanderscp.io/rollout-source"]).toBe(
+      "rollback"
+    );
     const liveImage = (
       [...standIn.cluster.values()].find(
         (m) =>
@@ -717,6 +726,164 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     expect(apps).toHaveLength(2);
     expect(apps[0]!.metadata.name).not.toBe(apps[1]!.metadata.name);
   }, 90_000);
+
+  describe("review round 2 — rollback against TODAY's authoring, config provenance, terminal plugin verdicts", () => {
+    /** Propose + settle + accept one forward release; returns its id. */
+    async function release(componentId: string, topologyId: string, digitChar: string) {
+      const c = await admin.changes.propose({
+        name: `rel ${digitChar} ${randomUUID().slice(0, 6)}`,
+        targets: [componentId],
+        topology: topologyId,
+        sourceRef: { artifact_digest: `sha256:${digitChar.repeat(64)}` }
+      });
+      if ((await settle(c.id)) === "validating") await admin.changes.accept(c.id);
+      return c.id;
+    }
+
+    it("B1: a rollback into a namespace the target has since LEFT (and the operator withdrew) is refused, not re-authored", async () => {
+      const p = await place("gamma", "shop");
+      const system = await argocdSystem({ ...AUTHORING, namespaces: ["shop-gamma", "shop"] });
+      const name = `b1-${randomUUID().slice(0, 6)}`;
+      const { component, placements } = await placedComponent(name, [p], system, {
+        deployment: { image: "ghcr.io/acme/b1:1", namespace: "shop-gamma" }
+      });
+      const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
+      await release(component.id, topo.id, "3");
+      // The target moves to `shop`, releases there, and the operator withdraws the old namespace.
+      await admin.components.update(component.id, {
+        properties: { deployment: { image: "ghcr.io/acme/b1:1", namespace: "shop" } }
+      });
+      const v2 = await release(component.id, topo.id, "4");
+      await admin
+        .object("execution-system")
+        .update(system.id, {
+          properties: { ...system.properties, authoring: { ...AUTHORING, namespaces: ["shop"] } }
+        });
+      const mark = writeMark();
+      const rb = await admin.changes.rollback(v2, "undo v2");
+      const row = await waitUntil(
+        async () => {
+          const rows = await inOrg((tx) =>
+            tx
+              .select()
+              .from(changeWaveTargets)
+              .where(
+                and(
+                  eq(changeWaveTargets.orgId, org.orgId),
+                  eq(changeWaveTargets.targetObjectId, placements[p.id]!)
+                )
+              )
+          );
+          return rows.find((r) => r.status === "deployment_authoring_refused");
+        },
+        { describe: "the B1 rollback is refused", timeoutMs: 45_000, intervalMs: 250 }
+      );
+      expect(row.executorRef).toBeNull();
+      const ds = await inOrg((tx) => tx.select().from(decisions).where(eq(decisions.subjectId, rb.id)));
+      expect(
+        ds.some(
+          (d) =>
+            d.verdict === "block" &&
+            (d.inputContext as { cause?: string }).cause === "rollback_destination_changed"
+        )
+      ).toBe(true);
+      expect(standIn.requests.slice(mark).filter((r) => r.method !== "GET")).toEqual([]);
+      expect((await admin.changes.get(v2)).state).not.toBe("rolled_back");
+    }, 180_000);
+
+    it("B2: after a carrier bump, a rollback re-authors the prior CONTENT under the NEW carrier — and the plugin sees the new authoring (config refresh)", async () => {
+      const p = await place("gamma", "shop");
+      const system = await argocdSystem();
+      const { component, placements } = await placedComponent(
+        `b2-${randomUUID().slice(0, 6)}`,
+        [p],
+        system,
+        { deployment: { image: "ghcr.io/acme/b2:1" } }
+      );
+      const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
+      await release(component.id, topo.id, "5");
+      const v2 = await release(component.id, topo.id, "6");
+      // The operator upgrades the carrier. The plugin instance was started with carrier-v1; if it kept
+      // that copy, its own guard would refuse the carrier-v2 document below.
+      await admin.object("execution-system").update(system.id, {
+        properties: { ...system.properties, authoring: { ...AUTHORING, targetRevision: "carrier-v2" } }
+      });
+      const b = standIn.authoredBodies.length;
+      await admin.changes.rollback(v2, "undo v2");
+      await waitUntil(
+        async () => ((await admin.changes.get(v2)).state === "rolled_back" ? true : undefined),
+        { describe: "v2 rolled back under the new carrier", timeoutMs: 60_000, intervalMs: 250 }
+      );
+      const body = standIn.authoredBodies
+        .slice(b)
+        .find((x) => x.metadata.labels?.["commanderscp.io/target"] === placements[p.id])!;
+      expect(body.spec?.source?.targetRevision).toBe("carrier-v2");
+      expect(JSON.stringify(body.spec?.source?.helm)).toContain("5".repeat(64));
+      expect(standIn.violations).toEqual([]);
+    }, 180_000);
+
+    it("item 3: an INLINE binding may not declare `authoring` — only the execution-system can", async () => {
+      const component = await createTestComponent(admin, {
+        name: `inline-${randomUUID().slice(0, 6)}`,
+        properties: { deployment: { image: "ghcr.io/acme/x:1" } }
+      });
+      const err = await admin.executors
+        .putBinding(component.id, {
+          pluginModule: "argocd",
+          pluginInstanceId: `inline-${randomUUID().slice(0, 6)}`,
+          config: {
+            serverUrl: standIn.url,
+            authoring: { ...AUTHORING, repoURL: "https://evil.example/x.git", namespaces: ["payments"] }
+          }
+        })
+        .catch((e: unknown) => e);
+      expect(String((err as Error)?.message ?? err)).toMatch(/Bad Request|400/);
+      expect(JSON.stringify(err)).toContain("only the execution-system");
+    }, 60_000);
+
+    it("item 2: a PLUGIN refusal is a terminal verdict with a Decision — not a trigger retried forever", async () => {
+      const p = await place("gamma", "shop");
+      const system = await argocdSystem();
+      const component = await createTestComponent(admin, {
+        name: `theirs-${randomUUID().slice(0, 6)}`,
+        properties: { deployment: { image: "ghcr.io/acme/x:1" } }
+      });
+      const placement = await admin.placements.create({
+        component: component.id,
+        deploymentTarget: p.id
+      });
+      // The binding names an Application someone else already owns in that Argo CD.
+      const theirs = `theirs-${randomUUID().slice(0, 6)}`;
+      standIn.seed({ metadata: { name: theirs, labels: {} } });
+      await admin.executors.putBinding(placement.id, {
+        executionSystemId: system.id,
+        externalRef: theirs
+      });
+      const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
+      const mark = writeMark();
+      const change = await admin.changes.propose({
+        name: `theirs ${randomUUID().slice(0, 6)}`,
+        targets: [component.id],
+        topology: topo.id
+      });
+      const row = await waitUntil(
+        async () => {
+          const r = await waveTargetRow(placement.id);
+          return r?.status === "executor_refused" ? r : undefined;
+        },
+        { describe: "the plugin's refusal terminalises the target", timeoutMs: 45_000, intervalMs: 250 }
+      );
+      expect(row.status).toBe("executor_refused");
+      const ds = await inOrg((tx) =>
+        tx.select().from(decisions).where(eq(decisions.subjectId, change.id))
+      );
+      const block = ds.find(
+        (d) => d.verdict === "block" && (d.inputContext as { gate?: string }).gate === "executor_refused"
+      );
+      expect(JSON.stringify(block?.reasonTree)).toContain("not authored by CommanderSCP");
+      expect(standIn.requests.slice(mark).filter((r) => r.method !== "GET")).toEqual([]);
+    }, 90_000);
+  });
 
   describe("finding 7: every refusal branch — terminal, a Decision, an audit event, and trigger() never called", () => {
     const cases: [

@@ -19,7 +19,9 @@ import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/cont
 import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
 import {
   assertEveryModuleHasManifest,
-  declaredConfigKeys
+  assertNoSystemOnlyConfig,
+  declaredConfigKeys,
+  withoutSystemOnlyConfig
 } from "../plugin-host/plugin-manifests.js";
 
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
@@ -287,6 +289,9 @@ export async function upsertExecutorBinding(
   // path can't reintroduce the hole by forgetting the check.
   if (!input.executionSystemId) {
     assertNotReservedInstanceId(input.pluginInstanceId);
+    // The repo-level net for execution-system-only config keys (ADR-0055 D9): every inline write
+    // door — the route, the IaC apply, the binding-policy reconciler — passes through here.
+    assertNoSystemOnlyConfig(input.pluginModule, input.config);
   }
   // Key the "is this an update or an insert" lookup on (target, TYPE). Without the Type the lookup
   // found "the" binding and UPDATED it — which is exactly how binding a component's second pipeline
@@ -895,7 +900,12 @@ export async function resolveExecutorPluginInstance(
   // Resolve the plugin identity and config from one of two. See docs/coordination.md §468.
   let pluginModule: string = binding.pluginModule;
   let pluginInstanceId = binding.pluginInstanceId;
-  let tenantConfig = (binding.config ?? {}) as Record<string, unknown>;
+  // An inline binding NEVER supplies an execution-system-only key, even from a row stored before
+  // the write door refused it (ADR-0055 D9) — stripped, not trusted.
+  let tenantConfig = withoutSystemOnlyConfig(
+    binding.pluginModule,
+    (binding.config ?? {}) as Record<string, unknown>
+  );
   let secretRefs = binding.secretRefs;
   // Two-layer internal-egress allowance (ADR-0003): the execution-system's declared intent AND the
   // operator's SCP_INTERNAL_EGRESS_HOSTS allowlist must BOTH permit. Never from tenant binding config.

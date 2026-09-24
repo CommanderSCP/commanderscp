@@ -30,6 +30,10 @@ const AUTHORING = {
   namespaces: ["shop"]
 };
 
+/** Documents mutated into malformed shapes. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Loose = any;
+
 function input(over: Partial<RenderAuthoredDeploymentInput> = {}): RenderAuthoredDeploymentInput {
   return {
     orgId: "org-1",
@@ -249,48 +253,77 @@ describe("renderAuthoredDeployment", () => {
   });
 });
 
-describe("authoredRollbackTrigger — D-c: a rollback re-authors the PRIOR manifest", () => {
-  const forward = { targetRef: "app-x", parameters: { [AUTHORED_APPLICATION_PARAMETER]: {} } };
+describe("authoredRollbackTrigger — D-c: a rollback re-authors the PRIOR release's content", () => {
   const expected = { orgId: "org-1", targetObjectId: "t" };
-  const prior = renderAuthoredDeployment(input({ changeObjectId: "earlier" })).application;
+  const forwardApp = renderAuthoredDeployment(input({ changeObjectId: "the-rollback" })).application;
+  const forward = {
+    targetRef: "checkout-gamma-1a2b3c4d",
+    parameters: { [AUTHORED_APPLICATION_PARAMETER]: forwardApp },
+    authoring: AUTHORING
+  };
+  const priorOf = (over: Partial<RenderAuthoredDeploymentInput> = {}) =>
+    renderAuthoredDeployment(input({ image: "ghcr.io/acme/checkout@sha256:" + "0".repeat(64), ...over }))
+      .application as Record<string, Loose>;
+  const state = (app: unknown) => ({ revision: "v1", [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(app) });
 
-  it("re-authors exactly the recorded prior Application", () => {
-    const trig = authoredRollbackTrigger(
-      { revision: "v1", [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(prior) },
-      forward,
-      expected
+  it("re-authors the prior Rollout under TODAY's envelope (carrier, project, destination)", () => {
+    const prior = priorOf();
+    const trig = authoredRollbackTrigger(state(prior), forward, expected);
+    const app = trig.parameters[AUTHORED_APPLICATION_PARAMETER] as Record<string, Loose>;
+    expect(app.spec.source.helm.valuesObject.manifests).toEqual(
+      prior.spec.source.helm.valuesObject.manifests
     );
-    expect(trig.targetRef).toBe("checkout-gamma-1a2b3c4d");
-    expect(trig.parameters[AUTHORED_APPLICATION_PARAMETER]).toEqual(prior);
+    expect(JSON.stringify(app)).toContain("0".repeat(64));
+    expect(app.spec.source.repoURL).toBe(AUTHORING.repoURL);
+    expect(app.metadata.annotations["commanderscp.io/rollout-source"]).toBe("rollback");
+  });
+
+  it("a prior that rode an OLDER carrier revision is re-authored under the current one", () => {
+    const prior = priorOf({ authoring: { ...AUTHORING, targetRevision: "carrier-v0" } });
+    const app = authoredRollbackTrigger(state(prior), forward, expected).parameters[
+      AUTHORED_APPLICATION_PARAMETER
+    ] as Record<string, Loose>;
+    expect(app.spec.source.targetRevision).toBe("v1");
   });
 
   it.each([
-    ["no prior at all (a first-ever deployment)", null],
-    ["a plain revision string (an imported app's state)", "abc123"],
+    ["no prior at all (a first-ever deployment)", null, "rollback_without_prior"],
+    ["a plain revision string (an imported app's state)", "abc123", "rollback_without_prior"],
     [
       "a prior cut by the persistence bound",
-      { [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(prior).slice(0, 200) }
+      { [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(priorOf()).slice(0, 200) },
+      "rollback_without_prior"
+    ],
+    ["a prior authored for a different target", state(priorOf({ targetObjectId: "other" })), "rollback_prior_foreign"],
+    [
+      "a prior deployed to a namespace this target no longer uses (review probe B1)",
+      state(priorOf({ namespace: "old-ns" })),
+      "rollback_destination_changed"
+    ],
+    [
+      "a prior whose content is outside TODAY's authoring (a kind since disallowed)",
+      state(
+        (() => {
+          const p = priorOf();
+          p.spec.source.helm.valuesObject.manifests.push({
+            apiVersion: "rbac.authorization.k8s.io/v1",
+            kind: "ClusterRoleBinding",
+            metadata: { name: "x" }
+          });
+          return p;
+        })()
+      ),
+      "rollback_prior_outside_authoring"
     ]
-  ])("REFUSES with %s", (_what, state) => {
-    expect(() => authoredRollbackTrigger(state, forward, expected)).toThrow(
-      DeploymentAuthoringRefused
-    );
+  ])("REFUSES %s", (_what, prior, cause) => {
+    let err: unknown;
     try {
-      authoredRollbackTrigger(state, forward, expected);
-    } catch (err) {
-      expect((err as DeploymentAuthoringRefused).inputContext.cause).toBe("rollback_without_prior");
+      authoredRollbackTrigger(prior, forward, expected);
+    } catch (e) {
+      err = e;
     }
-  });
-
-  it("REFUSES a prior authored for a different target", () => {
-    const foreign = renderAuthoredDeployment(input({ targetObjectId: "other" })).application;
-    expect(() =>
-      authoredRollbackTrigger(
-        { [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(foreign) },
-        forward,
-        expected
-      )
-    ).toThrow(/not authored by CommanderSCP for this target/);
+    expect(err).toBeInstanceOf(DeploymentAuthoringRefused);
+    expect((err as DeploymentAuthoringRefused).inputContext.cause).toBe(cause);
   });
 });
 

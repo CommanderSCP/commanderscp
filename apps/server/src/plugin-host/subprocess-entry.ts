@@ -28,7 +28,11 @@ import type {
   SecretsAccessor,
   TriggerIntent
 } from "@scp/plugin-api";
-import { scopedHttpResponseTooLargeError } from "@scp/plugin-api";
+import {
+  TRIGGER_REFUSED_RPC_CODE,
+  isTriggerRefused,
+  scopedHttpResponseTooLargeError
+} from "@scp/plugin-api";
 import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
 import { encodeMessage, parseMessage, type RpcRequest } from "./rpc-protocol.js";
 import { assertEgressAllowed, createEgressPinRegistry } from "./egress-guard.js";
@@ -531,7 +535,12 @@ async function main(): Promise<void> {
         encodeMessage({
           jsonrpc: "2.0",
           id: req.id,
-          error: { code: -32000, message: err instanceof Error ? err.message : String(err) }
+          // A plugin VERDICT (`TriggerRefused`) travels under its own code so the server can make it
+          // terminal; every other throw is the generic, retryable plugin error.
+          error: {
+            code: isTriggerRefused(err) ? TRIGGER_REFUSED_RPC_CODE : -32000,
+            message: err instanceof Error ? err.message : String(err)
+          }
         })
       );
     }

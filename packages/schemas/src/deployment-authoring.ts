@@ -96,7 +96,10 @@ export const ArgoCdAuthoringSchema = z
           message: "a control namespace (default, kube-*) is never an authoring destination"
         })
       )
-      .min(1)
+      .min(1),
+    /** Argo CD cluster NAMES a place's `properties.cluster` may target. Absent ⇒ the in-cluster
+     *  server only. The project must list the same destinations. */
+    clusters: z.array(z.string().min(1)).optional()
   })
   .refine((s) => (s.path === undefined) !== (s.chart === undefined), {
     message:

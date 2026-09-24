@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createFileBackedJsonCache } from "@scp/plugin-api";
+import { TriggerRefused, createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
   AbortResult,
   Cursor,
@@ -17,7 +17,13 @@ import type {
 } from "@scp/plugin-api";
 import { authoredApplicationProblems, readAuthoringConfig } from "./authored-guard.js";
 
-export { AUTHORED_MANIFEST_KINDS } from "./authored-guard.js";
+// The ONE validator, exported so the server applies the same rule to everything it authors.
+export {
+  AUTHORED_MANIFEST_KINDS,
+  authoredApplicationProblems,
+  readAuthoringConfig,
+  type AuthoringConfig
+} from "./authored-guard.js";
 
 /** `@scp/plugin-argocd` — the ArgoCD `ExecutorPlugin`. See docs/plugins.md §21. */
 
@@ -414,18 +420,18 @@ async function ensureAuthoredApplication(
 ): Promise<void> {
   const d = doc as { kind?: unknown; metadata?: { name?: unknown } } | null;
   if (!d || typeof d !== "object" || d.kind !== "Application" || d.metadata?.name !== appName) {
-    throw new Error(
+    throw new TriggerRefused(
       `argocd trigger: the authored Application must be kind Application named '${appName}' (the trigger's targetRef)`
     );
   }
   if (authoredLabelOf(doc) !== SCP_AUTHORED_LABEL_VALUE) {
-    throw new Error(
+    throw new TriggerRefused(
       `argocd trigger: an authored Application must carry ${SCP_AUTHORED_LABEL_KEY}=${SCP_AUTHORED_LABEL_VALUE}`
     );
   }
   const identity = identityLabelsOf(doc);
   if (!identity) {
-    throw new Error(
+    throw new TriggerRefused(
       `argocd trigger: an authored Application must name its org, component and target (${AUTHORED_IDENTITY_LABELS.join(", ")})`
     );
   }
@@ -433,14 +439,14 @@ async function ensureAuthoredApplication(
   // operator's own declaration on this Argo CD permits — or nothing is written at all.
   const authoring = readAuthoringConfig(config.authoring);
   if (!authoring) {
-    throw new Error(
+    throw new TriggerRefused(
       "argocd trigger: this Argo CD declares no usable `authoring` (carrier, non-default project, " +
         "namespace allowlist), so it is import-and-coordinate only — refusing to author an Application"
     );
   }
   const problems = authoredApplicationProblems(doc, authoring);
   if (problems.length > 0) {
-    throw new Error(
+    throw new TriggerRefused(
       `argocd trigger: refusing to author Application '${appName}': ${problems.join("; ")}`
     );
   }
@@ -462,7 +468,7 @@ async function ensureAuthoredApplication(
     );
   }
   if (authoredLabelOf(current.body) !== SCP_AUTHORED_LABEL_VALUE) {
-    throw new Error(
+    throw new TriggerRefused(
       `argocd trigger: Application '${appName}' already exists and was not authored by CommanderSCP ` +
         `(no ${SCP_AUTHORED_LABEL_KEY} label) — refusing to overwrite it. Import it instead, or name ` +
         `a different Application in the binding's externalRef.`
@@ -475,9 +481,11 @@ async function ensureAuthoredApplication(
     !existingIdentity ||
     AUTHORED_IDENTITY_LABELS.some((k) => existingIdentity[k] !== identity[k])
   ) {
-    throw new Error(
+    // The message names the property, never the other identity: it is persisted on a Decision in
+    // THIS org, and the Application may belong to another.
+    throw new TriggerRefused(
       `argocd trigger: Application '${appName}' was authored by CommanderSCP for a different org, ` +
-        `component or target (${JSON.stringify(existingIdentity)}) — refusing to overwrite it`
+        `component or target — refusing to overwrite it`
     );
   }
   // A forward release WAITS for a canary still in flight: re-authoring now would replace a Rollout

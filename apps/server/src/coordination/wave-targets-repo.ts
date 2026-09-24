@@ -31,6 +31,7 @@ import {
 import {
   WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS,
   WAVE_TARGET_DESTINATION_REFUSED_STATUS,
+  WAVE_TARGET_EXECUTOR_REFUSED_STATUS,
   WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS,
   WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS
 } from "./trigger-parameter-refusal.js";
@@ -507,7 +508,9 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   // M28.1 (ADR-0053) — a trigger-parameter derivation that refused. Before this they threw inside
   // the claim transaction and were retried every tick with no Decision at all.
   WAVE_TARGET_DESTINATION_REFUSED_STATUS,
-  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS,
+  // M28.4 fix round — the executor's own terminal verdict (`TriggerRefused`).
+  WAVE_TARGET_EXECUTOR_REFUSED_STATUS
 ] as const;
 export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
 

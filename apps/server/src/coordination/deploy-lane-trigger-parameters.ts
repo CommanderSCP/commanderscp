@@ -20,6 +20,7 @@ import { changePlans, changeWaves, objects } from "../db/schema.js";
 import { listRolloutsForComponents } from "../coordination-as-code/rollout-convergence-repo.js";
 import { ociDigestsOfSourceRef } from "./artifact-facts.js";
 import { parseTopologyWaves } from "./topology-waves.js";
+import { authoredApplicationProblems, readAuthoringConfig } from "@scp/plugin-argocd";
 import {
   TriggerParameterRefusal,
   WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION,
@@ -111,6 +112,9 @@ export interface AuthoredDeploymentTrigger {
   /** The Application name — sent as `trigger().targetRef`, so status/abort address what was made. */
   targetRef: string;
   parameters: Record<typeof AUTHORED_APPLICATION_PARAMETER, Record<string, unknown>>;
+  /** The execution-system's CURRENT authoring the document was derived under — what a rollback's
+   *  prior manifest is re-validated against. Never sent to the executor. */
+  authoring: ArgoCdAuthoring;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -465,17 +469,17 @@ export async function deployLaneTriggerParameters(
   }
   const deployment = parsed.data!;
 
-  // WHERE Argo CD reads the authored manifests from, which project, which namespaces. The
-  // execution-system's declaration wins, the same precedence its serverUrl and token already have
-  // over an inline binding's config.
+  // WHERE Argo CD reads the authored manifests from, which project, which namespaces — from the
+  // EXECUTION-SYSTEM ONLY (review round 2). An inline binding's config is tenant-writable
+  // (`object:write`), so a bound read from it is a bound the tenant chooses; the write door refuses
+  // `authoring` there and the resolver strips it (`SYSTEM_ONLY_CONFIG_KEYS`), and this lane never
+  // looks. The same rule ADR-0003 applies to `allowInternalEgress`.
   let authoringDoc: unknown;
   if (input.binding?.executionSystemId) {
     const system = await loadObject(tx, input.orgId, input.binding.executionSystemId);
     authoringDoc = isRecord(system?.properties)
       ? system.properties[ARGOCD_AUTHORING_PROPERTY]
       : undefined;
-  } else if (isRecord(input.binding?.config)) {
-    authoringDoc = input.binding.config[ARGOCD_AUTHORING_PROPERTY];
   }
   if (authoringDoc === undefined) {
     refuse(
@@ -483,7 +487,8 @@ export async function deployLaneTriggerParameters(
       `component '${component.name}' declares a deployment for SCP to author, but the Argo CD it ` +
         `is bound to declares no \`${ARGOCD_AUTHORING_PROPERTY}\` source — the carrier chart, the ` +
         `scoped project and the namespace allowlist. Install deploy/helm-bundled/authoring/scp-authored-manifests ` +
-        `where that Argo CD can read it and set \`properties.${ARGOCD_AUTHORING_PROPERTY}\` on the execution-system.`
+        `where that Argo CD can read it and set \`properties.${ARGOCD_AUTHORING_PROPERTY}\` on the ` +
+        `execution-system — an inline binding can never declare it.`
     );
   }
   const authoring = ArgoCdAuthoringSchema.safeParse(authoringDoc);
@@ -576,6 +581,15 @@ export async function deployLaneTriggerParameters(
   }
 
   const cluster = readString(place?.properties, "cluster");
+  // THE DESTINATION ALLOWLIST: a place naming an Argo CD cluster may target it only when the
+  // operator listed it; otherwise the in-cluster server, which the project allows.
+  if (cluster !== undefined && !(auth.clusters ?? []).includes(cluster)) {
+    refuse(
+      "cluster_not_allowed",
+      `deployment-target '${place?.name}' names Argo CD cluster '${cluster}', which the ` +
+        `execution-system's authoring does not list in \`clusters\`.`
+    );
+  }
   // Leaves room for blue-green's `-preview` suffix inside a 63-character Service name.
   const rolloutName = nameWithIdentity(component.name, component.id, 55);
   const rendered = renderAuthoredDeployment({
@@ -593,21 +607,55 @@ export async function deployLaneTriggerParameters(
     targetObjectId: input.targetObjectId,
     changeObjectId: input.changeObjectId
   });
+  // THE SAME VALIDATOR THE PLUGIN RUNS, on what the server itself authored. It cannot fail for a
+  // correct renderer; it is here so a renderer change that widens the document is refused with a
+  // Decision instead of reaching Argo CD and failing there.
+  assertWithinAuthoring(rendered.application, auth, "rendered_outside_authoring");
   return {
     targetRef: applicationName,
-    parameters: { [AUTHORED_APPLICATION_PARAMETER]: rendered.application }
+    parameters: { [AUTHORED_APPLICATION_PARAMETER]: rendered.application },
+    authoring: auth
   };
+}
+
+/** Run the plugin's own validator (`@scp/plugin-argocd`'s `authoredApplicationProblems`) against the
+ *  CURRENT authoring, refusing with a Decision. Messages name properties, never identifiers. */
+function assertWithinAuthoring(doc: unknown, auth: ArgoCdAuthoring, cause: string): void {
+  const config = readAuthoringConfig(auth);
+  const problems = config
+    ? authoredApplicationProblems(doc, config)
+    : ["the execution-system's authoring declaration is not usable"];
+  if (problems.length > 0) {
+    throw new DeploymentAuthoringRefused(
+      `the Application is outside what the Argo CD execution-system's authoring permits: ${problems.join("; ")}`,
+      { gate: "deployment_authoring", cause, problems: problems.length }
+    );
+  }
 }
 
 /**
  * D-c (owner decision 2026-09-23): a ROLLBACK RE-AUTHORS THE PRIOR MANIFEST. The prior is what the
  * argocd plugin's `status()` reported as the Application's state (`stateRef.scpAuthoredApplicationJson`)
- * when the original change was triggered — recorded as that wave target's `priorStateRef`. It goes
- * back through the same door, and the plugin re-validates it exactly as it validates a forward one.
+ * when the original change was triggered — recorded as that wave target's `priorStateRef`.
  *
- * Refused (with a Decision) when there is no prior: the original change was this target's first
- * authored deployment, so there is nothing to go back to — and re-syncing would re-apply the very
- * release being undone.
+ * WHAT "THE PRIOR MANIFEST" MEANS (review round 2): the prior release's CONTENT — the Rollout (image,
+ * steps) and its Services as they were deployed — re-authored under the CURRENT derivation: today's
+ * carrier, today's project, today's destination. Not the prior Application verbatim. The carrier is
+ * a pass-through vehicle, not part of the release; pinning a rollback to the carrier revision it
+ * happened to ride would make rollback fail precisely after an operator upgraded the carrier, and
+ * the prior Application's project/source were only ever the operator's bound at the time — the bound
+ * that holds NOW is the one a write must satisfy. So the content is kept, the envelope is current,
+ * and the result is re-validated by the same validator the forward path and the plugin run, against
+ * the execution-system's current `authoring`.
+ *
+ * Refused (with a Decision):
+ * - no prior (the original change was this target's first authored deployment);
+ * - a prior authored for another org or target;
+ * - a prior whose destination differs from today's (the target was moved: restoring content into
+ *   the OLD namespace would leave the current deployment in place and re-deploy where the operator
+ *   may since have revoked — the B1 probe's shape);
+ * - a prior whose content no longer satisfies today's authoring (e.g. a namespace or kind the
+ *   operator has since withdrawn).
  */
 export function authoredRollbackTrigger(
   priorStateRef: unknown,
@@ -648,9 +696,31 @@ export function authoredRollbackTrigger(
       { gate: "deployment_authoring", cause: "rollback_prior_foreign" }
     );
   }
-  const name = isRecord(prior.metadata) ? prior.metadata.name : undefined;
+  const forwardApp = forward.parameters[AUTHORED_APPLICATION_PARAMETER] as {
+    spec: { destination: unknown };
+  };
+  const priorSpec = isRecord(prior.spec) ? prior.spec : {};
+  if (JSON.stringify(priorSpec.destination) !== JSON.stringify(forwardApp.spec.destination)) {
+    throw new DeploymentAuthoringRefused(
+      "the prior release was deployed to a different destination than this target has now, so " +
+        "re-authoring it would restore it somewhere else and leave the current release in place. " +
+        "Re-propose the version you want as a forward change.",
+      { gate: "deployment_authoring", cause: "rollback_destination_changed" }
+    );
+  }
+  const priorSource = isRecord(priorSpec.source) ? priorSpec.source : {};
+  const priorHelm = isRecord(priorSource.helm) ? priorSource.helm : {};
+  const priorValues = isRecord(priorHelm.valuesObject) ? priorHelm.valuesObject : {};
+  const application = structuredClone(forward.parameters[AUTHORED_APPLICATION_PARAMETER]) as {
+    metadata: { annotations: Record<string, string> };
+    spec: { source: { helm: { valuesObject: { manifests: unknown } } } };
+  };
+  application.metadata.annotations["commanderscp.io/rollout-source"] = "rollback";
+  application.spec.source.helm.valuesObject.manifests = priorValues.manifests;
+  assertWithinAuthoring(application, forward.authoring, "rollback_prior_outside_authoring");
   return {
-    targetRef: typeof name === "string" ? name : forward.targetRef,
-    parameters: { [AUTHORED_APPLICATION_PARAMETER]: prior }
+    targetRef: forward.targetRef,
+    parameters: { [AUTHORED_APPLICATION_PARAMETER]: application as Record<string, unknown> },
+    authoring: forward.authoring
   };
 }

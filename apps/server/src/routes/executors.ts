@@ -29,7 +29,11 @@ import {
   type ExecutorType,
   type ExecutorLane
 } from "@scp/schemas";
-import { BUNDLED_PLUGIN_MANIFESTS, validatePluginConfig } from "../plugin-host/plugin-manifests.js";
+import {
+  BUNDLED_PLUGIN_MANIFESTS,
+  assertNoSystemOnlyConfig,
+  validatePluginConfig
+} from "../plugin-host/plugin-manifests.js";
 import type { AppDeps } from "../types.js";
 import type { PluginModule } from "../plugin-host/contract.js";
 import { requireAuth } from "../auth/require-auth.js";
@@ -268,6 +272,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         }
         // Reject e.g. a managed-iac binding that tries to set server-governed fields (CRITICAL #1).
         validatePluginConfig(body.pluginModule!, body.config);
+        // An inline binding never carries an execution-system-only key (ADR-0055 D9).
+        assertNoSystemOnlyConfig(body.pluginModule!, body.config);
       }
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);

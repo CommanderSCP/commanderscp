@@ -168,6 +168,35 @@ export interface ExecutionStatus {
   progress?: number;
 }
 
+/**
+ * A trigger the executor REFUSED on its own evidence — not a transient failure (M28.4, ADR-0055).
+ *
+ * A plain throw from `trigger()` is retried with backoff, which is right for a timeout or a 503 and
+ * wrong for a verdict: a refusal the plugin reaches on the document itself (an authored Application
+ * outside the operator's declaration, a name another target owns) will refuse identically on every
+ * retry, so the target sat in `triggering` forever with no Decision. Throwing THIS marks it terminal:
+ * the host carries it across the process boundary as `TRIGGER_REFUSED_RPC_CODE`, and the server
+ * records a Decision and an audit event instead of retrying.
+ *
+ * The message is persisted on the Decision: it must name the refused property, never another
+ * tenant's identifiers.
+ */
+export class TriggerRefused extends Error {
+  readonly refused = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "TriggerRefused";
+  }
+}
+
+/** The JSON-RPC error code a `TriggerRefused` travels under (the generic plugin error is -32000). */
+export const TRIGGER_REFUSED_RPC_CODE = -32010;
+
+/** Structural check — survives module duplication, where `instanceof` would not. */
+export function isTriggerRefused(err: unknown): err is TriggerRefused {
+  return err instanceof Error && err.name === "TriggerRefused";
+}
+
 export interface AbortResult {
   aborted: boolean;
   detail?: string;

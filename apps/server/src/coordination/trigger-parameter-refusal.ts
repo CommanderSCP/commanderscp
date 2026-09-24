@@ -34,6 +34,11 @@ export const WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS = "recipe_reserved_par
 export const WAVE_TARGET_RECIPE_RESERVED_PARAMETER_AUDIT_ACTION =
   "change.wave_target.recipe_reserved_parameter";
 
+/** Terminal status: the EXECUTOR refused the trigger on its own evidence (`TriggerRefused`, e.g. the
+ *  argocd plugin's second layer, ADR-0055) — recorded, never retried. */
+export const WAVE_TARGET_EXECUTOR_REFUSED_STATUS = "executor_refused";
+export const WAVE_TARGET_EXECUTOR_REFUSED_AUDIT_ACTION = "change.wave_target.executor_refused";
+
 export type TriggerParameterRefusalStatus =
   | typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS
   | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
