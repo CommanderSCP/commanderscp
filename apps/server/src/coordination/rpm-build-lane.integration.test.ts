@@ -297,12 +297,13 @@ describe("M28.1: an rpm component promotes end to end through Argo Workflows to 
     return component;
   }
 
-  async function proposeRpmChange(componentId: string) {
+  async function proposeRpmChange(componentId: string, properties?: Record<string, unknown>) {
     return admin.changes.propose({
       name: `rpm release ${randomUUID().slice(0, 6)}`,
       targets: [componentId],
       type: "rpm",
-      sourceRef: { repo: "acme/scp-widget", ref: "refs/heads/main", commit: COMMIT }
+      sourceRef: { repo: "acme/scp-widget", ref: "refs/heads/main", commit: COMMIT },
+      ...(properties ? { properties } : {})
     });
   }
 
@@ -400,6 +401,59 @@ describe("M28.1: an rpm component promotes end to end through Argo Workflows to 
     });
     expect(JSON.stringify(refusal!.reasonTree)).toContain("publishes 'rpm' packages");
 
+    const audit = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.subjectId, change.id))
+    );
+    expect(
+      audit.find((a) => a.action === "change.wave_target.destination_refused")?.decisionId
+    ).toBe(refusal!.id);
+  });
+
+  it("REFUSES a recipe that RESTATES the destination — the refusal above cannot be routed around", async () => {
+    // A recipe's `trigger.parameters` flow VERBATIM into the trigger and win a key collision with
+    // derived values. Without a bound, a proposer could restate the destination on an `rpm` target
+    // — the correct package-repo registry declared and all — and publish anywhere, including to a
+    // container registry: the exact outcome the DoD refusal exists to prevent. Written first and
+    // observed red: the plugin SUBMITTED with the recipe's `rpmUploadUrl`.
+    const component = await rpmComponent(
+      { kind: "gitea", serverUrl: "http://gitea:3000", packageFormats: ["oci", "rpm"] },
+      "acme/el9"
+    );
+    const change = await proposeRpmChange(component.id, {
+      recipe: {
+        version: 1,
+        trigger: {
+          kind: "workflow_dispatch",
+          parameters: {
+            rpmUploadUrl: "https://elsewhere.example.invalid/upload",
+            imageDestination: "ghcr.io/acme/widget"
+          }
+        }
+      }
+    });
+
+    const target = await waitUntil(
+      async () => {
+        const row = await waveTargetOf(component.id);
+        return row?.status === "destination_refused" ? row : undefined;
+      },
+      { describe: "the recipe-restated destination is refused", timeoutMs: 30_000 }
+    );
+    expect(target.executorRef).toBeNull();
+    expect(submissions.filter((s) => s.parameters["changeObjectId"] === change.id)).toEqual([]);
+
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(decisions).where(eq(decisions.subjectId, change.id))
+    );
+    const refusal = rows.find(
+      (d) => (d.inputContext as { gate?: string } | null)?.gate === "build_destination_recipe"
+    );
+    expect(refusal, "a Decision names the recipe keys it refused").toBeDefined();
+    expect(refusal!.verdict).toBe("block");
+    expect(refusal!.inputContext).toMatchObject({
+      type: "rpm",
+      recipeDestinationKeys: ["imageDestination", "rpmUploadUrl"]
+    });
     const audit = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.subjectId, change.id))
     );

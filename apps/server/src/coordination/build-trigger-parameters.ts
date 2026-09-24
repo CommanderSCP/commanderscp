@@ -52,7 +52,27 @@ export interface BuildTriggerParameterInput {
    *  change proposed with a hand-supplied `sourceRef`, was never checked against a shape. */
   sourceRef: unknown;
   changeObjectId: string;
+  /** The campaign recipe's `trigger.parameters`, when the change carries one. Read ONLY to refuse a
+   *  recipe that restates a destination key (ADR-0053 §4a); the merge itself stays in reconcile. */
+  recipeParameters?: Record<string, unknown> | undefined;
 }
+
+/** EVERY KEY `destinationParameters` CAN EMIT — the build lane's server-derived destination.
+ *
+ *  A recipe's parameters win a key collision with derived ones (reconcile's merge order), which is
+ *  right for conveniences and wrong for these: a recipe restating `rpmUploadUrl` or
+ *  `imageDestination` would route the artifact around the very refusal below. So for a Type whose
+ *  destination SCP derives, a recipe naming any of these is refused rather than merged. Kept as
+ *  one exported list so a later server-reserved-keys table (M28.4) can absorb it whole. */
+export const BUILD_DESTINATION_PARAMETER_KEYS = [
+  "registryUrl",
+  "registryName",
+  "imageRepository",
+  "imageDestination",
+  "packageRepository",
+  "rpmUploadUrl",
+  "rpmRepositoryUrl"
+] as const;
 
 /** The build lane's refusal: the declared destination cannot hold what this Type builds. */
 export class BuildDestinationRefused extends TriggerParameterRefusal {
@@ -115,6 +135,10 @@ export async function buildLaneTriggerParameters(
   // has nothing to hand it, so there is nothing it could hand wrongly (ADR-0053's table).
   const format = DESTINATION_FORMAT_OF_TYPE[type];
   if (format !== null) {
+    // BEFORE the registry is read, and whatever it says: a restated destination is refused even
+    // when the component declares no registry, since that is precisely the case where the recipe's
+    // value would be the only destination the executor sees.
+    assertRecipeDoesNotRestateDestination(type, input.recipeParameters);
     // The SAME resolution the pipeline view renders, not a second one. `declared` is the only
     // state that names a destination: `none` has no edge and `ambiguous` has more than one, and
     // picking one of several would be exactly the silent guess the pipeline view refuses to make.
@@ -130,6 +154,33 @@ export async function buildLaneTriggerParameters(
 
 /** Only ever called with a `declared` resolution — the one state that names a destination. */
 type DeclaredRegistry = ComponentPipelineRegistry;
+
+function assertRecipeDoesNotRestateDestination(
+  type: ArtifactClass,
+  recipeParameters: Record<string, unknown> | undefined
+): void {
+  if (!recipeParameters) return;
+  const restated = BUILD_DESTINATION_PARAMETER_KEYS.filter((k) =>
+    Object.hasOwn(recipeParameters, k)
+  )
+    .slice()
+    .sort();
+  if (restated.length === 0) return;
+  throw new BuildDestinationRefused(
+    `refusing to trigger this '${type}' build: its campaign recipe sets ${restated.join(", ")}, ` +
+      `which SCP derives from the component's publishes_to registry. A recipe may add parameters ` +
+      `but not choose where a '${type}' artifact is published — that would route it around the ` +
+      `destination check entirely.`,
+    {
+      remediation:
+        `remove ${restated.join(", ")} from the recipe's trigger.parameters and declare the ` +
+        `destination as data instead (the component's publishes_to edge, and the registry's ` +
+        `packageFormats), then cancel/rollback/re-propose the change`,
+      // The keys only, never the values: a refused destination is not worth persisting verbatim.
+      inputContext: { gate: "build_destination_recipe", type, recipeDestinationKeys: restated }
+    }
+  );
+}
 
 /** Refuse a registry that does not declare the format this Type publishes. See ADR-0053 §refusal. */
 function assertRegistryServes(

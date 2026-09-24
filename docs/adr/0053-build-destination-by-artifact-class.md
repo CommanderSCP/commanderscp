@@ -72,6 +72,27 @@ the Type, the required format, the declared and effective formats), hash-chained
 `change.wave_target.destination_refused` carrying the `decision_id`, status `destination_refused`,
 change parked — and `trigger()` is never called. Any other error still takes the retry path.
 
+**4a. A recipe may not restate the destination, and this narrows "the recipe wins".** reconcile
+merges a campaign recipe's `trigger.parameters` OVER the derived ones, deliberately: a recipe is an
+operator's explicit instruction, and silently overriding it would make the authored document a lie.
+That is right for conveniences and wrong for a destination. Without a bound, a proposer could put
+`properties.recipe.trigger.parameters.rpmUploadUrl` (or `imageDestination`, or `registryUrl`) on an
+`rpm` change and publish anywhere — a container registry included — around the very refusal above.
+It was observed doing exactly that (the plugin submitted the recipe's URL) before this bound.
+
+So for a Type whose destination SCP derives (`image`, `rpm`), a recipe naming any key in
+`BUILD_DESTINATION_PARAMETER_KEYS` — every key `destinationParameters` can emit — is **refused**
+through the same typed path: Decision `gate: build_destination_recipe` carrying the offending key
+NAMES (never their values), audit `change.wave_target.destination_refused`, never triggered. Refused
+rather than silently overridden, for the same reason the recipe wins elsewhere: an author who wrote a
+destination believed it would be used, and quietly discarding it would be the lie the merge rule
+exists to avoid. It is checked BEFORE the registry is read, so it also fires when the component
+declares no registry — the case where the recipe's value would be the only destination the executor
+saw. A no-class Type's recipe is untouched: SCP derives no destination for it, so there is nothing to
+protect. The key list is one exported constant so M28.4's server-reserved-keys table can absorb it.
+This is the build-lane twin of ADR-0052, narrower in effect (refuse, not win) because a build
+destination has a declared source of truth — the graph — to point the author at.
+
 **Census by property.** `OpsDeclarationRefused` (M27.9) had the same property — thrown inside the
 claim transaction, caught by the per-target handler, logged and retried every tick with no Decision.
 It now extends the same class and terminalises as `ops_declaration_refused`. Its Decision carries `{ gate: "ops_declaration", reason, role, hasArguments }` — the cause from a closed set, never the argument values (they can name hosts and paths) — and `ops-declaration-refusal.integration.test.ts` proves the path through the real reconcile loop with a real `managed-ops` binding. Both statuses joined
@@ -109,7 +130,7 @@ Gitea takes one identity); SCP holds none.
 - An `rpm` component promotes end to end: `rpm-build-lane.integration.test.ts` drives a change
   through the real reconcile loop and the real `argo-workflows` plugin, then runs the shipped builder
   with exactly the submitted parameters against a real Gitea and `dnf install`s the result.
-- A campaign recipe still wins a key collision on the build lane (ADR-0052 leaves that rule as it
-  was), so a recipe may supply its own `rpmUploadUrl`. The refusal happens first either way.
+- A campaign recipe still wins a key collision on the build lane for every key EXCEPT the derived
+  destination keys (§4a), which it may not name at all for an `image` or `rpm` target.
 - Registering an RPM destination is data only: add `rpm` to the registry's `packageFormats` and
   point the component's `publishes_to` edge at it with `repository: owner[/group]`.

@@ -1655,7 +1655,10 @@ async function triggerWaveTarget(
             targetObjectId,
             type,
             sourceRef: change.sourceRef,
-            changeObjectId: change.objectId
+            changeObjectId: change.objectId,
+            // Read only to REFUSE a recipe that restates a derived destination (ADR-0053 §4a) —
+            // the one narrowing of "the recipe wins" below.
+            recipeParameters
           }).catch(asRefusal);
       if (sourceParameters instanceof TriggerParameterRefusal) {
         await refuseTrigger(tx, sourceParameters);
@@ -1688,6 +1691,10 @@ async function triggerWaveTarget(
       // instruction for this campaign, and silently overriding it with a derived value would make
       // the authored document a lie. Merged rather than either/or so a recipe-driven build still
       // gets the source identity it would otherwise have to restate.
+      //
+      // EXCEPT a build DESTINATION, which a recipe cannot reach this merge carrying: for a Type
+      // whose destination SCP derives, `buildLaneTriggerParameters` refuses a recipe naming any
+      // `BUILD_DESTINATION_PARAMETER_KEYS` above (ADR-0053 §4a), so no collision on those exists.
       //
       // EXCEPT for host-reaching material, which is spread LAST and therefore wins (ADR-0052).
       // These are not conveniences an operator might reasonably restate: `opsInventory` is which

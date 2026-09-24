@@ -1771,7 +1771,10 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         a kind. (b) No maintained public image ships `rpmbuild` — hence a first-party image, and a
         template that is **off until its image is named**. (c) The "same refusal channel" the brief
         pointed at (`OpsDeclarationRefused`) was itself a retry-forever with no Decision; it was
-        fixed by property in the same increment.
+        fixed by property in the same increment; it now has its own behavioural test (`ops-declaration-refusal.integration.test.ts`). (d) The
+        refusal could be ROUTED AROUND: a campaign recipe's parameters win a key collision, so a
+        recipe restating `rpmUploadUrl` published anywhere — observed. For a Type whose destination SCP
+        derives, a recipe naming a destination key is now refused (ADR-0053 §4a).
       - *What the DoD did NOT prove.* Argo Workflows itself is a loopback stand-in in the test (it
         records the submission and reports Succeeded); the template's argument wiring is held by
         `tools/helm-verify` instead, and the source-fetch init container is shared with
