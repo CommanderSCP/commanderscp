@@ -831,6 +831,242 @@ function verifyRpmCatalogTemplate(): void {
   );
 }
 
+const INFRA_VERIFY_IMAGE = "ghcr.io/commanderscp/scp-runner-iac:verify";
+/** The values that render the infra templates — the operator's backend switch plus the image. */
+const INFRA_VERIFY_SETS = [
+  "--set",
+  `bundledExecutor.argoWorkflows.catalog.infra.image=${INFRA_VERIFY_IMAGE}`,
+  "--set",
+  "bundledExecutor.argoWorkflows.catalog.infra.stateBackend.type=s3",
+  "--set",
+  "bundledExecutor.argoWorkflows.catalog.infra.stateBackend.config.bucket=verify-state",
+  "--set",
+  "bundledExecutor.argoWorkflows.catalog.infra.stateBackend.config.encrypt=true"
+];
+
+/** INFRASTRUCTURE BUILDOUT (M28.3, ADR-0056) — scp-infra-plan-v1 / scp-infra-apply-v1, rendered and
+ *  held to their contract.
+ *
+ *  What `infra-lane.integration.test.ts` cannot see, because it runs the SCRIPT, not the rendered
+ *  template: that the template runs that script (the ConfigMap is byte-identical to the file the
+ *  test runs), with the positional arguments in the order the test passes them, as the identity the
+ *  chart gives the executor floor and nothing else, fully hardened, exporting exactly the global
+ *  outputs the argo-workflows plugin reads — and that the whole thing is ABSENT until the operator
+ *  names a state backend, and a render that names one without an image fails rather than shipping
+ *  a template with an empty image. */
+function verifyInfraCatalogTemplates(): void {
+  const label = "M28.3 scp-infra-plan-v1/apply-v1";
+  console.log(`\nhelm-verify: ${label} — rendering the infra catalog templates...`);
+  const base = [
+    "--set",
+    "bundledExecutor.argoWorkflows.enabled=true",
+    "--set",
+    "bundledExecutor.scpNamespace=verify-scp-ns"
+  ];
+  const templatesOf = (docs: K8sDoc[]) =>
+    new Map(
+      docs
+        .filter((d) => d.kind === "WorkflowTemplate")
+        .map((d) => [String(d.metadata?.name), d] as const)
+    );
+
+  // ABSENT until the backend is named — even with the image set (install.sh always sets it).
+  const off = templatesOf(
+    renderBundledChart([
+      ...base,
+      "--set",
+      `bundledExecutor.argoWorkflows.catalog.infra.image=${INFRA_VERIFY_IMAGE}`
+    ])
+  );
+  assert(
+    !off.has("scp-infra-plan-v1") && !off.has("scp-infra-apply-v1"),
+    `[${label}] with no stateBackend.type the infra templates must NOT render (rendered: ${[...off.keys()].join(", ")}) — a template with nowhere to keep state would lose it with the pod`
+  );
+
+  // FAIL-CLOSED: a backend with no image.
+  let failedClosed = false;
+  try {
+    renderRaw(BUNDLED_CHART_DIR, "verify-infra-noimage", [
+      ...base,
+      "--set",
+      "bundledExecutor.argoWorkflows.catalog.infra.stateBackend.type=s3"
+    ]);
+  } catch {
+    failedClosed = true;
+  }
+  assert(
+    failedClosed,
+    `[${label}] stateBackend.type set with an empty infra.image rendered — it must fail the render, not ship a template with no image`
+  );
+
+  const docs = renderBundledChart([...base, ...INFRA_VERIFY_SETS]);
+  const on = templatesOf(docs);
+  const configMap = docs.find((d) => d.kind === "ConfigMap" && d.metadata?.name === "scp-infra-v1");
+  const shipped = readFileSync(path.join(BUNDLED_CHART_DIR, "files/scp-infra.sh"), "utf8");
+  assert(
+    configMap?.data?.["scp-infra.sh"] === shipped,
+    `[${label}] the scp-infra-v1 ConfigMap's scp-infra.sh is not byte-identical to deploy/helm-bundled/files/scp-infra.sh — the script the integration test runs must be the script that ships`
+  );
+  assert(
+    configMap?.data?.["backend.tfbackend"] === 'bucket = "verify-state"\nencrypt = true\n',
+    `[${label}] backend.tfbackend rendered ${JSON.stringify(configMap?.data?.["backend.tfbackend"])}, not the operator's stateBackend.config as HCL`
+  );
+
+  type WfTemplate = {
+    name?: string;
+    outputs?: {
+      parameters?: { name: string; globalName?: string; valueFrom?: { path?: string } }[];
+    };
+    container?: Container & {
+      command?: string[];
+      args?: string[];
+      envFrom?: { secretRef?: { name?: string; optional?: boolean } }[];
+      securityContext?: Record<string, unknown>;
+    };
+    initContainers?: unknown[];
+  };
+  const buildSa = (on.get("scp-build-image-v1")?.spec as { serviceAccountName?: string })
+    ?.serviceAccountName;
+
+  for (const phase of ["plan", "apply"] as const) {
+    const name = `scp-infra-${phase}-v1`;
+    const wf = on.get(name);
+    assert(wf, `[${label}] ${name} did not render with a state backend and an image set`);
+    if (!wf) continue;
+    const spec = wf.spec as {
+      serviceAccountName?: string;
+      arguments?: { parameters?: { name: string; value?: string }[] };
+      templates?: WfTemplate[];
+    };
+    const tpl = spec.templates?.[0];
+    const c = tpl?.container;
+    assert(
+      c?.image === INFRA_VERIFY_IMAGE,
+      `[${label}] ${name} runs '${c?.image}', not infra.image`
+    );
+    assert(
+      spec.serviceAccountName === "scp-infra" && spec.serviceAccountName !== buildSa,
+      `[${label}] ${name} runs as '${spec.serviceAccountName}' — it must be the infra identity, never the build identity a tenant's Dockerfile runs as`
+    );
+    assert(
+      (tpl?.initContainers ?? []).length === 0,
+      `[${label}] ${name} grew an init container; the checkout is the script's, by commit`
+    );
+
+    // THE POSITIONAL CONTRACT (files/scp-infra.sh's usage line, and the order the test runs it).
+    const expectedArgs = [
+      phase,
+      "{{inputs.parameters.environment}}",
+      "{{inputs.parameters.stateWorkspace}}",
+      "{{inputs.parameters.sourceRepo}}",
+      "{{inputs.parameters.sourceCommit}}",
+      "{{inputs.parameters.infraPath}}",
+      ...(phase === "apply" ? ["{{inputs.parameters.planDigest}}"] : [])
+    ];
+    assert(
+      JSON.stringify(c?.command) === JSON.stringify(["bash", "/scp/scp-infra.sh"]) &&
+        JSON.stringify(c?.args) === JSON.stringify(expectedArgs),
+      `[${label}] ${name} runs ${JSON.stringify(c?.command)} ${JSON.stringify(c?.args)}, not bash /scp/scp-infra.sh ${JSON.stringify(expectedArgs)}`
+    );
+
+    // REQUIRED parameters carry no default — Argo refuses to submit without them.
+    const params = new Map((spec.arguments?.parameters ?? []).map((p) => [p.name, p] as const));
+    const required = ["environment", "stateWorkspace", "sourceRepo", "sourceCommit"];
+    if (phase === "apply") required.push("planDigest");
+    for (const r of required) {
+      assert(
+        params.has(r) && params.get(r)?.value === undefined,
+        `[${label}] ${name}: '${r}' must be declared with NO default, so a trigger missing it is refused at submit`
+      );
+    }
+    assert(
+      phase === "apply" || !params.has("planDigest"),
+      `[${label}] scp-infra-plan-v1 declares planDigest — a plan has nothing to be bound to`
+    );
+
+    // THE EVIDENCE CHANNEL — exactly the global outputs `@scp/plugin-argo-workflows` reads.
+    const outputs = (tpl?.outputs?.parameters ?? []).map(
+      (o) => `${o.globalName}<-${o.valueFrom?.path}`
+    );
+    const expectedOutputs = [
+      "scpPlanDigest<-/work/out/planDigest",
+      "scpPlanAdd<-/work/out/planAdd",
+      "scpPlanChange<-/work/out/planChange",
+      "scpPlanDestroy<-/work/out/planDestroy",
+      "scpPlanApplied<-/work/out/applied"
+    ];
+    assert(
+      JSON.stringify(outputs) === JSON.stringify(expectedOutputs),
+      `[${label}] ${name} exports ${JSON.stringify(outputs)}, not the plan-evidence contract ${JSON.stringify(expectedOutputs)} (PLAN_OUTPUT_PARAMETERS in the argo-workflows plugin)`
+    );
+
+    // FULLY HARDENED — tofu, git and jq need no relaxation.
+    const sc = (c?.securityContext ?? {}) as {
+      runAsNonRoot?: boolean;
+      runAsUser?: number;
+      readOnlyRootFilesystem?: boolean;
+      allowPrivilegeEscalation?: boolean;
+      privileged?: boolean;
+      seccompProfile?: { type?: string };
+      capabilities?: { drop?: string[]; add?: string[] };
+    };
+    const hardening: [boolean, string][] = [
+      [sc.runAsNonRoot === true && (sc.runAsUser ?? 0) > 0, "runAsNonRoot as a non-zero uid"],
+      [sc.readOnlyRootFilesystem === true, "readOnlyRootFilesystem: true"],
+      [sc.allowPrivilegeEscalation === false, "allowPrivilegeEscalation: false"],
+      [sc.privileged !== true, "not privileged"],
+      [sc.seccompProfile?.type === "RuntimeDefault", "seccompProfile RuntimeDefault"],
+      [(sc.capabilities?.drop ?? []).includes("ALL"), "capabilities drop ALL"],
+      [(sc.capabilities?.add ?? []).length === 0, "no added capabilities"]
+    ];
+    for (const [ok, what] of hardening) {
+      assert(ok, `[${label}] ${name} container is not '${what}'`);
+    }
+
+    // CREDENTIALS: the operator's infra Secret (optional) and the catalog's gitToken — nothing else.
+    const secretRefs = (c?.env ?? [])
+      .map(
+        (e) =>
+          (e as { valueFrom?: { secretKeyRef?: { name?: string; key?: string } } }).valueFrom
+            ?.secretKeyRef
+      )
+      .filter((r): r is { name?: string; key?: string } => r !== undefined)
+      .map((r) => `${r.name}/${r.key}`);
+    assert(
+      JSON.stringify(secretRefs) === JSON.stringify(["scp-build-registry/gitToken"]),
+      `[${label}] ${name} reads secret keys ${JSON.stringify(secretRefs)} — only the catalog's gitToken may be read by key (registry push credentials must never reach an infra pod)`
+    );
+    assert(
+      JSON.stringify(c?.envFrom) ===
+        JSON.stringify([{ secretRef: { name: "scp-infra-credentials", optional: true } }]),
+      `[${label}] ${name} envFrom is ${JSON.stringify(c?.envFrom)}, not the operator's optional infra credentials Secret`
+    );
+    const backendEnv = (c?.env ?? []).find((e) => e.name === "SCP_STATE_BACKEND_TYPE");
+    assert(
+      (backendEnv as { value?: string } | undefined)?.value === "s3",
+      `[${label}] ${name} does not carry the operator's backend type in SCP_STATE_BACKEND_TYPE`
+    );
+  }
+
+  // The infra identity's Role is the executor floor and nothing more.
+  const role = docs.find((d) => d.kind === "Role" && d.metadata?.name === "scp-infra") as
+    { rules?: { apiGroups?: string[]; resources?: string[]; verbs?: string[] }[] } | undefined;
+  assert(
+    JSON.stringify(role?.rules) ===
+      JSON.stringify([
+        {
+          apiGroups: ["argoproj.io"],
+          resources: ["workflowtaskresults"],
+          verbs: ["create", "patch"]
+        }
+      ]),
+    `[${label}] the scp-infra Role grants ${JSON.stringify(role?.rules)} — the chart grants the infra identity the executor floor only; anything more (a kubernetes backend's Secrets) is the operator's to add`
+  );
+  console.log(
+    "  absent until stateBackend.type is set; fails closed with no image; ships files/scp-infra.sh byte-identical; positional args + required params + evidence outputs match; fully hardened; infra identity at the executor floor; only gitToken + the infra Secret"
+  );
+}
+
 function verifySocketInvariantMatrix(): void {
   const label = "M23.6 socket invariant";
   console.log(
@@ -976,7 +1212,9 @@ function verifySocketInvariantMatrix(): void {
       // scp-build-rpm-v1 renders only once its first-party builder image is named (M28.1), so
       // without this the socket scan and the WorkflowTemplate container guards below would never
       // see it — "what this chart can render" includes it.
-      `bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage=${RPM_BUILDER_VERIFY_IMAGE}`
+      `bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage=${RPM_BUILDER_VERIFY_IMAGE}`,
+      // The infra templates (M28.3) render only once a state backend is named — same reason.
+      ...INFRA_VERIFY_SETS
     ]
   ]) {
     const bundledRaw = renderRaw(BUNDLED_CHART_DIR, "verify-socket-bundled", setArgs);
@@ -3553,6 +3791,7 @@ function main(): void {
 
   verifySocketInvariantMatrix();
   verifyRpmCatalogTemplate();
+  verifyInfraCatalogTemplates();
 
   if (failures.length > 0) {
     console.error(`\nhelm-verify: ${failures.length} assertion(s) FAILED:\n`);
