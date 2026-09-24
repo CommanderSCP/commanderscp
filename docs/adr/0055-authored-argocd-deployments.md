@@ -249,8 +249,11 @@ For an Application that manages a Rollout:
    - The resolver strips it from any stored row, and the deploy lane never reads binding config.
 
    This is ADR-0003's `allowInternalEgress` rule, and the model M28.2 uses for ops endpoints.
-2. **A running plugin sees the operator's CURRENT execution-system (a stale-config census).** The property: `host.start()` was idempotent per instance id, so every `execution-system:<id>` instance kept the properties it started with. A narrowed allowlist, a rotated token, a moved `serverUrl` or a revoked `allowInternalEgress` therefore changed nothing the plugin enforced. It is fixed at the host, for every plugin at once: `start` compares a canonical fingerprint of the whole resolved config (module, config, decrypted secrets, egress) and restarts the instance when it differs. An identical config is still a no-op.
-3. **A plugin's verdict is terminal.** `@scp/plugin-api` gains `TriggerRefused`, which crosses the process boundary as JSON-RPC code `-32010` (`PluginTriggerRefusedError`). `reconcile.ts` terminalises it as `executor_refused` with a Decision and an audit event, instead of a retry loop. The argocd plugin throws it for:
+2. **A running plugin kept a stale copy of its execution-system (the property is found, and owned elsewhere).** `host.start()` is idempotent per instance id, so an `execution-system:<id>` instance keeps the properties it started with until the server restarts. That affects every plugin, not only argocd: a narrowed allowlist, a rotated token, a moved `serverUrl`, a revoked `allowInternalEgress`. **The general fix in `plugin-host/host.ts` is owned by #414 (M28.2), by coordination, so the two PRs do not collide.** This PR does not depend on it:
+   - the server re-validates everything it authors, rollbacks included, against the CURRENT `authoring` on every trigger;
+   - a stale plugin can therefore only be *stricter* than the server;
+   - and a stale plugin's refusal is terminal (item 3), never a silent write.
+3. **A plugin's verdict is terminal.** `@scp/plugin-api` gains `TriggerRefused`. The subprocess entry sends it as code `-32010` with the message prefixed `TRIGGER_REFUSED_MESSAGE_PREFIX`, so `host.ts` is unchanged. `reconcile.ts` reads it with `triggerRefusalOf` and terminalises it as `executor_refused` with a Decision and an audit event, instead of a retry loop. The argocd plugin throws it for:
    - a second-layer violation;
    - a missing or unusable `authoring`;
    - an Application it did not author;
@@ -280,7 +283,6 @@ For an Application that manages a Rollout:
 - **What changed for existing estates:**
   - Nothing, unless a component declares `properties.deployment` or a recipe names a reserved key.
   - D12 changes one thing for everyone: an imported Application whose Rollout is paused now stays `running` instead of `succeeded`.
-  - D13.2 changes one thing for every plugin: editing an execution-system (or a binding's resolved config) now restarts its running plugin instance on the next call, so the change takes effect. Before, it took effect only after a server restart.
 
 ## What this did NOT prove
 

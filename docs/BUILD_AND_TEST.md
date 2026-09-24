@@ -1818,8 +1818,9 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         changed is refused, and the first deployment's rollback is refused.
       - **Review round 2 fixed four more defects:**
         - **BLOCKING — a rollback bypassed the namespace allowlist.**
-        - **A running plugin kept stale config.** Fixed at the host for every plugin: an instance
-          whose resolved config changes is restarted.
+        - **A running plugin kept stale config.** The general host fix is owned by #414. This PR
+          re-validates server-side against the current authoring on every trigger, so a stale
+          plugin can only be stricter than the server, and its refusal is terminal.
         - **`authoring` could come from a tenant's inline binding.** It is now refused at every
           write door and stripped on read.
         - **Plugin refusals retried forever.** They are now terminal `executor_refused` verdicts,

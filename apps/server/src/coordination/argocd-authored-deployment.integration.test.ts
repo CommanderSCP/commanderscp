@@ -803,14 +803,18 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
       await release(component.id, topo.id, "5");
       const v2 = await release(component.id, topo.id, "6");
-      // The operator upgrades the carrier. The plugin instance was started with carrier-v1; if it kept
-      // that copy, its own guard would refuse the carrier-v2 document below.
+      // The operator upgrades the carrier. The plugin instance was started with carrier-v1; a running
+      // instance does not yet pick up edited execution-system properties (the general refresh in
+      // `plugin-host/host.ts` is owned by #414, M28.2), so the instance is restarted here the way that
+      // fix will. What THIS test proves is the server side: the rollback is re-derived and
+      // re-validated against the current authoring, not re-sent verbatim.
       await admin.object("execution-system").update(system.id, {
         properties: {
           ...system.properties,
           authoring: { ...AUTHORING, targetRevision: "carrier-v2" }
         }
       });
+      await server.deps.pluginHost!.stopInstances([`execution-system:${system.id}`]);
       const b = standIn.authoredBodies.length;
       await admin.changes.rollback(v2, "undo v2");
       await waitUntil(

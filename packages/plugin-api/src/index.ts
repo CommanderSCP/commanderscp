@@ -192,6 +192,20 @@ export class TriggerRefused extends Error {
 /** The JSON-RPC error code a `TriggerRefused` travels under (the generic plugin error is -32000). */
 export const TRIGGER_REFUSED_RPC_CODE = -32010;
 
+/** The prefix a `TriggerRefused`'s message travels with across the process boundary, so the server
+ *  can tell a verdict from a failure without the host changing its error shape: the host surfaces
+ *  every plugin error as `plugin '<id>' RPC error: <message>`, and only the subprocess entry — for a
+ *  `TriggerRefused` and nothing else — writes this marker at the start of `<message>`. */
+export const TRIGGER_REFUSED_MESSAGE_PREFIX = "[trigger-refused] ";
+
+/** The refusal carried by a host error, or `undefined` for an ordinary (retryable) failure. */
+export function triggerRefusalOf(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const marker = `RPC error: ${TRIGGER_REFUSED_MESSAGE_PREFIX}`;
+  const at = err.message.indexOf(marker);
+  return at === -1 ? undefined : err.message.slice(at + marker.length);
+}
+
 /** Structural check — survives module duplication, where `instanceof` would not. */
 export function isTriggerRefused(err: unknown): err is TriggerRefused {
   return err instanceof Error && err.name === "TriggerRefused";

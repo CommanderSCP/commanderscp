@@ -6,6 +6,12 @@ import {
   PRIOR_AUTHORED_APPLICATION_KEY as PLUGIN_PRIOR_KEY,
   SCP_AUTHORED_LABEL_KEY as PLUGIN_LABEL_KEY
 } from "@scp/plugin-argocd";
+import {
+  TRIGGER_REFUSED_MESSAGE_PREFIX,
+  TriggerRefused,
+  isTriggerRefused,
+  triggerRefusalOf
+} from "@scp/plugin-api";
 import { AUTHORED_MANIFEST_KINDS, SCP_AUTHORED_LABEL_KEY } from "@scp/schemas";
 import {
   AUTHORED_APPLICATION_PARAMETER,
@@ -334,6 +340,24 @@ describe("authoredRollbackTrigger — D-c: a rollback re-authors the PRIOR relea
     }
     expect(err).toBeInstanceOf(DeploymentAuthoringRefused);
     expect((err as DeploymentAuthoringRefused).inputContext.cause).toBe(cause);
+  });
+});
+
+describe("a plugin's verdict crosses the host as a refusal, never as a retryable failure", () => {
+  it("only the marker the subprocess entry writes for a TriggerRefused is read as a verdict", () => {
+    const verdict = new Error(
+      `plugin 'execution-system:x' RPC error: ${TRIGGER_REFUSED_MESSAGE_PREFIX}refusing to author`
+    );
+    expect(triggerRefusalOf(verdict)).toBe("refusing to author");
+    // KNOWN-NEGATIVE CONTROLS: an ordinary plugin error, and a marker that is not at the message head.
+    expect(
+      triggerRefusalOf(new Error("plugin 'x' RPC error: sync returned HTTP 503"))
+    ).toBeUndefined();
+    expect(
+      triggerRefusalOf(new Error(`timeout ${TRIGGER_REFUSED_MESSAGE_PREFIX}`))
+    ).toBeUndefined();
+    expect(triggerRefusalOf("not an error")).toBeUndefined();
+    expect(isTriggerRefused(new TriggerRefused("x"))).toBe(true);
   });
 });
 

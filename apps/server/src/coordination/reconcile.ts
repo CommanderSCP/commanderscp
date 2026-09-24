@@ -128,7 +128,7 @@ import {
   WAVE_TARGET_EXECUTOR_REFUSED_AUDIT_ACTION,
   WAVE_TARGET_EXECUTOR_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
-import { PluginTriggerRefusedError } from "../plugin-host/host.js";
+import { triggerRefusalOf } from "@scp/plugin-api";
 import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 import {
   authoredRollbackTrigger,
@@ -1877,7 +1877,8 @@ async function triggerWaveTarget(
       // A VERDICT, not a failure (M28.4 fix round): the executor refused on its own evidence and
       // will refuse identically on every retry, so the target is terminalised with a Decision and an
       // audit event instead of sitting in `triggering` behind an ever-growing backoff.
-      if (err instanceof PluginTriggerRefusedError) {
+      const refusal = triggerRefusalOf(err);
+      if (refusal !== undefined) {
         await withTenantTx(db, orgId, (tx) =>
           blockWaveTarget(tx, {
             orgId,
@@ -1887,10 +1888,10 @@ async function triggerWaveTarget(
             targetObjectId,
             status: WAVE_TARGET_EXECUTOR_REFUSED_STATUS,
             action: WAVE_TARGET_EXECUTOR_REFUSED_AUDIT_ACTION,
-            summary: `the executor refused this trigger: ${err.refusal}`,
+            summary: `the executor refused this trigger: ${refusal}`,
             remediation:
               "correct what the executor names, then cancel/rollback/re-propose the change",
-            reason: err.refusal,
+            reason: refusal,
             inputContext: {
               waveId,
               targetObjectId,

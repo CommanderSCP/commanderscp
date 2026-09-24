@@ -27,7 +27,6 @@ import type {
   NotificationMessage,
   TriggerIntent
 } from "@scp/plugin-api";
-import { TRIGGER_REFUSED_RPC_CODE } from "@scp/plugin-api";
 import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
 import type {
   ControlPluginClient,
@@ -136,18 +135,6 @@ const DEFAULTS: Required<
 /** Thrown internally when a child exits while a call to it is in flight — `call()` catches this
  *  exact type to decide whether a transparent retry is still possible within budget; any other
  *  rejection (a real RPC error the plugin itself raised) propagates straight to the caller. */
-/** A plugin's own terminal verdict on a call (`TriggerRefused` in `@scp/plugin-api`), carried across
- *  the process boundary. `reconcile.ts` records it as a Decision instead of retrying (ADR-0055). */
-export class PluginTriggerRefusedError extends Error {
-  constructor(
-    readonly instanceId: string,
-    readonly refusal: string
-  ) {
-    super(`plugin '${instanceId}' refused the trigger: ${refusal}`);
-    this.name = "PluginTriggerRefusedError";
-  }
-}
-
 class PluginInstanceCrashedError extends Error {
   constructor(instanceId: string) {
     super(`plugin instance '${instanceId}' exited while this call was in flight`);
@@ -196,33 +183,6 @@ function killInstanceProcess(child: ChildProcessWithoutNullStreams, signal: Node
   child.kill(signal);
 }
 
-/** A stable identity for everything an instance was started WITH — keys sorted at every level, so
- *  two resolutions of the same unchanged binding always agree and never restart each other. */
-function instanceFingerprint(config: PluginHostInstanceConfig): string {
-  const stable = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.map(stable);
-    if (v && typeof v === "object") {
-      return Object.fromEntries(
-        Object.keys(v as Record<string, unknown>)
-          .sort()
-          .map((k) => [k, stable((v as Record<string, unknown>)[k])])
-      );
-    }
-    return v;
-  };
-  return JSON.stringify(
-    stable({
-      module: config.module,
-      orgId: config.orgId,
-      scopeKey: config.scopeKey,
-      config: config.config ?? null,
-      secrets: config.secrets ?? null,
-      allowedHosts: config.allowedHosts ?? null,
-      allowInternalEgress: config.allowInternalEgress ?? false
-    })
-  );
-}
-
 export class SubprocessPluginHost implements PluginHost {
   private readonly opts: Required<
     Pick<
@@ -252,20 +212,6 @@ export class SubprocessPluginHost implements PluginHost {
 
   /** Idempotent per instance id. See docs/plugin-host.md §56. */
   async start(configs: PluginHostInstanceConfig[]): Promise<void> {
-    // A REGISTERED id whose config has CHANGED is restarted, not skipped (M28.4 fix round). The
-    // property: every `execution-system:<id>` instance is started ONCE with the system's properties
-    // at that moment, and an operator editing the system later (a rotated token, a moved serverUrl,
-    // a narrowed `authoring` allowlist, a revoked `allowInternalEgress`) changed NOTHING the running
-    // plugin enforced — `start` was idempotent per id, so the stale copy served every later call.
-    // Comparing the whole resolved config (module, config, decrypted secrets, egress) closes it for
-    // every plugin at once rather than per field. An identical config is still a no-op.
-    for (const config of configs) {
-      const existing = this.instances.get(config.id);
-      if (existing && instanceFingerprint(existing.config) !== instanceFingerprint(config)) {
-        this.tearDown(existing, `plugin instance ${config.id} is restarting with changed config`);
-        this.instances.delete(config.id);
-      }
-    }
     await Promise.all(
       configs
         .filter((config) => !this.instances.has(config.id))
@@ -559,11 +505,7 @@ export class SubprocessPluginHost implements PluginHost {
       instance.pending.delete(msg.id);
       clearTimeout(pending.timer);
       if (isErrorResponse(msg)) {
-        pending.reject(
-          msg.error.code === TRIGGER_REFUSED_RPC_CODE
-            ? new PluginTriggerRefusedError(instance.config.id, msg.error.message)
-            : new Error(`plugin '${instance.config.id}' RPC error: ${msg.error.message}`)
-        );
+        pending.reject(new Error(`plugin '${instance.config.id}' RPC error: ${msg.error.message}`));
       } else {
         pending.resolve(msg.result);
       }

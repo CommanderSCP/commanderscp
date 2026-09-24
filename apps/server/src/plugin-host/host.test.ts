@@ -316,35 +316,3 @@ describe("SubprocessPluginHost: unbounded stdout line guard (CRITICAL #4)", () =
     stderrSpy.mockRestore();
   }, 15_000);
 });
-
-describe("SubprocessPluginHost: a registered instance whose config CHANGED is restarted (M28.4 fix round)", () => {
-  it("an identical config is a no-op; a changed one respawns the child with the NEW config", async () => {
-    const childProcess = await import("node:child_process");
-    const spawnSpy = vi.mocked(childProcess.spawn);
-    spawnSpy.mockClear();
-    host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
-    const base = {
-      id: "refresh-probe",
-      module: "fake-executor" as const,
-      orgId: "org-1",
-      scopeKey: "d"
-    };
-
-    await host.start([{ ...base, config: { authoring: { namespaces: ["shop", "old"], a: 1 } } }]);
-    // The same config with its keys in a different order: the same instance, no respawn.
-    await host.start([{ ...base, config: { authoring: { a: 1, namespaces: ["shop", "old"] } } }]);
-    expect(spawnSpy).toHaveBeenCalledTimes(1);
-
-    // The operator narrowed the execution-system: the running plugin must not keep the old copy.
-    await host.start([{ ...base, config: { authoring: { namespaces: ["shop"] } } }]);
-    expect(spawnSpy).toHaveBeenCalledTimes(2);
-    const env = (spawnSpy.mock.calls[1]![2] as { env: Record<string, string> }).env;
-    expect(JSON.parse(env.SCP_PLUGIN_CONFIG_JSON!)).toEqual({
-      authoring: { namespaces: ["shop"] }
-    });
-    // And the new child is the one answering.
-    expect((await host.executor("refresh-probe").describeCapabilities()).supportsTrigger).toBe(
-      true
-    );
-  }, 30_000);
-});
