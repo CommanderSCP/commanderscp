@@ -1936,6 +1936,51 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
   - **M28.5 — the cross-cutting proof.** One estate exercising all four paths, so no increment can
     be green while the capability is unreachable — the M27.9 lesson as a standing gate.
     - **DoD:** deleting the wiring for any one lane makes a test red.
+    - **State: THREE of four lanes proven — build, ops-Argo, deploy. The fourth (infrastructure
+      plan → approve → apply, M28.3) slots in once its PR (#415) merges to `main`; it is not a
+      re-scope, only a temporary sequencing gap this document states rather than hides.**
+      - `apps/server/src/coordination/m28-estate.integration.test.ts` — ONE org, ONE reconcile
+        loop, ONE subprocess plugin host, THREE real changes: an `rpm`-Typed component submitted
+        to `scp-build-rpm-v1` on an Argo Workflows execution-system publishing to a package-repo
+        registry; an infrastructure product enrolled, pinned, submitted to `scp-ops-v1` on the
+        SAME Argo Workflows execution-system, and completed by a REAL sealed one-time redemption
+        (not stubbed — `admin.opsRuns.redeem()` against a real certificate); a component SCP did
+        not import, deployed via an authored Argo CD Application + Rollout whose steps are the
+        release topology's wave plan. Both Argo-shaped stand-ins are loopback HTTP (one hand-rolled
+        for Argo Workflows, `startArgoCdStandIn` from `@scp/plugin-testkit` for Argo CD); each
+        lane's own per-lane integration test already covers the real-counterparty leg (Docker rpm
+        build + Gitea, a real sshd) and is deliberately not re-run here.
+      - **The standing gate, both halves:**
+        1. A behavioural spy in the estate test: `vi.spyOn` wraps (pass-through) each lane's
+           exported derivation — `buildLaneTriggerParameters`, `opsLaneTriggerParameters`,
+           `deployLaneTriggerParameters` — and the final test asserts each was CALLED during the
+           run and that its OWN returned value is byte-identical to what the loopback stand-in
+           actually received (not a lookalike recomputed separately).
+        2. `packages/source-census/src/m28-lanes-reachability.test.ts` — the no-database half of
+           the same property: a table naming all of the lanes' seams together, asserting each has
+           a comment-stripped, non-test caller in `reconcile.ts` specifically (not merely
+           somewhere in production code). Deleting a lane's `await ...TriggerParameters(...)` call
+           and commenting it out turns the matching row red — a real call-site removal, not a text
+           match on a dead comment.
+      - **Mutation-proved, one lane at a time, in `reconcile.ts`** (each lane's derivation call
+        replaced with `undefined` and the real call commented out, then restored):
+        - Build lane removed: `m28-lanes-reachability.test.ts` → 2 red (`buildLaneTriggerParameters
+          has a non-test caller`, `...is called from reconcile.ts SPECIFICALLY`); estate test → 2
+          red (LANE 1 times out waiting for a submission; STANDING GATE: `buildLaneTriggerParameters
+          was never called`).
+        - Ops-Argo lane removed: census → 2 red (same two rows, `opsLaneTriggerParameters`);
+          estate → 2 red (LANE 2: submission parameters are `[]`, not `[opsRunId,
+          opsRunTokenSealed]`; STANDING GATE: `opsLaneTriggerParameters was never called`).
+        - Deploy lane removed: census → 2 red (same two rows, `deployLaneTriggerParameters`);
+          estate → 2 red (LANE 3 times out — no Application is ever created, the plain sync 404s;
+          STANDING GATE: `deployLaneTriggerParameters was never called`).
+      - **What this did NOT prove:** the fourth lane's coexistence (pending #415); a real Argo
+        Workflows/Argo CD control plane running any of these submissions (each lane's own
+        integration test is where that's proved, where it's proved at all); and that the SAME
+        property holds under concurrent, not merely sequential, lane execution within one tick —
+        the three changes here are proposed one `it()` at a time against a shared reconcile loop,
+        which already demonstrates coexistence (no lane's wiring is torn down for another to run)
+        but does not stress simultaneous multi-lane ticks.
 
 ## 9. Verification Mapping
 
