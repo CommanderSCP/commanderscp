@@ -11,6 +11,7 @@ import {
   type RunnerLauncher
 } from "@scp/runner-launcher";
 import { createManagedIacExecutorPlugin } from "./index.js";
+import { APPROVED_PLAN_DIGEST, seedApprovedPlan } from "./test-support/approved-plan.js";
 
 /** HIGH (M23.0 verification pass 7). See docs/plugins.md §406. */
 
@@ -47,6 +48,8 @@ let statePath: string;
 beforeEach(async () => {
   workspaceRoot = await mkdtemp(join(tmpdir(), "managed-iac-detail-"));
   statePath = join(workspaceRoot, "dedup.json");
+  // These runs are APPLIES; an apply names the workspace's plan (ADR-0056 addendum 4).
+  await seedApprovedPlan(workspaceRoot);
 });
 
 afterEach(async () => {
@@ -79,7 +82,7 @@ async function runAndRead(launcher: RunnerLauncher, key: string) {
   const ref = await plugin.trigger(c, {
     kind: "sync",
     targetRef: "t1",
-    parameters: { iacAction: "apply" },
+    parameters: { iacAction: "apply", planDigest: APPROVED_PLAN_DIGEST },
     idempotencyKey: key
   });
   return { status: await plugin.status(c, ref), ledgerBytes: (await stat(statePath)).size };
@@ -182,7 +185,7 @@ describe("MEDIUM: the durable ledger is bounded by ENTRY COUNT, not only by entr
       await plugin.trigger(c, {
         kind: "sync",
         targetRef: "t1",
-        parameters: { iacAction: "apply" },
+        parameters: { iacAction: "apply", planDigest: APPROVED_PLAN_DIGEST },
         idempotencyKey: key
       });
     }
@@ -216,7 +219,7 @@ describe("MEDIUM: the durable ledger is bounded by ENTRY COUNT, not only by entr
       ref = await plugin.trigger(c, {
         kind: "sync",
         targetRef: "t1",
-        parameters: { iacAction: "apply" },
+        parameters: { iacAction: "apply", planDigest: APPROVED_PLAN_DIGEST },
         idempotencyKey: `0199ac${String(i).padStart(6, "0")}-7f00-7000-8000-000000000000`
       });
     }

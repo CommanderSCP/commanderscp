@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 import type { RunnerLauncher, RunnerSpec } from "@scp/runner-launcher";
 import { createManagedIacExecutorPlugin } from "./index.js";
+import { APPROVED_PLAN_DIGEST, seedApprovedPlan } from "./test-support/approved-plan.js";
 
 /** The standing gate that the port is installed, not present. See docs/plugins.md §447. */
 
@@ -121,10 +122,11 @@ describe("M23.1: managed-iac launches through the injected RunnerLauncher", () =
 
     const c = ctx();
     (c.config as Record<string, unknown>).dockerBinary = "/usr/local/bin/docker";
+    await seedApprovedPlan(workspaceRoot);
     const ref = await plugin.trigger(c, {
       kind: "sync",
       targetRef: "t1",
-      parameters: { iacAction: "apply" },
+      parameters: { iacAction: "apply", planDigest: APPROVED_PLAN_DIGEST },
       idempotencyKey: "seam-2"
     });
 

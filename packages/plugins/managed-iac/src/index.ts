@@ -66,6 +66,11 @@ const DEFAULT_NETWORK_MODE = "none";
 /** Filenames a tenant may supply via `intent.parameters.sourceFiles` — no path separators, no
  *  `..`, no leading-dot traversal; just plain tofu source/tfvars filenames. */
 const SAFE_FILENAME = /^[A-Za-z0-9._-]+$/;
+/** Names the WORKSPACE owns, never a tenant's source: the saved plan an apply applies, its evidence
+ *  (whose digest the apply gate approved), the state and its history, OpenTofu's own directory. A
+ *  source file with one of these names would replace what the approval was about. */
+const WORKSPACE_OWNED = /^(\.tfplan|plan\.json|terraform\.tfstate(\.backup)?|state-history|\.terraform.*)$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 function asConfig(config: unknown): ManagedIacConfig {
   const c = config as Partial<ManagedIacConfig> | undefined;
@@ -263,6 +268,12 @@ async function writeSourceFiles(
         `managed-iac: illegal source filename '${name}' (must match ${SAFE_FILENAME})`
       );
     }
+    if (WORKSPACE_OWNED.test(name)) {
+      throw new Error(
+        `managed-iac: source filename '${name}' names a file the workspace owns (the saved plan, ` +
+          `its evidence or the state) — refusing to overwrite it`
+      );
+    }
     await writeFile(join(workspaceDir, name), content, "utf8");
   }
 }
@@ -382,8 +393,42 @@ async function trigger(
         }
       } else {
         const sourceFiles = intent.parameters?.sourceFiles as Record<string, string> | undefined;
-        if (sourceFiles) await writeSourceFiles(workspaceDir, sourceFiles);
         const iacAction = (intent.parameters?.iacAction as "plan" | "apply" | undefined) ?? "plan";
+        if (iacAction !== "plan" && iacAction !== "apply") {
+          outcome = {
+            externalId,
+            succeeded: false,
+            detail: `managed-iac: FAILED CLOSED — unknown iacAction '${String(iacAction)}'`
+          };
+          return;
+        }
+        if (iacAction === "apply") {
+          // THE EXECUTOR-SIDE HALF OF THE APPLY GATE (ADR-0056 addendum 4). The server approved ONE
+          // plan, by digest; `run.sh apply` applies whatever `.tfplan` the workspace holds. So before
+          // anything launches: no new source (an apply applies what was reviewed, nothing else), and
+          // the workspace's plan evidence must be the approved plan's — a newer plan in the same
+          // workspace, or none, is refused rather than applied.
+          const approved = intent.parameters?.planDigest;
+          const inWorkspace = await summarizePlanFile(workspaceDir);
+          const refusal = sourceFiles
+            ? "an apply takes no source files — it applies the approved plan already in the workspace"
+            : typeof approved !== "string" || !SHA256.test(approved)
+              ? "an apply names no approved plan digest"
+              : inWorkspace?.ref !== approved
+                ? `the workspace's plan is ${inWorkspace?.ref ? inWorkspace.ref.slice(0, 12) : "absent"}, ` +
+                  `and the approved plan is ${approved.slice(0, 12)}`
+                : undefined;
+          if (refusal !== undefined) {
+            outcome = {
+              externalId,
+              succeeded: false,
+              detail: `managed-iac apply: FAILED CLOSED — ${refusal}; nothing was applied`,
+              ...(inWorkspace ? { plan: inWorkspace } : {})
+            };
+            return;
+          }
+        }
+        if (sourceFiles) await writeSourceFiles(workspaceDir, sourceFiles);
         const result = await runRunnerContainer(
           config,
           resolveLauncher,

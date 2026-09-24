@@ -308,8 +308,10 @@ never executes a replicated system:
 - A binding row that already names one does not resolve.
 - A replicated registry is never a build's push destination (`build_destination_replicated_registry`).
 
-**Belt and braces.** Each source-allowlist row records a fingerprint of the system's `kind`,
-`serverUrl` (normalised), `namespace` and `tokenSecretKey` at the moment it was set. When the live
+**Belt and braces.** Each source-allowlist row records a fingerprint of the system's whole
+canonical `properties` object (`serverUrl` normalised) at the moment it was set — the whole object,
+for the door's own reason (as first merged it named four fields and so missed `webUrl`,
+`allowInternalEgress`, `authoring` and every manifest-declared key; widened in addendum 4). When the live
 system no longer matches, readers see NOTHING ALLOWED (`routingCurrent: false` on the GET, and the
 CLI and the UI say so). A legitimate re-point, whether by a `secret:write` holder or by a replicated
 revision, therefore voids the list until someone sets it again for the new endpoint.

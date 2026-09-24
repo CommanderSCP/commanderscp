@@ -44,6 +44,9 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
     "credentials that a target's or component's own editor cannot move (owner ruling R1)",
   putSourceAllowlist: "is the ONE (secret:write) door that writes that allowlist",
   repoAllowedBy: "is the allowlist's match, used by BOTH the infra and the build lane",
+  isInfraApplyGateModule:
+    "is the ONE list of executors the apply gate serves, read by the lane and the UI alike; with no " +
+    "caller a managed-iac plan could be neither applied nor offered",
   infraApplyTemplateFor:
     "derives the apply template from the bound plan template, so no binding can point a plan's " +
     "trigger at an apply"
@@ -187,6 +190,36 @@ describe("the infrastructure lane is INSTALLED, not merely built", () => {
     expect(gates).toMatch(
       /const separation = await infraPlanSeparationOfDuties\(tx, ctx, changeObject\.properties\);\s*if \(separation\) return separation;/
     );
+  });
+
+  it("MODE C: the lane engages for managed-iac, and ONLY the lane writes `iacAction: \"apply\"` (ADR-0056 addendum 4)", () => {
+    const lane = read("apps/server/src/coordination/infra-lane-trigger-parameters.ts");
+    // Engaged by the SHARED list the UI reads too, and routed to the managed-iac half.
+    expect(lane).toMatch(/isInfraApplyGateModule\(input\.pluginModule\)/);
+    expect(lane).toMatch(
+      /if \(input\.pluginModule === MANAGED_IAC_LANE_MODULE\) \{\s*return managedIacLane\(tx, input, declaration\);/
+    );
+    // Both halves go through the ONE gate.
+    expect((lane.match(/return evaluateApplyGate\(tx, input, declaration\.planChangeObjectId, \{/g) ?? []).length).toBe(2);
+    // The only production writer of an apply action on the server side.
+    const writers = PRODUCTION_SOURCES.filter(
+      (p) => p.startsWith("apps/server/") && /iacAction\s*(=|:)\s*"apply"/.test(read(p))
+    );
+    expect(writers).toEqual(["apps/server/src/coordination/infra-lane-trigger-parameters.ts"]);
+    // The plugin host refuses an apply action it did not see the lane authorize.
+    const guard = read("apps/server/src/plugin-host/infra-template-guard.ts");
+    expect(guard).toMatch(/intent\.parameters\?\.\["iacAction"\] === "apply" && !authorized\.has\(intent\)/);
+  });
+
+  it("MODE C: the managed-iac plugin checks the approved digest against the workspace's plan BEFORE it launches", () => {
+    const plugin = read("packages/plugins/managed-iac/src/index.ts");
+    expect(plugin).toMatch(/const approved = intent\.parameters\?\.planDigest;/);
+    expect(plugin).toMatch(/inWorkspace\?\.ref !== approved/);
+    // The refusal returns before `runRunnerContainer` — nothing is launched.
+    const guardAt = plugin.indexOf("inWorkspace?.ref !== approved");
+    const launchAt = plugin.indexOf("const result = await runRunnerContainer(", guardAt);
+    expect(guardAt).toBeGreaterThan(0);
+    expect(launchAt).toBeGreaterThan(guardAt);
   });
 
   it("the argo-workflows plugin's status() READS the plan evidence it defines", () => {

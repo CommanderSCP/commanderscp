@@ -3727,9 +3727,10 @@ export function buildProgram(): Command {
     .option(
       "--apply-plan <planChangeId>",
       "M28.3 (ADR-0056): propose an APPLY of an accepted infrastructure plan — sets " +
-        "properties.infrastructure.applyPlan and Type infrastructure. The server triggers the " +
-        "apply template only if that plan change is accepted, is the latest plan at each target, " +
-        "and has not been applied; a re-apply of an applied plan succeeds as a no-op"
+        "properties.infrastructure.applyPlan and Type infrastructure. The server applies (the Argo " +
+        "apply template, or a managed-iac apply of the approved plan's digest) only if that plan " +
+        "change is accepted, is the latest plan at each target, and has not been applied; a " +
+        "re-apply of an applied plan succeeds as a no-op"
     )
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")

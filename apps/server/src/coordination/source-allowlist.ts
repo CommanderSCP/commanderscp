@@ -19,8 +19,7 @@ import { executionSystemRoutingFingerprint } from "../authz/execution-system-rou
  * no system and so no allowlist, and these lanes refuse it.
  *
  * BOUND TO THE SYSTEM'S ROUTING (ADR-0056 addendum 3, belt-and-braces to the routing door): each row
- * records the fingerprint of the system's `kind`/`serverUrl`/`namespace`/`tokenSecretKey` when it
- * was set, and a reader whose live system no longer matches reads NOTHING ALLOWED. The list names
+ * records the fingerprint of the system's whole `properties` object when it was set, and a reader whose live system no longer matches reads NOTHING ALLOWED. The list names
  * which repos may run at one destination with one credential; re-pointing the system — by any door,
  * a replicated revision included — means someone with `secret:write` re-sets it for the new one.
  */

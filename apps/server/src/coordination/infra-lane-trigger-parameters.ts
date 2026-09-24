@@ -2,6 +2,7 @@ import {
   categoryOfType,
   infraApplyTemplateFor,
   InfrastructureChangeDeclarationSchema,
+  isInfraApplyGateModule,
   INFRASTRUCTURE_DECLARATION_PROPERTY,
   type ExecutorType
 } from "@scp/schemas";
@@ -63,10 +64,16 @@ import type { WaveTargetObservedState } from "./wave-targets-repo.js";
  * The template carries the second half: it re-plans and applies only if the digest — which covers
  * the plan's place as well as its changes — still matches (`deploy/helm-bundled/files/scp-infra.sh`).
  *
- * ENGAGES ONLY FOR `argo-workflows`. `managed-iac` stays the Mode C fallback exactly as it was (D2),
- * and every other executor bound to an `infrastructure` Type keeps receiving what it received — but
- * a change that DECLARES an apply is refused wherever this lane does not engage, because an apply
- * declaration silently run as something else is the one misreading that must not happen.
+ * ENGAGES FOR THE TWO EXECUTORS THE APPLY GATE SERVES (`INFRA_APPLY_GATE_MODULES`): `argo-workflows`
+ * (the templates above) and `managed-iac` (Mode C, ADR-0056 addendum 4). They share ONE gate —
+ * `evaluateApplyGate` — and differ only in what "the place" is and how an apply is expressed: the
+ * Argo lane's place is the target's environment, repo and execution system, and its apply is the
+ * plan template's `-apply` sibling; managed-iac's place is its per-(org, target) workspace, and its
+ * apply is `iacAction: "apply"` carrying the approved plan's digest, which the plugin checks against
+ * the plan in that workspace before it launches anything. Every other executor bound to an
+ * `infrastructure` Type keeps receiving what it received — but a change that DECLARES an apply is
+ * refused wherever this lane does not engage, because an apply declaration silently run as
+ * something else is the one misreading that must not happen.
  */
 
 export class InfraDeclarationRefused extends TriggerParameterRefusal {
@@ -79,8 +86,10 @@ export class InfraApplyRefused extends TriggerParameterRefusal {
   readonly action = WAVE_TARGET_INFRA_APPLY_REFUSED_AUDIT_ACTION;
 }
 
-/** The only module this lane speaks for. */
+/** The module the template half of this lane speaks for. */
 export const INFRA_LANE_EXECUTOR_MODULE = "argo-workflows";
+/** The Mode C half (ADR-0056 addendum 4): SCP's own ephemeral runner, the same gate. */
+export const MANAGED_IAC_LANE_MODULE = "managed-iac";
 
 /** The SHIPPED infra catalog templates — reachable only through this lane (see
  *  `assertNotAnUngatedInfraTemplate` and the plugin host's `infra-template-guard.ts`). */
@@ -145,7 +154,9 @@ export const INFRA_LANE_RESERVED_PARAMETERS = [
   "planDigest",
   "planChangeObjectId",
   "changeObjectId",
-  "targetObjectId"
+  "targetObjectId",
+  // managed-iac's verb (ADR-0056 addendum 4): `apply` is what the gate grants, never a recipe.
+  "iacAction"
 ] as const;
 
 /** The subset registered in the SERVER-WIDE table (`reserved-trigger-parameters.ts`, RESERVED_BY_LANE
@@ -160,7 +171,8 @@ export const INFRA_LANE_TABLE_RESERVED_KEYS = [
   "infraPath",
   "planDigest",
   "planChangeObjectId",
-  "targetObjectId"
+  "targetObjectId",
+  "iacAction"
 ] as const;
 
 /** The parameters that say WHERE and WHAT a plan planned — what an apply must reuse verbatim. */
@@ -185,8 +197,9 @@ export type InfraLaneOutcome =
       /** For a plan: the apply template its approval will be applied with, recorded now. */
       applyTemplateRef: string;
       /** The execution system this runs on, as it is NOW — recorded with a plan, compared at apply:
-       *  an apply is refused if the system (or where it points) changed since the plan. */
-      executionSystem: ExecutionSystemIdentity;
+       *  an apply is refused if the system (or where it points) changed since the plan. `null` for
+       *  managed-iac, whose binding names no system: its runner is SCP's own. */
+      executionSystem: ExecutionSystemIdentity | null;
       parameters: Record<string, unknown>;
     }
   | {
@@ -474,8 +487,7 @@ export async function infraLaneTriggerParameters(
     .limit(1);
   const declaration = readDeclaration(changeObject?.properties);
   const engaged =
-    categoryOfType(input.type) === "infrastructure" &&
-    input.pluginModule === INFRA_LANE_EXECUTOR_MODULE;
+    categoryOfType(input.type) === "infrastructure" && isInfraApplyGateModule(input.pluginModule);
 
   // A DECLARED APPLY THE LANE WILL NOT SERVE IS REFUSED, never silently run as whatever the bound
   // executor does by default (for managed-iac today: a PLAN, reported as success).
@@ -489,7 +501,7 @@ export async function infraLaneTriggerParameters(
         {
           remediation:
             "bind the deployment-target's 'infrastructure' pipeline to an Argo Workflows system with " +
-            "externalRef scp-infra-plan-v1, or remove properties.infrastructure",
+            "externalRef scp-infra-plan-v1 (or to managed-iac), or remove properties.infrastructure",
           inputContext: {
             gate: "infra_apply_lane_absent",
             planChangeObjectId: declaration.planChangeObjectId,
@@ -500,17 +512,6 @@ export async function infraLaneTriggerParameters(
       );
     }
     return undefined;
-  }
-
-  // NO ROLLBACK REPLAY. Rolling infrastructure back is planning the prior commit and applying THAT
-  // plan through the same gate; re-triggering a template with the forward change's inputs would be
-  // the forward operation again, unapproved.
-  if (input.isRollback) {
-    throw new InfraDeclarationRefused(
-      "an infrastructure change is not rolled back by replaying it. Plan the prior commit as a new " +
-        "change, accept that plan, and apply it — the same gate every apply passes.",
-      { inputContext: { gate: "infra_rollback_refused" } }
-    );
   }
 
   const restated = (input.recipeParameterKeys ?? []).filter((k) =>
@@ -525,6 +526,21 @@ export async function infraLaneTriggerParameters(
         remediation: `remove ${restated.join(", ")} from properties.recipe.trigger.parameters`,
         inputContext: { gate: "infra_recipe_restates_bound", restated: [...restated].sort() }
       }
+    );
+  }
+
+  if (input.pluginModule === MANAGED_IAC_LANE_MODULE) {
+    return managedIacLane(tx, input, declaration);
+  }
+
+  // NO ROLLBACK REPLAY. Rolling infrastructure back is planning the prior commit and applying THAT
+  // plan through the same gate; re-triggering a template with the forward change's inputs would be
+  // the forward operation again, unapproved.
+  if (input.isRollback) {
+    throw new InfraDeclarationRefused(
+      "an infrastructure change is not rolled back by replaying it. Plan the prior commit as a new " +
+        "change, accept that plan, and apply it — the same gate every apply passes.",
+      { inputContext: { gate: "infra_rollback_refused" } }
     );
   }
 
@@ -601,11 +617,128 @@ export async function infraLaneTriggerParameters(
     };
   }
 
-  return evaluateApplyGate(tx, input, {
-    planChangeObjectId: declaration.planChangeObjectId,
-    planTemplate,
-    place,
-    system
+  // THE ARGO HALF OF THE SHARED GATE: the place is the target's environment, repo and system.
+  return evaluateApplyGate(tx, input, declaration.planChangeObjectId, {
+    now: {
+      environment: place.environment,
+      stateWorkspace: place.stateWorkspace,
+      region: place.region,
+      infraPath: place.infraPath,
+      sourceRepo: place.declaredRepo,
+      templateRef: planTemplate,
+      executionSystemId: system.id,
+      executionSystemServerUrl: system.serverUrl,
+      executionSystemNamespace: system.namespace
+    },
+    recorded: (record) => ({
+      environment: record.parameters["environment"] ?? "",
+      stateWorkspace: record.parameters["stateWorkspace"] ?? "",
+      region: record.parameters["region"] ?? "",
+      infraPath: record.parameters["infraPath"] ?? "",
+      sourceRepo: record.parameters["sourceRepo"] ?? "",
+      templateRef: record.templateRef,
+      executionSystemId: record.executionSystem?.id ?? "",
+      executionSystemServerUrl: record.executionSystem?.serverUrl ?? "",
+      executionSystemNamespace: record.executionSystem?.namespace ?? ""
+    }),
+    // The repo must STILL be allowed: an allowlist narrowed since the plan withdraws the permission.
+    recheck: (record) =>
+      assertRepoAllowed(tx, input, system, record.parameters["sourceRepo"] ?? "", InfraApplyRefused),
+    // THE PLAN'S OWN SUBMISSION, REUSED: the same workspace, directory, repo, commit — and the plan
+    // template's recorded sibling, never whatever the binding names today.
+    build: (record, planDigest) => {
+      const params: Record<string, string> = { changeObjectId: input.changeObjectId };
+      for (const k of PLAN_SCOPE_KEYS) params[k] = record.parameters[k] ?? "";
+      params.targetObjectId = input.targetObjectId;
+      params.planDigest = planDigest;
+      params.planChangeObjectId = declaration.planChangeObjectId;
+      return {
+        kind: "trigger",
+        phase: "apply",
+        templateRef: record.applyTemplateRef,
+        applyTemplateRef: record.applyTemplateRef,
+        executionSystem: system,
+        parameters: params
+      };
+    }
+  });
+}
+
+/** THE MODE C HALF (ADR-0056 addendum 4): managed-iac, SCP's own ephemeral `scp-runner-iac`
+ *  container, under the SAME gate. Before this, nothing in production set `iacAction`, so every
+ *  managed-iac run was a plan and nothing could apply one.
+ *
+ *  THE PLACE IS THE WORKSPACE. The plugin keeps one workspace per (org, `intent.targetRef`) and a
+ *  plan leaves its `.tfplan` there; reconcile's `targetRef` is the binding's externalRef, else the
+ *  target id — so that is what a plan records (`templateRef`) and what an apply must still resolve
+ *  to. Two targets resolving to one workspace would apply each other's plans, so a second target's
+ *  plan into a claimed workspace is refused (`assertWorkspaceUnclaimed`).
+ *
+ *  THE APPLY IS `iacAction: "apply"` WITH THE APPROVED DIGEST. The plugin applies the `.tfplan`
+ *  already in the workspace, and refuses — before launching anything — unless the workspace's
+ *  `plan.json` is the plan whose digest this gate approved. That is the executor-side half the Argo
+ *  template's re-plan-and-compare is for the other lane.
+ *
+ *  ITS OWN ROLLBACK STAYS. managed-iac's rollback restores a prior STATE snapshot and applies
+ *  nothing (`apps/runner-iac/run.sh`), so it is not an unapproved apply, and a saved plan made
+ *  against the newer state is stale to OpenTofu afterwards. A rollback that DECLARES an apply is
+ *  refused. */
+async function managedIacLane(
+  tx: TenantTx,
+  input: InfraLaneInput,
+  declaration: Declaration
+): Promise<InfraLaneOutcome | undefined> {
+  const workspace = input.externalRef ?? input.targetObjectId;
+  const stateWorkspace = `${MANAGED_IAC_LANE_MODULE}:${workspace}`;
+  if (input.isRollback) {
+    if (declaration.phase === "apply") {
+      throw new InfraApplyRefused(
+        "a rollback does not apply a plan. Plan the configuration you want to return to, accept " +
+          "that plan, and apply it.",
+        { inputContext: { gate: "infra_rollback_refused" } }
+      );
+    }
+    return undefined;
+  }
+  if (declaration.phase === "plan") {
+    await assertWorkspaceUnclaimed(tx, input, stateWorkspace);
+    // Built key by key, so `reserved-trigger-parameters.test.ts`'s census reads every one.
+    const params: Record<string, string> = { changeObjectId: input.changeObjectId };
+    params.targetObjectId = input.targetObjectId;
+    params.stateWorkspace = stateWorkspace;
+    params.iacAction = "plan";
+    return {
+      kind: "trigger",
+      phase: "plan",
+      templateRef: workspace,
+      applyTemplateRef: workspace,
+      executionSystem: null,
+      parameters: params
+    };
+  }
+  return evaluateApplyGate(tx, input, declaration.planChangeObjectId, {
+    now: { workspace, stateWorkspace },
+    recorded: (record) => ({
+      workspace: record.templateRef,
+      stateWorkspace: record.parameters["stateWorkspace"] ?? ""
+    }),
+    build: (record, planDigest) => {
+      const params: Record<string, string> = { changeObjectId: input.changeObjectId };
+      params.targetObjectId = input.targetObjectId;
+      params.stateWorkspace = record.parameters["stateWorkspace"] ?? "";
+      params.iacAction = "apply";
+      params.planDigest = planDigest;
+      params.planChangeObjectId = declaration.planChangeObjectId;
+      return {
+        kind: "trigger",
+        phase: "apply",
+        // The RECORDED workspace — the scope check above already refused it if it moved.
+        templateRef: record.templateRef,
+        applyTemplateRef: record.templateRef,
+        executionSystem: null,
+        parameters: params
+      };
+    }
   });
 }
 
@@ -624,22 +757,31 @@ interface PlanTriggerRecord {
   templateRef: string;
   applyTemplateRef: string;
   executorPluginId: string;
-  executionSystem: ExecutionSystemIdentity;
+  executionSystem: ExecutionSystemIdentity | null;
   parameters: Record<string, string>;
+}
+
+/** WHAT A LANE SUPPLIES TO THE ONE APPLY GATE: its place as it is now and as a plan recorded it
+ *  (compared key by key — any difference is `infra_plan_scope_changed`), any lane-specific recheck,
+ *  and how it expresses the apply. Everything else — accepted, succeeded here on this executor with a
+ *  digest and a record, not superseded, not in flight, already-applied is a no-op — is the gate's. */
+interface ApplyScope {
+  now: Record<string, string>;
+  recorded: (record: PlanTriggerRecord) => Record<string, string>;
+  recheck?: (record: PlanTriggerRecord) => Promise<void>;
+  build: (
+    record: PlanTriggerRecord,
+    planDigest: string
+  ) => Extract<InfraLaneOutcome, { kind: "trigger" }>;
 }
 
 async function evaluateApplyGate(
   tx: TenantTx,
   input: InfraLaneInput,
-  args: {
-    planChangeObjectId: string;
-    planTemplate: string;
-    place: Place;
-    system: ExecutionSystemIdentity;
-  }
+  planChangeObjectId: string,
+  scope: ApplyScope
 ): Promise<InfraLaneOutcome> {
   const { orgId, targetObjectId } = input;
-  const { planChangeObjectId, place } = args;
   const base = { planChangeObjectId, targetObjectId };
   // A function DECLARATION, not a const arrow: only a declared `never` narrows at its call sites.
   function refuse(
@@ -726,7 +868,7 @@ async function evaluateApplyGate(
       "infra_plan_no_evidence",
       `the plan at ${targetObjectId} is '${planTarget.status}' and reported ${plan?.ref ? `digest '${plan.ref}'` : "no digest"}; ` +
         `an apply is bound to a plan digest, so there is nothing to bind this one to.`,
-      "re-run the plan (its template must export scpPlanDigest), accept it, and apply that plan",
+      "re-run the plan (on Argo its template must export scpPlanDigest), accept it, and apply that plan",
       { planTargetStatus: planTarget.status, planDigest: plan?.ref ?? null }
     );
   }
@@ -756,28 +898,8 @@ async function evaluateApplyGate(
 
   // 3. THE PLACE AND THE BINDING STILL MATCH WHAT WAS PLANNED. The apply reuses the record either
   // way; a mismatch is refused because the approver approved a plan for a place that no longer is.
-  const now: Record<string, string> = {
-    environment: place.environment,
-    stateWorkspace: place.stateWorkspace,
-    region: place.region,
-    infraPath: place.infraPath,
-    sourceRepo: place.declaredRepo,
-    templateRef: args.planTemplate,
-    executionSystemId: args.system.id,
-    executionSystemServerUrl: args.system.serverUrl,
-    executionSystemNamespace: args.system.namespace
-  };
-  const recorded: Record<string, string> = {
-    environment: record.parameters["environment"] ?? "",
-    stateWorkspace: record.parameters["stateWorkspace"] ?? "",
-    region: record.parameters["region"] ?? "",
-    infraPath: record.parameters["infraPath"] ?? "",
-    sourceRepo: record.parameters["sourceRepo"] ?? "",
-    templateRef: record.templateRef,
-    executionSystemId: record.executionSystem.id,
-    executionSystemServerUrl: record.executionSystem.serverUrl,
-    executionSystemNamespace: record.executionSystem.namespace
-  };
+  const now = scope.now;
+  const recorded = scope.recorded(record);
   const changed = Object.keys(now).filter((k) => now[k] !== recorded[k]);
   if (changed.length > 0) {
     refuse(
@@ -795,14 +917,7 @@ async function evaluateApplyGate(
     );
   }
 
-  // The repo must STILL be allowed: an allowlist narrowed since the plan withdraws the permission.
-  await assertRepoAllowed(
-    tx,
-    input,
-    args.system,
-    record.parameters["sourceRepo"] ?? "",
-    InfraApplyRefused
-  );
+  if (scope.recheck) await scope.recheck(record);
 
   // 4. SUPERSEDED — a newer plan has been DISPATCHED here since. Ordered by the plan-trigger
   // Decisions' time-ordered ids, which is dispatch order; row creation order is plan-compile order,
@@ -867,21 +982,7 @@ async function evaluateApplyGate(
     };
   }
 
-  // THE PLAN'S OWN SUBMISSION, REUSED: the same workspace, directory, repo, commit — and the plan
-  // template's recorded sibling, never whatever the binding names today.
-  const params: Record<string, string> = { changeObjectId: input.changeObjectId };
-  for (const k of PLAN_SCOPE_KEYS) params[k] = record.parameters[k] ?? "";
-  params.targetObjectId = targetObjectId;
-  params.planDigest = planDigest;
-  params.planChangeObjectId = planChangeObjectId;
-  return {
-    kind: "trigger",
-    phase: "apply",
-    templateRef: record.applyTemplateRef,
-    applyTemplateRef: record.applyTemplateRef,
-    executionSystem: args.system,
-    parameters: params
-  };
+  return scope.build(record, planDigest);
 }
 
 /** RECORD WHAT A PLAN (OR APPLY) TRIGGER SUBMITS — called by reconcile once the claim is won, in the
@@ -962,12 +1063,14 @@ async function latestPlanTriggerRecord(
   if (!row) return undefined;
   const ctx = row.inputContext as Record<string, unknown>;
   const params = ctx["parameters"];
-  const sys = ctx["executionSystem"] as Partial<ExecutionSystemIdentity> | undefined;
+  // `null` is a managed-iac plan's (no system); anything else must be a whole identity.
+  const sys = ctx["executionSystem"] as Partial<ExecutionSystemIdentity> | null | undefined;
   if (
-    !sys ||
-    typeof sys.id !== "string" ||
-    typeof sys.serverUrl !== "string" ||
-    typeof sys.namespace !== "string"
+    sys !== null &&
+    (!sys ||
+      typeof sys.id !== "string" ||
+      typeof sys.serverUrl !== "string" ||
+      typeof sys.namespace !== "string")
   ) {
     return undefined;
   }
@@ -985,7 +1088,10 @@ async function latestPlanTriggerRecord(
     templateRef: ctx["templateRef"],
     applyTemplateRef: ctx["applyTemplateRef"],
     executorPluginId: ctx["executorPluginId"],
-    executionSystem: { id: sys.id, serverUrl: sys.serverUrl, namespace: sys.namespace },
+    executionSystem:
+      sys === null
+        ? null
+        : { id: sys.id as string, serverUrl: sys.serverUrl as string, namespace: sys.namespace as string },
     parameters: Object.fromEntries(
       Object.entries(params as Record<string, unknown>).map(([k, v]) => [k, String(v)])
     )

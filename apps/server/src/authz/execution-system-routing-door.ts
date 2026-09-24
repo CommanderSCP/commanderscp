@@ -82,14 +82,6 @@ export async function assertMayWriteExecutionSystemRouting(
   );
 }
 
-/** The fields a source-allowlist row is bound to: where the system's credentials go, and which. */
-export const ROUTING_FINGERPRINT_FIELDS = [
-  "kind",
-  "serverUrl",
-  "namespace",
-  "tokenSecretKey"
-] as const;
-
 function normalisedUrl(value: unknown): unknown {
   if (typeof value !== "string") return value ?? null;
   try {
@@ -99,17 +91,20 @@ function normalisedUrl(value: unknown): unknown {
   }
 }
 
-/** sha256 over the routing fields, so an allowlist set for one endpoint cannot follow a re-point. */
+/** sha256 over the WHOLE canonical `properties` object, so an allowlist set for one system cannot
+ *  follow any change to it. The whole object, not a list of routing keys, for the routing door's own
+ *  reason: every property routes (`webUrl` addresses a push, `allowInternalEgress` widens egress,
+ *  `authoring` bounds what is authored, and a manifest-declared key is carried into plugin config),
+ *  and a named list is where the next key hides. Only `serverUrl` is normalised, so a spelling of
+ *  the same URL is not a change. */
 export function executionSystemRoutingFingerprint(properties: unknown): string {
   const props = (properties && typeof properties === "object" ? properties : {}) as Record<
     string,
     unknown
   >;
-  const fields: Record<string, unknown> = {};
-  for (const key of ROUTING_FINGERPRINT_FIELDS) {
-    fields[key] = key === "serverUrl" ? normalisedUrl(props[key]) : (props[key] ?? null);
-  }
-  return createHash("sha256").update(canonicalJson(fields)).digest("hex");
+  const canonical: Record<string, unknown> = { ...props };
+  if (Object.hasOwn(props, "serverUrl")) canonical["serverUrl"] = normalisedUrl(props["serverUrl"]);
+  return createHash("sha256").update(canonicalJson(canonical)).digest("hex");
 }
 
 /** A REPLICATED execution system is never executable here. Its routing was written by another

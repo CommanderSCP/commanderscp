@@ -32,12 +32,18 @@ describe("executionSystemPropertyDelta", () => {
 describe("executionSystemRoutingFingerprint", () => {
   const fp = executionSystemRoutingFingerprint(SYSTEM);
 
-  it("moves with each field that decides where the credentials go, or which", () => {
+  it("moves with EVERY property — the four that name the endpoint, and the ones a list omitted", () => {
     for (const [key, value] of [
       ["kind", "argocd"],
       ["serverUrl", "https://argo.prod.invalid"],
       ["namespace", "prod"],
-      ["tokenSecretKey", "argo-prod-token"]
+      ["tokenSecretKey", "argo-prod-token"],
+      // Omitted by the first, four-field version (the #415 verifier's NIT): each routes.
+      ["webUrl", "https://registry.attacker.invalid"],
+      ["allowInternalEgress", true],
+      ["authoring", { project: "default" }],
+      ["packageFormats", ["oci", "rpm"]],
+      ["someManifestDeclaredKey", "x"]
     ] as const) {
       expect(executionSystemRoutingFingerprint({ ...SYSTEM, [key]: value }), key).not.toBe(fp);
     }
@@ -45,11 +51,12 @@ describe("executionSystemRoutingFingerprint", () => {
     expect(executionSystemRoutingFingerprint(noNamespace)).not.toBe(fp);
   });
 
-  it("does not move for a spelling of the same URL, or for a field the list is not about", () => {
+  it("does not move for a spelling of the same URL, or for key order", () => {
     expect(
       executionSystemRoutingFingerprint({ ...SYSTEM, serverUrl: "HTTPS://ARGO.example.invalid/" })
     ).toBe(fp);
-    expect(executionSystemRoutingFingerprint({ ...SYSTEM, packageFormats: ["oci"] })).toBe(fp);
+    const reversed = Object.fromEntries(Object.entries(SYSTEM).reverse());
+    expect(executionSystemRoutingFingerprint(reversed)).toBe(fp);
   });
 });
 
