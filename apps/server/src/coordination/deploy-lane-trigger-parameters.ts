@@ -105,9 +105,9 @@ export function foldDns1123Label(raw: string): string {
 }
 
 /** Argo Rollouts canary steps for one declared strategy. Every pause carries a duration. */
-export function rolloutStepsFor(
-  strategy: RolloutStrategy | undefined
-): { canary: Record<string, unknown> } {
+export function rolloutStepsFor(strategy: RolloutStrategy | undefined): {
+  canary: Record<string, unknown>;
+} {
   if (strategy === undefined) return { canary: {} };
   if (strategy.strategy === "canary") {
     const steps: Record<string, unknown>[] = [];
@@ -361,8 +361,7 @@ export async function deployLaneTriggerParameters(
 
   const externalRef = input.binding?.externalRef ?? null;
   const applicationName =
-    externalRef ??
-    foldDns1123Label(place ? `${component.name}-${place.name}` : component.name);
+    externalRef ?? foldDns1123Label(place ? `${component.name}-${place.name}` : component.name);
   if (!Dns1123LabelSchema.safeParse(applicationName).success) {
     throw new DeploymentAuthoringRefused(
       `the binding names Application '${applicationName}', which is not an RFC 1123 label — Argo CD ` +

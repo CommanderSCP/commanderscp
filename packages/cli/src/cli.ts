@@ -6380,8 +6380,14 @@ export function buildProgram(): Command {
     )
     .option("--authoring-path <path>", "carrier chart path within a git --authoring-repo")
     .option("--authoring-chart <name>", "carrier chart name within a Helm --authoring-repo")
-    .option("--authoring-revision <rev>", "the carrier's pinned revision (tag, commit, or chart version)")
-    .option("--authoring-project <project>", "Argo CD project for authored Applications (default: default)")
+    .option(
+      "--authoring-revision <rev>",
+      "the carrier's pinned revision (tag, commit, or chart version)"
+    )
+    .option(
+      "--authoring-project <project>",
+      "Argo CD project for authored Applications (default: default)"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(

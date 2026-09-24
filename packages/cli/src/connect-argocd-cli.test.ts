@@ -24,10 +24,10 @@ vi.mock("@scp/sdk", () => {
         create: vi.fn(async (body: unknown) => {
           created.bodies.push(body);
           return {
-          id: CREATED_ID,
-          urn: "urn:scp:execution-system:argocd",
-          name: "argocd",
-          typeId: "execution-system"
+            id: CREATED_ID,
+            urn: "urn:scp:execution-system:argocd",
+            name: "argocd",
+            typeId: "execution-system"
           };
         })
       };
@@ -114,7 +114,9 @@ describe("scp connect argocd --authoring-* (M28.4, ADR-0055)", () => {
       "carrier-v1"
     ]);
     expect(created.bodies).toHaveLength(1);
-    expect((created.bodies[0] as { properties: Record<string, unknown> }).properties.authoring).toEqual({
+    expect(
+      (created.bodies[0] as { properties: Record<string, unknown> }).properties.authoring
+    ).toEqual({
       repoURL: repo,
       path: "charts/scp-authored-manifests",
       targetRevision: "carrier-v1"
@@ -130,8 +132,8 @@ describe("scp connect argocd --authoring-* (M28.4, ADR-0055)", () => {
 
   it("without the flags, no authoring is declared — import-and-coordinate only", async () => {
     await run(base);
-    expect((created.bodies[0] as { properties: Record<string, unknown> }).properties).not.toHaveProperty(
-      "authoring"
-    );
+    expect(
+      (created.bodies[0] as { properties: Record<string, unknown> }).properties
+    ).not.toHaveProperty("authoring");
   });
 });

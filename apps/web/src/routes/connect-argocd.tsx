@@ -297,12 +297,12 @@ export function RegisterStep({
               Let SCP create Applications here (optional)
             </legend>
             <p className="mb-2 text-xs text-slate-500">
-              Where this Argo CD reads the{" "}
-              <code className="font-mono">scp-authored-manifests</code> carrier chart. With it, a
-              component that declares <code className="font-mono">properties.deployment</code> gets
-              an Application SCP creates, with a Rollout whose steps come from the wave plan. SCP
-              still only reads the Rollout afterwards — it never promotes or aborts it. A chart in a
-              Helm repository: use <code className="font-mono">scp connect argocd --authoring-chart</code>.
+              Where this Argo CD reads the <code className="font-mono">scp-authored-manifests</code>{" "}
+              carrier chart. With it, a component that declares{" "}
+              <code className="font-mono">properties.deployment</code> gets an Application SCP
+              creates, with a Rollout whose steps come from the wave plan. SCP still only reads the
+              Rollout afterwards — it never promotes or aborts it. A chart in a Helm repository: use{" "}
+              <code className="font-mono">scp connect argocd --authoring-chart</code>.
             </p>
             <div className="flex flex-col gap-2">
               <Input

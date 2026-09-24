@@ -1716,9 +1716,7 @@ async function triggerWaveTarget(
       // Spread LAST, the ops lane's rule and for its reason: the authored Application IS the bound on
       // what gets deployed, so nothing a recipe restates may replace it.
       const deployParameters =
-        authored && !isRollback
-          ? { ...(parameters ?? {}), ...authored.parameters }
-          : parameters;
+        authored && !isRollback ? { ...(parameters ?? {}), ...authored.parameters } : parameters;
 
       // An indirect resolution is recorded, not left implicit. See docs/coordination.md §808.
       const provenance = resolutionProvenance(resolution);

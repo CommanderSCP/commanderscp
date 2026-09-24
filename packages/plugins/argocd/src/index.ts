@@ -393,13 +393,17 @@ async function ensureAuthoredApplication(
   if (current.status === 404) {
     const created = await apiRequest(ctx, config, "POST", "/api/v1/applications", doc);
     if (created.status < 200 || created.status >= 300) {
-      throw new Error(`argocd trigger: creating Application '${appName}' returned HTTP ${created.status}`);
+      throw new Error(
+        `argocd trigger: creating Application '${appName}' returned HTTP ${created.status}`
+      );
     }
     ctx.logger.info("argocd: authored Application created", { appName });
     return;
   }
   if (current.status < 200 || current.status >= 300) {
-    throw new Error(`argocd trigger: reading Application '${appName}' returned HTTP ${current.status}`);
+    throw new Error(
+      `argocd trigger: reading Application '${appName}' returned HTTP ${current.status}`
+    );
   }
   if (authoredLabelOf(current.body) !== SCP_AUTHORED_LABEL_VALUE) {
     throw new Error(
@@ -410,7 +414,9 @@ async function ensureAuthoredApplication(
   }
   const updated = await apiRequest(ctx, config, "POST", "/api/v1/applications?upsert=true", doc);
   if (updated.status < 200 || updated.status >= 300) {
-    throw new Error(`argocd trigger: updating Application '${appName}' returned HTTP ${updated.status}`);
+    throw new Error(
+      `argocd trigger: updating Application '${appName}' returned HTTP ${updated.status}`
+    );
   }
   ctx.logger.info("argocd: authored Application updated", { appName });
 }

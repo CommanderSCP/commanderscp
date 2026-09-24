@@ -165,7 +165,10 @@ export async function startArgoCdStandIn(): Promise<ArgoCdStandIn> {
           const resources: Record<string, unknown>[] = [];
           const images: string[] = [];
           for (const m of manifests) {
-            const applied = { ...m, ...(m.kind === "Rollout" ? { status: progressedStatus(m) } : {}) };
+            const applied = {
+              ...m,
+              ...(m.kind === "Rollout" ? { status: progressedStatus(m) } : {})
+            };
             cluster.set(keyOf(m), applied);
             const meta = (m.metadata ?? {}) as { name?: string; namespace?: string };
             const [group, version] = String(m.apiVersion ?? "").split("/");

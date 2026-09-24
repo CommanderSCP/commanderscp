@@ -38,11 +38,7 @@ export const Dns1123LabelSchema = z
 export const AuthoredDeploymentSchema = z.strictObject({
   /** The image the Rollout runs. When the change carries exactly one OCI digest, the authored
    *  manifest pins `<image without tag>@<digest>` instead — the artifact this release IS. */
-  image: z
-    .string()
-    .min(1)
-    .max(512)
-    .regex(/^\S+$/, "must not contain whitespace"),
+  image: z.string().min(1).max(512).regex(/^\S+$/, "must not contain whitespace"),
   containerPort: z.number().int().min(1).max(65535).optional(),
   replicas: z.number().int().min(1).max(1000).optional(),
   /** Absent ⇒ the deployment-target's `properties.namespace`, else the component's folded name. */
@@ -64,6 +60,7 @@ export const ArgoCdAuthoringSourceSchema = z
     project: z.string().min(1).optional()
   })
   .refine((s) => (s.path === undefined) !== (s.chart === undefined), {
-    message: "declare exactly one of `path` (a chart in a git repository) or `chart` (a Helm repository)"
+    message:
+      "declare exactly one of `path` (a chart in a git repository) or `chart` (a Helm repository)"
   });
 export type ArgoCdAuthoringSource = z.infer<typeof ArgoCdAuthoringSourceSchema>;

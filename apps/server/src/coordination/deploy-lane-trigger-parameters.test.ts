@@ -26,7 +26,12 @@ describe("rolloutStepsFor — the wave plan's rollout, in Argo Rollouts' vocabul
       })
     ).toEqual({
       canary: {
-        steps: [{ setWeight: 10 }, { pause: { duration: "60s" } }, { setWeight: 50 }, { setWeight: 100 }]
+        steps: [
+          { setWeight: 10 },
+          { pause: { duration: "60s" } },
+          { setWeight: 50 },
+          { setWeight: 100 }
+        ]
       }
     });
   });
@@ -68,7 +73,8 @@ describe("rolloutStepsFor — the wave plan's rollout, in Argo Rollouts' vocabul
     ];
     for (const shape of shapes) {
       for (const step of (shape.canary.steps as Record<string, unknown>[] | undefined) ?? []) {
-        if ("pause" in step) expect(step.pause).toEqual({ duration: expect.stringMatching(/^\d+s$/) });
+        if ("pause" in step)
+          expect(step.pause).toEqual({ duration: expect.stringMatching(/^\d+s$/) });
       }
     }
   });
@@ -76,7 +82,9 @@ describe("rolloutStepsFor — the wave plan's rollout, in Argo Rollouts' vocabul
 
 describe("foldDns1123Label", () => {
   it("folds names deterministically into RFC 1123 labels", () => {
-    expect(foldDns1123Label("Checkout API@prod (DOKS hosted)")).toBe("checkout-api-prod-doks-hosted");
+    expect(foldDns1123Label("Checkout API@prod (DOKS hosted)")).toBe(
+      "checkout-api-prod-doks-hosted"
+    );
     expect(foldDns1123Label("---")).toBe("scp");
   });
   it("keeps a hash of the whole when it must truncate, so two long names never collide", () => {
@@ -94,7 +102,10 @@ describe("renderAuthoredDeployment", () => {
     namespace: "shop",
     image: "ghcr.io/acme/checkout@sha256:" + "a".repeat(64),
     deployment: { image: "ghcr.io/acme/checkout:1.4.0", containerPort: 8080, replicas: 4 },
-    strategy: { strategy: "canary", steps: [{ weightPercent: 20, pauseSeconds: 30 }, { weightPercent: 100 }] },
+    strategy: {
+      strategy: "canary",
+      steps: [{ weightPercent: 20, pauseSeconds: 30 }, { weightPercent: 100 }]
+    },
     source: { repoURL: "https://git.example/gitops.git", path: "charts/scp", targetRevision: "v1" },
     destination: { server: "https://kubernetes.default.svc" },
     componentObjectId: "c",
@@ -115,9 +126,9 @@ describe("renderAuthoredDeployment", () => {
       destination: { server: "https://kubernetes.default.svc", namespace: "shop" }
     });
     // SCP triggers every sync; an automated policy would let Argo CD release on its own.
-    expect((rendered.application.spec as { syncPolicy: Record<string, unknown> }).syncPolicy).not.toHaveProperty(
-      "automated"
-    );
+    expect(
+      (rendered.application.spec as { syncPolicy: Record<string, unknown> }).syncPolicy
+    ).not.toHaveProperty("automated");
   });
 
   it("labels both manifests as SCP-authored — the plugin's only licence to update", () => {

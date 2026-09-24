@@ -52,7 +52,11 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
     org = await createTestOrg(server, "m28-4-authored");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -141,7 +145,10 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
             name: "gamma",
             mode: "parallel",
             targets: [gamma.id],
-            rollout: { strategy: "canary", steps: [{ weightPercent: 50, pauseSeconds: 30 }, { weightPercent: 100 }] }
+            rollout: {
+              strategy: "canary",
+              steps: [{ weightPercent: 50, pauseSeconds: 30 }, { weightPercent: 100 }]
+            }
           },
           {
             name: "prod",
@@ -182,8 +189,15 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       const ds = await withTenantTx(server.deps.db, org.orgId, (tx) =>
         tx.select().from(decisions).where(eq(decisions.subjectId, change.id))
       );
-      console.error("DIAG state", c.state, JSON.stringify(ds.map((d) => [d.kind, d.verdict, d.reasonTree])));
-      console.error("DIAG requests", JSON.stringify(standIn.requests.map((r) => `${r.method} ${r.path}`)));
+      console.error(
+        "DIAG state",
+        c.state,
+        JSON.stringify(ds.map((d) => [d.kind, d.verdict, d.reasonTree]))
+      );
+      console.error(
+        "DIAG requests",
+        JSON.stringify(standIn.requests.map((r) => `${r.method} ${r.path}`))
+      );
       throw err;
     });
 
@@ -198,7 +212,11 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     };
 
     for (const [place, namespace, steps] of [
-      [gamma, "shop-gamma", [{ setWeight: 50 }, { pause: { duration: "30s" } }, { setWeight: 100 }]],
+      [
+        gamma,
+        "shop-gamma",
+        [{ setWeight: 50 }, { pause: { duration: "30s" } }, { setWeight: 100 }]
+      ],
       [
         prod,
         "shop",
@@ -224,8 +242,7 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       // Application's values, with the wave plan's steps and the change's digest.
       const rollout = [...standIn.cluster.values()].find(
         (m) =>
-          m.kind === "Rollout" &&
-          (m.metadata as { namespace?: string }).namespace === namespace
+          m.kind === "Rollout" && (m.metadata as { namespace?: string }).namespace === namespace
       );
       expect(rollout, `a Rollout applied in ${namespace}`).toBeDefined();
       const spec = rollout!.spec as {
@@ -250,7 +267,9 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     expect(standIn.violations).toEqual([]);
     const writes = standIn.requests
       .filter((r) => r.method !== "GET")
-      .map((r) => `${r.method} ${r.path.replace(/\/applications\/[^/]+\//, "/applications/:name/")}`);
+      .map(
+        (r) => `${r.method} ${r.path.replace(/\/applications\/[^/]+\//, "/applications/:name/")}`
+      );
     expect(writes.sort()).toEqual(
       [
         "POST /api/v1/applications",
