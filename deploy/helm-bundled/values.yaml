@@ -198,7 +198,9 @@ bundledExecutor:
         # set; the air-gap install.sh sets it to the bundle registry's digest-pinned ref.
         runnerImage: ""
         # SCP's API base URL as this cluster reaches it (e.g. http://commanderscp-api.scp.svc:8080).
-        # The pod redeems its one-time token here and nowhere else.
+        # The pod redeems its one-time token here and nowhere else. MUST EQUAL the domain pin's
+        # `redeemUrl`: SCP reads the template back and refuses one naming any other API URL.
+        # The runner image likewise must be pinned BY DIGEST and equal the pin's runnerImageDigest.
         apiUrl: ""
         # The port SCP's api pods listen on, for the egress policy.
         apiPort: 8080

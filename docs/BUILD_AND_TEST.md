@@ -1805,6 +1805,17 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
       **What this found about the method:** the first version's tests all passed and proved the path
       works; none asked who can move the path. Every prior "a binding editor cannot…" sentence was a
       claim about config SCP did not guard.
+    - **SECOND VERIFICATION ROUND 2026-09-24.** The template read-back was a DENYLIST and four
+      bypasses went through it (a `command` override, a `steps`→external `templateRef`, the catalog
+      key/dir redirected, an `onExit` `dag`→`templateRef`) — so the reworded charter clause about it
+      was false. It is now an EXACT allowlist of the chart's shape, checked by the same function
+      helm-verify runs against the actual render, and a refusal is terminal with a Decision; the pin
+      gained `redeemUrl`. Separately, `PluginHost.start()` kept a stale instance running under a
+      re-pointed binding (same id), which no test could see because the lane test's fake host
+      overwrote config on every start: it now respawns an instance whose config fingerprint
+      changed, proved over the real subprocess host, and the plugin refuses unless its OWN running
+      endpoint is pinned. The census of that property found two things left for a plugin-host
+      increment (non-unique, org-unscoped instance ids) — recorded in ADR-0054.
     - **STATUS 2026-09-23: BUILT — PR open, not yet merged.** Owner decision (Option 2 of
       [ADR-0054](adr/0054-host-ops-through-argo-workflows-credential-delivery.md), now Accepted): SCP's
       per-domain CA serves the Argo path, with a dated charter amendment in the same change. What was

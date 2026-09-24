@@ -131,8 +131,20 @@ run is refused (`binding_off_pin`); the sealing key and source addresses are rea
 `@scp/plugin-argo-workflows` reads the template back from the pinned server and refuses unless every
 container names the pinned digest and sets `SCP_OPS_CATALOG_VERIFY=required` as a literal, and no
 `podSpecPatch`, `templateDefaults` or script/resource/http/plugin/containerSet/data template exists;
-the expected ref and digest reach it as server-injected `opsTemplatePin` (always set, `null` without
-a pin, so tenant config cannot stand in for it). **This read-back is defence in depth, not
+the pins reach it as server-injected `opsTemplatePins` — every pin in the org, stably ordered, always
+set (`[]` without pins) so tenant config cannot stand in for them — and the plugin first refuses
+unless ITS OWN running `serverUrl`/`namespace` is a pinned endpoint for the template. The read-back is
+an **exact allowlist** of the chart's shape (`opsTemplateShapeProblems` in
+`@scp/plugin-argo-workflows`): one container template that is the entrypoint and nothing else (no
+`steps`/`dag`/`templateRef`/`onExit`/`hooks`/`initContainers`/`sidecars`/`podSpecPatch`); the pinned
+digest; `command` exactly `/usr/local/bin/run.sh` and no `args`; exactly the chart's env names with
+fixed values (catalog verification `required`, the fixed key and catalog paths, the pinned SCP API
+URL — the pin gained `redeemUrl` for this); exactly the chart's volumes and read-only mounts; the
+hardened container and pod security contexts; `podMetadata` labels only. `tools/helm-verify` asks the
+SAME function about the actual chart render, so the chart and the runtime check cannot drift. A
+refusal carries a marker the server recognises and terminalises the target with a Decision
+(`template_readback_refused`); an HTTP 5xx on the read-back is the Argo server being unwell and takes
+the ordinary retry path. **This read-back is defence in depth, not
 attestation:** a cluster admin can change the template between the read and the pod's start (TOCTOU).
 **Key rotation:** re-`PUT` the pin with the new public key and roll the Secret; a token sealed to the
 old key and still in flight fails to unseal in the pod (it fails, loudly, and is re-proposed) — so
@@ -193,8 +205,9 @@ adds is a second way for a certificate to come to exist, and its exposure is:
   `redeem.py` refuses an inventory host outside the allowlist. The charter amendment states this
   plainly rather than claiming the per-run precondition is met unchanged.
 - **THE RESIDUAL TRUST SET, named:** the cluster's **administrators**, anyone who can **read the
-  sealing Secret**, and anyone who can **create a pod** (or submit an ad-hoc Workflow) in the Argo
-  namespace. Any of them can obtain a certificate within its TTL — by unsealing a token in flight, or
+  sealing Secret**, anyone who can **create a pod** (or submit an ad-hoc Workflow) in the Argo
+  namespace, and anyone who can **edit WorkflowTemplates** there (they can change `scp-ops-v1` after
+  SCP's read-back). Any of them can obtain a certificate within its TTL — by unsealing a token in flight, or
   by changing what runs under the pinned template name after SCP's read-back. They cannot choose the
   hosts or principals a run's material names (those come from redemption), and a certificate they
   obtain carries the pinned `source-address`; but the certificate is usable against every host
@@ -216,6 +229,39 @@ adds is a second way for a certificate to come to exist, and its exposure is:
 - **The reachability census matched raw text**, so a commented-out caller stayed green — it now reads
   comment-stripped source (`stripComments`) and carries a control case.
 - **Egress text said "nothing else" over DNS-to-anywhere and an RFC1918 API default** — D8.
+
+## What the second verification round found (2026-09-24) and how each was closed
+
+- **BLOCKING — the read-back was a denylist, and four bypasses went through it**, each keeping the
+  pinned image and `SCP_OPS_CATALOG_VERIFY=required`: T1 a `command` override (`python -c`); T2 a
+  `steps` entrypoint calling an external `templateRef`; T3 `SCP_OPS_CATALOG_PUBKEY`/`_DIR` redirected
+  to an attacker volume; T4 an `onExit` `dag` with an external `templateRef`. The charter clause
+  claiming "every step names the pinned digest and requires verification" was therefore false. Closed
+  by the exact allowlist above; T1–T4 are permanent cases in `ops-template.test.ts` (with 21 more
+  allowlist edges) and T1–T4 again through the real reconcile loop in
+  `ops-argo-lane.integration.test.ts`, each ending terminal with a Decision. The clause was reworded
+  to what the allowlist checks.
+- **SHOULD-FIX — a stale plugin instance.** `PluginHost.start()` skipped any id already running, so an
+  editor could start an instance under their own server and keep it running after re-pointing the
+  binding at the pin with the same id. `start()` now fingerprints the config (module, config, secrets,
+  egress allowlist, internal-egress grant) and respawns an instance whose fingerprint changed; the one
+  caller that only needs the shared default alive (`ensureAliveOnly`) never reconfigures it. Proved
+  over the REAL subprocess host (`host-config-refresh.test.ts`). **Census** of callers that assumed a
+  started instance's config was current: reconcile, observe, the continuous-probe driver,
+  pipeline-hook runs, control-runner, notify dispatch, the discovery route, managed-dep and the
+  version index all call `start()` with the config they are about to act on — each is now correct by
+  the host's change rather than by its own code. **Two findings the census surfaced and this PR does
+  NOT fix, stated so they are not lost:** (i) `executor_bindings.plugin_instance_id` is not unique, so
+  two bindings (in one org or, because host instance ids are global, in two orgs) naming one id with
+  different configs now alternate restarts where before the first-started config silently served
+  both; (ii) a caller between `start()` and its call can have the instance reconfigured under it by a
+  concurrent `start()` with the other config. Both are the same property (instance identity is a
+  tenant-chosen string, not org- or config-scoped); the ops path is protected against it by the
+  plugin's own-endpoint check, the rest is a plugin-host contract change for its own increment.
+- **NITs** — the enrolment and pin doors answered 500 where they meant 404/409 (a plain `Error` with
+  `statusCode` is honoured only for framework errors); all five sites in `routes/ssh-ca.ts` now throw
+  `notFound`/`conflict`. `normalizeServerUrl`'s comment now says what it does (the path is kept: a
+  reverse-proxied prefix is a different endpoint), and the plugin's copy is asserted equal to it.
 
 ## Options that were put to the owner (for the record)
 

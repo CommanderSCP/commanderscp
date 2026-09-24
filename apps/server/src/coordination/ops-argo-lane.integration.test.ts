@@ -138,6 +138,7 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
   const sealingPublicPem = sealing.publicKey.export({ type: "spki", format: "pem" }).toString();
   /** The pinned runner digest, and the source addresses every certificate must carry. */
   const RUNNER_DIGEST = `sha256:${"a".repeat(64)}`;
+  const REDEEM_URL = "http://commanderscp-api.scp.svc:8080";
   const PIN_SOURCE = ["10.42.0.0/16", "192.168.5.7"];
   const PIN = {
     serverUrl: ARGO_URL,
@@ -145,23 +146,90 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     templateRef: "scp-ops-v1",
     sealingPublicKey: sealingPublicPem,
     sourceAddresses: PIN_SOURCE,
-    runnerImageDigest: RUNNER_DIGEST
+    runnerImageDigest: RUNNER_DIGEST,
+    redeemUrl: REDEEM_URL
   };
   /** The WorkflowTemplate the fake Argo returns when the plugin READS IT BACK before submit. */
-  const goodTemplate = () => ({
-    metadata: { name: "scp-ops-v1" },
-    spec: {
-      templates: [
-        {
-          name: "run",
-          container: {
-            image: `registry.example.com/scp/scp-runner-ops:v1@${RUNNER_DIGEST}`,
-            env: [{ name: "SCP_OPS_CATALOG_VERIFY", value: "required" }]
+  /** scp-ops-v1 exactly as the chart renders it — the plugin's read-back is an exact allowlist. */
+  interface TemplateFixture {
+    metadata: { name: string };
+    spec: Record<string, unknown> & {
+      templates: (Record<string, unknown> & {
+        container: Record<string, unknown> & {
+          image: string;
+          command: string[];
+          env: { name: string; value: string }[];
+        };
+      })[];
+    };
+  }
+  const goodTemplate = (): TemplateFixture =>
+    ({
+      metadata: { name: "scp-ops-v1" },
+      spec: {
+        serviceAccountName: "scp-ops",
+        entrypoint: "run",
+        activeDeadlineSeconds: 600,
+        podMetadata: { labels: { "commanderscp.io/catalog": "ops" } },
+        securityContext: {
+          runAsNonRoot: true,
+          runAsUser: 1000,
+          runAsGroup: 1000,
+          fsGroup: 1000,
+          seccompProfile: { type: "RuntimeDefault" }
+        },
+        arguments: { parameters: [{ name: "opsRunTokenSealed" }, { name: "opsRunId", value: "" }] },
+        templates: [
+          {
+            name: "run",
+            inputs: { parameters: [{ name: "opsRunTokenSealed" }, { name: "opsRunId" }] },
+            volumes: [
+              { name: "work", emptyDir: {} },
+              { name: "tmp", emptyDir: {} },
+              { name: "sealing", secret: { secretName: "scp-ops-sealing", defaultMode: 288 } },
+              {
+                name: "catalog-pubkey",
+                secret: { secretName: "scp-ops-catalog-pubkey", defaultMode: 288 }
+              }
+            ],
+            container: {
+              image: `registry.example.com/scp/scp-runner-ops:v1@${RUNNER_DIGEST}`,
+              command: ["/usr/local/bin/run.sh"],
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 1000,
+                runAsGroup: 1000,
+                readOnlyRootFilesystem: true,
+                allowPrivilegeEscalation: false,
+                privileged: false,
+                seccompProfile: { type: "RuntimeDefault" },
+                capabilities: { drop: ["ALL"] }
+              },
+              env: [
+                { name: "SCP_OPS_API_URL", value: REDEEM_URL },
+                {
+                  name: "SCP_OPS_RUN_TOKEN_SEALED",
+                  value: "{{inputs.parameters.opsRunTokenSealed}}"
+                },
+                {
+                  name: "SCP_OPS_SEALING_KEY_FILE",
+                  value: "/var/run/scp-ops/sealing/sealing-key.pem"
+                },
+                { name: "SCP_OPS_CATALOG_VERIFY", value: "required" },
+                { name: "SCP_OPS_CATALOG_PUBKEY", value: "/var/run/scp-ops/catalog/cosign.pub" },
+                { name: "HOME", value: "/work" }
+              ],
+              volumeMounts: [
+                { name: "work", mountPath: "/work" },
+                { name: "tmp", mountPath: "/tmp" },
+                { name: "sealing", mountPath: "/var/run/scp-ops/sealing", readOnly: true },
+                { name: "catalog-pubkey", mountPath: "/var/run/scp-ops/catalog", readOnly: true }
+              ]
+            }
           }
-        }
-      ]
-    }
-  });
+        ]
+      }
+    }) as unknown as TemplateFixture;
   let templateBody: unknown = goodTemplate();
   const templateReads: string[] = [];
   /** Any request to a host that is NOT the pinned Argo server — probe A's redirect target. */
@@ -844,20 +912,81 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     );
   });
 
-  it("TEMPLATE CHECK: a template read back with another image digest, or verification off, is NOT submitted", async () => {
-    for (const bad of [
-      () => {
-        const t = goodTemplate();
-        t.spec.templates[0]!.container.image = `registry.example.com/evil@sha256:${"b".repeat(64)}`;
-        return t;
-      },
-      () => {
-        const t = goodTemplate();
-        t.spec.templates[0]!.container.env = [{ name: "SCP_OPS_CATALOG_VERIFY", value: "off" }];
-        return t;
-      },
-      () => ({ ...goodTemplate(), spec: { ...goodTemplate().spec, podSpecPatch: "{}" } })
-    ]) {
+  it("the enrolment and pin doors answer 404/409, not 500 (probe PX2) — a plain Error with statusCode was a 500", async () => {
+    const unknownDomain = randomUUID();
+    await expect(admin.sshCa.pinArgoOps(unknownDomain, PIN)).rejects.toMatchObject({ status: 404 });
+    await expect(admin.sshCa.argoOpsPin(unknownDomain)).rejects.toMatchObject({ status: 404 });
+    await expect(admin.sshCa.enrolment(unknownDomain)).rejects.toMatchObject({ status: 404 });
+    await expect(admin.sshCa.enrol(domainId, "again")).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("TEMPLATE CHECK (T1–T4 + digest/verify): a template not EXACTLY the chart's is refused TERMINALLY with a Decision", async () => {
+    // The exhaustive allowlist edges are in @scp/plugin-argo-workflows' ops-template.test.ts; here
+    // the four re-verification bypasses go through the REAL reconcile loop and the REAL plugin, and
+    // each must end the target with a Decision — not a backed-off retry that re-reads every tick.
+    const cases: [string, () => TemplateFixture][] = [
+      [
+        "T1 command override",
+        () => {
+          const t = goodTemplate();
+          t.spec.templates[0]!.container.command = ["python", "-c", "exfil()"];
+          return t;
+        }
+      ],
+      [
+        "T2 steps -> external templateRef",
+        () => {
+          const t = goodTemplate();
+          t.spec["entrypoint"] = "main";
+          (t.spec.templates as unknown[]).push({
+            name: "main",
+            steps: [[{ name: "s", templateRef: { name: "org-evil", template: "x" } }]]
+          });
+          return t;
+        }
+      ],
+      [
+        "T3 catalog key/dir redirected",
+        () => {
+          const t = goodTemplate();
+          const env = t.spec.templates[0]!.container.env;
+          env.find((e) => e.name === "SCP_OPS_CATALOG_PUBKEY")!.value = "/evil/cosign.pub";
+          env.push({ name: "SCP_OPS_CATALOG_DIR", value: "/evil/catalog" });
+          return t;
+        }
+      ],
+      [
+        "T4 onExit dag -> external templateRef",
+        () => {
+          const t = goodTemplate();
+          t.spec["onExit"] = "exit";
+          (t.spec.templates as unknown[]).push({
+            name: "exit",
+            dag: { tasks: [{ name: "t", templateRef: { name: "org-evil", template: "x" } }] }
+          });
+          return t;
+        }
+      ],
+      [
+        "another image digest",
+        () => {
+          const t = goodTemplate();
+          t.spec.templates[0]!.container.image = `registry.example.com/evil@sha256:${"b".repeat(64)}`;
+          return t;
+        }
+      ],
+      [
+        "verification off",
+        () => {
+          const t = goodTemplate();
+          t.spec.templates[0]!.container.env.find(
+            (e) => e.name === "SCP_OPS_CATALOG_VERIFY"
+          )!.value = "off";
+          return t;
+        }
+      ]
+    ];
+    for (const [label, bad] of cases) {
       templateBody = bad();
       const product = await fleet();
       await bindArgo(product);
@@ -865,10 +994,15 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
       const before = submissions.length;
       templateReads.length = 0;
       await tick();
-      expect(templateReads.length, "the template was read back").toBeGreaterThan(0);
-      expect(submissions.length, "and refused before submit").toBe(before);
-      // Cancelled so its backed-off retry cannot submit later against the next case's good template.
-      await admin.changes.cancel(change.id, "template-check case done");
+      expect(templateReads.length, `${label}: the template was read back`).toBeGreaterThan(0);
+      expect(submissions.length, `${label}: refused before submit`).toBe(before);
+      expect((await waveTargetOf(change.id, product)).status, `${label}: TERMINAL`).toBe(
+        WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
+      );
+      const decision = (await decisionsFor(change.id)).find(
+        (d) => (d.inputContext as Record<string, unknown>)["reason"] === "template_readback_refused"
+      );
+      expect(decision, `${label}: the refusal carries a Decision`).toBeDefined();
     }
   });
 

@@ -123,7 +123,8 @@ import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook
 import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
-import { TriggerParameterRefusal } from "./trigger-parameter-refusal.js";
+import { OpsMaterialRefusal, TriggerParameterRefusal } from "./trigger-parameter-refusal.js";
+import { OPS_TEMPLATE_REFUSED_MARKER } from "@scp/plugin-argo-workflows";
 import { isOpsLane, opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
@@ -1845,6 +1846,30 @@ async function triggerWaveTarget(
         ...(claim.parameters !== undefined ? { parameters: claim.parameters } : {})
       });
     } catch (err) {
+      // THE OPS TEMPLATE READ-BACK REFUSED (M28.2, ADR-0054 D9(d)) — TERMINAL, with a Decision.
+      // Not a transient executor error: the pinned template is not SCP's, or this instance is not a
+      // pinned endpoint, and retrying cannot change either. The redemption row minted for this
+      // trigger dies with the target (the redeem door requires an in-flight target).
+      const message = err instanceof Error ? err.message : String(err);
+      if (
+        isOpsLane(executorModule, claim.externalRef) &&
+        message.includes(OPS_TEMPLATE_REFUSED_MARKER)
+      ) {
+        const detail = message.slice(message.indexOf(OPS_TEMPLATE_REFUSED_MARKER));
+        await withTenantTx(db, orgId, (tx) =>
+          refuseTrigger(
+            tx,
+            new OpsMaterialRefusal(`the host-ops template read-back refused this run: ${detail}`, {
+              inputContext: {
+                gate: "ops_material",
+                reason: "template_readback_refused",
+                detail: detail.slice(0, 2000)
+              }
+            })
+          )
+        );
+        return;
+      }
       // Step 3' — the executor REACHED and REFUSED this trigger. See docs/coordination.md §811.
       await withTenantTx(db, orgId, (tx) =>
         markWaveTargetTriggerFailed(tx, orgId, waveTargetId)
@@ -1921,7 +1946,10 @@ async function ensureExecutorInstanceStarted(
       module: DEFAULT_EXECUTOR_MODULE,
       orgId,
       scopeKey: "default",
-      config: {}
+      config: {},
+      // ALIVE, NOT RECONFIGURED: the default was booted with its own config (statePath, …), and
+      // `start()` now restarts an instance whose config changes (#414 fix round).
+      ensureAliveOnly: true
     }
   ]);
   // `module` describes what was actually started HERE. See docs/coordination.md §814.

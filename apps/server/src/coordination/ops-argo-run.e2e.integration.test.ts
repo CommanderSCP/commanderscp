@@ -141,7 +141,8 @@ async function pin(sourceAddresses: string[]): Promise<void> {
     templateRef: "scp-ops-v1",
     sealingPublicKey: sealingPublicPem,
     sourceAddresses,
-    runnerImageDigest: RUNNER_DIGEST
+    runnerImageDigest: RUNNER_DIGEST,
+    redeemUrl: server.baseUrl.replace(/\/api\/v1\/?$/, "")
   });
 }
 

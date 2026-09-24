@@ -63957,6 +63957,12 @@
                     "type": "string",
                     "pattern": "^sha256:[0-9a-f]{64}$",
                     "description": "The scp-runner-ops digest the WorkflowTemplate's step must name."
+                  },
+                  "redeemUrl": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "description": "SCP's API base URL as the Argo cluster reaches it — the template's SCP_OPS_API_URL must equal it."
                   }
                 },
                 "required": [
@@ -63965,7 +63971,8 @@
                   "templateRef",
                   "sealingPublicKey",
                   "sourceAddresses",
-                  "runnerImageDigest"
+                  "runnerImageDigest",
+                  "redeemUrl"
                 ],
                 "additionalProperties": false
               }
@@ -64007,6 +64014,9 @@
                     "runnerImageDigest": {
                       "type": "string"
                     },
+                    "redeemUrl": {
+                      "type": "string"
+                    },
                     "updatedAt": {
                       "type": "string"
                     }
@@ -64019,6 +64029,7 @@
                     "sealingPublicKey",
                     "sourceAddresses",
                     "runnerImageDigest",
+                    "redeemUrl",
                     "updatedAt"
                   ],
                   "additionalProperties": false
@@ -64255,6 +64266,9 @@
                     "runnerImageDigest": {
                       "type": "string"
                     },
+                    "redeemUrl": {
+                      "type": "string"
+                    },
                     "updatedAt": {
                       "type": "string"
                     }
@@ -64267,6 +64281,7 @@
                     "sealingPublicKey",
                     "sourceAddresses",
                     "runnerImageDigest",
+                    "redeemUrl",
                     "updatedAt"
                   ],
                   "additionalProperties": false

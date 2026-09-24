@@ -6194,6 +6194,7 @@ export const zGetTrustDomainArgoOpsPinResponse = z.object({
     sealingPublicKey: z.string(),
     sourceAddresses: z.array(z.string()),
     runnerImageDigest: z.string(),
+    redeemUrl: z.string(),
     updatedAt: z.string()
 });
 
@@ -6208,6 +6209,7 @@ export const zPutTrustDomainArgoOpsPinResponse = z.object({
     sealingPublicKey: z.string(),
     sourceAddresses: z.array(z.string()),
     runnerImageDigest: z.string(),
+    redeemUrl: z.string(),
     updatedAt: z.string()
 });
 

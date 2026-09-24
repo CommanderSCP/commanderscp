@@ -943,6 +943,9 @@ importers:
 
   tools/helm-verify:
     dependencies:
+      '@scp/plugin-argo-workflows':
+        specifier: workspace:*
+        version: link:../../packages/plugins/argo-workflows
       '@scp/runner-launcher':
         specifier: workspace:*
         version: link:../../packages/runner-launcher

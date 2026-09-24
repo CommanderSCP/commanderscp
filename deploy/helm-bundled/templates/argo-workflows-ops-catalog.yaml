@@ -3,6 +3,7 @@
 {{- $o := $w.catalog.ops -}}
 {{- $scpNs := .Values.bundledExecutor.scpNamespace -}}
 {{- if not $o.runnerImage }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.runnerImage is empty — the vendored, retargetable scp-runner-ops image is required (the air-gap install.sh sets it). Fail-closed." }}{{- end -}}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $o.runnerImage) }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.runnerImage must be pinned BY DIGEST (…@sha256:<64 hex>) — SCP's read-back refuses a scp-ops-v1 whose image is not the digest pinned for the domain, so a tag here would refuse every run. Fail-closed." }}{{- end -}}
 {{- if not $o.apiUrl }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.apiUrl is empty — a scp-ops-v1 pod redeems its one-time token at SCP's API and has no other way to its material. Fail-closed." }}{{- end -}}
 {{- if not $o.targetCidrs }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.targetCidrs is empty — the ops pods' egress policy would admit no host at all. Name the address ranges your managed hosts live in. Fail-closed." }}{{- end -}}
 {{- if not $o.kubeApiCidrs }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.kubeApiCidrs is empty — name your cluster's Kubernetes API endpoint address(es) (`kubectl get endpoints kubernetes -n default`). There is no default: a broad range here would let a pod holding a root certificate reach every private address on 443/6443. Fail-closed." }}{{- end -}}

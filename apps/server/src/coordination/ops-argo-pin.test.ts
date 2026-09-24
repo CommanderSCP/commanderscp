@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SCP_OPS_TEMPLATE_PATTERN } from "@scp/plugin-argo-workflows";
+import { SCP_OPS_TEMPLATE_PATTERN, normalizeOpsUrl } from "@scp/plugin-argo-workflows";
 import { PokeRateLimiter } from "../federation/poke-rate-limit.js";
 import {
   ArgoOpsPinInvalid,
@@ -22,7 +22,8 @@ describe("the Argo host-ops pin", () => {
     templateRef: "scp-ops-v1",
     sealingPublicKey: rsa,
     sourceAddresses: ["10.42.0.0/16"],
-    runnerImageDigest: `sha256:${"a".repeat(64)}`
+    runnerImageDigest: `sha256:${"a".repeat(64)}`,
+    redeemUrl: "http://commanderscp-api.scp.svc:8080"
   };
 
   it("accepts a good pin and NORMALISES its server URL (so a trailing slash or case cannot defeat the match)", () => {
@@ -59,12 +60,28 @@ describe("the Argo host-ops pin", () => {
     ["a digest that is not sha256", { runnerImageDigest: "latest" }, /sha256/],
     ["a template that is not SCP's", { templateRef: "org-own-template" }, /catalog templates/],
     ["a non-http server", { serverUrl: "file:///etc/passwd" }, /http/],
-    ["a namespace that is not one", { namespace: "Not_A_Namespace" }, /namespace/]
+    ["a namespace that is not one", { namespace: "Not_A_Namespace" }, /namespace/],
+    ["a redeem URL that is not http(s)", { redeemUrl: "ftp://x" }, /redeemUrl/]
   ] as const)("REFUSES %s at write time", (_label, patch, message) => {
     expect(() => validateArgoOpsPin({ ...good, ...patch } as ArgoOpsPinInput)).toThrow(
       ArgoOpsPinInvalid
     );
     expect(() => validateArgoOpsPin({ ...good, ...patch } as ArgoOpsPinInput)).toThrow(message);
+  });
+
+  it("the server's and the plugin's URL normalisation are the SAME function (the pin match and the plugin's own-endpoint match cannot disagree)", () => {
+    for (const u of [
+      "https://Argo.Example.test/",
+      "https://argo.example.test:8443/prefix/",
+      "http://10.0.0.1:2746",
+      "https://argo.example.test/a//",
+      "file:///etc/passwd",
+      "not a url"
+    ]) {
+      expect(normalizeOpsUrl(u)).toBe(normalizeServerUrl(u));
+    }
+    // The path is kept (a reverse-proxied prefix IS a different endpoint), as the comment says.
+    expect(normalizeServerUrl("https://h/argo")).not.toBe(normalizeServerUrl("https://h/other"));
   });
 
   it("the server's catalog templates are exactly the ones the argo-workflows plugin read-back-checks", () => {

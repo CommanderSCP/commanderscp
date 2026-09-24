@@ -1,4 +1,11 @@
 import { createFileBackedJsonCache } from "@scp/plugin-api";
+import {
+  OPS_TEMPLATE_REFUSED_MARKER,
+  SCP_OPS_TEMPLATE_PATTERN,
+  opsTemplateShapeProblems,
+  pinsForInstance
+} from "./ops-template.js";
+export * from "./ops-template.js";
 import type {
   ScheduleSpec,
   AbortResult,
@@ -192,48 +199,46 @@ function computeProgress(progress: string | undefined, phase: ExecutionPhase): n
   return 1;
 }
 
-/** SCP's host-ops catalog templates (M28.2). Kept in step with the server's
- *  `OPS_ARGO_CATALOG_TEMPLATES` by `ops-argo-pin.test.ts`. */
-export const SCP_OPS_TEMPLATE_PATTERN = /^scp-ops-v\d+$/;
-
-/** Template kinds that run something other than a named container image — any of them in an SCP
- *  ops template would run code the digest check below never looked at. */
-const FORBIDDEN_TEMPLATE_KINDS = ["script", "resource", "http", "plugin", "containerSet", "data"];
-
-interface OpsTemplatePin {
-  templateRef: string;
-  runnerImageDigest: string;
-}
-
-interface ArgoContainerShape {
-  image?: string;
-  env?: { name?: string; value?: string; valueFrom?: unknown }[];
-}
-
 /**
  * DEFENCE IN DEPTH for SCP's host-ops catalog template (M28.2, ADR-0054 D9(d)).
  *
- * Before a sealed run token is submitted, the WorkflowTemplate it will run is READ BACK from the
- * pinned Argo server and refused unless every container names the pinned `scp-runner-ops` digest
- * and requires catalog verification, and nothing (a podSpecPatch, a script/resource/http template)
- * could run something else. This is NOT attestation: a cluster admin can change the template
- * between this read and the pod's start (TOCTOU), and can run any pod with the sealing Secret
- * mounted. It catches the template being wrong, not an administrator intent on misusing it —
- * ADR-0054 names cluster admins, sealing-Secret readers and pod creators as the residual trust set.
+ * Before a sealed run token is submitted, THIS RUNNING INSTANCE checks two things against the
+ * domain pins the server injected (`opsTemplatePins`, always set — `[]` when the org has none):
+ *
+ *   1. ITS OWN `serverUrl` and `namespace` are a pinned endpoint for this template. Checked here,
+ *      against the config this process is actually running with, not only by the server against
+ *      the config it resolved — #414's re-verification showed a plugin host that kept a stale
+ *      instance running under a re-pointed binding, and the server's check alone cannot see that.
+ *   2. The WorkflowTemplate read back from that endpoint has EXACTLY the shape the chart renders
+ *      (`opsTemplateShapeProblems`), with the pinned runner digest and the pinned SCP API URL.
+ *
+ * Refusals carry `OPS_TEMPLATE_REFUSED_MARKER` so the server terminalises the run with a Decision.
+ * A read-back that fails at the HTTP layer (5xx, unreachable) does NOT carry it: that is the Argo
+ * server being unwell, not the template being wrong, and it takes the ordinary retry path.
+ * This is not attestation — see ops-template.ts.
  */
 async function assertOpsTemplateMatchesPin(
   ctx: PluginContext,
   config: ArgoWorkflowsConfig,
   templateName: string
 ): Promise<void> {
-  const pin = (ctx.config as { opsTemplatePin?: OpsTemplatePin | null } | undefined)
-    ?.opsTemplatePin;
   const refuse = (why: string): never => {
-    throw new Error(`argo-workflows trigger: refusing to submit ${templateName} — ${why}`);
+    throw new Error(`${OPS_TEMPLATE_REFUSED_MARKER} refusing to submit ${templateName} — ${why}`);
   };
-  if (!pin) refuse("the domain has no Argo host-ops pin (server-injected opsTemplatePin)");
-  if (pin!.templateRef !== templateName) {
-    refuse(`the pinned template ref is '${pin!.templateRef}'`);
+  const pins = pinsForInstance(
+    (ctx.config as { opsTemplatePins?: unknown } | undefined)?.opsTemplatePins,
+    { serverUrl: config.serverUrl, namespace: config.namespace },
+    templateName
+  );
+  if (pins.length === 0) {
+    refuse(
+      `no Argo host-ops pin names this instance's endpoint (${config.serverUrl}, namespace ` +
+        `${config.namespace}) for ${templateName}`
+    );
+  }
+  const variants = new Set(pins.map((p) => `${p.runnerImageDigest} ${p.redeemUrl}`));
+  if (variants.size !== 1) {
+    refuse("domains pinning this endpoint disagree on the runner digest or the SCP API URL");
   }
   const { status, body } = await apiRequest(
     ctx,
@@ -241,39 +246,12 @@ async function assertOpsTemplateMatchesPin(
     "GET",
     `/api/v1/workflow-templates/${config.namespace}/${encodeURIComponent(templateName)}`
   );
-  if (status < 200 || status >= 300) refuse(`reading it back returned HTTP ${status}`);
-  const spec = ((body as { spec?: Record<string, unknown> } | undefined)?.spec ?? {}) as {
-    podSpecPatch?: unknown;
-    templateDefaults?: unknown;
-    templates?: Record<string, unknown>[];
-  };
-  if (spec.podSpecPatch !== undefined) refuse("it sets a workflow-level podSpecPatch");
-  if (spec.templateDefaults !== undefined) refuse("it sets templateDefaults");
-  const containers: ArgoContainerShape[] = [];
-  for (const t of spec.templates ?? []) {
-    for (const kind of FORBIDDEN_TEMPLATE_KINDS) {
-      if (t[kind] !== undefined) refuse(`template '${String(t["name"])}' is a '${kind}' template`);
-    }
-    if (t["podSpecPatch"] !== undefined)
-      refuse(`template '${String(t["name"])}' sets podSpecPatch`);
-    if (t["container"]) containers.push(t["container"] as ArgoContainerShape);
-    for (const extra of ["initContainers", "sidecars"]) {
-      for (const c of (t[extra] as ArgoContainerShape[] | undefined) ?? []) containers.push(c);
-    }
+  if (status === 404) refuse("the template does not exist on the pinned server");
+  if (status < 200 || status >= 300) {
+    throw new Error(`argo-workflows trigger: reading back ${templateName} returned HTTP ${status}`);
   }
-  if (containers.length === 0) refuse("it declares no container");
-  for (const c of containers) {
-    const digest = /@(sha256:[0-9a-f]{64})$/.exec(c.image ?? "")?.[1];
-    if (digest !== pin!.runnerImageDigest) {
-      refuse(
-        `container image '${c.image ?? "(none)"}' is not the pinned ${pin!.runnerImageDigest}`
-      );
-    }
-    const verify = (c.env ?? []).filter((e) => e.name === "SCP_OPS_CATALOG_VERIFY");
-    if (verify.length !== 1 || verify[0]!.value !== "required" || verify[0]!.valueFrom) {
-      refuse("a container does not set SCP_OPS_CATALOG_VERIFY=required as a literal");
-    }
-  }
+  const problems = opsTemplateShapeProblems(body, pins[0]!);
+  if (problems.length > 0) refuse(problems.slice(0, 8).join("; "));
 }
 
 async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {

@@ -549,7 +549,14 @@ export const ArgoOpsPinRequestSchema = z.strictObject({
   runnerImageDigest: z
     .string()
     .regex(/^sha256:[0-9a-f]{64}$/)
-    .describe("The scp-runner-ops digest the WorkflowTemplate's step must name.")
+    .describe("The scp-runner-ops digest the WorkflowTemplate's step must name."),
+  redeemUrl: z
+    .string()
+    .min(1)
+    .max(2048)
+    .describe(
+      "SCP's API base URL as the Argo cluster reaches it — the template's SCP_OPS_API_URL must equal it."
+    )
 });
 export type ArgoOpsPinRequest = z.infer<typeof ArgoOpsPinRequestSchema>;
 
@@ -561,6 +568,7 @@ export const ArgoOpsPinSchema = z.strictObject({
   sealingPublicKey: z.string(),
   sourceAddresses: z.array(z.string()),
   runnerImageDigest: z.string(),
+  redeemUrl: z.string(),
   updatedAt: z.string()
 });
 export type ArgoOpsPinView = z.infer<typeof ArgoOpsPinSchema>;

@@ -2531,6 +2531,9 @@ export const sshCaArgoOpsPins = pgTable(
     sourceAddresses: text("source_addresses").array().notNull(),
     /** `sha256:<hex>` — the scp-runner-ops digest the WorkflowTemplate's step must name. */
     runnerImageDigest: text("runner_image_digest").notNull(),
+    /** The SCP API base URL the template must name as `SCP_OPS_API_URL` — where the pod sends the
+     *  token it unsealed. Pinned because a template naming another URL hands that server the token. */
+    redeemUrl: text("redeem_url").notNull(),
     recordedBySubjectId: uuid("recorded_by_subject_id").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },

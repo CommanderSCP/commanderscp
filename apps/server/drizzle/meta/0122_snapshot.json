@@ -1,5 +1,5 @@
 {
-  "id": "2740dc51-ca7f-4ff8-98da-091fde60eb87",
+  "id": "5d53b461-c79d-497b-b24d-44a46e360923",
   "prevId": "f76cd5e1-4976-48eb-b135-18bde53f2407",
   "version": "7",
   "dialect": "postgresql",
@@ -8619,6 +8619,12 @@
         },
         "runner_image_digest": {
           "name": "runner_image_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "redeem_url": {
+          "name": "redeem_url",
           "type": "text",
           "primaryKey": false,
           "notNull": true

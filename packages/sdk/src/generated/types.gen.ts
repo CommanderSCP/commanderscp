@@ -15469,6 +15469,7 @@ export type GetTrustDomainArgoOpsPinResponses = {
         sealingPublicKey: string;
         sourceAddresses: Array<string>;
         runnerImageDigest: string;
+        redeemUrl: string;
         updatedAt: string;
     };
 };
@@ -15492,6 +15493,10 @@ export type PutTrustDomainArgoOpsPinData = {
          * The scp-runner-ops digest the WorkflowTemplate's step must name.
          */
         runnerImageDigest: string;
+        /**
+         * SCP's API base URL as the Argo cluster reaches it — the template's SCP_OPS_API_URL must equal it.
+         */
+        redeemUrl: string;
     };
     path: {
         domainId: string;
@@ -15561,6 +15566,7 @@ export type PutTrustDomainArgoOpsPinResponses = {
         sealingPublicKey: string;
         sourceAddresses: Array<string>;
         runnerImageDigest: string;
+        redeemUrl: string;
         updatedAt: string;
     };
 };

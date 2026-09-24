@@ -4008,6 +4008,10 @@ export function buildProgram(): Command {
       [] as string[]
     )
     .requiredOption("--runner-image-digest <sha256:...>", "the pinned scp-runner-ops digest")
+    .requiredOption(
+      "--redeem-url <url>",
+      "SCP's API base URL as the Argo cluster reaches it (the template's SCP_OPS_API_URL)"
+    )
     .option("--base-url <url>", "API base URL override")
     .action(
       async (
@@ -4019,6 +4023,7 @@ export function buildProgram(): Command {
           sealingPublicKeyFile: string;
           sourceAddress: string[];
           runnerImageDigest: string;
+          redeemUrl: string;
           baseUrl?: string;
         }
       ) => {
@@ -4030,7 +4035,8 @@ export function buildProgram(): Command {
           templateRef: opts.templateRef,
           sealingPublicKey: await readFile(opts.sealingPublicKeyFile, "utf8"),
           sourceAddresses: opts.sourceAddress,
-          runnerImageDigest: opts.runnerImageDigest
+          runnerImageDigest: opts.runnerImageDigest,
+          redeemUrl: opts.redeemUrl
         });
         console.log(
           `pinned ${pin.domainId}: ${pin.serverUrl} ns=${pin.namespace} template=${pin.templateRef} ` +

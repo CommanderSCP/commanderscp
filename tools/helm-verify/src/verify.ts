@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseAllDocuments } from "yaml";
 import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runner-launcher";
+import { opsTemplateShapeProblems } from "@scp/plugin-argo-workflows";
 import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -701,6 +702,10 @@ function socketMatrix(): MatrixPoint[] {
 }
 
 const RPM_BUILDER_VERIFY_IMAGE = "ghcr.io/commanderscp/scp-builder-rpm:verify";
+/** The digest and SCP API URL the all-backends render pins scp-ops-v1 to — what the plugin's
+ *  read-back check is then asked to accept (M28.2, ADR-0054 D9(d)). */
+const OPS_VERIFY_DIGEST = `sha256:${"d".repeat(64)}`;
+const OPS_VERIFY_API_URL = "http://commanderscp-api.verify-scp-ns.svc:8080";
 
 /** THE SHIPPED RPM BUILD (M28.1, ADR-0053) — rendered and held to what was MEASURED.
  *
@@ -978,9 +983,9 @@ function verifySocketInvariantMatrix(): void {
       "--set",
       "bundledExecutor.argoWorkflows.catalog.ops.enabled=true",
       "--set",
-      "bundledExecutor.argoWorkflows.catalog.ops.runnerImage=registry.example.com/scp/scp-runner-ops:verify",
+      `bundledExecutor.argoWorkflows.catalog.ops.runnerImage=registry.example.com/scp/scp-runner-ops:verify@${OPS_VERIFY_DIGEST}`,
       "--set",
-      "bundledExecutor.argoWorkflows.catalog.ops.apiUrl=http://commanderscp-api.verify-scp-ns.svc:8080",
+      `bundledExecutor.argoWorkflows.catalog.ops.apiUrl=${OPS_VERIFY_API_URL}`,
       "--set",
       "bundledExecutor.argoWorkflows.catalog.ops.targetCidrs={10.20.0.0/16}",
       "--set",
@@ -1366,6 +1371,18 @@ function assertOpsCatalog(
   }
   check(tpl, `[${label}] catalog.ops.enabled=true rendered no scp-ops-v1 WorkflowTemplate`);
   if (!tpl) return;
+  // THE CHART AND THE RUNTIME CHECK ARE ONE THING. The argo-workflows plugin refuses, at submit time,
+  // any scp-ops-v1 whose shape is not exactly the chart's (#414 re-verification: a denylist let four
+  // bypasses through). Asking that same function about the ACTUAL render means a chart edit it would
+  // refuse fails here, at build time, instead of refusing every production run.
+  const shapeProblems = opsTemplateShapeProblems(JSON.parse(JSON.stringify(tpl)), {
+    runnerImageDigest: OPS_VERIFY_DIGEST,
+    redeemUrl: OPS_VERIFY_API_URL
+  });
+  check(
+    shapeProblems.length === 0,
+    `[${label}] the rendered scp-ops-v1 is not the shape @scp/plugin-argo-workflows accepts: ${shapeProblems.join("; ")}`
+  );
   const spec = tpl.spec as {
     arguments?: { parameters?: { name?: string }[] };
     podMetadata?: { labels?: Record<string, string> };

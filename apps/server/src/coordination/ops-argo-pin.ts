@@ -33,6 +33,7 @@ export interface ArgoOpsPin {
   sealingPublicKey: string;
   sourceAddresses: string[];
   runnerImageDigest: string;
+  redeemUrl: string;
   updatedAt: Date;
 }
 
@@ -43,10 +44,13 @@ export interface ArgoOpsPinInput {
   sealingPublicKey: string;
   sourceAddresses: string[];
   runnerImageDigest: string;
+  redeemUrl: string;
 }
 
 /** One spelling of a server URL, so a pin comparison cannot be defeated by a trailing slash or
- *  case. Scheme, host and port only — a path on an Argo server URL is not a different server. */
+ *  host-name case. Scheme, host, port AND path: an Argo server (or SCP's API) served under a path
+ *  prefix behind a reverse proxy IS a different endpoint from its sibling, so the path is kept.
+ *  Duplicated as `normalizeOpsUrl` in the argo-workflows plugin and asserted equal by a test. */
 export function normalizeServerUrl(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   try {
@@ -86,7 +90,9 @@ export function validateArgoOpsPin(input: ArgoOpsPinInput): ArgoOpsPinInput {
   if (!/^sha256:[0-9a-f]{64}$/.test(input.runnerImageDigest)) {
     throw new ArgoOpsPinInvalid("runnerImageDigest must be `sha256:<64 hex>`");
   }
-  return { ...input, serverUrl };
+  const redeemUrl = normalizeServerUrl(input.redeemUrl);
+  if (!redeemUrl) throw new ArgoOpsPinInvalid("redeemUrl must be an http(s) URL");
+  return { ...input, serverUrl, redeemUrl };
 }
 
 export async function putArgoOpsPin(
@@ -106,6 +112,7 @@ export async function putArgoOpsPin(
       sealingPublicKey: v.sealingPublicKey,
       sourceAddresses: v.sourceAddresses,
       runnerImageDigest: v.runnerImageDigest,
+      redeemUrl: v.redeemUrl,
       recordedBySubjectId: input.recordedBySubjectId
     })
     .onConflictDoUpdate({
@@ -117,10 +124,41 @@ export async function putArgoOpsPin(
         sealingPublicKey: v.sealingPublicKey,
         sourceAddresses: v.sourceAddresses,
         runnerImageDigest: v.runnerImageDigest,
+        redeemUrl: v.redeemUrl,
         recordedBySubjectId: input.recordedBySubjectId,
         updatedAt: sql`now()`
       }
     });
+}
+
+/** Every pin in the org, in a STABLE order — the argo-workflows plugin's own view of where it may
+ *  submit an ops template. Org-wide rather than per-target, because a plugin instance is shared by
+ *  every binding that names its id: a per-target value would make one instance's config depend on
+ *  which target started it, and the host would restart it on every alternation. */
+export async function argoOpsPinsForOrg(
+  tx: TenantTx,
+  orgId: string
+): Promise<
+  {
+    serverUrl: string;
+    namespace: string;
+    templateRef: string;
+    runnerImageDigest: string;
+    redeemUrl: string;
+  }[]
+> {
+  const rows = await tx
+    .select({
+      serverUrl: sshCaArgoOpsPins.serverUrl,
+      namespace: sshCaArgoOpsPins.namespace,
+      templateRef: sshCaArgoOpsPins.templateRef,
+      runnerImageDigest: sshCaArgoOpsPins.runnerImageDigest,
+      redeemUrl: sshCaArgoOpsPins.redeemUrl
+    })
+    .from(sshCaArgoOpsPins)
+    .where(eq(sshCaArgoOpsPins.orgId, orgId))
+    .orderBy(sshCaArgoOpsPins.domainId);
+  return rows;
 }
 
 export async function argoOpsPinForDomain(
@@ -142,6 +180,7 @@ export async function argoOpsPinForDomain(
     sealingPublicKey: row.sealingPublicKey,
     sourceAddresses: (row.sourceAddresses as string[]) ?? [],
     runnerImageDigest: row.runnerImageDigest,
+    redeemUrl: row.redeemUrl,
     updatedAt: row.updatedAt
   };
 }

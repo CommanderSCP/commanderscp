@@ -6,16 +6,11 @@ import type {
 import { join } from "node:path";
 import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import {
-  categoryOfType,
-  type ExecutorType,
-  type ExecutorCategory,
-  type TrustDomainId
-} from "@scp/schemas";
+import { categoryOfType, type ExecutorType, type ExecutorCategory } from "@scp/schemas";
 import type { ExecutorLane } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executorBindings, objects } from "../db/schema.js";
-import { argoOpsPinForDomain } from "./ops-argo-pin.js";
+import { argoOpsPinsForOrg } from "./ops-argo-pin.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
@@ -965,22 +960,13 @@ export async function resolveExecutorPluginInstance(
   };
 
   // M28.2 (ADR-0054 D9) — THE TEMPLATE CHECK'S EXPECTATION, server-governed. Before submitting an
-  // SCP host-ops catalog template, `@scp/plugin-argo-workflows` reads it back from the Argo server
-  // and refuses unless every container names this digest and catalog verification is required.
-  // ALWAYS set (null when the domain has no pin), because tenant config spreads first: a tenant
-  // value here would otherwise stand in for the pin it is meant to be checked against.
+  // SCP host-ops catalog template, `@scp/plugin-argo-workflows` checks ITS OWN endpoint against these
+  // pins and reads the template back against the pinned digest and SCP API URL. ORG-WIDE (every pin
+  // in the org, stably ordered), never per target: one instance serves every binding naming its id,
+  // and the host restarts an instance whose config changes. ALWAYS set (`[]` without pins), because
+  // tenant config spreads first and a tenant value must never stand in for the pins.
   if (pluginModule === "argo-workflows") {
-    const [carrier] = await tx
-      .select({ domainId: objects.originDomainId })
-      .from(objects)
-      .where(and(eq(objects.orgId, input.orgId), eq(objects.id, input.targetObjectId)))
-      .limit(1);
-    const pin = carrier
-      ? await argoOpsPinForDomain(tx, input.orgId, carrier.domainId as TrustDomainId)
-      : undefined;
-    serverInjected.opsTemplatePin = pin
-      ? { templateRef: pin.templateRef, runnerImageDigest: pin.runnerImageDigest }
-      : null;
+    serverInjected.opsTemplatePins = await argoOpsPinsForOrg(tx, input.orgId);
   }
 
   if (pluginModule === "managed-iac") {

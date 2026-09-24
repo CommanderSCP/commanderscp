@@ -145,6 +145,13 @@ export interface PluginHostInstanceConfig {
   allowedHosts?: string[];
   /** Relax the SSRF egress guard's internal-IP block. See docs/plugin-host.md §24. */
   allowInternalEgress?: boolean;
+  /**
+   * "Make sure SOMETHING is running under this id; do not reconfigure it" (#414 fix round). `start()`
+   * now restarts an instance whose config changed, which is right for every caller acting on a
+   * resolved binding — and wrong for the one that only needs the shared default executor alive and
+   * does not know the config it was booted with. Set ONLY by that caller.
+   */
+  ensureAliveOnly?: boolean;
 }
 
 export interface PluginHost {

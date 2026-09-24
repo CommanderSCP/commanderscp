@@ -30,7 +30,7 @@ import {
   putArgoOpsPin
 } from "../coordination/ops-argo-pin.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
-import { badRequest } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 
 /**
  * THE ENROLMENT DOOR and ADR-0051 D5's EVIDENCE SURFACE (M27.9). See docs/routes.md §311.
@@ -85,13 +85,13 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
         // sentence rather than a constraint violation. The index is what makes it TRUE.
         const existing = await enrolmentForDomain(tx, auth.orgId, domainId);
         if (existing) {
-          const err = new Error(
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw conflict(
             `trust domain ${domainId} is already enrolled. One CA per domain is the bound ` +
               "ADR-0051 D2 sets; re-enrolling would stand up a second authority minting for the " +
               "same hosts."
           );
-          (err as Error & { statusCode?: number }).statusCode = 409;
-          throw err;
         }
         const result = await enrolDomain(tx, {
           orgId: auth.orgId,
@@ -148,19 +148,19 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
         });
         const row = await enrolmentForDomain(tx, auth.orgId, domainId);
         if (!row) {
-          const err = new Error(`trust domain ${domainId} is not enrolled`);
-          (err as Error & { statusCode?: number }).statusCode = 404;
-          throw err;
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw notFound(`trust domain ${domainId} is not enrolled`);
         }
         const authority = await activeAuthorityForDomain(tx, auth.orgId, domainId);
         if (!authority) {
           // Enrolled with no ACTIVE authority means the CA was retired without re-enrolment — the
           // same state `deriveOpsRunMaterial` refuses on, surfaced here rather than only at run time.
-          const err = new Error(
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw notFound(
             `trust domain ${domainId} is enrolled but has no ACTIVE certificate authority`
           );
-          (err as Error & { statusCode?: number }).statusCode = 404;
-          throw err;
         }
         return {
           domainId: String(domainId),
@@ -212,12 +212,12 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
           scopeObjectId: auth.orgId
         });
         if (!(await enrolmentForDomain(tx, auth.orgId, domainId))) {
-          const err = new Error(
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw notFound(
             `trust domain ${domainId} is not enrolled — enrol it (and record its break-glass path) ` +
               "before pinning where its certificates may go"
           );
-          (err as Error & { statusCode?: number }).statusCode = 404;
-          throw err;
         }
         try {
           await putArgoOpsPin(tx, {
@@ -279,9 +279,9 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
         });
         const pin = await argoOpsPinForDomain(tx, auth.orgId, domainId);
         if (!pin) {
-          const err = new Error(`trust domain ${domainId} has no Argo host-ops pin`);
-          (err as Error & { statusCode?: number }).statusCode = 404;
-          throw err;
+          // A ProblemError, NOT a plain Error with `statusCode`: the error handler honours `statusCode`
+          // only on framework errors, so the old shape answered 500 (verification of #414, probe PX2).
+          throw notFound(`trust domain ${domainId} has no Argo host-ops pin`);
         }
         return { ...pin, domainId: String(pin.domainId), updatedAt: pin.updatedAt.toISOString() };
       });

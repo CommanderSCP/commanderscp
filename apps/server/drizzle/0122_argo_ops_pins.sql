@@ -8,6 +8,7 @@ CREATE TABLE "ssh_ca_argo_ops_pins" (
 	"sealing_public_key" text NOT NULL,
 	"source_addresses" text[] NOT NULL,
 	"runner_image_digest" text NOT NULL,
+	"redeem_url" text NOT NULL,
 	"recorded_by_subject_id" uuid NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "ssh_ca_argo_ops_pin_source_addresses_present" CHECK (cardinality("ssh_ca_argo_ops_pins"."source_addresses") > 0)

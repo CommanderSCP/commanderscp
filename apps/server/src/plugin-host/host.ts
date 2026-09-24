@@ -1,5 +1,6 @@
 /** The subprocess plugin host. See docs/plugin-host.md §50. */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,6 +151,9 @@ interface PendingCall {
 
 interface Instance {
   config: PluginHostInstanceConfig;
+  /** `configFingerprint(config)` at spawn — what `start()` compares to decide the running process
+   *  is still the one this config describes. */
+  fingerprint: string;
   child?: ChildProcessWithoutNullStreams;
   rl?: ReadlineInterface;
   ready: boolean;
@@ -160,6 +164,50 @@ interface Instance {
   spawnedAt: number;
   stopped: boolean;
   restartTimer?: NodeJS.Timeout;
+}
+
+/**
+ * WHAT MAKES A RUNNING INSTANCE THE ONE A CONFIG DESCRIBES (#414 re-verification).
+ *
+ * `start()` used to skip any id already running, whatever config it was now given. So an editor
+ * with `object:write` could start an instance under their own `serverUrl`, then re-point the binding
+ * at a pinned endpoint with the same instance id: every later caller "started" it with the new
+ * config and got the stale process, whose calls went where the OLD config said. The same property
+ * broke #413's rollback path. Every caller assumed a started instance's config was current; none
+ * could check.
+ *
+ * The fingerprint covers what reaches the child process and governs what it can do or reach —
+ * module, config, secrets, egress allowlist and internal-egress grant — as canonical JSON (keys
+ * sorted at every depth, so equal configs fingerprint equally regardless of construction order).
+ * `orgId` and `scopeKey` are deliberately OUT of it: the shared default executor instance is started
+ * by every org under one id, and folding those in would restart it on every alternation between
+ * orgs, which is the old behaviour's one legitimate reliance on first-start-wins.
+ */
+export function configFingerprint(config: PluginHostInstanceConfig): string {
+  const canonical = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(canonical);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(
+        Object.keys(v as Record<string, unknown>)
+          .sort()
+          .map((k) => [k, canonical((v as Record<string, unknown>)[k])])
+      );
+    }
+    return v;
+  };
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        canonical({
+          module: config.module,
+          config: config.config ?? null,
+          secrets: config.secrets ?? null,
+          allowedHosts: config.allowedHosts ?? null,
+          allowInternalEgress: config.allowInternalEgress ?? false
+        })
+      )
+    )
+    .digest("hex");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -210,14 +258,33 @@ export class SubprocessPluginHost implements PluginHost {
     };
   }
 
-  /** Idempotent per instance id. See docs/plugin-host.md §56. */
+  /**
+   * Idempotent per instance id AND CONFIG. See docs/plugin-host.md §56.
+   *
+   * An id already running under the SAME fingerprint is left alone. An id running under a DIFFERENT
+   * one is torn down and respawned with the config given now (#414): the caller is about to act on
+   * this config, and a process still holding an older one would act on that instead. In-flight calls
+   * on the old process are rejected, which their callers already treat as an executor error.
+   */
   async start(configs: PluginHostInstanceConfig[]): Promise<void> {
     await Promise.all(
       configs
-        .filter((config) => !this.instances.has(config.id))
+        .filter((config) => {
+          const running = this.instances.get(config.id);
+          if (!running) return true;
+          if (config.ensureAliveOnly) return false;
+          if (running.fingerprint === configFingerprint(config)) return false;
+          this.tearDown(
+            running,
+            `plugin instance ${config.id} is being restarted: its config changed`
+          );
+          this.instances.delete(config.id);
+          return true;
+        })
         .map(async (config) => {
           const instance: Instance = {
             config,
+            fingerprint: configFingerprint(config),
             ready: false,
             readyWaiters: [],
             nextRequestId: 1,
