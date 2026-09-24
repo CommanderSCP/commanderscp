@@ -1,149 +1,166 @@
-# ADR-0054: Host ops through Argo Workflows — whose credential reaches the host
+# ADR-0054: Host ops through Argo Workflows — SCP's CA serves the run, through a sealed one-time redemption
 
-**Status:** **Proposed — blocked on an owner decision** (2026-09-23). Nothing in M28.2 that depends on
-this has been built. The analysis below is why the builder stopped rather than picking.
+**Status:** Accepted (owner decision 2026-09-23, Option 2 below; charter amendment "Managed Execution
+Exception — Amendment approved 2026-09-23 (owner decision, M28.2)" lands in the same change)
 **Relates to:** [PROJECT_CHARTER.md](../../PROJECT_CHARTER.md) principle 1, "Managed Execution
-Exception" (2026-07-12 host-reaching amendment) and "Bundled Executor Backends";
-[ADR-0051](0051-ssh-credential-authority-and-ca-custody.md) (SSH credential authority and CA custody,
-and its blast-radius analysis); [ADR-0052](0052-server-derived-run-material-wins-for-host-reaching.md)
+Exception" (2026-07-12 and 2026-09-23 amendments) and "Bundled Executor Backends";
+[ADR-0051](0051-ssh-credential-authority-and-ca-custody.md) (credential authority, CA custody and its
+blast-radius analysis — **unchanged** by this ADR); [ADR-0052](0052-server-derived-run-material-wins-for-host-reaching.md)
 (server-derived material wins); [ADR-0050](0050-runner-ops-lockdown-is-an-allowlist.md);
 BUILD_AND_TEST.md §M28.2
 
 ## Context
 
-M28.2 asks for the same Ansible catalog and "the same `deriveOpsRunMaterial` output M27.9 produces"
-to run as an Argo Workflow (catalog template `scp-ops-v1`) when a domain runs Argo, rather than as a
-container `scpd` launches through `@scp/runner-launcher`. `managed-ops` (Mode C) stays the fallback
-for a domain with no execution system.
+M28.2 runs the same Ansible catalog and the same server-derived material M27.9 produces as an Argo
+Workflow (catalog template `scp-ops-v1`) when a domain's ops target is bound to `argo-workflows`,
+instead of a container `scpd` launches through `@scp/runner-launcher`. `managed-ops` (Mode C) stays
+the fallback for a domain with no execution system.
 
-`deriveOpsRunMaterial` returns five keys. Four of them are **the bound**, and none of those is a
-secret: `opsRole`, `opsInventory`, `opsEgressAllowlist`, `opsPrincipals`. The fifth,
-`opsCredentialSecretKey`, names a secret-store entry holding a private key and a certificate that
-**SCP's own per-domain CA minted** for this run (ADR-0051 D2/D3), with the issuance recorded for
-D5's serial reconciliation. In Mode C `managed-ops` resolves that entry inside `scpd` and writes it
-into a container SCP launched. The fifth key is the only one this ADR is about.
+The material has two halves. **The bound** — `opsRole`, `opsInventory`, `opsEgressAllowlist`,
+`opsPrincipals` — is not secret. **The credential** is: in Mode C, `scpd` mints a keypair and a
+certificate from the domain's CA and stages both into a container it launched. On the Argo path the
+runner pod is in a cluster SCP does not control and reaches only through an Argo API token, so the
+credential cannot be staged.
 
-### The finding that stopped the build: SCP-minted credentials on the Argo path conflict with the charter
+### The finding that made this the owner's call
 
-The DoD handed to M28.2 assumes the SCP CA serves the Argo path too — "refusals (no declared op,
-**unenrolled domain**) behave identically on both paths", and the milestone's own wording, "the same
-`deriveOpsRunMaterial` output". Read against the charter, that is not an implementation detail:
+Delivering an SCP-CA certificate to an Argo pod conflicted with the charter as it stood: the host-login
+grant (2026-07-12) was scoped to *a managed executor*; "Bundled backends keep their own infrastructure
+credentials"; and "Opting into a bundled backend ends managed-execution eligibility for the classes it
+covers". The builder stopped and put four options to the owner (recorded below). The owner chose
+**Option 2** and required the charter amendment, and the token-theft exposure, to be handled in the
+same change rather than documented.
 
-1. **Principle 1** (CLAUDE.md digest): *"the platform does not hold credentials to the
-   infrastructure that execution systems manage."* An SSH user CA that every enrolled host trusts
-   for `root` is exactly such a credential, and on this path the hosts' changes are made by the
-   org's execution system (Argo Workflows), not by a managed executor.
-2. **Managed Execution Exception, 2026-07-12:** *"a **managed executor** may hold host login-grade
-   credentials."* The grant is scoped to the managed executor. An Argo Workflow in the org's
-   cluster is not one.
-3. **Bundled Executor Backends:** *"Bundled backends keep their own infrastructure credentials …
-   CommanderSCP holds only a scoped API token to a bundled backend"* and *"Opting into a bundled
-   backend ends managed-execution eligibility for the classes it covers."* Binding host ops to a
-   bundled Argo is opting in for that class — which ends precisely the eligibility under which SCP
-   holds a host CA.
-4. The M28 kickoff (`docs/proposals/m28-kickoff-prompt.md`) says the same thing from the other side:
-   *"M28 is mostly outside the exception — it is the coordinate-don't-execute default."*
+## Decision
 
-The shipped build catalog already follows the charter's reading: `scp-build-image-v1` pushes with a
-credential the **operator** provisions in the backend's namespace (`catalog.credentialsSecret`,
-"NOT created by this chart: minting a forge credential is an operator act"). SCP never holds it.
+**D1 — One derivation feeds both executors.** `deriveOpsBound` (enrolment check, active CA, CA key
+resolves, inventory and allowlist from ONE read of observed membership, principals) is the shared
+half of `deriveOpsRunMaterial`. Mode C adds its credential on top; the Argo path stores the bound
+beside a redemption. Every refusal lives in the shared half, so "no declared op" and "unenrolled
+domain" refuse identically on both paths by construction.
 
-So every design in which SCP's CA mints the certificate an Argo pod uses — including both candidate
-shapes the milestone brief proposed — **extends the host-reaching credential grant beyond the
-managed executor**, which is a charter amendment. The design that needs no amendment changes the
-security posture SCP offers an Argo-bound estate (no per-run SCP-minted certificate, no D5 serial
-coverage, no enrolment/break-glass gate). Both are the owner's call; neither is a builder's.
+**D2 — The Argo path is gated on SCP's own catalog template.** `isOpsLane` derives material for
+`managed-ops`, or for `argo-workflows` **only** when the binding's `externalRef` is an SCP ops catalog
+template (`scp-ops-v1`). An `argo-workflows` binding to any other template derives nothing: an
+org-authored template is the org's executor with its own credentials, and SCP's CA never serves code
+SCP did not review.
 
-## What does NOT depend on the answer (and will be built the same way either way)
+**D3 — The Workflow carries ciphertext and a run id, nothing else.** At reconcile time, in the
+trigger's transaction, SCP stores the bound in `ops_run_redemptions` with the sha256 of a fresh 32-byte
+secret, and hands `argo-workflows` exactly two parameters: `opsRunId` and `opsRunTokenSealed` — the
+token `scpops1.<org>.<run>.<secret>` encrypted RSA-OAEP(SHA-256) to an RSA key (≥ 3072 bits) the
+operator registers on the binding as `opsSealingPublicKey`. The private half is an operator-created
+Secret mounted only into the `scp-ops-v1` pod. **Reading Workflows yields ciphertext.** A binding with
+no sealing key is refused before any row is written, rather than falling back to a plaintext token.
 
-- **One derivation of the bound.** The four bound keys are derived once, by the same code, for
-  both executors; a test asserts the Argo run's bound equals Mode C's for the same change, and
-  deleting the Argo-path wiring turns a test red.
-- **The Mode A/B path never launches a container from `scpd`**, asserted by a launcher double that
-  throws if touched, mutation-proved.
-- **The runner is the same `scp-runner-ops` image** with its signed closed catalog, deleted module
-  set and `!unsafe` parameters (ADR-0050, M27.2/M27.3). The bound reaches it as files at the same
-  `/work/in` paths Mode C uses (Argo `raw` input artifacts), so one reader reads one shape.
-- **ADR-0052 still holds on this path:** server-derived keys are spread last, a recipe carrying one
-  is refused, and rollback derives nothing.
-- **The per-run egress allowlist cannot be enforced by SCP in the org's cluster** under any option:
-  SCP holds only an Argo API token there (charter) and does not create NetworkPolicies. The runner's
-  inventory still bounds what Ansible connects to; network-layer enforcement is the backend's, via a
-  chart-shipped policy for `scp-ops` pods scoped to an operator-set target CIDR set (the ADR-0049
-  precedent the M28 section already cites for D2). This is stated as a real difference from Mode C,
-  not smoothed over.
+**D4 — Redemption is single-use, windowed, bound to one run, and yields only that run's bound.**
+`POST /api/v1/ops-run-redemptions` takes `{token, publicKey}`: the pod's own freshly generated
+ed25519 public key — **the per-run private key never exists in SCP**, on the wire, or in the Workflow.
+The door opens a tenant transaction from the ids in the token and locks the row. It checks the secret
+first (constant-time), and only then the row's state, so a caller without the secret learns nothing.
+It refuses:
+a burned row (≥ 3 wrong secrets); a replay (the stolen-token signal); a row past its window, which is
+**equal to the certificate TTL, never longer** (600 s — the same constant as Mode C); and a domain
+whose active CA changed since derivation. On success it issues the certificate over the pod's key
+with the same TTL, principals and key-id scheme as Mode C (plus `:run=<id>`), writes the issuance
+row, marks the redemption, and appends the audit event — **one transaction** (ADR-0051 D5).
 
-## Options
+**D5 — `source-address` when the binding declares the cluster's egress addresses.** An optional
+`opsSourceAddresses` on the binding becomes the certificate's OpenSSH `source-address` critical
+option, and is recorded on both the redemption and the issuance row
+(`ssh_certificate_issuances.source_address`, surfaced by `listSshCertificateIssuances`). Measured
+against a real `sshd`: accepted from the declared address, refused from any other.
 
-### Option 1 — the credential is the backend's own (charter as written) — RECOMMENDED
+**D6 — Every redemption and every attributable refusal is audited and reconciles.**
+`ops.run_redemption.redeemed` / `ops.run_redemption.refused`, in the hash chain, naming the run,
+wave target, serial and caller address. A refusal's side effects (failed-attempt count, burn, audit
+event) **commit**: the door returns a result instead of throwing, because a thrown refusal would roll
+back the very record that makes a stolen-token race visible. Redeemed certificates sit in the same
+issuance ledger as Mode C's, so `reconcileSerials` covers them unchanged — proved by reading the
+serial back out of a real host's sshd log. Unattributable attempts (malformed token, unknown run) are
+**not** audited: the org id in a forged token is attacker-chosen, and auditing it would let anyone
+spam any org's chain. Those are bounded by a per-address rate limit (10 per 6 s) instead.
 
-The Argo path derives and delivers **only the bound**. The `scp-ops-v1` runner step reads its SSH
-credential from what the operator provisions in the Argo namespace — a Secret (the
-`scp-build-registry` precedent), or the org's own authority (e.g. Vault's SSH engine via Kubernetes
-auth, from inside the pod). SCP mints nothing, holds nothing and records no issuance on this path.
+**D7 — The runner is the same image.** `apps/runner-ops/redeem.py` (stdlib + `cryptography`, already
+an ansible-core dependency — no new package) unseals, generates the keypair, redeems and writes the
+**same four `/work/in` files** Mode C's orchestrator stages; `run.sh` then runs the identical code
+path. Redemption happens after catalog verification (a tampered catalog refuses before a certificate
+is minted for it), and the role is taken from the redemption — an `SCP_OPS_ROLE` in the pod's
+environment, which a Workflow editor controls, is ignored.
 
-- *No new endpoint, no callback* from the org's cluster into SCP, and nothing secret in Workflow
-  parameters because nothing secret is sent.
-- *Blast radius (ADR-0051 terms):* SCP's CA is not involved, so a compromise of SCP cannot reach an
-  Argo-bound estate's hosts through this path at all. The org's credential's blast radius is the
-  org's, exactly as for every other bundled or BYO backend.
-- *What changes vs Mode C, said plainly:* per-run minutes-TTL certificates, D5 serial
-  reconciliation and the enrolment/break-glass refusal are **Mode C properties** and do not carry
-  over. An estate that stores a static key in a Secret gets a standing credential; one that uses its
-  own Vault gets per-run certificates from its own authority. "Unenrolled domain" is not a refusal
-  on this path — its replacement is the runner refusing, before Ansible starts, when no credential
-  is mounted (the same fail-closed position `run.sh` takes today).
-- *DoD impact:* "one derivation" holds for the bound; the "unenrolled domain behaves identically"
-  line is replaced as above; `run.sh` gains a key-with-optional-certificate credential shape.
+**D8 — The template is off by default and hardened with no relaxation.** `scp-ops-v1` ships in
+`deploy/helm-bundled/templates/argo-workflows-ops-catalog.yaml` behind
+`bundledExecutor.argoWorkflows.catalog.ops.enabled`: read-only root, no privilege escalation, every
+capability dropped, seccomp RuntimeDefault, a ServiceAccount whose Role is the executor floor
+(`workflowtaskresults: create, patch`), and a NetworkPolicy admitting DNS, SCP's API, the Kubernetes
+API (for the emissary executor) and SSH to the operator's `targetCidrs` only. `tools/helm-verify`
+checks each property on the render; `install.sh` retargets the runner image to the bundle registry.
 
-### Option 2 — SCP's CA serves the Argo path: pod-generated key, one-time token, redemption endpoint — needs a charter amendment
+**API parity.** Zod contract → OpenAPI → `pnpm gen` → `ScpClient.opsRuns.redeem`. **CLI, IaC and UI
+are N/A by design:** the only legitimate caller is the runner, which speaks HTTP directly; a CLI verb
+would be a way for a human to spend a run's token, which is the theft this door exists to make loud;
+a redemption is not desired state, so IaC has nothing to declare; the UI's read side is the issuance
+list and the audit chain, both already surfaced. The endpoint is bearer-less by construction — a PAT
+in the org's namespace would be a standing credential readable by the same people D3 keeps the token
+away from. `ops_run_redemptions` has GRANT SELECT/INSERT/UPDATE (no DELETE — a redemption is the
+attribution of an issued serial) and the standard `org_isolation` RLS policy.
 
-The pod generates an ephemeral keypair and redeems a single-use, per-run token (carried as a
-Workflow parameter, TTL ≤ the certificate's 10 minutes) at a new machine-to-machine endpoint for a
-certificate over its **public** key plus the derived bound. Issuance and its D5 serial are written
-in the redemption transaction. The per-run private key never exists in SCP.
+## Blast radius (ADR-0051's terms) — what this closes and what stays exposed
 
-- *Requires* amending the Managed Execution Exception to extend the host-login grant to SCP-catalog
-  templates run on an org's Argo, and qualifying "opting into a bundled backend ends
-  managed-execution eligibility" for this class.
-- *Blast radius — the part that must be read:* a Workflow's `spec.arguments` is persisted in the
-  Workflow object, shown in the Argo UI, held in etcd and its backups, and in the workflow archive
-  if enabled. **Anyone who can read Workflows in that namespace during the pre-redemption window can
-  redeem the token first** and receive a certificate for `root` that is valid on **every host
-  trusting the domain's CA**, not only the inventory: the certificate carries no host binding
-  (`targetHosts` is recorded, never enforced by `sshd`), and no OpenSSH certificate field can bind
-  one. Single-use makes the theft **loud** — the legitimate run then fails — but not impossible.
-  Binding redemption to the pod's projected ServiceAccount token (audience `scp`, verified offline
-  against the cluster's issuer keys registered on the binding) raises the bar from "can read
-  Workflows" to "can create a pod as that ServiceAccount" — which anyone able to *submit* a Workflow
-  in the namespace can do. Short TTL bounds a leaked certificate, not a stolen redemption.
-- *New inbound network path:* the org's cluster must reach SCP's API. Mode A has only ever needed
-  SCP → executor; in a Mode A estate across a segment boundary this path may not exist.
-- *Build cost:* endpoint with full API parity (Zod → OpenAPI → `pnpm gen` → `ScpClient`; CLI/IaC/UI
-  N/A as machine-to-machine), a token table with GRANT + RLS, replay and rate limits, an audit
-  event per redemption.
+ADR-0051's analysis is unchanged in substance: the CA key's custody, D2's per-domain scope, and the
+fact that TTL bounds a *leaked certificate* and not a *compromised CA* all carry over. What this path
+adds is a second way for a certificate to come to exist, and its exposure is:
 
-### Option 3 — Argo as a *launcher* for `managed-ops` (stay inside the exception) — not recommended
+- **Workflow readers — closed.** Before sealing, anyone who could read Workflows in the namespace
+  (Argo UI, etcd and its backups, the workflow archive) could redeem first. With D3 they hold
+  ciphertext.
+- **Sealing-Secret readers — REMAINS EXPOSED, and the set is larger than it looks.** Anyone who can
+  read the sealing Secret can unseal a token in flight — and a pod may mount any Secret in its own
+  namespace, so this includes **anyone who can create a pod (or submit an ad-hoc Workflow) in the
+  Argo namespace**. Such a party can race the legitimate pod. The race is **loud, not prevented**:
+  the legitimate run then fails with a 409 that SCP has audited with the thief's certificate serial
+  on the row. Mitigation is the operator's: restrict pod creation in that namespace and set Argo's
+  `workflowRestrictions.templateReferencing: Strict`. Binding redemption to the pod's projected
+  ServiceAccount token was considered and not built: anyone able to submit a Workflow can run a pod
+  as that ServiceAccount, so it raises the bar only to the same set.
+- **The certificate is not host-bound — REMAINS EXPOSED.** It authorizes `root` on **every** host
+  trusting the domain's CA for its TTL, not only the inventory: `targetHosts` is recorded, never
+  enforced by `sshd`, and no OpenSSH certificate field can bind a target host. D5's `source-address`
+  narrows **where it can be used from** when the operator declares it; nothing narrows where it can
+  be used **against**.
+- **Network egress is per deployment, not per run.** Mode C's kubernetes launcher builds a
+  NetworkPolicy from the run's own allowlist. SCP holds only an Argo API token in the org's cluster
+  and creates no NetworkPolicy there, so `scp-ops-egress` bounds SSH to the operator's `targetCidrs`
+  for every run. The run's inventory still bounds which hosts Ansible connects to, and
+  `redeem.py` refuses an inventory host outside the allowlist. The charter amendment states this
+  plainly rather than claiming the per-run precondition is met unchanged.
+- **The org's cluster admins are inside the trust boundary**, as they are for every executor: they
+  can replace `scp-ops-v1` in their own namespace. They still cannot choose hosts or principals —
+  those come from redemption — but they can use a redeemed certificate within its TTL against the
+  domain's hosts.
 
-Treat Argo as a sibling of the Kubernetes runner launcher: the run remains a managed-ops run, SCP
-still mints, and Argo only schedules the pod. This keeps the grant nominally within "a managed
-executor", but it is Option 2's delivery problem unchanged (the credential must still reach a pod in
-a cluster SCP does not control), it contradicts "opting into a bundled backend ends managed-execution
-eligibility" in substance, and it makes M28.2 a Mode C feature rather than the coordinate-default
-the milestone exists to deliver.
+## Options that were put to the owner (for the record)
 
-### Option 4 — server-minted keypair, fetched by token — rejected
+1. **The backend's own credential (the charter as it stood).** SCP sends only the bound; the pod uses
+   a credential the operator provisions (a Secret, or the org's own Vault). No new endpoint; loses
+   SCP's per-run certificate, D5 coverage and the enrolment gate on this path. *Builder's
+   recommendation at the time.*
+2. **SCP's CA via a pod-generated key, a one-time token and a redemption endpoint — CHOSEN**, with
+   the charter amended and the token-theft exposure hardened (D3–D6) rather than documented.
+3. **Argo as a launcher for `managed-ops`** — the same delivery problem as 2 while contradicting the
+   bundled-backend eligibility clause in substance; rejected.
+4. **A server-minted keypair fetched by token** — strictly dominated by 2 (the private key generated
+   in `scpd`, stored in SCP's database and sent over the network); rejected.
 
-`deriveOpsRunMaterial` unchanged; the pod redeems a token for the stored private key and
-certificate. Strictly dominated by Option 2: identical token-theft exposure, plus the per-run
-private key is generated in `scpd`, stored in SCP's database and sent across the network.
+## Consequences
 
-## Recommendation
-
-**Option 1.** It is what the charter already says, what the shipped build catalog already does, and
-it is the only option whose worst case does not route an org's Argo read permissions into a
-domain-wide root credential. The cost is real and belongs in the product's description: an
-Argo-bound estate's host credential is its own, with the strength the org gives it. If the owner
-wants SCP's per-run CA available to Argo estates that have no SSH authority, Option 2 is buildable,
-but it is a charter amendment with the token-theft exposure above written into it — not a wiring
-change.
+- **Two issuance paths share one ledger.** Mode C issues at derivation time; the Argo path at
+  redemption time. Both write `ssh_certificate_issuances`, and only the Argo path writes
+  `source_address`.
+- **An unredeemed token simply expires.** A trigger that is retried after a failed submit derives a
+  new redemption; the old row expires unused, and is visible as never redeemed.
+- **Refusals leave the wave target pending with backoff**, as Mode C's already did. Neither path
+  terminalises on a derivation refusal; that is unchanged and identical.
+- **ADR-0052 is now wired on this path.** `argo-workflows` is not recipe-forbidden, so a recipe can
+  reach the ops lane here; `assertNoRecipeOverride` (which had no production caller) now refuses a
+  recipe naming a bound key or a delivery key.
