@@ -260,9 +260,14 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
     async (type) => {
       // Neither handed a container registry (the defect) nor refused over one (a guess the other
       // way): SCP models no destination for this Type, so it derives none. Source identity only.
-      const id = await componentPublishingTo("acme/widget", "https://ghcr.io", {}, {
-        dockerfile: "Dockerfile"
-      });
+      const id = await componentPublishingTo(
+        "acme/widget",
+        "https://ghcr.io",
+        {},
+        {
+          dockerfile: "Dockerfile"
+        }
+      );
       const params = await resolve(id, SOURCE_REF, type);
       expect(params).toMatchObject({ sourceCommit: "a".repeat(40) });
       for (const key of [

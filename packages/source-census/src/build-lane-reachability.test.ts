@@ -70,9 +70,10 @@ describe("the build lane's destination derivation is INSTALLED, not merely built
   it("every name in the census is actually DEFINED somewhere", () => {
     // A rename would otherwise empty the gate: `callersOf` a name nothing defines passes vacuously.
     for (const name of Object.keys(MUST_HAVE_A_PRODUCTION_CALLER)) {
-      expect([...definitionFiles(name)], `${name} is in the census but nothing exports it`).not.toEqual(
-        []
-      );
+      expect(
+        [...definitionFiles(name)],
+        `${name} is in the census but nothing exports it`
+      ).not.toEqual([]);
     }
   });
 
@@ -82,7 +83,9 @@ describe("the build lane's destination derivation is INSTALLED, not merely built
     // retries every tick with no Decision — a refusal nobody can see. `asRefusal` is the one thing
     // that turns it into a value `refuseTrigger` terminalises.
     const reconcile = read("apps/server/src/coordination/reconcile.ts");
-    expect(reconcile).toMatch(/await buildLaneTriggerParameters\(tx, \{[^}]*\}\)\.catch\(asRefusal\)/);
+    expect(reconcile).toMatch(
+      /await buildLaneTriggerParameters\(tx, \{[^}]*\}\)\.catch\(asRefusal\)/
+    );
     expect(reconcile).toMatch(
       /if \(sourceParameters instanceof TriggerParameterRefusal\) \{\s*await refuseTrigger\(tx, sourceParameters\);/
     );

@@ -16,7 +16,8 @@
 
 /** Terminal status: the component's declared destination cannot hold what its Type builds. */
 export const WAVE_TARGET_DESTINATION_REFUSED_STATUS = "destination_refused";
-export const WAVE_TARGET_DESTINATION_REFUSED_AUDIT_ACTION = "change.wave_target.destination_refused";
+export const WAVE_TARGET_DESTINATION_REFUSED_AUDIT_ACTION =
+  "change.wave_target.destination_refused";
 
 /** Terminal status: a host-reaching change whose declared operation cannot be derived into material. */
 export const WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS = "ops_declaration_refused";
@@ -24,8 +25,7 @@ export const WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION =
   "change.wave_target.ops_declaration_refused";
 
 export type TriggerParameterRefusalStatus =
-  | typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS
-  | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS;
+  typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS;
 
 export abstract class TriggerParameterRefusal extends Error {
   abstract readonly status: TriggerParameterRefusalStatus;

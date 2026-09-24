@@ -177,7 +177,11 @@ describe("M28.1: an rpm component promotes end to end through Argo Workflows to 
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
     org = await createTestOrg(server, "m28-1-rpm");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -365,7 +369,10 @@ describe("M28.1: an rpm component promotes end to end through Argo Workflows to 
   it("REFUSES an rpm binding whose destination is a container registry — Decision + audit, never submitted", async () => {
     // The present behaviour M28.1 corrects, asserted as a refusal at the level that matters: the
     // executor is never asked. A registry declaring no packageFormats is a container registry.
-    const component = await rpmComponent({ kind: "ghcr", serverUrl: "https://ghcr.io" }, "acme/el9");
+    const component = await rpmComponent(
+      { kind: "ghcr", serverUrl: "https://ghcr.io" },
+      "acme/el9"
+    );
     const change = await proposeRpmChange(component.id);
 
     const target = await waitUntil(
@@ -478,7 +485,9 @@ describe("M28.1: an rpm component promotes end to end through Argo Workflows to 
       ],
       { timeout: 300_000, maxBuffer: 16 * 1024 * 1024 }
     ).catch((err: { stdout?: string; stderr?: string }) => {
-      throw new Error(`dnf could not install from Gitea:\n${err.stdout ?? ""}\n${err.stderr ?? ""}`);
+      throw new Error(
+        `dnf could not install from Gitea:\n${err.stdout ?? ""}\n${err.stderr ?? ""}`
+      );
     });
     expect(install.stdout).toContain("scp-widget 1.0.0");
     expect(install.stdout).toContain("scp-widget-1.0.0-1.el9.x86_64");
