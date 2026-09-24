@@ -48353,6 +48353,30 @@
                                     "batchPercent"
                                   ],
                                   "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "strategy": {
+                                      "type": "string",
+                                      "const": "blueGreen"
+                                    },
+                                    "autoPromotionSeconds": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "scaleDownDelaySeconds": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "strategy",
+                                    "autoPromotionSeconds"
+                                  ],
+                                  "additionalProperties": false
                                 }
                               ]
                             }
@@ -49137,6 +49161,30 @@
                                     "required": [
                                       "strategy",
                                       "batchPercent"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "strategy": {
+                                        "type": "string",
+                                        "const": "blueGreen"
+                                      },
+                                      "autoPromotionSeconds": {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "scaleDownDelaySeconds": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "strategy",
+                                      "autoPromotionSeconds"
                                     ],
                                     "additionalProperties": false
                                   }
@@ -51022,6 +51070,30 @@
                                     "required": [
                                       "strategy",
                                       "batchPercent"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "strategy": {
+                                        "type": "string",
+                                        "const": "blueGreen"
+                                      },
+                                      "autoPromotionSeconds": {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "scaleDownDelaySeconds": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "strategy",
+                                      "autoPromotionSeconds"
                                     ],
                                     "additionalProperties": false
                                   }
@@ -52910,6 +52982,30 @@
                                         "required": [
                                           "strategy",
                                           "batchPercent"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "strategy": {
+                                            "type": "string",
+                                            "const": "blueGreen"
+                                          },
+                                          "autoPromotionSeconds": {
+                                            "type": "integer",
+                                            "exclusiveMinimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "scaleDownDelaySeconds": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "strategy",
+                                          "autoPromotionSeconds"
                                         ],
                                         "additionalProperties": false
                                       }
