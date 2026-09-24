@@ -2,6 +2,7 @@ import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import { INFRASTRUCTURE_DECLARATION_PROPERTY, type ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { decisions, gateBindings } from "../db/schema.js";
+import { INFRA_PLAN_TRIGGER_GATE } from "./infra-lane-trigger-parameters.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
 import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
@@ -302,6 +303,24 @@ async function infraPlanSeparationOfDuties(
   const props = (properties ?? {}) as Record<string, unknown>;
   if (props["type"] !== "infrastructure") return undefined;
   if ((props[INFRASTRUCTURE_DECLARATION_PROPERTY] ?? null) !== null) return undefined;
+  // ONLY A PLAN THE LANE ACTUALLY PLANNED — one with a recorded `infra_plan_trigger`. Its acceptance
+  // is what an apply is later gated on; an infrastructure change driven by any other executor
+  // (a machine-image publication, managed-iac today) is not approving a plan for apply, and its
+  // acceptance keeps meaning what it always meant. The managed-iac follow-on records the same
+  // trigger and so inherits this check.
+  const [planned] = await tx
+    .select({ id: decisions.id })
+    .from(decisions)
+    .where(
+      and(
+        eq(decisions.orgId, ctx.orgId),
+        eq(decisions.subjectId, ctx.changeObjectId),
+        eq(decisions.kind, "wave_target"),
+        sql`${decisions.inputContext} ->> 'gate' = ${INFRA_PLAN_TRIGGER_GATE}`
+      )
+    )
+    .limit(1);
+  if (!planned) return undefined;
   const proposer = await proposerOf(tx, ctx.orgId, ctx.changeObjectId);
   if (proposer !== undefined && proposer !== ctx.actorObjectId) return undefined;
   return {

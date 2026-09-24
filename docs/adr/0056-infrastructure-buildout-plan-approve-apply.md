@@ -49,7 +49,9 @@ mid-execution approval primitive with its own roles, votes and Decision shape; i
 approval system beside the first. (Owner ruling 2026-09-24: keep the two-change shape.)
 
 **1a. Separation of duties, by default.** Accepting an infrastructure PLAN change (Type
-`infrastructure`, no apply declaration) is refused when the acceptor is the change's proposer — read
+`infrastructure`, no apply declaration, and actually planned by this lane — a recorded
+`infra_plan_trigger`; an infrastructure change driven by any other executor, such as a machine-image
+publication, is not approving a plan for apply and keeps its old meaning) is refused when the acceptor is the change's proposer — read
 from the change's `propose` transition Decision — or when no proposer is recorded
 (`infra_plan_separation_of_duties`, `gates.ts`, ahead of governance on the `validating → accepted`
 edge). "An approved plan" must mean someone other than the person who wanted it approved it. It is
