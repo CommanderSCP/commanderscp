@@ -31,9 +31,8 @@ describe("binding reconciler (ADR-0046 section 4)", () => {
   beforeAll(async () => {
     server = await listenTestServer();
     org = await createTestOrg(server, "reconciler");
-    adminId = (
-      await new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken }).auth.me()
-    ).subjectObjectId;
+    adminId = (await new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken }).auth.me())
+      .subjectObjectId;
   });
 
   afterAll(async () => {
@@ -274,9 +273,8 @@ describe("binding reconciler — per-target attribution survives batching (b5-pe
   beforeAll(async () => {
     server = await listenTestServer();
     org = await createTestOrg(server, "reconciler-attr");
-    adminId = (
-      await new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken }).auth.me()
-    ).subjectObjectId;
+    adminId = (await new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken }).auth.me())
+      .subjectObjectId;
   });
 
   afterAll(async () => {

@@ -447,7 +447,11 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
       });
       await admin.executors.putSourceAllowlist(sandbox.id, ["attacker/evil"]);
       const id = await declaredComponent("attacker/*");
-      const prod = { kind: "argo-workflows", serverUrl: "https://argo.example.invalid", namespace: "x" };
+      const prod = {
+        kind: "argo-workflows",
+        serverUrl: "https://argo.example.invalid",
+        namespace: "x"
+      };
 
       // THE DOOR: object:write alone does not move where the credentials go.
       const opUser = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);

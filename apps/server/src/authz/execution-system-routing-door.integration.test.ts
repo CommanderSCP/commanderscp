@@ -108,11 +108,9 @@ describe("execution-system routing: secret:write at every write door (Testcontai
       name: `bare-${randomUUID().slice(0, 8)}`
     });
     expect(bare.statusCode, bare.body).toBe(201);
-    const renamed = await asOperator(
-      "PATCH",
-      `/api/v1/objects/execution-system/${systemId}`,
-      { name: `renamed-${randomUUID().slice(0, 8)}` }
-    );
+    const renamed = await asOperator("PATCH", `/api/v1/objects/execution-system/${systemId}`, {
+      name: `renamed-${randomUUID().slice(0, 8)}`
+    });
     expect(renamed.statusCode, renamed.body).toBe(200);
     // …and a full-replacement write that re-sends the properties UNCHANGED is still only a rename.
     const put = await asOperator(
@@ -162,10 +160,14 @@ describe("execution-system routing: secret:write at every write door (Testcontai
   it("DOOR 3 — PUT /objects/execution-system/{urn}: both the upsert's create and update branch are 403", async () => {
     const name = `put-${randomUUID().slice(0, 8)}`;
     const urn = `urn:scp:${org.orgId}:execution-system:${name}`;
-    const created = await asOperator("PUT", `/api/v1/objects/execution-system/${encodeURIComponent(urn)}`, {
-      name,
-      properties: ROUTED
-    });
+    const created = await asOperator(
+      "PUT",
+      `/api/v1/objects/execution-system/${encodeURIComponent(urn)}`,
+      {
+        name,
+        properties: ROUTED
+      }
+    );
     expect(created.statusCode).toBe(403);
     expect(await liveByUrn(urn)).toHaveLength(0);
     const updated = await asOperator(
@@ -298,7 +300,10 @@ describe("execution-system routing: secret:write at every write door (Testcontai
 
     // THE WRITE DOOR: binding to it is refused, for the admin too — it is not about who asks.
     const bind = await refusal(
-      admin.executors.putBinding(target.id, { executionSystemId: replica.id, type: "configuration" })
+      admin.executors.putBinding(target.id, {
+        executionSystemId: replica.id,
+        type: "configuration"
+      })
     );
     expect(bind.status).toBe(400);
     expect(bind.problem?.detail).toMatch(/replicated/);
@@ -329,7 +334,10 @@ describe("execution-system routing: secret:write at every write door (Testcontai
     expect(resolved.message).toMatch(/replicated system is not executable/);
 
     // CONTROL: the admin's own system binds and resolves — the refusal is about origin.
-    await admin.executors.putBinding(target.id, { executionSystemId: systemId, type: "configuration" });
+    await admin.executors.putBinding(target.id, {
+      executionSystemId: systemId,
+      type: "configuration"
+    });
     const own = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       resolveExecutorPluginInstance(tx, {
         orgId: org.orgId,

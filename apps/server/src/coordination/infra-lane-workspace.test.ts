@@ -47,14 +47,29 @@ describe("deriveStateWorkspace", () => {
   it("hashes the ENVIRONMENT too, so two environments whose slugs truncate alike never share a state", () => {
     // Both slugs cut to the same 38 characters; only the digest can tell them apart.
     const long = "a".repeat(60);
-    const ws1 = deriveStateWorkspace({ orgId: ORG, targetObjectId: T1, environment: `${long}x`, region: "" });
-    const ws2 = deriveStateWorkspace({ orgId: ORG, targetObjectId: T1, environment: `${long}y`, region: "" });
+    const ws1 = deriveStateWorkspace({
+      orgId: ORG,
+      targetObjectId: T1,
+      environment: `${long}x`,
+      region: ""
+    });
+    const ws2 = deriveStateWorkspace({
+      orgId: ORG,
+      targetObjectId: T1,
+      environment: `${long}y`,
+      region: ""
+    });
     expect(ws1.slice(0, 38)).toBe(ws2.slice(0, 38));
     expect(ws1).not.toBe(ws2);
   });
 
   it("carries a 24-hex (96-bit) digest", () => {
-    const ws = deriveStateWorkspace({ orgId: ORG, targetObjectId: T1, environment: "prod", region: "" });
+    const ws = deriveStateWorkspace({
+      orgId: ORG,
+      targetObjectId: T1,
+      environment: "prod",
+      region: ""
+    });
     expect(ws).toMatch(/^prod-[0-9a-f]{24}$/);
   });
 });

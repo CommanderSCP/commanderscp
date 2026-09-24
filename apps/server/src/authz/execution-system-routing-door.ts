@@ -83,7 +83,12 @@ export async function assertMayWriteExecutionSystemRouting(
 }
 
 /** The fields a source-allowlist row is bound to: where the system's credentials go, and which. */
-export const ROUTING_FINGERPRINT_FIELDS = ["kind", "serverUrl", "namespace", "tokenSecretKey"] as const;
+export const ROUTING_FINGERPRINT_FIELDS = [
+  "kind",
+  "serverUrl",
+  "namespace",
+  "tokenSecretKey"
+] as const;
 
 function normalisedUrl(value: unknown): unknown {
   if (typeof value !== "string") return value ?? null;
