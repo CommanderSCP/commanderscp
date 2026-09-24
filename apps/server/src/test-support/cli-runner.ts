@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Confirmed flake: the next command sees no credentials. See docs/test-support.md §1. */
-async function waitForCredentials(configDir: string): Promise<void> {
+async function waitForCredentials(
+  configDir: string,
+  login: { stdout: string; stderr: string }
+): Promise<void> {
   const credentialsPath = path.join(configDir, "credentials.json");
   const attempts = 16;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -35,9 +38,16 @@ async function waitForCredentials(configDir: string): Promise<void> {
       return;
     } catch {
       if (attempt === attempts) {
+        // Report what login printed and what the dir holds. See docs/test-support.md §1.
+        const listing = await readdir(configDir).then(
+          (names) => `[${names.join(", ")}]`,
+          (err: unknown) => `unreadable (${(err as NodeJS.ErrnoException).code ?? String(err)})`
+        );
         throw new Error(
           `scp login exited but ${credentialsPath} never became readable after ${attempts} attempts — ` +
-            "the CLI's own saveCredentials() should have made it visible before its process exited."
+            "the CLI's own saveCredentials() should have made it visible before its process exited. " +
+            `configDir contents: ${listing}; login stdout: ${JSON.stringify(login.stdout)}; ` +
+            `login stderr: ${JSON.stringify(login.stderr)}`
         );
       }
       // Capped so the total (~5 s) is spread across many checks instead of a few long ones — the
@@ -59,7 +69,7 @@ export async function startCliSession(baseUrl: string): Promise<CliInvocation> {
     // Only `login` (password or --device) writes credentials.json; every other command only READS
     // it, so this check is a no-op (an extra stat + readFile) for the other ~95% of calls.
     if (args[0] === "login") {
-      await waitForCredentials(configDir);
+      await waitForCredentials(configDir, result);
     }
     return result;
   }
