@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { SCP_OPS_TEMPLATE_PATTERN, normalizeOpsUrl } from "@scp/plugin-argo-workflows";
 import { PokeRateLimiter } from "../federation/poke-rate-limit.js";
 import {
+  ALLOW_INSECURE_REDEEM_URL_ENV,
   ArgoOpsPinInvalid,
   OPS_ARGO_CATALOG_TEMPLATES,
   normalizeServerUrl,
@@ -29,7 +30,7 @@ describe("the Argo host-ops pin", () => {
     sealingPublicKey: rsa,
     sourceAddresses: ["10.42.0.0/16"],
     runnerImageDigest: `sha256:${"a".repeat(64)}`,
-    redeemUrl: "http://commanderscp-api.scp.svc:8080"
+    redeemUrl: "https://commanderscp-api.scp.svc:8443"
   };
 
   it("accepts a good pin and NORMALISES its server URL (so a trailing slash or case cannot defeat the match)", () => {
@@ -67,7 +68,12 @@ describe("the Argo host-ops pin", () => {
     ["a template that is not SCP's", { templateRef: "org-own-template" }, /catalog templates/],
     ["a non-http server", { serverUrl: "file:///etc/passwd" }, /http/],
     ["a namespace that is not one", { namespace: "Not_A_Namespace" }, /namespace/],
-    ["a redeem URL that is not http(s)", { redeemUrl: "ftp://x" }, /redeemUrl/]
+    ["a redeem URL that is not http(s)", { redeemUrl: "ftp://x" }, /redeemUrl/],
+    [
+      "a PLAIN-HTTP redeem URL (the pod sends its unsealed secret there)",
+      { redeemUrl: "http://api.scp.svc:8080" },
+      /must be https/
+    ]
   ] as const)("REFUSES %s at write time", (_label, patch, message) => {
     expect(() => validateArgoOpsPin({ ...good, ...patch } as ArgoOpsPinInput)).toThrow(
       ArgoOpsPinInvalid
@@ -95,6 +101,33 @@ describe("the Argo host-ops pin", () => {
     // read-back would silently not run for it.
     for (const t of OPS_ARGO_CATALOG_TEMPLATES) expect(SCP_OPS_TEMPLATE_PATTERN.test(t)).toBe(true);
     expect(SCP_OPS_TEMPLATE_PATTERN.test("scp-build-image-v1")).toBe(false);
+  });
+});
+
+describe("a plain-http redeemUrl only behind the named development flag", () => {
+  it("is accepted with SCP_OPS_ALLOW_INSECURE_REDEEM_URL=true, and refused again without it", () => {
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 3072 })
+      .publicKey.export({ type: "spki", format: "pem" })
+      .toString();
+    const pin: ArgoOpsPinInput = {
+      serverUrl: "https://argo.example.test",
+      namespace: "ns",
+      templateRef: "scp-ops-v1",
+      sealingPublicKey: rsa,
+      sourceAddresses: ["10.0.0.0/8"],
+      runnerImageDigest: `sha256:${"a".repeat(64)}`,
+      redeemUrl: "http://api.scp.svc:8080"
+    };
+    const before = process.env[ALLOW_INSECURE_REDEEM_URL_ENV];
+    try {
+      process.env[ALLOW_INSECURE_REDEEM_URL_ENV] = "true";
+      expect(validateArgoOpsPin(pin).redeemUrl).toBe("http://api.scp.svc:8080");
+      delete process.env[ALLOW_INSECURE_REDEEM_URL_ENV];
+      expect(() => validateArgoOpsPin(pin)).toThrow(/must be https/);
+    } finally {
+      if (before === undefined) delete process.env[ALLOW_INSECURE_REDEEM_URL_ENV];
+      else process.env[ALLOW_INSECURE_REDEEM_URL_ENV] = before;
+    }
   });
 });
 

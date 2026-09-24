@@ -705,7 +705,7 @@ const RPM_BUILDER_VERIFY_IMAGE = "ghcr.io/commanderscp/scp-builder-rpm:verify";
 /** The digest and SCP API URL the all-backends render pins scp-ops-v1 to — what the plugin's
  *  read-back check is then asked to accept (M28.2, ADR-0054 D9(d)). */
 const OPS_VERIFY_DIGEST = `sha256:${"d".repeat(64)}`;
-const OPS_VERIFY_API_URL = "http://commanderscp-api.verify-scp-ns.svc:8080";
+const OPS_VERIFY_API_URL = "https://commanderscp-api.verify-scp-ns.svc:8443";
 
 /** THE SHIPPED RPM BUILD (M28.1, ADR-0053) — rendered and held to what was MEASURED.
  *

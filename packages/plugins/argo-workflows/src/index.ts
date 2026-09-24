@@ -1,6 +1,5 @@
-import { createFileBackedJsonCache } from "@scp/plugin-api";
+import { OpsTemplateRefused, createFileBackedJsonCache } from "@scp/plugin-api";
 import {
-  OPS_TEMPLATE_REFUSED_MARKER,
   SCP_OPS_TEMPLATE_PATTERN,
   opsTemplateShapeProblems,
   pinsForInstance
@@ -212,7 +211,8 @@ function computeProgress(progress: string | undefined, phase: ExecutionPhase): n
  *   2. The WorkflowTemplate read back from that endpoint has EXACTLY the shape the chart renders
  *      (`opsTemplateShapeProblems`), with the pinned runner digest and the pinned SCP API URL.
  *
- * Refusals carry `OPS_TEMPLATE_REFUSED_MARKER` so the server terminalises the run with a Decision.
+ * Refusals are `OpsTemplateRefused` (their own JSON-RPC code), so the server terminalises the run
+ * with a Decision; it decides on the code, never on message text.
  * A read-back that fails at the HTTP layer (5xx, unreachable) does NOT carry it: that is the Argo
  * server being unwell, not the template being wrong, and it takes the ordinary retry path.
  * This is not attestation — see ops-template.ts.
@@ -223,7 +223,7 @@ async function assertOpsTemplateMatchesPin(
   templateName: string
 ): Promise<void> {
   const refuse = (why: string): never => {
-    throw new Error(`${OPS_TEMPLATE_REFUSED_MARKER} refusing to submit ${templateName} — ${why}`);
+    throw new OpsTemplateRefused(`refusing to submit ${templateName} — ${why}`);
   };
   const pins = pinsForInstance(
     (ctx.config as { opsTemplatePins?: unknown } | undefined)?.opsTemplatePins,

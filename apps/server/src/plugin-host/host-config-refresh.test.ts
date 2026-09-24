@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { scpOpsV1ReferenceTemplate } from "@scp/plugin-argo-workflows";
+import {
+  OPS_TEMPLATE_REFUSED_RPC_CODE,
+  opsTemplateRefusalOf,
+  triggerRefusalOf
+} from "@scp/plugin-api";
 import { SubprocessPluginHost, configFingerprint } from "./host.js";
 
 // Wraps the REAL `child_process.spawn`, to count respawns.
@@ -185,5 +190,74 @@ describe("SubprocessPluginHost: an instance is restarted when its config changes
       await evil.close();
       await good.close();
     }
+  });
+});
+
+describe("SubprocessPluginHost: the ops read-back refusal is recognised by RPC CODE, never by text", () => {
+  it("FORGE PROBE: an instance id spelled like the old text marker cannot turn a network failure into a template verdict", async () => {
+    // #413's pluginInstanceId charset admits every character of the old marker, and the host's
+    // error message embeds the instance id — so a text match was forgeable by naming an instance.
+    const id = "scp-ops-template-refused:forged";
+    expect(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id), "a charset-valid instance id").toBe(
+      true
+    );
+    host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+    await host.start([
+      {
+        id,
+        module: "argo-workflows",
+        orgId: "org-1",
+        scopeKey: "d",
+        allowInternalEgress: true,
+        config: {
+          serverUrl: "http://127.0.0.1:9", // nothing listens: an ordinary, retryable failure
+          namespace: "ns",
+          token: "t",
+          statePath: join(tmpdir(), `forge-${randomUUID()}.json`),
+          opsTemplatePins: []
+        }
+      }
+    ]);
+    const err = await host
+      .executor(id)
+      .trigger({
+        kind: "workflow_dispatch",
+        targetRef: "org-template",
+        idempotencyKey: randomUUID()
+      })
+      .catch((e: Error) => e);
+    expect((err as Error).message, "the forged text IS in the host's message").toContain(
+      "scp-ops-template-refused:"
+    );
+    expect(opsTemplateRefusalOf(err), "…and is NOT read as a template verdict").toBeUndefined();
+    expect(triggerRefusalOf(err)).toBeUndefined();
+  });
+
+  it("CONTROL: a genuine read-back refusal over the real host IS recognised, by its code", async () => {
+    host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+    await host.start([
+      {
+        id: "ops-genuine",
+        module: "argo-workflows",
+        orgId: "org-1",
+        scopeKey: "d",
+        allowInternalEgress: true,
+        config: {
+          serverUrl: "http://127.0.0.1:9",
+          namespace: "ns",
+          token: "t",
+          statePath: join(tmpdir(), `genuine-${randomUUID()}.json`),
+          opsTemplatePins: [] // no pin names this endpoint → refused before any request
+        }
+      }
+    ]);
+    const err = await host
+      .executor("ops-genuine")
+      .trigger({ kind: "workflow_dispatch", targetRef: "scp-ops-v1", idempotencyKey: randomUUID() })
+      .catch((e: Error) => e);
+    expect((err as Error & { rpcCode?: number }).rpcCode).toBe(OPS_TEMPLATE_REFUSED_RPC_CODE);
+    expect(opsTemplateRefusalOf(err)).toContain(
+      "no Argo host-ops pin names this instance's endpoint"
+    );
   });
 });

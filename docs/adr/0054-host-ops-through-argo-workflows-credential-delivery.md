@@ -139,7 +139,7 @@ an **exact allowlist** of the chart's shape (`opsTemplateShapeProblems` in
 `steps`/`dag`/`templateRef`/`onExit`/`hooks`/`initContainers`/`sidecars`/`podSpecPatch`); the pinned
 digest; `command` exactly `/usr/local/bin/run.sh` and no `args`; exactly the chart's env names with
 fixed values (catalog verification `required`, the fixed key and catalog paths, the pinned SCP API
-URL — the pin gained `redeemUrl` for this); exactly the chart's volumes and read-only mounts; the
+URL, which the pin door requires to be https — the pin gained `redeemUrl` for this); exactly the chart's volume NAMES and KINDS with read-only mounts at the chart's paths — **the Secret names those volumes reference and the pod's `serviceAccountName` are the operator's and are not checked** (#414 final re-verification, probe N8, swapped the `api-ca` Secret; with `redeemUrl` https-only, supplying an attacker CA that way needs write access to Secrets or WorkflowTemplates in the namespace, which is inside the residual trust set); the
 hardened container and pod security contexts; `podMetadata` labels only. `tools/helm-verify` asks the
 SAME function about the actual chart render, so the chart and the runtime check cannot drift. A
 refusal carries a marker the server recognises and terminalises the target with a Decision
@@ -258,6 +258,18 @@ adds is a second way for a certificate to come to exist, and its exposure is:
   concurrent `start()` with the other config. Both are the same property (instance identity is a
   tenant-chosen string, not org- or config-scoped); the ops path is protected against it by the
   plugin's own-endpoint check, the rest is a plugin-host contract change for its own increment.
+- **Final round (2026-09-24).** (1) The ops read-back refusal was recognised in reconcile by a TEXT
+  marker in the error message — and the host's message embeds the instance id, whose charset (#413)
+  admits every character of the marker, so an instance named after it could turn a network failure
+  into a template verdict. It is now `OpsTemplateRefused` (a `TriggerRefused` subclass) travelling
+  under its own JSON-RPC code, -32011, read by `opsTemplateRefusalOf` off `rpcCode` as data; a
+  permanent forge probe runs over the real subprocess host. Census of message-text matching in
+  reconcile, plugin-api and the plugins: this was the only one; `graph/containment.ts`'s
+  `isWalkDepthExceeded` matches a phrase too, but on a server-authored in-process error no tenant
+  string reaches and no plugin boundary crosses, so it is not the same property. (2) The amendment's
+  "fixed volumes" overstated the check — reworded as above. (3) `redeemUrl` must be https at the pin
+  door (plain http only behind `SCP_OPS_ALLOW_INSECURE_REDEEM_URL=true`, for tests), and the chart's
+  example is https.
 - **NITs** — the enrolment and pin doors answered 500 where they meant 404/409 (a plain `Error` with
   `statusCode` is honoured only for framework errors); all five sites in `routes/ssh-ca.ts` now throw
   `notFound`/`conflict`. `normalizeServerUrl`'s comment now says what it does (the path is kept: a

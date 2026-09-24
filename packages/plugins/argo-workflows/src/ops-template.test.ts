@@ -6,11 +6,8 @@ import nock from "nock";
 import type { PluginContext } from "@scp/plugin-api";
 import { createArgoWorkflowsExecutorPlugin } from "./index.js";
 import { createNodeHttpTestClient } from "./test-node-http-client.js";
-import {
-  OPS_TEMPLATE_REFUSED_MARKER,
-  opsTemplateShapeProblems,
-  scpOpsV1ReferenceTemplate
-} from "./ops-template.js";
+import { isOpsTemplateRefused } from "@scp/plugin-api";
+import { opsTemplateShapeProblems, scpOpsV1ReferenceTemplate } from "./ops-template.js";
 
 /**
  * THE scp-ops-v1 READ-BACK, through the REAL plugin's trigger (M28.2 fix rounds, ADR-0054 D9(d)).
@@ -151,9 +148,9 @@ async function outcome(template: unknown, extraConfig: Record<string, unknown> =
       parameters: { opsRunTokenSealed: "c", opsRunId: "r" }
     } as never);
   } catch (e) {
-    return { submitted: submit.isDone(), refused: (e as Error).message };
+    return { submitted: submit.isDone(), refused: (e as Error).message, err: e };
   }
-  return { submitted: submit.isDone(), refused: undefined };
+  return { submitted: submit.isDone(), refused: undefined, err: undefined };
 }
 
 beforeAll(() => nock.disableNetConnect());
@@ -282,12 +279,12 @@ describe("scp-ops-v1 read-back: an EXACT allowlist of the chart's shape", () => 
   ];
 
   it.each(BYPASSES)(
-    "REFUSES %s — nothing is submitted, and the refusal is terminal-marked",
+    "REFUSES %s — nothing is submitted, and the refusal is an OpsTemplateRefused",
     async (_label, tpl) => {
       expect(opsTemplateShapeProblems(tpl, PIN).length).toBeGreaterThan(0);
       const r = await outcome(tpl);
       expect(r.submitted, "a refused template must never be submitted").toBe(false);
-      expect(r.refused).toContain(OPS_TEMPLATE_REFUSED_MARKER);
+      expect(isOpsTemplateRefused(r.err), "an OpsTemplateRefused — its own RPC code").toBe(true);
     }
   );
 
@@ -302,10 +299,10 @@ describe("scp-ops-v1 read-back: an EXACT allowlist of the chart's shape", () => 
   it("no pins at all → refused before any read", async () => {
     const r = await outcome(chartShape(), { opsTemplatePins: [] });
     expect(r.submitted).toBe(false);
-    expect(r.refused).toContain(OPS_TEMPLATE_REFUSED_MARKER);
+    expect(isOpsTemplateRefused(r.err)).toBe(true);
   });
 
-  it("a read-back HTTP 5xx is NOT terminal-marked (the server's retry path), and nothing is submitted", async () => {
+  it("a read-back HTTP 5xx is NOT an OpsTemplateRefused (the server's retry path), and nothing is submitted", async () => {
     nock(SERVER_URL).get(`/api/v1/workflow-templates/${NS}/scp-ops-v1`).reply(503, {});
     const submit = nock(SERVER_URL).post(`/api/v1/workflows/${NS}/submit`).reply(200, {});
     const err = await createArgoWorkflowsExecutorPlugin()
@@ -317,7 +314,7 @@ describe("scp-ops-v1 read-back: an EXACT allowlist of the chart's shape", () => 
       } as never)
       .catch((e: Error) => e);
     expect((err as Error).message).toContain("HTTP 503");
-    expect((err as Error).message).not.toContain(OPS_TEMPLATE_REFUSED_MARKER);
+    expect(isOpsTemplateRefused(err)).toBe(false);
     expect(submit.isDone()).toBe(false);
   });
 });

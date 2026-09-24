@@ -25,6 +25,9 @@ export const OPS_ARGO_CATALOG_TEMPLATES = ["scp-ops-v1"] as const;
 
 export class ArgoOpsPinInvalid extends Error {}
 
+/** The named development flag that permits a plain-http `redeemUrl` (tests against an http server). */
+export const ALLOW_INSECURE_REDEEM_URL_ENV = "SCP_OPS_ALLOW_INSECURE_REDEEM_URL";
+
 export interface ArgoOpsPin {
   domainId: TrustDomainId;
   serverUrl: string;
@@ -92,6 +95,15 @@ export function validateArgoOpsPin(input: ArgoOpsPinInput): ArgoOpsPinInput {
   }
   const redeemUrl = normalizeServerUrl(input.redeemUrl);
   if (!redeemUrl) throw new ArgoOpsPinInvalid("redeemUrl must be an http(s) URL");
+  // HTTPS, because the pod sends the UNSEALED redemption secret here — over plain http anyone on the
+  // path between the pod and SCP could redeem first (#414 final re-verification). Plain http only
+  // behind the explicit, named development flag.
+  if (redeemUrl.startsWith("http:") && process.env[ALLOW_INSECURE_REDEEM_URL_ENV] !== "true") {
+    throw new ArgoOpsPinInvalid(
+      "redeemUrl must be https: the runner pod sends its unsealed one-time redemption secret there. " +
+        `(Development only: set ${ALLOW_INSECURE_REDEEM_URL_ENV}=true on the server to allow http.)`
+    );
+  }
   return { ...input, serverUrl, redeemUrl };
 }
 

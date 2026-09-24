@@ -24,11 +24,6 @@
 /** SCP's host-ops catalog template names. */
 export const SCP_OPS_TEMPLATE_PATTERN = /^scp-ops-v\d+$/;
 
-/** Prefix of every read-back refusal, so the server can terminalise the target with a Decision
- *  rather than retrying (the message crosses the plugin-host RPC boundary; this is the one stable
- *  part of it). */
-export const OPS_TEMPLATE_REFUSED_MARKER = "scp-ops-template-refused:";
-
 /** One spelling of an endpoint URL. The server's `normalizeServerUrl` is the same function, asserted
  *  equal by `ops-argo-pin.test.ts`. Scheme, host (lower-cased), port and path (trailing `/` dropped). */
 export function normalizeOpsUrl(value: unknown): string | undefined {

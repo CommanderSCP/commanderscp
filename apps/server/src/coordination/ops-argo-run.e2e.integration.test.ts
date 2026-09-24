@@ -243,6 +243,9 @@ describe("host-reaching run through the ARGO path, against a real sshd (Testcont
   beforeAll(async () => {
     dockerReady = await dockerAvailable();
     if (!dockerReady) return;
+    // The test server is plain http, so the pin's redeemUrl needs the named DEVELOPMENT flag; a real
+    // pin door refuses http (ADR-0054 D9).
+    process.env["SCP_OPS_ALLOW_INSECURE_REDEEM_URL"] = "true";
 
     server = await listenTestServer();
     org = await createTestOrg(server, "ops-argo-e2e");

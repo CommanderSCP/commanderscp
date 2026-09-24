@@ -129,14 +129,13 @@ import {
   WAVE_TARGET_EXECUTOR_REFUSED_AUDIT_ACTION,
   WAVE_TARGET_EXECUTOR_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
-import { triggerRefusalOf } from "@scp/plugin-api";
+import { opsTemplateRefusalOf, triggerRefusalOf } from "@scp/plugin-api";
 import { isOpsLane, opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 import {
   authoredRollbackTrigger,
   deployLaneTriggerParameters
 } from "./deploy-lane-trigger-parameters.js";
 import { recipeReservedParameterRefusal } from "./reserved-trigger-parameters.js";
-import { OPS_TEMPLATE_REFUSED_MARKER } from "@scp/plugin-argo-workflows";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1929,12 +1928,12 @@ async function triggerWaveTarget(
       // Not a transient executor error: the pinned template is not SCP's, or this instance is not a
       // pinned endpoint, and retrying cannot change either. The redemption row minted for this
       // trigger dies with the target (the redeem door requires an in-flight target).
-      const message = err instanceof Error ? err.message : String(err);
-      if (
-        isOpsLane(executorModule, claim.externalRef) &&
-        message.includes(OPS_TEMPLATE_REFUSED_MARKER)
-      ) {
-        const detail = message.slice(message.indexOf(OPS_TEMPLATE_REFUSED_MARKER));
+      //
+      // Decided on the RPC CODE (`opsTemplateRefusalOf`), never on message text: the host's message
+      // embeds the tenant-chosen instance id, whose charset admits any text marker (#414 final round).
+      const opsRefusal = opsTemplateRefusalOf(err);
+      if (isOpsLane(executorModule, claim.externalRef) && opsRefusal !== undefined) {
+        const detail = opsRefusal;
         await withTenantTx(db, orgId, (tx) =>
           refuseTrigger(
             tx,

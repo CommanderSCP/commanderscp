@@ -138,7 +138,7 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
   const sealingPublicPem = sealing.publicKey.export({ type: "spki", format: "pem" }).toString();
   /** The pinned runner digest, and the source addresses every certificate must carry. */
   const RUNNER_DIGEST = `sha256:${"a".repeat(64)}`;
-  const REDEEM_URL = "http://commanderscp-api.scp.svc:8080";
+  const REDEEM_URL = "https://commanderscp-api.scp.svc:8443";
   const PIN_SOURCE = ["10.42.0.0/16", "192.168.5.7"];
   const PIN = {
     serverUrl: ARGO_URL,

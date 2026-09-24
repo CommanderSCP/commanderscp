@@ -214,7 +214,9 @@ bundledExecutor:
         # The vendored, retargetable scp-runner-ops image — the SAME image Mode C runs. Empty until
         # set; the air-gap install.sh sets it to the bundle registry's digest-pinned ref.
         runnerImage: ""
-        # SCP's API base URL as this cluster reaches it (e.g. http://commanderscp-api.scp.svc:8080).
+        # SCP's API base URL as this cluster reaches it, HTTPS (e.g. https://commanderscp-api.scp.svc:8443;
+        # set `apiCaSecret` if its certificate is not publicly trusted). The pin door refuses an http
+        # `redeemUrl`: the pod sends its unsealed redemption secret here.
         # The pod redeems its one-time token here and nowhere else. MUST EQUAL the domain pin's
         # `redeemUrl`: SCP reads the template back and refuses one naming any other API URL.
         # The runner image likewise must be pinned BY DIGEST and equal the pin's runnerImageDigest.
