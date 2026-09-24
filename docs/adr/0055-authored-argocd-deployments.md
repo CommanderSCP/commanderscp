@@ -83,11 +83,13 @@ The strategy mapping:
 
 A pause with no duration waits for `promote`, and ADR-0008 §3 forbids SCP that verb. Every authored pause is therefore timed.
 
-**Blue-green is supported, with `autoPromotionSeconds` REQUIRED** (`RolloutStrategySchema`): the controller promotes itself. The requirement is enforced three times:
+**Blue-green is supported, with `autoPromotionSeconds` REQUIRED**: the controller promotes itself. The requirement is enforced three times:
 
-1. The schema refuses a declaration without it at propose or apply time.
-2. The deploy lane refuses, with a Decision, a stored declaration that lacks it — for example one written by an older writer.
+1. The deploy lane refuses, with a Decision (`blue_green_without_auto_promotion`), a blue-green declared without it.
+2. The renderer will not produce one.
 3. The plugin refuses any blue-green that does not auto-promote.
+
+**Blue-green is declared in the wave plan** (`AuthoredRolloutStrategySchema` = the D12 vocabulary plus `BlueGreenRolloutStrategySchema`). It is **not yet** a component-level D12 construct. CI measured why: adding a member to `RolloutStrategySchema` is an oasdiff `response-property-one-of-added` **break of `/v1`**, because that schema is echoed in the `/plans` responses (`manifest.rollouts[].rollout`). A component-level `BlueGreenRollout` therefore needs an owner-approved `api-v2-exception`; see the open questions.
 
 ### D5 — Authorship and identity are labels, and together they are the only licence to overwrite
 
@@ -231,9 +233,9 @@ For an Application that manages a Rollout:
 ## Consequences
 
 - **Parity:**
-  - *API/SDK/ScpClient* — no new route; the declarations are properties on existing object types. `pnpm gen` picks up `blueGreen` in `RolloutStrategySchema`: a request-side `oneOf` addition, which is additive.
+  - *API/SDK/ScpClient* — no new route, and no OpenAPI change. The declarations are properties on existing object types.
   - *CLI* — `scp connect argocd --authoring-{repo,path,chart,revision,project,namespace…}`, validated with the server's schema before any write.
-  - *Coordination as Code* — `Component({ deployment })`, wave `rollout`, and `BlueGreenRollout`. The estate export round-trips `rollout`.
+  - *Coordination as Code* — `Component({ deployment })`, and wave `rollout` including blue-green. The estate export round-trips `rollout`.
   - *UI* — the Connect Argo CD wizard's carrier fieldset, including project and namespaces.
 - **What changed for existing estates:**
   - Nothing, unless a component declares `properties.deployment` or a recipe names a reserved key.
@@ -249,3 +251,13 @@ For an Application that manages a Rollout:
   A negative control was refused. Not exercised: Argo CD's repo-server rendering the carrier from a real repo, Argo CD evaluating the AppProject and RBAC, and a Rollouts controller walking the steps. No argocd or argo-rollouts image is cached locally.
 - **Argo CD 3.x fine-grained RBAC** is taken from upstream's v3.0 upgrade notes and was not measured. Those notes say `applications, update` no longer implies `update/*` on managed resources. D10's project whitelist is the bound that does not depend on it.
 - **The in-flight wait** is refuse-and-retry, so a canary that stays paused for longer than reconcile's retry backoff ceiling holds the next release until it settles. That is intended, and not separately bounded.
+
+## Open question for the owner
+
+**Component-level blue-green (a `BlueGreenRollout` construct).** Blue-green is authored today when a wave plan declares it. Declaring it per component needs `blueGreen` in the D12 wire schema, which oasdiff measures as a `/v1` response break on `/plans`. The options:
+
+1. Approve an `api-v2-exception`, and add the construct and the wire member.
+2. Keep blue-green at the wave-plan level.
+3. Add a separate, additive component property for authored strategies — a second declaration door, which D-a's single precedence rule argues against.
+
+**Recommended: (2) now, and (1) when there is a second reason to take a `/v1` exception**, so one exception covers both.

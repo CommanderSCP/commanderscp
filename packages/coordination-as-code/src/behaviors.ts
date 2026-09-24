@@ -262,34 +262,6 @@ export class CanaryRollout extends Construct {
   }
 }
 
-export interface BlueGreenRolloutProps {
-  readonly targetClass: RolloutTargetClass;
-  /** REQUIRED: the controller promotes the preview itself after this long. SCP never promotes
-   *  (ADR-0008 §3), so a blue-green Rollout without it would wait forever (ADR-0055 D4). */
-  readonly autoPromotion: Duration;
-  /** @default Argo Rollouts' own default — how long the old stack stays up after the switch */
-  readonly scaleDownDelay?: Duration;
-}
-
-export class BlueGreenRollout extends Construct {
-  constructor(scope: Construct, id = "blueGreenRollout", props: BlueGreenRolloutProps) {
-    super(scope, id);
-    const host = hostOf(scope);
-    const componentUrn = requireComponent(host, "BlueGreenRollout", this.path);
-    const rollout: RolloutStrategy = {
-      strategy: "blueGreen",
-      autoPromotionSeconds: props.autoPromotion.toSeconds(),
-      ...(props.scaleDownDelay !== undefined
-        ? { scaleDownDelaySeconds: props.scaleDownDelay.toSeconds() }
-        : {})
-    };
-    host.stack.addRollout(
-      { urn: componentUrn, typeId: "component" },
-      { targetClass: props.targetClass, rollout }
-    );
-  }
-}
-
 export interface RollingRolloutProps {
   readonly targetClass: RolloutTargetClass;
   /** CDK's `minHealthyPercent` pattern: a plain number on a self-describing prop. */

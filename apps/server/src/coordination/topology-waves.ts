@@ -1,7 +1,7 @@
 import {
-  RolloutStrategySchema,
+  AuthoredRolloutStrategySchema,
   WaveGateSchema,
-  type RolloutStrategy,
+  type AuthoredRolloutStrategy,
   type WaveGate
 } from "@scp/schemas";
 import { badRequest } from "../errors.js";
@@ -86,9 +86,9 @@ export function parseTopologyWaves(document: unknown): TopologyWaveSpec[] | unde
     // M28.4 (ADR-0055): HOW this wave's places roll — the steps an SCP-authored Argo Rollout at
     // one of them is written with. Refused here, with the rest of the wave, so a malformed wave
     // plan fails when the change is PROPOSED rather than half way through a deploy.
-    let rollout: RolloutStrategy | undefined;
+    let rollout: AuthoredRolloutStrategy | undefined;
     if (w.rollout !== undefined) {
-      const parsed = RolloutStrategySchema.safeParse(w.rollout);
+      const parsed = AuthoredRolloutStrategySchema.safeParse(w.rollout);
       if (!parsed.success) {
         throw badRequest(
           `${where} rollout is invalid: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`

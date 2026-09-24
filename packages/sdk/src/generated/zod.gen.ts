@@ -4139,11 +4139,6 @@ export const zCreatePlanResponse = z.object({
                     strategy: z.literal('rolling'),
                     batchPercent: z.int().gte(1).lte(100),
                     pauseBetweenSeconds: z.int().gte(0).lte(9007199254740991).optional()
-                }),
-                z.object({
-                    strategy: z.literal('blueGreen'),
-                    autoPromotionSeconds: z.int().gt(0).lte(9007199254740991),
-                    scaleDownDelaySeconds: z.int().gte(0).lte(9007199254740991).optional()
                 })
             ])
         })).optional(),
@@ -4553,11 +4548,6 @@ export const zGetPlanResponse = z.object({
                     strategy: z.literal('rolling'),
                     batchPercent: z.int().gte(1).lte(100),
                     pauseBetweenSeconds: z.int().gte(0).lte(9007199254740991).optional()
-                }),
-                z.object({
-                    strategy: z.literal('blueGreen'),
-                    autoPromotionSeconds: z.int().gt(0).lte(9007199254740991),
-                    scaleDownDelaySeconds: z.int().gte(0).lte(9007199254740991).optional()
                 })
             ])
         })).optional(),
@@ -4968,11 +4958,6 @@ export const zApplyPlanResponse = z.object({
                         strategy: z.literal('rolling'),
                         batchPercent: z.int().gte(1).lte(100),
                         pauseBetweenSeconds: z.int().gte(0).lte(9007199254740991).optional()
-                    }),
-                    z.object({
-                        strategy: z.literal('blueGreen'),
-                        autoPromotionSeconds: z.int().gt(0).lte(9007199254740991),
-                        scaleDownDelaySeconds: z.int().gte(0).lte(9007199254740991).optional()
                     })
                 ])
             })).optional(),

@@ -157,17 +157,33 @@ export const RolloutStrategySchema = z.discriminatedUnion("strategy", [
     strategy: z.literal("rolling"),
     batchPercent: z.number().int().min(1).max(100),
     pauseBetweenSeconds: z.number().int().nonnegative().optional()
-  }),
-  /** Blue-green (owner decision 2026-09-23, ADR-0055 D4). `autoPromotionSeconds` is REQUIRED: a
-   *  blue-green Rollout without it waits for `promote`, the one verb ADR-0008 §3 forbids SCP — so
-   *  the controller must promote itself. Declared without it, the Rollout is refused. */
-  z.object({
-    strategy: z.literal("blueGreen"),
-    autoPromotionSeconds: z.number().int().positive(),
-    scaleDownDelaySeconds: z.number().int().nonnegative().optional()
   })
 ]);
 export type RolloutStrategy = z.infer<typeof RolloutStrategySchema>;
+
+/** Blue-green (owner decision 2026-09-23, ADR-0055 D4). A blue-green Rollout without
+ *  `autoPromotionSeconds` waits for `promote`, the one verb ADR-0008 §3 forbids SCP, so the
+ *  controller must promote itself: declared without it, the deploy lane REFUSES with a Decision
+ *  (optional here so the refusal is a recorded verdict at trigger time, not a bare 400 at propose).
+ *
+ *  NOT a member of `RolloutStrategySchema`, deliberately: that schema is echoed in the `/plans`
+ *  RESPONSES (`manifest.rollouts[].rollout`), and adding a `oneOf` member there is an oasdiff
+ *  `response-property-one-of-added` break of `/v1`. So blue-green is declarable in the WAVE PLAN
+ *  (a release-topology document, not an API schema) and not yet as a component-level D12 construct
+ *  — ADR-0055 lists that as an owner question. */
+export const BlueGreenRolloutStrategySchema = z.object({
+  strategy: z.literal("blueGreen"),
+  autoPromotionSeconds: z.number().int().positive().optional(),
+  scaleDownDelaySeconds: z.number().int().nonnegative().optional()
+});
+
+/** Every strategy an SCP-authored Rollout can be written from (ADR-0055): the D12 wire vocabulary
+ *  plus blue-green, which today only a wave plan can declare. */
+export const AuthoredRolloutStrategySchema = z.union([
+  RolloutStrategySchema,
+  BlueGreenRolloutStrategySchema
+]);
+export type AuthoredRolloutStrategy = z.infer<typeof AuthoredRolloutStrategySchema>;
 
 /** Identity is `(componentUrn, targetClass)` — D12 keys the declaration by the CLASS of target, so
  *  one component legitimately declares a canary for its clusters and a rolling batch for its

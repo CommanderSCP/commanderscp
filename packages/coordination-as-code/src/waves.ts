@@ -1,4 +1,4 @@
-import type { RolloutStrategy } from "@scp/schemas";
+import type { AuthoredRolloutStrategy } from "@scp/schemas";
 import type { IResourceRef, ReleaseTopologyWaveSpec } from "./construct.js";
 
 /** Wave-organization guidance (team-pipeline-iac.md §8, D6 vocabulary). See docs/coordination-as-code.md §320. */
@@ -17,7 +17,7 @@ export type WaveItem =
       readonly mode?: "parallel" | "sequential";
       readonly requiresFanIn?: boolean;
       /** M28.4 (ADR-0055): the steps an SCP-authored Rollout at this wave's places runs. */
-      readonly rollout?: RolloutStrategy;
+      readonly rollout?: AuthoredRolloutStrategy;
     };
 
 function isWaveObject(

@@ -19,7 +19,7 @@ describe("parseTopologyWaves — the wave plan's rollout", () => {
   it.each([
     [{ strategy: "canary", steps: [] }, /rollout is invalid/],
     [{ strategy: "canary", steps: [{ weightPercent: 150 }] }, /rollout is invalid/],
-    [{ strategy: "blueGreen" }, /rollout is invalid/],
+    [{ strategy: "blueGreen", autoPromotionSeconds: 0 }, /rollout is invalid/],
     ["10%", /rollout is invalid/]
   ])("refuses %j", (rollout, message) => {
     let detail: string | undefined;

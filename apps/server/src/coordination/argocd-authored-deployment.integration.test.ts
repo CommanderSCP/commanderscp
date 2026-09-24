@@ -450,14 +450,16 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
         deployment: { image: "ghcr.io/acme/bg:1.0.0", containerPort: 8080 }
       }
     );
-    await inOrg((tx) =>
-      upsertComponentRollout(tx, org.orgId, {
-        componentObjectId: component.id,
-        targetClass: "cluster",
+    // Blue-green is declared in the WAVE PLAN (ADR-0055 D4): the D12 component wire cannot carry
+    // it without a /v1 response break.
+    const topo = await topology([
+      {
+        name: "gamma",
+        mode: "parallel",
+        targets: [p.id],
         rollout: { strategy: "blueGreen", autoPromotionSeconds: 90 }
-      })
-    );
-    const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
+      }
+    ]);
     const bodiesBefore = standIn.authoredBodies.length;
     const change = await admin.changes.propose({
       name: "blue-green",
@@ -488,18 +490,45 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
         deployment: { image: "ghcr.io/acme/bg:1.0.0", containerPort: 8080 }
       }
     );
-    // Written the way an older writer (or a hand edit) could: the schema would refuse it at apply.
+    const topo = await topology([
+      { name: "gamma", mode: "parallel", targets: [p.id], rollout: { strategy: "blueGreen" } }
+    ]);
+    const mark = writeMark();
+    const change = await admin.changes.propose({
+      name: "bg bad",
+      targets: [component.id],
+      topology: topo.id
+    });
+    await expectRefused(
+      change.id,
+      placements[p.id]!,
+      "deployment_authoring_refused",
+      { cause: "blue_green_without_auto_promotion" },
+      mark
+    );
+  }, 90_000);
+
+  it("D-a: a component rollout declaration the D12 wire cannot read is refused, not ignored", async () => {
+    const p = await place("gamma", "shop");
+    const system = await argocdSystem();
+    const { component, placements } = await placedComponent(
+      `ownbad-${randomUUID().slice(0, 6)}`,
+      [p],
+      system,
+      { deployment: { image: "ghcr.io/acme/bg:1.0.0", containerPort: 8080 } }
+    );
+    // Written the way an older writer or a hand edit could: IaC apply's schema would refuse it.
     await inOrg((tx) =>
       upsertComponentRollout(tx, org.orgId, {
         componentObjectId: component.id,
         targetClass: "cluster",
-        rollout: { strategy: "blueGreen" }
+        rollout: { strategy: "canary", steps: [] }
       })
     );
     const topo = await topology([{ name: "gamma", mode: "parallel", targets: [p.id] }]);
     const mark = writeMark();
     const change = await admin.changes.propose({
-      name: "bg bad",
+      name: `own bad ${randomUUID().slice(0, 6)}`,
       targets: [component.id],
       topology: topo.id
     });

@@ -4,7 +4,7 @@ import type {
   GraphObject,
   InfraKind,
   Relationship,
-  RolloutStrategy,
+  AuthoredRolloutStrategy,
   SourceMapping
 } from "@scp/schemas";
 import {
@@ -148,7 +148,7 @@ async function readComponentSpec(
       mode?: "parallel" | "sequential";
       targets: string[];
       requiresFanIn?: boolean;
-      rollout?: RolloutStrategy;
+      rollout?: AuthoredRolloutStrategy;
     }>;
 
     const mapping = mappings.find((m) => (m.type ?? "configuration") === kind);

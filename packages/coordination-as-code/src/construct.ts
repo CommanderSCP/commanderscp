@@ -1,6 +1,7 @@
 import {
   DesiredStateManifestSchema,
   type AuthoredDeployment,
+  type AuthoredRolloutStrategy,
   type DependencyEcosystem,
   type DesiredStateManifest,
   type ExecutorType,
@@ -912,7 +913,7 @@ export interface ReleaseTopologyWaveSpec {
   readonly requiresFanIn?: boolean;
   /** M28.4 (ADR-0055): the steps an SCP-authored Argo Rollout at this wave's places is written with.
    *  @default none — an authored Rollout here is a canary with no steps (a rolling update) */
-  readonly rollout?: RolloutStrategy;
+  readonly rollout?: AuthoredRolloutStrategy;
 }
 
 export interface ReleaseTopologyProps extends Omit<ResourceProps, "properties"> {

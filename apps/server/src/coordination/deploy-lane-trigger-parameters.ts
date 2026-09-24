@@ -11,6 +11,7 @@ import {
   isForbiddenAuthoringNamespace,
   type ArgoCdAuthoring,
   type AuthoredDeployment,
+  type AuthoredRolloutStrategy,
   type RolloutStrategy
 } from "@scp/schemas";
 import { and, eq, isNull } from "drizzle-orm";
@@ -155,7 +156,7 @@ export function nameWithIdentity(raw: string, identity: string, maxLength = 63):
 /** Argo Rollouts `spec.strategy` for one declared strategy. Every pause carries a duration and
  *  blue-green always auto-promotes. */
 export function rolloutStrategyFor(
-  strategy: RolloutStrategy | undefined,
+  strategy: AuthoredRolloutStrategy | undefined,
   services?: { active: string; preview: string }
 ): Record<string, unknown> {
   if (strategy === undefined) return { canary: {} };
@@ -171,6 +172,11 @@ export function rolloutStrategyFor(
   }
   if (strategy.strategy === "blueGreen") {
     if (!services) throw new Error("blue-green needs its two Services named");
+    // The deploy lane refuses a blue-green without it before rendering; this is the renderer's own
+    // floor, so a future caller cannot author a Rollout that waits for `promote`.
+    if (strategy.autoPromotionSeconds === undefined) {
+      throw new Error("blue-green is only authored with autoPromotionSeconds (ADR-0055 D4)");
+    }
     return {
       blueGreen: {
         activeService: services.active,
@@ -218,7 +224,7 @@ export interface RenderAuthoredDeploymentInput {
   namespace: string;
   image: string;
   deployment: AuthoredDeployment;
-  strategy: RolloutStrategy | undefined;
+  strategy: AuthoredRolloutStrategy | undefined;
   /** Where the steps came from — stamped on the Application so the choice is never silent. */
   rolloutSource: string;
   authoring: ArgoCdAuthoring;
@@ -347,7 +353,7 @@ async function waveRolloutFor(
   orgId: string,
   waveId: string,
   memberIds: string[]
-): Promise<{ strategy: RolloutStrategy | undefined; waveName: string | null }> {
+): Promise<{ strategy: AuthoredRolloutStrategy | undefined; waveName: string | null }> {
   const [wave] = await tx
     .select({ planId: changeWaves.planId, name: changeWaves.name })
     .from(changeWaves)
@@ -552,6 +558,15 @@ export async function deployLaneTriggerParameters(
     : wave?.strategy
       ? `wave:${wave.waveName ?? "(unnamed)"}`
       : "none";
+  // Owner decision D-b (2026-09-23): blue-green only with the controller promoting itself.
+  if (strategy?.strategy === "blueGreen" && strategy.autoPromotionSeconds === undefined) {
+    refuse(
+      "blue_green_without_auto_promotion",
+      `the wave plan declares a blue-green rollout with no autoPromotionSeconds. Without it the ` +
+        `Rollout waits for \`promote\` — the one verb SCP may never call (ADR-0008 §3) — so it ` +
+        `would never finish. Declare how long the preview runs before the controller promotes it.`
+    );
+  }
   if (strategy?.strategy === "blueGreen" && deployment.containerPort === undefined) {
     refuse(
       "blue_green_needs_port",

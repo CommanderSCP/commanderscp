@@ -1810,7 +1810,9 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
       - **Where the steps come from** (owner D-a): the component's own D12 declaration wins; the
         release-topology wave that names the target's place applies where it declares none. Every
         authored pause is timed, and blue-green is supported with `autoPromotionSeconds` required
-        (owner D-b). A rollback re-authors the prior manifest recorded as `priorStateRef`, and the
+        (owner D-b). Blue-green is declared in the wave plan: a component-level D12 construct would
+        need a `/v1` exception, because adding a `oneOf` member to the `/plans` response is a
+        measured oasdiff break. That is an owner question in the ADR. A rollback re-authors the prior manifest recorded as `priorStateRef`, and the
         first deployment's rollback is refused (owner D-c).
       - **Adversarial review of #413 found two BLOCKING defects, both fixed by property:**
         - **A recipe could smuggle an Application.** A campaign recipe carrying

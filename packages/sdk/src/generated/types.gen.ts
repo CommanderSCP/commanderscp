@@ -12123,10 +12123,6 @@ export type CreatePlanData = {
                     strategy: 'rolling';
                     batchPercent: number;
                     pauseBetweenSeconds?: number;
-                } | {
-                    strategy: 'blueGreen';
-                    autoPromotionSeconds: number;
-                    scaleDownDelaySeconds?: number;
                 };
             }>;
             convergence?: Array<{
@@ -12332,10 +12328,6 @@ export type CreatePlanResponses = {
                     strategy: 'rolling';
                     batchPercent: number;
                     pauseBetweenSeconds?: number;
-                } | {
-                    strategy: 'blueGreen';
-                    autoPromotionSeconds: number;
-                    scaleDownDelaySeconds?: number;
                 };
             }>;
             convergence?: Array<{
@@ -12697,10 +12689,6 @@ export type GetPlanResponses = {
                     strategy: 'rolling';
                     batchPercent: number;
                     pauseBetweenSeconds?: number;
-                } | {
-                    strategy: 'blueGreen';
-                    autoPromotionSeconds: number;
-                    scaleDownDelaySeconds?: number;
                 };
             }>;
             convergence?: Array<{
@@ -13074,10 +13062,6 @@ export type ApplyPlanResponses = {
                         strategy: 'rolling';
                         batchPercent: number;
                         pauseBetweenSeconds?: number;
-                    } | {
-                        strategy: 'blueGreen';
-                        autoPromotionSeconds: number;
-                        scaleDownDelaySeconds?: number;
                     };
                 }>;
                 convergence?: Array<{
