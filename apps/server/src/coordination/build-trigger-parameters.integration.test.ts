@@ -332,7 +332,11 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
     beforeAll(async () => {
       const system = await admin.object("execution-system").create({
         name: `argo-${randomUUID().slice(0, 8)}`,
-        properties: { kind: "argo-workflows", serverUrl: "https://argo.example.invalid", namespace: "x" }
+        properties: {
+          kind: "argo-workflows",
+          serverUrl: "https://argo.example.invalid",
+          namespace: "x"
+        }
       });
       systemId = system.id;
       await admin.executors.putSourceAllowlist(systemId, [SOURCE_REF.repo, "acme/*"]);
@@ -362,7 +366,8 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
           sourceRef,
           changeObjectId: randomUUID(),
           pluginModule: "argo-workflows",
-          executionSystemId: opts.executionSystemId === undefined ? systemId : opts.executionSystemId,
+          executionSystemId:
+            opts.executionSystemId === undefined ? systemId : opts.executionSystemId,
           recipeParameters: opts.recipeParameters
         })
       );
