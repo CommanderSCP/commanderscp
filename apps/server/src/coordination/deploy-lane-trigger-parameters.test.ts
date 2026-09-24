@@ -255,16 +255,22 @@ describe("renderAuthoredDeployment", () => {
 
 describe("authoredRollbackTrigger — D-c: a rollback re-authors the PRIOR release's content", () => {
   const expected = { orgId: "org-1", targetObjectId: "t" };
-  const forwardApp = renderAuthoredDeployment(input({ changeObjectId: "the-rollback" })).application;
+  const forwardApp = renderAuthoredDeployment(
+    input({ changeObjectId: "the-rollback" })
+  ).application;
   const forward = {
     targetRef: "checkout-gamma-1a2b3c4d",
     parameters: { [AUTHORED_APPLICATION_PARAMETER]: forwardApp },
     authoring: AUTHORING
   };
   const priorOf = (over: Partial<RenderAuthoredDeploymentInput> = {}) =>
-    renderAuthoredDeployment(input({ image: "ghcr.io/acme/checkout@sha256:" + "0".repeat(64), ...over }))
-      .application as Record<string, Loose>;
-  const state = (app: unknown) => ({ revision: "v1", [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(app) });
+    renderAuthoredDeployment(
+      input({ image: "ghcr.io/acme/checkout@sha256:" + "0".repeat(64), ...over })
+    ).application as Record<string, Loose>;
+  const state = (app: unknown) => ({
+    revision: "v1",
+    [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(app)
+  });
 
   it("re-authors the prior Rollout under TODAY's envelope (carrier, project, destination)", () => {
     const prior = priorOf();
@@ -294,7 +300,11 @@ describe("authoredRollbackTrigger — D-c: a rollback re-authors the PRIOR relea
       { [PRIOR_AUTHORED_APPLICATION_KEY]: JSON.stringify(priorOf()).slice(0, 200) },
       "rollback_without_prior"
     ],
-    ["a prior authored for a different target", state(priorOf({ targetObjectId: "other" })), "rollback_prior_foreign"],
+    [
+      "a prior authored for a different target",
+      state(priorOf({ targetObjectId: "other" })),
+      "rollback_prior_foreign"
+    ],
     [
       "a prior deployed to a namespace this target no longer uses (review probe B1)",
       state(priorOf({ namespace: "old-ns" })),

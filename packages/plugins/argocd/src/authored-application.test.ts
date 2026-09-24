@@ -351,13 +351,20 @@ describe("the second layer — only a carrier render the operator declared is ev
     ],
     [
       "both server and name",
-      (d) => (d.spec.destination = { server: "https://kubernetes.default.svc", name: "prod", namespace: "shop" }),
+      (d) =>
+        (d.spec.destination = {
+          server: "https://kubernetes.default.svc",
+          name: "prod",
+          namespace: "shop"
+        }),
       /not the in-cluster server or an allowlisted cluster/
     ],
     [
       "an Argo CD notifications annotation",
       (d) =>
-        (d.metadata.annotations = { "notifications.argoproj.io/subscribe.on-sync.webhook": "evil" }),
+        (d.metadata.annotations = {
+          "notifications.argoproj.io/subscribe.on-sync.webhook": "evil"
+        }),
       /metadata.annotations.notifications.argoproj.io\/subscribe.on-sync.webhook is not a field/
     ],
     [
@@ -383,7 +390,10 @@ describe("the second layer — only a carrier render the operator declared is ev
     ],
     [
       "a pause with a non-duration value",
-      (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps[1] = { pause: { duration: "0s" } }),
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.strategy.canary.steps[1] = {
+          pause: { duration: "0s" }
+        }),
       /not a timed pause/
     ],
     [
@@ -413,15 +423,18 @@ describe("the second layer — only a carrier render the operator declared is ev
     ]
   ];
 
-  it.each(cases)("refuses %s — before any write, as a TERMINAL verdict", async (_what, tweak, message) => {
-    await expect(authorAndSync(authoredApplication("checkout-gamma", { tweak }))).rejects.toSatisfy(
-      (e: unknown) => isTriggerRefused(e)
-    );
-    await expect(authorAndSync(authoredApplication("checkout-gamma", { tweak }))).rejects.toThrow(
-      message
-    );
-    expect(standIn.requests).toEqual([]);
-  });
+  it.each(cases)(
+    "refuses %s — before any write, as a TERMINAL verdict",
+    async (_what, tweak, message) => {
+      await expect(
+        authorAndSync(authoredApplication("checkout-gamma", { tweak }))
+      ).rejects.toSatisfy((e: unknown) => isTriggerRefused(e));
+      await expect(authorAndSync(authoredApplication("checkout-gamma", { tweak }))).rejects.toThrow(
+        message
+      );
+      expect(standIn.requests).toEqual([]);
+    }
+  );
 
   it("refuses to author at all into an Argo CD that declares no authoring (import-and-coordinate only)", async () => {
     await expect(

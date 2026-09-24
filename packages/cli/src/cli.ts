@@ -6389,6 +6389,10 @@ export function buildProgram(): Command {
       "the SCOPED Argo CD project authored Applications go in — never `default` (ADR-0055)"
     )
     .option(
+      "--authoring-cluster <name...>",
+      "an Argo CD cluster NAME a deployment-target's `cluster` may target (repeatable; default: in-cluster only)"
+    )
+    .option(
       "--authoring-namespace <namespace...>",
       "a namespace SCP may author into (repeatable) — the project's destinations"
     )
@@ -6409,6 +6413,7 @@ export function buildProgram(): Command {
           authoringRevision?: string;
           authoringProject?: string;
           authoringNamespace?: string[];
+          authoringCluster?: string[];
         }
       ) => {
         // Validated HERE, before anything is written, with the server's own schema: a half-declared
@@ -6429,7 +6434,8 @@ export function buildProgram(): Command {
             ...(opts.authoringChart !== undefined ? { chart: opts.authoringChart } : {}),
             targetRevision: opts.authoringRevision,
             project: opts.authoringProject,
-            namespaces: opts.authoringNamespace ?? []
+            namespaces: opts.authoringNamespace ?? [],
+            ...(opts.authoringCluster ? { clusters: opts.authoringCluster } : {})
           });
           if (!parsed.success) {
             throw new Error(

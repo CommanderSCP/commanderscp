@@ -754,11 +754,9 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
         properties: { deployment: { image: "ghcr.io/acme/b1:1", namespace: "shop" } }
       });
       const v2 = await release(component.id, topo.id, "4");
-      await admin
-        .object("execution-system")
-        .update(system.id, {
-          properties: { ...system.properties, authoring: { ...AUTHORING, namespaces: ["shop"] } }
-        });
+      await admin.object("execution-system").update(system.id, {
+        properties: { ...system.properties, authoring: { ...AUTHORING, namespaces: ["shop"] } }
+      });
       const mark = writeMark();
       const rb = await admin.changes.rollback(v2, "undo v2");
       const row = await waitUntil(
@@ -779,7 +777,9 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
         { describe: "the B1 rollback is refused", timeoutMs: 45_000, intervalMs: 250 }
       );
       expect(row.executorRef).toBeNull();
-      const ds = await inOrg((tx) => tx.select().from(decisions).where(eq(decisions.subjectId, rb.id)));
+      const ds = await inOrg((tx) =>
+        tx.select().from(decisions).where(eq(decisions.subjectId, rb.id))
+      );
       expect(
         ds.some(
           (d) =>
@@ -806,7 +806,10 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       // The operator upgrades the carrier. The plugin instance was started with carrier-v1; if it kept
       // that copy, its own guard would refuse the carrier-v2 document below.
       await admin.object("execution-system").update(system.id, {
-        properties: { ...system.properties, authoring: { ...AUTHORING, targetRevision: "carrier-v2" } }
+        properties: {
+          ...system.properties,
+          authoring: { ...AUTHORING, targetRevision: "carrier-v2" }
+        }
       });
       const b = standIn.authoredBodies.length;
       await admin.changes.rollback(v2, "undo v2");
@@ -833,7 +836,11 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
           pluginInstanceId: `inline-${randomUUID().slice(0, 6)}`,
           config: {
             serverUrl: standIn.url,
-            authoring: { ...AUTHORING, repoURL: "https://evil.example/x.git", namespaces: ["payments"] }
+            authoring: {
+              ...AUTHORING,
+              repoURL: "https://evil.example/x.git",
+              namespaces: ["payments"]
+            }
           }
         })
         .catch((e: unknown) => e);
@@ -871,14 +878,19 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
           const r = await waveTargetRow(placement.id);
           return r?.status === "executor_refused" ? r : undefined;
         },
-        { describe: "the plugin's refusal terminalises the target", timeoutMs: 45_000, intervalMs: 250 }
+        {
+          describe: "the plugin's refusal terminalises the target",
+          timeoutMs: 45_000,
+          intervalMs: 250
+        }
       );
       expect(row.status).toBe("executor_refused");
       const ds = await inOrg((tx) =>
         tx.select().from(decisions).where(eq(decisions.subjectId, change.id))
       );
       const block = ds.find(
-        (d) => d.verdict === "block" && (d.inputContext as { gate?: string }).gate === "executor_refused"
+        (d) =>
+          d.verdict === "block" && (d.inputContext as { gate?: string }).gate === "executor_refused"
       );
       expect(JSON.stringify(block?.reasonTree)).toContain("not authored by CommanderSCP");
       expect(standIn.requests.slice(mark).filter((r) => r.method !== "GET")).toEqual([]);

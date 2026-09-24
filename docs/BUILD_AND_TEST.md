@@ -1812,8 +1812,21 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         authored pause is timed, and blue-green is supported with `autoPromotionSeconds` required
         (owner D-b). Blue-green is declared in the wave plan: a component-level D12 construct would
         need a `/v1` exception, because adding a `oneOf` member to the `/plans` response is a
-        measured oasdiff break. That is an owner question in the ADR. A rollback re-authors the prior manifest recorded as `priorStateRef`, and the
-        first deployment's rollback is refused (owner D-c).
+        measured oasdiff break. **The owner ruled on 2026-09-24 that it stays wave-plan only.**
+      - **A rollback re-authors the prior release's content** (owner D-c) under today's carrier and
+        project, and re-validates it against today's authoring. A target whose destination has
+        changed is refused, and the first deployment's rollback is refused.
+      - **Review round 2 fixed four more defects:**
+        - **BLOCKING — a rollback bypassed the namespace allowlist.**
+        - **A running plugin kept stale config.** Fixed at the host for every plugin: an instance
+          whose resolved config changes is restarted.
+        - **`authoring` could come from a tenant's inline binding.** It is now refused at every
+          write door and stripped on read.
+        - **Plugin refusals retried forever.** They are now terminal `executor_refused` verdicts,
+          with a Decision.
+
+        The validator is also value-level now, and the server runs it too. The reserved-key census
+        discovers its lanes.
       - **Adversarial review of #413 found two BLOCKING defects, both fixed by property:**
         - **A recipe could smuggle an Application.** A campaign recipe carrying
           `scpAuthoredApplication` for an undeclared component reached Argo CD as a

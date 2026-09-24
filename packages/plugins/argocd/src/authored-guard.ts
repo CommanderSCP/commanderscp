@@ -58,7 +58,11 @@ const isInt = (v: unknown, min: number, max = Number.MAX_SAFE_INTEGER) =>
   typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 const isStr = (v: unknown) => typeof v === "string" && v.length > 0;
 
-function onlyKeys(where: string, obj: Record<string, unknown>, allowed: readonly string[]): string[] {
+function onlyKeys(
+  where: string,
+  obj: Record<string, unknown>,
+  allowed: readonly string[]
+): string[] {
   return Object.keys(obj)
     .filter((k) => !allowed.includes(k))
     .map((k) => `${where}.${k} is not a field SCP authors`);
@@ -106,10 +110,16 @@ function checkMetadata(
   annotations: readonly string[]
 ): string[] {
   if (!isRecord(meta)) return [`${where}.metadata is missing`];
-  const problems = onlyKeys(`${where}.metadata`, meta, ["name", "namespace", "labels", "annotations"]);
+  const problems = onlyKeys(`${where}.metadata`, meta, [
+    "name",
+    "namespace",
+    "labels",
+    "annotations"
+  ]);
   if (!isStr(meta.name)) problems.push(`${where}.metadata.name is missing`);
   if (meta.labels !== undefined) {
-    if (labels === "any-string") problems.push(...stringMap(`${where}.metadata.labels`, meta.labels));
+    if (labels === "any-string")
+      problems.push(...stringMap(`${where}.metadata.labels`, meta.labels));
     else if (!isRecord(meta.labels)) problems.push(`${where}.metadata.labels must be a map`);
     else {
       problems.push(...onlyKeys(`${where}.metadata.labels`, meta.labels, Object.keys(labels)));
@@ -144,8 +154,10 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
   ]);
   // `paused`, `restartAt`, `workloadRef`, analysis and traffic routing all fall out of the allowlist
   // above; `paused` is named because it is the one that DRIVES a rollout.
-  if ("paused" in spec) problems.push(`${where}.paused would pause the Rollout — SCP never drives one`);
-  if (spec.replicas !== undefined && !isInt(spec.replicas, 1, 1000)) problems.push(`${where}.replicas is out of range`);
+  if ("paused" in spec)
+    problems.push(`${where}.paused would pause the Rollout — SCP never drives one`);
+  if (spec.replicas !== undefined && !isInt(spec.replicas, 1, 1000))
+    problems.push(`${where}.replicas is out of range`);
   if (spec.revisionHistoryLimit !== undefined && !isInt(spec.revisionHistoryLimit, 0, 100)) {
     problems.push(`${where}.revisionHistoryLimit is out of range`);
   }
@@ -170,7 +182,8 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
     else {
       problems.push(...onlyKeys(`${where}.template.spec`, pod, ["containers"]));
       const containers = Array.isArray(pod.containers) ? pod.containers : [];
-      if (containers.length !== 1) problems.push(`${where}.template.spec.containers must hold one container`);
+      if (containers.length !== 1)
+        problems.push(`${where}.template.spec.containers must hold one container`);
       for (const c of containers) {
         const at = `${where}.template.spec.containers[]`;
         if (!isRecord(c)) {
@@ -186,7 +199,8 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
             if (!isRecord(port)) problems.push(`${at}.ports[] is not an object`);
             else {
               problems.push(...onlyKeys(`${at}.ports[]`, port, ["containerPort"]));
-              if (!isInt(port.containerPort, 1, 65535)) problems.push(`${at}.ports[].containerPort is out of range`);
+              if (!isInt(port.containerPort, 1, 65535))
+                problems.push(`${at}.ports[].containerPort is out of range`);
             }
           }
         }
@@ -205,8 +219,13 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
     const canary = strategy.canary;
     if (!isRecord(canary)) problems.push(`${where}.strategy.canary is not an object`);
     else {
-      problems.push(...onlyKeys(`${where}.strategy.canary`, canary, ["steps", "maxSurge", "maxUnavailable"]));
-      if (canary.maxSurge !== undefined && !(typeof canary.maxSurge === "string" && /^[1-9]\d?%$|^100%$/.test(canary.maxSurge))) {
+      problems.push(
+        ...onlyKeys(`${where}.strategy.canary`, canary, ["steps", "maxSurge", "maxUnavailable"])
+      );
+      if (
+        canary.maxSurge !== undefined &&
+        !(typeof canary.maxSurge === "string" && /^[1-9]\d?%$|^100%$/.test(canary.maxSurge))
+      ) {
         problems.push(`${where}.strategy.canary.maxSurge is not a percentage SCP authors`);
       }
       if (canary.maxUnavailable !== undefined && canary.maxUnavailable !== 0) {
@@ -223,7 +242,8 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
             continue;
           }
           problems.push(...onlyKeys(at, step, ["setWeight", "pause"]));
-          if ("setWeight" in step && !isInt(step.setWeight, 0, 100)) problems.push(`${at}.setWeight is out of range`);
+          if ("setWeight" in step && !isInt(step.setWeight, 0, 100))
+            problems.push(`${at}.setWeight is out of range`);
           if ("pause" in step) {
             const pause = step.pause;
             const timed =
@@ -263,8 +283,14 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
         problems.push(`${where}.strategy.blueGreen.scaleDownDelaySeconds is out of range`);
       }
       const named = [bg.activeService, bg.previewService];
-      if (serviceNames.length !== 2 || !named.every((n) => typeof n === "string" && serviceNames.includes(n)) || bg.activeService === bg.previewService) {
-        problems.push(`${where}.strategy.blueGreen must switch between the two Services it carries`);
+      if (
+        serviceNames.length !== 2 ||
+        !named.every((n) => typeof n === "string" && serviceNames.includes(n)) ||
+        bg.activeService === bg.previewService
+      ) {
+        problems.push(
+          `${where}.strategy.blueGreen must switch between the two Services it carries`
+        );
       }
     }
   } else if (serviceNames.length > 0) {
@@ -277,7 +303,9 @@ function checkService(where: string, spec: unknown): string[] {
   if (!isRecord(spec)) return [`${where}.spec is missing`];
   const problems = onlyKeys(`${where}.spec`, spec, ["type", "selector", "ports"]);
   if (spec.type !== "ClusterIP") {
-    problems.push(`${where}.spec.type must be ClusterIP — the carrier never exposes a Service outside the cluster`);
+    problems.push(
+      `${where}.spec.type must be ClusterIP — the carrier never exposes a Service outside the cluster`
+    );
   }
   problems.push(...stringMap(`${where}.spec.selector`, spec.selector));
   for (const port of Array.isArray(spec.ports) ? spec.ports : [null]) {
@@ -296,7 +324,10 @@ function checkService(where: string, spec: unknown): string[] {
 function checkManifests(manifests: unknown[], namespace: string): string[] {
   const problems: string[] = [];
   const rollouts = manifests.filter((m) => isRecord(m) && m.kind === "Rollout");
-  const services = manifests.filter((m) => isRecord(m) && m.kind === "Service") as Record<string, unknown>[];
+  const services = manifests.filter((m) => isRecord(m) && m.kind === "Service") as Record<
+    string,
+    unknown
+  >[];
   if (rollouts.length !== 1) problems.push("the carrier must carry exactly one Rollout");
   manifests.forEach((m, i) => {
     const where = `manifests[${i}]`;
@@ -305,20 +336,24 @@ function checkManifests(manifests: unknown[], namespace: string): string[] {
       return;
     }
     problems.push(...onlyKeys(where, m, ["apiVersion", "kind", "metadata", "spec"]));
-    const expectedVersion = m.kind === "Rollout" ? "argoproj.io/v1alpha1" : m.kind === "Service" ? "v1" : undefined;
+    const expectedVersion =
+      m.kind === "Rollout" ? "argoproj.io/v1alpha1" : m.kind === "Service" ? "v1" : undefined;
     if (!expectedVersion) {
       problems.push(
         `${where} is a ${String(m.kind)} — an authored Application carries only ${AUTHORED_MANIFEST_KINDS.map((k) => k.kind).join(" and ")}`
       );
       return;
     }
-    if (m.apiVersion !== expectedVersion) problems.push(`${where}.apiVersion must be ${expectedVersion}`);
+    if (m.apiVersion !== expectedVersion)
+      problems.push(`${where}.apiVersion must be ${expectedVersion}`);
     problems.push(...checkMetadata(where, m.metadata, "any-string", MANIFEST_ANNOTATIONS));
     if (isRecord(m.metadata) && m.metadata.namespace !== namespace) {
       problems.push(`${where} does not land in the Application's destination namespace`);
     }
     if (m.kind === "Rollout") {
-      const names = services.map((s) => (isRecord(s.metadata) ? s.metadata.name : undefined)).filter((n): n is string => typeof n === "string");
+      const names = services
+        .map((s) => (isRecord(s.metadata) ? s.metadata.name : undefined))
+        .filter((n): n is string => typeof n === "string");
       problems.push(...checkRolloutSpec(`${where}.spec`, m.spec, names));
     } else {
       problems.push(...checkService(where, m.spec));
@@ -337,13 +372,23 @@ export function authoredApplicationProblems(doc: unknown, authoring: AuthoringCo
   // No finalizers, no owner references: a `resources-finalizer` would make deleting the Application
   // cascade into the namespace's resources — a write SCP never asked for. No annotation beyond SCP's
   // own: Argo CD notifications subscribe webhooks by annotation.
-  problems.push(...checkMetadata("Application", doc.metadata, APPLICATION_LABELS, APPLICATION_ANNOTATIONS));
+  problems.push(
+    ...checkMetadata("Application", doc.metadata, APPLICATION_LABELS, APPLICATION_ANNOTATIONS)
+  );
   const spec = doc.spec;
   if (!isRecord(spec)) return [...problems, "Application.spec is missing"];
-  problems.push(...onlyKeys("Application.spec", spec, ["project", "destination", "source", "syncPolicy"]));
-  if (spec.project !== authoring.project) problems.push("Application.spec.project is not the authoring project");
-  if (spec.syncPolicy !== undefined && !(isRecord(spec.syncPolicy) && Object.keys(spec.syncPolicy).length === 0)) {
-    problems.push("Application.spec.syncPolicy must be empty — SCP triggers every sync and creates no namespace");
+  problems.push(
+    ...onlyKeys("Application.spec", spec, ["project", "destination", "source", "syncPolicy"])
+  );
+  if (spec.project !== authoring.project)
+    problems.push("Application.spec.project is not the authoring project");
+  if (
+    spec.syncPolicy !== undefined &&
+    !(isRecord(spec.syncPolicy) && Object.keys(spec.syncPolicy).length === 0)
+  ) {
+    problems.push(
+      "Application.spec.syncPolicy must be empty — SCP triggers every sync and creates no namespace"
+    );
   }
   const dest = spec.destination;
   let namespace = "";
@@ -352,19 +397,38 @@ export function authoredApplicationProblems(doc: unknown, authoring: AuthoringCo
     namespace = typeof dest.namespace === "string" ? dest.namespace : "";
     const keys = Object.keys(dest).sort().join(",");
     const inCluster = keys === "namespace,server" && dest.server === IN_CLUSTER_SERVER;
-    const named = keys === "name,namespace" && typeof dest.name === "string" && authoring.clusters.includes(dest.name);
+    const named =
+      keys === "name,namespace" &&
+      typeof dest.name === "string" &&
+      authoring.clusters.includes(dest.name);
     if (!inCluster && !named) {
-      problems.push("Application destination is not the in-cluster server or an allowlisted cluster");
+      problems.push(
+        "Application destination is not the in-cluster server or an allowlisted cluster"
+      );
     }
-    if (!namespace || FORBIDDEN_NAMESPACES.includes(namespace) || namespace.startsWith("kube-") || !authoring.namespaces.includes(namespace)) {
+    if (
+      !namespace ||
+      FORBIDDEN_NAMESPACES.includes(namespace) ||
+      namespace.startsWith("kube-") ||
+      !authoring.namespaces.includes(namespace)
+    ) {
       problems.push("Application destination namespace is not in the authoring allowlist");
     }
   }
   const source = spec.source;
   if (!isRecord(source)) return [...problems, "Application.spec.source is missing"];
-  problems.push(...onlyKeys("Application.spec.source", source, ["repoURL", "path", "chart", "targetRevision", "helm"]));
+  problems.push(
+    ...onlyKeys("Application.spec.source", source, [
+      "repoURL",
+      "path",
+      "chart",
+      "targetRevision",
+      "helm"
+    ])
+  );
   for (const key of ["repoURL", "path", "chart", "targetRevision"] as const) {
-    if (source[key] !== authoring[key]) problems.push(`Application source ${key} is not the registered carrier's`);
+    if (source[key] !== authoring[key])
+      problems.push(`Application source ${key} is not the registered carrier's`);
   }
   const helm = source.helm;
   if (!isRecord(helm)) return [...problems, "Application.spec.source.helm is missing"];

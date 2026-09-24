@@ -146,11 +146,23 @@ The deploy lane's causes:
 
 An authored Application's `status()` reports `stateRef = { revision, scpAuthoredApplicationJson }`. That is its own live manifest, with Argo CD's bookkeeping stripped. The next forward trigger records it as the target's `priorStateRef`, as it already did for any executor.
 
-A rollback re-authors that prior manifest through the same door and the same checks, then syncs with no revision.
+**What "the prior manifest" means (review round 2).** A rollback restores the prior release's **content**: its Rollout (image and steps) and its Services, as deployed. That content is re-authored **under the current derivation** — today's carrier, today's project, today's destination. It then goes through the same validator the forward path and the plugin run, against the execution-system's **current** `authoring`, and is synced with no revision.
 
-- **Why JSON text, not an object:** `priorStateRef` is depth-bounded (8) before it is stored, and an Application is deeper. A prior cut by the byte bound fails to parse and is refused.
-- **No prior** (the change was this target's first authored deployment): refused with `rollback_without_prior`.
-- **A prior authored for another target:** refused with `rollback_prior_foreign`.
+The prior Application is **not** re-sent verbatim, for two reasons:
+
+- **The carrier is a vehicle, not part of the release.** Pinning a rollback to the carrier revision it happened to ride would make rollback fail precisely after an operator upgrades the carrier (probe B2).
+- **The bound that holds is today's.** The prior's project, source and namespace were the operator's bound at the time. Re-sending them verbatim re-authored v1 into a namespace the operator had since withdrawn (probe B1).
+
+Refusals:
+
+| Cause | When |
+|---|---|
+| `rollback_without_prior` | there is no prior (the change was this target's first authored deployment) |
+| `rollback_prior_foreign` | the prior was authored for another org or target |
+| `rollback_destination_changed` | the prior's destination differs from today's; restoring it there would leave the current release in place |
+| `rollback_prior_outside_authoring` | the prior content no longer satisfies today's authoring |
+
+**Why JSON text, not an object:** `priorStateRef` is depth-bounded (8) before it is stored, and an Application is deeper. A prior cut by the byte bound fails to parse and is refused.
 
 ### D9 — Server-reserved trigger parameters: one table, one choke point (review finding 1)
 
@@ -230,6 +242,34 @@ For an Application that manages a Rollout:
 
 **A forward re-author waits while the prior canary is in flight.** The plugin refuses the trigger, and reconcile retries with backoff, rather than overwrite a live canary — a promote-by-overwrite. **A rollback does not wait:** undoing the in-flight release is its purpose.
 
+### D13 — Review round 2: config provenance, fresh config, terminal verdicts, a value-level guard
+
+1. **`authoring` comes from the execution-system ONLY.** An inline binding's config is tenant-writable (`object:write`), and a bound read from it is a bound the tenant chooses: the reviewer's probe named `payments`, `argocd` and `commanderscp` as allowed namespaces. So `SYSTEM_ONLY_CONFIG_KEYS` (`plugin-manifests.ts`, `argocd: ["authoring"]`) is enforced at both ends:
+   - Every inline binding write refuses it: at `upsertExecutorBinding`, which every write door passes through, and at the route and the IaC apply, which refuse earlier.
+   - The resolver strips it from any stored row, and the deploy lane never reads binding config.
+
+   This is ADR-0003's `allowInternalEgress` rule, and the model M28.2 uses for ops endpoints.
+2. **A running plugin sees the operator's CURRENT execution-system (a stale-config census).** The property: `host.start()` was idempotent per instance id, so every `execution-system:<id>` instance kept the properties it started with. A narrowed allowlist, a rotated token, a moved `serverUrl` or a revoked `allowInternalEgress` therefore changed nothing the plugin enforced. It is fixed at the host, for every plugin at once: `start` compares a canonical fingerprint of the whole resolved config (module, config, decrypted secrets, egress) and restarts the instance when it differs. An identical config is still a no-op.
+3. **A plugin's verdict is terminal.** `@scp/plugin-api` gains `TriggerRefused`, which crosses the process boundary as JSON-RPC code `-32010` (`PluginTriggerRefusedError`). `reconcile.ts` terminalises it as `executor_refused` with a Decision and an audit event, instead of a retry loop. The argocd plugin throws it for:
+   - a second-layer violation;
+   - a missing or unusable `authoring`;
+   - an Application it did not author;
+   - an identity mismatch.
+
+   HTTP failures and the in-flight canary wait stay retryable. Refusal messages name the property and never another tenant's identifiers.
+4. **The validator is value-level, and the server runs it too.** `authored-guard.ts` now pins values as well as keys:
+   - Application `apiVersion`/`kind` and SCP's label values; only SCP's own annotations, so no notifications webhook.
+   - The destination: exactly the in-cluster server, or a cluster name the operator listed in `authoring.clusters`. A place naming an unlisted cluster is refused server-side (`cluster_not_allowed`).
+   - The Rollout at `argoproj.io/v1alpha1`, with exactly one of canary or blueGreen, and a non-empty step list when present.
+   - Every step exactly one `setWeight`, or a `pause` with a timed duration.
+   - The container: `containerPort` only (no `hostPort`/`hostIP`), and pod-template labels only (no AppArmor/seccomp annotation).
+   - Services only alongside a blue-green that switches exactly those two.
+
+   `@scp/plugin-argocd` exports the validator, and the server runs it on everything it authors: forward (`rendered_outside_authoring`) and rollback (`rollback_prior_outside_authoring`). Both layers therefore apply one rule.
+5. **The reserved-key census discovers its lanes.** Every `*-trigger-parameters.ts` under `coordination/` is censused, following any `*-material` module it imports. A lane the census cannot read turns it red, so M28.2's lane is seen the day it lands.
+
+**Owner ruling (2026-09-24): blue-green stays WAVE-PLAN ONLY.** This is option (2) of the question this ADR raised. No component-level `BlueGreenRollout` and no `/v1` exception.
+
 ## Consequences
 
 - **Parity:**
@@ -240,6 +280,7 @@ For an Application that manages a Rollout:
 - **What changed for existing estates:**
   - Nothing, unless a component declares `properties.deployment` or a recipe names a reserved key.
   - D12 changes one thing for everyone: an imported Application whose Rollout is paused now stays `running` instead of `succeeded`.
+  - D13.2 changes one thing for every plugin: editing an execution-system (or a binding's resolved config) now restarts its running plugin instance on the next call, so the change takes effect. Before, it took effect only after a server restart.
 
 ## What this did NOT prove
 
@@ -252,12 +293,6 @@ For an Application that manages a Rollout:
 - **Argo CD 3.x fine-grained RBAC** is taken from upstream's v3.0 upgrade notes and was not measured. Those notes say `applications, update` no longer implies `update/*` on managed resources. D10's project whitelist is the bound that does not depend on it.
 - **The in-flight wait** is refuse-and-retry, so a canary that stays paused for longer than reconcile's retry backoff ceiling holds the next release until it settles. That is intended, and not separately bounded.
 
-## Open question for the owner
+## Resolved question
 
-**Component-level blue-green (a `BlueGreenRollout` construct).** Blue-green is authored today when a wave plan declares it. Declaring it per component needs `blueGreen` in the D12 wire schema, which oasdiff measures as a `/v1` response break on `/plans`. The options:
-
-1. Approve an `api-v2-exception`, and add the construct and the wire member.
-2. Keep blue-green at the wave-plan level.
-3. Add a separate, additive component property for authored strategies — a second declaration door, which D-a's single precedence rule argues against.
-
-**Recommended: (2) now, and (1) when there is a second reason to take a `/v1` exception**, so one exception covers both.
+**Component-level blue-green.** Declaring it per component would need `blueGreen` in the D12 wire schema, which oasdiff measures as a `/v1` response break on `/plans`. **The owner ruled on 2026-09-24 that blue-green stays at the wave-plan level** (D13).
