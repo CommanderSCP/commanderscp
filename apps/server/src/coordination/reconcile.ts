@@ -1337,7 +1337,10 @@ async function resolveRecipeRefusal(
   /** The plugin module this target's binding resolved to — for the OQ-5 managed-actuator refusal.
    *  Comes from `ensureExecutorInstanceStarted`'s return so it is the same answer the trigger will
    *  act on, never a second query. */
-  executorModule: PluginModule
+  executorModule: PluginModule,
+  /** M28.2 — the target is a host-reaching run (`isOpsLane`) on a module that is NOT itself
+   *  recipe-forbidden: `argo-workflows` on an SCP ops catalog template. */
+  hostReachingLane = false
 ): Promise<
   | {
       status: RefusedWaveTargetStatus;
@@ -1364,6 +1367,31 @@ async function resolveRecipeRefusal(
     };
   }
   const kind = recipe.recipe.trigger.kind;
+  // A HOST-REACHING RUN IS NEVER RECIPE-DRIVEN, whichever executor runs it (M28.2, ADR-0054). Its
+  // inventory, allowlist, principals and role are the bound (ADR-0052), and on the Argo path its
+  // Workflow parameters are a sealed one-time token — none of it is anything a campaign author may
+  // restate. Checked BEFORE the module refusal so the reason names the lane, not a managed actuator.
+  if (hostReachingLane && !isRecipeForbiddenExecutorModule(executorModule)) {
+    return {
+      status: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+      action: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION,
+      summary:
+        `this target runs CommanderSCP's host-operations catalog template on '${executorModule}', ` +
+        `and a campaign recipe may not drive a host-reaching run — its hosts, reach, principals and ` +
+        `run token are derived by the server, never authored`,
+      remediation:
+        `remove the recipe from this change (declare the operation in 'properties.ops' instead), or ` +
+        `remove this target from the campaign. A host-reaching run's parameters are the bound on what ` +
+        `it can touch (ADR-0052); letting a recipe supply them would let a campaign author choose ` +
+        `which machines receive a root certificate's worth of change`,
+      inputContext: {
+        recipe: { readable: true, kind },
+        executorModule,
+        managedActuator: false,
+        hostReachingLane: true
+      }
+    };
+  }
   // A recipe may not drive one of our own actuators. See docs/coordination.md §798.
   if (isRecipeForbiddenExecutorModule(executorModule)) {
     return {
@@ -1565,8 +1593,23 @@ async function triggerWaveTarget(
     const idempotencyKey = waveTargetId;
 
     // The recipe, and the two refusals that come with it. See docs/coordination.md §805.
+    //
+    // M28.2: a host-reaching run on an org's Argo Workflows is refused a recipe OUTRIGHT, exactly as
+    // `managed-ops` is. `argo-workflows` is not a managed module, so the module check alone would
+    // let a recipe reach the ops lane and restate a bound key or the sealed token; the lane is
+    // decided from the binding's template, so the binding is read here for that one question.
+    const hostReachingLane =
+      !isRollback && recipe.outcome !== "none"
+        ? await withTenantTx(db, orgId, async (tx) =>
+            isOpsLane(
+              executorModule,
+              (await resolveBindingForTarget(tx, orgId, targetObjectId, type)).binding
+                ?.externalRef ?? null
+            )
+          )
+        : false;
     const recipeRefusal = !isRollback
-      ? await resolveRecipeRefusal(client, recipe, executorModule)
+      ? await resolveRecipeRefusal(client, recipe, executorModule, hostReachingLane)
       : undefined;
     if (recipeRefusal) {
       const refused = await withTenantTx(db, orgId, (tx) =>

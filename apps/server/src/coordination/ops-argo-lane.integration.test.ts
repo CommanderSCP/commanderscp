@@ -14,7 +14,12 @@ import { ScpClient, ScpApiError } from "@scp/sdk";
 import type { TrustDomainId } from "@scp/schemas";
 import type { PluginContext, TriggerIntent, ExecutorPlugin } from "@scp/plugin-api";
 import { argoWorkflowsExecutorPlugin } from "@scp/plugin-argo-workflows";
-import { createManagedOpsExecutorPlugin, readServerDerivedMaterial } from "@scp/plugin-managed-ops";
+import {
+  RecipeOverrideRefused,
+  SERVER_DERIVED_OPS_KEYS,
+  createManagedOpsExecutorPlugin,
+  readServerDerivedMaterial
+} from "@scp/plugin-managed-ops";
 import type { ResolveRunnerLauncher, RunnerSpec } from "@scp/runner-launcher";
 import { createFakeExecutorPlugin } from "@scp/plugin-fake-executor";
 import {
@@ -25,7 +30,13 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { auditEvents, objects, opsRunRedemptions, sshCertificateIssuances } from "../db/schema.js";
+import {
+  auditEvents,
+  decisions,
+  objects,
+  opsRunRedemptions,
+  sshCertificateIssuances
+} from "../db/schema.js";
 import type { PluginHost, PluginHostInstanceConfig } from "../plugin-host/contract.js";
 import { getSecretValue } from "../secrets/secrets-repo.js";
 import { reconcileOrgTick } from "./reconcile.js";
@@ -35,6 +46,12 @@ import { deriveOpsRunMaterial, OpsMaterialUnavailable } from "./ops-run-material
 import { OpsDeclarationRefused, opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 import { generateEphemeralSshKeypair } from "./ssh-credentials.js";
 import { opsRedemptionRateLimiter } from "../routes/ops-run-redemptions.js";
+import { ARGO_OPS_DELIVERY_KEYS } from "./ops-run-redemption.js";
+import {
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+  WAVE_TARGET_RECIPE_UNREADABLE_STATUS
+} from "./campaign-recipe.js";
+import { getLatestPlanForChange } from "./plan-service.js";
 
 /**
  * M28.2 — HOST OPS THROUGH AN ORG'S ARGO WORKFLOWS, through the REAL reconcile loop and the REAL
@@ -588,23 +605,105 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     expect((await redemptionRows()).length).toBe(rowsBefore);
   });
 
-  it("a recipe naming a BOUND key is refused (ADR-0052) — nothing is submitted", async () => {
-    const product = await fleet();
-    await bindArgo(product);
-    const before = submissions.length;
-    await propose(product, {
-      ops: DECLARATION,
-      recipe: {
-        version: 1,
-        trigger: {
-          kind: "workflow_dispatch",
-          parameters: { opsInventory: "evil ansible_host=1.2.3.4" }
-        }
-      }
-    });
-    await tick();
-    expect(submissions.length).toBe(before);
+  /** Every key a recipe could use to restate the bound or the delivery: the closed ADR-0052 set
+   *  and the two Argo delivery keys. Enumerated from the SAME constants production refuses with, so
+   *  a key added there is covered here without editing this file. */
+  const RESERVED_KEYS = [...SERVER_DERIVED_OPS_KEYS, ...ARGO_OPS_DELIVERY_KEYS];
+
+  it("the reserved set is EXACTLY these seven keys — shrinking a constant would silently drop a case", () => {
+    expect([...RESERVED_KEYS].sort()).toEqual(
+      [
+        "opsCredentialSecretKey",
+        "opsEgressAllowlist",
+        "opsInventory",
+        "opsPrincipals",
+        "opsRole",
+        "opsRunId",
+        "opsRunTokenSealed"
+      ].sort()
+    );
   });
+
+  it.each(RESERVED_KEYS)(
+    "a recipe restating `%s` on the Argo ops lane is REFUSED OUTRIGHT — terminal, a Decision, nothing submitted",
+    async (key) => {
+      const product = await fleet();
+      await bindArgo(product);
+      const before = submissions.length;
+      const change = await propose(product, {
+        ops: DECLARATION,
+        recipe: {
+          version: 1,
+          trigger: { kind: "workflow_dispatch", parameters: { [key]: "restated-by-recipe" } }
+        }
+      });
+      await tick();
+      expect(submissions.length, "a recipe-driven host-reaching run must never be submitted").toBe(
+        before
+      );
+      const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        getLatestPlanForChange(tx, org.orgId, change.id)
+      );
+      const target = plan!.waves
+        .flatMap((w) => w.targets)
+        .find((t) => t.targetObjectId === product);
+      const refusals = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx
+          .select()
+          .from(decisions)
+          .where(
+            and(
+              eq(decisions.orgId, org.orgId),
+              eq(decisions.subjectId, change.id),
+              eq(decisions.kind, "wave_target")
+            )
+          )
+      );
+      // TWO DOORS, and which one fires is itself asserted. A key whose NAME looks like a secret
+      // (`opsCredentialSecretKey`, `opsRunTokenSealed`) is refused by the recipe schema before the
+      // lane is ever consulted (packages/schemas/src/campaigns.ts) — terminal `recipe_unreadable`.
+      // Every other key reaches the host-reaching-lane refusal this increment adds.
+      if (/secret|token/i.test(key)) {
+        expect(target!.status).toBe(WAVE_TARGET_RECIPE_UNREADABLE_STATUS);
+        expect(refusals.length, "the refusal must carry a Decision").toBeGreaterThan(0);
+      } else {
+        expect(target!.status).toBe(WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS);
+        expect(
+          refusals.some(
+            (d) => (d.inputContext as Record<string, unknown>)["hostReachingLane"] === true
+          ),
+          "the refusal must carry a Decision naming the host-reaching lane"
+        ).toBe(true);
+      }
+    }
+  );
+
+  it.each(RESERVED_KEYS)(
+    "the claim-time layer ALSO refuses a recipe restating `%s`, on both executors (defence in depth)",
+    async (key) => {
+      const product = await fleet();
+      const change = await propose(product);
+      for (const pluginModule of ["managed-ops", "argo-workflows"]) {
+        const refused = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+          opsLaneTriggerParameters(tx, {
+            orgId: org.orgId,
+            targetObjectId: product,
+            changeObjectId: change.id,
+            pluginModule,
+            externalRef: pluginModule === "argo-workflows" ? "scp-ops-v1" : null,
+            waveTargetId: randomUUID(),
+            executorConfig: { opsSealingPublicKey: sealingPublicPem },
+            recipeParameters: { [key]: "restated-by-recipe" },
+            masterKey: server.deps.config.secretsMasterKey
+          })
+        ).catch((e: Error) => e);
+        expect(refused, `${pluginModule} must refuse a recipe restating ${key}`).toBeInstanceOf(
+          RecipeOverrideRefused
+        );
+        expect((refused as Error).message).toContain(key);
+      }
+    }
+  );
 
   it("REFUSALS ARE IDENTICAL on both paths: no declared op, and an unenrolled domain", async () => {
     const product = await fleet();

@@ -163,6 +163,18 @@ adds is a second way for a certificate to come to exist, and its exposure is:
   new redemption; the old row expires unused, and is visible as never redeemed.
 - **Refusals leave the wave target pending with backoff**, as Mode C's already did. Neither path
   terminalises on a derivation refusal; that is unchanged and identical.
-- **ADR-0052 is now wired on this path.** `argo-workflows` is not recipe-forbidden, so a recipe can
-  reach the ops lane here; `assertNoRecipeOverride` (which had no production caller) now refuses a
-  recipe naming a bound key or a delivery key.
+- **A host-reaching run is never recipe-driven, on either executor.** `argo-workflows` is not in
+  `RECIPE_FORBIDDEN_EXECUTOR_MODULES`, and a change's `properties.recipe.trigger.parameters` flows
+  verbatim into `TriggerIntent.parameters` (the campaign recipe guard does not see directly proposed
+  changes). So on the Argo ops lane a recipe is refused **outright** at the recipe door, exactly as
+  for `managed-ops`: the wave target terminalises with a Decision (`hostReachingLane: true`) and
+  nothing is submitted. Behind it, the claim-time layer still refuses any recipe naming a reserved
+  key (`assertNoRecipeOverride`, which had no production caller before this path), and ops
+  parameters are spread last.
+- **The server-reserved trigger-parameter keys of this lane**, for any shared registry of such keys
+  (M28.4 is adding one; register these there when it lands):
+  - the ADR-0052 bound — `opsRole`, `opsInventory`, `opsEgressAllowlist`, `opsPrincipals`,
+    `opsCredentialSecretKey` (`SERVER_DERIVED_OPS_KEYS`);
+  - the Argo delivery keys — `opsRunTokenSealed`, `opsRunId` (`ARGO_OPS_DELIVERY_KEYS`).
+  Each is covered by its own case in `ops-argo-lane.integration.test.ts`, enumerated from those
+  constants.
