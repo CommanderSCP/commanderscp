@@ -36,7 +36,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 const { ChangeDetailPage } = await import("./change-detail");
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 
-function target(id: string, observed: unknown) {
+function target(id: string, observed: unknown, pluginModule = "argo-workflows") {
   return {
     id: `${id.slice(0, 8)}-0000-4000-8000-000000000000`,
     waveId: "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
@@ -45,6 +45,7 @@ function target(id: string, observed: unknown) {
     category: "infrastructure",
     type: "infrastructure",
     executorPluginId: "argo-workflows:1",
+    executor: { basis: "triggered", pluginModule },
     executorRef: { externalId: "wf::uid" },
     observed,
     attempt: 1,
@@ -149,6 +150,22 @@ describe("change detail: Apply this plan", () => {
     expect(view.byTestId("applies-plan").textContent).toContain(
       "7b8c9d0e-1f2a-4b3c-8d4e-5f6a7b8c9d0e"
     );
+    view.unmount();
+  });
+
+  it("is ABSENT for a plan the Argo lane did not run — managed-iac's evidence has no apply gate yet", () => {
+    const data = explain();
+    const wave = (data.plan as unknown as { waves: { targets: unknown[] }[] }).waves[0]!;
+    wave.targets = [
+      target(
+        PLANNED_TARGET,
+        { plan: { ref: "b".repeat(64), add: 1, change: 0, destroy: 0 } },
+        "managed-iac"
+      )
+    ];
+    const view = renderPage(data);
+    expect(view.html()).toContain("observed-plan");
+    expect(view.html()).not.toContain('data-testid="apply-plan-button"');
     view.unmount();
   });
 

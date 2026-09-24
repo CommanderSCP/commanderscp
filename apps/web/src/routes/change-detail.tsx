@@ -178,7 +178,15 @@ export function ChangeDetailPage(): React.JSX.Element {
   const appliesPlan = infraDeclaration.success ? infraDeclaration.data.applyPlan : null;
   const plannedTargets = waves
     .flatMap((w) => w.targets)
-    .filter((t) => t.category === "infrastructure" && t.observed?.plan?.ref)
+    // ONLY a plan the apply gate serves: one the Argo Workflows lane ran. managed-iac reports the
+    // same plan evidence, and offering "Apply" for it would propose an apply the server refuses.
+    .filter(
+      (t) =>
+        t.category === "infrastructure" &&
+        t.observed?.plan?.ref &&
+        t.executor?.basis === "triggered" &&
+        t.executor.pluginModule === "argo-workflows"
+    )
     .map((t) => t.targetObjectId);
   const canApplyPlan =
     change.state === "accepted" &&
