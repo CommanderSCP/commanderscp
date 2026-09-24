@@ -28,13 +28,14 @@ import {
   WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
   WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS
 } from "./campaign-recipe.js";
-import { WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS } from "./reserved-trigger-parameters.js";
+import {
+  WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS,
+  WAVE_TARGET_DESTINATION_REFUSED_STATUS,
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS,
+  WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS
+} from "./trigger-parameter-refusal.js";
 
 /** The wave-target access the reconcile loop needs. See docs/coordination.md §1051. */
-
-/** Terminal status for a deployment SCP was asked to author and could not (ADR-0055). Defined here,
- *  beside the set it joins, so the deploy lane never has to be imported to read the set. */
-export const WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS = "deployment_authoring_refused";
 
 export type WaveRow = typeof changeWaves.$inferSelect;
 export type WaveTargetRow = typeof changeWaveTargets.$inferSelect;
@@ -502,7 +503,11 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   // declaration could not be authored (`deploy-lane-trigger-parameters.ts`).
   WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS,
   // M28.4 fix round (ADR-0055 D9) — a recipe named a server-reserved trigger parameter.
-  WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS
+  WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS,
+  // M28.1 (ADR-0053) — a trigger-parameter derivation that refused. Before this they threw inside
+  // the claim transaction and were retried every tick with no Decision at all.
+  WAVE_TARGET_DESTINATION_REFUSED_STATUS,
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
 ] as const;
 export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
 

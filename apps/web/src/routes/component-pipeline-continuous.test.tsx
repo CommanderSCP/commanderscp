@@ -855,6 +855,20 @@ describe("the REGISTRY node names the registry this component publishes to, at t
     );
   });
 
+  it("declared formats (M28.1) → `serves oci, rpm`; none declared → nothing claimed; malformed → says so", () => {
+    const unified = renderToStaticMarkup(
+      <RegistryNodeForTest registry={registryDeclared({ packageFormats: ["oci", "rpm"] })} />
+    );
+    expect(unified).toMatch(/data-testid="pipeline-registry-formats"[^>]*> · serves oci, rpm</);
+    // The build lane reads "declared nothing" as ["oci"]; the VIEW does not put words in its mouth.
+    const silent = renderToStaticMarkup(<RegistryNodeForTest registry={registryDeclared()} />);
+    expect(silent).not.toContain("pipeline-registry-formats");
+    const malformed = renderToStaticMarkup(
+      <RegistryNodeForTest registry={registryDeclared({ packageFormats: [] })} />
+    );
+    expect(malformed).toContain("serves nothing readable");
+  });
+
   it("declared with no url → plain text, no link (a node is clickable exactly when there is somewhere real to go)", () => {
     const html = renderToStaticMarkup(
       <RegistryNodeForTest registry={registryDeclared({ url: null, repository: null })} />

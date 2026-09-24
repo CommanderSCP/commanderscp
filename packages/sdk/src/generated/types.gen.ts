@@ -7664,6 +7664,7 @@ export type GetComponentPipelineResponses = {
             url: string | null;
             repository: string | null;
             edgeCount: number;
+            packageFormats?: Array<string> | null;
         } | null;
         artifact?: {
             changeId: string;

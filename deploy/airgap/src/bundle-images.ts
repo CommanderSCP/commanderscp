@@ -139,6 +139,18 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     flagDescription: "build catalog's git image (source checkout)",
     doc: "build catalog's git client, for the pinned source checkout"
   },
+  // scp-build-rpm-v1's builder (M28.1, ADR-0053). FIRST-PARTY — no maintained public image ships
+  // rpmbuild — so it is built from apps/builder-rpm like the runners are and, unlike the two
+  // above, has no upstream default in the chart at all: install.sh setting it is what renders the
+  // template.
+  {
+    name: "scp-builder-rpm",
+    optionStem: "builder-rpm",
+    defaultRef: "scp-builder-rpm:dev",
+    defaultSource: "docker-daemon",
+    flagDescription: "scp-build-rpm-v1's builder image (rpmbuild, EL9) to bundle",
+    doc: "build catalog's RPM builder (scp-build-rpm-v1) — first-party, apps/builder-rpm"
+  },
   {
     name: "argo-events",
     optionStem: "argo-events",

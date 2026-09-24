@@ -19,6 +19,11 @@ import { changePlans, changeWaves, objects } from "../db/schema.js";
 import { listRolloutsForComponents } from "../coordination-as-code/rollout-convergence-repo.js";
 import { ociDigestsOfSourceRef } from "./artifact-facts.js";
 import { parseTopologyWaves } from "./topology-waves.js";
+import {
+  TriggerParameterRefusal,
+  WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION,
+  WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS
+} from "./trigger-parameter-refusal.js";
 
 /**
  * M28.4 — WHAT A DEPLOY-LANE TRIGGER TELLS ARGO CD WHEN SCP AUTHORS THE DEPLOYMENT (ADR-0055).
@@ -34,7 +39,7 @@ import { parseTopologyWaves } from "./topology-waves.js";
  * `properties.deployment`. Everything else returns `undefined` and the trigger is byte-identical
  * to the import-and-coordinate path (Mode A): an Application SCP did not author is synced, never
  * written. (A RECIPE cannot supply one instead — `scpAuthoredApplication` is a server-reserved
- * parameter, refused at `resolveRecipeRefusal`; `reserved-trigger-parameters.ts`.)
+ * parameter, refused at the one choke point in `reconcile.ts`; `reserved-trigger-parameters.ts`.)
  *
  * WHERE THE STEPS COME FROM (owner decision 2026-09-23). The component's own D12 declaration
  * (`component_rollouts`, target class `cluster` — the `CanaryRollout` / `RollingRollout` /
@@ -47,13 +52,16 @@ import { parseTopologyWaves } from "./topology-waves.js";
  * is a Rollout nobody is allowed to finish.
  */
 
-export class DeploymentAuthoringRefused extends Error {
-  constructor(
-    message: string,
-    readonly inputContext: Record<string, unknown> = {}
-  ) {
-    super(message);
-    this.name = "DeploymentAuthoringRefused";
+/** The deploy lane's refusal, through M28.1's typed channel (`trigger-parameter-refusal.ts`):
+ *  `reconcile.ts` terminalises it with a Decision and an audit event, never a retry. */
+export class DeploymentAuthoringRefused extends TriggerParameterRefusal {
+  readonly status = WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS;
+  readonly action = WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION;
+  constructor(message: string, inputContext: Record<string, unknown> = {}) {
+    super(message, {
+      remediation: "correct the declaration named above, then cancel/rollback/re-propose the change",
+      inputContext
+    });
   }
 }
 
@@ -65,8 +73,6 @@ export const AUTHORED_APPLICATION_PARAMETER = "scpAuthoredApplication";
  *  live manifest (JSON text) — the plugin's `PRIOR_AUTHORED_APPLICATION_KEY`, pinned equal by test. */
 export const PRIOR_AUTHORED_APPLICATION_KEY = "scpAuthoredApplicationJson";
 
-export const WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION =
-  "change.wave_target.deployment_authoring_refused";
 
 /** Argo CD's in-cluster destination — the default when the place names no registered cluster. */
 export const IN_CLUSTER_SERVER = "https://kubernetes.default.svc";

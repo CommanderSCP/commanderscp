@@ -64,8 +64,7 @@ import {
   markWaveTerminal,
   observedStateFrom,
   originalChangeDispatchedTarget,
-  updateWaveTargetObserved,
-  WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS
+  updateWaveTargetObserved
 } from "./wave-targets-repo.js";
 import {
   DEAD_TARGET_REMEDIATION,
@@ -124,19 +123,13 @@ import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook
 import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
+import { TriggerParameterRefusal } from "./trigger-parameter-refusal.js";
 import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 import {
-  DeploymentAuthoringRefused,
-  WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION,
   authoredRollbackTrigger,
   deployLaneTriggerParameters
 } from "./deploy-lane-trigger-parameters.js";
-import {
-  SERVER_RESERVED_TRIGGER_PARAMETERS,
-  WAVE_TARGET_RECIPE_RESERVED_PARAMETER_AUDIT_ACTION,
-  WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS,
-  reservedKeysIn
-} from "./reserved-trigger-parameters.js";
+import { recipeReservedParameterRefusal } from "./reserved-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1377,27 +1370,6 @@ async function resolveRecipeRefusal(
     };
   }
   const kind = recipe.recipe.trigger.kind;
-  // M28.4 fix round (ADR-0055 D9) — THE ONE CHOKE POINT for authored parameters. A recipe may not
-  // name a key a server lane derives as a bound, whether or not that lane derived one this time: an
-  // omitted bound filled in by a recipe is how an arbitrary Application reached Argo CD.
-  const reserved = reservedKeysIn(recipeTriggerParameters(recipe.recipe));
-  if (reserved.length > 0) {
-    return {
-      status: WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS,
-      action: WAVE_TARGET_RECIPE_RESERVED_PARAMETER_AUDIT_ACTION,
-      summary:
-        `this change's recipe supplies ${reserved.map((k) => `'${k}'`).join(", ")}, which only ` +
-        `CommanderSCP's own lanes may derive (${reserved
-          .map((k) => SERVER_RESERVED_TRIGGER_PARAMETERS[k])
-          .join("; ")})`,
-      remediation:
-        `remove those keys from the recipe's trigger parameters. What they bound is declared on the ` +
-        `graph (a component's deployment, its publishes_to registry, an operation's inventory) and ` +
-        `derived by the server — an authored document restating it would replace the bound with an ` +
-        `assertion`,
-      inputContext: { recipe: { readable: true, kind }, reservedParameters: reserved }
-    };
-  }
   // A recipe may not drive one of our own actuators. See docs/coordination.md §798.
   if (isRecipeForbiddenExecutorModule(executorModule)) {
     return {
@@ -1439,6 +1411,13 @@ async function resolveRecipeRefusal(
 }
 
 /** Triggers one wave target. See docs/coordination.md §799. */
+/** Turn a typed refusal into a value and rethrow everything else — an unexpected error is not a
+ *  verdict, and must keep taking the retry path rather than terminalising a target. */
+function asRefusal(err: unknown): TriggerParameterRefusal {
+  if (err instanceof TriggerParameterRefusal) return err;
+  throw err;
+}
+
 async function triggerWaveTarget(
   db: Db,
   orgId: string,
@@ -1633,6 +1612,31 @@ async function triggerWaveTarget(
       if (refused) return;
     }
 
+    // A DERIVATION THAT REFUSED (ADR-0053). Terminal, with a Decision and an audit event, through
+    // the same `blockWaveTarget` every other refusal here uses — never the catch-and-retry below,
+    // which is for errors, and which re-fired a verdict every tick explained only by a log line.
+    // `trigger()` is never reached: returning null from the claim transaction is the early exit.
+    const refuseTrigger = (tx: TenantTx, refusal: TriggerParameterRefusal) =>
+      blockWaveTarget(tx, {
+        orgId,
+        change,
+        waveId,
+        waveTargetId,
+        targetObjectId,
+        status: refusal.status,
+        action: refusal.action,
+        summary: refusal.message,
+        remediation: refusal.remediation,
+        reason: refusal.message,
+        inputContext: {
+          waveId,
+          targetObjectId,
+          requestedType: type,
+          executorPluginId: instanceId,
+          ...refusal.inputContext
+        }
+      });
+
     const claim = await withTenantTx(db, orgId, async (tx) => {
       let kind: TriggerIntent["kind"];
       let priorStateRef: unknown = null;
@@ -1641,6 +1645,15 @@ async function triggerWaveTarget(
         !isRollback && recipe.outcome === "recipe"
           ? recipeTriggerParameters(recipe.recipe)
           : undefined;
+      // M28.4 fix round (ADR-0055 D9) — THE ONE CHOKE POINT for authored parameters, and the only
+      // place a recipe's parameters enter a trigger. A recipe may not name a key a server lane
+      // derives as a bound — whether or not that lane derives one this time: an omitted bound filled
+      // in by a recipe is how an arbitrary Application reached Argo CD. Before any lane runs.
+      const reservedRefusal = recipeReservedParameterRefusal(recipeParameters, type);
+      if (reservedRefusal) {
+        await refuseTrigger(tx, reservedRefusal);
+        return null;
+      }
       // BUILD-LANE SOURCE IDENTITY. Until this, a build trigger carried `targetRef` and nothing
       // else unless a campaign recipe supplied parameters by hand — so a shipped, parameterised
       // build template had no repo, no commit and no destination to work from. The test lane
@@ -1656,8 +1669,15 @@ async function triggerWaveTarget(
             targetObjectId,
             type,
             sourceRef: change.sourceRef,
-            changeObjectId: change.objectId
-          });
+            changeObjectId: change.objectId,
+            // Read only to REFUSE a recipe that restates a derived destination (ADR-0053 §4a) —
+            // the one narrowing of "the recipe wins" below.
+            recipeParameters
+          }).catch(asRefusal);
+      if (sourceParameters instanceof TriggerParameterRefusal) {
+        await refuseTrigger(tx, sourceParameters);
+        return null;
+      }
       // HOST-REACHING MATERIAL (M27.9). This call is the whole of the seam: M27 built
       // `deriveOpsRunMaterial`'s parts and `managed-ops`'s refusal to run without them, and nothing
       // in between, so a census for production callers found the producers at ZERO and every gate
@@ -1676,11 +1696,20 @@ async function triggerWaveTarget(
               changeObjectId: change.objectId,
               pluginModule: executorModule,
               masterKey
-            });
+            }).catch(asRefusal);
+      if (opsParameters instanceof TriggerParameterRefusal) {
+        await refuseTrigger(tx, opsParameters);
+        return null;
+      }
       // The RECIPE WINS on a key collision, deliberately: a recipe is an operator's explicit
       // instruction for this campaign, and silently overriding it with a derived value would make
       // the authored document a lie. Merged rather than either/or so a recipe-driven build still
       // gets the source identity it would otherwise have to restate.
+      //
+      // EXCEPT any SERVER-RESERVED key — a build destination (ADR-0053 §4a), host-reaching material
+      // (ADR-0052), the authored Application (ADR-0055) — which a recipe cannot reach this merge
+      // carrying: the choke point above refuses it (`reserved-trigger-parameters.ts`), and
+      // `buildLaneTriggerParameters` keeps its own destination refusal as a second layer.
       //
       // EXCEPT for host-reaching material, which is spread LAST and therefore wins (ADR-0052).
       // These are not conveniences an operator might reasonably restate: `opsInventory` is which
@@ -1729,8 +1758,9 @@ async function triggerWaveTarget(
             : null
         });
       } catch (err) {
-        if (err instanceof DeploymentAuthoringRefused) {
-          return { refused: { reason: err.message, inputContext: err.inputContext } } as const;
+        if (err instanceof TriggerParameterRefusal) {
+          await refuseTrigger(tx, err);
+          return null;
         }
         throw err;
       }
@@ -1804,8 +1834,9 @@ async function triggerWaveTarget(
         try {
           deployTrigger = authoredRollbackTrigger(priorStateRef, authored, { orgId, targetObjectId });
         } catch (err) {
-          if (err instanceof DeploymentAuthoringRefused) {
-            return { refused: { reason: err.message, inputContext: err.inputContext } } as const;
+          if (err instanceof TriggerParameterRefusal) {
+            await refuseTrigger(tx, err);
+            return null;
           }
           throw err;
         }
@@ -1813,49 +1844,18 @@ async function triggerWaveTarget(
       const externalRef = deployTrigger?.targetRef ?? binding?.externalRef ?? null;
       // Spread LAST, the ops lane's rule and for its reason: the authored Application IS the bound on
       // what gets deployed. (A recipe naming the key never gets this far — it is server-reserved,
-      // refused in `resolveRecipeRefusal`.)
+      // refused at the choke point above.)
       const deployParameters = deployTrigger
         ? { ...(parameters ?? {}), ...deployTrigger.parameters }
         : parameters;
 
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
       return claimed
-        ? { kind, priorStateRef, externalRef, parameters: deployParameters, refused: undefined }
+        ? { kind, priorStateRef, externalRef, parameters: deployParameters }
         : null;
     });
 
     if (!claim) return; // no longer pending/triggering — another tick already handled it.
-    if (claim.refused !== undefined) {
-      const { reason, inputContext: refusalContext } = claim.refused;
-      // Terminal, audited, and before `trigger()` — a deployment SCP cannot author is never sent to
-      // Argo CD in some partial form, and never falls through to syncing an Application that does
-      // not exist.
-      await withTenantTx(db, orgId, (tx) =>
-        blockWaveTarget(tx, {
-          orgId,
-          change,
-          waveId,
-          waveTargetId,
-          targetObjectId,
-          status: WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS,
-          action: WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION,
-          summary: `SCP was asked to author the Argo CD deployment of ${targetObjectId} and refused: ${reason}`,
-          remediation:
-            "correct the declaration named above, then cancel/rollback/re-propose the change",
-          reason,
-          inputContext: {
-            waveId,
-            targetObjectId,
-            requestedType: type,
-            executorPluginId: instanceId,
-            gate: "deployment_authoring",
-            ...refusalContext
-          }
-        })
-      );
-      return;
-    }
-
     // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
     let ref;
     try {
