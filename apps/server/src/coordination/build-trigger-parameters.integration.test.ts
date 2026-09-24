@@ -9,8 +9,14 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { eq } from "drizzle-orm";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { BuildDestinationRefused, buildLaneTriggerParameters } from "./build-trigger-parameters.js";
+import { decisions } from "../db/schema.js";
+import {
+  BuildDestinationRefused,
+  BuildSourceRefused,
+  buildLaneTriggerParameters
+} from "./build-trigger-parameters.js";
 
 /** WHAT A BUILD-LANE TRIGGER TELLS ITS EXECUTOR.
  *
@@ -316,6 +322,93 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
       }
     }
   );
+
+  // M28.3 verification (ADR-0053 addendum) — WHOSE CODE IS BUILT. The build runs the repo's own
+  // build definition and pushes the result with the operator's credentials, so the repo must be one
+  // the component declares. The property the infra lane had (a proposer-chosen repo run with
+  // operator credentials), census'd here.
+  describe("the source repo must be one the component DECLARES", () => {
+    async function declaredComponent(pattern: string | null, type = "image") {
+      const id = await componentPublishingTo("acme/widget");
+      await admin.changeSources.createMapping("github", {
+        ...(pattern === null ? {} : { repoPattern: pattern }),
+        component: id,
+        type
+      } as Parameters<typeof admin.changeSources.createMapping>[1]);
+      return id;
+    }
+    const decisionsFor = (changeObjectId: string) =>
+      withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx.select().from(decisions).where(eq(decisions.subjectId, changeObjectId))
+      );
+
+    it("a repo matching the component's source mapping builds", async () => {
+      const id = await declaredComponent("AgentKitProject/*");
+      expect(await resolve(id, SOURCE_REF)).toMatchObject({ sourceRepo: SOURCE_REF.repo });
+    });
+
+    it("a repo the component does NOT declare is REFUSED — never built with the push credentials", async () => {
+      const id = await declaredComponent("acme/widget");
+      const err = await resolve(id, { ...SOURCE_REF, repo: "attacker/evil" }).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(BuildSourceRefused);
+      expect((err as BuildSourceRefused).inputContext).toMatchObject({
+        gate: "build_source_declared",
+        requestedRepos: ["attacker/evil"],
+        declaredRepoPatterns: ["acme/widget"]
+      });
+    });
+
+    it("a RECIPE's sourceRepo is checked too — it wins the merge in reconcile", async () => {
+      const id = await declaredComponent("AgentKitProject/*");
+      const err = await resolve(id, SOURCE_REF, "image", { sourceRepo: "attacker/evil" }).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(BuildSourceRefused);
+    });
+
+    it("a mapping of ANOTHER Type does not declare this Type's source", async () => {
+      // The component's gitops repo (a `configuration` mapping) is not where its image builds from.
+      const id = await declaredComponent("acme/gitops", "configuration");
+      const changeObjectId = randomUUID();
+      const params = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        buildLaneTriggerParameters(tx, {
+          orgId: org.orgId,
+          targetObjectId: id,
+          type: "image",
+          sourceRef: SOURCE_REF,
+          changeObjectId
+        })
+      );
+      expect(params).toMatchObject({ sourceRepo: SOURCE_REF.repo });
+      expect(
+        (await decisionsFor(changeObjectId)).find(
+          (d) => (d.inputContext as { gate?: string }).gate === "build_source_undeclared"
+        )?.verdict
+      ).toBe("warn");
+    });
+
+    it("NO declared source — the live estate's case — still builds, with a WARN Decision naming the repo", async () => {
+      const id = await componentPublishingTo("acme/widget");
+      const changeObjectId = randomUUID();
+      const params = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        buildLaneTriggerParameters(tx, {
+          orgId: org.orgId,
+          targetObjectId: id,
+          type: "image",
+          sourceRef: SOURCE_REF,
+          changeObjectId
+        })
+      );
+      expect(params).toMatchObject({ sourceRepo: SOURCE_REF.repo });
+      const warn = (await decisionsFor(changeObjectId)).find(
+        (d) => (d.inputContext as { gate?: string }).gate === "build_source_undeclared"
+      );
+      expect(warn?.verdict).toBe("warn");
+      expect(warn?.inputContext).toMatchObject({ requestedRepos: [SOURCE_REF.repo] });
+    });
+  });
 
   it("tolerates a sourceRef that is not an object at all", async () => {
     // Replicated rows from an older peer, and changes proposed with a hand-supplied `sourceRef`,
