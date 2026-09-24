@@ -345,6 +345,76 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
   return events;
 }
 
+/** The label on every Application SCP authors (`@scp/schemas` `SCP_AUTHORED_LABEL_KEY` — this
+ *  package takes no `@scp/schemas` dependency, so the literal is duplicated and a server test pins
+ *  the two equal). It is the ONLY licence to update an Application: one without it is somebody
+ *  else's, and SCP refuses to overwrite it. */
+export const SCP_AUTHORED_LABEL_KEY = "commanderscp.io/authored";
+const SCP_AUTHORED_LABEL_VALUE = "true";
+
+/** The trigger parameter carrying an SCP-authored Application (ADR-0055). */
+export const AUTHORED_APPLICATION_PARAMETER = "scpAuthoredApplication";
+
+function authoredLabelOf(doc: unknown): string | undefined {
+  const labels = (doc as { metadata?: { labels?: Record<string, unknown> } } | undefined)?.metadata
+    ?.labels;
+  const v = labels?.[SCP_AUTHORED_LABEL_KEY];
+  return typeof v === "string" ? v : undefined;
+}
+
+/**
+ * M28.4 — THE CREATE HALF OF IMPORT-OR-CREATE (ADR-0055). Makes the Application SCP authored exist
+ * with exactly the spec the server derived, then returns so `trigger` syncs it as it syncs any
+ * other. This is a write to ARGO CD's API — its input, the desired state it is asked to sync — and
+ * never to the cluster: the Rollout inside reaches Kubernetes only when Argo CD's own controller,
+ * holding its own credentials, applies it. After that SCP reads the Rollout and nothing else
+ * (ADR-0008 §3): no call in this file names a Rollout resource with a write verb, and the
+ * recording stand-in in `@scp/plugin-testkit` fails any test in which one does.
+ */
+async function ensureAuthoredApplication(
+  ctx: PluginContext,
+  config: ArgoCdConfig,
+  appName: string,
+  doc: unknown
+): Promise<void> {
+  const d = doc as { kind?: unknown; metadata?: { name?: unknown } } | null;
+  if (!d || typeof d !== "object" || d.kind !== "Application" || d.metadata?.name !== appName) {
+    throw new Error(
+      `argocd trigger: the authored Application must be kind Application named '${appName}' (the trigger's targetRef)`
+    );
+  }
+  if (authoredLabelOf(doc) !== SCP_AUTHORED_LABEL_VALUE) {
+    throw new Error(
+      `argocd trigger: an authored Application must carry ${SCP_AUTHORED_LABEL_KEY}=${SCP_AUTHORED_LABEL_VALUE}`
+    );
+  }
+  const path = `/api/v1/applications/${encodeURIComponent(appName)}`;
+  const current = await apiRequest(ctx, config, "GET", path);
+  if (current.status === 404) {
+    const created = await apiRequest(ctx, config, "POST", "/api/v1/applications", doc);
+    if (created.status < 200 || created.status >= 300) {
+      throw new Error(`argocd trigger: creating Application '${appName}' returned HTTP ${created.status}`);
+    }
+    ctx.logger.info("argocd: authored Application created", { appName });
+    return;
+  }
+  if (current.status < 200 || current.status >= 300) {
+    throw new Error(`argocd trigger: reading Application '${appName}' returned HTTP ${current.status}`);
+  }
+  if (authoredLabelOf(current.body) !== SCP_AUTHORED_LABEL_VALUE) {
+    throw new Error(
+      `argocd trigger: Application '${appName}' already exists and was not authored by CommanderSCP ` +
+        `(no ${SCP_AUTHORED_LABEL_KEY} label) — refusing to overwrite it. Import it instead, or name ` +
+        `a different Application in the binding's externalRef.`
+    );
+  }
+  const updated = await apiRequest(ctx, config, "POST", "/api/v1/applications?upsert=true", doc);
+  if (updated.status < 200 || updated.status >= 300) {
+    throw new Error(`argocd trigger: updating Application '${appName}' returned HTTP ${updated.status}`);
+  }
+  ctx.logger.info("argocd: authored Application updated", { appName });
+}
+
 async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const appName = intent.targetRef;
@@ -354,6 +424,16 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   const existing = state.targets[appName];
   if (intent.idempotencyKey && existing?.idempotencyKey === intent.idempotencyKey) {
     return { externalId: existing.externalId, url: `${config.serverUrl}/applications/${appName}` };
+  }
+
+  const authored = intent.parameters?.[AUTHORED_APPLICATION_PARAMETER];
+  if (authored !== undefined) {
+    // The server never sends one with a rollback (`reconcile.ts` refuses that first); refusing here
+    // too keeps a rollback from ever re-applying the forward manifests it is rolling back from.
+    if (intent.kind === "rollback") {
+      throw new Error("argocd trigger: a rollback never carries an authored Application");
+    }
+    await ensureAuthoredApplication(ctx, config, appName, authored);
   }
 
   // CRITICAL #2 — fail closed on a rollback with no valid prior revision. NEVER fall through to an
@@ -492,7 +572,10 @@ function describeCapabilities(): ExecutorCapabilities {
     supportsObserve: true,
     supportsTrigger: true,
     supportsAbort: true,
-    triggerKinds: ["sync", "rollback"]
+    triggerKinds: ["sync", "rollback"],
+    // D12 / ADR-0055: Argo Rollouts runs the canary and takes SCP's declared steps as trigger
+    // parameters — the authored Application's Rollout. Never `authoritative`: SCP drives no step.
+    rollout: { authority: "triggerParams", targetClasses: ["cluster"] }
   };
 }
 

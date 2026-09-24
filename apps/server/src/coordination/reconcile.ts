@@ -64,7 +64,8 @@ import {
   markWaveTerminal,
   observedStateFrom,
   originalChangeDispatchedTarget,
-  updateWaveTargetObserved
+  updateWaveTargetObserved,
+  WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS
 } from "./wave-targets-repo.js";
 import {
   DEAD_TARGET_REMEDIATION,
@@ -124,6 +125,11 @@ import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
 import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
+import {
+  DeploymentAuthoringRefused,
+  WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION,
+  deployLaneTriggerParameters
+} from "./deploy-lane-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1667,7 +1673,52 @@ async function triggerWaveTarget(
       // The executor-specific target id. See docs/coordination.md §807.
       const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
       const binding = resolution.binding;
-      const externalRef = binding?.externalRef ?? null;
+
+      // M28.4 (ADR-0055) — THE CREATE HALF OF IMPORT-OR-CREATE. A component that declares
+      // `properties.deployment` and is bound to Argo CD gets an Application SCP authors, with the
+      // Rollout in it written from the wave plan. Deleting this call must make a test red: it is the
+      // only production caller of the deploy lane, the M27.9 lesson restated.
+      //
+      // A ROLLBACK of an authored target is REFUSED. The forward manifests are what it is rolling
+      // back FROM and no prior authored manifest is recorded, so the only thing left to send is a
+      // re-sync of the current values — a no-op reported as a rollback, CRITICAL #2's hazard one
+      // layer up (the argocd plugin's `ROLLBACK_UNAVAILABLE_PREFIX`).
+      let authored: Awaited<ReturnType<typeof deployLaneTriggerParameters>>;
+      try {
+        authored = await deployLaneTriggerParameters(tx, {
+          orgId,
+          targetObjectId,
+          waveId,
+          changeObjectId: change.objectId,
+          sourceRef: change.sourceRef,
+          pluginModule: executorModule,
+          binding: binding
+            ? {
+                externalRef: binding.externalRef,
+                executionSystemId: binding.executionSystemId,
+                config: binding.config
+              }
+            : null
+        });
+      } catch (err) {
+        if (err instanceof DeploymentAuthoringRefused) return { refused: err.message } as const;
+        throw err;
+      }
+      if (authored && isRollback) {
+        return {
+          refused:
+            "a rollback of an SCP-authored Application is refused: no prior authored manifest is " +
+            "recorded to restore, and syncing the Application again would re-apply the very " +
+            "release this rollback is undoing. Re-propose the prior version as a forward change."
+        } as const;
+      }
+      const externalRef = authored?.targetRef ?? binding?.externalRef ?? null;
+      // Spread LAST, the ops lane's rule and for its reason: the authored Application IS the bound on
+      // what gets deployed, so nothing a recipe restates may replace it.
+      const deployParameters =
+        authored && !isRollback
+          ? { ...(parameters ?? {}), ...authored.parameters }
+          : parameters;
 
       // An indirect resolution is recorded, not left implicit. See docs/coordination.md §808.
       const provenance = resolutionProvenance(resolution);
@@ -1732,10 +1783,41 @@ async function triggerWaveTarget(
       }
 
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
-      return claimed ? { kind, priorStateRef, externalRef, parameters } : null;
+      return claimed
+        ? { kind, priorStateRef, externalRef, parameters: deployParameters, refused: undefined }
+        : null;
     });
 
     if (!claim) return; // no longer pending/triggering — another tick already handled it.
+    if (claim.refused !== undefined) {
+      const reason = claim.refused;
+      // Terminal, audited, and before `trigger()` — a deployment SCP cannot author is never sent to
+      // Argo CD in some partial form, and never falls through to syncing an Application that does
+      // not exist.
+      await withTenantTx(db, orgId, (tx) =>
+        blockWaveTarget(tx, {
+          orgId,
+          change,
+          waveId,
+          waveTargetId,
+          targetObjectId,
+          status: WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS,
+          action: WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION,
+          summary: `SCP was asked to author the Argo CD deployment of ${targetObjectId} and refused: ${reason}`,
+          remediation:
+            "correct the declaration named above, then cancel/rollback/re-propose the change",
+          reason,
+          inputContext: {
+            waveId,
+            targetObjectId,
+            requestedType: type,
+            executorPluginId: instanceId,
+            gate: "deployment_authoring"
+          }
+        })
+      );
+      return;
+    }
 
     // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
     let ref;

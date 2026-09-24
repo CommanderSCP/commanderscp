@@ -31,6 +31,10 @@ import {
 
 /** The wave-target access the reconcile loop needs. See docs/coordination.md §1051. */
 
+/** Terminal status for a deployment SCP was asked to author and could not (ADR-0055). Defined here,
+ *  beside the set it joins, so the deploy lane never has to be imported to read the set. */
+export const WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS = "deployment_authoring_refused";
+
 export type WaveRow = typeof changeWaves.$inferSelect;
 export type WaveTargetRow = typeof changeWaveTargets.$inferSelect;
 
@@ -484,7 +488,10 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   // its job on the very next status added: this line is the ONLY edit that was needed, and
   // `blockWaveTarget`, `terminalizeRefusedWaveTarget`, the per-target terminal skip and
   // `service-board.ts` all picked it up from the type.
-  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+  // M28.4 (ADR-0055) — SCP was asked to author this target's Argo CD Application and the
+  // declaration could not be authored (`deploy-lane-trigger-parameters.ts`).
+  WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS
 ] as const;
 export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
 

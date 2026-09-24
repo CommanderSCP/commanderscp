@@ -1,11 +1,16 @@
-import { WaveGateSchema, type WaveGate } from "@scp/schemas";
+import {
+  RolloutStrategySchema,
+  WaveGateSchema,
+  type RolloutStrategy,
+  type WaveGate
+} from "@scp/schemas";
 import { badRequest } from "../errors.js";
 import type { TopologyWaveSpec } from "./plan-compiler.js";
 
 /** THE release-topology wave parser. See docs/coordination.md §1004. */
 
 /** Wave keys the compiler understands. Anything else is a typo or a key from a newer authority. */
-const KNOWN_WAVE_KEYS = new Set(["name", "mode", "targets", "requiresFanIn", "gates"]);
+const KNOWN_WAVE_KEYS = new Set(["name", "mode", "targets", "requiresFanIn", "gates", "rollout"]);
 
 /** Parses a snapshotted topology, failing loudly. See docs/coordination.md §1005. */
 export function parseTopologyWaves(document: unknown): TopologyWaveSpec[] | undefined {
@@ -78,12 +83,26 @@ export function parseTopologyWaves(document: unknown): TopologyWaveSpec[] | unde
         return parsed.data;
       });
     }
+    // M28.4 (ADR-0055): HOW this wave's places roll — the steps an SCP-authored Argo Rollout at
+    // one of them is written with. Refused here, with the rest of the wave, so a malformed wave
+    // plan fails when the change is PROPOSED rather than half way through a deploy.
+    let rollout: RolloutStrategy | undefined;
+    if (w.rollout !== undefined) {
+      const parsed = RolloutStrategySchema.safeParse(w.rollout);
+      if (!parsed.success) {
+        throw badRequest(
+          `${where} rollout is invalid: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`
+        );
+      }
+      rollout = parsed.data;
+    }
     return {
       ...(typeof w.name === "string" ? { name: w.name } : {}),
       mode: w.mode,
       targets: w.targets as string[],
       ...(typeof w.requiresFanIn === "boolean" ? { requiresFanIn: w.requiresFanIn } : {}),
-      ...(gates !== undefined ? { gates } : {})
+      ...(gates !== undefined ? { gates } : {}),
+      ...(rollout !== undefined ? { rollout } : {})
     };
   });
 }

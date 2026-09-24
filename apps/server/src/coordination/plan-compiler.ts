@@ -1,6 +1,6 @@
 /** The plan compiler (DESIGN.md §9.3). See docs/coordination.md §677. */
 
-import type { WaveGate } from "@scp/schemas";
+import type { RolloutStrategy, WaveGate } from "@scp/schemas";
 
 export interface DependsOnEdge {
   /** `from` depends on `to` — `to` must be scheduled in an earlier (or, if truly independent, an
@@ -17,6 +17,10 @@ export interface TopologyWaveSpec {
   requiresFanIn?: boolean;
   /** Gates this wave adds on top, always a union. See docs/coordination.md §678. */
   gates?: WaveGate[];
+  /** M28.4 (ADR-0055): the steps an SCP-authored Rollout at this wave's places is written with.
+   *  The compiler does not read it — ordering is unchanged. It is parsed with the wave so a
+   *  malformed one is refused at propose time; `deploy-lane-trigger-parameters.ts` reads it. */
+  rollout?: RolloutStrategy;
 }
 
 export interface CompiledWave {
