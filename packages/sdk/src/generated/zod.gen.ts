@@ -6161,6 +6161,59 @@ export const zReportInfrastructureMembersResponse = z.object({
 /**
  * Success
  */
+export const zGetTrustDomainSshCaEnrolmentResponse = z.object({
+    domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    authorityId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    breakGlass: z.string(),
+    enrolledAt: z.string(),
+    caPublicKey: z.string(),
+    trustedUserCaKeysFile: z.string()
+});
+
+/**
+ * Success
+ */
+export const zEnrolTrustDomainSshCaResponse = z.object({
+    domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    authorityId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    breakGlass: z.string(),
+    enrolledAt: z.string(),
+    caPublicKey: z.string(),
+    trustedUserCaKeysFile: z.string()
+});
+
+/**
+ * Success
+ */
+export const zListSshCertificateIssuancesResponse = z.object({
+    issuances: z.array(z.object({
+        serial: z.string(),
+        keyId: z.string(),
+        authorityName: z.string(),
+        principals: z.array(z.string()),
+        targetHosts: z.array(z.string()),
+        issuedAt: z.string(),
+        expiresAt: z.string()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zReconcileSshCertificateSerialsResponse = z.object({
+    verdicts: z.array(z.object({
+        serial: z.string(),
+        unrecognised: z.boolean(),
+        keyId: z.string().nullable(),
+        authorityName: z.string().nullable(),
+        issuedAt: z.string().nullable()
+    })),
+    unrecognisedCount: z.int().gte(-9007199254740991).lte(9007199254740991)
+});
+
+/**
+ * Success
+ */
 export const zListPolicysResponse = z.object({
     items: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),

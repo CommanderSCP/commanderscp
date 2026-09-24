@@ -37,6 +37,10 @@ import {
   graphHealth as graphHealthRequest,
   getInfrastructureMembers as getInfrastructureMembersRequest,
   reportInfrastructureMembers as reportInfrastructureMembersRequest,
+  enrolTrustDomainSshCa as enrolTrustDomainSshCaRequest,
+  getTrustDomainSshCaEnrolment as getTrustDomainSshCaEnrolmentRequest,
+  listSshCertificateIssuances as listSshCertificateIssuancesRequest,
+  reconcileSshCertificateSerials as reconcileSshCertificateSerialsRequest,
   listAuditEvents as listAuditEventsRequest,
   // M2 typed registries (routes/typed-registries.ts) — 8 resources × create/list/get/update/
   // delete/upsertByUrn, generated from BUILD_AND_TEST.md §8 M2 item 1's operationIds.
@@ -509,6 +513,9 @@ import type {
   CreatedOperatorCredential,
   OperatorCredentialListResponse,
   InfrastructureMembersView,
+  TrustDomainEnrolment,
+  SshCertificateIssuanceList,
+  SshSerialReconciliation,
   InfrastructureMembershipDiff,
   ObservedMember
 } from "@scp/schemas";
@@ -1358,6 +1365,50 @@ export class ScpClient {
         path: { idOrUrn }
       });
       return unwrap(result) as InfrastructureMembersView;
+    }
+  };
+
+  /**
+   * HOST-REACHING CREDENTIAL CUSTODY (M27.9, ADR-0051).
+   *
+   * Here for the same reason `infrastructureMembers` is: the CLI and UI import THIS wrapper, and
+   * nothing gates it against `generated/`. M27.8 built `enrolDomain` and the reconciliation and
+   * neither had any caller at all, so no domain could be enrolled and the detective control that
+   * is the only bound on CA compromise could never be invoked.
+   */
+  readonly sshCa = {
+    /** Mint a trust domain's per-domain CA and record the independent access path, together.
+     *  `breakGlass` is a PRECONDITION: an empty one is refused, because an estate whose only route
+     *  in is SCP's CA cannot recover from SCP's CA being compromised. */
+    enrol: async (domainId: string, breakGlass: string): Promise<TrustDomainEnrolment> => {
+      const result = await enrolTrustDomainSshCaRequest({
+        client: this.client,
+        path: { domainId },
+        body: { breakGlass }
+      });
+      return unwrap(result) as TrustDomainEnrolment;
+    },
+    enrolment: async (domainId: string): Promise<TrustDomainEnrolment> => {
+      const result = await getTrustDomainSshCaEnrolmentRequest({
+        client: this.client,
+        path: { domainId }
+      });
+      return unwrap(result) as TrustDomainEnrolment;
+    },
+    issuances: async (limit?: number): Promise<SshCertificateIssuanceList> => {
+      const result = await listSshCertificateIssuancesRequest({
+        client: this.client,
+        query: limit === undefined ? {} : { limit }
+      });
+      return unwrap(result) as SshCertificateIssuanceList;
+    },
+    /** Given serials read out of a host's own sshd log, report which SCP never issued. */
+    reconcile: async (serials: string[]): Promise<SshSerialReconciliation> => {
+      const result = await reconcileSshCertificateSerialsRequest({
+        client: this.client,
+        body: { serials }
+      });
+      return unwrap(result) as SshSerialReconciliation;
     }
   };
 

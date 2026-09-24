@@ -42,9 +42,8 @@ describe("ssh CA enrolment (Testcontainers)", () => {
       enrolDomain(tx, {
         orgId: org.orgId,
         domainId,
-        publicKey: "ssh-ed25519 AAAA-ca",
-        privateKeySecretKey: `ssh-ca/${domainId}`,
         breakGlass,
+        masterKey: server.deps.config.secretsMasterKey,
         recordedBySubjectId: subject
       })
     );

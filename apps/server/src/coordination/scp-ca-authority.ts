@@ -52,13 +52,16 @@ export class ScpCaAuthority implements SshCredentialAuthority {
     const validAfter = new Date();
     const validBefore = new Date(validAfter.getTime() + request.validForSeconds * 1000);
 
+    // The key id is what sshd logs, so it is where the RUN belongs. The default below names only
+    // the principals and the serial — which is what this comment used to claim carried the run and
+    // did not. A caller that knows the change supplies `request.keyId`; the serial is appended here
+    // either way so the log line is unique per certificate even for repeated runs of one change.
+    const keyId = `${request.keyId ?? `scp-ops:${request.principals.join(",")}`}:${serial}`;
     const certificate = signSshCertificate({
       openSshPublicKey: request.openSshPublicKey,
       caPrivateKeyPem: this.config.caPrivateKeyPem,
       serial,
-      // The key id is what sshd logs beside the serial, so it carries the run this belongs to —
-      // that is the line an operator reads when reconciling.
-      keyId: `scp-ops:${request.principals.join(",")}:${serial}`,
+      keyId,
       principals: request.principals,
       validAfter,
       validBefore,
@@ -74,7 +77,8 @@ export class ScpCaAuthority implements SshCredentialAuthority {
       certificate,
       serial: serial.toString(),
       expiresAt: validBefore,
-      authority: this.name
+      authority: this.name,
+      keyId
     };
   }
 }

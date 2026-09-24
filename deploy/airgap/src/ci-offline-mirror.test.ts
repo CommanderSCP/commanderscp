@@ -87,6 +87,15 @@ describe("the CI mirror manifest is well-formed", () => {
   });
 });
 
+/** The image refs `scripts/runner-image-tags.sh` emits — images THIS repo builds and publishes, so
+ *  they have no upstream to mirror. Read from the script rather than listed here, so a new runner
+ *  joins by existing and a typo'd exemption cannot pass. */
+const RUNNER_IMAGE_REF_VARS = [
+  ...readFileSync(path.join(REPO_ROOT, "scripts/runner-image-tags.sh"), "utf8").matchAll(
+    /echo "(SCP_[A-Z_]+_IMAGE_REF)=/g
+  )
+].map((m) => m[1]!);
+
 describe("every image a source file names is mirrored", () => {
   /** Testcontainers pulls whatever string it is handed. See docs/airgap.md §25. */
   it("every GenericContainer / PostgreSqlContainer image resolves to a manifest alias", () => {
@@ -98,6 +107,32 @@ describe("every image a source file names is mirrored", () => {
         const arg = m[1]!;
         if (/^["'`]/.test(arg)) {
           found.push({ file: rel, image: arg.slice(1, -1) });
+          continue;
+        }
+        // REPO-BUILT IMAGES ARE NOT MIRRORED, because there is nothing upstream to mirror: they are
+        // built and pushed to GHCR by our own publish job and pulled by ref. An identifier assigned
+        // from `resolveRunnerImage` is exactly that class (M27.9's `scp-sshd-fixture` test host was
+        // the first to reach a Container constructor rather than a bare `docker run`).
+        //
+        // The exemption is NARROW ON PURPOSE — it would otherwise be the hole this gate exists to
+        // close. The `refEnvVar` must be one `scripts/runner-image-tags.sh` actually emits, so the
+        // only way to claim it is to have a ref that the publish job builds, the integration job
+        // pulls, and `ci-gate-census` already polices in all three places.
+        // The identifier's OWN assignment, not merely a nearby one. The first version of this
+        // scanned forward from the identifier for any `resolveRunnerImage`, which matched the wrong
+        // call in a `Promise.all` and let a bogus ref through — the exemption passed its own
+        // mutation test only after being pinned to `<name> = await resolveRunnerImage({ refEnvVar:`.
+        const repoBuilt = new RegExp(
+          String.raw`${arg}\s*=\s*await\s+resolveRunnerImage\(\s*\{\s*refEnvVar:\s*"([A-Z_]+)"`
+        ).exec(source);
+        if (repoBuilt) {
+          const refVar = repoBuilt[1]!;
+          expect(
+            RUNNER_IMAGE_REF_VARS,
+            `${rel}: '${arg}' claims to be a repo-built image via ${refVar}, but ` +
+              `scripts/runner-image-tags.sh does not emit that ref — so nothing builds, pushes or ` +
+              `pulls it, and the exemption would hide an unmirrored pull`
+          ).toContain(refVar);
           continue;
         }
         // An identifier: resolve a `const NAME = "…"` in the same file. If it cannot be resolved,

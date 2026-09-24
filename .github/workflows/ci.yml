@@ -359,6 +359,12 @@ jobs:
           # job — this Dockerfile's `# syntax=` directive makes BuildKit fetch a frontend from
           # Docker Hub, and that job has no egress.
           build_and_push "$SCP_RUNNER_OPS_IMAGE_REF" apps/runner-ops
+          # M27.9 — scp-sshd-fixture, the TEST HOST. Not a runner and never shipped: it is a real
+          # OpenSSH server trusting a CA the test mints at run time, so the host-reaching path can
+          # be proved against sshd rather than against a mock that agrees with us. It has to be
+          # published here for the plainest reason of all — the integration job has no egress, and
+          # the fixture's own build does `apt-get install openssh-server`.
+          build_and_push "$SCP_SSHD_FIXTURE_IMAGE_REF" tools/sshd-fixture
 
   testcontainer-images:
     name: "4d. Mirror every third-party test image to GHCR (tools/ci-mirror/images.list)"
@@ -696,10 +702,10 @@ jobs:
       # instead of building. (Local dev, with these env vars unset, still legacy-builds as before.)
       - name: Compute the content-hash runner image tags (same formula as the publish job)
         run: scripts/runner-image-tags.sh >> "$GITHUB_ENV"
-      - name: Pull the pre-built runner images (in parallel — the four pulls share no layers)
+      - name: Pull the pre-built runner images (in parallel — the pulls share no layers)
         run: |
           pids=""
-          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF"; do
+          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF"; do
             docker pull "$ref" & pids="$pids $!"
           done
           # `wait` PER PID, not a bare `wait`: a bare one exits 0 even when a pull failed.

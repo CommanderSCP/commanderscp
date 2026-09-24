@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import {
   sshCaEnrolments,
   sshCertificateAuthorities,
@@ -7,6 +7,8 @@ import {
 } from "../db/schema.js";
 import type { TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
+import { putSecret } from "../secrets/secrets-repo.js";
+import { generateEphemeralSshKeypair } from "./ssh-credentials.js";
 
 /**
  * Storage for ADR-0051's SCP-CA fallback, and for the issuance evidence BOTH credential paths
@@ -163,10 +165,11 @@ export async function reconcileSerials(
 export interface EnrolDomainInput {
   orgId: string;
   domainId: TrustDomainId;
-  publicKey: string;
-  privateKeySecretKey: string;
   /** HOW TO GET IN WITHOUT SCP'S CA (ADR-0051). Non-empty, or the enrolment is refused. */
   breakGlass: string;
+  /** To seal the minted signing key. Enrolment MINTS the CA rather than being handed one — see
+   *  `enrolDomain`. */
+  masterKey: Buffer;
   recordedBySubjectId: string;
 }
 
@@ -184,11 +187,21 @@ export class BreakGlassRequired extends Error {}
  * The emptiness check lives HERE as well as in the CHECK constraint, so the caller gets a sentence
  * rather than a constraint-violation string. The constraint is what makes it true; this is what
  * makes it legible.
+ *
+ * ENROLMENT MINTS THE KEYPAIR; it is not handed one. Taking `publicKey` + `privateKeySecretKey`
+ * from the caller looked like flexibility and was a hole: nothing checks that the named secret
+ * EXISTS, or that it is the private half of the public key recorded beside it. A caller could
+ * enrol a domain naming a secret it never wrote — which is precisely what happened the first time
+ * this path was exercised end-to-end, and it surfaced far downstream as `deriveOpsRunMaterial`
+ * refusing a run because the CA "names secret 'ssh-ca/...', which does not resolve". A CA whose
+ * signing key does not exist is not a CA, and the only place that can be guaranteed is where the
+ * row is created. Minting here makes the pair correct by construction and keeps the key, the
+ * public half and the break-glass path in ONE transaction.
  */
 export async function enrolDomain(
   tx: TenantTx,
   input: EnrolDomainInput
-): Promise<{ authorityId: string; enrolmentId: string }> {
+): Promise<{ authorityId: string; enrolmentId: string; caPublicKey: string }> {
   if (input.breakGlass.trim().length === 0) {
     throw new BreakGlassRequired(
       "refusing to enrol this domain: no independent access path was recorded. An estate whose " +
@@ -198,11 +211,21 @@ export async function enrolDomain(
         "hardware KVM."
     );
   }
+  // Per-domain, never fleet-wide (ADR-0051 D2). The key path embeds the domain so two domains
+  // cannot collide onto one secret and silently share a CA — the exact thing D2 forbids.
+  const keypair = generateEphemeralSshKeypair();
+  const privateKeySecretKey = `ssh-ca/${input.domainId}`;
+  await putSecret(tx, {
+    orgId: input.orgId,
+    key: privateKeySecretKey,
+    value: keypair.privateKeyPem,
+    masterKey: input.masterKey
+  });
   const { id: authorityId } = await createAuthority(tx, {
     orgId: input.orgId,
     domainId: input.domainId,
-    publicKey: input.publicKey,
-    privateKeySecretKey: input.privateKeySecretKey
+    publicKey: keypair.openSshPublicKey,
+    privateKeySecretKey
   });
   const enrolmentId = randomUUID();
   await tx.insert(sshCaEnrolments).values({
@@ -213,7 +236,51 @@ export async function enrolDomain(
     breakGlass: input.breakGlass.trim(),
     recordedBySubjectId: input.recordedBySubjectId
   });
-  return { authorityId, enrolmentId };
+  // The public half is RETURNED, not merely stored: it is what the operator installs as
+  // `TrustedUserCAKeys` on every host in the domain, and an enrolment they cannot act on is an
+  // enrolment that never reaches a host.
+  return { authorityId, enrolmentId, caPublicKey: keypair.openSshPublicKey };
+}
+
+/** Every certificate SCP recorded issuing, newest first — ADR-0051 D5's evidence side.
+ *
+ *  Bounded rather than unbounded: this table grows once per host-reaching RUN, and an unbounded
+ *  read is how `decisions` reached 1.44 GB/day. A caller reconciling a host's log wants the recent
+ *  window, and a caller auditing a specific serial has `reconcileSerials`. */
+export async function listIssuances(
+  tx: TenantTx,
+  orgId: string,
+  limit = 200
+): Promise<
+  {
+    serial: string;
+    keyId: string;
+    authorityName: string;
+    principals: string[];
+    targetHosts: string[];
+    issuedAt: Date;
+    expiresAt: Date;
+  }[]
+> {
+  const rows = await tx
+    .select({
+      serial: sshCertificateIssuances.serial,
+      keyId: sshCertificateIssuances.keyId,
+      authorityName: sshCertificateIssuances.authorityName,
+      principals: sshCertificateIssuances.principals,
+      targetHosts: sshCertificateIssuances.targetHosts,
+      issuedAt: sshCertificateIssuances.issuedAt,
+      expiresAt: sshCertificateIssuances.expiresAt
+    })
+    .from(sshCertificateIssuances)
+    .where(eq(sshCertificateIssuances.orgId, orgId))
+    .orderBy(desc(sshCertificateIssuances.issuedAt))
+    .limit(Math.min(Math.max(limit, 1), 1000));
+  return rows.map((r) => ({
+    ...r,
+    principals: (r.principals as string[]) ?? [],
+    targetHosts: (r.targetHosts as string[]) ?? []
+  }));
 }
 
 export interface EnrolmentRow {

@@ -83,6 +83,12 @@ export interface SshCertificateRequest {
   /** The resolved hosts this run may reach, carried for the authority's own policy and for the
    *  audit record. Not a substitute for the network-layer allowlist (M27.6). */
   targetHosts: string[];
+  /** REQUESTED key id — the string `sshd` writes to the host's own auth log on every
+   *  authentication, and therefore the only field by which a host's records can name what reached
+   *  it. Honoured only by authorities that mint the certificate themselves (`ScpCaAuthority`); a
+   *  BYO authority chooses its own, which is why `IssuedSshCertificate.keyId` reports what was
+   *  ACTUALLY signed rather than echoing this back. */
+  keyId?: string;
 }
 
 export interface IssuedSshCertificate {
@@ -96,6 +102,11 @@ export interface IssuedSshCertificate {
   expiresAt: Date;
   /** Which authority issued it. Distinguishes BYO from the SCP-CA fallback in evidence. */
   authority: string;
+  /** The key id ACTUALLY inside the certificate, when the authority knows it. Reported rather than
+   *  assumed: the value recorded in `ssh_certificate_issuances` and the value a host logs must be
+   *  the same string, and a caller that formatted its own copy would be comparing its guess against
+   *  the host's record. `undefined` from a BYO authority that does not disclose it. */
+  keyId?: string;
 }
 
 export interface SshCredentialAuthority {

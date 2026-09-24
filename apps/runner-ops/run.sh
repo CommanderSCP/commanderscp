@@ -89,6 +89,53 @@ python /usr/local/bin/params_to_vars.py /work/in/params.json > /work/vars.yml \
 # this file is the only inventory, and params.json cannot name one.
 [ -f /work/in/inventory.ini ] || die "no server-compiled inventory at /work/in/inventory.ini"
 
+# ---- 5. THE PER-RUN CERTIFICATE ----------------------------------------------------------------
+# The orchestrator stages the credential the server minted; until M27.9 this file was WRITTEN and
+# never read, so ansible-playbook ran with no key at all and could not have authenticated to any
+# host. The whole host-reaching path was unreachable in a way no test noticed, because every test
+# either stopped before the connection or asserted a refusal.
+#
+# The file is JSON — the private key and the certificate TOGETHER, because splitting them across
+# two secrets would let a run start holding one half.
+[ -f /work/in/ssh-credential ] || die "no per-run credential at /work/in/ssh-credential"
+python - <<'PYKEY' || die "credential refused"
+import json, os, sys
+with open("/work/in/ssh-credential") as fh:
+    cred = json.load(fh)
+key, cert = cred.get("privateKeyPem"), cred.get("certificate")
+if not key or not cert:
+    sys.exit("credential must carry both privateKeyPem and certificate")
+# 0600, and UNLINK FIRST rather than trusting the creation mode. `os.open`'s mode argument applies
+# only when the file is CREATED — reopening an existing path with O_CREAT|O_TRUNC keeps whatever
+# mode it already had. A workspace reused across runs therefore kept a world-readable key from the
+# previous one and OpenSSH refused it ("Permissions 0666 for '/work/id' are too open ... This
+# private key will be ignored"), which surfaces as `Permission denied (publickey)` and reads like a
+# bad certificate. Unlinking makes the mode a fact about THIS run rather than about the workspace's
+# history, and it closes the window a post-hoc chmod would leave open.
+for path, data in (("/work/id", key), ("/work/id-cert.pub", cert)):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as fh:
+        fh.write(data if data.endswith("\n") else data + "\n")
+PYKEY
+
+# HOST KEY POLICY. `ansible.cfg` sets `host_key_checking = True` and that stays true: the named
+# file below is the trust anchor when the server supplies one.
+#
+# KNOWN GAP, stated rather than hidden: observed membership (M27.6a) records addresses, not host
+# keys, so there is usually nothing to supply and the first connection is trust-on-first-use.
+# Closing it needs host keys in the membership report — a change to what an infrastructure
+# pipeline pushes, not something this script can invent. Until then TOFU is the honest description,
+# and it is logged so a run cannot quietly look stronger than it is.
+if [ -f /work/in/known_hosts ]; then
+  SSH_HOST_ARGS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/work/in/known_hosts"
+else
+  echo "scp-runner-ops: no server-supplied known_hosts — first contact is TRUST-ON-FIRST-USE." >&2
+  SSH_HOST_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/work/known_hosts"
+fi
+
 cat > /work/play.yml <<PLAY
 - hosts: all
   gather_facts: true
@@ -96,7 +143,31 @@ cat > /work/play.yml <<PLAY
     - $ROLE
 PLAY
 
+# `root` is the principal the certificate authorizes (ADR-0051 D4 as amended 2026-09-23) and the
+# roles carry no `become:`, so the connection user IS the privileged one and no sudo step exists.
+# THE VERIFIED CATALOG IS THE ONLY ROLE SOURCE. Until M27.9 this was unset, so the catalog was
+# signature-checked, digest-checked, charter-class-checked — and then never placed where
+# ansible-playbook looks, which failed with "the role '...' was not found". Exported rather than
+# passed as a flag because `ansible-playbook` has no --roles-path.
+#
+# A SINGLE path, not a list: Ansible searches every entry in order, so appending the catalog to the
+# default set would leave `/work/roles` ahead of it — a directory inside the copy-in area, which is
+# the one place a caller can put files.
+export ANSIBLE_ROLES_PATH="$CATALOG_DIR/roles"
+
+# NO TTY. Ansible allocates one by default (`-tt`) because `become` normally needs somewhere to
+# answer a sudo prompt — and this catalog has no `become` at all (ADR-0051 D4 as amended: the
+# certificate authorizes root directly). Two reasons to turn it off rather than leave the default:
+# a tty MERGES the target's stderr into stdout, so every diagnostic a run collects as evidence
+# would be interleaved and unattributable; and requesting one makes the run depend on the target
+# having working pty allocation, which is a capability it does not need. Measured: with `-tt` the
+# run failed at "PTY allocation request failed on channel 0" having already authenticated.
+export ANSIBLE_SSH_USETTY=False
+
 exec ansible-playbook \
   -i /work/in/inventory.ini \
   -e @/work/vars.yml \
+  --user root \
+  --private-key /work/id \
+  --ssh-extra-args "-o CertificateFile=/work/id-cert.pub -o IdentitiesOnly=yes $SSH_HOST_ARGS" \
   /work/play.yml

@@ -1664,8 +1664,21 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     - **DoD:** a run cannot reach an address outside its resolved set (measured against a real listener, not a config assertion); a tenant-supplied `hosts` value is ignored, and its presence is refused rather than silently dropped.
   - **M27.7 — the orchestrator plugin + full API-first parity.** `packages/plugins/managed-ops` as the thin in-`scpd` orchestrator launching the ephemeral image per run (the `runner-iac`/`managed-iac` split, DESIGN.md §3); executor binding, `observe`/`trigger`/`status`/`abort` only; API → SDK → CLI → IaC → UI per charter principle 3.
     - **DoD:** the plugin-testkit conformance suite passes; the capability is reachable from the CLI through the generated SDK with nothing bypassing the public API.
-  - **M27.8 — enrolment, the standing footprint, and delivery.** Host enrolment writes `TrustedUserCAKeys` plus a restricted sudoers naming exactly the catalog's commands (never `NOPASSWD:ALL`), justified per ADR-0051 D4 as static configuration with no daemon, no callback and no listener beyond the `sshd` already running. **An independent break-glass is a precondition of enrolment** (ADR-0051): an estate whose only access route is SCP's CA cannot recover from SCP's CA being compromised. Air-gap bundle image entry + retarget, Helm wiring, runner-image tag formula.
+  - **M27.8 — enrolment, the standing footprint, and delivery.** Host enrolment writes `TrustedUserCAKeys` (originally: plus a restricted sudoers — **see the correction below**), justified per ADR-0051 D4 as static configuration with no daemon, no callback and no listener beyond the `sshd` already running. **An independent break-glass is a precondition of enrolment** (ADR-0051): an estate whose only access route is SCP's CA cannot recover from SCP's CA being compromised. Air-gap bundle image entry + retarget, Helm wiring, runner-image tag formula.
     - **DoD:** enrolling a domain without a recorded independent access path is **refused**; the air-gap bundle carries the image and `install.sh` retargets it (the gap found in #401 for the build catalog — a values comment claiming retargeting is not retargeting).
+    - **CORRECTED 2026-09-23 (owner decision, ADR-0051 D4 amendment).** The restricted sudoers half
+      of this increment **could not work and has been deleted**. It named the catalog's commands
+      (`/usr/bin/apt-get`, `/usr/bin/dnf`, `/usr/bin/systemctl`); measured against the shipped
+      image, Ansible's `become: true` invokes
+      `sudo -H -S -n -u root /bin/sh -c '… /usr/bin/python3 …/AnsiballZ_*.py'`, so a host enrolled
+      that way fails **every** privileged task — and the rule that would work grants `/bin/sh`,
+      with the executed module in the connecting account's own writable `~/.ansible/tmp`. The
+      certificate's principal is now `root`, said plainly, and the roles carry no `become:`.
+      Enrolment is **one** file plus an `sshd_config` line. This removes a false statement about the
+      posture, not a control: what bounds a run is the signed closed catalog, the deleted module
+      set, non-templatable parameters, the minutes-TTL certificate and the per-run egress allowlist.
+      **It was found only by giving `enrolDomain` a production caller** — which is the whole point
+      of M27.9, and the reason its gate is written over reachability rather than over this bug.
 
   - **M27.9 — THE SEAM: the server actually produces what the runner requires.** M27.1–8 each met a
     definition of done that never required the capability to be *reachable*. A census for production
@@ -1677,6 +1690,16 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     Scope: (a) reconcile derives the run material for a host-reaching run; (b) enrolment reaches the
     outside world API → SDK → CLI; (c) issuance and serial reconciliation get a read surface;
     (d) an end-to-end run against a real `sshd`.
+    - **What (d) found, recorded because it is the whole argument for doing it.** Running the path
+      against a real `sshd` surfaced **four** defects that every prior M27 test had passed over,
+      each the same shape — a part built, verified in isolation, connected to nothing: `run.sh`
+      never read the credential the orchestrator staged (so `ansible-playbook` ran with no key);
+      it never put the verified catalog on `ANSIBLE_ROLES_PATH` (so the role it had just
+      signature-, digest- and charter-class-checked was "not found"); Ansible's default `-tt`
+      failed *after* authenticating, for a tty the catalog never needed; and the private key was
+      written with a creation mode that a pre-existing path silently ignores, so a reused workspace
+      left it world-readable and OpenSSH refused it as `Permission denied (publickey)`. A fifth was
+      the test's own: an Alpine host exercised `apk`, which the ADR-0050 allowlist correctly refuses.
     - **DoD:** the **real producer's** output is fed to the **real consumer's** reader, and the
       consumer decides — `readServerDerivedMaterial` accepts `deriveOpsRunMaterial`'s result, rather
       than either side asserting a shape this test invented. Deleting the reconcile wiring makes a

@@ -15267,6 +15267,268 @@ export type ReportInfrastructureMembersResponses = {
 
 export type ReportInfrastructureMembersResponse = ReportInfrastructureMembersResponses[keyof ReportInfrastructureMembersResponses];
 
+export type GetTrustDomainSshCaEnrolmentData = {
+    body?: never;
+    path: {
+        domainId: string;
+    };
+    query?: never;
+    url: '/trust-domains/{domainId}/ssh-ca/enrolment';
+};
+
+export type GetTrustDomainSshCaEnrolmentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetTrustDomainSshCaEnrolmentError = GetTrustDomainSshCaEnrolmentErrors[keyof GetTrustDomainSshCaEnrolmentErrors];
+
+export type GetTrustDomainSshCaEnrolmentResponses = {
+    /**
+     * Success
+     */
+    200: {
+        domainId: string;
+        authorityId: string;
+        breakGlass: string;
+        enrolledAt: string;
+        caPublicKey: string;
+        trustedUserCaKeysFile: string;
+    };
+};
+
+export type GetTrustDomainSshCaEnrolmentResponse = GetTrustDomainSshCaEnrolmentResponses[keyof GetTrustDomainSshCaEnrolmentResponses];
+
+export type EnrolTrustDomainSshCaData = {
+    body: {
+        /**
+         * How an operator reaches these hosts WITHOUT this CA: an out-of-band console, a jump host outside the trust domain, a hardware KVM. Non-empty, or the enrolment is refused.
+         */
+        breakGlass: string;
+    };
+    path: {
+        domainId: string;
+    };
+    query?: never;
+    url: '/trust-domains/{domainId}/ssh-ca/enrolment';
+};
+
+export type EnrolTrustDomainSshCaErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type EnrolTrustDomainSshCaError = EnrolTrustDomainSshCaErrors[keyof EnrolTrustDomainSshCaErrors];
+
+export type EnrolTrustDomainSshCaResponses = {
+    /**
+     * Success
+     */
+    201: {
+        domainId: string;
+        authorityId: string;
+        breakGlass: string;
+        enrolledAt: string;
+        caPublicKey: string;
+        trustedUserCaKeysFile: string;
+    };
+};
+
+export type EnrolTrustDomainSshCaResponse = EnrolTrustDomainSshCaResponses[keyof EnrolTrustDomainSshCaResponses];
+
+export type ListSshCertificateIssuancesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        limit?: number;
+    };
+    url: '/ssh-certificate-issuances';
+};
+
+export type ListSshCertificateIssuancesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListSshCertificateIssuancesError = ListSshCertificateIssuancesErrors[keyof ListSshCertificateIssuancesErrors];
+
+export type ListSshCertificateIssuancesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        issuances: Array<{
+            serial: string;
+            keyId: string;
+            authorityName: string;
+            principals: Array<string>;
+            targetHosts: Array<string>;
+            issuedAt: string;
+            expiresAt: string;
+        }>;
+    };
+};
+
+export type ListSshCertificateIssuancesResponse = ListSshCertificateIssuancesResponses[keyof ListSshCertificateIssuancesResponses];
+
+export type ReconcileSshCertificateSerialsData = {
+    body: {
+        serials: Array<string>;
+    };
+    path?: never;
+    query?: never;
+    url: '/ssh-certificate-issuances/reconcile';
+};
+
+export type ReconcileSshCertificateSerialsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ReconcileSshCertificateSerialsError = ReconcileSshCertificateSerialsErrors[keyof ReconcileSshCertificateSerialsErrors];
+
+export type ReconcileSshCertificateSerialsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        verdicts: Array<{
+            serial: string;
+            unrecognised: boolean;
+            keyId: string | null;
+            authorityName: string | null;
+            issuedAt: string | null;
+        }>;
+        unrecognisedCount: number;
+    };
+};
+
+export type ReconcileSshCertificateSerialsResponse = ReconcileSshCertificateSerialsResponses[keyof ReconcileSshCertificateSerialsResponses];
+
 export type ListPolicysData = {
     body?: never;
     path?: never;

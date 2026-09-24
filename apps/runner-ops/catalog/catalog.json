@@ -15,19 +15,19 @@
       "name": "os_package",
       "charterClass": "osPackage",
       "summary": "Install, upgrade or version-pin an OS package.",
-      "digest": "sha256:3621a35248a9128c2d693712d29cdf952774f7f28e8120d2bd59175fc197ee8b"
+      "digest": "sha256:5525f553d93858d11bca819906ffbd921c1d48c8973f157627b8bddb8fb3f607"
     },
     {
       "name": "config_file",
       "charterClass": "configRenderPush",
       "summary": "Render a template or push a configuration file.",
-      "digest": "sha256:6008582999a989bffb5f97cbbbe6e1404fd692180565a37cbb5ebc3a34f84408"
+      "digest": "sha256:389579e094ac9ee0508fe125a1bba875506dca0d0c53d0e629900cef1a494b93"
     },
     {
       "name": "scheduled_unit",
       "charterClass": "cronSystemd",
       "summary": "Manage a cron entry or a systemd unit's enabled/started state.",
-      "digest": "sha256:d05196b219ec436c528b5eeebdf3f746a6c62669da7b4515dfe2dfb07486bbd5"
+      "digest": "sha256:ccb1bf0991918040885cd3c91ffaf878e4e94adcc6f254e2b9632b33ce0ac34f"
     }
   ]
 }

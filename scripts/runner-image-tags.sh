@@ -44,7 +44,15 @@ dep_hash=$(
   } | sort | sha256sum | cut -c1-16
 )
 
+# scp-sshd-fixture (M27.9 item d): a TEST HOST, not a runner — a real `sshd` trusting a CA the test
+# mints at run time. It lives under tools/ rather than apps/runner-* deliberately: `@scp/airgap`
+# requires every apps/runner-* directory to be bundled and activatable, and this image must never
+# ship. It is tagged and published by the same machinery because the reason is identical — the
+# integration jobs blackhole egress, so anything a test needs has to arrive as a pre-pulled ref.
+sshd_fixture_hash=$(find tools/sshd-fixture -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)
+
 echo "SCP_RUNNER_SCAN_IMAGE_REF=${registry}/scp-runner-scan:${scan_hash}"
 echo "SCP_RUNNER_IAC_IMAGE_REF=${registry}/scp-runner-iac:${iac_hash}"
 echo "SCP_RUNNER_DEP_IMAGE_REF=${registry}/scp-runner-dep:${dep_hash}"
 echo "SCP_RUNNER_OPS_IMAGE_REF=${registry}/scp-runner-ops:${ops_hash}"
+echo "SCP_SSHD_FIXTURE_IMAGE_REF=${registry}/scp-sshd-fixture:${sshd_fixture_hash}"

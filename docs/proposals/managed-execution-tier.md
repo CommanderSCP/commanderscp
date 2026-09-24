@@ -90,6 +90,14 @@ Five controls — four port directly from the IaC posture; the fifth (network) i
    stripped). But host login is login-grade → prefer **SCP as an SSH CA issuing minutes-TTL certs**
    scoped per-target/per-run + a **restricted sudoers** (exactly the catalog's commands, never
    `NOPASSWD:ALL`). *(See guardian caveat — the CA key is itself a fleet crown-jewel.)*
+
+   > **SUPERSEDED 2026-09-23 as to the sudoers half** — [ADR-0051](../adr/0051-ssh-credential-authority-and-ca-custody.md)
+   > D4 as amended. The restricted sudoers was measured to be unimplementable with Ansible: `become`
+   > invokes `sudo … /bin/sh -c '… python3 …/AnsiballZ_*.py'`, so a rule naming `apt-get`/`dnf`/
+   > `systemctl` grants nothing a run calls, and the rule that works is a root shell over a module
+   > the connecting account itself wrote. The certificate's principal is `root`, stated plainly;
+   > the catalog carries no `become:`. The minutes-TTL, per-target/per-run CA half of this
+   > recommendation stands unchanged.
 3. **Network is the structural difference.** IaC runs `--network none`; a host runner must reach
    private IPs. Replace the blanket deny with a **per-run positive allowlist = exactly the resolved
    wave-target IPs**, enforced at the **NetworkPolicy / nftables layer** (not app-level). Always-block
