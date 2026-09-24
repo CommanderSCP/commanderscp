@@ -1393,15 +1393,18 @@ Extending this class allowlist further requires owner sign-off.
 
 Amendment approved 2026-09-23 (owner decision, M28.2).
 
-CommanderSCP's per-domain SSH certificate authority may issue the per-run host-login certificate for a host-reaching catalog run that an organization's Argo Workflows executes, rather than only for a run CommanderSCP's own managed executor launches.
+CommanderSCP's per-domain SSH certificate authority may issue the per-run host-login certificate for a host-reaching run that CommanderSCP submits to an organization's Argo Workflows, rather than only for a run CommanderSCP's own managed executor launches.
 
-This extends the host-login grant of the 2026-07-12 amendment to exactly one further case, and grants nothing else:
+The grant is stated as what CommanderSCP enforces. CommanderSCP cannot attest the template, the image or the pod that redeems a run token in a cluster it reaches only through an Argo API token, so the grant does not rest on any claim about the redeemer. It rests on the following, each enforced by CommanderSCP:
 
-- The run executes CommanderSCP's own signed catalog template for host operations (`scp-ops-v1` and its versioned successors), running the same locked-down `scp-runner-ops` image and the same closed, cosign-signed task catalog as the managed executor; an organization-authored template is never issued a certificate
-- The operations are the three host-reaching classes the 2026-07-12 amendment enumerates, and no others
-- CommanderSCP derives the run's inventory, egress allowlist and principals from resolved graph state, exactly as for the managed executor, and the organization's Workflow can neither supply nor widen them
-- The certificate is issued per run, over a key the runner generates itself, with a lifetime no longer than the managed executor's, through a single-use redemption bound to one run and valid for no longer than that lifetime; its serial is recorded and audited like every other issuance
-- The Workflow carries only a run identifier and a redemption token sealed to a key the operator registers; no host credential, inventory or allowlist is placed in the Workflow
+- A certificate is issued only for a trigger CommanderSCP itself submits, to the Argo Workflows endpoint and namespace pinned for the trust domain, for CommanderSCP's own host-operations catalog template reference (`scp-ops-v1` and its versioned successors), with the run token sealed to the key pinned for the domain
+- The pin is written only by a principal holding `secret:write` at the organization root, the same authority that enrols the domain's certificate authority; editing an executor binding cannot change where a run token goes or what it is sealed to, and a binding that disagrees with the pin is refused
+- Before submitting, CommanderSCP reads the pinned template back and refuses unless every step names the pinned `scp-runner-ops` digest and requires catalog verification; this is defence in depth, not attestation, because the template can be changed between that read and the pod's start
+- The operations are the three host-reaching classes the 2026-07-12 amendment enumerates, and no others; CommanderSCP derives the run's inventory, egress allowlist and principals from resolved graph state exactly as for the managed executor, and hands them to the pod only on redemption, so nothing CommanderSCP submits carries them
+- The certificate is issued per run, over a key the runner generates itself, with a lifetime no longer than the managed executor's and the pinned cluster egress addresses as its mandatory `source-address`, through a single-use redemption bound to one in-flight run and valid for no longer than that lifetime; its serial is recorded and audited like every other issuance
+- The Workflow carries only a run identifier and the sealed redemption token
+
+The residual trust set is named, not implied: the cluster's administrators, anyone who can read the pinned sealing key's Secret, and anyone who can create a pod in the Argo namespace can obtain a certificate within its lifetime, because any of them can unseal a token in flight or change what redeems it. A stolen redemption is detected and audited, not prevented. The certificate is not bound to target hosts.
 
 CommanderSCP still does not hold the execution system's own credentials, still reaches the Argo Workflows install only through its scoped API token, and still launches nothing on this path.
 
@@ -1437,7 +1440,7 @@ PostgreSQL remains the only stateful dependency CommanderSCP itself requires.
 
 Opting into a bundled backend ends managed-execution eligibility for the classes it covers.
 
-The two preceding clauses have exactly one qualification: under the Managed Execution Exception amendment of 2026-09-23, CommanderSCP's per-domain SSH certificate authority may issue the per-run certificate for a host-reaching run of CommanderSCP's own signed host-operations catalog template executed by a bundled or organization-run Argo Workflows. The backend otherwise keeps its own infrastructure credentials, and the qualification covers no other backend, template or class.
+The two preceding clauses have exactly one qualification: under the Managed Execution Exception amendment of 2026-09-23, CommanderSCP's per-domain SSH certificate authority may issue the per-run certificate for a host-reaching run CommanderSCP submits, to a pinned endpoint under a pinned sealing key, for its own host-operations catalog template on a bundled or organization-run Argo Workflows. The backend otherwise keeps its own infrastructure credentials, and the qualification covers no other backend, template or class.
 
 The bundled backend allowlist is the SCP Standard Stack.
 

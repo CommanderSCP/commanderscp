@@ -1788,6 +1788,23 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     rather than launched by `@scp/runner-launcher`. Mode C stays the no-execution-system fallback.
     - **DoD:** one material derivation feeds both executors; the Mode A/B path never launches a
       container from `scpd`, asserted by the absence of a launcher call on that path.
+    - **FIX ROUND 2026-09-24 (adversarial verification of #414, owner ruling "honest wording +
+      pin").** The charter grant was **not enforced**: the Argo endpoint and sealing key were binding
+      config under `object:write`, and an Operator scoped to one product redirected a run token to
+      their own server and redeemed a `root` certificate (probe A). Closed by a per-domain **Argo ops
+      pin** (migration 0122) written only with `secret:write` at the org root — the enrolment door's
+      permission — which a binding must match and which alone supplies the sealing key and the now
+      MANDATORY source addresses; a template read-back before submit (pinned digest, verification
+      required; TOCTOU by cluster admins documented, not claimed away); `run.sh` refusing
+      verification off on the Argo path; every lane refusal made terminal with a Decision
+      (`ops_material_refused`); redemption bound to an in-flight target's newest row and one pod key
+      per run; a ceiling on burn auditing; equal-cost 401s; a comment-stripping reachability census;
+      and tightened egress (DNS to kube-system, operator-set kube API CIDRs, deadline ≤ cert TTL).
+      The charter amendment and ADR-0054 were reworded to what is ENFORCED, and name the residual
+      trust set: cluster admins, sealing-Secret readers and pod creators in the Argo namespace.
+      **What this found about the method:** the first version's tests all passed and proved the path
+      works; none asked who can move the path. Every prior "a binding editor cannot…" sentence was a
+      claim about config SCP did not guard.
     - **STATUS 2026-09-23: BUILT — PR open, not yet merged.** Owner decision (Option 2 of
       [ADR-0054](adr/0054-host-ops-through-argo-workflows-credential-delivery.md), now Accepted): SCP's
       per-domain CA serves the Argo path, with a dated charter amendment in the same change. What was
