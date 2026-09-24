@@ -28,6 +28,8 @@ BUDGET RAISED 2026-08-02 (CI run 30770220554 job 91556316977). The guard fired f
 
 Now ~5 s across 16 attempts with the backoff capped, so the tail is patience rather than one long final sleep. It stays a WAIT, not a retry-the-test: if `credentials.json` never becomes readable the failure is still loud, still points at this boundary, and still refuses to let a "Not logged in" error surface later as a confusing assertion failure somewhere unrelated.
 
+DIAGNOSTICS ADDED 2026-09-24, after it recurred twice on `main` in two days (runs 35937033721 and 36037672587, each on a different CLI test) at the ~5 s budget. A visibility delay that long between two processes on one local filesystem is implausible, and `bin.ts` sets exit code 1 on any error, so `login` really did exit 0. The failure message now carries `login`'s stdout and stderr and a listing of `configDir`. "Printed 'Logged in', directory empty", "directory missing" and "printed nothing" each point at a different cause. Read them on the next occurrence before raising the budget again.
+
 ## `apps/server/src/test-support/db-clone.ts`
 
 ### §2. Per-worker template-DB isolation, kept side-effect free
