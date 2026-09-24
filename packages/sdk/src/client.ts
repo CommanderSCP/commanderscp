@@ -41,6 +41,9 @@ import {
   getTrustDomainSshCaEnrolment as getTrustDomainSshCaEnrolmentRequest,
   listSshCertificateIssuances as listSshCertificateIssuancesRequest,
   reconcileSshCertificateSerials as reconcileSshCertificateSerialsRequest,
+  redeemOpsRun as redeemOpsRunRequest,
+  putTrustDomainArgoOpsPin as putTrustDomainArgoOpsPinRequest,
+  getTrustDomainArgoOpsPin as getTrustDomainArgoOpsPinRequest,
   listAuditEvents as listAuditEventsRequest,
   // M2 typed registries (routes/typed-registries.ts) — 8 resources × create/list/get/update/
   // delete/upsertByUrn, generated from BUILD_AND_TEST.md §8 M2 item 1's operationIds.
@@ -516,6 +519,9 @@ import type {
   TrustDomainEnrolment,
   SshCertificateIssuanceList,
   SshSerialReconciliation,
+  OpsRunMaterial,
+  ArgoOpsPinRequest,
+  ArgoOpsPinView,
   InfrastructureMembershipDiff,
   ObservedMember
 } from "@scp/schemas";
@@ -1402,6 +1408,23 @@ export class ScpClient {
       });
       return unwrap(result) as SshCertificateIssuanceList;
     },
+    /** Pin where this domain's CA may send an Argo host-ops run token (M28.2, ADR-0054 D9).
+     *  `secret:write` at the org root, like enrolment. */
+    pinArgoOps: async (domainId: string, pin: ArgoOpsPinRequest): Promise<ArgoOpsPinView> => {
+      const result = await putTrustDomainArgoOpsPinRequest({
+        client: this.client,
+        path: { domainId },
+        body: pin
+      });
+      return unwrap(result) as ArgoOpsPinView;
+    },
+    argoOpsPin: async (domainId: string): Promise<ArgoOpsPinView> => {
+      const result = await getTrustDomainArgoOpsPinRequest({
+        client: this.client,
+        path: { domainId }
+      });
+      return unwrap(result) as ArgoOpsPinView;
+    },
     /** Given serials read out of a host's own sshd log, report which SCP never issued. */
     reconcile: async (serials: string[]): Promise<SshSerialReconciliation> => {
       const result = await reconcileSshCertificateSerialsRequest({
@@ -1409,6 +1432,21 @@ export class ScpClient {
         body: { serials }
       });
       return unwrap(result) as SshSerialReconciliation;
+    }
+  };
+
+  /**
+   * HOST OPS THROUGH AN ORG'S ARGO WORKFLOWS (M28.2, ADR-0054) — the one-time redeem door.
+   *
+   * The real caller is the `scp-ops-v1` runner pod, which speaks HTTP directly; this wrapper exists
+   * so the contract is exercised through the public SDK like every other route. It is authenticated
+   * by the TOKEN, not by this client's bearer, and a token is single-use: spending one here makes
+   * the run it belongs to fail, loudly, as a replay. There is deliberately no CLI verb over it.
+   */
+  readonly opsRuns = {
+    redeem: async (token: string, publicKey: string): Promise<OpsRunMaterial> => {
+      const result = await redeemOpsRunRequest({ client: this.client, body: { token, publicKey } });
+      return unwrap(result) as OpsRunMaterial;
     }
   };
 

@@ -17,6 +17,11 @@ export interface PokeRateLimiterOptions {
   refillIntervalMs: number;
   /** Test seam — inject a deterministic clock. Defaults to `Date.now`. */
   now?: () => number;
+  /** BOUND on distinct keys held. A key is a caller identity (a peer, or — for the ops redeem door —
+   *  a remote address), so an unbounded map grows with every address that ever called. Past the
+   *  bound the OLDEST-inserted bucket is evicted; an evicted key starts full again, which is the
+   *  same state it would reach by waiting. Unset keeps the historical unbounded behaviour. */
+  maxKeys?: number;
 }
 
 interface Bucket {
@@ -30,11 +35,18 @@ export class PokeRateLimiter {
   private readonly refillIntervalMs: number;
   private readonly now: () => number;
   private readonly buckets = new Map<string, Bucket>();
+  private readonly maxKeys: number;
 
   constructor(opts: PokeRateLimiterOptions) {
     this.capacity = Math.max(1, opts.capacity);
     this.refillIntervalMs = Math.max(1, opts.refillIntervalMs);
     this.now = opts.now ?? Date.now;
+    this.maxKeys = Math.max(1, opts.maxKeys ?? Number.POSITIVE_INFINITY);
+  }
+
+  /** How many keys are currently held — for the bound's own test. */
+  get size(): number {
+    return this.buckets.size;
   }
 
   /** Attempts to spend one token for `key`. Returns `true` (allow) if a token was available, `false`
@@ -42,7 +54,12 @@ export class PokeRateLimiter {
    *  can never leak fractional tokens or drift with call frequency. */
   tryConsume(key: string): boolean {
     const now = this.now();
-    const bucket = this.buckets.get(key) ?? { tokens: this.capacity, updatedAt: now };
+    const known = this.buckets.get(key);
+    if (!known && this.buckets.size >= this.maxKeys) {
+      const oldest = this.buckets.keys().next().value;
+      if (oldest !== undefined) this.buckets.delete(oldest);
+    }
+    const bucket = known ?? { tokens: this.capacity, updatedAt: now };
 
     const elapsed = now - bucket.updatedAt;
     if (elapsed >= this.refillIntervalMs) {

@@ -83,6 +83,14 @@ interface TableVerdict {
  * docs/graph.md §125f rather than here, because a count goes stale and a verdict should not.
  */
 const VERDICTS: TableVerdict[] = [
+  // ---- M28.2: host ops through Argo Workflows (ADR-0054) ---------------------------------------
+  {
+    table: "ops_run_redemptions",
+    column: "change_object_id",
+    verdict: "historical",
+    why: "no delete statement and no DELETE grant, deliberately: a redemption is the attribution of an issued certificate serial to the run that asked for it, and must outlive the change exactly as its `ssh_certificate_issuances` row and audit events do. The redeem door never resolves the change — it locks the row by (org, id) and refuses once the short window closes — so a tombstoned change cannot be acted on through it. See docs/graph.md §125f",
+    deleteGrant: false
+  },
   // ---- M27.6a: observed infrastructure membership ---------------------------------------------
   {
     table: "infrastructure_members",

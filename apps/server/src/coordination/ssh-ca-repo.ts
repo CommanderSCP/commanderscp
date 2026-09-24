@@ -84,6 +84,8 @@ export interface RecordIssuanceInput {
   principals: string[];
   targetHosts: string[];
   expiresAt: Date;
+  /** The `source-address` critical option the certificate carries, when it carries one. */
+  sourceAddress?: string | null;
 }
 
 /**
@@ -107,6 +109,7 @@ export async function recordIssuance(
     keyId: input.keyId,
     principals: input.principals,
     targetHosts: input.targetHosts,
+    sourceAddress: input.sourceAddress ?? null,
     expiresAt: input.expiresAt
   });
   return { id };
@@ -258,6 +261,7 @@ export async function listIssuances(
     authorityName: string;
     principals: string[];
     targetHosts: string[];
+    sourceAddress: string | null;
     issuedAt: Date;
     expiresAt: Date;
   }[]
@@ -269,6 +273,7 @@ export async function listIssuances(
       authorityName: sshCertificateIssuances.authorityName,
       principals: sshCertificateIssuances.principals,
       targetHosts: sshCertificateIssuances.targetHosts,
+      sourceAddress: sshCertificateIssuances.sourceAddress,
       issuedAt: sshCertificateIssuances.issuedAt,
       expiresAt: sshCertificateIssuances.expiresAt
     })

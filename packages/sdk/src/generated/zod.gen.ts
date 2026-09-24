@@ -6186,6 +6186,36 @@ export const zEnrolTrustDomainSshCaResponse = z.object({
 /**
  * Success
  */
+export const zGetTrustDomainArgoOpsPinResponse = z.object({
+    domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    serverUrl: z.string(),
+    namespace: z.string(),
+    templateRef: z.string(),
+    sealingPublicKey: z.string(),
+    sourceAddresses: z.array(z.string()),
+    runnerImageDigest: z.string(),
+    redeemUrl: z.string(),
+    updatedAt: z.string()
+});
+
+/**
+ * Success
+ */
+export const zPutTrustDomainArgoOpsPinResponse = z.object({
+    domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    serverUrl: z.string(),
+    namespace: z.string(),
+    templateRef: z.string(),
+    sealingPublicKey: z.string(),
+    sourceAddresses: z.array(z.string()),
+    runnerImageDigest: z.string(),
+    redeemUrl: z.string(),
+    updatedAt: z.string()
+});
+
+/**
+ * Success
+ */
 export const zListSshCertificateIssuancesResponse = z.object({
     issuances: z.array(z.object({
         serial: z.string(),
@@ -6193,6 +6223,7 @@ export const zListSshCertificateIssuancesResponse = z.object({
         authorityName: z.string(),
         principals: z.array(z.string()),
         targetHosts: z.array(z.string()),
+        sourceAddress: z.string().nullable(),
         issuedAt: z.string(),
         expiresAt: z.string()
     }))
@@ -6210,6 +6241,23 @@ export const zReconcileSshCertificateSerialsResponse = z.object({
         issuedAt: z.string().nullable()
     })),
     unrecognisedCount: z.int().gte(-9007199254740991).lte(9007199254740991)
+});
+
+/**
+ * Success
+ */
+export const zRedeemOpsRunResponse = z.object({
+    runId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    opsRole: z.string(),
+    opsInventory: z.string(),
+    opsEgressAllowlist: z.array(z.string()),
+    opsPrincipals: z.array(z.string()),
+    roleArguments: z.record(z.string(), z.unknown()),
+    certificate: z.string(),
+    serial: z.string(),
+    keyId: z.string(),
+    expiresAt: z.string(),
+    sourceAddress: z.string().nullable()
 });
 
 /**

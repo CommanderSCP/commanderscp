@@ -466,6 +466,8 @@ export const SshCertificateIssuanceSchema = z.strictObject({
   authorityName: z.string(),
   principals: z.array(z.string()),
   targetHosts: z.array(z.string()),
+  /** The OpenSSH `source-address` the certificate CARRIES (M28.2), or null when it carries none. */
+  sourceAddress: z.string().nullable(),
   issuedAt: z.string(),
   expiresAt: z.string()
 });
@@ -504,3 +506,93 @@ export const SshCertificateIssuanceListSchema = z.strictObject({
   issuances: z.array(SshCertificateIssuanceSchema)
 });
 export type SshCertificateIssuanceList = z.infer<typeof SshCertificateIssuanceListSchema>;
+
+// ---------------------------------------------------------------------------------------------
+// Host ops through Argo Workflows — the one-time redemption (M28.2, ADR-0054).
+// ---------------------------------------------------------------------------------------------
+
+/** WHAT A `scp-ops-v1` RUNNER POD SENDS. Two fields, and neither can widen the run.
+ *
+ *  `token` is the single-use secret the pod unsealed with the operator's key; it names ONE
+ *  redemption row, whose bound reconcile already derived. `publicKey` is the key the pod generated
+ *  for itself — the certificate is issued over it, so the private half never leaves the pod and
+ *  never exists in SCP. There is deliberately no field for hosts, a role, principals or a validity:
+ *  anything the request could name is something a Workflow editor could choose. */
+export const OpsRunRedemptionRequestSchema = z.strictObject({
+  token: z.string().min(1).max(512),
+  publicKey: z
+    .string()
+    .min(1)
+    .max(1024)
+    .describe("The pod's own ephemeral public key, `ssh-ed25519 AAAA...`.")
+});
+export type OpsRunRedemptionRequest = z.infer<typeof OpsRunRedemptionRequestSchema>;
+
+/** WHAT THE POD GETS BACK — the same bound Mode C's `deriveOpsRunMaterial` produces, plus a
+ *  certificate over the pod's own key. The runner writes these to the same `/work/in` files the
+ *  Mode C orchestrator stages, so one reader reads one shape. */
+export const OpsRunMaterialSchema = z.strictObject({
+  runId: z.string().uuid(),
+  opsRole: z.string(),
+  opsInventory: z.string(),
+  opsEgressAllowlist: z.array(z.string()),
+  opsPrincipals: z.array(z.string()),
+  /** The role's OWN arguments, as data — the runner marks every string `!unsafe` (M27.2). */
+  roleArguments: z.record(z.string(), z.unknown()),
+  /** `ssh-ed25519-cert-v01@openssh.com AAAA...` over `publicKey`. */
+  certificate: z.string(),
+  serial: z.string(),
+  keyId: z.string(),
+  expiresAt: z.string(),
+  /** The `source-address` critical option the certificate carries, or null when it carries none. */
+  sourceAddress: z.string().nullable()
+});
+export type OpsRunMaterial = z.infer<typeof OpsRunMaterialSchema>;
+
+/** THE ARGO HOST-OPS PIN (M28.2, ADR-0054 D9): where this domain's CA may send an Argo run token,
+ *  what it is sealed to, and the runner digest the catalog template must name. Written only with
+ *  `secret:write` at the org root — the enrolment door's permission — so a binding editor with
+ *  `object:write` cannot move it. Every field is required: an Argo-bound host-reaching run is
+ *  refused unless its binding matches the pin. */
+export const ArgoOpsPinRequestSchema = z.strictObject({
+  serverUrl: z.string().min(1).max(2048),
+  namespace: z.string().min(1).max(63),
+  templateRef: z.string().min(1).max(253),
+  sealingPublicKey: z
+    .string()
+    .min(1)
+    .max(8192)
+    .describe("RSA (>= 3072-bit) SPKI PEM; its private half is the `scp-ops-v1` sealing Secret."),
+  sourceAddresses: z
+    .array(z.string().min(1).max(64))
+    .min(1)
+    .max(64)
+    .describe(
+      "The cluster's egress addresses/CIDRs — every certificate's OpenSSH `source-address`."
+    ),
+  runnerImageDigest: z
+    .string()
+    .regex(/^sha256:[0-9a-f]{64}$/)
+    .describe("The scp-runner-ops digest the WorkflowTemplate's step must name."),
+  redeemUrl: z
+    .string()
+    .min(1)
+    .max(2048)
+    .describe(
+      "SCP's API base URL as the Argo cluster reaches it — the template's SCP_OPS_API_URL must equal it."
+    )
+});
+export type ArgoOpsPinRequest = z.infer<typeof ArgoOpsPinRequestSchema>;
+
+export const ArgoOpsPinSchema = z.strictObject({
+  domainId: z.string().uuid(),
+  serverUrl: z.string(),
+  namespace: z.string(),
+  templateRef: z.string(),
+  sealingPublicKey: z.string(),
+  sourceAddresses: z.array(z.string()),
+  runnerImageDigest: z.string(),
+  redeemUrl: z.string(),
+  updatedAt: z.string()
+});
+export type ArgoOpsPinView = z.infer<typeof ArgoOpsPinSchema>;

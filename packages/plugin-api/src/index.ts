@@ -210,6 +210,45 @@ export function triggerRefusalOf(err: unknown): string | undefined {
   return typeof rpcMessage === "string" ? rpcMessage : err.message;
 }
 
+/**
+ * THE HOST-OPS TEMPLATE READ-BACK REFUSED (M28.2, ADR-0054 D9(d)) — a `TriggerRefused` with its OWN
+ * JSON-RPC code, so the server can record it as an ops-material refusal (with the lane's own status
+ * and reason) rather than a generic executor verdict.
+ *
+ * Decided on the CODE, like `triggerRefusalOf`: the first version matched a text marker in the
+ * message, and #413's instance-id charset admits every character of it, so an instance named after
+ * the marker could make a DNS failure read as a template verdict (#414 final re-verification).
+ */
+export class OpsTemplateRefused extends TriggerRefused {
+  constructor(message: string) {
+    super(message);
+    this.name = "OpsTemplateRefused";
+  }
+}
+
+/** The JSON-RPC code an `OpsTemplateRefused` travels under. */
+export const OPS_TEMPLATE_REFUSED_RPC_CODE = -32011;
+
+/** Structural check — survives module duplication, where `instanceof` would not. */
+export function isOpsTemplateRefused(err: unknown): err is OpsTemplateRefused {
+  return err instanceof Error && err.name === "OpsTemplateRefused";
+}
+
+/** The ops read-back refusal carried by an error, or `undefined`.
+ *
+ *  Over the subprocess host: the RPC CODE only (`rpcCode`, set by the host as data, never parsed out
+ *  of text). In-process (no host between, so no `rpcCode` and no host-written message): the error's
+ *  own NAME, which the plugin sets and which no tenant string reaches. Never the message text. */
+export function opsTemplateRefusalOf(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const { rpcCode, rpcMessage } = err as Error & { rpcCode?: unknown; rpcMessage?: unknown };
+  if (rpcCode !== undefined) {
+    if (rpcCode !== OPS_TEMPLATE_REFUSED_RPC_CODE) return undefined;
+    return typeof rpcMessage === "string" ? rpcMessage : err.message;
+  }
+  return isOpsTemplateRefused(err) ? err.message : undefined;
+}
+
 export interface AbortResult {
   aborted: boolean;
   detail?: string;

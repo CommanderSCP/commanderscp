@@ -124,12 +124,13 @@ import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
 import {
+  OpsMaterialRefusal,
   TriggerParameterRefusal,
   WAVE_TARGET_EXECUTOR_REFUSED_AUDIT_ACTION,
   WAVE_TARGET_EXECUTOR_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
-import { triggerRefusalOf } from "@scp/plugin-api";
-import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
+import { opsTemplateRefusalOf, triggerRefusalOf } from "@scp/plugin-api";
+import { isOpsLane, opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 import {
   authoredRollbackTrigger,
   deployLaneTriggerParameters
@@ -1348,7 +1349,10 @@ async function resolveRecipeRefusal(
   /** The plugin module this target's binding resolved to — for the OQ-5 managed-actuator refusal.
    *  Comes from `ensureExecutorInstanceStarted`'s return so it is the same answer the trigger will
    *  act on, never a second query. */
-  executorModule: PluginModule
+  executorModule: PluginModule,
+  /** M28.2 — the target is a host-reaching run (`isOpsLane`) on a module that is NOT itself
+   *  recipe-forbidden: `argo-workflows` on an SCP ops catalog template. */
+  hostReachingLane = false
 ): Promise<
   | {
       status: RefusedWaveTargetStatus;
@@ -1375,6 +1379,31 @@ async function resolveRecipeRefusal(
     };
   }
   const kind = recipe.recipe.trigger.kind;
+  // A HOST-REACHING RUN IS NEVER RECIPE-DRIVEN, whichever executor runs it (M28.2, ADR-0054). Its
+  // inventory, allowlist, principals and role are the bound (ADR-0052), and on the Argo path its
+  // Workflow parameters are a sealed one-time token — none of it is anything a campaign author may
+  // restate. Checked BEFORE the module refusal so the reason names the lane, not a managed actuator.
+  if (hostReachingLane && !isRecipeForbiddenExecutorModule(executorModule)) {
+    return {
+      status: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+      action: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION,
+      summary:
+        `this target runs CommanderSCP's host-operations catalog template on '${executorModule}', ` +
+        `and a campaign recipe may not drive a host-reaching run — its hosts, reach, principals and ` +
+        `run token are derived by the server, never authored`,
+      remediation:
+        `remove the recipe from this change (declare the operation in 'properties.ops' instead), or ` +
+        `remove this target from the campaign. A host-reaching run's parameters are the bound on what ` +
+        `it can touch (ADR-0052); letting a recipe supply them would let a campaign author choose ` +
+        `which machines receive a root certificate's worth of change`,
+      inputContext: {
+        recipe: { readable: true, kind },
+        executorModule,
+        managedActuator: false,
+        hostReachingLane: true
+      }
+    };
+  }
   // A recipe may not drive one of our own actuators. See docs/coordination.md §798.
   if (isRecipeForbiddenExecutorModule(executorModule)) {
     return {
@@ -1572,23 +1601,34 @@ async function triggerWaveTarget(
     // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
     // Component/DeploymentTarget with no binding configured falls back to the shared default
     // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
-    const { instanceId, module: executorModule } = await ensureExecutorInstanceStarted(
-      db,
-      orgId,
-      host,
-      targetObjectId,
-      type,
-      null,
-      masterKey
-    );
+    const {
+      instanceId,
+      module: executorModule,
+      config: executorConfig
+    } = await ensureExecutorInstanceStarted(db, orgId, host, targetObjectId, type, null, masterKey);
     const client = host.executor(instanceId);
     // Deterministic across every retry of this exact wave target — no separate storage needed, the
     // row's own id already satisfies "IDENTICAL across retries of the same target."
     const idempotencyKey = waveTargetId;
 
     // The recipe, and the two refusals that come with it. See docs/coordination.md §805.
+    //
+    // M28.2: a host-reaching run on an org's Argo Workflows is refused a recipe OUTRIGHT, exactly as
+    // `managed-ops` is. `argo-workflows` is not a managed module, so the module check alone would
+    // let a recipe reach the ops lane and restate a bound key or the sealed token; the lane is
+    // decided from the binding's template, so the binding is read here for that one question.
+    const hostReachingLane =
+      !isRollback && recipe.outcome !== "none"
+        ? await withTenantTx(db, orgId, async (tx) =>
+            isOpsLane(
+              executorModule,
+              (await resolveBindingForTarget(tx, orgId, targetObjectId, type)).binding
+                ?.externalRef ?? null
+            )
+          )
+        : false;
     const recipeRefusal = !isRollback
-      ? await resolveRecipeRefusal(client, recipe, executorModule)
+      ? await resolveRecipeRefusal(client, recipe, executorModule, hostReachingLane)
       : undefined;
     if (recipeRefusal) {
       const refused = await withTenantTx(db, orgId, (tx) =>
@@ -1692,14 +1732,26 @@ async function triggerWaveTarget(
       // A ROLLBACK derives nothing, for a sharper reason than the build lane's: there is no
       // "previous package version" recorded anywhere, so a rollback here would re-run the FORWARD
       // operation against the same hosts. Refusing to derive means `managed-ops` refuses the run.
+      //
+      // M28.2 widens the lane to an `argo-workflows` binding on an SCP ops catalog template
+      // (`isOpsLane`): the SAME derivation, delivered as a sealed one-time token instead of a staged
+      // credential, and `scpd` launches nothing. Deleting either half of this condition must make a
+      // test red (`ops-argo-lane.integration.test.ts`).
+      const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
+      const binding = resolution.binding;
+      const bindingExternalRef = binding?.externalRef ?? null;
       const opsParameters =
-        isRollback || executorModule !== "managed-ops"
+        isRollback || !isOpsLane(executorModule, bindingExternalRef)
           ? undefined
           : await opsLaneTriggerParameters(tx, {
               orgId,
               targetObjectId,
               changeObjectId: change.objectId,
               pluginModule: executorModule,
+              externalRef: bindingExternalRef,
+              waveTargetId,
+              executorConfig,
+              recipeParameters,
               masterKey
             }).catch(asRefusal);
       if (opsParameters instanceof TriggerParameterRefusal) {
@@ -1732,9 +1784,7 @@ async function triggerWaveTarget(
             }
           : undefined;
 
-      // The executor-specific target id. See docs/coordination.md §807.
-      const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
-      const binding = resolution.binding;
+      // The executor-specific target id (`resolution`, above). See docs/coordination.md §807.
 
       // M28.4 (ADR-0055) — THE CREATE HALF OF IMPORT-OR-CREATE. A component that declares
       // `properties.deployment` and is bound to Argo CD gets an Application SCP authors, with the
@@ -1874,6 +1924,30 @@ async function triggerWaveTarget(
         ...(claim.parameters !== undefined ? { parameters: claim.parameters } : {})
       });
     } catch (err) {
+      // THE OPS TEMPLATE READ-BACK REFUSED (M28.2, ADR-0054 D9(d)) — TERMINAL, with a Decision.
+      // Not a transient executor error: the pinned template is not SCP's, or this instance is not a
+      // pinned endpoint, and retrying cannot change either. The redemption row minted for this
+      // trigger dies with the target (the redeem door requires an in-flight target).
+      //
+      // Decided on the RPC CODE (`opsTemplateRefusalOf`), never on message text: the host's message
+      // embeds the tenant-chosen instance id, whose charset admits any text marker (#414 final round).
+      const opsRefusal = opsTemplateRefusalOf(err);
+      if (isOpsLane(executorModule, claim.externalRef) && opsRefusal !== undefined) {
+        const detail = opsRefusal;
+        await withTenantTx(db, orgId, (tx) =>
+          refuseTrigger(
+            tx,
+            new OpsMaterialRefusal(`the host-ops template read-back refused this run: ${detail}`, {
+              inputContext: {
+                gate: "ops_material",
+                reason: "template_readback_refused",
+                detail: detail.slice(0, 2000)
+              }
+            })
+          )
+        );
+        return;
+      }
       // A VERDICT, not a failure (M28.4 fix round): the executor refused on its own evidence and
       // will refuse identically on every retry, so the target is terminalised with a Decision and an
       // audit event instead of sitting in `triggering` behind an ever-growing backoff.
@@ -1942,7 +2016,7 @@ async function ensureExecutorInstanceStarted(
    * currently-configured one) — and the refusal would then be reasoning about a module that is not
    * the one about to be triggered.
    */
-): Promise<{ instanceId: string; module: PluginModule }> {
+): Promise<{ instanceId: string; module: PluginModule; config: Record<string, unknown> }> {
   // MUST resolve the SAME routing Type the trigger will use. See docs/coordination.md §813.
   const resolved = await withTenantTx(db, orgId, async (tx) => {
     const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
@@ -1960,7 +2034,13 @@ async function ensureExecutorInstanceStarted(
     (!persistedExecutorPluginId || persistedExecutorPluginId === resolved.instanceConfig.id)
   ) {
     await host.start([resolved.instanceConfig]);
-    return { instanceId: resolved.instanceConfig.id, module: resolved.instanceConfig.module };
+    return {
+      instanceId: resolved.instanceConfig.id,
+      module: resolved.instanceConfig.module,
+      // The SAME resolved config the instance was started with, so the ops lane reads the sealing
+      // key off the binding the trigger will act on rather than re-resolving it.
+      config: (resolved.instanceConfig.config ?? {}) as Record<string, unknown>
+    };
   }
 
   // Either no binding is configured, or a persisted id from an earlier trigger no longer matches
@@ -1973,13 +2053,17 @@ async function ensureExecutorInstanceStarted(
       module: DEFAULT_EXECUTOR_MODULE,
       orgId,
       scopeKey: "default",
-      config: {}
+      config: {},
+      // ALIVE, NOT RECONFIGURED: the default was booted with its own config (statePath, …), and
+      // `start()` now restarts an instance whose config changes (#414 fix round).
+      ensureAliveOnly: true
     }
   ]);
   // `module` describes what was actually started HERE. See docs/coordination.md §814.
   return {
     instanceId: persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID,
-    module: DEFAULT_EXECUTOR_MODULE
+    module: DEFAULT_EXECUTOR_MODULE,
+    config: {}
   };
 }
 

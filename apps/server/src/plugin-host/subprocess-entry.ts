@@ -29,7 +29,9 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import {
+  OPS_TEMPLATE_REFUSED_RPC_CODE,
   TRIGGER_REFUSED_RPC_CODE,
+  isOpsTemplateRefused,
   isTriggerRefused,
   scopedHttpResponseTooLargeError
 } from "@scp/plugin-api";
@@ -538,7 +540,12 @@ async function main(): Promise<void> {
           // A plugin VERDICT (`TriggerRefused`) travels under its own code so the server can make it
           // terminal; every other throw is the generic, retryable plugin error.
           error: {
-            code: isTriggerRefused(err) ? TRIGGER_REFUSED_RPC_CODE : -32000,
+            // The ops read-back refusal first: it is a TriggerRefused subclass with its own code.
+            code: isOpsTemplateRefused(err)
+              ? OPS_TEMPLATE_REFUSED_RPC_CODE
+              : isTriggerRefused(err)
+                ? TRIGGER_REFUSED_RPC_CODE
+                : -32000,
             message: err instanceof Error ? err.message : String(err)
           }
         })

@@ -10,6 +10,7 @@
     "test": "tsx src/verify.ts"
   },
   "dependencies": {
+    "@scp/plugin-argo-workflows": "workspace:*",
     "@scp/runner-launcher": "workspace:*",
     "yaml": "^2.9.0"
   },

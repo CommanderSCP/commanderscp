@@ -1,4 +1,10 @@
-import { createFileBackedJsonCache } from "@scp/plugin-api";
+import { OpsTemplateRefused, createFileBackedJsonCache } from "@scp/plugin-api";
+import {
+  SCP_OPS_TEMPLATE_PATTERN,
+  opsTemplateShapeProblems,
+  pinsForInstance
+} from "./ops-template.js";
+export * from "./ops-template.js";
 import type {
   ScheduleSpec,
   AbortResult,
@@ -192,11 +198,70 @@ function computeProgress(progress: string | undefined, phase: ExecutionPhase): n
   return 1;
 }
 
+/**
+ * DEFENCE IN DEPTH for SCP's host-ops catalog template (M28.2, ADR-0054 D9(d)).
+ *
+ * Before a sealed run token is submitted, THIS RUNNING INSTANCE checks two things against the
+ * domain pins the server injected (`opsTemplatePins`, always set — `[]` when the org has none):
+ *
+ *   1. ITS OWN `serverUrl` and `namespace` are a pinned endpoint for this template. Checked here,
+ *      against the config this process is actually running with, not only by the server against
+ *      the config it resolved — #414's re-verification showed a plugin host that kept a stale
+ *      instance running under a re-pointed binding, and the server's check alone cannot see that.
+ *   2. The WorkflowTemplate read back from that endpoint has EXACTLY the shape the chart renders
+ *      (`opsTemplateShapeProblems`), with the pinned runner digest and the pinned SCP API URL.
+ *
+ * Refusals are `OpsTemplateRefused` (their own JSON-RPC code), so the server terminalises the run
+ * with a Decision; it decides on the code, never on message text.
+ * A read-back that fails at the HTTP layer (5xx, unreachable) does NOT carry it: that is the Argo
+ * server being unwell, not the template being wrong, and it takes the ordinary retry path.
+ * This is not attestation — see ops-template.ts.
+ */
+async function assertOpsTemplateMatchesPin(
+  ctx: PluginContext,
+  config: ArgoWorkflowsConfig,
+  templateName: string
+): Promise<void> {
+  const refuse = (why: string): never => {
+    throw new OpsTemplateRefused(`refusing to submit ${templateName} — ${why}`);
+  };
+  const pins = pinsForInstance(
+    (ctx.config as { opsTemplatePins?: unknown } | undefined)?.opsTemplatePins,
+    { serverUrl: config.serverUrl, namespace: config.namespace },
+    templateName
+  );
+  if (pins.length === 0) {
+    refuse(
+      `no Argo host-ops pin names this instance's endpoint (${config.serverUrl}, namespace ` +
+        `${config.namespace}) for ${templateName}`
+    );
+  }
+  const variants = new Set(pins.map((p) => `${p.runnerImageDigest} ${p.redeemUrl}`));
+  if (variants.size !== 1) {
+    refuse("domains pinning this endpoint disagree on the runner digest or the SCP API URL");
+  }
+  const { status, body } = await apiRequest(
+    ctx,
+    config,
+    "GET",
+    `/api/v1/workflow-templates/${config.namespace}/${encodeURIComponent(templateName)}`
+  );
+  if (status === 404) refuse("the template does not exist on the pinned server");
+  if (status < 200 || status >= 300) {
+    throw new Error(`argo-workflows trigger: reading back ${templateName} returned HTTP ${status}`);
+  }
+  const problems = opsTemplateShapeProblems(body, pins[0]!);
+  if (problems.length > 0) refuse(problems.slice(0, 8).join("; "));
+}
+
 async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const templateName = intent.targetRef;
   if (!templateName) {
     throw new Error("argo-workflows trigger: intent.targetRef (WorkflowTemplate name) is required");
+  }
+  if (SCP_OPS_TEMPLATE_PATTERN.test(templateName)) {
+    await assertOpsTemplateMatchesPin(ctx, config, templateName);
   }
 
   const state = await loadState(config.statePath);
@@ -503,6 +568,10 @@ export const manifest: PluginManifest = {
       namespace: { type: "string" },
       tokenSecretKey: { type: "string" },
       labelSelector: { type: "string" }
+      // NO sealing key or source addresses here (M28.2 fix round): they were binding config under
+      // `object:write`, and #414's adversarial round redirected a run token with them. They live on
+      // the domain's Argo host-ops pin (`secret:write` at the org root); `opsTemplatePin` is
+      // SERVER-injected from it and never tenant-settable.
     }
   }
 };

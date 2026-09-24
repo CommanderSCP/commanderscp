@@ -67,3 +67,13 @@ M27.1 ships the image and its gate. `run.sh` **refuses to run** anything: the ca
 unsafe-marked parameters (M27.2) and credential provisioning (M27.4 BYO / M27.5 SCP-CA) attach in
 their own increments. The refusal is deliberate — an image built today cannot be wired up and
 quietly do the wrong thing.
+
+## The Argo path (M28.2, ADR-0054)
+
+The same image runs as the `scp-ops-v1` Argo Workflows catalog template. There nothing SCP controls
+can stage `/work/in`, so when `SCP_OPS_API_URL` is set `run.sh` first runs `redeem.py`: it unseals
+`SCP_OPS_RUN_TOKEN_SEALED` with the key at `SCP_OPS_SEALING_KEY_FILE`, generates this run's ed25519
+keypair, redeems the token once at `POST /api/v1/ops-run-redemptions`, and writes the same four files
+Mode C's orchestrator stages (`inventory.ini`, `params.json`, `ssh-credential`, `role`). From there
+the code path is identical. The role comes from the redemption; an `SCP_OPS_ROLE` in the pod's
+environment is ignored on this path.
