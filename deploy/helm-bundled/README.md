@@ -70,7 +70,10 @@ scripts/scp-bundled.sh enable argo-workflows \
 The air-gap `install.sh` sets the image (it is `scp-runner-iac`, already in the bundle); the backend
 is always yours to name. Then give a deployment-target `properties.environment` and
 `properties.infrastructureRepo` (the one repo its infrastructure comes from), bind its
-`infrastructure` pipeline to `scp-infra-plan-v1`, propose a plan pinned to a commit of that repo,
+`infrastructure` pipeline to `scp-infra-plan-v1` THROUGH AN EXECUTION SYSTEM (an inline binding is
+refused), allow that repo on the system with
+`scp execution-system source-allowlist set <system> --repo <owner/name>` (needs `secret:write` at the
+org root — the target's editor cannot), propose a plan pinned to a commit of that repo,
 have someone OTHER than its proposer accept it, and apply it with
 `scp change propose --apply-plan <plan change id>`.
 

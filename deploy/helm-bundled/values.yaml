@@ -227,12 +227,14 @@ bundledExecutor:
         # the egress allowlist): chart values, never tenant data SCP holds. `type` is an OpenTofu
         # backend name (s3, gcs, azurerm, pg, kubernetes, http, …); `config` is its NON-SECRET
         # settings, rendered to a `-backend-config` file. The template supplies the backend with an
-        # override of its own and REFUSES a directory that carries any other override file, a
-        # `backend` block or a `cloud` block — an org `zz_override.tf` would otherwise beat it
-        # (measured) — so an org config cannot move state somewhere the operator did not choose.
-        # Each deployment-target gets its own workspace in this backend,
-        # `<environment>[-<region>]--o<org id>--t<target id>`, derived by SCP: two regions of one
-        # environment, or two orgs' `prod`, never share a state.
+        # override of its own and REFUSES a directory carrying ANY other override file (`.tf`,
+        # `.tf.json`, `.tofu`, `.tofu.json`) — an org `zz_override.tf` or `zz_override.tofu` would
+        # otherwise beat it (measured) — so its override is the only one, replacing any `backend`
+        # or `cloud` block a normal file declares, and OpenTofu's own record of the configured
+        # backend is checked after init. Each deployment-target gets its own workspace in this
+        # backend, `<environment-slug>-<12-hex digest of org+target+region>`, derived by SCP: a
+        # lowercase RFC 1123 label of at most 63 characters, so every backend accepts it —
+        # `kubernetes` included, whose Secret label `tfstateWorkspace` caps at 63.
         stateBackend:
           type: ""
           config: {}

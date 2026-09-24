@@ -1844,8 +1844,19 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         door for both infra templates; plan and apply have separate, and for the plan read-only,
         credentials; proposer ≠ acceptor; one workspace per target carrying org and target identity.
         The build lane had the same repo property and now builds only a declared source (ADR-0053
-        addendum; the no-source-mapping case warns rather than refuses — an owner question). Every
-        fix has a test that goes red when it is removed.
+        addendum). Every fix has a test that goes red when it is removed.
+      - *And the fix round was not closed either (second re-verification, 2026-09-24).* The repo
+        binding was circular — `infrastructureRepo` is `object:write`, so an Operator re-declared it
+        and planned their own repo — and the backend refusal missed `.tofu` overrides, a JSON backend
+        and a commented `backend` keyword. Owner ruling R1 moved the repo's AUTHORITY onto the
+        execution system: a source allowlist in its own table, written only with `secret:write` at
+        the org root (migration 0121, ADR-0056 §7a), required by both the infra and the build lane;
+        an inline binding is refused. The script now refuses every override spelling and checks
+        OpenTofu's own record of the backend it configured instead of text-matching HCL. Workspaces
+        fit a Kubernetes label (≤ 63). Owner ruling R2: a build component with no source mapping of
+        its Type is refused. **Deploying this needs estate data first** — every real-executor build
+        or infra target bound through an execution system whose allowlist names its repo, with a
+        source mapping of its Type (see the M28.3 PR for the list).
   - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
     import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
     Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.

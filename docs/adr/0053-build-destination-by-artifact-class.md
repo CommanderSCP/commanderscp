@@ -149,8 +149,15 @@ a glob on the repo, a NULL pattern meaning every repo; disabled rows still decla
 change's `sourceRef.repo` or a recipe's `sourceRepo`, which wins the merge in reconcile — that no
 row matches is refused, terminal, `source_refused` with a Decision (`BuildSourceRefused`).
 
-**A component with NO source mapping of that Type proceeds, with a `warn` Decision**
-(`build_source_undeclared`, naming the repo). That is the live estate's shape today for API-proposed
-builds, and strict refusal would stop builds that work. It is an **open owner question**: make the
-undeclared case a refusal (every build component then needs a source mapping of its Type), or keep
-the warning.
+**A component with NO source mapping of that Type is REFUSED** (`build_source_undeclared`) — owner
+ruling R2, 2026-09-24, replacing the first version's warn-and-proceed (which also wrote a warn
+Decision per claim).
+
+**And the repo must be in the binding's EXECUTION SYSTEM's source allowlist** (owner ruling R1;
+ADR-0056 §7a): a component's editor can add a source mapping, so the mapping alone would be the
+proposer vouching for themselves. The allowlist is written only with `secret:write` at the org root.
+An inline binding has no allowlist and is refused (`build_source_no_execution_system`); a repo the
+system does not allow is refused (`build_source_not_allowed`). The fake executor runs nothing and is
+not checked. Before deploying this, every build component coordinated through a real executor needs
+(a) a source mapping of its Type naming its repo, and (b) that repo in its execution system's
+allowlist — and must be bound through an execution system, not inline.

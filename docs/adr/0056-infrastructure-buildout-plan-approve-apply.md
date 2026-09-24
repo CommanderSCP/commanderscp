@@ -48,7 +48,10 @@ The alternative — one change that pauses between a plan wave and an apply wave
 mid-execution approval primitive with its own roles, votes and Decision shape; it would be a second
 approval system beside the first. (Owner ruling 2026-09-24: keep the two-change shape.)
 
-**1a. Separation of duties, by default.** Accepting an infrastructure PLAN change (Type
+**1a. Separation of duties, by default.** (The proposer is the change's `propose` actor AND, for a
+system-proposed change such as a change-source report, the subject who declared it —
+`declarationActorId` on the propose Decision — so the human who reported a plan cannot accept it
+either; re-verification finding 9.) Accepting an infrastructure PLAN change (Type
 `infrastructure`, no apply declaration, and actually planned by this lane — a recorded
 `infra_plan_trigger`; an infrastructure change driven by any other executor, such as a machine-image
 publication, is not approving a plan for apply and keeps its old meaning) is refused when the acceptor is the change's proposer — read
@@ -130,33 +133,67 @@ enforced twice:
 
 **6. Reserved parameters.** `environment`, `stateWorkspace`, `region`, `infraPath`, `sourceRepo`,
 `sourceCommit`, `sourceRef`, `planDigest`, `planChangeObjectId`, `changeObjectId`, `targetObjectId`
-(`INFRA_LANE_RESERVED_PARAMETERS`). A recipe that names any is refused (`infra_recipe_restates_bound`)
-and the lane's values are spread last; outside the lane, §5 refuses the template itself, so no
-binding submits an infra template with recipe-chosen values. M28.4's server-reserved-parameter table
-(`reserved-trigger-parameters.ts`) was not on `main` when this merged; these keys belong in it.
+(`INFRA_LANE_RESERVED_PARAMETERS`). THREE layers: the server-wide table M28.4 built
+(`reserved-trigger-parameters.ts`, `RESERVED_BY_LANE.infra`, for an `infrastructure`-Category Type)
+refuses a recipe naming `environment`, `stateWorkspace`, `region`, `infraPath`, `planDigest`,
+`planChangeObjectId` or `targetObjectId` before any lane runs (`recipe_reserved_parameter`); the
+source keys are conveniences for the build lane in that table, so the lane itself refuses a recipe
+naming them (`infra_recipe_restates_bound`); and the lane's values are spread last. Outside the lane,
+§5 refuses the template itself.
 
 **7. Scoped to one target; its source is declared; state belongs to the operator.** The wave target
 is a `deployment-target`, which must declare:
 
 - `properties.environment` (e.g. `prod-us-east-1`), and optionally `region`;
-- `properties.infrastructureRepo` — the ONE repo its infrastructure comes from. A plan runs the
-  repository's own code (providers, `data "external"`) with the operator's credentials in the pod,
-  so a plan whose `sourceRef.repo` is anything else is refused (`infra_source_not_declared`), and a
-  target declaring none refuses every plan (`infra_source_undeclared`). Probe C submitted
-  `attacker/evil` before this. It is a fact about the target, set by whoever may write the target;
+- `properties.infrastructureRepo` — the ONE repo its infrastructure comes from. A plan whose
+  `sourceRef.repo` is anything else is refused (`infra_source_not_declared`), and a target declaring
+  none refuses every plan (`infra_source_undeclared`);
 - optionally `properties.infrastructurePath` (default the repo root).
 
-Each target gets its own OpenTofu workspace, `<environment>[-<region>]--o<org id>--t<target id>`: the
-readable part leads, and the org and target identities mean two regions of one environment, two
-targets named alike, or two orgs' `prod` on one operator backend never share a state. A plan must be
+**7a. The repo's AUTHORITY lives on the execution system (owner ruling R1, 2026-09-24).** The target's
+`infrastructureRepo` is written with `object:write`, so it alone was circular: an Operator re-declared
+it as `attacker/evil` and had that planned with the plan credentials (re-verification probe C2). A
+plan now runs only if its repo is ALSO in the binding's execution system's **source allowlist** —
+`owner/name` or `owner/*` entries, stored in its own table (`execution_system_source_allowlists`,
+migration 0121) and written through ONE door: `PUT /v1/execution-systems/{id}/source-allowlist`, with
+`secret:write` at the org root (the class that sets a secret; audit event
+`execution_system.source_allowlist.set`). Not a property on the execution-system object — object
+properties are written with `object:write` through the object routes, coordination-as-code and
+federation replication, and a look-alike `properties.sourceAllowlist` has no effect (tested). The
+table is never replicated and has no IaC construct; `infra-lane-reachability.test.ts` holds that the
+route is its only writer. An INLINE binding has no execution system and so no allowlist: refused
+(`infra_source_no_execution_system`). The apply re-checks the recorded repo against the allowlist as
+it is then (a narrowed allowlist withdraws the permission). API → SDK (`executors.put/getSourceAllowlist`)
+→ CLI (`scp execution-system source-allowlist set|get`) → UI (read-only card on the execution
+system's page — it is set with `secret:write`, not from a page any reader reaches). This departs from
+"new concepts as graph data" deliberately, for the same reason M28.2's Argo host-ops pin does: a bound
+on what runs with credentials cannot be data its own subject can write.
+
+The plan's record also carries the execution system's identity (id, `serverUrl`, `namespace`), and
+an apply is refused if the system was re-pointed since (`infra_plan_scope_changed`, probe E).
+
+Each target gets its own OpenTofu workspace, `<environment-slug>-<12 hex>` (`deriveStateWorkspace`):
+the slug is the lowercased environment and region, the digest is sha256 of org + target + region, and
+the whole is a lowercase RFC 1123 label of at most 63 characters, because the strictest backend —
+`kubernetes`, which labels each workspace's Secret `tfstateWorkspace=<workspace>` — caps a label value
+at 63 (every earlier name was ≥ 78). A digest collision is checked, not assumed away: a plan whose
+workspace another target's plan already used is refused (`infra_workspace_collision`). A plan must be
 pinned to a full commit id.
 
 The **state backend is chart values** (`catalog.infra.stateBackend.type` + non-secret `config`),
 rendered into a `-backend-config` file and supplied by an override the script writes. A directory
-carrying ANY other override file (`override.tf[.json]`, `*_override.tf[.json]`), a `backend` block or a
-`cloud` block is **refused before init**: OpenTofu merges overrides in lexical order and the last
-wins, so an org `zz_override.tf` beat the script's override (measured by the verification). The
-templates do not render until a backend is named, and a backend with no image fails the render.
+carrying ANY other override file — `override.*` or `*_override.*` in all four spellings OpenTofu reads,
+`.tf`, `.tf.json`, `.tofu`, `.tofu.json` — is **refused before init**: overrides merge in lexical order
+and the last wins, and an org `zz_override.tf`, then a `zz_override.tofu` with `backend "http"`, beat
+the script's override (both measured by the verification). With the script's override the ONLY one,
+it replaces whatever `backend` or `cloud` block a NORMAL file declares, however written — `.tofu`,
+JSON, a comment between the keyword and the label — so the script does not text-match HCL at all
+(an earlier regex/`jq` pass let `state.tf.json` and `backend /* x */ "http"` through); instead, after
+`init`, it reads OpenTofu's OWN record of the backend it configured (`.terraform/terraform.tfstate`
+`.backend.type`) and refuses anything but the operator's. Fixtures c1–c4 from the re-verification are
+permanent in `infra-lane.integration.test.ts`: the override spellings are refused, and each normal-file
+backend plans against the operator's `local` state, never `http`. The templates do not render until a
+backend is named, and a backend with no image fails the render.
 
 **Credentials are per phase.** `scp-infra-plan-credentials` and `scp-infra-apply-credentials`, each an
 operator-provisioned Secret mounted with `envFrom`, and each phase its own ServiceAccount
@@ -218,3 +255,13 @@ override file could replace the state backend; a declared apply on a non-Argo ex
 ignored; no separation of duties; state shared by environment name across targets and orgs. Each is
 fixed above (§1a, §2, §3, §5, §7) and each fix has a test that goes red when it is removed (PR body).
 The build lane had the same repo property; see ADR-0053's addendum.
+
+**Re-verification (2026-09-24, second round)** found the repo binding circular (the target's
+`infrastructureRepo` is `object:write`; probe C2) and the backend refusal incomplete (`.tofu`
+overrides, a JSON backend and a commented `backend` keyword passed the regex/`jq` checks). Fixed by
+§7a (the execution system's source allowlist, owner ruling R1) and by refusing every override
+spelling and reading OpenTofu's own configured-backend record instead of parsing HCL (§7). Also: the
+workspace now fits a Kubernetes label (≤ 63, finding 10); separation of duties reads the declarer of a
+system-proposed plan (finding 9); the plan's record carries the execution system's identity (NIT);
+the lane's keys are registered in M28.4's reserved-key table (§6); and the build lane refuses a
+component with no source mapping of its Type (owner ruling R2, ADR-0053 addendum).
