@@ -5,7 +5,7 @@ import {
   INFRASTRUCTURE_DECLARATION_PROPERTY,
   type ExecutorType
 } from "@scp/schemas";
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
   changePlans,
@@ -380,7 +380,13 @@ async function readExecutionSystem(
   const [row] = await tx
     .select({ typeId: objects.typeId, properties: objects.properties })
     .from(objects)
-    .where(and(eq(objects.orgId, input.orgId), eq(objects.id, input.executionSystemId)))
+    .where(
+      and(
+        eq(objects.orgId, input.orgId),
+        eq(objects.id, input.executionSystemId),
+        isNull(objects.deletedAt)
+      )
+    )
     .limit(1);
   if (!row || row.typeId !== "execution-system") {
     return refuseNoSystem(`names ${input.executionSystemId}, which is not an execution-system`);

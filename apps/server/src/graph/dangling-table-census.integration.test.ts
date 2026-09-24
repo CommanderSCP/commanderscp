@@ -83,6 +83,14 @@ interface TableVerdict {
  * docs/graph.md §125f rather than here, because a count goes stale and a verdict should not.
  */
 const VERDICTS: TableVerdict[] = [
+  // ---- M28.3: an execution system's source allowlist (ADR-0056 §7a) ----------------------------
+  {
+    table: "execution_system_source_allowlists",
+    column: "execution_system_object_id",
+    verdict: "reader-fails-closed",
+    why: "no DELETE grant, deliberately: the allowlist is the record of which repos a system's credentials were allowed to run, and a row that could be deleted and re-created would hide what a past run was allowed. Every reader fails closed on a tombstoned system: `getSourceAllowlist` joins the LIVE execution-system object (a stale id reads as 'nothing allowed'), the infra lane resolves the system with `deleted_at IS NULL`, and the route resolves it through `getObjectByIdOrUrnAnyType`, which excludes tombstones. See docs/graph.md §125f",
+    deleteGrant: false
+  },
   // ---- M28.2: host ops through Argo Workflows (ADR-0054) ---------------------------------------
   {
     table: "ops_run_redemptions",

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { executionSystemSourceAllowlists } from "../db/schema.js";
+import { executionSystemSourceAllowlists, objects } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
 
 /**
@@ -86,16 +86,29 @@ export async function getSourceAllowlist(
   orgId: string,
   executionSystemObjectId: string
 ): Promise<SourceAllowlist | undefined> {
-  const [row] = await tx
-    .select()
+  // FAILS CLOSED ON A TOMBSTONED SYSTEM: the row outlives its system (no DELETE grant, deliberately),
+  // and an allowlist is only an allowlist of a LIVE execution system — joined here, so a caller
+  // holding a stale id reads "nothing allowed" (docs/graph.md §125f).
+  const [joined] = await tx
+    .select({ row: executionSystemSourceAllowlists })
     .from(executionSystemSourceAllowlists)
+    .innerJoin(
+      objects,
+      and(
+        eq(objects.orgId, executionSystemSourceAllowlists.orgId),
+        eq(objects.id, executionSystemSourceAllowlists.executionSystemObjectId)
+      )
+    )
     .where(
       and(
         eq(executionSystemSourceAllowlists.orgId, orgId),
-        eq(executionSystemSourceAllowlists.executionSystemObjectId, executionSystemObjectId)
+        eq(executionSystemSourceAllowlists.executionSystemObjectId, executionSystemObjectId),
+        eq(objects.typeId, "execution-system"),
+        isNull(objects.deletedAt)
       )
     )
     .limit(1);
+  const row = joined?.row;
   if (!row) return undefined;
   return {
     executionSystemObjectId: row.executionSystemObjectId,

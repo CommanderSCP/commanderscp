@@ -1391,6 +1391,8 @@ The population is DERIVED from the catalog, in three arms because one convention
 
 THREE TABLES HOLD A DELETE GRANT NO STATEMENT USES — `config_source_stacks` (0101), `config_source_sync_queue` (0109) and `federation_peer_observations` (0116). Recorded rather than revoked: the grant is a capability the code does not take, which is worth knowing and is not itself a defect.
 
+`execution_system_source_allowlists.execution_system_object_id` (M28.3, ADR-0056 §7a) is `reader-fails-closed` with no DELETE grant: the allowlist records which repos a system's credentials were allowed to run and outlives the system, and every reader resolves the LIVE system (`getSourceAllowlist` joins it; a tombstoned system allows nothing).
+
 THE VERDICTS AND THEIR LIVE COUNTS are in the test file, one entry per column, each with the reason in its own words. The homelab measurement behind them (read-only SELECTs, 2026-09-19) is:
 
 ```text
