@@ -365,6 +365,11 @@ jobs:
           # published here for the plainest reason of all — the integration job has no egress, and
           # the fixture's own build does `apt-get install openssh-server`.
           build_and_push "$SCP_SSHD_FIXTURE_IMAGE_REF" tools/sshd-fixture
+          # M28.1 — scp-builder-rpm, the scp-build-rpm-v1 catalog image. Not a runner: the org's Argo
+          # Workflows runs it, never SCP. Published here so `rpm-build-lane.integration.test.ts` can
+          # run the SHIPPED build script against a real Gitea — and because its build is a
+          # `dnf install`, which the integration job's blackholed egress cannot do.
+          build_and_push "$SCP_BUILDER_RPM_IMAGE_REF" apps/builder-rpm
 
   testcontainer-images:
     name: "4d. Mirror every third-party test image to GHCR (tools/ci-mirror/images.list)"
@@ -705,7 +710,7 @@ jobs:
       - name: Pull the pre-built runner images (in parallel — the pulls share no layers)
         run: |
           pids=""
-          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF"; do
+          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF" "$SCP_BUILDER_RPM_IMAGE_REF"; do
             docker pull "$ref" & pids="$pids $!"
           done
           # `wait` PER PID, not a bare `wait`: a bare one exits 0 even when a pull failed.

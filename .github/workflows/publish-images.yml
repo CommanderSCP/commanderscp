@@ -83,6 +83,17 @@ jobs:
           docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/runner-dep
           docker push "$IMAGE:sha-${{ github.sha }}"
           docker push "$IMAGE:latest"
+      - name: Build + push scp-builder-rpm (apps/builder-rpm)
+        # M28.1 — the scp-build-rpm-v1 CATALOG image (not a runner: the org's Argo Workflows runs it).
+        # First-party because no maintained public image ships rpmbuild, so a connected install has
+        # no upstream ref to default to: this published tag is what an operator sets as
+        # bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage, and setting it is what
+        # renders the template.
+        run: |
+          IMAGE="ghcr.io/commanderscp/scp-builder-rpm"
+          docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/builder-rpm
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          docker push "$IMAGE:latest"
       - name: Emit pinned refs + digests (paste into the consuming gitops values)
         run: |
           {
@@ -96,5 +107,7 @@ jobs:
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-scan:sha-${{ github.sha }}" || true
             echo "scp-runner-dep: ghcr.io/commanderscp/scp-runner-dep:sha-${{ github.sha }}"
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-dep:sha-${{ github.sha }}" || true
+            echo "scp-builder-rpm: ghcr.io/commanderscp/scp-builder-rpm:sha-${{ github.sha }}"
+            docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-builder-rpm:sha-${{ github.sha }}" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -167,6 +167,18 @@ bundledExecutor:
           build:
             requests: { cpu: 500m, memory: 1Gi }
             limits: { cpu: "2", memory: 4Gi }
+      # scp-build-rpm-v1 (M28.1, ADR-0053). Shares buildImage.gitImage/sourceHost/resources.fetch
+      # for its source checkout and `credentialsSecret` for its publish — one catalog, one
+      # checkout, one push identity (a unified Gitea serves OCI and RPM from the same account).
+      buildRpm:
+        # scp-builder-rpm (apps/builder-rpm) — FIRST-PARTY, so there is no upstream ref to default
+        # to, and the template is NOT RENDERED until this is set. The air-gap install.sh sets it
+        # from the bundle; a connected install sets it to the published ghcr.io/commanderscp ref.
+        builderImage: ""
+        resources:
+          build:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
     # Per-CONTAINER resources. Upstream ships neither workload with any, which makes both
     # BestEffort — unbounded, and first evicted under node pressure.
     resources:

@@ -158,8 +158,8 @@ function assertRegistryServes(
           ? `declares packageFormats that are not a list of strings, so it serves nothing SCP can read`
           : `declares packageFormats [${declared.join(", ")}]`;
     throw new BuildDestinationRefused(
-      `refusing to trigger a '${type}' build: it publishes '${format}' packages, and its ${who} ` +
-        `${what}. Handing it that registry would push a '${type}' artifact somewhere that cannot hold it.`,
+      `refusing to trigger this '${type}' build: it publishes '${format}' packages, and its ${who} ` +
+        `${what}. Handing it that registry would push this '${type}' artifact somewhere that cannot hold it.`,
       {
         remediation:
           `point this component's publishes_to edge at a registry that serves '${format}', or add ` +
@@ -174,7 +174,7 @@ function assertRegistryServes(
   // shape SCP actually knows is derived; anything else is refused rather than guessed at.
   if (format === "rpm" && registry.kind !== "gitea") {
     throw new BuildDestinationRefused(
-      `refusing to trigger a '${type}' build: its ${who} serves 'rpm' but is kind ` +
+      `refusing to trigger this '${type}' build: its ${who} serves 'rpm' but is kind ` +
         `'${registry.kind ?? "(none)"}', and SCP derives an RPM upload address only for 'gitea'. ` +
         `Guessing another product's upload API would push to an address nobody declared.`,
       {

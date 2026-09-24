@@ -700,6 +700,137 @@ function socketMatrix(): MatrixPoint[] {
   return points;
 }
 
+const RPM_BUILDER_VERIFY_IMAGE = "ghcr.io/commanderscp/scp-builder-rpm:verify";
+
+/** THE SHIPPED RPM BUILD (M28.1, ADR-0053) — rendered and held to what was MEASURED.
+ *
+ *  `scp-build-image-v1`'s build container is the one deliberately-weakened workload in this chart,
+ *  and the generic WorkflowTemplate guard above is written around that: it forbids privileged, uid
+ *  0 and any capability beyond SETUID/SETGID. That guard is TOO LOOSE for the RPM build, which was
+ *  measured to need NO relaxation at all — so the image template's four would pass it unnoticed.
+ *  This asserts the RPM build container is fully hardened, that its positional arguments are the
+ *  script's contract, that its source checkout is byte-identical to the image template's (the
+ *  fetch-by-commit property must not drift between two copies), and that it is absent until its
+ *  image is named rather than rendered with an empty image. */
+function verifyRpmCatalogTemplate(): void {
+  const label = "M28.1 scp-build-rpm-v1";
+  console.log(`\nhelm-verify: ${label} — rendering the RPM catalog template and its hardening...`);
+  const base = [
+    "--set",
+    "bundledExecutor.argoWorkflows.enabled=true",
+    "--set",
+    "bundledExecutor.scpNamespace=verify-scp-ns"
+  ];
+  const templatesOf = (docs: K8sDoc[]) =>
+    new Map(
+      docs
+        .filter((d) => d.kind === "WorkflowTemplate")
+        .map((d) => [String(d.metadata?.name), d] as const)
+    );
+
+  const off = templatesOf(renderBundledChart(base));
+  assert(
+    off.has("scp-build-image-v1") && !off.has("scp-build-rpm-v1"),
+    `[${label}] with no builderImage the chart must render scp-build-image-v1 and NOT scp-build-rpm-v1 (rendered: ${[...off.keys()].join(", ")}). An RPM template with an empty image would fail only at its last step`
+  );
+
+  const on = templatesOf(
+    renderBundledChart([
+      ...base,
+      "--set",
+      `bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage=${RPM_BUILDER_VERIFY_IMAGE}`
+    ])
+  );
+  const rpm = on.get("scp-build-rpm-v1");
+  const image = on.get("scp-build-image-v1");
+  assert(rpm, `[${label}] builderImage is set but scp-build-rpm-v1 did not render`);
+  if (!rpm || !image) return;
+
+  type WfTemplate = {
+    name?: string;
+    container?: Container & { command?: string[]; args?: string[] };
+    initContainers?: (Container & { args?: string[] })[];
+  };
+  const spec = rpm.spec as {
+    serviceAccountName?: string;
+    arguments?: { parameters?: { name: string; value?: string }[] };
+    templates?: WfTemplate[];
+  };
+  const imageSpec = image.spec as { serviceAccountName?: string; templates?: WfTemplate[] };
+  const tpl = spec.templates?.[0];
+  const build = tpl?.container;
+  assert(
+    build?.image === RPM_BUILDER_VERIFY_IMAGE,
+    `[${label}] build container image is '${build?.image}', not the configured builderImage`
+  );
+  assert(
+    spec.serviceAccountName === imageSpec.serviceAccountName,
+    `[${label}] runs as '${spec.serviceAccountName}', not the catalog build identity '${imageSpec.serviceAccountName}' whose Role is the workflowtaskresults floor`
+  );
+
+  // FULLY HARDENED — every field, because each was measured to be unnecessary to relax.
+  const sc = (build?.securityContext ?? {}) as {
+    runAsUser?: number;
+    runAsNonRoot?: boolean;
+    readOnlyRootFilesystem?: boolean;
+    allowPrivilegeEscalation?: boolean;
+    privileged?: boolean;
+    seccompProfile?: { type?: string };
+    appArmorProfile?: { type?: string };
+    capabilities?: { drop?: string[]; add?: string[] };
+  };
+  const hardening: [boolean, string][] = [
+    [sc.runAsNonRoot === true && sc.runAsUser === 1000, "runAsNonRoot as uid 1000"],
+    [sc.readOnlyRootFilesystem === true, "readOnlyRootFilesystem: true"],
+    [sc.allowPrivilegeEscalation === false, "allowPrivilegeEscalation: false"],
+    [sc.privileged !== true, "not privileged"],
+    [sc.seccompProfile?.type === "RuntimeDefault", "seccompProfile RuntimeDefault"],
+    [sc.appArmorProfile?.type !== "Unconfined", "no Unconfined AppArmor profile"],
+    [(sc.capabilities?.drop ?? []).includes("ALL"), "capabilities drop ALL"],
+    [(sc.capabilities?.add ?? []).length === 0, "no added capabilities"]
+  ];
+  for (const [ok, what] of hardening) {
+    assert(
+      ok,
+      `[${label}] build container is not '${what}'. rpmbuild was measured to need NO relaxation (template header), so this is a regression, not a tuning`
+    );
+  }
+
+  // THE SCRIPT'S POSITIONAL CONTRACT (apps/builder-rpm/build-rpm.sh: <spec> <upload-url> <commit>).
+  // A reorder here would publish to a spec path, or build from a URL — and pass every other check.
+  const expectedArgs = [
+    "{{inputs.parameters.rpmSpec}}",
+    "{{inputs.parameters.rpmUploadUrl}}",
+    "{{inputs.parameters.sourceCommit}}"
+  ];
+  assert(
+    JSON.stringify(build?.args) === JSON.stringify(expectedArgs) &&
+      JSON.stringify(build?.command) === JSON.stringify(["/usr/local/bin/scp-build-rpm"]),
+    `[${label}] build container runs ${JSON.stringify(build?.command)} ${JSON.stringify(build?.args)}, not scp-build-rpm ${JSON.stringify(expectedArgs)}`
+  );
+
+  // The four REQUIRED parameters carry no default — Argo refuses to submit without them.
+  const params = new Map((spec.arguments?.parameters ?? []).map((p) => [p.name, p] as const));
+  for (const required of ["sourceRepo", "sourceCommit", "rpmSpec", "rpmUploadUrl"]) {
+    assert(
+      params.has(required) && params.get(required)?.value === undefined,
+      `[${label}] '${required}' must be declared with NO default, so a trigger missing it is refused at submit rather than built or published somewhere guessed`
+    );
+  }
+
+  // The checkout is the image template's, byte for byte.
+  const fetchOf = (t?: WfTemplate) => t?.initContainers?.find((c) => c.name === "fetch-source");
+  const rpmFetch = fetchOf(tpl);
+  const imageFetch = fetchOf(imageSpec.templates?.[0]);
+  assert(
+    rpmFetch !== undefined && JSON.stringify(rpmFetch) === JSON.stringify(imageFetch),
+    `[${label}] fetch-source differs from scp-build-image-v1's. The checkout-by-commit is the property that ties a published artifact to a revision; the two copies must stay identical`
+  );
+  console.log(
+    "  absent until builderImage is set; fully hardened (no relaxation); positional args match build-rpm.sh; required params carry no default; fetch-source identical to scp-build-image-v1"
+  );
+}
+
 function verifySocketInvariantMatrix(): void {
   const label = "M23.6 socket invariant";
   console.log(
@@ -840,7 +971,12 @@ function verifySocketInvariantMatrix(): void {
       // "What this chart can render" is the question, not "what SCP talks to".
       "bundledExecutor.argoRollouts.enabled=true",
       "--set",
-      "bundledExecutor.gitea.enabled=true"
+      "bundledExecutor.gitea.enabled=true",
+      "--set",
+      // scp-build-rpm-v1 renders only once its first-party builder image is named (M28.1), so
+      // without this the socket scan and the WorkflowTemplate container guards below would never
+      // see it — "what this chart can render" includes it.
+      `bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage=${RPM_BUILDER_VERIFY_IMAGE}`
     ]
   ]) {
     const bundledRaw = renderRaw(BUNDLED_CHART_DIR, "verify-socket-bundled", setArgs);
@@ -3416,6 +3552,7 @@ function main(): void {
   }
 
   verifySocketInvariantMatrix();
+  verifyRpmCatalogTemplate();
 
   if (failures.length > 0) {
     console.error(`\nhelm-verify: ${failures.length} assertion(s) FAILED:\n`);

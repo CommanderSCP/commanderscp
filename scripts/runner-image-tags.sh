@@ -51,8 +51,16 @@ dep_hash=$(
 # integration jobs blackhole egress, so anything a test needs has to arrive as a pre-pulled ref.
 sshd_fixture_hash=$(find tools/sshd-fixture -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)
 
+# scp-builder-rpm (M28.1): the scp-build-rpm-v1 CATALOG image, not a runner — SCP never launches it,
+# the org's Argo Workflows does. Tagged by the same formula because the real-counterparty test
+# (`rpm-build-lane.integration.test.ts`) runs it, and its build does a `dnf install` the integration
+# job's blackholed egress cannot. Its build context (Dockerfile + build-rpm.sh + the test fixture)
+# is the whole input.
+builder_rpm_hash=$(find apps/builder-rpm -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)
+
 echo "SCP_RUNNER_SCAN_IMAGE_REF=${registry}/scp-runner-scan:${scan_hash}"
 echo "SCP_RUNNER_IAC_IMAGE_REF=${registry}/scp-runner-iac:${iac_hash}"
 echo "SCP_RUNNER_DEP_IMAGE_REF=${registry}/scp-runner-dep:${dep_hash}"
 echo "SCP_RUNNER_OPS_IMAGE_REF=${registry}/scp-runner-ops:${ops_hash}"
 echo "SCP_SSHD_FIXTURE_IMAGE_REF=${registry}/scp-sshd-fixture:${sshd_fixture_hash}"
+echo "SCP_BUILDER_RPM_IMAGE_REF=${registry}/scp-builder-rpm:${builder_rpm_hash}"
