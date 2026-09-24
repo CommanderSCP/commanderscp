@@ -76,7 +76,7 @@ if [ "$action" = apply ]; then
     refuse "apply needs the approved plan's digest; CommanderSCP sends it only for a plan that was accepted"
 fi
 
-mkdir -p "$out" "$work/src"
+mkdir -p "$out" "$work/src" "${HOME:-$work/home}"
 
 # ---- 1. SOURCE, PINNED TO THE COMMIT ------------------------------------------------------------
 # By commit, never by branch, for the build template's reason: what was planned has to be what is

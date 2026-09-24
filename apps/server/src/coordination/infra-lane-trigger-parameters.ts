@@ -231,7 +231,9 @@ async function readEnvironment(
   };
 }
 
-function readSource(sourceRef: unknown): { repo: string; commit: string; ref?: string } | undefined {
+function readSource(
+  sourceRef: unknown
+): { repo: string; commit: string; ref?: string } | undefined {
   const repo = readString(sourceRef, "repo");
   const commit = readString(sourceRef, "commit");
   if (!repo || !commit || !REPO_SHAPE.test(repo) || !FULL_COMMIT.test(commit)) return undefined;
@@ -460,7 +462,10 @@ async function evaluateApplyGate(
       `the plan at ${targetObjectId} was run by executor ${planTarget.executorPluginId}, and this ` +
         `apply would run on ${input.executorInstanceId}. A plan is evidence about the system that made it.`,
       "re-plan on the executor now bound to this target, accept it, and apply that plan",
-      { planExecutorPluginId: planTarget.executorPluginId, executorPluginId: input.executorInstanceId }
+      {
+        planExecutorPluginId: planTarget.executorPluginId,
+        executorPluginId: input.executorInstanceId
+      }
     );
   }
   const planDigest = plan.ref;
@@ -495,7 +500,9 @@ async function evaluateApplyGate(
       appliesPlan: planChangeObjectId
     })
   ).filter((t) => (DISPATCHED_STATUSES as readonly string[]).includes(t.status));
-  const inFlight = applies.find((t) => (IN_FLIGHT_STATUSES as readonly string[]).includes(t.status));
+  const inFlight = applies.find((t) =>
+    (IN_FLIGHT_STATUSES as readonly string[]).includes(t.status)
+  );
   if (inFlight) {
     refuse(
       "infra_apply_in_flight",
@@ -642,7 +649,10 @@ async function plansOnly(
  *  this for every trigger this lane did not itself derive. */
 export function assertNotAnUngatedInfraApply(templateRef: string | null): void {
   if (templateRef === null) return;
-  if (templateRef === INFRA_CATALOG_APPLY_TEMPLATE || /^scp-infra-apply-v[0-9]+$/.test(templateRef)) {
+  if (
+    templateRef === INFRA_CATALOG_APPLY_TEMPLATE ||
+    /^scp-infra-apply-v[0-9]+$/.test(templateRef)
+  ) {
     throw new InfraApplyRefused(
       `refusing to trigger '${templateRef}' outside the infrastructure lane: it applies infrastructure, ` +
         `and it is triggered only for an accepted, current plan through that lane's gate.`,
