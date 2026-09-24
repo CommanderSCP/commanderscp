@@ -195,6 +195,7 @@ describe("M28.1: an rpm component promotes end to end through Argo Workflows to 
       }
     });
     argoSystemId = system.id;
+    await admin.executors.putSourceAllowlist(argoSystemId, ["acme/scp-widget"]);
 
     dockerReady = await dockerAvailable();
     if (!dockerReady) return;
@@ -294,6 +295,13 @@ describe("M28.1: an rpm component promotes end to end through Argo Workflows to 
       type: "rpm",
       externalRef: "scp-build-rpm-v1"
     });
+    // WHOSE CODE IS BUILT (ADR-0053 addendum): the component declares its rpm source, and the
+    // system allows that repo to run with its credentials.
+    await admin.changeSources.createMapping("github", {
+      repoPattern: "acme/scp-widget",
+      component: component.id,
+      type: "rpm"
+    } as Parameters<typeof admin.changeSources.createMapping>[1]);
     return component;
   }
 

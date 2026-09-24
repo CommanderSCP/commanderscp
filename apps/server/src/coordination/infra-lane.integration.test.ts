@@ -20,8 +20,11 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { auditEvents, changeWaveTargets, decisions } from "../db/schema.js";
-import { INFRA_LANE_RESERVED_PARAMETERS } from "./infra-lane-trigger-parameters.js";
+import { auditEvents, changeSourceEvents, changeWaveTargets, decisions } from "../db/schema.js";
+import {
+  deriveStateWorkspace,
+  INFRA_LANE_RESERVED_PARAMETERS
+} from "./infra-lane-trigger-parameters.js";
 
 /**
  * M28.3 — INFRASTRUCTURE BUILDOUT FOR AN ENVIRONMENT, plan → approve → apply, through Argo Workflows.
@@ -132,7 +135,7 @@ async function dockerAvailable(): Promise<boolean> {
 /** A VISIBLE skip — `it.runIf` reports skipped with exit 0 before `beforeAll` decides anything.
  *  And NEVER a skip in CI: the integration job has Docker, so a missing daemon there is a broken
  *  job, and a green "skip" would be the real-counterparty proof quietly not running. */
-function expectSkipped(): void {
+function expectSkipped(ctx: { skip: () => void }): void {
   if (process.env.CI) {
     throw new Error(
       "[infra-lane] CI is set and no Docker daemon is reachable — the real OpenTofu counterparty " +
@@ -143,6 +146,8 @@ function expectSkipped(): void {
     "[infra-lane] no reachable Docker daemon — the real OpenTofu counterparty did NOT run"
   );
   expect(dockerReady).toBe(false);
+  // Reported as SKIPPED, not passed — the run's summary says the counterparty did not run.
+  ctx.skip();
 }
 
 describe(
@@ -156,6 +161,7 @@ describe(
     let approver: ScpClient;
     let argo: Server;
     let argoSystemId: string;
+    let argoUrl = "";
     const submissions: Submission[] = [];
     const completions = new Map<string, Completion>();
     const prevEgressHosts = process.env.SCP_INTERNAL_EGRESS_HOSTS;
@@ -342,6 +348,7 @@ describe(
       process.env.SCP_INTERNAL_EGRESS_HOSTS = "127.0.0.1";
       const started = await startArgo();
       argo = started.srv;
+      argoUrl = started.url;
       server = await listenTestServer({
         withEventRelay: true,
         withReconcileLoop: true,
@@ -367,6 +374,9 @@ describe(
         }
       });
       argoSystemId = system.id;
+      // THE SYSTEM'S SOURCE ALLOWLIST (owner ruling R1): the one repo this estate's infrastructure
+      // may run from with this system's credentials. Set by the org admin (`secret:write`).
+      await admin.executors.putSourceAllowlist(argoSystemId, [REPO]);
 
       dockerReady = await dockerAvailable();
       if (!dockerReady) return;
@@ -590,7 +600,12 @@ describe(
         environment: ENVIRONMENT,
         // One state per TARGET, carrying the org and the target (item 10): never shared between two
         // regions of an environment, nor two orgs' `prod`.
-        stateWorkspace: `${ENVIRONMENT}--o${org.orgId}--t${target.id}`,
+        stateWorkspace: deriveStateWorkspace({
+          orgId: org.orgId,
+          targetObjectId: target.id,
+          environment: ENVIRONMENT,
+          region: ""
+        }),
         infraPath: "infra",
         sourceRepo: REPO,
         sourceCommit: commit,
@@ -665,7 +680,12 @@ describe(
         sourceRepo: REPO,
         sourceCommit: commit,
         environment: ENVIRONMENT,
-        stateWorkspace: `${ENVIRONMENT}--o${org.orgId}--t${prodTargetId}`,
+        stateWorkspace: deriveStateWorkspace({
+          orgId: org.orgId,
+          targetObjectId: prodTargetId,
+          environment: ENVIRONMENT,
+          region: ""
+        }),
         infraPath: "infra",
         changeObjectId: apply.id
       });
@@ -713,7 +733,7 @@ describe(
       expect(refusal?.inputContext).toMatchObject({ supersededBy: newer.id });
     });
 
-    it("a RECIPE restating any of the lane's bounds is refused — it cannot re-point an approved apply", async () => {
+    it("a RECIPE restating the lane's bounds is refused at the server-wide choke point — it cannot re-point an approved apply", async () => {
       const target = await environmentTarget({
         environment: ENVIRONMENT,
         region: "green",
@@ -726,11 +746,12 @@ describe(
       const apply = await proposeApply(target.id, plan.id, {
         recipe: { version: 1, trigger: { kind: "workflow_dispatch", parameters: hostile } }
       });
-      // TWO LAYERS, asserted in the order that lets a mutation tell them apart. The refusal is the
-      // first: nothing is submitted at all. Behind it the lane's values are spread LAST, so even with
-      // the refusal deleted the recipe's digest never reaches the executor — the first assertion
-      // stays green and the second goes red; delete BOTH and the first goes red too.
-      const t = await settled(apply.id, "infra_declaration_refused");
+      // THREE LAYERS, asserted so a mutation can tell them apart: the server-wide reserved-key table
+      // (`reserved-trigger-parameters.ts`, RESERVED_BY_LANE "infra") refuses before any lane runs;
+      // the lane's own refusal covers the source keys the table cannot reserve globally; and the
+      // lane's values are spread LAST, so even with both refusals gone the recipe's digest is never
+      // the one sent.
+      const t = await settled(apply.id, "recipe_reserved_parameter");
       expect(
         submissions.filter((s) => s.parameters["planDigest"] === "f".repeat(64)),
         "an apply carrying the RECIPE's digest was submitted — the lane's bound did not win"
@@ -739,11 +760,31 @@ describe(
         submissions.filter((s) => s.parameters["changeObjectId"] === apply.id),
         "the apply was submitted at all — a recipe restating the lane's bounds must be refused"
       ).toEqual([]);
-      expect(t.status).toBe("infra_declaration_refused");
-      const refusal = byGate(await decisionsOf(apply.id), "infra_recipe_restates_bound");
-      expect(refusal?.inputContext).toMatchObject({
-        restated: [...INFRA_LANE_RESERVED_PARAMETERS].sort()
+      expect(t.status).toBe("recipe_reserved_parameter");
+      expect(
+        byGate(await decisionsOf(apply.id), "recipe_reserved_parameter")?.inputContext
+      ).toMatchObject({
+        reservedParameters: expect.arrayContaining(["planDigest", "stateWorkspace", "environment"])
       });
+    });
+
+    it("a RECIPE naming only a SOURCE key (a convenience elsewhere) is refused by the lane itself", async () => {
+      const target = await environmentTarget({
+        environment: ENVIRONMENT,
+        region: "green2",
+        infrastructurePath: "infra"
+      });
+      const { plan } = await acceptedPlanAt(target.id);
+      const apply = await proposeApply(target.id, plan.id, {
+        recipe: {
+          version: 1,
+          trigger: { kind: "workflow_dispatch", parameters: { sourceCommit: "e".repeat(40) } }
+        }
+      });
+      await settle(apply.id, "infra_declaration_refused");
+      expect(
+        byGate(await decisionsOf(apply.id), "infra_recipe_restates_bound")?.inputContext
+      ).toMatchObject({ restated: ["sourceCommit"] });
     });
 
     it("PROBE A — the target re-scoped after approval (region r1 → r2): the apply is refused, never sent to the new workspace", async () => {
@@ -847,6 +888,160 @@ describe(
       expect(byGate(await decisionsOf(change.id), "infra_template_outside_lane")).toBeDefined();
     });
 
+    it("PROBE C2 — an Operator re-declares the target's infrastructureRepo and plans from it: refused, the system's allowlist has the say", async () => {
+      const opUser = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+      const op = new ScpClient({ baseUrl: server.baseUrl, token: opUser.token });
+      const target = await environmentTarget({
+        environment: ENVIRONMENT,
+        region: "c2",
+        infrastructurePath: "infra"
+      });
+      // The Operator CAN re-declare the target (object:write) and even write a look-alike property
+      // onto the execution-system object — neither is the allowlist.
+      const cur = await op.deploymentTargets.get(target.id);
+      await op.deploymentTargets.update(target.id, {
+        properties: {
+          ...(cur.properties as Record<string, unknown>),
+          infrastructureRepo: "attacker/evil"
+        }
+      });
+      const sys = await admin.object("execution-system").get(argoSystemId);
+      await op
+        .object("execution-system")
+        .update(argoSystemId, {
+          properties: {
+            ...(sys.properties as Record<string, unknown>),
+            sourceAllowlist: ["attacker/evil"]
+          }
+        })
+        .catch(() => undefined);
+      // …but NOT the allowlist itself: that door is secret:write at the org root.
+      const denied = await op.executors
+        .putSourceAllowlist(argoSystemId, [REPO, "attacker/evil"])
+        .then(() => undefined)
+        .catch((e: unknown) => e as { status?: number });
+      expect(denied?.status, "an Operator could set the source allowlist").toBe(403);
+      expect((await admin.executors.getSourceAllowlist(argoSystemId)).repos).toEqual([REPO]);
+
+      const plan = await op.changes.propose({
+        name: `evil2 ${randomUUID().slice(0, 6)}`,
+        targets: [target.id],
+        type: "infrastructure",
+        sourceRef: { repo: "attacker/evil", commit: "d".repeat(40) }
+      });
+      await settle(plan.id, "infra_declaration_refused");
+      expect(submissions.filter((s) => s.parameters["sourceRepo"] === "attacker/evil")).toEqual([]);
+      expect(
+        byGate(await decisionsOf(plan.id), "infra_source_not_allowed")?.inputContext
+      ).toMatchObject({ repo: "attacker/evil", executionSystemId: argoSystemId });
+    });
+
+    it("an INLINE infrastructure binding (no execution system, so no allowlist) is refused", async () => {
+      const target = await admin.deploymentTargets.create({
+        name: `inline-${randomUUID().slice(0, 6)}`,
+        properties: { environment: ENVIRONMENT, infrastructureRepo: REPO, region: "inline" }
+      });
+      await admin.executors.putBinding(target.id, {
+        pluginModule: "argo-workflows",
+        pluginInstanceId: `argo-inline-${randomUUID().slice(0, 6)}`,
+        config: { serverUrl: "https://argo.example.invalid", namespace: NAMESPACE },
+        type: "infrastructure",
+        externalRef: "scp-infra-plan-v1"
+      });
+      const plan = await proposePlan(target.id);
+      await settle(plan.id, "infra_declaration_refused");
+      expect(byGate(await decisionsOf(plan.id), "infra_source_no_execution_system")).toBeDefined();
+    });
+
+    it("PROBE E — the execution system re-pointed after approval: the apply is refused, never sent to the new endpoint", async () => {
+      // Its own system, so re-pointing it cannot disturb the other tests.
+      const system = await admin.object("execution-system").create({
+        name: `argo-e-${randomUUID().slice(0, 6)}`,
+        properties: {
+          kind: "argo-workflows",
+          serverUrl: argoUrl,
+          namespace: NAMESPACE,
+          allowInternalEgress: true
+        }
+      });
+      await admin.executors.putSourceAllowlist(system.id, [REPO]);
+      const target = await admin.deploymentTargets.create({
+        name: `probe-e-${randomUUID().slice(0, 6)}`,
+        properties: {
+          environment: ENVIRONMENT,
+          region: "e",
+          infrastructurePath: "infra",
+          infrastructureRepo: REPO
+        }
+      });
+      await admin.executors.putBinding(target.id, {
+        executionSystemId: system.id,
+        type: "infrastructure",
+        externalRef: "scp-infra-plan-v1"
+      });
+      const { plan } = await acceptedPlanAt(target.id);
+      await admin.object("execution-system").update(system.id, {
+        properties: {
+          kind: "argo-workflows",
+          serverUrl: argoUrl,
+          namespace: "some-other-namespace",
+          allowInternalEgress: true
+        }
+      });
+      const apply = await proposeApply(target.id, plan.id);
+      await settle(apply.id, "infra_apply_refused");
+      expect(
+        byGate(await decisionsOf(apply.id), "infra_plan_scope_changed")?.inputContext
+      ).toMatchObject({ changed: ["executionSystemNamespace"] });
+    });
+
+    it("SEPARATION OF DUTIES reads the DECLARER — the human who REPORTED a plan cannot accept it", async () => {
+      // A change-source report is proposed by the system on the reporter's behalf; the reporter is
+      // recorded as the declarer, and separation of duties reads both.
+      const reporterUser = await createTestUser(server, org, [
+        { role: "Administrator", scope: org.orgId }
+      ]);
+      const reporter = new ScpClient({ baseUrl: server.baseUrl, token: reporterUser.token });
+      const target = await environmentTarget({
+        environment: ENVIRONMENT,
+        region: "reported",
+        infrastructurePath: "infra"
+      });
+      await admin.changeSources.createMapping("ci", {
+        repoPattern: REPO,
+        component: target.id,
+        type: "infrastructure"
+      } as Parameters<typeof admin.changeSources.createMapping>[1]);
+      const { eventId } = await reporter.changeSources.report("ci", {
+        status: "applied",
+        repo: REPO,
+        ref: "refs/heads/main",
+        commitSha: commit
+      } as Parameters<typeof reporter.changeSources.report>[1]);
+      const event = await waitUntil(
+        async () => {
+          const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+            tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.id, eventId))
+          );
+          return rows[0]?.processedAt ? rows[0] : undefined;
+        },
+        { describe: "the reported event is processed", timeoutMs: 30_000 }
+      );
+      const planId = event.resultingChangeObjectId;
+      expect(planId, "the report produced a plan change").toBeTruthy();
+      await runSubmittedWorkflow(planId!);
+      await waitForTarget(planId!, "succeeded");
+      await waitForState(planId!, "validating");
+
+      const refused = await reporter.changes
+        .accept(planId!, "approving the plan I reported")
+        .then(() => undefined)
+        .catch((err: unknown) => err as { status?: number });
+      expect(refused?.status, "the reporter accepted their own plan").toBe(409);
+      await approver.changes.accept(planId!, "reviewed");
+      expect((await admin.changes.get(planId!)).state).toBe("accepted");
+    });
+
     it("THE PLUGIN HOST'S DOOR — no server path can submit or schedule an infra template except the lane", async () => {
       // Every other caller (hook runs, continuous probes, bumps) reaches Argo through this client.
       const t = await waveTargetOf(approved!.planChangeId);
@@ -925,8 +1120,8 @@ describe(
       }
     });
 
-    it("REAL COUNTERPARTY — the shipped script planned, applied the approved digest, and a re-plan now shows NO changes; a drifted digest is refused", async () => {
-      if (!dockerReady) return expectSkipped();
+    it("REAL COUNTERPARTY — the shipped script planned, applied the approved digest, and a re-plan now shows NO changes; a drifted digest is refused", async (ctx) => {
+      if (!dockerReady) return expectSkipped(ctx);
       expect(applySubmission, "the apply test ran").toBeDefined();
 
       // The runs the lane itself drove, in order: the prod plan, then its apply.
@@ -982,28 +1177,47 @@ describe(
       expect(crossApply.rc, crossApply.stdout).toBe(3);
       expect(crossApply.outputs["applied"]).toBe("false");
 
-      // THE BACKEND IS THE OPERATOR'S (item 5): a repo carrying its own override file, `backend`
-      // block or `cloud` block is refused before init — `zz_override.tf` sorts after the script's
-      // override and would otherwise win (measured by the verification probe).
-      for (const [name, extra] of [
-        [
-          "acme/infra-override",
-          {
-            "infra/zz_override.tf":
-              'terraform {\n  backend "local" {\n    path = "/tmp/elsewhere.tfstate"\n  }\n}\n'
-          }
-        ],
-        ["acme/infra-backend", { "infra/backend.tf": 'terraform {\n  backend "s3" {}\n}\n' }],
-        [
-          "acme/infra-cloud",
-          { "infra/cloud.tf": 'terraform {\n  cloud {\n    organization = "x"\n  }\n}\n' }
-        ]
-      ] as const) {
+      // THE BACKEND IS THE OPERATOR'S (finding 5, fixtures c1–c4 from the re-verification). OpenTofu
+      // reads `.tofu`/`.tofu.json` as well as `.tf`/`.tf.json` and merges override files in lexical
+      // order, the last winning: so ANY override file in the repo is refused (c1: a `zz_override.tofu`
+      // with `backend "http"` WON before this). A backend block in a NORMAL file — `.tofu` (c2),
+      // JSON (c3), a comment between keyword and label (c4) — is replaced by the script's override,
+      // the only one left, and OpenTofu's own record of the backend it configured is checked after
+      // init: each of those plans against the operator's `local` state, never `http`.
+      const HTTP_BACKEND =
+        'terraform {\n  backend "http" {\n    address = "http://127.0.0.1:9/state"\n  }\n}\n';
+      const cases = {
+        c1: { "infra/zz_override.tofu": HTTP_BACKEND },
+        c2: { "infra/state.tofu": HTTP_BACKEND },
+        c3: {
+          "infra/state.tf.json":
+            '{"terraform":{"backend":{"http":{"address":"http://127.0.0.1:9/state"}}},"locals":{"a":{"b":1}}}\n'
+        },
+        c4: {
+          "infra/state.tf":
+            'terraform {\n  backend /* x */ "http" {\n    address = "http://127.0.0.1:9/state"\n  }\n}\n'
+        },
+        "c1-json": { "infra/override.tf.json": '{"terraform":{"backend":{"http":{}}}}\n' },
+        "c1-tf": { "infra/zz_override.tf": HTTP_BACKEND }
+      } as const;
+      for (const [label, extra] of Object.entries(cases)) {
+        const name = `acme/infra-${label}`;
         const head = await seedRepo(name, { "infra/main.tf": NETWORK_TF, ...extra });
-        const run = await runScript("plan", { ...fresh, sourceRepo: name, sourceCommit: head });
-        expect(run.rc, `${name}: ${run.stdout}`).toBe(2);
-        expect(run.stdout).toMatch(/override file|backend or cloud block/);
-        expect(run.outputs["planDigest"], `${name} got as far as a plan`).toBeUndefined();
+        const run = await runScript("plan", {
+          ...fresh,
+          stateWorkspace: `backend-${label}`,
+          sourceRepo: name,
+          sourceCommit: head
+        });
+        if (label.startsWith("c1")) {
+          expect(run.rc, `${label}: ${run.stdout}`).toBe(2);
+          expect(run.stdout, label).toMatch(/is an override file/);
+          expect(run.outputs["planDigest"], `${label} got as far as a plan`).toBeUndefined();
+        } else {
+          expect(run.rc, `${label}: ${run.stdout}`).toBe(0);
+          expect(run.stdout, label).toContain("scp-infra: state backend in effect: local");
+          expect(run.stdout, label).not.toMatch(/127\.0\.0\.1:9/);
+        }
       }
     }, 900_000);
 
