@@ -159,6 +159,11 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "lists which credential keys the org holds; belongs with the credential doors above, not with the object reads"
   },
   {
+    site: "routes/executors.ts :: PUT /api/v1/execution-systems/:idOrUrn/source-allowlist :: secret:write",
+    cls: "escalation-bar",
+    why: "M28.3 owner ruling R1 (ADR-0056 §7a) — which source repos may run WITH an execution system's credentials. It bounds what the secrets above are used for, so it takes their bar: never object:write, which a target's or component's own editor holds (re-verification probe C2 re-declared the repo that way). Org root, because the credentials it bounds are org-wide"
+  },
+  {
     site: "routes/executors.ts :: DELETE /api/v1/secrets/:key :: secret:write",
     cls: "escalation-bar",
     why: "role-model.md §8.6 — deleting an execution-system credential is the same credential door as PUT and takes the same secret:write (drizzle/0099); it is also an availability kill switch for all coordination on the deployment, so if the two ever differ this is the one that should be HARDER"
