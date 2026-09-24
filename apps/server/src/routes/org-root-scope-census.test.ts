@@ -54,6 +54,18 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "ADR-0051 D5's detective control, and the ONLY thing that bounds CA compromise — short TTLs provably do not, because sshd honours the validity interval inside the certificate, which an attacker holding the signing key chooses. It answers 'did SCP issue this serial?' against the org's whole issuance record; scoped narrower it would answer 'not in this slice', which reads identically to the forgery signal it exists to raise"
   },
 
+  // ---- the Argo host-ops pin (M28.2, ADR-0054 D9) ----------------------------------------------
+  {
+    site: "routes/ssh-ca.ts :: PUT /api/v1/trust-domains/:domainId/ssh-ca/argo-ops-pin :: secret:write",
+    cls: "escalation-bar",
+    why: "decides WHERE a domain's CA-minted root certificates can go (the Argo endpoint and the key the run token is sealed to). Org-root ON PURPOSE and the enrolment door's own permission: #414's adversarial round showed an Operator with object:write at one product redirecting a token when these were binding config, and a binding narrower than the org root is exactly what must NOT be able to move the pin. A trust domain has no graph object to scope to either"
+  },
+  {
+    site: "routes/ssh-ca.ts :: GET /api/v1/trust-domains/:domainId/ssh-ca/argo-ops-pin :: audit:read",
+    cls: "org-level",
+    why: "reads the pin — the same evidence surface and the same reason as reading the enrolment: a trust domain carries no graph object to scope to, and the pin describes the deployment rather than any one object"
+  },
+
   // ---- not a permission check at all: the two production writers of `role_bindings` -------------
   {
     site: "auth/local-auth.ts :: ensureBootstrapAdmin() :: -",
