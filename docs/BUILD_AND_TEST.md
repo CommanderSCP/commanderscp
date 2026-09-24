@@ -1708,7 +1708,7 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 
 
 
-### M28 — every kind of work reaches a real executor: RPM builds, infrastructure buildout, host ops, deployment — **OPEN**
+### M28 — every kind of work reaches a real executor: RPM builds, infrastructure buildout, host ops, deployment — **COMPLETE (2026-09-24)**
 
 *Owner direction 2026-09-23: "this commanderscp platform is meant for all types of systems … it should
 be driving things through tools like ArgoWorkflow", and — on finding this scope deferred repeatedly —
@@ -2102,6 +2102,51 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
       four changes here are proposed one `it()` at a time against a shared reconcile loop, which
       already demonstrates coexistence (no lane's wiring is torn down for another to run) but does
       not stress simultaneous multi-lane ticks.
+
+- **Close-out (2026-09-24). Nothing was deferred.** Seven PRs, each through adversarial verification
+  until no BLOCKING finding survived: #412 (M28.1), #414 (M28.2), #415 (M28.3), #417 (M28.3b —
+  managed-iac apply, found unwired during M28.3 and fixed inside M28 by owner ruling), #413
+  (M28.4), #416 (M28.5). ADRs 0053–0056; migrations 0121–0125; one charter amendment
+  (2026-09-23, M28.2).
+  - **Owner decisions taken during the build**, beyond D1–D3: M28.2 — SCP's per-domain CA serves
+    the Argo ops path through a sealed one-time redemption (charter amendment), and the amendment
+    states only what is enforced (endpoint, sealing key, template ref and runner digest pinned at
+    `secret:write`; cluster admins, sealing-Secret readers, Argo-namespace pod creators and
+    WorkflowTemplate editors named as the residual trust set). M28.3 — plan and apply are two
+    changes, and accepting the plan approves it; the proposer cannot accept their own plan; **repo
+    authority lives on the execution system** (a source allowlist at `secret:write`), and a build
+    with no source mapping is refused. M28.4 — a component's rollout declaration wins over
+    wave-plan steps; blue-green is wave-plan only and requires `autoPromotionSeconds`; a rollback
+    re-authors the prior content under today's validated authoring.
+  - **What verification found that the DoDs did not ask for.** Every lane's first green PR had at
+    least one BLOCKING hole, and the dominant class was the same across all four: **a value that
+    decides where work goes or what authority it runs with was writable by someone who could not
+    otherwise grant that authority.** The instances: a recipe restating a lane's derived parameters
+    (now one server-reserved-keys table, `RESERVED_BY_LANE`); binding config choosing the ops
+    token's endpoint and sealing key; inline binding config supplying Argo CD `authoring`; a
+    proposer declaring the repo a plan or build runs; and, found last, **every execution-system
+    property being writable at `object:write`** — including M28.4's `authoring`, a hole that was
+    live on `main` between #413 and #415. The fix is one rule at the object choke point
+    (`authz/execution-system-routing-door.ts`): any change to an execution system's `properties`
+    needs `secret:write`. The second class was **message-text markers deciding control flow**
+    (terminal refusals recognized by substring, forgeable through a tenant-chosen plugin instance
+    id) — now decided by JSON-RPC code. The third was **stale plugin-instance config**
+    (`PluginHost.start()` skipped running ids) — now fingerprinted and restarted.
+  - **Behaviour changes an operator will notice:** roles without `secret:write` can no longer
+    create or edit an execution system's properties; real-executor build and infra targets must be
+    bound through an execution system (inline bindings are refused); build components need a source
+    mapping of their Type; managed-iac bindings must be Type `infrastructure` with a unique
+    workspace key per org (migration 0125 fails if two already share one — resolve first); Argo CD
+    authoring is off by default and scoped to a dedicated AppProject.
+  - **Before deploying to the homelab** (owner action): the Argo Workflows execution system needs a
+    source allowlist naming the agentkit repo (`scp execution-system source-allowlist set <system>
+    --repo <owner/name>`, `secret:write`; re-set after any routing change), and each agentkit
+    component built there needs an `image` source mapping for that repo. Confirm the repo name
+    against homelab-gitops; the tests use `AgentKitProject/agentkit`.
+  - **Not proved anywhere in M28:** a live Argo Workflows controller or Argo CD/Rollouts controller
+    executing any shipped template or authored Application (every lane ran against loopback
+    stand-ins; the real counterparties exercised were Gitea, `dnf`, `sshd`, OpenTofu and a
+    throwaway kind cluster's server-side dry-run). The first live run belongs on the homelab.
 
 ## 9. Verification Mapping
 
