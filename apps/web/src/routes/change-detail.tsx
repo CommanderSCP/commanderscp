@@ -5,6 +5,10 @@ import { ArrowRight } from "lucide-react";
 import type { Change, ChangeState, ChangeStageDependencyTarget } from "@scp/sdk";
 // M4 governance types: @scp/schemas, not @scp/sdk. See docs/web.md §190.
 import type { ApprovalRequest } from "@scp/schemas";
+import {
+  InfrastructureChangeDeclarationSchema,
+  INFRASTRUCTURE_DECLARATION_PROPERTY
+} from "@scp/schemas";
 import { client } from "../lib/client";
 import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
@@ -97,6 +101,23 @@ export function ChangeDetailPage(): React.JSX.Element {
     onError: () => invalidate()
   });
 
+  // M28.3 (ADR-0056) — APPLY an accepted infrastructure plan. Accepting the plan change IS approving
+  // its plan; this proposes the second change that applies it, and the server triggers the apply
+  // template only if that plan is still the latest one at each target and not already applied.
+  const applyPlanMutation = useMutation({
+    mutationFn: (input: { name: string; targets: string[] }) =>
+      client.changes.propose({
+        name: input.name,
+        targets: input.targets,
+        type: "infrastructure",
+        properties: { [INFRASTRUCTURE_DECLARATION_PROPERTY]: { applyPlan: id! } }
+      }),
+    onSuccess: async (created: Change) => {
+      await invalidate();
+      await navigate({ to: "/changes/$id", params: { id: created.id } });
+    }
+  });
+
   const approvalsKey = changeApprovalsKey(id ?? "");
   // DESIGN §10.2: "approval control instances materialize as approval tasks — actionable via
   // API, UI, and CLI." `GET /approvals` is always scoped to one changeId (routes/governance.ts),
@@ -148,6 +169,22 @@ export function ChangeDetailPage(): React.JSX.Element {
   // Provenance badge only — never a gate (see above).
   const foreign = isForeignOriginObject(change.originDomainId, ownDomainId);
   const waves = plan?.waves ?? [];
+  // M28.3 — what this change is in the plan → approve → apply lane, read off the same wire the
+  // server reads. An APPLY names its plan; a PLAN is an accepted, non-rollback infrastructure change
+  // whose targets carry plan evidence (the plan chip below) — only those targets are applied.
+  const infraDeclaration = InfrastructureChangeDeclarationSchema.safeParse(
+    change.properties[INFRASTRUCTURE_DECLARATION_PROPERTY]
+  );
+  const appliesPlan = infraDeclaration.success ? infraDeclaration.data.applyPlan : null;
+  const plannedTargets = waves
+    .flatMap((w) => w.targets)
+    .filter((t) => t.category === "infrastructure" && t.observed?.plan?.ref)
+    .map((t) => t.targetObjectId);
+  const canApplyPlan =
+    change.state === "accepted" &&
+    change.rollbackOfObjectId === null &&
+    change.properties[INFRASTRUCTURE_DECLARATION_PROPERTY] === undefined &&
+    plannedTargets.length > 0;
   // Mirrors the pipeline page's hold resolution exactly. See docs/web.md §193.
   function holdFor(target: { targetObjectId: string }): ChangeStageDependencyTarget | null {
     const found = stageDependencyStatus?.targets.find(
@@ -197,6 +234,18 @@ export function ChangeDetailPage(): React.JSX.Element {
                 </Link>
               </span>
             )}
+            {appliesPlan && (
+              <span className="text-xs text-slate-500" data-testid="applies-plan">
+                Applies plan{" "}
+                <Link
+                  to="/changes/$id"
+                  params={{ id: appliesPlan }}
+                  className="font-mono text-slate-700 hover:underline"
+                >
+                  {appliesPlan}
+                </Link>
+              </span>
+            )}
           </>
         }
         actions={
@@ -214,6 +263,20 @@ export function ChangeDetailPage(): React.JSX.Element {
                 data-testid="accept-change-button"
               >
                 {acceptMutation.isPending ? "Accepting…" : "Accept"}
+              </Button>
+            )}
+            {canApplyPlan && (
+              <Button
+                onClick={() =>
+                  applyPlanMutation.mutate({
+                    name: `apply: ${change.name}`,
+                    targets: plannedTargets
+                  })
+                }
+                disabled={applyPlanMutation.isPending}
+                data-testid="apply-plan-button"
+              >
+                {applyPlanMutation.isPending ? "Proposing apply…" : "Apply this plan"}
               </Button>
             )}
             {canRollback && (
@@ -249,6 +312,14 @@ export function ChangeDetailPage(): React.JSX.Element {
               <WhyLink decisionId={decisionIdOf(acceptMutation.error)!} />
             </>
           )}
+        </p>
+      )}
+
+      {applyPlanMutation.isError && (
+        <p className="text-sm text-red-600" data-testid="apply-plan-error">
+          {applyPlanMutation.error instanceof Error
+            ? applyPlanMutation.error.message
+            : "Failed to propose the apply"}
         </p>
       )}
 

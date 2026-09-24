@@ -107,8 +107,11 @@ import {
   OutpostTrustTierSchema,
   ScanMethodSchema,
   SourceMappingScopeSchema,
-  JourneyKindSchema
+  JourneyKindSchema,
+  InfrastructureChangeDeclarationSchema,
+  INFRASTRUCTURE_DECLARATION_PROPERTY
 } from "@scp/schemas";
+import type { WaveTargetObserved } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
 import { verifyAuditChain } from "@scp/schemas/audit-chain";
@@ -174,6 +177,52 @@ function parseRequiresFlag(value: string | undefined): { key: string; at: string
     }
     return { key, at };
   });
+}
+
+/** `--apply-plan` (M28.3, ADR-0056): an APPLY is a change declaring the accepted plan it applies.
+ *  Folded into `properties` rather than sent as its own field because that is where the server
+ *  reads it (`properties.infrastructure`, beside `properties.recipe`), and forced to Type
+ *  `infrastructure` because only that lane has an apply at all. Refuses a contradiction rather than
+ *  picking a side: `--type image --apply-plan …`, or `--properties` already declaring a different
+ *  infrastructure block, would otherwise be proposed as something the author did not write. */
+export function infraApplyProposal(
+  applyPlan: string | undefined,
+  type: ExecutorType | undefined,
+  properties: Record<string, unknown> | undefined
+): { type: ExecutorType | undefined; properties: Record<string, unknown> | undefined } {
+  if (applyPlan === undefined) return { type, properties };
+  const declaration = InfrastructureChangeDeclarationSchema.safeParse({ applyPlan });
+  if (!declaration.success) {
+    throw new Error(`--apply-plan '${applyPlan}' is not a change id (a UUID)`);
+  }
+  if (type !== undefined && type !== "infrastructure") {
+    throw new Error(
+      `--apply-plan applies an infrastructure plan; it cannot be combined with --type ${type}`
+    );
+  }
+  if (properties?.[INFRASTRUCTURE_DECLARATION_PROPERTY] !== undefined) {
+    throw new Error(
+      `--apply-plan and --properties.${INFRASTRUCTURE_DECLARATION_PROPERTY} both declare the plan — pass one`
+    );
+  }
+  return {
+    type: "infrastructure",
+    properties: { ...(properties ?? {}), [INFRASTRUCTURE_DECLARATION_PROPERTY]: declaration.data }
+  };
+}
+
+/** The plan evidence on one wave target, as `scp change explain` prints it — the CLI half of the
+ *  plan chip (`PipelineWaveCard`). Absent plan ⇒ `undefined`, never a zeroed summary. */
+export function waveTargetPlanText(
+  observed: WaveTargetObserved | null | undefined
+): string | undefined {
+  const plan = observed?.plan;
+  if (!plan) return undefined;
+  const n = (v: number | undefined) => (v === undefined ? "?" : String(v));
+  return (
+    `plan ${plan.ref ? plan.ref.slice(0, 12) : "(no digest)"} · ` +
+    `${n(plan.add)} add / ${n(plan.change)} change / ${n(plan.destroy)} destroy`
+  );
 }
 
 /** Parse the stage-dependency flags into their request shape. See docs/cli.md §9. */
@@ -1484,7 +1533,8 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
       console.log(`  Wave ${label} — ${wave.status}`);
       for (const target of wave.targets) {
         const ref = target.targetUrn ?? target.targetName ?? target.targetObjectId;
-        console.log(`    - ${ref}: ${target.status}`);
+        const plan = waveTargetPlanText(target.observed);
+        console.log(`    - ${ref}: ${target.status}${plan ? ` — ${plan}` : ""}`);
       }
     }
   } else {
@@ -3671,6 +3721,13 @@ export function buildProgram(): Command {
         "to those places (omit for every stage the components share)"
     )
     .option("--properties <json>", "JSON object")
+    .option(
+      "--apply-plan <planChangeId>",
+      "M28.3 (ADR-0056): propose an APPLY of an accepted infrastructure plan — sets " +
+        "properties.infrastructure.applyPlan and Type infrastructure. The server triggers the " +
+        "apply template only if that plan change is accepted, is the latest plan at each target, " +
+        "and has not been applied; a re-apply of an applied plan succeeds as a no-op"
+    )
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -3679,6 +3736,7 @@ export function buildProgram(): Command {
         opts: BaseCliOpts & {
           name: string;
           targets: string;
+          applyPlan?: string;
           type?: ExecutorType;
           provides?: string;
           requires?: string;
@@ -3694,6 +3752,11 @@ export function buildProgram(): Command {
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const requires = parseRequiresFlag(opts.requires);
+        const { type, properties } = infraApplyProposal(
+          opts.applyPlan,
+          opts.type,
+          parseJsonOption(opts.properties, "--properties")
+        );
         const created = await client.changes.propose(
           {
             name: opts.name,
@@ -3702,14 +3765,14 @@ export function buildProgram(): Command {
             sourceKind: opts.sourceKind,
             correlationKey: opts.correlationKey,
             emergency: opts.emergency,
-            type: opts.type,
+            type,
             provides: parseList(opts.provides),
             requires,
             stageDependencies: parseStageDependenciesFlags(
               opts.stageDependsOn,
               opts.stageDependsAt
             ),
-            properties: parseJsonOption(opts.properties, "--properties"),
+            properties,
             labels: parseJsonOption(opts.labels, "--labels")
           },
           { idempotencyKey: randomUUID() }
