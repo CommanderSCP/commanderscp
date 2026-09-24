@@ -1968,6 +1968,10 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
             a swapped `.tfplan`.
           - The widened fingerprint would have voided every #415-era allowlist on upgrade. It is now
             versioned (0124): old rows are checked under v1 until someone re-sets them.
+          - The re-verify found a fourth gap: a `configuration`-typed or hook-lane managed-iac
+            binding bypassed the lane and planned into another target's workspace. Closed at the
+            binding door: `infrastructure` only, plus a partial unique index (0125) on the
+            workspace key.
   - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
     import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
     Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.

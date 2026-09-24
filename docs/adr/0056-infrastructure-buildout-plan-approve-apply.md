@@ -391,6 +391,19 @@ execution system's WHOLE canonical `properties`. The first version named four fi
   - An unknown version never verifies.
 - **URL spelling** (NIT). v2 normalises every http(s) URL-valued property at any depth, so
   `https://x` and `https://x/` are one value.
+- **One workspace, one binding** (re-verify, probe I). The lane's collision check guards only
+  infra-lane plans. A `configuration`-typed or hook-lane managed-iac binding naming another
+  target's workspace ran there and rewrote the plan an approver had accepted. That was
+  interference, not an unapproved apply. Two fixes now stand at the binding door:
+  - managed-iac binds the `infrastructure` Type only, and a relabel away from it is refused;
+  - a partial unique index (0125) keys `lower(coalesce(external_ref, target_object_id))`, one
+    live managed-iac binding per org. Bindings are hard-deleted, so no tombstone keeps a key.
+
+  A row that predates the door is refused by the lane at trigger time
+  (`managed_iac_not_infrastructure`). The lane's collision check still covers the one case the
+  index cannot see: a workspace a moved-away target planned in. **Upgrade note:** 0125 fails to
+  apply if an org already has two managed-iac bindings sharing a workspace. That is exactly the
+  unsafe state, so the operator must resolve it first.
 
 **Proved by** `managed-iac-apply.integration.test.ts`. It runs the real reconcile loop and the real
 plugin in the real subprocess host, with each run in the real `scp-runner-iac` container on
