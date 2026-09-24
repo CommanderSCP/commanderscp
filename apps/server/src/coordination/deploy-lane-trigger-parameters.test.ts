@@ -351,9 +351,11 @@ describe("a plugin's verdict crosses the host as a refusal, never as a retryable
     });
 
   it("decided on the RPC CODE the host carries, never on message text", () => {
-    expect(triggerRefusalOf(hostError("execution-system:x", "refusing to author", TRIGGER_REFUSED_RPC_CODE))).toBe(
-      "refusing to author"
-    );
+    expect(
+      triggerRefusalOf(
+        hostError("execution-system:x", "refusing to author", TRIGGER_REFUSED_RPC_CODE)
+      )
+    ).toBe("refusing to author");
     expect(triggerRefusalOf(hostError("x", "sync returned HTTP 503", -32000))).toBeUndefined();
     expect(triggerRefusalOf(new Error("plain"))).toBeUndefined();
     expect(triggerRefusalOf("not an error")).toBeUndefined();

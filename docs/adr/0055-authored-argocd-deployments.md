@@ -253,7 +253,10 @@ For an Application that manages a Rollout:
    - the server re-validates everything it authors, rollbacks included, against the CURRENT `authoring` on every trigger;
    - a stale plugin can therefore only be *stricter* than the server;
    - and a stale plugin's refusal is terminal (item 3), never a silent write.
-3. **A plugin's verdict is terminal.** `@scp/plugin-api` gains `TriggerRefused`. The subprocess entry sends it as code `-32010` with the message prefixed `TRIGGER_REFUSED_MESSAGE_PREFIX`, so `host.ts` is unchanged. `reconcile.ts` reads it with `triggerRefusalOf` and terminalises it as `executor_refused` with a Decision and an audit event, instead of a retry loop. The argocd plugin throws it for:
+3. **A plugin's verdict is terminal.** `@scp/plugin-api` gains `TriggerRefused`, which the subprocess entry sends as JSON-RPC code `-32010`. `reconcile.ts` terminalises it as `executor_refused` with a Decision and an audit event, instead of a retry loop.
+   - **The verdict is decided on the code, never on message text (review round 3).** An intermediate version matched a text marker anywhere in the host's error message. That message embeds the instance id, so a tenant-chosen `pluginInstanceId` containing the marker turned a DNS failure into a terminal verdict with a tenant-written reason (probe F).
+   - **`host.ts` change:** the edit touches only the error-wrapping line. It carries `rpcCode` and `rpcMessage` on the error as data, and #414 owns the rest of `host.ts`. `triggerRefusalOf` reads `rpcCode`.
+   - **Safe instance-id charset.** Every caller-supplied `pluginInstanceId` — executor, control and notification bindings — must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`. This is enforced on write only, so the `/v1` schemas and stored rows are unchanged. The argocd plugin throws it for:
    - a second-layer violation;
    - a missing or unusable `authoring`;
    - an Application it did not author;
@@ -267,6 +270,12 @@ For an Application that manages a Rollout:
    - Every step exactly one `setWeight`, or a `pause` with a timed duration.
    - The container: `containerPort` only (no `hostPort`/`hostIP`), and pod-template labels only (no AppArmor/seccomp annotation).
    - Services only alongside a blue-green that switches exactly those two.
+   - **Round 3** pins the rest to exactly what the renderer emits:
+     - the Rollout's and Services' label sets;
+     - `selector.matchLabels`, pod-template labels and Service selectors, all exactly `{app.kubernetes.io/name: <rollout>}`, so nothing targets another app's pods;
+     - the container name `app`;
+     - a single-token image with no whitespace or newline;
+     - Service names `<rollout>-active` / `-preview`.
 
    `@scp/plugin-argocd` exports the validator, and the server runs it on everything it authors: forward (`rendered_outside_authoring`) and rollback (`rollback_prior_outside_authoring`). Both layers therefore apply one rule.
 5. **The reserved-key census discovers its lanes.** Every `*-trigger-parameters.ts` under `coordination/` is censused, following any `*-material` module it imports. A lane the census cannot read turns it red, so M28.2's lane is seen the day it lands.

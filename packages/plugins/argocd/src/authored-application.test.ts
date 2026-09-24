@@ -449,7 +449,8 @@ describe("the second layer — only a carrier render the operator declared is ev
     ],
     [
       "an extra pod-template label",
-      (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.template.metadata.labels.extra = "1"),
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.template.metadata.labels.extra = "1"),
       /template.metadata.labels is not exactly what SCP authors/
     ],
     [
