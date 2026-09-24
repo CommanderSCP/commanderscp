@@ -106,13 +106,17 @@ function chartShape(): Record<string, unknown> {
   };
 }
 
-type Tpl = ReturnType<typeof chartShape> & { spec: Record<string, any> };
+/** The fixture is edited by path in each case below (that is the point of a mutation table), so it
+ *  is typed as deliberately loose JSON rather than restating the whole template type. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LooseJson = any;
+type Tpl = ReturnType<typeof chartShape> & { spec: Record<string, LooseJson> };
 const mutate = (fn: (t: Tpl) => void): Tpl => {
   const t = chartShape() as Tpl;
   fn(t);
   return t;
 };
-const container = (t: Tpl): Record<string, any> => t.spec.templates[0].container;
+const container = (t: Tpl): Record<string, LooseJson> => t.spec.templates[0].container;
 
 function ctx(extra: Record<string, unknown> = {}): PluginContext {
   return {
