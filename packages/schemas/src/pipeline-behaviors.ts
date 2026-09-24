@@ -524,3 +524,43 @@ export const OpsRunMaterialSchema = z.strictObject({
   sourceAddress: z.string().nullable()
 });
 export type OpsRunMaterial = z.infer<typeof OpsRunMaterialSchema>;
+
+/** THE ARGO HOST-OPS PIN (M28.2, ADR-0054 D9): where this domain's CA may send an Argo run token,
+ *  what it is sealed to, and the runner digest the catalog template must name. Written only with
+ *  `secret:write` at the org root — the enrolment door's permission — so a binding editor with
+ *  `object:write` cannot move it. Every field is required: an Argo-bound host-reaching run is
+ *  refused unless its binding matches the pin. */
+export const ArgoOpsPinRequestSchema = z.strictObject({
+  serverUrl: z.string().min(1).max(2048),
+  namespace: z.string().min(1).max(63),
+  templateRef: z.string().min(1).max(253),
+  sealingPublicKey: z
+    .string()
+    .min(1)
+    .max(8192)
+    .describe("RSA (>= 3072-bit) SPKI PEM; its private half is the `scp-ops-v1` sealing Secret."),
+  sourceAddresses: z
+    .array(z.string().min(1).max(64))
+    .min(1)
+    .max(64)
+    .describe(
+      "The cluster's egress addresses/CIDRs — every certificate's OpenSSH `source-address`."
+    ),
+  runnerImageDigest: z
+    .string()
+    .regex(/^sha256:[0-9a-f]{64}$/)
+    .describe("The scp-runner-ops digest the WorkflowTemplate's step must name.")
+});
+export type ArgoOpsPinRequest = z.infer<typeof ArgoOpsPinRequestSchema>;
+
+export const ArgoOpsPinSchema = z.strictObject({
+  domainId: z.string().uuid(),
+  serverUrl: z.string(),
+  namespace: z.string(),
+  templateRef: z.string(),
+  sealingPublicKey: z.string(),
+  sourceAddresses: z.array(z.string()),
+  runnerImageDigest: z.string(),
+  updatedAt: z.string()
+});
+export type ArgoOpsPinView = z.infer<typeof ArgoOpsPinSchema>;

@@ -24,8 +24,18 @@ export const WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS = "ops_declaration_refus
 export const WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION =
   "change.wave_target.ops_declaration_refused";
 
+/** Terminal status (M28.2, ADR-0054): a host-reaching run whose MATERIAL cannot be derived or
+ *  delivered — an unenrolled domain, a CA key that does not resolve, no Argo ops pin, a binding that
+ *  does not match the pin, a recipe restating the bound. Distinct from a bad declaration because
+ *  the operator who fixes it is a different person (the CA / pin custodian, not the change author). */
+export const WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS = "ops_material_refused";
+export const WAVE_TARGET_OPS_MATERIAL_REFUSED_AUDIT_ACTION =
+  "change.wave_target.ops_material_refused";
+
 export type TriggerParameterRefusalStatus =
-  typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS;
+  | typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS
+  | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
+  | typeof WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS;
 
 export abstract class TriggerParameterRefusal extends Error {
   abstract readonly status: TriggerParameterRefusalStatus;
@@ -45,4 +55,11 @@ export abstract class TriggerParameterRefusal extends Error {
     this.remediation = options.remediation ?? message;
     this.inputContext = options.inputContext ?? {};
   }
+}
+
+/** The ops-lane MATERIAL refusal (M28.2). Terminal with a Decision + audit, like every
+ *  `TriggerParameterRefusal`; its `inputContext` names the gate and a reason from a closed set. */
+export class OpsMaterialRefusal extends TriggerParameterRefusal {
+  readonly status = WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS;
+  readonly action = WAVE_TARGET_OPS_MATERIAL_REFUSED_AUDIT_ACTION;
 }

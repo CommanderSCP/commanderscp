@@ -27,8 +27,20 @@ import { redeemOpsRun, type RedemptionRefusal } from "../coordination/ops-run-re
  *  so this is what bounds them; a legitimate pod redeems exactly once. */
 export const opsRedemptionRateLimiter = new PokeRateLimiter({
   capacity: 10,
-  refillIntervalMs: 6_000
+  refillIntervalMs: 6_000,
+  // Bounded: every distinct caller address costs a map entry, and this door is bearer-less.
+  maxKeys: 10_000
 });
+
+/** EVERY 401 answers no sooner than this after the request arrived. The unknown-run and wrong-secret
+ *  paths do different work (the latter updates a row and appends an audit event), so without a
+ *  floor their latency would tell a guesser which run ids exist. */
+export const OPS_REDEMPTION_401_FLOOR_MS = 250;
+
+async function atLeast(startedAt: number, floorMs: number): Promise<void> {
+  const wait = startedAt + floorMs - Date.now();
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+}
 
 function problemFor(refusal: RedemptionRefusal, detail: string): ProblemError {
   switch (refusal) {
@@ -43,6 +55,9 @@ function problemFor(refusal: RedemptionRefusal, detail: string): ProblemError {
     case "replayed":
     case "burned":
     case "change_not_executing":
+    case "target_not_in_flight":
+    case "superseded":
+    case "key_reused":
     case "authority_changed":
       return conflict(detail);
   }
@@ -74,6 +89,7 @@ export function registerOpsRunRedemptionRoutes(app: FastifyInstance, deps: AppDe
       }
     },
     handler: async (request, reply) => {
+      const startedAt = Date.now();
       if (!opsRedemptionRateLimiter.tryConsume(request.ip)) {
         throw tooManyRequests("too many run redemptions from this address");
       }
@@ -84,7 +100,11 @@ export function registerOpsRunRedemptionRoutes(app: FastifyInstance, deps: AppDe
         requestId: request.id,
         remoteAddress: request.ip
       });
-      if (!result.ok) throw problemFor(result.refusal, result.detail);
+      if (!result.ok) {
+        const problem = problemFor(result.refusal, result.detail);
+        if (problem.status === 401) await atLeast(startedAt, OPS_REDEMPTION_401_FLOOR_MS);
+        throw problem;
+      }
       const m = result.material;
       return reply.code(200).send({
         runId: m.runId,

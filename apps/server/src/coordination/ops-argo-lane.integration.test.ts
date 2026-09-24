@@ -15,7 +15,6 @@ import type { TrustDomainId } from "@scp/schemas";
 import type { PluginContext, TriggerIntent, ExecutorPlugin } from "@scp/plugin-api";
 import { argoWorkflowsExecutorPlugin } from "@scp/plugin-argo-workflows";
 import {
-  RecipeOverrideRefused,
   SERVER_DERIVED_OPS_KEYS,
   createManagedOpsExecutorPlugin,
   readServerDerivedMaterial
@@ -25,6 +24,7 @@ import { createFakeExecutorPlugin } from "@scp/plugin-fake-executor";
 import {
   createTestComponent,
   createTestOrg,
+  createTestUser,
   listenTestServer,
   type ListeningTestServer,
   type TestOrg
@@ -32,6 +32,7 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import {
   auditEvents,
+  changeWaveTargets,
   decisions,
   objects,
   opsRunRedemptions,
@@ -43,9 +44,20 @@ import { reconcileOrgTick } from "./reconcile.js";
 import { enrolDomain, reconcileSerials } from "./ssh-ca-repo.js";
 import { replaceMembership } from "./infrastructure-members-repo.js";
 import { deriveOpsRunMaterial, OpsMaterialUnavailable } from "./ops-run-material.js";
-import { OpsDeclarationRefused, opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
+import {
+  OpsDeclarationRefused,
+  OpsRecipeRefused,
+  opsLaneTriggerParameters
+} from "./ops-lane-trigger-parameters.js";
+import {
+  TriggerParameterRefusal,
+  WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
+} from "./trigger-parameter-refusal.js";
 import { generateEphemeralSshKeypair } from "./ssh-credentials.js";
-import { opsRedemptionRateLimiter } from "../routes/ops-run-redemptions.js";
+import {
+  OPS_REDEMPTION_401_FLOOR_MS,
+  opsRedemptionRateLimiter
+} from "../routes/ops-run-redemptions.js";
 import { ARGO_OPS_DELIVERY_KEYS } from "./ops-run-redemption.js";
 import {
   WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
@@ -124,6 +136,36 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
 
   const sealing = generateKeyPairSync("rsa", { modulusLength: 3072 });
   const sealingPublicPem = sealing.publicKey.export({ type: "spki", format: "pem" }).toString();
+  /** The pinned runner digest, and the source addresses every certificate must carry. */
+  const RUNNER_DIGEST = `sha256:${"a".repeat(64)}`;
+  const PIN_SOURCE = ["10.42.0.0/16", "192.168.5.7"];
+  const PIN = {
+    serverUrl: ARGO_URL,
+    namespace: NAMESPACE,
+    templateRef: "scp-ops-v1",
+    sealingPublicKey: sealingPublicPem,
+    sourceAddresses: PIN_SOURCE,
+    runnerImageDigest: RUNNER_DIGEST
+  };
+  /** The WorkflowTemplate the fake Argo returns when the plugin READS IT BACK before submit. */
+  const goodTemplate = () => ({
+    metadata: { name: "scp-ops-v1" },
+    spec: {
+      templates: [
+        {
+          name: "run",
+          container: {
+            image: `registry.example.com/scp/scp-runner-ops:v1@${RUNNER_DIGEST}`,
+            env: [{ name: "SCP_OPS_CATALOG_VERIFY", value: "required" }]
+          }
+        }
+      ]
+    }
+  });
+  let templateBody: unknown = goodTemplate();
+  const templateReads: string[] = [];
+  /** Any request to a host that is NOT the pinned Argo server — probe A's redirect target. */
+  const foreignRequests: string[] = [];
 
   const DECLARATION = {
     role: "os_package",
@@ -167,6 +209,17 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
 
   /** The fake Argo server — the only fake in the path. */
   async function argoHttp(req: { method: string; url: string; body?: unknown }) {
+    if (!req.url.startsWith(`${ARGO_URL}/`)) {
+      foreignRequests.push(`${req.method} ${req.url}`);
+      return { status: 404, headers: {}, body: {} };
+    }
+    if (
+      req.method === "GET" &&
+      req.url === `${ARGO_URL}/api/v1/workflow-templates/${NAMESPACE}/scp-ops-v1`
+    ) {
+      templateReads.push(req.url);
+      return { status: 200, headers: {}, body: templateBody };
+    }
     if (req.method === "POST" && req.url === `${ARGO_URL}/api/v1/workflows/${NAMESPACE}/submit`) {
       const body = req.body as {
         resourceName: string;
@@ -264,26 +317,42 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     }
   };
 
+  /** A binding whose endpoint matches the pin. There is no sealing key or source address to pass:
+   *  those are the pin's, and a binding carrying them is ignored (see probe A). */
   async function bindArgo(
     targetId: string,
-    extra: { externalRef?: string; sealing?: string | null; sourceAddresses?: string[] } = {}
+    extra: { externalRef?: string; client?: ScpClient; config?: Record<string, unknown> } = {}
   ) {
-    await admin.executors.putBinding(targetId, {
+    await (extra.client ?? admin).executors.putBinding(targetId, {
       pluginModule: "argo-workflows",
       pluginInstanceId: `argo-ops-${randomUUID().slice(0, 8)}`,
       type: "configuration",
       externalRef: extra.externalRef ?? "scp-ops-v1",
-      allowedHosts: ["argo.example.test"],
-      config: {
-        serverUrl: ARGO_URL,
-        namespace: NAMESPACE,
-        ...(extra.sealing === null
-          ? {}
-          : { opsSealingPublicKey: extra.sealing ?? sealingPublicPem }),
-        ...(extra.sourceAddresses ? { opsSourceAddresses: extra.sourceAddresses } : {})
-      }
+      allowedHosts: ["argo.example.test", "evil.example.test"],
+      config: { serverUrl: ARGO_URL, namespace: NAMESPACE, ...(extra.config ?? {}) }
     });
   }
+
+  /** The wave target a change's run was planned onto, and its Decisions. */
+  async function waveTargetOf(changeId: string, targetId: string) {
+    const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      getLatestPlanForChange(tx, org.orgId, changeId)
+    );
+    return plan!.waves.flatMap((w) => w.targets).find((t) => t.targetObjectId === targetId)!;
+  }
+  const decisionsFor = (changeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.subjectId, changeId),
+            eq(decisions.kind, "wave_target")
+          )
+        )
+    );
 
   const propose = (targetId: string, properties: Record<string, unknown> = { ops: DECLARATION }) =>
     admin.changes.propose({
@@ -308,9 +377,9 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     ).filter((e) => e.action.startsWith("ops.run_redemption."));
 
   /** One Argo run, end to end up to the Workflow submit. Returns the submission and the unsealed token. */
-  async function argoRun(sourceAddresses?: string[]) {
+  async function argoRun() {
     const product = await fleet();
-    await bindArgo(product, sourceAddresses ? { sourceAddresses } : {});
+    await bindArgo(product);
     const change = await propose(product);
     const before = submissions.length;
     await tick();
@@ -364,9 +433,14 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
         recordedBySubjectId: randomUUID()
       })
     );
+    // THE PIN, through the public door (secret:write at the org root) — the only way it is set.
+    await admin.sshCa.pinArgoOps(domainId, PIN);
   }, 180_000);
 
   beforeEach(() => {
+    templateBody = goodTemplate();
+    templateReads.length = 0;
+    foreignRequests.length = 0;
     argoPhase = "Running";
     launcherArmed = true;
     launcherTouches.length = 0;
@@ -472,11 +546,12 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     expect(verdict!.unrecognised).toBe(false);
     const [row] = (await redemptionRows()).filter((r) => r.id === sub.parameters["opsRunId"]);
     expect(row!.issuedSerial).toBe(redeemed.serial);
-    expect(redeemed.sourceAddress).toBeNull();
+    // The plugin READ THE TEMPLATE BACK before submitting (ADR-0054 D9(d)).
+    expect(templateReads.length).toBeGreaterThan(0);
   });
 
-  it("carries the binding's source addresses as the certificate's `source-address`, and records it", async () => {
-    const { token } = await argoRun(["10.42.0.0/16", "192.168.5.7"]);
+  it("EVERY certificate carries the PIN's source addresses as `source-address` (mandatory), recorded on the issuance", async () => {
+    const { token } = await argoRun();
     const redeemed = await anonymous.opsRuns.redeem(
       token,
       generateEphemeralSshKeypair().openSshPublicKey
@@ -529,6 +604,69 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     expect(events.at(-1)!.reason).toContain("burned");
   });
 
+  it("A CEILING on a burned run (probe C): further wrong guesses are neither counted nor audited", async () => {
+    const { token, change, sub } = await argoRun();
+    const forged = `${token.slice(0, token.lastIndexOf(".") + 1)}${"A".repeat(43)}`;
+    for (let i = 0; i < 9; i++) {
+      await anonymous.opsRuns
+        .redeem(forged, generateEphemeralSshKeypair().openSshPublicKey)
+        .catch(() => undefined);
+    }
+    const events = await auditActions(change.id);
+    expect(events, "three counted guesses, then silence — not nine audit events").toHaveLength(3);
+    const [row] = (await redemptionRows()).filter((r) => r.id === sub.parameters["opsRunId"]);
+    expect(row!.failedAttempts).toBe(3);
+    expect(row!.burnedAt).not.toBeNull();
+  });
+
+  it("an ABORTED wave target's token buys nothing (probe B) — 409 target_not_in_flight", async () => {
+    const { token, change, sub } = await argoRun();
+    const [row] = (await redemptionRows()).filter((r) => r.id === sub.parameters["opsRunId"]);
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changeWaveTargets)
+        .set({ status: "aborted" })
+        .where(eq(changeWaveTargets.id, row!.waveTargetId))
+    );
+    await expect(
+      anonymous.opsRuns.redeem(token, generateEphemeralSshKeypair().openSshPublicKey)
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await auditActions(change.id)).at(-1)!.reason).toContain("target_not_in_flight");
+  });
+
+  it("a SUPERSEDED token is dead: a newer row for the same wave target makes the older one 409", async () => {
+    const { token, change, sub, product } = await argoRun();
+    const [row] = (await redemptionRows()).filter((r) => r.id === sub.parameters["opsRunId"]);
+    // A retried trigger derives a fresh row for the same target — the reconcile-side call, directly.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      opsLaneTriggerParameters(tx, {
+        orgId: org.orgId,
+        targetObjectId: product,
+        changeObjectId: change.id,
+        pluginModule: "argo-workflows",
+        externalRef: "scp-ops-v1",
+        waveTargetId: row!.waveTargetId,
+        executorConfig: { serverUrl: ARGO_URL, namespace: NAMESPACE },
+        masterKey: server.deps.config.secretsMasterKey
+      })
+    );
+    await expect(
+      anonymous.opsRuns.redeem(token, generateEphemeralSshKeypair().openSshPublicKey)
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await auditActions(change.id)).at(-1)!.reason).toContain("superseded");
+  });
+
+  it("ONE KEY, ONE RUN (probe D): a pod key already certified for another run is refused", async () => {
+    const key = generateEphemeralSshKeypair();
+    const a = await argoRun();
+    const b = await argoRun();
+    await anonymous.opsRuns.redeem(a.token, key.openSshPublicKey);
+    await expect(anonymous.opsRuns.redeem(b.token, key.openSshPublicKey)).rejects.toMatchObject({
+      status: 409
+    });
+    expect((await auditActions(b.change.id)).at(-1)!.reason).toContain("key_reused");
+  });
+
   it("a CANCELLED change's token buys nothing — 409, audited, no certificate", async () => {
     const { token, change, sub } = await argoRun();
     await admin.changes.cancel(change.id, "operator stopped the package change");
@@ -558,12 +696,16 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     const before = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.orgId, org.orgId))
     );
+    const startedAt = Date.now();
     await expect(
       anonymous.opsRuns.redeem(
         `scpops1.${org.orgId}.${randomUUID()}.${"B".repeat(43)}`,
         generateEphemeralSshKeypair().openSshPublicKey
       )
     ).rejects.toMatchObject({ status: 401 });
+    // EQUAL-COST 401s: every one answers no sooner than the floor, so latency does not tell a
+    // guesser a real run id from a made-up one.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(OPS_REDEMPTION_401_FLOOR_MS - 5);
     const after = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.orgId, org.orgId))
     );
@@ -581,15 +723,142 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     expect(statuses[10]).toBe(429);
   });
 
-  it("NO SEALING KEY → refused: no Workflow is submitted and no redemption row exists", async () => {
+  it("NO PIN → refused TERMINALLY with a Decision naming the reason; nothing submitted, no row", async () => {
+    // A second org, enrolled but never pinned.
+    const other = await createTestOrg(server, "ops-argo-unpinned");
+    const otherAdmin = new ScpClient({ baseUrl: server.baseUrl, token: other.adminToken });
+    const product = (
+      await createTestComponent(otherAdmin, { name: `fleet-${randomUUID().slice(0, 8)}` })
+    ).id;
+    const [row] = await withTenantTx(server.deps.db, other.orgId, (tx) =>
+      tx.select({ d: objects.originDomainId }).from(objects).where(eq(objects.id, product))
+    );
+    await withTenantTx(server.deps.db, other.orgId, (tx) =>
+      enrolDomain(tx, {
+        orgId: other.orgId,
+        domainId: row!.d as TrustDomainId,
+        breakGlass: "OOB console",
+        masterKey: server.deps.config.secretsMasterKey,
+        recordedBySubjectId: randomUUID()
+      })
+    );
+    const otherChange = await otherAdmin.changes.propose({
+      name: `ops-${randomUUID().slice(0, 8)}`,
+      targets: [product],
+      properties: { ops: DECLARATION }
+    });
+    const refused = await withTenantTx(server.deps.db, other.orgId, (tx) =>
+      opsLaneTriggerParameters(tx, {
+        orgId: other.orgId,
+        targetObjectId: product,
+        changeObjectId: otherChange.id,
+        pluginModule: "argo-workflows",
+        externalRef: "scp-ops-v1",
+        waveTargetId: randomUUID(),
+        executorConfig: { serverUrl: ARGO_URL, namespace: NAMESPACE },
+        masterKey: server.deps.config.secretsMasterKey
+      })
+    ).catch((e: Error) => e);
+    expect(refused).toBeInstanceOf(TriggerParameterRefusal);
+    expect((refused as TriggerParameterRefusal).status).toBe(
+      WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
+    );
+    expect((refused as TriggerParameterRefusal).inputContext["reason"]).toBe("no_argo_ops_pin");
+  });
+
+  it("PROBE A, PERMANENT: an Operator scoped to one product cannot redirect where a run token goes", async () => {
     const product = await fleet();
-    await bindArgo(product, { sealing: null });
-    const rowsBefore = (await redemptionRows()).length;
+    const op = await createTestUser(server, org, [{ role: "Operator", scope: product }]);
+    const opClient = new ScpClient({ baseUrl: server.baseUrl, token: op.token });
+    const attacker = generateKeyPairSync("rsa", { modulusLength: 3072 });
+    const attackerPem = attacker.publicKey.export({ type: "spki", format: "pem" }).toString();
+
+    // (1) The pin itself is not theirs to move: secret:write at the org root.
+    await expect(
+      opClient.sshCa.pinArgoOps(domainId, {
+        ...PIN,
+        serverUrl: "https://evil.example.test",
+        sealingPublicKey: attackerPem
+      })
+    ).rejects.toMatchObject({ status: 403 });
+
+    // (2) Repointing THEIR BINDING at their own server (with their own key in its config) is refused
+    //     at derivation, terminally, with a Decision — and nothing reaches the other server.
+    await bindArgo(product, {
+      client: opClient,
+      config: { serverUrl: "https://evil.example.test", opsSealingPublicKey: attackerPem }
+    });
+    const redirected = await propose(product);
     const before = submissions.length;
-    await propose(product);
     await tick();
     expect(submissions.length).toBe(before);
-    expect((await redemptionRows()).length).toBe(rowsBefore);
+    expect(foreignRequests).toEqual([]);
+    expect((await waveTargetOf(redirected.id, product)).status).toBe(
+      WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
+    );
+    const refusal = (await decisionsFor(redirected.id)).find(
+      (d) => (d.inputContext as Record<string, unknown>)["reason"] === "binding_off_pin"
+    );
+    expect(refusal, "the refusal carries a Decision naming the mismatch").toBeDefined();
+
+    // (3) Keeping the pinned server but planting their own sealing key in binding config changes
+    //     nothing: the token is sealed to the PINNED key, and theirs cannot open it.
+    const product2 = await fleet();
+    const op2 = await createTestUser(server, org, [{ role: "Operator", scope: product2 }]);
+    await bindArgo(product2, {
+      client: new ScpClient({ baseUrl: server.baseUrl, token: op2.token }),
+      config: { opsSealingPublicKey: attackerPem, opsSourceAddresses: ["0.0.0.0/0"] }
+    });
+    await propose(product2);
+    const before2 = submissions.length;
+    await tick();
+    const sub = submissions.slice(before2)[0]!;
+    expect(sub, "the pinned-endpoint run is still submitted").toBeDefined();
+    expect(() =>
+      privateDecrypt(
+        {
+          key: attacker.privateKey,
+          padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING,
+          oaepHash: "sha256"
+        },
+        Buffer.from(sub.parameters["opsRunTokenSealed"]!, "base64")
+      )
+    ).toThrow();
+    const redeemed = await anonymous.opsRuns.redeem(
+      unseal(sub.parameters["opsRunTokenSealed"]!),
+      generateEphemeralSshKeypair().openSshPublicKey
+    );
+    expect(redeemed.sourceAddress, "binding config cannot widen the source-address").toBe(
+      PIN_SOURCE.join(",")
+    );
+  });
+
+  it("TEMPLATE CHECK: a template read back with another image digest, or verification off, is NOT submitted", async () => {
+    for (const bad of [
+      () => {
+        const t = goodTemplate();
+        t.spec.templates[0]!.container.image = `registry.example.com/evil@sha256:${"b".repeat(64)}`;
+        return t;
+      },
+      () => {
+        const t = goodTemplate();
+        t.spec.templates[0]!.container.env = [{ name: "SCP_OPS_CATALOG_VERIFY", value: "off" }];
+        return t;
+      },
+      () => ({ ...goodTemplate(), spec: { ...goodTemplate().spec, podSpecPatch: "{}" } })
+    ]) {
+      templateBody = bad();
+      const product = await fleet();
+      await bindArgo(product);
+      const change = await propose(product);
+      const before = submissions.length;
+      templateReads.length = 0;
+      await tick();
+      expect(templateReads.length, "the template was read back").toBeGreaterThan(0);
+      expect(submissions.length, "and refused before submit").toBe(before);
+      // Cancelled so its backed-off retry cannot submit later against the next case's good template.
+      await admin.changes.cancel(change.id, "template-check case done");
+    }
   });
 
   it("an Argo binding to a NON-catalog template derives nothing — SCP's CA never serves an org-authored template", async () => {
@@ -698,8 +967,10 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
           })
         ).catch((e: Error) => e);
         expect(refused, `${pluginModule} must refuse a recipe restating ${key}`).toBeInstanceOf(
-          RecipeOverrideRefused
+          OpsRecipeRefused
         );
+        // TERMINAL, with a Decision — not a plain Error reconcile would retry every tick.
+        expect(refused).toBeInstanceOf(TriggerParameterRefusal);
         expect((refused as Error).message).toContain(key);
       }
     }

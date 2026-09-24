@@ -7,11 +7,11 @@ import {
   randomUUID,
   timingSafeEqual
 } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { TrustDomainId } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { changes, objects, opsRunRedemptions } from "../db/schema.js";
+import { changeWaveTargets, changes, objects, opsRunRedemptions } from "../db/schema.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import {
@@ -24,6 +24,16 @@ import {
 import { ScpCaAuthority } from "./scp-ca-authority.js";
 import { activeAuthorityForDomain, recordIssuance } from "./ssh-ca-repo.js";
 import { getSecretValue } from "../secrets/secrets-repo.js";
+import { OpsMaterialRefusal } from "./trigger-parameter-refusal.js";
+import {
+  OpsSealingKeyRefused,
+  argoOpsPinForDomain,
+  assertSealingKey,
+  normalizeServerUrl,
+  sourceAddressFrom
+} from "./ops-argo-pin.js";
+// Re-exported for callers that reached them here before the pin existed.
+export { OpsSealingKeyRefused, assertSealingKey, sourceAddressFrom } from "./ops-argo-pin.js";
 
 /**
  * HOST OPS THROUGH AN ORG'S ARGO WORKFLOWS — the credential half (M28.2, ADR-0054, charter
@@ -34,11 +44,11 @@ import { getSecretValue } from "../secrets/secrets-repo.js";
  * cannot be staged — it has to be FETCHED, by the pod, once. Three things make that safe enough to
  * have been approved, and each is a mechanism rather than a comment:
  *
- *   1. THE TOKEN IS SEALED. A Workflow's parameters are persisted in the Workflow object, shown in
- *      the Argo UI, stored in etcd and its backups and in the workflow archive. So the parameter
- *      carries the single-use secret ENCRYPTED to an RSA key the operator registered on the binding;
- *      the private half is a namespace Secret mounted only into the `scp-ops-v1` pod. Reading
- *      Workflows yields ciphertext.
+ *   1. THE TOKEN IS SEALED, TO A PINNED KEY, AND GOES ONLY TO A PINNED ENDPOINT. A Workflow's
+ *      parameters are persisted in the Workflow object, the Argo UI, etcd and the archive, so the
+ *      parameter carries the secret ENCRYPTED to the RSA key in the domain's Argo ops pin
+ *      (`ops-argo-pin.ts`) — written only with `secret:write` at the org root, never binding config.
+ *      Reading Workflows yields ciphertext; editing a binding cannot change the key or the server.
  *   2. THE REDEMPTION IS NARROW. Single-use, a window no longer than the certificate's own TTL, bound
  *      to one wave target of one change, and it yields only the bound reconcile derived for that
  *      run — the request carries a secret and a public key, nothing that could name a host.
@@ -58,39 +68,7 @@ export const OPS_REDEMPTION_WINDOW_SECONDS = RUN_CERTIFICATE_TTL_SECONDS;
  *  pod presents the right secret first time, so any wrong one is either a bug or a guess. */
 export const OPS_REDEMPTION_MAX_FAILED_ATTEMPTS = 3;
 
-/** The smallest RSA modulus a sealing key may have. 3072 is NIST's 128-bit equivalent. */
-export const OPS_SEALING_MIN_RSA_BITS = 3072;
-
 const TOKEN_PREFIX = "scpops1";
-
-export class OpsSealingKeyRefused extends Error {}
-
-/** Refuse a sealing key that cannot carry the token safely, BEFORE a redemption row is written.
- *  Absent is refused too: without it the only way to deliver the token would be in the clear. */
-export function assertSealingKey(pem: unknown): string {
-  if (typeof pem !== "string" || pem.trim().length === 0) {
-    throw new OpsSealingKeyRefused(
-      "this argo-workflows binding runs the host-ops catalog template but declares no " +
-        "`opsSealingPublicKey`. Without one the run token would sit in the Workflow's parameters in " +
-        "the clear — readable by anyone who can read Workflows — so the run is refused. Register the " +
-        "public half of the key whose private half is the `scp-ops-v1` sealing Secret."
-    );
-  }
-  let key;
-  try {
-    key = createPublicKey(pem);
-  } catch {
-    throw new OpsSealingKeyRefused("`opsSealingPublicKey` is not a readable PEM public key");
-  }
-  const bits = key.asymmetricKeyDetails?.modulusLength ?? 0;
-  if (key.asymmetricKeyType !== "rsa" || bits < OPS_SEALING_MIN_RSA_BITS) {
-    throw new OpsSealingKeyRefused(
-      `\`opsSealingPublicKey\` must be an RSA key of at least ${OPS_SEALING_MIN_RSA_BITS} bits ` +
-        `(got ${key.asymmetricKeyType ?? "unknown"}${bits ? ` ${bits}` : ""}).`
-    );
-  }
-  return pem;
-}
 
 /** RSA-OAEP(SHA-256) — chosen because both ends have it without a new dependency: node:crypto here
  *  and `cryptography` (already an ansible-core dependency) in the runner. */
@@ -151,34 +129,15 @@ export interface CreateOpsRunRedemptionInput {
   roleArguments: Record<string, unknown>;
   changeObjectId: string;
   waveTargetId: string;
-  sealingPublicKeyPem: unknown;
-  /** The binding's declared egress CIDRs, as the OpenSSH `source-address` list. Optional. */
-  sourceAddresses?: unknown;
+  /** What the BINDING says it will submit to. It must MATCH the domain's Argo ops pin — the
+   *  sealing key and source addresses are read from the pin, never from here. */
+  binding: { serverUrl: unknown; namespace: unknown; templateRef: string | null | undefined };
   masterKey: Buffer;
 }
 
 /** The Workflow parameters the Argo path adds. Neither is a secret: one is ciphertext, the other is
  *  a row id that is useless without the secret. */
 export const ARGO_OPS_DELIVERY_KEYS = ["opsRunTokenSealed", "opsRunId"] as const;
-
-/** Validates the binding's `opsSourceAddresses`: an array of CIDRs/addresses, joined the way
- *  OpenSSH's `source-address` critical option expects. */
-export function sourceAddressFrom(value: unknown): string | null {
-  if (value === undefined || value === null) return null;
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new OpsSealingKeyRefused(
-      "`opsSourceAddresses` must be a non-empty array of addresses/CIDRs when set"
-    );
-  }
-  for (const entry of value) {
-    if (typeof entry !== "string" || !/^[0-9a-fA-F.:]+(\/\d{1,3})?$/.test(entry)) {
-      throw new OpsSealingKeyRefused(
-        `\`opsSourceAddresses\` entry ${JSON.stringify(entry)} is not an address or CIDR`
-      );
-    }
-  }
-  return (value as string[]).join(",");
-}
 
 /**
  * RECONCILE-TIME, in the trigger's transaction: derive the bound (the SAME `deriveOpsBound` Mode C
@@ -199,8 +158,44 @@ export async function createOpsRunRedemption(
     role: input.role,
     masterKey: input.masterKey
   });
-  const sealingPublicKeyPem = assertSealingKey(input.sealingPublicKeyPem);
-  const sourceAddress = sourceAddressFrom(input.sourceAddresses);
+  // THE PIN (ADR-0054 D9). Where this token may go and what it is sealed to are the domain's,
+  // written with `secret:write` at the org root — never the binding's, which `object:write` edits.
+  // A binding that disagrees with the pin is refused rather than corrected: an operator who pointed
+  // it elsewhere has a belief about where this run's certificate goes that must not survive.
+  const pin = await argoOpsPinForDomain(tx, input.orgId, input.domainId);
+  if (!pin) {
+    throw new OpsSealingKeyRefused(
+      `domain ${input.domainId} has no Argo host-ops pin. An Argo-bound host-reaching run is issued ` +
+        "a certificate only for a trigger SCP submits to a PINNED Argo endpoint under a PINNED " +
+        "sealing key; pin them first (`scp ssh-ca pin-argo-ops`, which needs secret:write at the " +
+        "org root).",
+      { inputContext: { gate: "ops_material", reason: "no_argo_ops_pin" } }
+    );
+  }
+  const mismatched = [
+    normalizeServerUrl(input.binding.serverUrl) !== pin.serverUrl ? "serverUrl" : null,
+    input.binding.namespace !== pin.namespace ? "namespace" : null,
+    input.binding.templateRef !== pin.templateRef ? "templateRef" : null
+  ].filter((f): f is string => f !== null);
+  if (mismatched.length > 0) {
+    throw new OpsSealingKeyRefused(
+      `this binding's ${mismatched.join(", ")} does not match domain ${input.domainId}'s Argo ` +
+        "host-ops pin. A run token goes only to the pinned endpoint; a binding editor cannot move it.",
+      { inputContext: { gate: "ops_material", reason: "binding_off_pin", mismatched } }
+    );
+  }
+  const sealingPublicKeyPem = assertSealingKey(pin.sealingPublicKey);
+  // MANDATORY on this path (owner ruling, #414 fix round): a certificate for a pod in a cluster SCP
+  // does not control is always bounded to where that cluster's egress comes from.
+  const sourceAddress = sourceAddressFrom(pin.sourceAddresses);
+  if (!sourceAddress) {
+    throw new OpsSealingKeyRefused(
+      "the domain's Argo ops pin declares no source addresses. They are MANDATORY on the Argo " +
+        "path: every certificate issued to a pod in a cluster SCP does not control carries the " +
+        "cluster's egress addresses as its OpenSSH `source-address`.",
+      { inputContext: { gate: "ops_material", reason: "source_addresses_absent" } }
+    );
+  }
 
   const id = randomUUID();
   const secret = randomBytes(32).toString("base64url");
@@ -225,6 +220,20 @@ export async function createOpsRunRedemption(
   return { opsRunTokenSealed: sealToken(token, sealingPublicKeyPem), opsRunId: id, bound };
 }
 
+/** The wave-target statuses during which a run's pod may legitimately be asking for its
+ *  certificate: claimed, triggered, or being polled. Anything else — pending, a terminal outcome, a
+ *  refusal — has no pod that should hold one. */
+export const IN_FLIGHT_TARGET_STATUSES = ["triggering", "triggered", "observing"];
+
+/** A fixed 32-byte comparand for the unknown-row path's equal-work compare. */
+const UNKNOWN_ROW_HASH = Buffer.alloc(32);
+
+/** `ssh-ed25519 <base64>` with any comment dropped — the identity of a key, for the reuse check. */
+function canonicalPublicKey(openSsh: string): string {
+  const [alg, b64] = openSsh.trim().split(/\s+/);
+  return `${alg} ${b64}`;
+}
+
 export type RedemptionRefusal =
   | "malformed"
   | "unknown"
@@ -233,6 +242,9 @@ export type RedemptionRefusal =
   | "replayed"
   | "expired"
   | "change_not_executing"
+  | "target_not_in_flight"
+  | "superseded"
+  | "key_reused"
   | "authority_changed";
 
 export interface RedeemedMaterial extends OpsRunBound {
@@ -282,7 +294,12 @@ export async function redeemOpsRun(db: Db, input: RedeemOpsRunInput): Promise<Re
       )
       .for("update")
       .limit(1);
-    if (!row) return { ok: false, refusal: "unknown", detail: "no such run" } as RedeemResult;
+    if (!row) {
+      // EQUAL WORK to the wrong-secret path's compare, so the two 401s differ only by the row
+      // update and audit append — and the route pads every 401 to a common floor over that.
+      timingSafeEqual(Buffer.from(hashSecret(parsed.secret), "hex"), UNKNOWN_ROW_HASH);
+      return { ok: false, refusal: "unknown", detail: "no such run" } as RedeemResult;
+    }
 
     const refuse = async (refusal: RedemptionRefusal, detail: string): Promise<RedeemResult> => {
       await appendAuditEvent(tx, {
@@ -304,6 +321,14 @@ export async function redeemOpsRun(db: Db, input: RedeemOpsRunInput): Promise<Re
     const presented = Buffer.from(hashSecret(parsed.secret), "hex");
     const expected = Buffer.from(row.secretHash, "hex");
     if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+      // A CEILING. Once burned, a wrong guess is neither counted nor audited: the run is already
+      // dead, and auditing every further guess would let anyone who knows a run id (it is a
+      // Workflow parameter) append without bound to the org's hash chain. The DoS that remains —
+      // three guesses burn a run — is documented in ADR-0054: it kills one run, loudly, and the
+      // change is re-proposed.
+      if (row.burnedAt) {
+        return { ok: false, refusal: "bad_secret", detail: "wrong secret" } as RedeemResult;
+      }
       const attempts = row.failedAttempts + 1;
       const burn = attempts >= OPS_REDEMPTION_MAX_FAILED_ATTEMPTS && !row.burnedAt;
       await tx
@@ -331,6 +356,37 @@ export async function redeemOpsRun(db: Db, input: RedeemOpsRunInput): Promise<Re
     if (row.expiresAt.getTime() <= Date.now()) {
       return refuse("expired", `the redemption window closed at ${row.expiresAt.toISOString()}`);
     }
+    // THE WAVE TARGET MUST BE IN FLIGHT, AND THIS MUST BE ITS NEWEST TOKEN (probe B, #414). An
+    // aborted, failed or already-finished target has no run that could legitimately need a
+    // certificate; and a retried trigger mints a fresh row, which makes every older row for the same
+    // target dead even inside its window.
+    const [target] = await tx
+      .select({ status: changeWaveTargets.status })
+      .from(changeWaveTargets)
+      .where(
+        and(eq(changeWaveTargets.orgId, row.orgId), eq(changeWaveTargets.id, row.waveTargetId))
+      )
+      .limit(1);
+    if (!target || !IN_FLIGHT_TARGET_STATUSES.includes(target.status)) {
+      return refuse(
+        "target_not_in_flight",
+        `wave target ${row.waveTargetId} is ${target ? `'${target.status}'` : "gone"}, not in flight`
+      );
+    }
+    const [newest] = await tx
+      .select({ id: opsRunRedemptions.id })
+      .from(opsRunRedemptions)
+      .where(
+        and(
+          eq(opsRunRedemptions.orgId, row.orgId),
+          eq(opsRunRedemptions.waveTargetId, row.waveTargetId)
+        )
+      )
+      .orderBy(desc(opsRunRedemptions.createdAt), desc(opsRunRedemptions.id))
+      .limit(1);
+    if (newest?.id !== row.id) {
+      return refuse("superseded", `a newer run token (${newest?.id}) exists for this wave target`);
+    }
     // THE RUN MUST STILL BE WANTED. A change cancelled, rolled back or deleted after its Workflow
     // was submitted must not be able to buy a certificate in the minutes its token has left: the
     // operator who stopped it believes no host will be touched.
@@ -355,6 +411,22 @@ export async function redeemOpsRun(db: Db, input: RedeemOpsRunInput): Promise<Re
     }
     if (!isEd25519PublicKey(input.publicKey)) {
       return refuse("malformed", "publicKey must be an `ssh-ed25519` OpenSSH public key");
+    }
+    // ONE KEY, ONE RUN. A pod key already certified for another run is refused, so a single key
+    // cannot accumulate certificates across runs; the unique index makes this true under a race.
+    const podKey = canonicalPublicKey(input.publicKey);
+    const [reused] = await tx
+      .select({ id: opsRunRedemptions.id })
+      .from(opsRunRedemptions)
+      .where(
+        and(
+          eq(opsRunRedemptions.orgId, row.orgId),
+          eq(opsRunRedemptions.certifiedPublicKey, podKey)
+        )
+      )
+      .limit(1);
+    if (reused) {
+      return refuse("key_reused", `this public key was already certified for run ${reused.id}`);
     }
     const caPrivateKeyPem = await getSecretValue(
       tx,
@@ -401,7 +473,7 @@ export async function redeemOpsRun(db: Db, input: RedeemOpsRunInput): Promise<Re
     });
     await tx
       .update(opsRunRedemptions)
-      .set({ redeemedAt: sql`now()`, issuedSerial: issued.serial })
+      .set({ redeemedAt: sql`now()`, issuedSerial: issued.serial, certifiedPublicKey: podKey })
       .where(and(eq(opsRunRedemptions.orgId, row.orgId), eq(opsRunRedemptions.id, row.id)));
     await appendAuditEvent(tx, {
       orgId: row.orgId,

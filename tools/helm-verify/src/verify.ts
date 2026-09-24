@@ -984,6 +984,8 @@ function verifySocketInvariantMatrix(): void {
       "--set",
       "bundledExecutor.argoWorkflows.catalog.ops.targetCidrs={10.20.0.0/16}",
       "--set",
+      "bundledExecutor.argoWorkflows.catalog.ops.kubeApiCidrs={10.43.0.1/32}",
+      "--set",
       // scp-build-rpm-v1 renders only once its first-party builder image is named (M28.1), so
       // without this the socket scan and the WorkflowTemplate container guards below would never
       // see it — "what this chart can render" includes it.
@@ -993,6 +995,45 @@ function verifySocketInvariantMatrix(): void {
     const bundledRaw = renderRaw(BUNDLED_CHART_DIR, "verify-socket-bundled", setArgs);
     const opsEnabled = setArgs.includes("bundledExecutor.argoWorkflows.catalog.ops.enabled=true");
     assertOpsCatalog(label, bundledRaw, opsEnabled);
+    if (opsEnabled) {
+      // THE DETECTOR'S OWN NON-VACUITY, as for the socket and grant detectors above: each planted
+      // defect in an otherwise-good render must be reported, or every clean ops verdict means nothing.
+      const PLANTS: [string, string, string][] = [
+        [
+          "an extra Workflow parameter",
+          "      - name: opsRunId\n",
+          "      - name: opsRunId\n      - name: opsInventory\n"
+        ],
+        ["catalog verification off", "value: required", 'value: "off"'],
+        [
+          "a deadline past the certificate",
+          "activeDeadlineSeconds: 600",
+          "activeDeadlineSeconds: 3600"
+        ],
+        [
+          "DNS to anywhere",
+          "              kubernetes.io/metadata.name: kube-system\n",
+          "              kubernetes.io/metadata.name: anywhere\n"
+        ]
+      ];
+      for (const [what, from, to] of PLANTS) {
+        const planted = bundledRaw.replace(from, to);
+        const problems: string[] = [];
+        if (planted === bundledRaw) {
+          fail(
+            `[${label}] assertOpsCatalog self-test could not plant '${what}' — the render changed shape`
+          );
+          continue;
+        }
+        assertOpsCatalog(label, planted, true, (condition, msg) => {
+          if (!condition) problems.push(msg);
+        });
+        assert(
+          problems.length > 0,
+          `[${label}] assertOpsCatalog did not detect ${what} in a planted render, so its clean verdict means nothing`
+        );
+      }
+    }
     for (const pattern of RUNTIME_SOCKET_PATTERNS) {
       assert(
         !bundledRaw.includes(pattern),
@@ -1306,19 +1347,24 @@ function assert(condition: unknown, msg: string): void {
  *   - its egress policy actually SELECTS the pod the template produces (subset match on the
  *     podMetadata labels) and admits SSH only to the operator's ranges.
  */
-function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean): void {
+function assertOpsCatalog(
+  label: string,
+  bundledRaw: string,
+  opsEnabled: boolean,
+  check: (condition: unknown, msg: string) => void = assert
+): void {
   const docs = parseAllDocuments(bundledRaw)
     .map((d) => d.toJS() as K8sDoc | null)
     .filter((d): d is K8sDoc => Boolean(d));
   const tpl = docs.find((d) => d.kind === "WorkflowTemplate" && d.metadata?.name === "scp-ops-v1");
   if (!opsEnabled) {
-    assert(
+    check(
       !tpl,
       `[${label}] scp-ops-v1 rendered with catalog.ops disabled — the host-ops template must be off unless an operator enables it`
     );
     return;
   }
-  assert(tpl, `[${label}] catalog.ops.enabled=true rendered no scp-ops-v1 WorkflowTemplate`);
+  check(tpl, `[${label}] catalog.ops.enabled=true rendered no scp-ops-v1 WorkflowTemplate`);
   if (!tpl) return;
   const spec = tpl.spec as {
     arguments?: { parameters?: { name?: string }[] };
@@ -1335,7 +1381,7 @@ function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean
     }[];
   };
   const params = (spec.arguments?.parameters ?? []).map((p) => p.name).sort();
-  assert(
+  check(
     JSON.stringify(params) === JSON.stringify(["opsRunId", "opsRunTokenSealed"]),
     `[${label}] scp-ops-v1 declares parameters ${JSON.stringify(params)} — it may declare exactly opsRunId and opsRunTokenSealed. A Workflow's arguments are persisted in etcd, the Argo UI and the archive; hosts, roles and credentials reach the pod by redemption, never as parameters`
   );
@@ -1343,7 +1389,7 @@ function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean
     const c = t.container;
     if (!c) continue;
     const sc = c.securityContext ?? {};
-    assert(
+    check(
       sc.readOnlyRootFilesystem === true &&
         sc.allowPrivilegeEscalation === false &&
         sc.privileged !== true &&
@@ -1359,13 +1405,13 @@ function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean
       "SCP_OPS_RUN_TOKEN_SEALED",
       "SCP_OPS_SEALING_KEY_FILE"
     ]) {
-      assert(
+      check(
         envNames.includes(required),
         `[${label}] scp-ops-v1 container sets no ${required} — the runner cannot redeem without it`
       );
     }
     const verify = (c.env ?? []).find((e) => e.name === "SCP_OPS_CATALOG_VERIFY");
-    assert(
+    check(
       verify?.value === "required",
       `[${label}] scp-ops-v1 does not require catalog verification — the signed catalog is what bounds a host-reaching run`
     );
@@ -1374,19 +1420,19 @@ function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean
   const granted = ((role as { rules?: { resources?: string[] }[] } | undefined)?.rules ?? [])
     .flatMap((r) => r.resources ?? [])
     .sort();
-  assert(
+  check(
     granted.length === 1 && granted[0] === "workflowtaskresults",
     `[${label}] the ops Role '${spec.serviceAccountName}' grants ${JSON.stringify(granted)} — workflowtaskresults and nothing else; this pod holds a root certificate`
   );
   const policy = docs.find(
     (d) => d.kind === "NetworkPolicy" && d.metadata?.name === "scp-ops-egress"
   );
-  assert(policy, `[${label}] catalog.ops.enabled rendered no scp-ops-egress NetworkPolicy`);
+  check(policy, `[${label}] catalog.ops.enabled rendered no scp-ops-egress NetworkPolicy`);
   const selector = ((
     policy?.spec as { podSelector?: { matchLabels?: Record<string, string> } } | undefined
   )?.podSelector?.matchLabels ?? {}) as Record<string, string>;
   const podLabels = spec.podMetadata?.labels ?? {};
-  assert(
+  check(
     Object.keys(selector).length > 0 &&
       Object.entries(selector).every(([k, v]) => podLabels[k] === v),
     `[${label}] scp-ops-egress selects ${JSON.stringify(selector)}, which the scp-ops-v1 pod labels ${JSON.stringify(podLabels)} do not satisfy — the policy would select nothing`
@@ -1398,10 +1444,48 @@ function assertOpsCatalog(label: string, bundledRaw: string, opsEnabled: boolean
       }
     )?.egress ?? []
   ).filter((r) => (r.ports ?? []).some((p) => p.port === 22));
-  assert(
+  check(
     sshRules.length === 1 &&
       (sshRules[0]!.to ?? []).every((t) => t.ipBlock?.cidr && t.ipBlock.cidr !== "0.0.0.0/0"),
     `[${label}] scp-ops-egress must admit SSH to the operator's targetCidrs only (one rule, ipBlocks, never 0.0.0.0/0)`
+  );
+
+  // EVERY egress rule names a destination — "port 53 to anywhere" was the defect this replaced —
+  // and the Kubernetes API rule is the operator's, never an RFC1918 /8.
+  const egress = ((policy?.spec as { egress?: { to?: unknown[]; ports?: { port?: number }[] }[] })
+    ?.egress ?? []) as {
+    to?: { ipBlock?: { cidr?: string }; namespaceSelector?: unknown }[];
+    ports?: { port?: number }[];
+  }[];
+  check(
+    egress.every((r) => (r.to ?? []).length > 0),
+    `[${label}] scp-ops-egress has a rule with no 'to' — that admits its ports to every destination`
+  );
+  const dns = egress.filter((r) => (r.ports ?? []).some((p) => p.port === 53));
+  check(
+    dns.length === 1 &&
+      (dns[0]!.to ?? []).every(
+        (t) =>
+          JSON.stringify(t.namespaceSelector ?? {}).includes("kube-system") &&
+          t.ipBlock === undefined
+      ),
+    `[${label}] scp-ops-egress DNS must go to kube-system only`
+  );
+  check(
+    egress.every((r) =>
+      (r.to ?? []).every(
+        (t) =>
+          !["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "0.0.0.0/0"].includes(
+            t.ipBlock?.cidr ?? ""
+          )
+      )
+    ),
+    `[${label}] scp-ops-egress admits a whole private range — every CIDR here is operator-set and specific`
+  );
+  const deadline = (tpl.spec as { activeDeadlineSeconds?: number }).activeDeadlineSeconds;
+  check(
+    typeof deadline === "number" && deadline > 0 && deadline <= 600,
+    `[${label}] scp-ops-v1 activeDeadlineSeconds is ${String(deadline)} — it must be <= 600, the run certificate's TTL`
   );
 }
 

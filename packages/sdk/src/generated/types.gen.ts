@@ -15410,6 +15410,163 @@ export type EnrolTrustDomainSshCaResponses = {
 
 export type EnrolTrustDomainSshCaResponse = EnrolTrustDomainSshCaResponses[keyof EnrolTrustDomainSshCaResponses];
 
+export type GetTrustDomainArgoOpsPinData = {
+    body?: never;
+    path: {
+        domainId: string;
+    };
+    query?: never;
+    url: '/trust-domains/{domainId}/ssh-ca/argo-ops-pin';
+};
+
+export type GetTrustDomainArgoOpsPinErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetTrustDomainArgoOpsPinError = GetTrustDomainArgoOpsPinErrors[keyof GetTrustDomainArgoOpsPinErrors];
+
+export type GetTrustDomainArgoOpsPinResponses = {
+    /**
+     * Success
+     */
+    200: {
+        domainId: string;
+        serverUrl: string;
+        namespace: string;
+        templateRef: string;
+        sealingPublicKey: string;
+        sourceAddresses: Array<string>;
+        runnerImageDigest: string;
+        updatedAt: string;
+    };
+};
+
+export type GetTrustDomainArgoOpsPinResponse = GetTrustDomainArgoOpsPinResponses[keyof GetTrustDomainArgoOpsPinResponses];
+
+export type PutTrustDomainArgoOpsPinData = {
+    body: {
+        serverUrl: string;
+        namespace: string;
+        templateRef: string;
+        /**
+         * RSA (>= 3072-bit) SPKI PEM; its private half is the `scp-ops-v1` sealing Secret.
+         */
+        sealingPublicKey: string;
+        /**
+         * The cluster's egress addresses/CIDRs — every certificate's OpenSSH `source-address`.
+         */
+        sourceAddresses: Array<string>;
+        /**
+         * The scp-runner-ops digest the WorkflowTemplate's step must name.
+         */
+        runnerImageDigest: string;
+    };
+    path: {
+        domainId: string;
+    };
+    query?: never;
+    url: '/trust-domains/{domainId}/ssh-ca/argo-ops-pin';
+};
+
+export type PutTrustDomainArgoOpsPinErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutTrustDomainArgoOpsPinError = PutTrustDomainArgoOpsPinErrors[keyof PutTrustDomainArgoOpsPinErrors];
+
+export type PutTrustDomainArgoOpsPinResponses = {
+    /**
+     * Success
+     */
+    200: {
+        domainId: string;
+        serverUrl: string;
+        namespace: string;
+        templateRef: string;
+        sealingPublicKey: string;
+        sourceAddresses: Array<string>;
+        runnerImageDigest: string;
+        updatedAt: string;
+    };
+};
+
+export type PutTrustDomainArgoOpsPinResponse = PutTrustDomainArgoOpsPinResponses[keyof PutTrustDomainArgoOpsPinResponses];
+
 export type ListSshCertificateIssuancesData = {
     body?: never;
     path?: never;

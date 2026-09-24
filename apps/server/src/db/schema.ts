@@ -2504,6 +2504,46 @@ export const sshCaEnrolments = pgTable(
 );
 
 /**
+ * WHERE A DOMAIN'S CA MAY SEND AN ARGO HOST-OPS TOKEN (M28.2, ADR-0054 D9).
+ *
+ * The owner's "honest wording + pin" ruling. SCP cannot attest the template, image or pod that
+ * redeems a token in a cluster it reaches only through an Argo API token — so what it CAN enforce
+ * is where the token goes and what it is sealed to, and those must not be something a binding
+ * editor chooses. This row pins them per trust domain, beside the enrolment of the CA it governs,
+ * and is written only with `secret:write` at the org root — the enrolment door's own permission.
+ * A binding's `serverUrl`/`namespace`/`externalRef` must MATCH it or the run is refused; the
+ * sealing key and source addresses are read from here and never from binding config.
+ */
+export const sshCaArgoOpsPins = pgTable(
+  "ssh_ca_argo_ops_pins",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    domainId: uuid("domain_id").notNull().$type<TrustDomainId>(),
+    /** The ONE Argo Workflows server a token for this domain may be submitted to. */
+    serverUrl: text("server_url").notNull(),
+    namespace: text("namespace").notNull(),
+    /** The SCP ops catalog template ref (`scp-ops-v1`). */
+    templateRef: text("template_ref").notNull(),
+    /** RSA (>= 3072-bit) SPKI PEM the run token is sealed to. */
+    sealingPublicKey: text("sealing_public_key").notNull(),
+    /** MANDATORY: the cluster's egress addresses, as the certificate's `source-address`. */
+    sourceAddresses: text("source_addresses").array().notNull(),
+    /** `sha256:<hex>` — the scp-runner-ops digest the WorkflowTemplate's step must name. */
+    runnerImageDigest: text("runner_image_digest").notNull(),
+    recordedBySubjectId: uuid("recorded_by_subject_id").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("ssh_ca_argo_ops_pin_one_per_domain").on(t.orgId, t.domainId),
+    check(
+      "ssh_ca_argo_ops_pin_source_addresses_present",
+      sql`cardinality(${t.sourceAddresses}) > 0`
+    )
+  ]
+);
+
+/**
  * ONE-TIME REDEMPTIONS FOR HOST OPS RUN BY AN ORG'S ARGO WORKFLOWS (M28.2, ADR-0054).
  *
  * On the Argo path the runner pod lives in a cluster SCP does not control, so SCP cannot stage a
@@ -2544,10 +2584,16 @@ export const opsRunRedemptions = pgTable(
     /** Wrong-secret presentations against this row. At the limit the row is BURNED. */
     failedAttempts: integer("failed_attempts").notNull().default(0),
     burnedAt: timestamp("burned_at", { withTimezone: true }),
+    /** The pod public key the certificate was issued over. UNIQUE per org: a key certified for one
+     *  run is refused for another, so one pod's key cannot accumulate certificates across runs. */
+    certifiedPublicKey: text("certified_public_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (t) => [
     index("ops_run_redemptions_org_change_idx").on(t.orgId, t.changeObjectId),
+    /** The newest row per wave target is the only live one; this is the lookup that decides it. */
+    index("ops_run_redemptions_org_target_idx").on(t.orgId, t.waveTargetId, t.createdAt),
+    uniqueIndex("ops_run_redemptions_org_pubkey_uq").on(t.orgId, t.certifiedPublicKey),
     /** A redeemed row names exactly one serial, and a serial is issued once. */
     uniqueIndex("ops_run_redemptions_org_serial_uq").on(t.orgId, t.issuedSerial),
     check(

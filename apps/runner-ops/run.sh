@@ -40,6 +40,14 @@ die() { echo "scp-runner-ops: $1" >&2; exit "${2:-2}"; }
 # catalog never reaches Ansible's loader.
 [ -f "$CATALOG_DIR/catalog.json" ] || die "no catalog at $CATALOG_DIR/catalog.json"
 
+# ON THE ARGO PATH, VERIFICATION IS NOT OPTIONAL (M28.2 fix round). The environment of an Argo pod
+# is the Workflow's to write, and SCP mints a root certificate for whatever this pod runs — so an
+# `off` here would let a Workflow editor run an unsigned catalog with SCP's credential. Refused
+# before anything else, and before any token is redeemed.
+if [ -n "${SCP_OPS_API_URL:-}" ] && [ "${SCP_OPS_CATALOG_VERIFY:-required}" != "required" ]; then
+  die "catalog verification cannot be disabled on the Argo path (SCP_OPS_CATALOG_VERIFY=${SCP_OPS_CATALOG_VERIFY}) — refusing"
+fi
+
 if [ "${SCP_OPS_CATALOG_VERIFY:-required}" = "required" ]; then
   [ -n "${SCP_OPS_CATALOG_PUBKEY:-}" ] || die "SCP_OPS_CATALOG_PUBKEY is unset and catalog verification is required"
   [ -f "$CATALOG_DIR/catalog.json.sig" ] || die "catalog is unsigned (no catalog.json.sig) — refusing"

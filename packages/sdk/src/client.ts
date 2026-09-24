@@ -42,6 +42,8 @@ import {
   listSshCertificateIssuances as listSshCertificateIssuancesRequest,
   reconcileSshCertificateSerials as reconcileSshCertificateSerialsRequest,
   redeemOpsRun as redeemOpsRunRequest,
+  putTrustDomainArgoOpsPin as putTrustDomainArgoOpsPinRequest,
+  getTrustDomainArgoOpsPin as getTrustDomainArgoOpsPinRequest,
   listAuditEvents as listAuditEventsRequest,
   // M2 typed registries (routes/typed-registries.ts) — 8 resources × create/list/get/update/
   // delete/upsertByUrn, generated from BUILD_AND_TEST.md §8 M2 item 1's operationIds.
@@ -518,6 +520,8 @@ import type {
   SshCertificateIssuanceList,
   SshSerialReconciliation,
   OpsRunMaterial,
+  ArgoOpsPinRequest,
+  ArgoOpsPinView,
   InfrastructureMembershipDiff,
   ObservedMember
 } from "@scp/schemas";
@@ -1403,6 +1407,23 @@ export class ScpClient {
         query: limit === undefined ? {} : { limit }
       });
       return unwrap(result) as SshCertificateIssuanceList;
+    },
+    /** Pin where this domain's CA may send an Argo host-ops run token (M28.2, ADR-0054 D9).
+     *  `secret:write` at the org root, like enrolment. */
+    pinArgoOps: async (domainId: string, pin: ArgoOpsPinRequest): Promise<ArgoOpsPinView> => {
+      const result = await putTrustDomainArgoOpsPinRequest({
+        client: this.client,
+        path: { domainId },
+        body: pin
+      });
+      return unwrap(result) as ArgoOpsPinView;
+    },
+    argoOpsPin: async (domainId: string): Promise<ArgoOpsPinView> => {
+      const result = await getTrustDomainArgoOpsPinRequest({
+        client: this.client,
+        path: { domainId }
+      });
+      return unwrap(result) as ArgoOpsPinView;
     },
     /** Given serials read out of a host's own sshd log, report which SCP never issued. */
     reconcile: async (serials: string[]): Promise<SshSerialReconciliation> => {

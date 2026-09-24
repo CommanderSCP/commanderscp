@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
+  ArgoOpsPinRequestSchema,
+  ArgoOpsPinSchema,
   EnrolTrustDomainRequestSchema,
   ProblemSchema,
   ReconcileSshSerialsRequestSchema,
@@ -22,6 +24,13 @@ import {
   reconcileSerials
 } from "../coordination/ssh-ca-repo.js";
 import { trustedUserCaKeysFile } from "../coordination/ops-host-enrolment.js";
+import {
+  ArgoOpsPinInvalid,
+  argoOpsPinForDomain,
+  putArgoOpsPin
+} from "../coordination/ops-argo-pin.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
+import { badRequest } from "../errors.js";
 
 /**
  * THE ENROLMENT DOOR and ADR-0051 D5's EVIDENCE SURFACE (M27.9). See docs/routes.md §311.
@@ -161,6 +170,120 @@ export function registerSshCaRoutes(app: FastifyInstance, deps: AppDeps): void {
           caPublicKey: authority.publicKey,
           trustedUserCaKeysFile: trustedUserCaKeysFile(authority.publicKey)
         };
+      });
+      return reply.code(200).send(view);
+    }
+  });
+
+  // THE ARGO HOST-OPS PIN (M28.2, ADR-0054 D9). The same door permission as enrolment —
+  // `secret:write` at the org root — because what it decides is where this domain's CA-minted
+  // certificates can go. #414's adversarial round showed the alternative: with these as binding
+  // config, an Operator scoped to one product redirected a run token to their own Argo and key.
+  typed.route({
+    method: "PUT",
+    url: "/api/v1/trust-domains/:domainId/ssh-ca/argo-ops-pin",
+    schema: {
+      params: z.object({ domainId: z.string().uuid() }),
+      body: ArgoOpsPinRequestSchema,
+      response: {
+        200: ArgoOpsPinSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "putTrustDomainArgoOpsPin",
+        summary:
+          "Pin where this domain's CA may send an Argo Workflows host-ops run token: the Argo server and namespace, SCP's catalog template ref, the RSA key the token is sealed to, the cluster's egress addresses (every certificate's `source-address`) and the scp-runner-ops digest the template must name. `secret:write` at the org root, like enrolment — a binding editor cannot move it, and an Argo-bound run whose binding does not match it is refused. SCP cannot attest the pod that redeems; this pins what it CAN control (ADR-0054)",
+        tags: ["infrastructure"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const domainId = asTrustDomainId(request.params.domainId);
+      const view = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "secret:write",
+          scopeObjectId: auth.orgId
+        });
+        if (!(await enrolmentForDomain(tx, auth.orgId, domainId))) {
+          const err = new Error(
+            `trust domain ${domainId} is not enrolled — enrol it (and record its break-glass path) ` +
+              "before pinning where its certificates may go"
+          );
+          (err as Error & { statusCode?: number }).statusCode = 404;
+          throw err;
+        }
+        try {
+          await putArgoOpsPin(tx, {
+            ...request.body,
+            orgId: auth.orgId,
+            domainId,
+            recordedBySubjectId: auth.subjectObjectId
+          });
+        } catch (err) {
+          if (err instanceof ArgoOpsPinInvalid) throw badRequest(err.message);
+          throw err;
+        }
+        const pin = (await argoOpsPinForDomain(tx, auth.orgId, domainId))!;
+        await appendAuditEvent(tx, {
+          orgId: auth.orgId,
+          actorId: auth.subjectObjectId,
+          action: "ssh_ca.argo_ops_pin.put",
+          reason:
+            `pinned domain ${domainId}'s Argo host-ops endpoint to ${pin.serverUrl} ` +
+            `(namespace ${pin.namespace}, template ${pin.templateRef}, runner ` +
+            `${pin.runnerImageDigest}, source-address ${pin.sourceAddresses.join(",")})`,
+          requestId: request.id
+        });
+        return { ...pin, domainId: String(pin.domainId), updatedAt: pin.updatedAt.toISOString() };
+      });
+      return reply.code(200).send(view);
+    }
+  });
+
+  typed.route({
+    method: "GET",
+    url: "/api/v1/trust-domains/:domainId/ssh-ca/argo-ops-pin",
+    schema: {
+      params: z.object({ domainId: z.string().uuid() }),
+      response: {
+        200: ArgoOpsPinSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "getTrustDomainArgoOpsPin",
+        summary:
+          "Read this domain's Argo host-ops pin. 404 when none is set — the state in which every Argo-bound host-reaching run for the domain is refused",
+        tags: ["infrastructure"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const domainId = asTrustDomainId(request.params.domainId);
+      const view = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "audit:read",
+          scopeObjectId: auth.orgId
+        });
+        const pin = await argoOpsPinForDomain(tx, auth.orgId, domainId);
+        if (!pin) {
+          const err = new Error(`trust domain ${domainId} has no Argo host-ops pin`);
+          (err as Error & { statusCode?: number }).statusCode = 404;
+          throw err;
+        }
+        return { ...pin, domainId: String(pin.domainId), updatedAt: pin.updatedAt.toISOString() };
       });
       return reply.code(200).send(view);
     }

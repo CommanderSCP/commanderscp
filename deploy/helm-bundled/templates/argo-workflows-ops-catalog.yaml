@@ -5,6 +5,8 @@
 {{- if not $o.runnerImage }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.runnerImage is empty — the vendored, retargetable scp-runner-ops image is required (the air-gap install.sh sets it). Fail-closed." }}{{- end -}}
 {{- if not $o.apiUrl }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.apiUrl is empty — a scp-ops-v1 pod redeems its one-time token at SCP's API and has no other way to its material. Fail-closed." }}{{- end -}}
 {{- if not $o.targetCidrs }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.targetCidrs is empty — the ops pods' egress policy would admit no host at all. Name the address ranges your managed hosts live in. Fail-closed." }}{{- end -}}
+{{- if not $o.kubeApiCidrs }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.kubeApiCidrs is empty — name your cluster's Kubernetes API endpoint address(es) (`kubectl get endpoints kubernetes -n default`). There is no default: a broad range here would let a pod holding a root certificate reach every private address on 443/6443. Fail-closed." }}{{- end -}}
+{{- if gt (int $o.activeDeadlineSeconds) 600 }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.activeDeadlineSeconds must be <= 600, the run certificate's own TTL — a run that outlives its certificate can only fail, and a longer deadline only lengthens how long a pod holding one lives. Fail-closed." }}{{- end -}}
 {{- if not $scpNs }}{{ fail "bundledExecutor.argoWorkflows.catalog.ops.enabled=true but bundledExecutor.scpNamespace is empty — the ops pods' egress to SCP's API would have no namespace to be scoped to. Fail-closed." }}{{- end -}}
 # =============================================================================================
 # THE SHIPPED HOST-OPS CATALOG TEMPLATE (M28.2, ADR-0054, charter amendment 2026-09-23).
@@ -30,6 +32,11 @@
 #     `workflowRestrictions.templateReferencing: Strict` stops ad-hoc Workflows from mounting it.
 #   - the certificate is not host-bound: it authorizes `root` on every host trusting this domain's
 #     CA for its TTL. `targetCidrs` below is a per-DEPLOYMENT network bound, not Mode C's per-RUN one.
+#   - SCP cannot attest this template, its image or the pod that redeems. It pins what it CAN: the
+#     Argo endpoint, the sealing key, the template ref and the runner digest (the domain's Argo
+#     host-ops pin), and reads this template back before each submit. A cluster admin can change it
+#     after that read. Cluster admins, sealing-Secret readers and pod creators in this namespace are
+#     the residual trust set (ADR-0054).
 # =============================================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
@@ -46,7 +53,8 @@ spec:
   # Argo refuses a tokenless pod, and the emissary reports step status through workflowtaskresults.
   serviceAccountName: {{ $o.serviceAccount }}
   entrypoint: run
-  # Bounded, because the certificate is. A run that outlives its certificate can only fail.
+  # <= the certificate's 600s TTL (the chart refuses more): a run that outlives its certificate can
+  # only fail, and a longer deadline only lengthens how long a pod holding one lives.
   activeDeadlineSeconds: {{ $o.activeDeadlineSeconds }}
   podMetadata:
     labels:
@@ -149,10 +157,14 @@ spec:
         resources:
           {{- toYaml $o.resources | nindent 10 }}
 ---
-# EGRESS FOR OPS PODS: DNS, SCP's API (to redeem), the Kubernetes API (the emissary executor's
-# status reports) and the operator's host ranges on SSH — nothing else. Per-DEPLOYMENT, not per-run:
-# the run's own inventory bounds which hosts Ansible connects to, and this bounds what the pod could
-# reach at all if something inside it tried.
+# EGRESS FOR OPS PODS — four rules, each as narrow as the chart can know:
+#   DNS        port 53 to kube-system only (the cluster resolver), never "53 anywhere";
+#   SCP's API  the commanderscp pods in `scpNamespace`, on `apiPort`;
+#   kube API   `kubeApiCidrs` on `kubeApiPorts` — OPERATOR-SET, no default (the emissary executor
+#              reports step status there);
+#   SSH        `targetCidrs` on 22.
+# Per-DEPLOYMENT, not per-run: the run's own inventory bounds which hosts Ansible connects to, and
+# this bounds what the pod could reach at all if something inside it tried.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -168,7 +180,11 @@ spec:
       commanderscp.io/catalog: ops
   policyTypes: ["Egress"]
   egress:
-    - ports:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
     - to:

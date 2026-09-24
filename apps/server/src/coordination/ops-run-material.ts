@@ -6,6 +6,7 @@ import { readMembers } from "./infrastructure-members-repo.js";
 import { compileInventory, egressAllowlistFor } from "./ops-inventory.js";
 import { ScpCaAuthority } from "./scp-ca-authority.js";
 import { activeAuthorityForDomain, enrolmentForDomain, recordIssuance } from "./ssh-ca-repo.js";
+import { OpsMaterialRefusal } from "./trigger-parameter-refusal.js";
 
 /**
  * THE SEAM (M27.9): everything a host-reaching run needs, derived from resolved graph state.
@@ -72,7 +73,16 @@ export interface DeriveOpsRunMaterialInput {
   masterKey: Buffer;
 }
 
-export class OpsMaterialUnavailable extends Error {}
+/** TERMINAL, with a Decision and an audit event (M28.2 fix round). It used to be a bare Error, which
+ *  reconcile's per-target catch logged and retried every tick with no Decision — a verdict visible
+ *  only in a log line. None of its causes is transient: each needs a person (enrol the domain,
+ *  restore the CA key, pin the endpoint), after which the change is re-proposed. */
+export class OpsMaterialUnavailable extends OpsMaterialRefusal {}
+
+/** The closed set of reasons, so the Decision carries a cause and never an address or a key. */
+export function opsMaterialContext(reason: string): Record<string, unknown> {
+  return { gate: "ops_material", reason };
+}
 
 /** The key id REQUESTED of the authority. `sshd` logs this string on every authentication, so it
  *  is the only place a host's own records can name the change that reached it. The authority appends
@@ -119,7 +129,8 @@ export async function deriveOpsBound(
     throw new OpsMaterialUnavailable(
       `domain ${input.domainId} is not enrolled for host-reaching execution. Enrol it first — ` +
         "which requires recording an independent access path, because an estate whose only route " +
-        "in is SCP's CA cannot recover from SCP's CA being compromised (ADR-0051)."
+        "in is SCP's CA cannot recover from SCP's CA being compromised (ADR-0051).",
+      { inputContext: opsMaterialContext("domain_not_enrolled") }
     );
   }
   const authorityRow = await activeAuthorityForDomain(tx, input.orgId, input.domainId);
@@ -127,7 +138,8 @@ export async function deriveOpsBound(
     // An enrolment without an active CA means the CA was retired without re-enrolment. Refusing is
     // the only safe reading: the alternative is minting from a `retiring` key nobody intended.
     throw new OpsMaterialUnavailable(
-      `domain ${input.domainId} is enrolled but has no ACTIVE certificate authority`
+      `domain ${input.domainId} is enrolled but has no ACTIVE certificate authority`,
+      { inputContext: opsMaterialContext("no_active_authority") }
     );
   }
 
@@ -149,7 +161,8 @@ export async function deriveOpsBound(
     throw new OpsMaterialUnavailable(
       `the CA for domain ${input.domainId} names secret '${authorityRow.privateKeySecretKey}', ` +
         "which does not resolve. Refusing rather than running a host-reaching class with no " +
-        "credential."
+        "credential.",
+      { inputContext: opsMaterialContext("ca_key_unresolved") }
     );
   }
 

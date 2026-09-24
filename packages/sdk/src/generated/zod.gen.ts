@@ -6186,6 +6186,34 @@ export const zEnrolTrustDomainSshCaResponse = z.object({
 /**
  * Success
  */
+export const zGetTrustDomainArgoOpsPinResponse = z.object({
+    domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    serverUrl: z.string(),
+    namespace: z.string(),
+    templateRef: z.string(),
+    sealingPublicKey: z.string(),
+    sourceAddresses: z.array(z.string()),
+    runnerImageDigest: z.string(),
+    updatedAt: z.string()
+});
+
+/**
+ * Success
+ */
+export const zPutTrustDomainArgoOpsPinResponse = z.object({
+    domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    serverUrl: z.string(),
+    namespace: z.string(),
+    templateRef: z.string(),
+    sealingPublicKey: z.string(),
+    sourceAddresses: z.array(z.string()),
+    runnerImageDigest: z.string(),
+    updatedAt: z.string()
+});
+
+/**
+ * Success
+ */
 export const zListSshCertificateIssuancesResponse = z.object({
     issuances: z.array(z.object({
         serial: z.string(),

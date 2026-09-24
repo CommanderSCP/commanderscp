@@ -192,11 +192,98 @@ function computeProgress(progress: string | undefined, phase: ExecutionPhase): n
   return 1;
 }
 
+/** SCP's host-ops catalog templates (M28.2). Kept in step with the server's
+ *  `OPS_ARGO_CATALOG_TEMPLATES` by `ops-argo-pin.test.ts`. */
+export const SCP_OPS_TEMPLATE_PATTERN = /^scp-ops-v\d+$/;
+
+/** Template kinds that run something other than a named container image — any of them in an SCP
+ *  ops template would run code the digest check below never looked at. */
+const FORBIDDEN_TEMPLATE_KINDS = ["script", "resource", "http", "plugin", "containerSet", "data"];
+
+interface OpsTemplatePin {
+  templateRef: string;
+  runnerImageDigest: string;
+}
+
+interface ArgoContainerShape {
+  image?: string;
+  env?: { name?: string; value?: string; valueFrom?: unknown }[];
+}
+
+/**
+ * DEFENCE IN DEPTH for SCP's host-ops catalog template (M28.2, ADR-0054 D9(d)).
+ *
+ * Before a sealed run token is submitted, the WorkflowTemplate it will run is READ BACK from the
+ * pinned Argo server and refused unless every container names the pinned `scp-runner-ops` digest
+ * and requires catalog verification, and nothing (a podSpecPatch, a script/resource/http template)
+ * could run something else. This is NOT attestation: a cluster admin can change the template
+ * between this read and the pod's start (TOCTOU), and can run any pod with the sealing Secret
+ * mounted. It catches the template being wrong, not an administrator intent on misusing it —
+ * ADR-0054 names cluster admins, sealing-Secret readers and pod creators as the residual trust set.
+ */
+async function assertOpsTemplateMatchesPin(
+  ctx: PluginContext,
+  config: ArgoWorkflowsConfig,
+  templateName: string
+): Promise<void> {
+  const pin = (ctx.config as { opsTemplatePin?: OpsTemplatePin | null } | undefined)
+    ?.opsTemplatePin;
+  const refuse = (why: string): never => {
+    throw new Error(`argo-workflows trigger: refusing to submit ${templateName} — ${why}`);
+  };
+  if (!pin) refuse("the domain has no Argo host-ops pin (server-injected opsTemplatePin)");
+  if (pin!.templateRef !== templateName) {
+    refuse(`the pinned template ref is '${pin!.templateRef}'`);
+  }
+  const { status, body } = await apiRequest(
+    ctx,
+    config,
+    "GET",
+    `/api/v1/workflow-templates/${config.namespace}/${encodeURIComponent(templateName)}`
+  );
+  if (status < 200 || status >= 300) refuse(`reading it back returned HTTP ${status}`);
+  const spec = ((body as { spec?: Record<string, unknown> } | undefined)?.spec ?? {}) as {
+    podSpecPatch?: unknown;
+    templateDefaults?: unknown;
+    templates?: Record<string, unknown>[];
+  };
+  if (spec.podSpecPatch !== undefined) refuse("it sets a workflow-level podSpecPatch");
+  if (spec.templateDefaults !== undefined) refuse("it sets templateDefaults");
+  const containers: ArgoContainerShape[] = [];
+  for (const t of spec.templates ?? []) {
+    for (const kind of FORBIDDEN_TEMPLATE_KINDS) {
+      if (t[kind] !== undefined) refuse(`template '${String(t["name"])}' is a '${kind}' template`);
+    }
+    if (t["podSpecPatch"] !== undefined)
+      refuse(`template '${String(t["name"])}' sets podSpecPatch`);
+    if (t["container"]) containers.push(t["container"] as ArgoContainerShape);
+    for (const extra of ["initContainers", "sidecars"]) {
+      for (const c of (t[extra] as ArgoContainerShape[] | undefined) ?? []) containers.push(c);
+    }
+  }
+  if (containers.length === 0) refuse("it declares no container");
+  for (const c of containers) {
+    const digest = /@(sha256:[0-9a-f]{64})$/.exec(c.image ?? "")?.[1];
+    if (digest !== pin!.runnerImageDigest) {
+      refuse(
+        `container image '${c.image ?? "(none)"}' is not the pinned ${pin!.runnerImageDigest}`
+      );
+    }
+    const verify = (c.env ?? []).filter((e) => e.name === "SCP_OPS_CATALOG_VERIFY");
+    if (verify.length !== 1 || verify[0]!.value !== "required" || verify[0]!.valueFrom) {
+      refuse("a container does not set SCP_OPS_CATALOG_VERIFY=required as a literal");
+    }
+  }
+}
+
 async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const templateName = intent.targetRef;
   if (!templateName) {
     throw new Error("argo-workflows trigger: intent.targetRef (WorkflowTemplate name) is required");
+  }
+  if (SCP_OPS_TEMPLATE_PATTERN.test(templateName)) {
+    await assertOpsTemplateMatchesPin(ctx, config, templateName);
   }
 
   const state = await loadState(config.statePath);
@@ -502,15 +589,11 @@ export const manifest: PluginManifest = {
       serverUrl: { type: "string", format: "uri" },
       namespace: { type: "string" },
       tokenSecretKey: { type: "string" },
-      labelSelector: { type: "string" },
-      // M28.2 (ADR-0054) — read by the SERVER, never by this plugin. A binding to an SCP host-ops
-      // catalog template (`scp-ops-v1`) needs both halves of how the run's credential reaches the
-      // pod: the RSA public key its one-time token is sealed to (the private half is the namespace
-      // Secret mounted only into that pod), and optionally the cluster's egress addresses, which
-      // become the certificate's OpenSSH `source-address`. Declared here so an execution-system
-      // object carries them onto its bindings like `namespace`.
-      opsSealingPublicKey: { type: "string" },
-      opsSourceAddresses: { type: "array", items: { type: "string" }, minItems: 1 }
+      labelSelector: { type: "string" }
+      // NO sealing key or source addresses here (M28.2 fix round): they were binding config under
+      // `object:write`, and #414's adversarial round redirected a run token with them. They live on
+      // the domain's Argo host-ops pin (`secret:write` at the org root); `opsTemplatePin` is
+      // SERVER-injected from it and never tenant-settable.
     }
   }
 };

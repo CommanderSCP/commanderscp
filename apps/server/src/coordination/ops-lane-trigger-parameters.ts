@@ -9,6 +9,7 @@ import {
 } from "@scp/plugin-managed-ops";
 import { deriveOpsRunMaterial } from "./ops-run-material.js";
 import { ARGO_OPS_DELIVERY_KEYS, createOpsRunRedemption } from "./ops-run-redemption.js";
+import { OPS_ARGO_CATALOG_TEMPLATES } from "./ops-argo-pin.js";
 
 /** The role's own arguments with the closed set removed — the same operation `managed-ops`'s
  *  `roleArguments()` performs for Mode C, so a declared argument named like a bound key reaches
@@ -18,6 +19,7 @@ function stripReserved(args: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(args).filter(([k]) => !reserved.has(k)));
 }
 import {
+  OpsMaterialRefusal,
   TriggerParameterRefusal,
   WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION,
   WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
@@ -52,6 +54,9 @@ export class OpsDeclarationRefused extends TriggerParameterRefusal {
   readonly action = WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION;
 }
 
+/** A recipe restating a bound or delivery key (ADR-0052/0054) — terminal, with a Decision. */
+export class OpsRecipeRefused extends OpsMaterialRefusal {}
+
 export interface OpsLaneTriggerParameterInput {
   orgId: string;
   /** The infrastructure product whose observed membership becomes the inventory. */
@@ -75,8 +80,8 @@ export interface OpsLaneTriggerParameterInput {
 }
 
 /** The SCP catalog templates that run the host-ops catalog on an org's Argo Workflows (M28.2).
- *  Versioned in the name, like `scp-build-image-v1`: a new template ships beside the old one. */
-export const OPS_ARGO_CATALOG_TEMPLATES = ["scp-ops-v1"] as const;
+ *  Defined beside the pin (`ops-argo-pin.ts`), which is what actually decides the template ref. */
+export { OPS_ARGO_CATALOG_TEMPLATES };
 
 /**
  * WHICH TRIGGERS ARE HOST-REACHING — and therefore get material derived at all.
@@ -166,15 +171,24 @@ export async function opsLaneTriggerParameters(
   // ADR-0052's refusal, WIRED. A recipe naming a bound key is an operator believing they can choose
   // hosts or reach; refusing keeps that belief from surviving. `managed-ops` never gets here with a
   // recipe (it is recipe-forbidden), but `argo-workflows` is not, so this is the door that holds.
+  // TERMINAL with a Decision (a `TriggerParameterRefusal`) — the plugin package's
+  // `RecipeOverrideRefused` is a plain Error, and reconcile retries a plain Error every tick.
   if (input.recipeParameters) {
-    assertNoRecipeOverride(input.recipeParameters);
-    const delivery = ARGO_OPS_DELIVERY_KEYS.filter((k) =>
-      Object.prototype.hasOwnProperty.call(input.recipeParameters, k)
+    const recipeParameters = input.recipeParameters;
+    const restated = [...SERVER_DERIVED_OPS_KEYS, ...ARGO_OPS_DELIVERY_KEYS].filter((k) =>
+      Object.prototype.hasOwnProperty.call(recipeParameters, k)
     );
-    if (delivery.length > 0) {
-      throw new RecipeOverrideRefused(
-        `a campaign recipe may not set ${delivery.join(", ")} — the run token is minted per run by ` +
-          "the server and sealed to the operator's key (ADR-0054)."
+    try {
+      assertNoRecipeOverride(recipeParameters);
+    } catch (err) {
+      if (!(err instanceof RecipeOverrideRefused)) throw err;
+    }
+    if (restated.length > 0) {
+      throw new OpsRecipeRefused(
+        `a campaign recipe may not set ${restated.join(", ")} — these are derived from resolved ` +
+          "graph state or minted per run by the server and sealed to the pinned key " +
+          "(ADR-0052, ADR-0054). Author the role's own arguments instead.",
+        { inputContext: { gate: "ops_material", reason: "recipe_restates_bound", keys: restated } }
       );
     }
   }
@@ -224,8 +238,12 @@ export async function opsLaneTriggerParameters(
       roleArguments: stripReserved(declaration.arguments),
       changeObjectId: input.changeObjectId,
       waveTargetId: input.waveTargetId,
-      sealingPublicKeyPem: config["opsSealingPublicKey"],
-      sourceAddresses: config["opsSourceAddresses"],
+      // What the binding will submit to — checked against the domain's pin, never trusted.
+      binding: {
+        serverUrl: config["serverUrl"],
+        namespace: config["namespace"],
+        templateRef: input.externalRef
+      },
       masterKey: input.masterKey
     });
     return { opsRunTokenSealed, opsRunId };

@@ -30,7 +30,8 @@ import {
 } from "./campaign-recipe.js";
 import {
   WAVE_TARGET_DESTINATION_REFUSED_STATUS,
-  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS,
+  WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
 } from "./trigger-parameter-refusal.js";
 
 /** The wave-target access the reconcile loop needs. See docs/coordination.md §1051. */
@@ -492,7 +493,9 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   // M28.1 (ADR-0053) — a trigger-parameter derivation that refused. Before this they threw inside
   // the claim transaction and were retried every tick with no Decision at all.
   WAVE_TARGET_DESTINATION_REFUSED_STATUS,
-  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS,
+  // M28.2 (ADR-0054) — host-reaching material that cannot be derived or delivered.
+  WAVE_TARGET_OPS_MATERIAL_REFUSED_STATUS
 ] as const;
 export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
 
