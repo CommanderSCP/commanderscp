@@ -13,6 +13,10 @@ import {
 } from "./index.js";
 import { createNodeHttpTestClient } from "./test-node-http-client.js";
 
+/** Test documents are deliberately mutated into every malformed shape the guard must refuse. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Loose = any;
+
 const AUTHORING = {
   repoURL: "https://gitea.example/platform/gitops.git",
   path: "charts/scp-authored-manifests",
@@ -48,9 +52,9 @@ function rollout(
 
 function authoredApplication(
   name: string,
-  opts: { labels?: Record<string, string>; manifests?: unknown[]; tweak?: (d: any) => void } = {}
+  opts: { labels?: Record<string, string>; manifests?: unknown[]; tweak?: (d: Loose) => void } = {}
 ) {
-  const doc: any = {
+  const doc: Loose = {
     apiVersion: "argoproj.io/v1alpha1",
     kind: "Application",
     metadata: {
@@ -191,7 +195,7 @@ describe("argocd trigger — an SCP-authored Application", () => {
 });
 
 describe("the second layer — only a carrier render the operator declared is ever written (finding 1/2)", () => {
-  const cases: [string, (d: any) => void, RegExp][] = [
+  const cases: [string, (d: Loose) => void, RegExp][] = [
     [
       "a foreign source repository",
       (d) => (d.spec.source.repoURL = "https://evil.example/x.git"),

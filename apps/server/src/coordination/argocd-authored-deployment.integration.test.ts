@@ -41,6 +41,10 @@ import {
  * or a `paused: true` anywhere in what is authored, turns the ADR-0008 §3 assertions red.
  */
 
+/** A received manifest, read field by field in assertions. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Loose = any;
+
 const AUTHORING = {
   repoURL: "https://gitea.example/platform/gitops.git",
   path: "charts/scp-authored-manifests",
@@ -464,7 +468,7 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
     const sent = standIn.authoredBodies
       .slice(bodiesBefore)
       .find((b) => b.metadata.labels?.["commanderscp.io/target"] === placements[p.id])!;
-    const manifests = sent.spec?.source?.helm?.valuesObject?.manifests as Record<string, any>[];
+    const manifests = sent.spec?.source?.helm?.valuesObject?.manifests as Record<string, Loose>[];
     expect(manifests.map((m) => m.kind)).toEqual(["Rollout", "Service", "Service"]);
     expect(manifests[0]!.spec.strategy.blueGreen).toMatchObject({
       autoPromotionEnabled: true,
