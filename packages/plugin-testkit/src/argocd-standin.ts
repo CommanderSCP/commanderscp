@@ -24,6 +24,15 @@ import type { AddressInfo } from "node:net";
  * resource — a Rollout's spec or status), deleting the Application (which cascades to its Rollout),
  * `PUT` on anything, and any Kubernetes-API-shaped path all land in `violations`. A test asserts it
  * empty; adding a promote call anywhere in the plugin turns that test red.
+ *
+ * THE ALLOWED SHAPES ARE CONTENT-AWARE (fix round). The authoring door is also a way to DRIVE a
+ * Rollout — upsert it with `spec.paused: true`, an indefinite `pause: {}`, or a `status` — so a
+ * create/upsert whose carried manifests do any of that, or carry a kind other than Rollout/Service,
+ * is a violation too. This is a SECOND implementation of the rule, written independently of the
+ * plugin's own guard (`authored-guard.ts`), so one mistake cannot hide in both.
+ *
+ * It can also hold a Rollout part way (`setRolloutProgress`): paused at a step, progressing, or
+ * degraded — the states in which SCP must report the deploy RUNNING or FAILED, never succeeded.
  */
 
 export interface StandInRequest {
@@ -58,9 +67,60 @@ export interface ArgoCdStandIn {
   applications: Map<string, StandInApplication>;
   /** What Argo CD's controller has applied, keyed `Kind/namespace/name`. */
   cluster: Map<string, Record<string, unknown>>;
+  /** Every create/upsert body, in order, verbatim — for exact comparison with what the server derived. */
+  authoredBodies: StandInApplication[];
   /** Pre-seed an Application someone else authored (the import case). */
   seed(app: StandInApplication): void;
+  /** Hold an Application's Rollout at a phase/step (Argo Rollouts' own vocabulary). Applies now if
+   *  the Rollout exists, and to every later sync of that Application until cleared with `undefined`. */
+  setRolloutProgress(
+    appName: string,
+    progress: { phase: "Paused" | "Progressing" | "Degraded" | "Healthy"; step?: number } | undefined
+  ): void;
   close(): Promise<void>;
+}
+
+/** The node-health Argo CD derives from a Rollout phase. */
+const HEALTH_OF_PHASE: Record<string, string> = {
+  Paused: "Suspended",
+  Progressing: "Progressing",
+  Degraded: "Degraded",
+  Healthy: "Healthy"
+};
+
+/** Why a carried manifest would drive (or escape) a Rollout — the stand-in's own reading. */
+export function drivingProblems(app: StandInApplication): string[] {
+  const problems: string[] = [];
+  for (const m of manifestsOf(app)) {
+    const kind = String(m.kind);
+    if (kind !== "Rollout" && kind !== "Service") problems.push(`carries a ${kind}`);
+    if ("status" in m) problems.push(`${kind} carries a status`);
+    if (kind !== "Rollout") continue;
+    const spec = (m.spec ?? {}) as Record<string, unknown>;
+    if ("paused" in spec) problems.push("Rollout spec.paused");
+    const strategy = (spec.strategy ?? {}) as {
+      canary?: { steps?: unknown };
+      blueGreen?: { autoPromotionEnabled?: unknown; autoPromotionSeconds?: unknown };
+    };
+    const steps = strategy.canary?.steps;
+    if (Array.isArray(steps)) {
+      if (steps.length === 0) problems.push("Rollout canary.steps is an empty list");
+      for (const s of steps as Record<string, unknown>[]) {
+        if (s && "pause" in s) {
+          const d = (s.pause as { duration?: unknown } | null)?.duration;
+          if (d === undefined || d === null || d === "" || d === 0) problems.push("indefinite pause");
+        }
+      }
+    }
+    if (
+      strategy.blueGreen &&
+      (strategy.blueGreen.autoPromotionEnabled === false ||
+        typeof strategy.blueGreen.autoPromotionSeconds !== "number")
+    ) {
+      problems.push("blue-green without auto-promotion");
+    }
+  }
+  return problems;
 }
 
 const ALLOWED_WRITES: readonly { method: string; pattern: RegExp }[] = [
@@ -114,6 +174,33 @@ export async function startArgoCdStandIn(): Promise<ArgoCdStandIn> {
   const violations: StandInRequest[] = [];
   const applications = new Map<string, StandInApplication>();
   const cluster = new Map<string, Record<string, unknown>>();
+  const authoredBodies: StandInApplication[] = [];
+  const progress = new Map<string, { phase: string; step?: number }>();
+
+  /** Re-derive one Application's Rollout status and node health from its held progress. */
+  function applyProgress(appName: string): void {
+    const app = applications.get(appName);
+    const held = progress.get(appName);
+    if (!app) return;
+    for (const m of manifestsOf(app)) {
+      if (m.kind !== "Rollout") continue;
+      const live = cluster.get(keyOf(m));
+      if (!live) continue;
+      const full = progressedStatus(m);
+      live.status = held
+        ? {
+            ...full,
+            phase: held.phase,
+            ...(held.step !== undefined ? { currentStepIndex: held.step } : {}),
+            ...(held.phase === "Paused" ? { pauseConditions: [{ reason: "CanaryPauseStep" }] } : {})
+          }
+        : full;
+      const health = HEALTH_OF_PHASE[held?.phase ?? "Healthy"]!;
+      const resources = (app.status?.resources ?? []) as Record<string, unknown>[];
+      for (const r of resources) if (r.kind === "Rollout") r.health = { status: health };
+      if (app.status) app.status.health = { status: health };
+    }
+  }
 
   const server: Server = createServer((req, res) => {
     void (async () => {
@@ -146,6 +233,12 @@ export async function startArgoCdStandIn(): Promise<ArgoCdStandIn> {
             message: "existing application spec is different, use upsert flag to force update"
           });
         }
+        const driving = drivingProblems(app);
+        if (driving.length > 0) {
+          violations.push({ ...record, path: `${path} [${driving.join("; ")}]` });
+          return send(403, { message: `stand-in: authored content refused (${driving.join("; ")})` });
+        }
+        authoredBodies.push(structuredClone(app));
         const prior = applications.get(name);
         applications.set(name, { ...app, status: prior?.status ?? {} });
         return send(200, applications.get(name));
@@ -195,6 +288,7 @@ export async function startArgoCdStandIn(): Promise<ArgoCdStandIn> {
             resources,
             reconciledAt: new Date().toISOString()
           };
+          applyProgress(name);
           return send(200, app);
         }
 
@@ -226,8 +320,14 @@ export async function startArgoCdStandIn(): Promise<ArgoCdStandIn> {
     violations,
     applications,
     cluster,
+    authoredBodies,
     seed(app) {
       applications.set(app.metadata.name, app);
+    },
+    setRolloutProgress(appName, held) {
+      if (held) progress.set(appName, held);
+      else progress.delete(appName);
+      applyProgress(appName);
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve()))
   };

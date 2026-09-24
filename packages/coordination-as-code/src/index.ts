@@ -57,6 +57,7 @@ export {
   ContinuousTest,
   BakeAlarms,
   CanaryRollout,
+  BlueGreenRollout,
   RollingRollout
 } from "./behaviors.js";
 
@@ -69,6 +70,7 @@ export type {
   ContinuousTestProps,
   BakeAlarmsProps,
   CanaryRolloutProps,
+  BlueGreenRolloutProps,
   RollingRolloutProps,
   BehaviorHost
 } from "./behaviors.js";

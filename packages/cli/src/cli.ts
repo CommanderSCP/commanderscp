@@ -102,8 +102,8 @@ import type {
 } from "@scp/schemas";
 import {
   ARGOCD_AUTHORING_PROPERTY,
-  ArgoCdAuthoringSourceSchema,
-  type ArgoCdAuthoringSource,
+  ArgoCdAuthoringSchema,
+  type ArgoCdAuthoring,
   DesiredStateManifestSchema,
   ExecutorTypeSchema,
   outpostClaimantTokens,
@@ -6386,7 +6386,11 @@ export function buildProgram(): Command {
     )
     .option(
       "--authoring-project <project>",
-      "Argo CD project for authored Applications (default: default)"
+      "the SCOPED Argo CD project authored Applications go in — never `default` (ADR-0055)"
+    )
+    .option(
+      "--authoring-namespace <namespace...>",
+      "a namespace SCP may author into (repeatable) — the project's destinations"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -6404,25 +6408,28 @@ export function buildProgram(): Command {
           authoringChart?: string;
           authoringRevision?: string;
           authoringProject?: string;
+          authoringNamespace?: string[];
         }
       ) => {
         // Validated HERE, before anything is written, with the server's own schema: a half-declared
         // carrier would otherwise register cleanly and surface only as a refused first deploy.
-        let authoring: ArgoCdAuthoringSource | undefined;
+        let authoring: ArgoCdAuthoring | undefined;
         const authoringFlags = [
           opts.authoringRepo,
           opts.authoringPath,
           opts.authoringChart,
           opts.authoringRevision,
-          opts.authoringProject
+          opts.authoringProject,
+          opts.authoringNamespace
         ];
         if (authoringFlags.some((f) => f !== undefined)) {
-          const parsed = ArgoCdAuthoringSourceSchema.safeParse({
+          const parsed = ArgoCdAuthoringSchema.safeParse({
             repoURL: opts.authoringRepo,
             ...(opts.authoringPath !== undefined ? { path: opts.authoringPath } : {}),
             ...(opts.authoringChart !== undefined ? { chart: opts.authoringChart } : {}),
             targetRevision: opts.authoringRevision,
-            ...(opts.authoringProject !== undefined ? { project: opts.authoringProject } : {})
+            project: opts.authoringProject,
+            namespaces: opts.authoringNamespace ?? []
           });
           if (!parsed.success) {
             throw new Error(
@@ -6430,7 +6437,8 @@ export function buildProgram(): Command {
                 parsed.error.issues
                   .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
                   .join("; ") +
-                ` (need --authoring-repo, --authoring-revision and exactly one of --authoring-path / --authoring-chart)`
+                ` (need --authoring-repo, --authoring-revision, a scoped --authoring-project, at ` +
+                `least one --authoring-namespace, and exactly one of --authoring-path / --authoring-chart)`
             );
           }
           authoring = parsed.data;

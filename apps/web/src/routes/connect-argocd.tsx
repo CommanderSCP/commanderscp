@@ -2,8 +2,8 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ARGOCD_AUTHORING_PROPERTY,
-  ArgoCdAuthoringSourceSchema,
-  type ArgoCdAuthoringSource,
+  ArgoCdAuthoringSchema,
+  type ArgoCdAuthoring,
   type CreateObjectRequest,
   type DiscoveryProposal,
   type GraphObject
@@ -39,29 +39,40 @@ export interface ConnectDraft {
   token: string;
   tokenKey: string;
   allowInternalEgress: boolean;
-  /** M28.4 (ADR-0055) — `scp connect argocd --authoring-*`. All three empty ⇒ no authoring: SCP
-   *  imports and coordinates this Argo CD's Applications and creates none. */
+  /** M28.4 (ADR-0055) — `scp connect argocd --authoring-*`. All empty ⇒ no authoring: SCP imports
+   *  and coordinates this Argo CD's Applications and creates none. */
   authoringRepo?: string;
   authoringPath?: string;
   authoringRevision?: string;
+  /** The SCOPED project (never `default`) and the namespaces it allows, comma-separated. */
+  authoringProject?: string;
+  authoringNamespaces?: string;
 }
 
 /** The carrier the draft declares, validated with the SERVER's schema; `undefined` when the operator
- *  left all three fields empty. Throws BEFORE anything is written, so a half-declared carrier never
+ *  left every field empty. Throws BEFORE anything is written, so a half-declared carrier never
  *  registers cleanly and surfaces later as a refused first deploy. */
-export function authoringFromDraft(draft: ConnectDraft): ArgoCdAuthoringSource | undefined {
+export function authoringFromDraft(draft: ConnectDraft): ArgoCdAuthoring | undefined {
   const repo = draft.authoringRepo?.trim() ?? "";
   const path = draft.authoringPath?.trim() ?? "";
   const revision = draft.authoringRevision?.trim() ?? "";
-  if (!repo && !path && !revision) return undefined;
-  const parsed = ArgoCdAuthoringSourceSchema.safeParse({
+  const project = draft.authoringProject?.trim() ?? "";
+  const namespaces = (draft.authoringNamespaces ?? "")
+    .split(",")
+    .map((n) => n.trim())
+    .filter((n) => n.length > 0);
+  if (!repo && !path && !revision && !project && namespaces.length === 0) return undefined;
+  const parsed = ArgoCdAuthoringSchema.safeParse({
     repoURL: repo || undefined,
     ...(path ? { path } : {}),
-    targetRevision: revision || undefined
+    targetRevision: revision || undefined,
+    project: project || undefined,
+    namespaces
   });
   if (!parsed.success) {
     throw new Error(
-      "Authoring needs all three: the carrier's repository, its chart path, and a pinned revision."
+      "Authoring needs all five: the carrier's repository, its chart path, a pinned revision, a " +
+        "scoped project (not `default`), and the namespaces it may deploy into (no control namespaces)."
     );
   }
   return parsed.data;
@@ -327,6 +338,24 @@ export function RegisterStep({
                   setDraft((prev) => ({ ...prev, authoringRevision: e.target.value }))
                 }
                 placeholder="carrier-v1"
+              />
+              <Input
+                aria-label="Authoring project"
+                data-testid="argocd-authoring-project-input"
+                value={draft.authoringProject ?? ""}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, authoringProject: e.target.value }))
+                }
+                placeholder="scp-authored (a scoped AppProject — never default)"
+              />
+              <Input
+                aria-label="Authoring namespaces"
+                data-testid="argocd-authoring-namespaces-input"
+                value={draft.authoringNamespaces ?? ""}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, authoringNamespaces: e.target.value }))
+                }
+                placeholder="shop, shop-gamma"
               />
             </div>
           </fieldset>

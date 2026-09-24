@@ -28,6 +28,7 @@ import {
   WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
   WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS
 } from "./campaign-recipe.js";
+import { WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS } from "./reserved-trigger-parameters.js";
 
 /** The wave-target access the reconcile loop needs. See docs/coordination.md §1051. */
 
@@ -449,6 +450,14 @@ export function observedStateFrom(
   const stateRef = status.stateRef;
   if (typeof stateRef === "string") {
     result.revision = stateRef;
+  } else if (
+    typeof stateRef === "object" &&
+    stateRef !== null &&
+    typeof (stateRef as { revision?: unknown }).revision === "string"
+  ) {
+    // M28.4 (ADR-0055 D-c): an SCP-authored Application's stateRef is `{ revision, scpAuthoredApplication }`
+    // — the revision is still the synced revision; the manifest is for rollback, not for display.
+    result.revision = (stateRef as { revision: string }).revision;
   } else if (stateRef !== undefined && stateRef !== null) {
     // Non-string stateRef (later increments emit a typed digest/rollout object). Stringify defensively
     // so today's opaque value is still captured rather than dropped.
@@ -491,7 +500,9 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
   // M28.4 (ADR-0055) — SCP was asked to author this target's Argo CD Application and the
   // declaration could not be authored (`deploy-lane-trigger-parameters.ts`).
-  WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS
+  WAVE_TARGET_DEPLOYMENT_REFUSED_STATUS,
+  // M28.4 fix round (ADR-0055 D9) — a recipe named a server-reserved trigger parameter.
+  WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS
 ] as const;
 export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
 

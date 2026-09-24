@@ -297,7 +297,9 @@ describe("M28.4 (ADR-0055): the optional authoring carrier", () => {
       ...base,
       authoringRepo: " https://gitea.example/platform/gitops.git ",
       authoringPath: "charts/scp-authored-manifests",
-      authoringRevision: "carrier-v1"
+      authoringRevision: "carrier-v1",
+      authoringProject: "scp-authored",
+      authoringNamespaces: "shop, shop-gamma"
     });
     const props = doors.createExecutionSystem.mock.calls[0]![0].properties as Record<
       string,
@@ -306,7 +308,9 @@ describe("M28.4 (ADR-0055): the optional authoring carrier", () => {
     expect(props.authoring).toEqual({
       repoURL: "https://gitea.example/platform/gitops.git",
       path: "charts/scp-authored-manifests",
-      targetRevision: "carrier-v1"
+      targetRevision: "carrier-v1",
+      project: "scp-authored",
+      namespaces: ["shop", "shop-gamma"]
     });
   });
 
@@ -320,11 +324,23 @@ describe("M28.4 (ADR-0055): the optional authoring carrier", () => {
     expect(props).not.toHaveProperty("authoring");
   });
 
-  it("a half-declared carrier is refused BEFORE the token is stored or the system created", async () => {
+  const full = {
+    authoringRepo: "https://gitea.example/x.git",
+    authoringPath: "c",
+    authoringRevision: "v1",
+    authoringProject: "scp-authored",
+    authoringNamespaces: "shop"
+  };
+  it.each([
+    ["only a repository", { authoringRepo: "https://gitea.example/x.git" }],
+    ["the unscoped default project", { ...full, authoringProject: "default" }],
+    ["kube-system", { ...full, authoringNamespaces: "kube-system" }],
+    ["no namespaces", { ...full, authoringNamespaces: " , " }]
+  ])("%s is refused BEFORE the token is stored or the system created", async (_what, fields) => {
     const doors = doorsDouble();
-    await expect(
-      registerExecutionSystem(doors, { ...base, authoringRepo: "https://gitea.example/x.git" })
-    ).rejects.toThrow(/needs all three/);
+    await expect(registerExecutionSystem(doors, { ...base, ...fields })).rejects.toThrow(
+      /needs all five/
+    );
     expect(doors.calls).toEqual([]);
   });
 });

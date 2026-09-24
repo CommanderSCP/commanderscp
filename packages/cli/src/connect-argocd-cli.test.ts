@@ -111,7 +111,12 @@ describe("scp connect argocd --authoring-* (M28.4, ADR-0055)", () => {
       "--authoring-path",
       "charts/scp-authored-manifests",
       "--authoring-revision",
-      "carrier-v1"
+      "carrier-v1",
+      "--authoring-project",
+      "scp-authored",
+      "--authoring-namespace",
+      "shop",
+      "shop-gamma"
     ]);
     expect(created.bodies).toHaveLength(1);
     expect(
@@ -119,14 +124,31 @@ describe("scp connect argocd --authoring-* (M28.4, ADR-0055)", () => {
     ).toEqual({
       repoURL: repo,
       path: "charts/scp-authored-manifests",
-      targetRevision: "carrier-v1"
+      targetRevision: "carrier-v1",
+      project: "scp-authored",
+      namespaces: ["shop", "shop-gamma"]
     });
   });
 
-  it("writes NOTHING when the flags describe no carrier (no revision) — refused before registering", async () => {
-    await expect(run([...base, "--authoring-repo", repo, "--authoring-path", "c"])).rejects.toThrow(
-      /do not describe a carrier/
-    );
+  const full = [
+    "--authoring-repo",
+    repo,
+    "--authoring-path",
+    "c",
+    "--authoring-revision",
+    "v1",
+    "--authoring-project",
+    "scp-authored",
+    "--authoring-namespace",
+    "shop"
+  ];
+  it.each([
+    ["no revision", full.filter((_, i) => i !== 4 && i !== 5)],
+    ["the unscoped default project", full.map((a) => (a === "scp-authored" ? "default" : a))],
+    ["no namespace", full.slice(0, 8)],
+    ["kube-system", full.map((a) => (a === "shop" ? "kube-system" : a))]
+  ])("writes NOTHING for %s — refused before registering", async (_what, flags) => {
+    await expect(run([...base, ...flags])).rejects.toThrow(/do not describe a carrier/);
     expect(created.bodies).toEqual([]);
   });
 

@@ -157,6 +157,14 @@ export const RolloutStrategySchema = z.discriminatedUnion("strategy", [
     strategy: z.literal("rolling"),
     batchPercent: z.number().int().min(1).max(100),
     pauseBetweenSeconds: z.number().int().nonnegative().optional()
+  }),
+  /** Blue-green (owner decision 2026-09-23, ADR-0055 D4). `autoPromotionSeconds` is REQUIRED: a
+   *  blue-green Rollout without it waits for `promote`, the one verb ADR-0008 §3 forbids SCP — so
+   *  the controller must promote itself. Declared without it, the Rollout is refused. */
+  z.object({
+    strategy: z.literal("blueGreen"),
+    autoPromotionSeconds: z.number().int().positive(),
+    scaleDownDelaySeconds: z.number().int().nonnegative().optional()
   })
 ]);
 export type RolloutStrategy = z.infer<typeof RolloutStrategySchema>;

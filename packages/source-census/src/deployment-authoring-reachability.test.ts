@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { trackedFiles } from "./tracked.js";
+import { stripComments } from "./ts.js";
 
 /**
  * THE INSTALLATION GATE for SCP-authored deployments (M28.4, ADR-0055) — the sibling of
@@ -24,6 +25,9 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
     "the only producer of the Application SCP authors; with no caller, a component that is not " +
     "imported has no way to reach Argo CD at all — its plain sync addresses an Application nobody " +
     "created",
+  authoredRollbackTrigger:
+    "the only thing that turns a rollback of an authored target into the PRIOR manifest (ADR-0055 " +
+    "D-c); with no caller, every authored rollback re-syncs the release it is undoing",
   parseTopologyWaves:
     "where the wave plan's `rollout` is validated at propose time and read back at trigger time — " +
     "the Rollout's steps come from nowhere else"
@@ -50,11 +54,13 @@ function definitionFiles(name: string): Set<string> {
   return defined;
 }
 
+/** A CALL, not a mention: comments are stripped first (`ts.ts`'s reader), so a commented-out call —
+ *  the exact shape of "the wiring was removed and a note left behind" — is not counted as a caller. */
 function callersOf(name: string): string[] {
   const defined = definitionFiles(name);
   const used = new RegExp(`\\b${name}\\s*\\(`);
   return PRODUCTION_SOURCES.filter((p) => !defined.has(p)).filter((p) =>
-    used.test(readFileSync(resolve(REPO_ROOT, p), "utf8"))
+    used.test(stripComments(readFileSync(resolve(REPO_ROOT, p), "utf8")))
   );
 }
 
@@ -75,6 +81,13 @@ describe("SCP-authored deployment is INSTALLED, not merely built", () => {
     expect(callersOf("deployLaneTriggerParameters")).toContain(
       "apps/server/src/coordination/reconcile.ts"
     );
+  });
+
+  it("a commented-out call is not a caller (known-positive control for the comment stripping)", () => {
+    const used = /\bdeployLaneTriggerParameters\s*\(/;
+    const commentedOut = "// authored = await deployLaneTriggerParameters(tx, {\n/* deployLaneTriggerParameters( */";
+    expect(used.test(commentedOut)).toBe(true);
+    expect(used.test(stripComments(commentedOut))).toBe(false);
   });
 
   it("every name in the census is actually DEFINED somewhere", () => {

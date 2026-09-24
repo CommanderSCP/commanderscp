@@ -128,8 +128,15 @@ import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 import {
   DeploymentAuthoringRefused,
   WAVE_TARGET_DEPLOYMENT_REFUSED_AUDIT_ACTION,
+  authoredRollbackTrigger,
   deployLaneTriggerParameters
 } from "./deploy-lane-trigger-parameters.js";
+import {
+  SERVER_RESERVED_TRIGGER_PARAMETERS,
+  WAVE_TARGET_RECIPE_RESERVED_PARAMETER_AUDIT_ACTION,
+  WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS,
+  reservedKeysIn
+} from "./reserved-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1370,6 +1377,27 @@ async function resolveRecipeRefusal(
     };
   }
   const kind = recipe.recipe.trigger.kind;
+  // M28.4 fix round (ADR-0055 D9) — THE ONE CHOKE POINT for authored parameters. A recipe may not
+  // name a key a server lane derives as a bound, whether or not that lane derived one this time: an
+  // omitted bound filled in by a recipe is how an arbitrary Application reached Argo CD.
+  const reserved = reservedKeysIn(recipeTriggerParameters(recipe.recipe));
+  if (reserved.length > 0) {
+    return {
+      status: WAVE_TARGET_RECIPE_RESERVED_PARAMETER_STATUS,
+      action: WAVE_TARGET_RECIPE_RESERVED_PARAMETER_AUDIT_ACTION,
+      summary:
+        `this change's recipe supplies ${reserved.map((k) => `'${k}'`).join(", ")}, which only ` +
+        `CommanderSCP's own lanes may derive (${reserved
+          .map((k) => SERVER_RESERVED_TRIGGER_PARAMETERS[k])
+          .join("; ")})`,
+      remediation:
+        `remove those keys from the recipe's trigger parameters. What they bound is declared on the ` +
+        `graph (a component's deployment, its publishes_to registry, an operation's inventory) and ` +
+        `derived by the server — an authored document restating it would replace the bound with an ` +
+        `assertion`,
+      inputContext: { recipe: { readable: true, kind }, reservedParameters: reserved }
+    };
+  }
   // A recipe may not drive one of our own actuators. See docs/coordination.md §798.
   if (isRecipeForbiddenExecutorModule(executorModule)) {
     return {
@@ -1679,10 +1707,10 @@ async function triggerWaveTarget(
       // Rollout in it written from the wave plan. Deleting this call must make a test red: it is the
       // only production caller of the deploy lane, the M27.9 lesson restated.
       //
-      // A ROLLBACK of an authored target is REFUSED. The forward manifests are what it is rolling
-      // back FROM and no prior authored manifest is recorded, so the only thing left to send is a
-      // re-sync of the current values — a no-op reported as a rollback, CRITICAL #2's hazard one
-      // layer up (the argocd plugin's `ROLLBACK_UNAVAILABLE_PREFIX`).
+      // A ROLLBACK of an authored target RE-AUTHORS THE PRIOR MANIFEST (owner decision D-c,
+      // 2026-09-23), recorded as this target's `priorStateRef` when the original change triggered
+      // (below). Without one it is refused: re-syncing the current values would be a no-op reported
+      // as a rollback, CRITICAL #2's hazard one layer up.
       let authored: Awaited<ReturnType<typeof deployLaneTriggerParameters>>;
       try {
         authored = await deployLaneTriggerParameters(tx, {
@@ -1701,22 +1729,11 @@ async function triggerWaveTarget(
             : null
         });
       } catch (err) {
-        if (err instanceof DeploymentAuthoringRefused) return { refused: err.message } as const;
+        if (err instanceof DeploymentAuthoringRefused) {
+          return { refused: { reason: err.message, inputContext: err.inputContext } } as const;
+        }
         throw err;
       }
-      if (authored && isRollback) {
-        return {
-          refused:
-            "a rollback of an SCP-authored Application is refused: no prior authored manifest is " +
-            "recorded to restore, and syncing the Application again would re-apply the very " +
-            "release this rollback is undoing. Re-propose the prior version as a forward change."
-        } as const;
-      }
-      const externalRef = authored?.targetRef ?? binding?.externalRef ?? null;
-      // Spread LAST, the ops lane's rule and for its reason: the authored Application IS the bound on
-      // what gets deployed, so nothing a recipe restates may replace it.
-      const deployParameters =
-        authored && !isRollback ? { ...(parameters ?? {}), ...authored.parameters } : parameters;
 
       // An indirect resolution is recorded, not left implicit. See docs/coordination.md §808.
       const provenance = resolutionProvenance(resolution);
@@ -1780,6 +1797,27 @@ async function triggerWaveTarget(
         }
       }
 
+      // The authored trigger, now that the prior state is known: forward = the derived manifest;
+      // rollback = the recorded prior one (D-c), or a refusal when there is none.
+      let deployTrigger = authored;
+      if (authored && isRollback) {
+        try {
+          deployTrigger = authoredRollbackTrigger(priorStateRef, authored, { orgId, targetObjectId });
+        } catch (err) {
+          if (err instanceof DeploymentAuthoringRefused) {
+            return { refused: { reason: err.message, inputContext: err.inputContext } } as const;
+          }
+          throw err;
+        }
+      }
+      const externalRef = deployTrigger?.targetRef ?? binding?.externalRef ?? null;
+      // Spread LAST, the ops lane's rule and for its reason: the authored Application IS the bound on
+      // what gets deployed. (A recipe naming the key never gets this far — it is server-reserved,
+      // refused in `resolveRecipeRefusal`.)
+      const deployParameters = deployTrigger
+        ? { ...(parameters ?? {}), ...deployTrigger.parameters }
+        : parameters;
+
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
       return claimed
         ? { kind, priorStateRef, externalRef, parameters: deployParameters, refused: undefined }
@@ -1788,7 +1826,7 @@ async function triggerWaveTarget(
 
     if (!claim) return; // no longer pending/triggering — another tick already handled it.
     if (claim.refused !== undefined) {
-      const reason = claim.refused;
+      const { reason, inputContext: refusalContext } = claim.refused;
       // Terminal, audited, and before `trigger()` — a deployment SCP cannot author is never sent to
       // Argo CD in some partial form, and never falls through to syncing an Application that does
       // not exist.
@@ -1810,7 +1848,8 @@ async function triggerWaveTarget(
             targetObjectId,
             requestedType: type,
             executorPluginId: instanceId,
-            gate: "deployment_authoring"
+            gate: "deployment_authoring",
+            ...refusalContext
           }
         })
       );

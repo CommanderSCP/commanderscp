@@ -5,10 +5,11 @@ import { z } from "zod";
  *  Three documents, each on the graph object that owns the fact, none of them a new table:
  *
  *  - WHAT runs: `component.properties.deployment` (`AuthoredDeploymentSchema`).
- *  - HOW each place rolls: the release topology's per-wave `rollout` (`RolloutStrategySchema`,
- *    `pipeline-behaviors.ts`) — the wave plan the Rollout's steps are derived from.
+ *  - HOW each place rolls: the component's own D12 `CanaryRollout` declaration (`component_rollouts`,
+ *    target class `cluster`) when it has one — owner decision 2026-09-23 — else the release
+ *    topology's per-wave `rollout` (`RolloutStrategySchema`, `pipeline-behaviors.ts`).
  *  - WHERE Argo CD reads the authored manifests from: `execution-system.properties.authoring`
- *    (`ArgoCdAuthoringSourceSchema`) — the operator-installed carrier chart.
+ *    (`ArgoCdAuthoringSchema`) — the carrier chart, the project and the namespace allowlist.
  *
  *  Validated when the deploy lane DERIVES, not when the object is written: every one of these
  *  object types is registered `{"type":"object"}`, and typing a key at the write door is the
@@ -18,7 +19,7 @@ import { z } from "zod";
 /** The component property key holding `AuthoredDeploymentSchema`. */
 export const AUTHORED_DEPLOYMENT_PROPERTY = "deployment";
 
-/** The execution-system property key holding `ArgoCdAuthoringSourceSchema`. */
+/** The execution-system property key holding `ArgoCdAuthoringSchema`. */
 export const ARGOCD_AUTHORING_PROPERTY = "authoring";
 
 /** The label every SCP-authored Application and Rollout carries, and the ONLY thing that lets
@@ -49,18 +50,56 @@ export type AuthoredDeployment = z.infer<typeof AuthoredDeploymentSchema>;
 /** Where the operator installed SCP's pass-through carrier chart
  *  (`deploy/helm-bundled/authoring/scp-authored-manifests`), in Argo CD's own source vocabulary:
  *  `path` for a chart kept in a git repository, `chart` for one in a Helm repository — exactly one. */
-export const ArgoCdAuthoringSourceSchema = z
+/** Namespaces no authored manifest may ever land in, whatever an allowlist says. The bundled chart
+ *  refuses its own control namespaces (Argo CD's, SCP's, every bundled backend's) at render; these
+ *  are the ones the SERVER can name without knowing the install. */
+export const FORBIDDEN_AUTHORING_NAMESPACES: readonly string[] = [
+  "default",
+  "kube-system",
+  "kube-public",
+  "kube-node-lease"
+];
+
+export function isForbiddenAuthoringNamespace(ns: string): boolean {
+  return FORBIDDEN_AUTHORING_NAMESPACES.includes(ns) || ns.startsWith("kube-");
+}
+
+/** The only manifest kinds an authored Application may carry (ADR-0055 D2): the Rollout, and the two
+ *  Services a blue-green Rollout switches between. Duplicated in `@scp/plugin-argocd` (no schemas
+ *  dependency) and in the bundled AppProject's `namespaceResourceWhitelist`; pinned equal by tests. */
+export const AUTHORED_MANIFEST_KINDS: readonly { group: string; kind: string }[] = [
+  { group: "argoproj.io", kind: "Rollout" },
+  { group: "", kind: "Service" }
+];
+
+export const ArgoCdAuthoringSchema = z
   .strictObject({
     repoURL: z.string().min(1),
     path: z.string().min(1).optional(),
     chart: z.string().min(1).optional(),
     /** REQUIRED: a carrier that floats with HEAD is a carrier nobody reviewed. */
     targetRevision: z.string().min(1),
-    /** The Argo CD project every authored Application is created in. Absent ⇒ `default`. */
-    project: z.string().min(1).optional()
+    /** REQUIRED, and never `default`: upstream's default AppProject allows any repo, any
+     *  destination and cluster-scoped kinds, so a token scoped to it is cluster-admin by proxy. The
+     *  project named here must restrict sources to the carrier, destinations to `namespaces`, and
+     *  kinds to `AUTHORED_MANIFEST_KINDS` (the bundled chart ships exactly that one). */
+    project: z
+      .string()
+      .min(1)
+      .refine((p) => p !== "default", {
+        message: "must not be `default` — upstream's default AppProject is unscoped"
+      }),
+    /** The namespaces an authored deployment may land in — the project's destinations. */
+    namespaces: z
+      .array(
+        Dns1123LabelSchema.refine((ns) => !isForbiddenAuthoringNamespace(ns), {
+          message: "a control namespace (default, kube-*) is never an authoring destination"
+        })
+      )
+      .min(1)
   })
   .refine((s) => (s.path === undefined) !== (s.chart === undefined), {
     message:
       "declare exactly one of `path` (a chart in a git repository) or `chart` (a Helm repository)"
   });
-export type ArgoCdAuthoringSource = z.infer<typeof ArgoCdAuthoringSourceSchema>;
+export type ArgoCdAuthoring = z.infer<typeof ArgoCdAuthoringSchema>;

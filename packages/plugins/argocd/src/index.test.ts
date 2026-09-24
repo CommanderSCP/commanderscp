@@ -397,9 +397,11 @@ describe("status()", () => {
 
     expect(appScope.isDone()).toBe(true);
     expect(resourceScope.isDone()).toBe(true);
-    expect(result.phase).toBe("succeeded");
-    expect(result.progress).toBe(1);
-    // ...and the weight this snapshot freezes at is a PARTIAL one.
+    // M28.4 fix round (ADR-0055 D10): this USED to pin `succeeded`/progress 1 — the hazard §15
+    // describes, which froze the weight at 10 forever. A paused Rollout is a deploy still RUNNING,
+    // so reconcile keeps polling it and the weight stays live.
+    expect(result.phase).toBe("running");
+    expect(result.progress).toBe(0.5);
     expect(result.observed?.rollout).toEqual({
       phase: "Paused",
       message: "Rollout is paused",

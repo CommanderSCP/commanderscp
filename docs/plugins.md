@@ -230,7 +230,7 @@ ADR-0028 decision 3 / docs/proposals/rollout-step-coupling.md §2.5 — EXHAUSTI
 
 ### §15. The hazard of §2.5 in ONE fixture
 
-The hazard of §2.5 in ONE fixture: an Application aggregating to `Suspended` while the Rollout underneath it is PAUSED at 10%. status() reports the target DONE (`succeeded`, progress 1) and carries weight 10 in the same response. reconcile.ts then skips this target on every later tick (`if (target.status === "succeeded") continue;`), so 10 is the LAST weight ever persisted for it — it stays 10 even after somebody promotes the Rollout to 100%. This is a pin of what SCP does GIVEN that input; whether Argo really aggregates a paused Rollout to `Suspended` cannot be established from this tree and must be checked against a live instance (§2.5).
+The hazard of §2.5 in ONE fixture: an Application aggregating to `Suspended` while the Rollout underneath it is PAUSED at 10%. **Closed by M28.4 (ADR-0055 D10): an Application managing a Rollout is now `succeeded` only when the Rollout is Healthy past its last step, so this fixture reports `running`, progress 0.5.** Before that, status() reported the target DONE (`succeeded`, progress 1) and carried weight 10 in the same response. reconcile.ts then skips this target on every later tick (`if (target.status === "succeeded") continue;`), so 10 is the LAST weight ever persisted for it — it stays 10 even after somebody promotes the Rollout to 100%. This is a pin of what SCP does GIVEN that input; whether Argo really aggregates a paused Rollout to `Suspended` cannot be established from this tree and must be checked against a live instance (§2.5).
 
 ### §16. ADR-0008 P4D (rollout, OBSERVE-ONLY)
 
