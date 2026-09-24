@@ -241,9 +241,9 @@ ConfigMap, byte-identical (helm-verify) to the file the integration test runs. T
   holds the rendered wiring, and `globalName` → `status.outputs` and a templated mutex name are
   Argo's documented behaviour, not observed live); a real cloud provider (local backend,
   `terraform_data`).
-- **managed-iac's apply** has no production caller (nothing sets `iacAction`). Owner ruling
+- **managed-iac's apply** had no production caller (nothing set `iacAction`). Owner ruling
   2026-09-24: bind it to an accepted plan's digest by this lane's rule, in a separate follow-on PR in
-  M28.
+  M28 — done, addendum 4.
 
 ## Addendum (2026-09-24) — what the adversarial verification of PR #415 found, and the fix
 
@@ -319,3 +319,58 @@ revision, therefore voids the list until someone sets it again for the new endpo
 **Also.** The state workspace digest is now 24 hex characters (96 bits) over org + target +
 environment + region. Two environments whose slugs truncate to the same prefix no longer rely on the
 target id alone to be told apart.
+
+## Addendum 4 (2026-09-24) — managed-iac (Mode C) applies through the same gate
+
+**Before.** managed-iac had one production reader of `iacAction` (the plugin) and no production
+writer, so every production managed-iac run was a plan and no plan could be applied.
+
+**The rule, reused, not duplicated.** The lane now engages for the executors in
+`INFRA_APPLY_GATE_MODULES` (`argo-workflows`, `managed-iac`; `@scp/schemas`, read by the UI too),
+and both go through ONE `evaluateApplyGate`. A lane supplies only three things: its place as it is
+now and as the plan recorded it (compared key by key), any extra recheck (the Argo half re-checks the
+source allowlist), and how it expresses the apply. Everything else is the gate's, for both lanes:
+- the plan is accepted, succeeded at this target on this executor instance, and carries a digest
+  and a recorded trigger;
+- it is not superseded and no apply of it is in flight;
+- a re-apply of an applied plan is a no-op;
+- the proposer cannot accept their own plan (`infra_plan_separation_of_duties` keys on the
+  recorded trigger, which managed-iac plans now write).
+
+**managed-iac's place is its workspace.** The plugin keeps one workspace per (org,
+`intent.targetRef`), and reconcile's `targetRef` is the binding's externalRef, else the target id.
+A plan records that workspace, and an apply must still resolve to it. A second target's plan into a
+workspace another target already planned in is refused (`infra_workspace_collision`), because the
+two would apply each other's plans.
+
+**Its apply is `iacAction: "apply"` with the approved digest.** `run.sh apply` applies whatever
+`.tfplan` the workspace holds. So the plugin refuses before launching anything when:
+- the workspace's `plan.json` is not the approved digest (a newer plan, or none);
+- the apply carries no digest;
+- the apply brings source files.
+
+It also refuses any source file that names a workspace-owned file (`.tfplan`, `plan.json`, the
+state, `.terraform*`), so the evidence the approval was about cannot be replaced. This is the
+executor-side half, as the Argo template's re-plan-and-compare is for the other lane. The plugin
+host refuses any `iacAction: "apply"` the lane did not authorize, whichever server path carries it.
+`iacAction` is a server-reserved trigger key.
+
+**Unchanged:** managed-iac's execution model (ephemeral `scp-runner-iac` container, vaulted
+credentials, copied-in workspace). Its own rollback restores a prior state snapshot and applies
+nothing, so it stays. A rollback that declares an apply is refused. Configuration still reaches a
+managed-iac workspace as it did before; a campaign recipe cannot target managed-iac.
+
+**Also (the #415 verifier's NIT).** The source-allowlist routing fingerprint now covers the
+execution system's WHOLE canonical `properties`. The first version named four fields and so missed
+`webUrl`, `allowInternalEgress`, `authoring` and every manifest-declared key.
+
+**Proved by** `managed-iac-apply.integration.test.ts`. It runs the real reconcile loop and the real
+plugin in the real subprocess host, with each run in the real `scp-runner-iac` container on
+OpenTofu's local backend. It covers:
+- plan → accept → apply applies for real, and a re-apply is a no-op with no second run;
+- an unaccepted plan's apply is refused;
+- the proposer cannot accept;
+- a superseded plan is refused;
+- the shared-workspace collision is refused.
+
+`apply-digest.test.ts` covers the plugin half. Each guard is mutation-proved (PR body).

@@ -1942,6 +1942,22 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         because its `tokenSecretKey` names the receiver's secret. Belt and braces: each allowlist row
         is bound to the system's routing fingerprint, so any re-point voids it until someone sets it
         again. The workspace digest is now 24 hex over org + target + environment + region.
+      - *managed-iac (Mode C) applies through the same gate (M28.3b, 2026-09-24; ADR-0056 addendum
+        4).* Before this, the plugin was the only production reader of `iacAction` and nothing
+        wrote it, so every managed-iac run was a plan. The infra lane now engages for managed-iac as
+        well (`INFRA_APPLY_GATE_MODULES`, shared with the UI), and both lanes go through ONE
+        `evaluateApplyGate` that owns accepted, succeeded-here-with-a-digest-and-record, superseded,
+        in-flight, no-op re-apply and SoD. A lane supplies only its place (for managed-iac, the
+        workspace) and how it applies (`iacAction: "apply"` plus the approved digest). The plugin
+        refuses, before launching, an apply whose digest is not the workspace's `plan.json`, and the
+        plugin host refuses an `iacAction: "apply"` the lane did not authorize. "Apply this plan" is
+        offered for managed-iac plans. Proved against the real counterparty: the reconcile loop, the
+        plugin in the subprocess host, and `scp-runner-iac` with a local backend
+        (`managed-iac-apply.integration.test.ts`). Deleting the wiring turns all five tests red. The
+        allowlist routing fingerprint now covers the whole `properties` object (the #415 verifier's
+        NIT). *Not proved:* a managed-iac plan's configuration still arrives as it always did, by
+        being present in the workspace, because a recipe cannot target managed-iac. How an org
+        populates that workspace is unchanged and out of scope.
   - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
     import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
     Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.

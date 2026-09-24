@@ -309,9 +309,8 @@ async function infraPlanSeparationOfDuties(
   if ((props[INFRASTRUCTURE_DECLARATION_PROPERTY] ?? null) !== null) return undefined;
   // ONLY A PLAN THE LANE ACTUALLY PLANNED — one with a recorded `infra_plan_trigger`. Its acceptance
   // is what an apply is later gated on; an infrastructure change driven by any other executor
-  // (a machine-image publication, managed-iac today) is not approving a plan for apply, and its
-  // acceptance keeps meaning what it always meant. The managed-iac follow-on records the same
-  // trigger and so inherits this check.
+  // is not approving a plan for apply, and its acceptance keeps meaning what it always meant.
+  // managed-iac plans record the same trigger (ADR-0056 addendum 4) and so are held to this check.
   const [planned] = await tx
     .select({ id: decisions.id })
     .from(decisions)
