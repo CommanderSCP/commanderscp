@@ -1,5 +1,6 @@
 import {
   constants as cryptoConstants,
+  createHash,
   generateKeyPairSync,
   privateDecrypt,
   randomUUID
@@ -17,6 +18,7 @@ import {
 import {
   createTestComponent,
   createTestOrg,
+  createTestUser,
   listenTestServer,
   waitUntil,
   type ListeningTestServer,
@@ -28,40 +30,45 @@ import { generateEphemeralSshKeypair } from "./ssh-credentials.js";
 import * as buildLaneModule from "./build-trigger-parameters.js";
 import * as opsLaneModule from "./ops-lane-trigger-parameters.js";
 import * as deployLaneModule from "./deploy-lane-trigger-parameters.js";
+import * as infraLaneModule from "./infra-lane-trigger-parameters.js";
 import { AUTHORED_APPLICATION_PARAMETER } from "./deploy-lane-trigger-parameters.js";
 
 /**
- * M28.5 — THE CROSS-CUTTING PROOF: one estate exercising the build, host-ops and deployment lanes
- * TOGETHER, against the REAL reconcile loop and the REAL plugins, so no lane can be green while it
- * is unreachable in the presence of the others — the M27.9 lesson ("built, never installed")
- * restated as a standing gate rather than a one-off census.
+ * M28.5 — THE CROSS-CUTTING PROOF: one estate exercising all four executor lanes TOGETHER, against
+ * the REAL reconcile loop and the REAL plugins, so no lane can be green while it is unreachable in
+ * the presence of the others — the M27.9 lesson ("built, never installed") restated as a standing
+ * gate rather than a one-off census.
  *
- * (The infrastructure buildout lane, M28.3, slots in once its PR merges — see the note at the
- * bottom of this file. Its absence here is a known, temporary gap, not an oversight.)
- *
- * ONE org, ONE reconcile loop, ONE subprocess plugin host. Three lanes, each driven by a real
- * change proposed through the public API:
+ * ONE org, ONE reconcile loop, ONE subprocess plugin host. Four lanes, each driven by a real change
+ * proposed through the public API:
  *
  *   LANE 1 (build)  — an `rpm`-Typed component, bound to `scp-build-rpm-v1` on an Argo Workflows
- *                      execution-system, publishing to a package-repo registry.
+ *                      execution-system, publishing to a package-repo registry. Its source repo is
+ *                      both allowlisted on the execution system and declared as the component's own
+ *                      `rpm` source mapping (ADR-0053 addendum, R1+R2 — landed alongside M28.3).
  *   LANE 2 (ops)    — an infrastructure product, enrolled and pinned, whose host-ops run is
  *                      submitted to `scp-ops-v1` on the SAME Argo Workflows execution-system and
  *                      completed by a real sealed one-time redemption (not stubbed).
  *   LANE 3 (deploy) — a component SCP did not import, deployed via an authored Argo CD Application
  *                      + Rollout whose steps are the release topology's wave plan.
+ *   LANE 4 (infra)  — a `prod-us-east-1` deployment-target, bound to `scp-infra-plan-v1` on the SAME
+ *                      Argo Workflows execution-system, whose infrastructure repo is likewise
+ *                      allowlisted: a plan is submitted and persisted as evidence, ACCEPTED BY A
+ *                      NON-PROPOSER (separation of duties, ADR-0056), and only then applied via
+ *                      `scp-infra-apply-v1` bound to that plan's digest.
  *
  * Argo itself is not run (it needs a cluster, and each lane's own integration test already proves
  * the wiring against a real counterparty where one exists — `rpm-build-lane.integration.test.ts`'s
- * Docker leg, `ops-argo-run.e2e.integration.test.ts`'s real sshd). What is under test here is
- * coexistence: that all four lanes' seams are wired into the SAME reconcile loop at the SAME time,
- * proved two ways —
+ * Docker leg, `ops-argo-run.e2e.integration.test.ts`'s real sshd, `infra-lane.integration.test.ts`'s
+ * real OpenTofu run). What is under test here is coexistence: that all four lanes' seams are wired
+ * into the SAME reconcile loop at the SAME time, proved two ways —
  *
  *   (a) each lane's change completes against a loopback stand-in that only reports success once
  *       the lane-specific submission actually reached it, and
  *   (b) a SPY on each lane's exported derivation (`buildLaneTriggerParameters`,
- *       `opsLaneTriggerParameters`, `deployLaneTriggerParameters`) shows it was CALLED by
- *       `reconcile.ts` during this run, and its own returned value is what the executor received —
- *       not merely present in the same file.
+ *       `opsLaneTriggerParameters`, `deployLaneTriggerParameters`, `infraLaneTriggerParameters`)
+ *       shows it was CALLED by `reconcile.ts` during this run, and its own returned value is what
+ *       the executor received — not merely present in the same file.
  *
  * The standing gate: delete any one lane's `await ...TriggerParameters(...)` call in
  * `reconcile.ts` and that lane's spy assertion goes red immediately — never called, because nothing
@@ -70,6 +77,7 @@ import { AUTHORED_APPLICATION_PARAMETER } from "./deploy-lane-trigger-parameters
  */
 
 const ARGO_NAMESPACE = "scp-argo-workflows";
+const RPM_REPO = "acme/scp-widget";
 const RPM_SPEC = "packaging/scp-widget.spec";
 const RPM_COMMIT = "c".repeat(40);
 const RUNNER_DIGEST = `sha256:${"a".repeat(64)}`;
@@ -82,6 +90,18 @@ const ARGOCD_AUTHORING = {
   project: "scp-authored",
   namespaces: ["shop", "shop-gamma"]
 };
+const INFRA_ENVIRONMENT = "prod-us-east-1";
+const INFRA_REPO = "acme/infra";
+const INFRA_COMMIT = "e".repeat(40);
+const INFRA_PATH = "infra";
+/** The GLOBAL output name each plan-evidence field is exported as (matches
+ *  `@scp/plugin-argo-workflows`'s `PLAN_OUTPUT_PARAMETERS` and the shipped script's contract). */
+const INFRA_PLAN_OUTPUT = {
+  digest: "scpPlanDigest",
+  add: "scpPlanAdd",
+  change: "scpPlanChange",
+  destroy: "scpPlanDestroy"
+} as const;
 
 interface WorkflowSubmission {
   resourceName: string;
@@ -160,21 +180,26 @@ function opsCatalogTemplate(): unknown {
   };
 }
 
-/** A loopback Argo Workflows API serving BOTH the build lane (`scp-build-rpm-v1`) and the ops-Argo
- *  lane (`scp-ops-v1`) — one estate, one Argo Workflows execution-system, exactly as production
- *  would route two catalog templates through the same server. Every Workflow reports `Succeeded`
- *  by default EXCEPT an `scp-ops-v1` run, which starts `Running` — a real Workflow cannot finish
- *  before its pod redeems, and the redeem door refuses a change that is no longer executing — until
- *  the test explicitly flips it after redemption completes. */
+/** A loopback Argo Workflows API serving the build lane (`scp-build-rpm-v1`), the ops-Argo lane
+ *  (`scp-ops-v1`) AND the infra lane (`scp-infra-plan-v1`/`scp-infra-apply-v1`) — one estate, one
+ *  Argo Workflows execution-system, exactly as production would route several catalog templates
+ *  through the same server. Every Workflow reports `Succeeded` by default EXCEPT an `scp-ops-v1`
+ *  run, which starts `Running` — a real Workflow cannot finish before its pod redeems, and the
+ *  redeem door refuses a change that is no longer executing — until the test explicitly flips it
+ *  after redemption completes. An infra submission additionally carries GLOBAL OUTPUTS once the
+ *  test registers them (`outputsOverride`) — the plan-evidence contract `@scp/plugin-argo-workflows`
+ *  reads (`scpPlanDigest`/`scpPlanAdd`/`scpPlanChange`/`scpPlanDestroy`). */
 function startArgoWorkflowsStandIn(): Promise<{
   srv: Server;
   url: string;
   submissions: WorkflowSubmission[];
   phaseOverride: Map<string, string>;
+  outputsOverride: Map<string, Record<string, string>>;
   templateReads: string[];
 }> {
   const submissions: WorkflowSubmission[] = [];
   const phaseOverride = new Map<string, string>();
+  const outputsOverride = new Map<string, Record<string, string>>();
   const templateReads: string[] = [];
 
   const srv = createServer((req, res) => {
@@ -216,10 +241,21 @@ function startArgoWorkflowsStandIn(): Promise<{
         const name = get[1]!;
         const defaultPhase = name.startsWith("scp-ops-v1-") ? "Running" : "Succeeded";
         const phase = phaseOverride.get(name) ?? defaultPhase;
+        const outputs = outputsOverride.get(name);
         res.end(
           JSON.stringify({
             metadata: { name, uid: randomUUID() },
-            status: { phase, progress: "1/1" }
+            status: {
+              phase,
+              progress: "1/1",
+              ...(outputs
+                ? {
+                    outputs: {
+                      parameters: Object.entries(outputs).map(([n, value]) => ({ name: n, value }))
+                    }
+                  }
+                : {})
+            }
           })
         );
         return;
@@ -233,20 +269,31 @@ function startArgoWorkflowsStandIn(): Promise<{
     srv.listen(0, "127.0.0.1", () => {
       const addr = srv.address();
       const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolve({ srv, url: `http://127.0.0.1:${port}`, submissions, phaseOverride, templateReads });
+      resolve({
+        srv,
+        url: `http://127.0.0.1:${port}`,
+        submissions,
+        phaseOverride,
+        outputsOverride,
+        templateReads
+      });
     });
   });
 }
 
-describe("M28.5 — one estate exercises the build, host-ops and deployment lanes together", () => {
+describe("M28.5 — one estate exercises the build, host-ops, deployment and infrastructure lanes together", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
   let admin: ScpClient;
   let anonymous: ScpClient;
+  /** A second subject with `change:accept` but no propose on the infra plan — separation of duties
+   *  (ADR-0056): the proposer of a plan may not accept it themselves. */
+  let approver: ScpClient;
   let argo: Server;
   let argoUrl: string;
   let argoSubmissions: WorkflowSubmission[];
   let argoPhaseOverride: Map<string, string>;
+  let argoOutputsOverride: Map<string, Record<string, string>>;
   let argoTemplateReads: string[];
   let argoSystemId: string;
   let argoCd: ArgoCdStandIn;
@@ -276,9 +323,12 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
   const deployLaneResults: Awaited<
     ReturnType<typeof deployLaneModule.deployLaneTriggerParameters>
   >[] = [];
+  const infraLaneResults: Awaited<ReturnType<typeof infraLaneModule.infraLaneTriggerParameters>>[] =
+    [];
   const buildLaneOriginal = buildLaneModule.buildLaneTriggerParameters;
   const opsLaneOriginal = opsLaneModule.opsLaneTriggerParameters;
   const deployLaneOriginal = deployLaneModule.deployLaneTriggerParameters;
+  const infraLaneOriginal = infraLaneModule.infraLaneTriggerParameters;
   const buildLaneSpy = vi
     .spyOn(buildLaneModule, "buildLaneTriggerParameters")
     .mockImplementation(async (...args) => {
@@ -300,6 +350,13 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
       deployLaneResults.push(result);
       return result;
     });
+  const infraLaneSpy = vi
+    .spyOn(infraLaneModule, "infraLaneTriggerParameters")
+    .mockImplementation(async (...args) => {
+      const result = await infraLaneOriginal(...args);
+      infraLaneResults.push(result);
+      return result;
+    });
 
   // Captured by each lane's own test, read back by the standing-gate test at the end.
   let rpmSubmission: WorkflowSubmission | undefined;
@@ -309,6 +366,9 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
    *  `deployLaneTriggerParameters` returned, before Argo CD's controller adds `status`. Compared
    *  against the spy's own captured return value in the standing-gate test below. */
   let deployedAuthoredBody: StandInApplication | undefined;
+  let infraPlanSubmission: WorkflowSubmission | undefined;
+  let infraApplySubmission: WorkflowSubmission | undefined;
+  let infraPlanDigest: string | undefined;
 
   beforeAll(async () => {
     // ADR-0003's two layers: the operator allowlist (here) AND the system's declared intent
@@ -319,6 +379,7 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
     argoUrl = argoStandIn.url;
     argoSubmissions = argoStandIn.submissions;
     argoPhaseOverride = argoStandIn.phaseOverride;
+    argoOutputsOverride = argoStandIn.outputsOverride;
     argoTemplateReads = argoStandIn.templateReads;
     argoCd = await startArgoCdStandIn();
 
@@ -334,9 +395,13 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
     org = await createTestOrg(server, "m28-5-estate");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     anonymous = new ScpClient({ baseUrl: server.baseUrl });
+    const approverUser = await createTestUser(server, org, [
+      { role: "Administrator", scope: org.orgId }
+    ]);
+    approver = new ScpClient({ baseUrl: server.baseUrl, token: approverUser.token });
 
-    // ONE Argo Workflows execution-system serves BOTH the build and ops-Argo lanes — the same way
-    // one org's Argo Workflows deployment would host every SCP catalog template it is pinned to.
+    // ONE Argo Workflows execution-system serves the build, ops-Argo AND infra lanes — the same
+    // way one org's Argo Workflows deployment would host every SCP catalog template it is pinned to.
     const argoSystem = await admin.object("execution-system").create({
       name: `argo-workflows-${randomUUID().slice(0, 8)}`,
       properties: {
@@ -347,6 +412,9 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
       }
     });
     argoSystemId = argoSystem.id;
+    // THE SYSTEM'S SOURCE ALLOWLIST (owner ruling R1, ADR-0053/ADR-0056): the repos this estate's
+    // build and infrastructure may run from with this system's credentials. `secret:write`.
+    await admin.executors.putSourceAllowlist(argoSystemId, [RPM_REPO, INFRA_REPO]);
 
     await admin.secrets.put("m28-5-argocd-token", { value: "stand-in-token" });
     const argocdSystem = await admin.object("execution-system").create({
@@ -366,6 +434,7 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
     buildLaneSpy.mockRestore();
     opsLaneSpy.mockRestore();
     deployLaneSpy.mockRestore();
+    infraLaneSpy.mockRestore();
     await server?.close();
     await new Promise<void>((ok) => argo?.close(() => ok()));
     await argoCd?.close();
@@ -386,6 +455,14 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
         )
     );
     return rows.sort((a, b) => String(a.id).localeCompare(String(b.id))).at(-1);
+  }
+
+  /** PER-CHANGE, not per-target: the infra lane proposes TWO changes (plan, then apply) against the
+   *  SAME deployment-target, so `waveTargetOf`'s "latest row for this target" would be ambiguous
+   *  right at the moment the second change's row is still being created. Matches
+   *  `infra-lane.integration.test.ts`'s own `waveTargetOf`. */
+  async function waveTargetForChange(changeId: string) {
+    return (await admin.changes.explain(changeId)).plan?.waves.flatMap((w) => w.targets)[0];
   }
 
   it("LANE 1 (build) — an rpm component promotes through Argo Workflows to a package repo", async () => {
@@ -411,13 +488,20 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
       type: "rpm",
       externalRef: "scp-build-rpm-v1"
     });
+    // WHOSE CODE IS BUILT (ADR-0053 addendum, R1+R2): the component declares its rpm source, and
+    // the system's allowlist (set in beforeAll) allows that repo to run with its credentials.
+    await admin.changeSources.createMapping("github", {
+      repoPattern: RPM_REPO,
+      component: component.id,
+      type: "rpm"
+    } as Parameters<typeof admin.changeSources.createMapping>[1]);
 
     const before = argoSubmissions.length;
     const change = await admin.changes.propose({
       name: `rpm release ${randomUUID().slice(0, 6)}`,
       targets: [component.id],
       type: "rpm",
-      sourceRef: { repo: "acme/scp-widget", ref: "refs/heads/main", commit: RPM_COMMIT }
+      sourceRef: { repo: RPM_REPO, ref: "refs/heads/main", commit: RPM_COMMIT }
     });
 
     rpmSubmission = await waitUntil(
@@ -428,7 +512,7 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
     );
     expect(rpmSubmission.resourceName).toBe("scp-build-rpm-v1");
     expect(rpmSubmission.parameters).toMatchObject({
-      sourceRepo: "acme/scp-widget",
+      sourceRepo: RPM_REPO,
       sourceCommit: RPM_COMMIT,
       rpmSpec: RPM_SPEC,
       packageRepository: "acme/el9"
@@ -612,6 +696,130 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
     expect(argoCd.violations).toEqual([]);
   }, 60_000);
 
+  it("LANE 4 (infra) — prod-us-east-1 plans, is ACCEPTED BY A NON-PROPOSER, and applies through Argo Workflows", async () => {
+    const target = await admin.deploymentTargets.create({
+      name: `${INFRA_ENVIRONMENT}-${randomUUID().slice(0, 6)}`,
+      properties: {
+        environment: INFRA_ENVIRONMENT,
+        infrastructurePath: INFRA_PATH,
+        // Declared ON THE TARGET, never taken from the change — ADR-0056 verification probe C.
+        infrastructureRepo: INFRA_REPO
+      }
+    });
+    await admin.executors.putBinding(target.id, {
+      executionSystemId: argoSystemId,
+      type: "infrastructure",
+      externalRef: "scp-infra-plan-v1"
+    });
+
+    // PLAN.
+    const planBefore = argoSubmissions.length;
+    const plan = await admin.changes.propose({
+      name: `infra plan ${randomUUID().slice(0, 6)}`,
+      targets: [target.id],
+      type: "infrastructure",
+      sourceRef: { repo: INFRA_REPO, ref: "refs/heads/main", commit: INFRA_COMMIT }
+    });
+
+    infraPlanSubmission = await waitUntil(
+      async () =>
+        argoSubmissions.slice(planBefore).find((s) => s.parameters["changeObjectId"] === plan.id) ??
+        undefined,
+      { describe: "the argo-workflows plugin submits the infra plan workflow", timeoutMs: 30_000 }
+    );
+    expect(infraPlanSubmission.resourceName).toBe("scp-infra-plan-v1");
+    expect(infraPlanSubmission.parameters).toMatchObject({
+      environment: INFRA_ENVIRONMENT,
+      infraPath: INFRA_PATH,
+      sourceRepo: INFRA_REPO,
+      sourceCommit: INFRA_COMMIT,
+      changeObjectId: plan.id,
+      targetObjectId: target.id
+    });
+    expect(infraPlanSubmission.parameters).not.toHaveProperty("planDigest");
+
+    // The plan evidence a REAL `scp-infra.sh` run would have written as global outputs — the
+    // real-counterparty leg belongs to `infra-lane.integration.test.ts`, not this estate.
+    infraPlanDigest = createHash("sha256")
+      .update(`m28-5-estate:${infraPlanSubmission.workflowName}`)
+      .digest("hex");
+    argoOutputsOverride.set(infraPlanSubmission.workflowName, {
+      [INFRA_PLAN_OUTPUT.digest]: infraPlanDigest,
+      [INFRA_PLAN_OUTPUT.add]: "1",
+      [INFRA_PLAN_OUTPUT.change]: "0",
+      [INFRA_PLAN_OUTPUT.destroy]: "0"
+    });
+
+    const plannedTarget = await waitUntil(
+      async () => {
+        const t = await waveTargetForChange(plan.id);
+        return t?.status === "succeeded" ? t : undefined;
+      },
+      { describe: "the infra plan wave target reaches succeeded", timeoutMs: 30_000 }
+    );
+    expect(plannedTarget.observed?.plan).toMatchObject({ add: 1, change: 0, destroy: 0 });
+    expect(plannedTarget.observed?.plan?.ref).toBe(infraPlanDigest);
+    await waitUntil(
+      async () => ((await admin.changes.get(plan.id)).state === "validating" ? true : undefined),
+      { describe: "the infra plan change reaches validating", timeoutMs: 30_000 }
+    );
+
+    // SEPARATION OF DUTIES (ADR-0056): the plan's own proposer cannot accept it.
+    await expect(admin.changes.accept(plan.id, "approving my own plan")).rejects.toMatchObject({
+      status: 409
+    });
+    expect((await admin.changes.get(plan.id)).state).toBe("validating");
+
+    // A NON-PROPOSER accepts it.
+    await approver.changes.accept(plan.id, "reviewed the prod-us-east-1 plan");
+
+    // APPLY, bound to the accepted plan's digest.
+    const applyBefore = argoSubmissions.length;
+    const apply = await admin.changes.propose({
+      name: `infra apply ${randomUUID().slice(0, 6)}`,
+      targets: [target.id],
+      type: "infrastructure",
+      properties: { infrastructure: { applyPlan: plan.id } }
+    });
+
+    infraApplySubmission = await waitUntil(
+      async () =>
+        argoSubmissions
+          .slice(applyBefore)
+          .find((s) => s.parameters["changeObjectId"] === apply.id) ?? undefined,
+      { describe: "the argo-workflows plugin submits the infra apply workflow", timeoutMs: 30_000 }
+    );
+    expect(infraApplySubmission.resourceName).toBe("scp-infra-apply-v1");
+    expect(infraApplySubmission.parameters).toMatchObject({
+      planDigest: infraPlanDigest,
+      planChangeObjectId: plan.id,
+      sourceRepo: INFRA_REPO,
+      sourceCommit: INFRA_COMMIT,
+      environment: INFRA_ENVIRONMENT,
+      changeObjectId: apply.id
+    });
+
+    argoOutputsOverride.set(infraApplySubmission.workflowName, {
+      [INFRA_PLAN_OUTPUT.digest]: infraPlanDigest,
+      [INFRA_PLAN_OUTPUT.add]: "0",
+      [INFRA_PLAN_OUTPUT.change]: "0",
+      [INFRA_PLAN_OUTPUT.destroy]: "0"
+    });
+
+    const appliedTarget = await waitUntil(
+      async () => {
+        const t = await waveTargetForChange(apply.id);
+        return t?.status === "succeeded" ? t : undefined;
+      },
+      { describe: "the infra apply wave target reaches succeeded", timeoutMs: 30_000 }
+    );
+    expect(appliedTarget.observed?.plan?.ref).toBe(infraPlanDigest);
+    await waitUntil(
+      async () => ((await admin.changes.get(apply.id)).state === "validating" ? true : undefined),
+      { describe: "the infra apply change reaches validating", timeoutMs: 30_000 }
+    );
+  }, 90_000);
+
   it("STANDING GATE — each lane's derivation was CALLED by reconcile during this run, and its OWN output is what reached the executor (delete any lane's reconcile wiring and this goes red)", () => {
     expect(
       buildLaneSpy,
@@ -624,6 +832,10 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
     expect(
       deployLaneSpy,
       "deployLaneTriggerParameters was never called — the deploy lane's reconcile wiring is missing"
+    ).toHaveBeenCalled();
+    expect(
+      infraLaneSpy,
+      "infraLaneTriggerParameters was never called — the infra lane's reconcile wiring is missing"
     ).toHaveBeenCalled();
 
     // Not merely called — the VALUE each derivation returned is what actually reached the plugin
@@ -665,20 +877,46 @@ describe("M28.5 — one estate exercises the build, host-ops and deployment lane
     expect(deployResultForProd!.parameters[AUTHORED_APPLICATION_PARAMETER]).toEqual(
       deployedAuthoredBody
     );
+
+    // Infra: the derivation's OWN output for the APPLY carries the same plan digest the loopback
+    // stand-in reported as evidence — the bound an approved plan is bound to.
+    expect(infraPlanSubmission, "fixture check: lane 4's plan must have run").toBeDefined();
+    expect(infraApplySubmission, "fixture check: lane 4's apply must have run").toBeDefined();
+    const infraApplyResult = infraLaneResults.find(
+      (r) =>
+        r?.kind === "trigger" &&
+        r.phase === "apply" &&
+        r.parameters["changeObjectId"] === infraApplySubmission!.parameters["changeObjectId"]
+    );
+    expect(
+      infraApplyResult,
+      "infraLaneTriggerParameters never derived this run's apply trigger"
+    ).toBeDefined();
+    expect(infraApplyResult!.kind).toBe("trigger");
+    if (infraApplyResult!.kind === "trigger") {
+      for (const [key, value] of Object.entries(infraApplyResult!.parameters)) {
+        expect(
+          infraApplySubmission!.parameters[key],
+          `submission carries derived infra key '${key}'`
+        ).toBe(value);
+      }
+      expect(infraApplyResult!.parameters["planDigest"]).toBe(infraPlanDigest);
+    }
   });
 
   // ============================================================================================
   // NOT COVERED BY THIS FILE, DELIBERATELY:
-  //   * LANE 4 (infrastructure plan -> approve -> apply, M28.3) — its PR (#415) is not yet merged
-  //     to main. It slots in here as a fourth `it()` following the same shape (propose against a
-  //     `deployment-target` carrying `properties.environment = "prod-us-east-1"`, an approval by a
-  //     non-proposer, then apply) plus a fourth spy on `infraLaneTriggerParameters`, once it lands.
   //   * Each lane's OWN edge cases (refusals, recipe overrides, template-tamper detection, replay/
-  //     single-use redemption probes, ADR-0008 driving-vs-authoring edge cases) — those are
-  //     `rpm-build-lane.integration.test.ts`, `ops-argo-lane.integration.test.ts` and
-  //     `argocd-authored-deployment.integration.test.ts`'s job, not this file's.
-  //   * A real counterparty for the rpm build or the ops host — `rpm-build-lane.integration.test.ts`
-  //     (Docker) and `ops-argo-run.e2e.integration.test.ts` (Docker + a real sshd) already prove
-  //     those; running them again here would only slow this file down for no new proof.
+  //     single-use redemption probes, ADR-0008 driving-vs-authoring edge cases, plan supersession,
+  //     re-apply no-op, source-allowlist mismatches) — those are `rpm-build-lane.integration.test.ts`,
+  //     `ops-argo-lane.integration.test.ts`, `argocd-authored-deployment.integration.test.ts` and
+  //     `infra-lane.integration.test.ts`'s job, not this file's.
+  //   * A real counterparty for the rpm build, the ops host, or the OpenTofu plan/apply —
+  //     `rpm-build-lane.integration.test.ts` (Docker), `ops-argo-run.e2e.integration.test.ts`
+  //     (Docker + a real sshd) and `infra-lane.integration.test.ts` (Docker + a real OpenTofu run)
+  //     already prove those; running them again here would only slow this file down for no new proof.
+  //   * Concurrent (as opposed to sequential) multi-lane reconcile ticks — the four lanes here run
+  //     one `it()` at a time against a shared reconcile loop, which proves coexistence (no lane's
+  //     wiring is torn down for another to run) but not simultaneity within one tick.
   // ============================================================================================
 });

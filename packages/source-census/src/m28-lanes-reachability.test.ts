@@ -8,12 +8,12 @@ import { stripComments } from "./ts.js";
 /**
  * THE STANDING GATE for M28's four executor lanes (M28.5) — one census enumerating every lane's
  * seam and asserting `reconcile.ts` — specifically, not merely "somewhere in production code" — is
- * still calling it. Each per-lane increment (M28.1/M28.2/M28.4) already has its own reachability
- * file (`build-lane-reachability.test.ts`, `host-reaching-reachability.test.ts`,
- * `deployment-authoring-reachability.test.ts`); this file is not a replacement for any of them —
- * it is the cross-cutting roll-up M28.5 asks for: ONE table naming all four lanes together, so a
- * change that silently drops one lane's call while leaving the others (and every per-lane census)
- * green is still caught here.
+ * still calling it. Each per-lane increment (M28.1/M28.2/M28.3/M28.4) already has its own
+ * reachability file (`build-lane-reachability.test.ts`, `host-reaching-reachability.test.ts`,
+ * `infra-lane-reachability.test.ts`, `deployment-authoring-reachability.test.ts`); this file is not
+ * a replacement for any of them — it is the cross-cutting roll-up M28.5 asks for: ONE table naming
+ * all four lanes together, so a change that silently drops one lane's call while leaving the others
+ * (and every per-lane census) green is still caught here.
  *
  * The behavioural half is `apps/server/src/coordination/m28-estate.integration.test.ts`, which
  * spies on each lane's exported derivation and shows it was CALLED, with a database and a real
@@ -29,8 +29,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../..");
 const RECONCILE = "apps/server/src/coordination/reconcile.ts";
 
-/** The four lanes' seams. `infraLaneTriggerParameters` (M28.3) is added once its PR merges — see
- *  the note at the bottom of this file; until then this census covers the three merged lanes. */
+/** All four lanes' seams. */
 const LANE_SEAMS: Record<string, { file: string; why: string }> = {
   buildLaneTriggerParameters: {
     file: "apps/server/src/coordination/build-trigger-parameters.ts",
@@ -50,6 +49,13 @@ const LANE_SEAMS: Record<string, { file: string; why: string }> = {
     why:
       "the deploy lane's only producer of the authored Application/Rollout (M28.4, ADR-0055); with " +
       "no caller, a component SCP did not import has no way to reach Argo CD at all"
+  },
+  infraLaneTriggerParameters: {
+    file: "apps/server/src/coordination/infra-lane-trigger-parameters.ts",
+    why:
+      "the infra lane's only producer of plan/apply parameters AND the apply gate (M28.3, " +
+      "ADR-0056); with no caller, the infrastructure Category reaches its executor with nothing " +
+      "and an apply can never be refused for lacking an approved plan"
   }
 };
 
@@ -141,11 +147,4 @@ describe("all four M28 executor lanes are INSTALLED into reconcile.ts, together,
       ).toContain(file);
     }
   });
-
-  // ============================================================================================
-  // NOT YET IN THIS TABLE: `infraLaneTriggerParameters` (M28.3, the infrastructure plan -> approve
-  // -> apply lane). Its PR (#415) is not yet merged to `main` as of this file's writing. Add a
-  // fourth entry to `LANE_SEAMS` — name, defining file, and why it is load-bearing — once it lands;
-  // every mechanism above already generalises to a fourth row with no other change.
-  // ============================================================================================
 });
