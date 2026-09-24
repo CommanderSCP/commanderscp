@@ -88,8 +88,16 @@ const PRODUCTION_SOURCES = trackedFiles(REPO_ROOT).filter(
  *  still counted, and the gate stayed green over exactly the "built, never installed" shape it
  *  exists to catch. `stripComments` is the repo's own reader (strings are preserved). */
 function readSource(file: string): string {
-  return stripComments(readFileSync(resolve(REPO_ROOT, file), "utf8"));
+  // MEMOISED. Every census name reads every production source; stripping each file once per name
+  // took this file to 75 s in CI and tripped vitest's worker RPC timeout (#414 CI).
+  let text = strippedSources.get(file);
+  if (text === undefined) {
+    text = stripComments(readFileSync(resolve(REPO_ROOT, file), "utf8"));
+    strippedSources.set(file, text);
+  }
+  return text;
 }
+const strippedSources = new Map<string, string>();
 
 /** Where each name is DEFINED — excluded when looking for callers, since a definition is not a use. */
 function definitionFiles(name: string): Set<string> {
