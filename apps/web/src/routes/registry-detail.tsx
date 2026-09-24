@@ -287,6 +287,10 @@ export function RegistryDetailPage(): React.JSX.Element {
         <MergeComponentCard survivorId={object.id} detailKey={detailKey} />
       )}
 
+      {object.typeId === "execution-system" && (
+        <SourceAllowlistCard systemId={object.id} detailKey={detailKey} />
+      )}
+
       {/* Owner decision 2026-08-18: yes, delete offered for every registry type. Confirm dialog +
           typed-name gate (destructive act); a 409 (container-delete guard, or a governance refusal)
           or a 403 renders the server's sentence verbatim and the dialog stays open — never an
@@ -522,6 +526,47 @@ function ComponentServiceCard({
               ? setServiceMutation.error.message
               : "Failed"}
           </Alert>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** An execution system's SOURCE-REPO ALLOWLIST (M28.3, ADR-0056 §7a): which repos may run with its
+ *  credentials. READ-ONLY here, deliberately — it is set with `secret:write` at the org root
+ *  (`scp execution-system source-allowlist set`), the permission that sets a secret, and this page is
+ *  reached by anyone who may read the object. */
+export function SourceAllowlistCard({
+  systemId,
+  detailKey
+}: {
+  systemId: string;
+  detailKey: unknown[];
+}): React.JSX.Element {
+  const allowlistQuery = useQuery({
+    queryKey: [...detailKey, "source-allowlist"],
+    queryFn: () => client.executors.getSourceAllowlist(systemId)
+  });
+  const repos = allowlistQuery.data?.repos ?? [];
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Source allowlist</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        {repos.length === 0 ? (
+          <p className="text-sm text-slate-500" data-testid="source-allowlist-empty">
+            No repos may run with this system's credentials. Set them with{" "}
+            <code>scp execution-system source-allowlist set</code> (requires secret:write).
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1" data-testid="source-allowlist">
+            {repos.map((r) => (
+              <li key={r} className="font-mono text-sm">
+                {r}
+              </li>
+            ))}
+          </ul>
         )}
       </CardContent>
     </Card>

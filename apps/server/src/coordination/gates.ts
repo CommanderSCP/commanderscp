@@ -268,13 +268,14 @@ export async function evaluateWaveGate(
   };
 }
 
-/** Who proposed a change — its `propose` transition Decision's actor. `undefined` when no such
- *  record exists (an imported change, a pruned Decision). */
-async function proposerOf(
+/** Who proposed a change — its `propose` transition Decision's actor AND, when a system path
+ *  proposed on a subject's behalf, the subject who declared it (`declarationActorId`, a change-source
+ *  report's reporter). `undefined` when no such record exists (an imported change, a pruned Decision). */
+async function proposersOf(
   tx: TenantTx,
   orgId: string,
   changeObjectId: string
-): Promise<string | undefined> {
+): Promise<string[] | undefined> {
   const [row] = await tx
     .select({ inputContext: decisions.inputContext })
     .from(decisions)
@@ -288,8 +289,11 @@ async function proposerOf(
     )
     .orderBy(asc(decisions.id))
     .limit(1);
-  const actor = (row?.inputContext as Record<string, unknown> | undefined)?.["actorId"];
-  return typeof actor === "string" ? actor : undefined;
+  const ctx = row?.inputContext as Record<string, unknown> | undefined;
+  const ids = [ctx?.["actorId"], ctx?.["declarationActorId"]].filter(
+    (v): v is string => typeof v === "string"
+  );
+  return ids.length > 0 ? ids : undefined;
 }
 
 /** THE SEPARATION-OF-DUTIES CHECK (ADR-0056 §1a). An infrastructure change that declares no apply is
@@ -321,8 +325,9 @@ async function infraPlanSeparationOfDuties(
     )
     .limit(1);
   if (!planned) return undefined;
-  const proposer = await proposerOf(tx, ctx.orgId, ctx.changeObjectId);
-  if (proposer !== undefined && proposer !== ctx.actorObjectId) return undefined;
+  const proposers = await proposersOf(tx, ctx.orgId, ctx.changeObjectId);
+  if (proposers !== undefined && !proposers.includes(ctx.actorObjectId)) return undefined;
+  const proposer = proposers?.[0];
   return {
     verdict: "block",
     inputContext: {
@@ -330,6 +335,7 @@ async function infraPlanSeparationOfDuties(
       toState: ctx.toState,
       gate: "infra_plan_separation_of_duties",
       proposerObjectId: proposer ?? null,
+      proposerObjectIds: proposers ?? [],
       acceptorObjectId: ctx.actorObjectId
     },
     reasonTree: {

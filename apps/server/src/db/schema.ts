@@ -2497,3 +2497,36 @@ export const sshCaEnrolments = pgTable(
     check("ssh_ca_enrolment_break_glass_present", sql`length(btrim(${t.breakGlass})) > 0`)
   ]
 );
+
+/**
+ * THE SOURCE-REPO ALLOWLIST OF AN EXECUTION SYSTEM (M28.3 re-verify, owner ruling R1 2026-09-24,
+ * ADR-0056 §7a). Which repositories may run WITH THAT SYSTEM'S CREDENTIALS — an infra plan runs the
+ * repo's providers and `data "external"`, a build runs its Dockerfile/spec and pushes the result.
+ *
+ * NOT a property on the `execution-system` object, deliberately: object properties are written with
+ * `object:write` through many doors (the object routes, coordination-as-code, federation
+ * replication), and a bound its own subject can rewrite is no bound. This row has ONE door —
+ * `secret:write` at the org root, the class that guards setting a secret and minting a CA — and it
+ * is never replicated.
+ */
+export const executionSystemSourceAllowlists = pgTable(
+  "execution_system_source_allowlists",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    executionSystemObjectId: uuid("execution_system_object_id")
+      .notNull()
+      .references(() => objects.id),
+    /** `owner/name`, or an `owner/*` glob. Empty = nothing may run with this system's credentials. */
+    repos: text("repos").array().notNull(),
+    /** Stamped server-side from the authenticated subject. */
+    recordedBySubjectId: uuid("recorded_by_subject_id").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("execution_system_source_allowlist_one_per_system").on(
+      t.orgId,
+      t.executionSystemObjectId
+    )
+  ]
+);

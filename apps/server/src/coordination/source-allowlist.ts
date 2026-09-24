@@ -1,0 +1,112 @@
+import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import type { TenantTx } from "../db/tenant-tx.js";
+import { executionSystemSourceAllowlists } from "../db/schema.js";
+import { globMatch } from "./glob-match.js";
+
+/**
+ * AN EXECUTION SYSTEM'S SOURCE-REPO ALLOWLIST (M28.3 re-verify, owner ruling R1, ADR-0056 §7a).
+ *
+ * The question a target's `infrastructureRepo` or a component's source mapping cannot answer on its
+ * own: MAY this repository run with THAT system's credentials? Both are written with `object:write`,
+ * so a subject who may re-declare the target could name their own repo and have it planned with the
+ * plan credentials (verification probe C2). The authority therefore lives with the credentials — on
+ * the execution system, behind `secret:write` at the org root — and a run needs BOTH: its repo in
+ * the system's allowlist AND matching what the target/component declares.
+ *
+ * An entry is `owner/name` or `owner/*`. A system with no row allows nothing; an INLINE binding has
+ * no system and so no allowlist, and these lanes refuse it.
+ */
+
+export const ALLOWLIST_ENTRY = /^[A-Za-z0-9._-]+\/([A-Za-z0-9._-]+|\*)$/;
+export const ALLOWLIST_MAX_ENTRIES = 200;
+
+export class SourceAllowlistInvalid extends Error {}
+
+export interface SourceAllowlist {
+  executionSystemObjectId: string;
+  repos: string[];
+  recordedBySubjectId: string;
+  updatedAt: Date;
+}
+
+/** Normalised (sorted, deduplicated) at the write door, so a stored list compares byte-for-byte. */
+export function validateSourceAllowlist(repos: readonly string[]): string[] {
+  if (repos.length > ALLOWLIST_MAX_ENTRIES) {
+    throw new SourceAllowlistInvalid(`at most ${ALLOWLIST_MAX_ENTRIES} entries`);
+  }
+  for (const r of repos) {
+    if (!ALLOWLIST_ENTRY.test(r)) {
+      throw new SourceAllowlistInvalid(`'${r}' is not 'owner/name' or 'owner/*'`);
+    }
+  }
+  return [...new Set(repos)].sort();
+}
+
+export async function putSourceAllowlist(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    executionSystemObjectId: string;
+    repos: readonly string[];
+    recordedBySubjectId: string;
+  }
+): Promise<SourceAllowlist> {
+  const repos = validateSourceAllowlist(input.repos);
+  const now = new Date();
+  const [row] = await tx
+    .insert(executionSystemSourceAllowlists)
+    .values({
+      id: randomUUID(),
+      orgId: input.orgId,
+      executionSystemObjectId: input.executionSystemObjectId,
+      repos,
+      recordedBySubjectId: input.recordedBySubjectId,
+      updatedAt: now
+    })
+    .onConflictDoUpdate({
+      target: [
+        executionSystemSourceAllowlists.orgId,
+        executionSystemSourceAllowlists.executionSystemObjectId
+      ],
+      set: { repos, recordedBySubjectId: input.recordedBySubjectId, updatedAt: now }
+    })
+    .returning();
+  if (!row) throw new Error("failed to record the source allowlist");
+  return {
+    executionSystemObjectId: row.executionSystemObjectId,
+    repos: row.repos,
+    recordedBySubjectId: row.recordedBySubjectId,
+    updatedAt: row.updatedAt
+  };
+}
+
+export async function getSourceAllowlist(
+  tx: TenantTx,
+  orgId: string,
+  executionSystemObjectId: string
+): Promise<SourceAllowlist | undefined> {
+  const [row] = await tx
+    .select()
+    .from(executionSystemSourceAllowlists)
+    .where(
+      and(
+        eq(executionSystemSourceAllowlists.orgId, orgId),
+        eq(executionSystemSourceAllowlists.executionSystemObjectId, executionSystemObjectId)
+      )
+    )
+    .limit(1);
+  if (!row) return undefined;
+  return {
+    executionSystemObjectId: row.executionSystemObjectId,
+    repos: row.repos,
+    recordedBySubjectId: row.recordedBySubjectId,
+    updatedAt: row.updatedAt
+  };
+}
+
+/** Is `repo` one the system allows? Exact, or an `owner/*` entry for its owner. */
+export function repoAllowedBy(allowlist: SourceAllowlist | undefined, repo: string): boolean {
+  if (!allowlist) return false;
+  return allowlist.repos.some((entry) => entry === repo || globMatch(entry, repo));
+}

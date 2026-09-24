@@ -41,3 +41,23 @@ export function infraApplyTemplateFor(planTemplate: string): string | null {
   const m = /^(.+)-plan(-v[0-9]+)?$/.exec(planTemplate);
   return m ? `${m[1]}-apply${m[2] ?? ""}` : null;
 }
+
+/** An execution system's SOURCE-REPO ALLOWLIST (owner ruling R1, 2026-09-24): which repositories
+ *  may run with that system's credentials. Written only with `secret:write` at the org root. */
+export const SourceAllowlistEntrySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9._-]+\/([A-Za-z0-9._-]+|\*)$/, "an entry is 'owner/name' or 'owner/*'");
+
+export const PutSourceAllowlistRequestSchema = z.strictObject({
+  repos: z.array(SourceAllowlistEntrySchema).max(200)
+});
+export type PutSourceAllowlistRequest = z.infer<typeof PutSourceAllowlistRequestSchema>;
+
+export const SourceAllowlistSchema = z.object({
+  executionSystemId: z.string().uuid(),
+  /** Sorted and deduplicated. Empty — or never set — means nothing may run with this system. */
+  repos: z.array(z.string()),
+  recordedBySubjectId: z.string().uuid().nullable(),
+  updatedAt: z.string().datetime().nullable()
+});
+export type SourceAllowlist = z.infer<typeof SourceAllowlistSchema>;

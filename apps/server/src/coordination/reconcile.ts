@@ -1724,6 +1724,10 @@ async function triggerWaveTarget(
       //
       // A ROLLBACK gets none of it: there is nothing to rebuild, and handing a rollback the
       // forward commit is how you rebuild the thing you are rolling back from.
+      // The binding, resolved ONCE for every lane below: the build and infra lanes need to know
+      // WHICH execution system (and so whose source allowlist) a run would use.
+      const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
+      const binding = resolution.binding;
       const sourceParameters = isRollback
         ? undefined
         : await buildLaneTriggerParameters(tx, {
@@ -1732,6 +1736,8 @@ async function triggerWaveTarget(
             type,
             sourceRef: change.sourceRef,
             changeObjectId: change.objectId,
+            pluginModule: executorModule,
+            executionSystemId: binding?.executionSystemId ?? null,
             // Read only to REFUSE a recipe that restates a derived destination (ADR-0053 §4a) —
             // the one narrowing of "the recipe wins" below.
             recipeParameters
@@ -1789,9 +1795,7 @@ async function triggerWaveTarget(
             }
           : undefined;
 
-      // The executor-specific target id. See docs/coordination.md §807.
-      const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
-      const binding = resolution.binding;
+      // The executor-specific target id (resolved above). See docs/coordination.md §807.
 
       // M28.4 (ADR-0055) — THE CREATE HALF OF IMPORT-OR-CREATE. A component that declares
       // `properties.deployment` and is bound to Argo CD gets an Application SCP authors, with the
@@ -1844,6 +1848,7 @@ async function triggerWaveTarget(
         pluginModule: executorModule,
         executorInstanceId: instanceId,
         externalRef: binding?.externalRef ?? null,
+        executionSystemId: binding?.executionSystemId ?? null,
         recipeParameterKeys: recipeParameters ? Object.keys(recipeParameters) : []
       }).catch(asRefusal);
       if (infra instanceof TriggerParameterRefusal) {

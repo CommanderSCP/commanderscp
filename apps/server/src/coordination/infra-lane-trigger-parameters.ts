@@ -15,7 +15,9 @@ import {
   decisions,
   objects
 } from "../db/schema.js";
+import { createHash } from "node:crypto";
 import { canonicalJson } from "../util/canonical-json.js";
+import { getSourceAllowlist, repoAllowedBy } from "./source-allowlist.js";
 import { insertDecision } from "./decisions-repo.js";
 import {
   TriggerParameterRefusal,
@@ -90,7 +92,11 @@ export const INFRA_APPLY_TRIGGER_GATE = "infra_apply_trigger";
 
 /** A plain name: what OpenTofu accepts as a workspace and the template re-checks. */
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
-const WORKSPACE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
+/** THE STATE WORKSPACE SHAPE: a lowercase RFC 1123 label of at most 63 characters. The strictest
+ *  backend sets the rule — `kubernetes` stores each workspace as a Secret labelled
+ *  `tfstateWorkspace=<workspace>`, and a label value is ≤ 63 characters — and every other backend
+ *  accepts it too. */
+export const STATE_WORKSPACE_SHAPE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const FULL_COMMIT = /^([0-9a-f]{40}|[0-9a-f]{64})$/;
 const REPO_SHAPE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -114,6 +120,9 @@ export interface InfraLaneInput {
   executorInstanceId: string;
   /** The binding's `externalRef` — for this lane, the PLAN template's name. */
   externalRef: string | null;
+  /** The binding's execution system. Its SOURCE ALLOWLIST decides which repos may run with its
+   *  credentials (owner ruling R1); an inline binding (`null`) has none, and is refused. */
+  executionSystemId?: string | null;
   /** The keys a campaign recipe (`properties.recipe.trigger.parameters`) would add to this trigger.
    *  Any of {@link INFRA_LANE_RESERVED_PARAMETERS} is refused: see below. */
   recipeParameterKeys?: readonly string[];
@@ -139,6 +148,21 @@ export const INFRA_LANE_RESERVED_PARAMETERS = [
   "targetObjectId"
 ] as const;
 
+/** The subset registered in the SERVER-WIDE table (`reserved-trigger-parameters.ts`, RESERVED_BY_LANE
+ *  "infra"), refused at the one recipe choke point before any lane runs. The source keys
+ *  (`sourceRepo`/`sourceCommit`/`sourceRef`) are conveniences for the build lane there, so the table
+ *  cannot reserve them globally; THIS lane still refuses a recipe naming them (above), and ignores
+ *  them anyway — the plan's source is the target's declared repo, the apply's is the plan's record. */
+export const INFRA_LANE_TABLE_RESERVED_KEYS = [
+  "environment",
+  "stateWorkspace",
+  "region",
+  "infraPath",
+  "planDigest",
+  "planChangeObjectId",
+  "targetObjectId"
+] as const;
+
 /** The parameters that say WHERE and WHAT a plan planned — what an apply must reuse verbatim. */
 const PLAN_SCOPE_KEYS = [
   "environment",
@@ -160,6 +184,9 @@ export type InfraLaneOutcome =
       templateRef: string;
       /** For a plan: the apply template its approval will be applied with, recorded now. */
       applyTemplateRef: string;
+      /** The execution system this runs on, as it is NOW — recorded with a plan, compared at apply:
+       *  an apply is refused if the system (or where it points) changed since the plan. */
+      executionSystem: ExecutionSystemIdentity;
       parameters: Record<string, unknown>;
     }
   | {
@@ -177,6 +204,38 @@ function readString(bag: unknown, key: string): string | undefined {
 }
 
 type Declaration = { phase: "plan" } | { phase: "apply"; planChangeObjectId: string };
+
+/** Which Argo a run goes to — the system object and where it points. */
+export interface ExecutionSystemIdentity {
+  id: string;
+  serverUrl: string;
+  namespace: string;
+}
+
+/** THE WORKSPACE NAME — derived, stable, and ≤ 63 lowercase characters. A readable slug of the
+ *  environment (and region) leads, so an operator browsing the backend sees `prod-us-east-1-…`; a
+ *  12-hex digest of org + target + region makes it unique per target, so two regions of one
+ *  environment, two targets named alike, or two orgs' `prod` on one operator backend never share
+ *  a state. Collisions of the digest are CHECKED, not assumed away (`assertWorkspaceUnclaimed`). */
+export function deriveStateWorkspace(input: {
+  orgId: string;
+  targetObjectId: string;
+  environment: string;
+  region: string;
+}): string {
+  const digest = createHash("sha256")
+    .update(`${input.orgId}\0${input.targetObjectId}\0${input.region}`)
+    .digest("hex")
+    .slice(0, 12);
+  const slug = (input.region ? `${input.environment}-${input.region}` : input.environment)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+/, "")
+    .slice(0, 63 - 1 - digest.length)
+    .replace(/-+$/, "");
+  return slug ? `${slug}-${digest}` : `ws-${digest}`;
+}
 
 function readDeclaration(properties: unknown): Declaration {
   const raw =
@@ -247,8 +306,13 @@ async function readPlace(tx: TenantTx, orgId: string, targetObjectId: string): P
   // can both call an environment `prod` — sharing a state between any of them would make one's
   // plan a plan to destroy the other's. The readable part leads so an operator browsing the backend
   // still sees `prod-us-east-1`.
-  const stateWorkspace = `${region ? `${environment}-${region}` : environment}--o${orgId}--t${targetObjectId}`;
-  if (!WORKSPACE_NAME.test(stateWorkspace)) {
+  const stateWorkspace = deriveStateWorkspace({
+    orgId,
+    targetObjectId,
+    environment,
+    region: region ?? ""
+  });
+  if (!STATE_WORKSPACE_SHAPE.test(stateWorkspace)) {
     throw new InfraDeclarationRefused(
       `the state workspace '${stateWorkspace}' derived for ${targetObjectId} is not a plain name.`,
       { inputContext: { gate: "infra_workspace_malformed", stateWorkspace } }
@@ -290,6 +354,98 @@ function readSource(sourceRef: unknown): { repo: string; commit: string; ref: st
   const commit = readString(sourceRef, "commit");
   if (!repo || !commit || !REPO_SHAPE.test(repo) || !FULL_COMMIT.test(commit)) return undefined;
   return { repo, commit, ref: readString(sourceRef, "ref") ?? "" };
+}
+
+/** The binding's execution system, as it is now — required: an inline binding has no allowlist. */
+async function readExecutionSystem(
+  tx: TenantTx,
+  input: InfraLaneInput
+): Promise<ExecutionSystemIdentity> {
+  const refuseNoSystem = (why: string): never => {
+    throw new InfraDeclarationRefused(
+      `this target's 'infrastructure' binding ${why}, so there is no source allowlist saying which ` +
+        `repos may run with its credentials.`,
+      {
+        remediation:
+          "bind the deployment-target's 'infrastructure' pipeline through an execution-system and set " +
+          "its source allowlist (scp execution-system source-allowlist set, secret:write)",
+        inputContext: {
+          gate: "infra_source_no_execution_system",
+          executionSystemId: input.executionSystemId ?? null
+        }
+      }
+    );
+  };
+  if (!input.executionSystemId) return refuseNoSystem("is inline — it names no execution system");
+  const [row] = await tx
+    .select({ typeId: objects.typeId, properties: objects.properties })
+    .from(objects)
+    .where(and(eq(objects.orgId, input.orgId), eq(objects.id, input.executionSystemId)))
+    .limit(1);
+  if (!row || row.typeId !== "execution-system") {
+    return refuseNoSystem(`names ${input.executionSystemId}, which is not an execution-system`);
+  }
+  return {
+    id: input.executionSystemId,
+    serverUrl: readString(row.properties, "serverUrl") ?? "",
+    namespace: readString(row.properties, "namespace") ?? ""
+  };
+}
+
+async function assertRepoAllowed(
+  tx: TenantTx,
+  input: InfraLaneInput,
+  system: ExecutionSystemIdentity,
+  repo: string,
+  refusal: typeof InfraDeclarationRefused | typeof InfraApplyRefused = InfraDeclarationRefused
+): Promise<void> {
+  const allowlist = await getSourceAllowlist(tx, input.orgId, system.id);
+  if (repoAllowedBy(allowlist, repo)) return;
+  throw new refusal(
+    `execution system ${system.id} does not allow '${repo}' to run with its credentials (its source ` +
+      `allowlist is [${(allowlist?.repos ?? []).join(", ")}]). The target may declare the repo; only ` +
+      `the system's allowlist lets it run there.`,
+    {
+      remediation:
+        "have someone with secret:write at the org root add the repo to the execution system's source " +
+        "allowlist, if it really may run with that system's credentials",
+      inputContext: {
+        gate: "infra_source_not_allowed",
+        repo,
+        executionSystemId: system.id,
+        allowedRepos: allowlist?.repos ?? []
+      }
+    }
+  );
+}
+
+/** A 12-hex digest can collide; if another target's plan already used this workspace, refuse rather
+ *  than share its state. */
+async function assertWorkspaceUnclaimed(
+  tx: TenantTx,
+  input: InfraLaneInput,
+  stateWorkspace: string
+): Promise<void> {
+  const [other] = await tx
+    .select({ inputContext: decisions.inputContext })
+    .from(decisions)
+    .where(
+      and(
+        eq(decisions.orgId, input.orgId),
+        eq(decisions.kind, "wave_target"),
+        sql`${decisions.inputContext} ->> 'gate' = ${INFRA_PLAN_TRIGGER_GATE}`,
+        sql`${decisions.inputContext} -> 'parameters' ->> 'stateWorkspace' = ${stateWorkspace}`,
+        sql`${decisions.inputContext} ->> 'targetObjectId' <> ${input.targetObjectId}`
+      )
+    )
+    .limit(1);
+  if (!other) return;
+  throw new InfraDeclarationRefused(
+    `the state workspace '${stateWorkspace}' derived for ${input.targetObjectId} is already another ` +
+      `target's (${String((other.inputContext as Record<string, unknown>)["targetObjectId"])}). Sharing ` +
+      `it would make one target's plan a plan to destroy the other's.`,
+    { inputContext: { gate: "infra_workspace_collision", stateWorkspace } }
+  );
 }
 
 export async function infraLaneTriggerParameters(
@@ -373,6 +529,7 @@ export async function infraLaneTriggerParameters(
     );
   }
 
+  const system = await readExecutionSystem(tx, input);
   const place = await readPlace(tx, input.orgId, input.targetObjectId);
 
   if (declaration.phase === "plan") {
@@ -389,6 +546,10 @@ export async function infraLaneTriggerParameters(
         }
       );
     }
+    // THE REPO'S AUTHORITY IS THE EXECUTION SYSTEM'S (owner ruling R1): its allowlist, written only
+    // with `secret:write`, is the half the target's own editor cannot move (probe C2 re-declared
+    // `infrastructureRepo` as an Operator and had its repo planned with the plan credentials).
+    await assertRepoAllowed(tx, input, system, place.declaredRepo);
     if (source.repo !== place.declaredRepo) {
       throw new InfraDeclarationRefused(
         `this plan asks for '${source.repo}', and deployment-target ${input.targetObjectId} declares ` +
@@ -404,29 +565,32 @@ export async function infraLaneTriggerParameters(
         }
       );
     }
+    await assertWorkspaceUnclaimed(tx, input, place.stateWorkspace);
+    // Built key by key, so `reserved-trigger-parameters.test.ts`'s census reads every one.
+    const params: Record<string, string> = { changeObjectId: input.changeObjectId };
+    params.targetObjectId = input.targetObjectId;
+    params.environment = place.environment;
+    params.stateWorkspace = place.stateWorkspace;
+    params.region = place.region;
+    params.infraPath = place.infraPath;
+    params.sourceRepo = source.repo;
+    params.sourceCommit = source.commit;
+    params.sourceRef = source.ref;
     return {
       kind: "trigger",
       phase: "plan",
       templateRef: planTemplate,
       applyTemplateRef: applyTemplate,
-      parameters: {
-        environment: place.environment,
-        stateWorkspace: place.stateWorkspace,
-        region: place.region,
-        infraPath: place.infraPath,
-        sourceRepo: source.repo,
-        sourceCommit: source.commit,
-        sourceRef: source.ref,
-        changeObjectId: input.changeObjectId,
-        targetObjectId: input.targetObjectId
-      }
+      executionSystem: system,
+      parameters: params
     };
   }
 
   return evaluateApplyGate(tx, input, {
     planChangeObjectId: declaration.planChangeObjectId,
     planTemplate,
-    place
+    place,
+    system
   });
 }
 
@@ -445,13 +609,19 @@ interface PlanTriggerRecord {
   templateRef: string;
   applyTemplateRef: string;
   executorPluginId: string;
+  executionSystem: ExecutionSystemIdentity;
   parameters: Record<string, string>;
 }
 
 async function evaluateApplyGate(
   tx: TenantTx,
   input: InfraLaneInput,
-  args: { planChangeObjectId: string; planTemplate: string; place: Place }
+  args: {
+    planChangeObjectId: string;
+    planTemplate: string;
+    place: Place;
+    system: ExecutionSystemIdentity;
+  }
 ): Promise<InfraLaneOutcome> {
   const { orgId, targetObjectId } = input;
   const { planChangeObjectId, place } = args;
@@ -577,7 +747,10 @@ async function evaluateApplyGate(
     region: place.region,
     infraPath: place.infraPath,
     sourceRepo: place.declaredRepo,
-    templateRef: args.planTemplate
+    templateRef: args.planTemplate,
+    executionSystemId: args.system.id,
+    executionSystemServerUrl: args.system.serverUrl,
+    executionSystemNamespace: args.system.namespace
   };
   const recorded: Record<string, string> = {
     environment: record.parameters["environment"] ?? "",
@@ -585,7 +758,10 @@ async function evaluateApplyGate(
     region: record.parameters["region"] ?? "",
     infraPath: record.parameters["infraPath"] ?? "",
     sourceRepo: record.parameters["sourceRepo"] ?? "",
-    templateRef: record.templateRef
+    templateRef: record.templateRef,
+    executionSystemId: record.executionSystem.id,
+    executionSystemServerUrl: record.executionSystem.serverUrl,
+    executionSystemNamespace: record.executionSystem.namespace
   };
   const changed = Object.keys(now).filter((k) => now[k] !== recorded[k]);
   if (changed.length > 0) {
@@ -603,6 +779,15 @@ async function evaluateApplyGate(
       }
     );
   }
+
+  // The repo must STILL be allowed: an allowlist narrowed since the plan withdraws the permission.
+  await assertRepoAllowed(
+    tx,
+    input,
+    args.system,
+    record.parameters["sourceRepo"] ?? "",
+    InfraApplyRefused
+  );
 
   // 4. SUPERSEDED — a newer plan has been DISPATCHED here since. Ordered by the plan-trigger
   // Decisions' time-ordered ids, which is dispatch order; row creation order is plan-compile order,
@@ -669,18 +854,18 @@ async function evaluateApplyGate(
 
   // THE PLAN'S OWN SUBMISSION, REUSED: the same workspace, directory, repo, commit — and the plan
   // template's recorded sibling, never whatever the binding names today.
+  const params: Record<string, string> = { changeObjectId: input.changeObjectId };
+  for (const k of PLAN_SCOPE_KEYS) params[k] = record.parameters[k] ?? "";
+  params.targetObjectId = targetObjectId;
+  params.planDigest = planDigest;
+  params.planChangeObjectId = planChangeObjectId;
   return {
     kind: "trigger",
     phase: "apply",
     templateRef: record.applyTemplateRef,
     applyTemplateRef: record.applyTemplateRef,
-    parameters: {
-      ...Object.fromEntries(PLAN_SCOPE_KEYS.map((k) => [k, record.parameters[k] ?? ""])),
-      planDigest,
-      planChangeObjectId,
-      changeObjectId: input.changeObjectId,
-      targetObjectId
-    }
+    executionSystem: args.system,
+    parameters: params
   };
 }
 
@@ -707,6 +892,7 @@ export async function recordInfraTrigger(
     executorPluginId: input.executorPluginId,
     templateRef: input.outcome.templateRef,
     applyTemplateRef: input.outcome.applyTemplateRef,
+    executionSystem: input.outcome.executionSystem,
     parameters: input.outcome.parameters
   };
   const [latest] = await tx
@@ -761,6 +947,15 @@ async function latestPlanTriggerRecord(
   if (!row) return undefined;
   const ctx = row.inputContext as Record<string, unknown>;
   const params = ctx["parameters"];
+  const sys = ctx["executionSystem"] as Partial<ExecutionSystemIdentity> | undefined;
+  if (
+    !sys ||
+    typeof sys.id !== "string" ||
+    typeof sys.serverUrl !== "string" ||
+    typeof sys.namespace !== "string"
+  ) {
+    return undefined;
+  }
   if (
     typeof ctx["templateRef"] !== "string" ||
     typeof ctx["applyTemplateRef"] !== "string" ||
@@ -775,6 +970,7 @@ async function latestPlanTriggerRecord(
     templateRef: ctx["templateRef"],
     applyTemplateRef: ctx["applyTemplateRef"],
     executorPluginId: ctx["executorPluginId"],
+    executionSystem: { id: sys.id, serverUrl: sys.serverUrl, namespace: sys.namespace },
     parameters: Object.fromEntries(
       Object.entries(params as Record<string, unknown>).map(([k, v]) => [k, String(v)])
     )

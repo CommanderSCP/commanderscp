@@ -8,12 +8,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  *  target's plan evidence. A helper test stays green when the command stops calling it. */
 
 const proposeCalls: Record<string, unknown>[] = [];
+const allowlistCalls: { system: string; repos: string[] }[] = [];
 const PLAN_ID = "01a0d160-9479-7769-91ea-d3c1cf6dd393";
 const DIGEST = "7c1e".padEnd(64, "0");
 
 vi.mock("@scp/sdk", () => {
   class ScpApiError extends Error {}
   class ScpClient {
+    executors = {
+      putSourceAllowlist: async (system: string, repos: string[]) => {
+        allowlistCalls.push({ system, repos });
+        return { executionSystemId: system, repos, recordedBySubjectId: null, updatedAt: null };
+      },
+      getSourceAllowlist: async (system: string) => ({
+        executionSystemId: system,
+        repos: ["acme/infra", "acme/*"],
+        recordedBySubjectId: null,
+        updatedAt: null
+      })
+    };
     changes = {
       propose: async (body: Record<string, unknown>) => {
         proposeCalls.push(body);
@@ -73,6 +86,7 @@ async function run(args: string[]): Promise<void> {
 
 beforeEach(async () => {
   proposeCalls.length = 0;
+  allowlistCalls.length = 0;
   logged = [];
   configDir = await mkdtemp(path.join(tmpdir(), "scp-infra-cli-"));
   process.env.SCP_CONFIG_DIR = configDir;
@@ -147,5 +161,31 @@ describe("scp change explain (wire)", () => {
       "prod-us-east-1: succeeded — plan 7c1e00000000 · 2 add / 0 change / 1 destroy"
     );
     expect(out).toMatch(/gamma: succeeded$/m);
+  });
+});
+
+describe("scp execution-system source-allowlist (wire)", () => {
+  it("set sends every --repo to the system's allowlist", async () => {
+    await run([
+      "execution-system",
+      "source-allowlist",
+      "set",
+      "argo-prod",
+      "--repo",
+      "acme/infra",
+      "--repo",
+      "acme/*"
+    ]);
+    expect(allowlistCalls).toEqual([{ system: "argo-prod", repos: ["acme/infra", "acme/*"] }]);
+  });
+
+  it("set with no --repo clears it (nothing may run)", async () => {
+    await run(["execution-system", "source-allowlist", "set", "argo-prod"]);
+    expect(allowlistCalls).toEqual([{ system: "argo-prod", repos: [] }]);
+  });
+
+  it("get prints each allowed repo", async () => {
+    await run(["execution-system", "source-allowlist", "get", "argo-prod"]);
+    expect(logged).toEqual(["acme/infra", "acme/*"]);
   });
 });

@@ -29,10 +29,12 @@
 # THE STATE BACKEND IS THE OPERATOR'S (D2, the ADR-0049 precedent): `SCP_STATE_BACKEND_TYPE` and
 # the non-secret `SCP_BACKEND_CONFIG_FILE` come from chart values, any backend credential from the
 # operator's own Secret. The org's configuration does not get to choose where state lives: a
-# directory carrying its own override file, `backend` block or `cloud` block is REFUSED (an org
-# `zz_override.tf` would otherwise beat this script's override — measured), and this script's
-# override supplies the operator's backend, because a config with no backend would otherwise keep
-# its state in this pod's emptyDir and lose it when the pod exits.
+# directory carrying ANY override file of its own (`.tf`, `.tf.json`, `.tofu`, `.tofu.json`) is
+# REFUSED — an org `zz_override.tf` or `zz_override.tofu` would otherwise beat this script's
+# override (measured) — so this script's override is the only one, replaces whatever `backend` or
+# `cloud` block a normal file declares, and OpenTofu's own record of the configured backend is
+# checked after init. Without an override, a config with no backend would keep its state in this
+# pod's emptyDir and lose it when the pod exits.
 #
 # Never `set -x`: argv carries nothing secret, but provider credentials are in the environment and a
 # tracing habit is how that changes by accident.
@@ -63,7 +65,9 @@ esac
 # The same shape SCP validates before it triggers — checked again here because this script is also
 # runnable by anything that can submit the template.
 name_shape='^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$'
-workspace_shape='^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$'
+# A lowercase RFC 1123 label of at most 63 characters: the `kubernetes` backend labels each
+# workspace's Secret `tfstateWorkspace=<workspace>`, and a label value is at most 63 characters.
+workspace_shape='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
 [[ "$environment" =~ $name_shape ]] || refuse "environment '$environment' is not a plain name"
 [[ "$workspace" =~ $workspace_shape ]] || refuse "state workspace '$workspace' is not a plain name"
 [[ "$repo" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$ ]] || refuse "sourceRepo '$repo' is not owner/name"
@@ -104,23 +108,17 @@ echo "scp-infra: fetched $fetched from $repo"
 cd "$work/src/$infra_path" 2>/dev/null || refuse "no directory '$infra_path' in $repo at $commit"
 compgen -G '*.tf' >/dev/null || refuse "no .tf files in '$infra_path' of $repo at $commit"
 
-# THE BACKEND IS NOT THE REPOSITORY'S TO CHOOSE. OpenTofu merges override files in lexical order and
-# the LAST one wins, so an org `zz_override.tf` beats this script's own override (measured) — and a
-# `cloud` block or a backend declared in JSON is another way to move state. So none may be present:
-# the directory is refused rather than "corrected", because an author who wrote one meant something.
+# THE BACKEND IS NOT THE REPOSITORY'S TO CHOOSE. OpenTofu merges OVERRIDE files in lexical order
+# and the last one wins, and it reads `.tofu` and `.tofu.json` as well as `.tf`/`.tf.json` — so an
+# org `zz_override.tf`, or `zz_override.tofu`, beats an override of ours (both measured). So NO
+# override file may be present, in any of the four spellings; the directory is refused rather than
+# "corrected", because an author who wrote one meant something. With ours the ONLY override, it
+# replaces any `backend` or `cloud` block a NORMAL file declares, however that block is written
+# (comments, JSON, `.tofu`) — no text-matching of HCL is needed, and after init OpenTofu's own
+# record of the backend it configured is checked (step 2).
 shopt -s nullglob
-for f in [o]verride.tf [o]verride.tf.json *_override.tf *_override.tf.json; do
+for f in *override.tf *override.tf.json *override.tofu *override.tofu.json; do
   refuse "'$infra_path/$f' is an override file. The state backend is the operator's setting, and an override in the repository can replace it — remove it (a backend belongs in chart values, not in the repo)"
-done
-for f in *.tf; do
-  if grep -Eq '^[[:space:]]*(backend[[:space:]]+"|cloud[[:space:]]*\{)' "$f"; then
-    refuse "'$infra_path/$f' declares a backend or cloud block. The state backend is the operator's setting (catalog.infra.stateBackend) — remove the block"
-  fi
-done
-for f in *.tf.json; do
-  if jq -e '.. | objects | (has("backend") or has("cloud"))' "$f" >/dev/null 2>&1; then
-    refuse "'$infra_path/$f' declares a backend or cloud block. The state backend is the operator's setting — remove it"
-  fi
 done
 shopt -u nullglob
 
@@ -131,6 +129,12 @@ if [ -n "${SCP_BACKEND_CONFIG_FILE:-}" ] && [ -s "$SCP_BACKEND_CONFIG_FILE" ]; t
   init_args+=("-backend-config=$SCP_BACKEND_CONFIG_FILE")
 fi
 tofu init "${init_args[@]}"
+# OPENTOFU'S OWN ANSWER to "which backend did you configure", not a parse of ours: the backend state
+# `init` records. Anything but the operator's type means something other than our override won.
+effective="$(jq -r '.backend.type // empty' .terraform/terraform.tfstate 2>/dev/null || true)"
+[ "$effective" = "$SCP_STATE_BACKEND_TYPE" ] ||
+  refuse "OpenTofu configured backend '${effective:-none}', not the operator's '$SCP_STATE_BACKEND_TYPE' — refusing to plan against state the operator did not choose"
+echo "scp-infra: state backend in effect: $effective"
 tofu workspace select -or-create=true "$workspace"
 export TF_VAR_environment="$environment"
 

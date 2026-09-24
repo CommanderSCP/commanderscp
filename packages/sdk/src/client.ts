@@ -303,6 +303,8 @@ import {
   listNotificationBindings as listNotificationBindingsRequest,
   deleteNotificationBinding as deleteNotificationBindingRequest,
   putSecret as putSecretRequest,
+  putExecutionSystemSourceAllowlist as putExecutionSystemSourceAllowlistRequest,
+  getExecutionSystemSourceAllowlist as getExecutionSystemSourceAllowlistRequest,
   listSecretKeys as listSecretKeysRequest,
   deleteSecret as deleteSecretRequest,
   listPluginManifests as listPluginManifestsRequest,
@@ -2505,6 +2507,23 @@ export class ScpClient {
   // M7: Real Executor Integrations. See docs/sdk.md §48.
 
   readonly executors = {
+    /** An execution system's SOURCE-REPO ALLOWLIST (M28.3, ADR-0056 §7a): which repos may run with
+     *  its credentials. Replaces the whole list; needs `secret:write` at the org root. */
+    putSourceAllowlist: async (executionSystemIdOrUrn: string, repos: string[]) => {
+      const result = await putExecutionSystemSourceAllowlistRequest({
+        client: this.client,
+        path: { idOrUrn: executionSystemIdOrUrn },
+        body: { repos }
+      });
+      return unwrap(result);
+    },
+    getSourceAllowlist: async (executionSystemIdOrUrn: string) => {
+      const result = await getExecutionSystemSourceAllowlistRequest({
+        client: this.client,
+        path: { idOrUrn: executionSystemIdOrUrn }
+      });
+      return unwrap(result);
+    },
     putBinding: async (
       idOrUrn: string,
       req: CreateExecutorBindingRequest

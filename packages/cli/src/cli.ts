@@ -6374,6 +6374,48 @@ export function buildProgram(): Command {
     .command("secret")
     .description("Manage encrypted org secrets (write-only — never readable back)");
 
+  // M28.3 (ADR-0056 §7a, owner ruling R1) — which source repos may run with an execution system's
+  // credentials. Beside `secret`, and behind the same permission, because it bounds what runs WITH
+  // the secrets.
+  const sourceAllowlistCmd = program
+    .command("execution-system")
+    .description("Execution-system settings that bound what runs with its credentials")
+    .command("source-allowlist")
+    .description(
+      "Which source repos may run with an execution system's credentials (an infra plan/apply, a build)"
+    );
+
+  sourceAllowlistCmd
+    .command("set <executionSystem>")
+    .description(
+      "Replace the allowlist (secret:write at the org root). Each --repo is 'owner/name' or 'owner/*'; " +
+        "none clears it, so nothing may run"
+    )
+    .option("--repo <repo...>", "an allowed repo, repeatable", [])
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (system: string, opts: BaseCliOpts & { repo: string[] }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.executors.putSourceAllowlist(system, opts.repo);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
+    });
+
+  sourceAllowlistCmd
+    .command("get <executionSystem>")
+    .description("Show the allowlist (empty = nothing may run with this system's credentials)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (system: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.executors.getSourceAllowlist(system);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      if (result.repos.length === 0) console.log("(none — nothing may run with this system)");
+      for (const repo of result.repos) console.log(repo);
+    });
+
   secretCmd
     .command("put <key>")
     .description("Store (or rotate) an encrypted secret value by key")

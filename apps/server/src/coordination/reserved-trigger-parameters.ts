@@ -1,9 +1,10 @@
-import { DESTINATION_FORMAT_OF_TYPE, type ExecutorType } from "@scp/schemas";
+import { categoryOfType, DESTINATION_FORMAT_OF_TYPE, type ExecutorType } from "@scp/schemas";
 import {
   BUILD_DESTINATION_PARAMETER_KEYS,
   BuildDestinationRefused
 } from "./build-trigger-parameters.js";
 import { AUTHORED_APPLICATION_PARAMETER } from "./deploy-lane-trigger-parameters.js";
+import { INFRA_LANE_TABLE_RESERVED_KEYS } from "./infra-lane-trigger-parameters.js";
 import {
   TriggerParameterRefusal,
   WAVE_TARGET_RECIPE_RESERVED_PARAMETER_AUDIT_ACTION,
@@ -61,6 +62,13 @@ export const RESERVED_BY_LANE: Readonly<Record<string, ReservedLane>> = {
     keys: BUILD_DESTINATION_PARAMETER_KEYS,
     appliesTo: (type) =>
       (DESTINATION_FORMAT_OF_TYPE as Partial<Record<ExecutorType, unknown>>)[type] != null
+  },
+  infra: {
+    why:
+      "where an infrastructure plan or apply runs — its environment, state workspace and directory — " +
+      "and the approved plan an apply is bound to (ADR-0056 §6)",
+    keys: INFRA_LANE_TABLE_RESERVED_KEYS,
+    appliesTo: (type) => categoryOfType(type) === "infrastructure"
   },
   "build-identity": {
     why: "the change identity the executor reports back under",

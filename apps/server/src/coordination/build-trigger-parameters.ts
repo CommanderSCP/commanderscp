@@ -11,7 +11,7 @@ import { and, eq } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, sourceMappings } from "../db/schema.js";
 import { registryForComponent } from "./component-pipeline.js";
-import { insertDecision } from "./decisions-repo.js";
+import { getSourceAllowlist, repoAllowedBy } from "./source-allowlist.js";
 import { globMatch } from "./glob-match.js";
 import {
   TriggerParameterRefusal,
@@ -59,6 +59,12 @@ export interface BuildTriggerParameterInput {
   /** The campaign recipe's `trigger.parameters`, when the change carries one. Read ONLY to refuse a
    *  recipe that restates a destination key (ADR-0053 §4a); the merge itself stays in reconcile. */
   recipeParameters?: Record<string, unknown> | undefined;
+  /** The module the binding resolved to. The fake executor runs nothing, so it is the one module
+   *  whose source is not checked. */
+  pluginModule?: string | null;
+  /** The binding's execution system — whose SOURCE ALLOWLIST says which repos may run with its
+   *  credentials (owner ruling R1). `null` = an inline binding, which has no allowlist. */
+  executionSystemId?: string | null;
 }
 
 /** EVERY KEY `destinationParameters` CAN EMIT — the build lane's server-derived destination.
@@ -171,14 +177,17 @@ export class BuildSourceRefused extends TriggerParameterRefusal {
   readonly action = WAVE_TARGET_SOURCE_REFUSED_AUDIT_ACTION;
 }
 
-/** A component's DECLARED sources for one Type are its source mappings of that Type: the same rows
- *  that route a push to it (`correlation.ts`), matched the same way — a glob on the repo, a NULL
- *  pattern meaning every repo. Disabled rows still declare: a paused source is still the component's.
+/** WHOSE CODE IS BUILT (M28.3 verification; owner rulings R1 + R2, 2026-09-24; ADR-0053 addendum).
  *
- *  A component with NO mapping for this Type has declared nothing, and that is where the live
- *  estate is today (API-proposed builds with a hand-supplied sourceRef). Refusing them would stop
- *  builds that work, so that case is a `warn` Decision naming the undeclared repo and the build
- *  proceeds — an owner question recorded in ADR-0053's addendum, not a silent pass. */
+ *  A build runs the repo's own Dockerfile or spec and pushes the result with the executor's
+ *  credentials, so a repo runs only if BOTH:
+ *   1. the binding's EXECUTION SYSTEM allows it — its source allowlist, written only with
+ *      `secret:write` at the org root (`source-allowlist.ts`). An inline binding has no system and
+ *      no allowlist: refused. This is the half a component's own editor cannot move;
+ *   2. the COMPONENT declares it — a source mapping of this Type, matched as `correlation.ts` matches
+ *      a push (a glob on the repo, NULL = every repo; a disabled row still declares). NO mapping of
+ *      this Type is refused too (R2) — "the proposer said so" is not a declaration.
+ *  The fake executor runs nothing and is not checked. */
 async function assertSourceIsDeclared(
   tx: TenantTx,
   input: BuildTriggerParameterInput,
@@ -187,6 +196,40 @@ async function assertSourceIsDeclared(
 ): Promise<void> {
   const repos = [...new Set(candidates.filter((r): r is string => r !== undefined))];
   if (repos.length === 0) return;
+  if (input.pluginModule === "fake-executor") return;
+  const base = { type, requestedRepos: repos, executionSystemId: input.executionSystemId ?? null };
+  if (!input.executionSystemId) {
+    throw new BuildSourceRefused(
+      `refusing to build ${repos.map((r) => `'${r}'`).join(", ")}: this component's '${type}' ` +
+        `binding names no execution system, so there is no source allowlist saying which repos may ` +
+        `run with its credentials.`,
+      {
+        remediation:
+          "bind the component through an execution-system and set that system's source allowlist " +
+          "(scp execution-system source-allowlist set, secret:write)",
+        inputContext: { gate: "build_source_no_execution_system", ...base }
+      }
+    );
+  }
+  const allowlist = await getSourceAllowlist(tx, input.orgId, input.executionSystemId);
+  const notAllowed = repos.filter((r) => !repoAllowedBy(allowlist, r));
+  if (notAllowed.length > 0) {
+    throw new BuildSourceRefused(
+      `refusing to build ${notAllowed.map((r) => `'${r}'`).join(", ")}: execution system ` +
+        `${input.executionSystemId} does not allow ${notAllowed.length === 1 ? "that repo" : "those repos"} ` +
+        `to run with its credentials (its source allowlist is [${(allowlist?.repos ?? []).join(", ")}]).`,
+      {
+        remediation:
+          "add the repo to the execution system's source allowlist (secret:write at the org root) " +
+          "if it really may run there",
+        inputContext: {
+          gate: "build_source_not_allowed",
+          ...base,
+          allowedRepos: allowlist?.repos ?? []
+        }
+      }
+    );
+  }
   const rows = await tx
     .select({ repoPattern: sourceMappings.repoPattern })
     .from(sourceMappings)
@@ -199,25 +242,19 @@ async function assertSourceIsDeclared(
     );
   const inputContext = {
     gate: "build_source_declared",
-    type,
-    requestedRepos: repos,
+    ...base,
     declaredRepoPatterns: rows.map((r) => r.repoPattern)
   };
   if (rows.length === 0) {
-    await insertDecision(tx, {
-      orgId: input.orgId,
-      kind: "wave_target",
-      subjectId: input.changeObjectId,
-      verdict: "warn",
-      inputContext: { ...inputContext, gate: "build_source_undeclared" },
-      reasonTree: {
-        summary:
-          `building ${repos.join(", ")} for component ${input.targetObjectId}, which declares no ` +
-          `'${type}' source mapping — the repo is the proposer's word alone`,
-        remediation: `declare this component's '${type}' source with a source mapping`
+    throw new BuildSourceRefused(
+      `refusing to build ${repos.map((r) => `'${r}'`).join(", ")}: component ` +
+        `${input.targetObjectId} declares no '${type}' source mapping, so nothing says this repo is ` +
+        `its source — only the proposer.`,
+      {
+        remediation: `declare this component's '${type}' source with a source mapping`,
+        inputContext: { ...inputContext, gate: "build_source_undeclared" }
       }
-    });
-    return;
+    );
   }
   const undeclared = repos.filter(
     (r) => !rows.some((row) => row.repoPattern === null || globMatch(row.repoPattern, r))
@@ -227,7 +264,7 @@ async function assertSourceIsDeclared(
       `refusing to build ${undeclared.map((r) => `'${r}'`).join(", ")} for this '${type}' ` +
         `component: its declared sources are ${rows.map((r) => `'${r.repoPattern}'`).join(", ")}. ` +
         `The build runs that repository's own build definition and pushes the result with the ` +
-        `operator's credentials, so it builds only what the component declares.`,
+        `executor's credentials, so it builds only what the component declares.`,
       {
         remediation:
           "propose the build from a repo the component's source mappings name, or add a source " +
