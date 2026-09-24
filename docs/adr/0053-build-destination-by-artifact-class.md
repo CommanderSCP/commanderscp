@@ -134,3 +134,23 @@ Gitea takes one identity); SCP holds none.
   destination keys (§4a), which it may not name at all for an `image` or `rpm` target.
 - Registering an RPM destination is data only: add `rpm` to the registry's `packageFormats` and
   point the component's `publishes_to` edge at it with `repository: owner[/group]`.
+
+## Addendum (2026-09-24, M28.3 verification) — the build builds only a DECLARED source
+
+The adversarial verification of PR #415 found the infrastructure lane running whatever repo a
+proposer named with the operator's credentials; census by property found the build lane has the same
+property. `buildLaneTriggerParameters` passed `sourceRef.repo` straight through, and the build
+template runs that repo's own Dockerfile or spec and pushes the result with the operator's push
+credentials — a proposer could publish any repository under a component's name.
+
+**The repo is now checked against the component's declared sources for the build's Type**: its
+`source_mappings` rows of that Type (the same rows that route a push to it, matched the same way —
+a glob on the repo, a NULL pattern meaning every repo; disabled rows still declare). A repo — the
+change's `sourceRef.repo` or a recipe's `sourceRepo`, which wins the merge in reconcile — that no
+row matches is refused, terminal, `source_refused` with a Decision (`BuildSourceRefused`).
+
+**A component with NO source mapping of that Type proceeds, with a `warn` Decision**
+(`build_source_undeclared`, naming the repo). That is the live estate's shape today for API-proposed
+builds, and strict refusal would stop builds that work. It is an **open owner question**: make the
+undeclared case a refusal (every build component then needs a source mapping of its Type), or keep
+the warning.

@@ -51,8 +51,13 @@ scripts/scp-bundled.sh enable argo-workflows \
 **The infrastructure templates (`scp-infra-plan-v1` / `scp-infra-apply-v1`, ADR-0056) render only
 once you name a state backend** — that is the switch, because they must never run with nowhere real
 to keep state. The backend is yours (a deployment-level setting, never tenant data SCP holds); each
-environment gets its own workspace in it. Credentials go in a Secret you create in the Argo
-namespace (`catalog.infra.credentialsSecret`, every key becomes an env var) — SCP never reads it.
+deployment-target gets its own workspace in it, and a repository carrying its own override file,
+`backend` or `cloud` block is refused. Credentials go in TWO Secrets you create in the Argo
+namespace, one per phase (every key becomes an env var; SCP never reads either):
+`scp-infra-plan-credentials` — **read-only** for the cloud, because a plan runs the repository's own
+code before anyone approves it — and `scp-infra-apply-credentials`, which only an approved apply
+reaches. Each phase also runs as its own ServiceAccount (`scp-infra-plan` / `scp-infra-apply`) for
+workload identity.
 
 ```bash
 scripts/scp-bundled.sh enable argo-workflows \
@@ -63,8 +68,10 @@ scripts/scp-bundled.sh enable argo-workflows \
 ```
 
 The air-gap `install.sh` sets the image (it is `scp-runner-iac`, already in the bundle); the backend
-is always yours to name. Then bind a deployment-target's `infrastructure` pipeline to
-`scp-infra-plan-v1`, propose a plan pinned to a commit, accept it, and apply it with
+is always yours to name. Then give a deployment-target `properties.environment` and
+`properties.infrastructureRepo` (the one repo its infrastructure comes from), bind its
+`infrastructure` pipeline to `scp-infra-plan-v1`, propose a plan pinned to a commit of that repo,
+have someone OTHER than its proposer accept it, and apply it with
 `scp change propose --apply-plan <plan change id>`.
 
 **Air-gap:** you don't run this directly — the signed bundle's `install.sh` calls it for every backend

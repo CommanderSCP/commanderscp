@@ -46,122 +46,173 @@ approval quorum bound to that edge. An APPLY is a second change declaring
 This reuses the approval model rather than building a parallel one, and that was the requirement.
 The alternative — one change that pauses between a plan wave and an apply wave — needs a new
 mid-execution approval primitive with its own roles, votes and Decision shape; it would be a second
-approval system beside the first.
+approval system beside the first. (Owner ruling 2026-09-24: keep the two-change shape.)
+
+**1a. Separation of duties, by default.** Accepting an infrastructure PLAN change (Type
+`infrastructure`, no apply declaration) is refused when the acceptor is the change's proposer — read
+from the change's `propose` transition Decision — or when no proposer is recorded
+(`infra_plan_separation_of_duties`, `gates.ts`, ahead of governance on the `validating → accepted`
+edge). "An approved plan" must mean someone other than the person who wanted it approved it. It is
+not an opt-in policy: it is what this acceptance means. There was no existing proposer-≠-acceptor
+mechanism to reuse (quorum policies count votes, not who proposed), so this is the narrowest check
+at the one edge that approves.
 
 **2. The apply gate is enforced by the server, before `trigger()`, in the claim transaction.**
-`infraLaneTriggerParameters` (the `infraLaneTriggerParameters` seam D2 named) refuses — terminal,
-Decision + hash-chained audit, `infra_apply_refused` — unless:
+`infraLaneTriggerParameters` (the seam D2 named) refuses — terminal, Decision + hash-chained audit,
+`infra_apply_refused` — unless:
 
 - the named plan change exists, is a plan (not an apply, not a rollback) and is **`accepted`**;
 - it has a **succeeded** plan at *this* target, run by the **same executor instance** that would
-  apply it, with a sha256 **digest**;
-- **no newer plan** has been dispatched at this target since — a plan approved and then superseded
-  cannot be applied (the newest plan is what reflects the configuration now);
+  apply it, with a sha256 **digest** and a **recorded submission** (below);
+- the target's place (`environment`, `region`, workspace, `infrastructurePath`,
+  `infrastructureRepo`) and its binding's plan template **still match what the plan recorded**
+  (`infra_plan_scope_changed` otherwise — verification probes A and B);
+- **no newer plan** has been dispatched at this target since, in DISPATCH order — the time-ordered
+  ids of the plan-trigger Decisions, not wave-target creation order;
 - no other apply of this plan is **in flight**. Apply decisions for one target are serialised by a
   transaction-scoped advisory lock, so two workers cannot both see the other's claim as absent.
 
+**What a plan submitted is recorded, and the apply reuses it — never re-derives it.** Every
+plan (and apply) trigger writes an append-only `infra_plan_trigger` Decision in the claim transaction
+carrying the exact template, the plan template's `-apply` sibling, the executor instance and every
+parameter sent (`recordInfraTrigger`). The apply is built from that record: the same workspace,
+directory, repo, commit, and the RECORDED apply template — never whatever the binding names today.
+Re-deriving at apply time is how an approval of workspace `…-r1` became an apply into `…-r2` with the
+old digest (probe A, measured `applied:true` against real tofu before this fix).
+
 If an apply of this plan has already **succeeded** at this target, the new apply is a **no-op**:
 the wave target succeeds, nothing is triggered, and an `allow` Decision (`infra_apply_noop`, naming
-the change that did apply it) and an audit event record why. Failing it would make an idempotent
-retry of a successful apply look like a broken one.
+the change that did apply it) and an audit event record why.
 
-**3. The apply is bound to the plan by digest, and the template re-plans rather than storing a plan.**
-The digest is sha256 over the plan's **change set** — `resource_changes` and `output_changes` of
-`tofu show -json`, keys sorted by jq — never the whole document, which carries a timestamp. Two plans
-with the same digest make the same changes, before and after values included. The server carries
-the approved digest into `scp-infra-apply-v1` as `planDigest`, with the PLAN change's source (not the
-apply change's). The template re-plans at that commit against the same state and:
+A change that DECLARES an apply on a target whose pipeline is not this lane (managed-iac, the
+default executor, any other module) is **refused** (`infra_apply_lane_absent`), never silently run as
+that executor's default action.
 
-- nothing to do (`tofu plan -detailed-exitcode` = 0) → **no-op success** — applying nothing cannot
-  exceed what was approved, and it is what a re-apply of an applied plan looks like from there;
-- digest ≠ approved → **refuses** (exit 3): state or inputs changed since approval;
+**3. The apply is bound to the plan by digest, and the digest covers the plan's PLACE.** The digest
+is sha256 over the plan's change set — `resource_changes` and `output_changes` of `tofu show -json`,
+keys sorted by jq — AND its scope: environment, workspace, repo, commit, directory, and the
+backend's type + a sha256 of its settings file. Never the whole document, which carries a
+timestamp. Two plans with one digest make the same changes in the same state. The template re-plans
+at the recorded commit, in the recorded workspace, and:
+
+- nothing to do (`tofu plan -detailed-exitcode` = 0) → **no-op success**;
+- digest ≠ approved → **refuses** (exit 3): state, inputs or place changed since approval;
 - digest = approved → applies that plan file.
 
-Measured, not assumed (`infra-lane.integration.test.ts`, real `scp-runner-iac` image): two plans of
-the same inputs produce the same digest; an apply with the approved digest applies; the re-plan
-after it reports `0 add / 0 change / 0 destroy`; a re-apply is a no-op; an apply bound to a wrong
-digest exits 3.
+Measured (`infra-lane.integration.test.ts`, real `scp-runner-iac` image): two plans of the same inputs
+share a digest; an apply with the approved digest applies; the re-plan after it reports `0 add / 0
+change / 0 destroy`; a re-apply is a no-op; a wrong digest exits 3; **the same changes planned into
+another workspace have a different digest, and applying the first's digest there exits 3**.
 
 **4. The plan's evidence reaches SCP as the workflow's global outputs.** The templates export
 `scpPlanDigest`, `scpPlanAdd`, `scpPlanChange`, `scpPlanDestroy` (and `scpPlanApplied`) with
 `globalName`, which Argo puts on the Workflow's own `status.outputs` — the object `status()` already
-fetches, so no second call and no artifact repository. The plugin reads them all-or-nothing: a
-digest that is not a sha256 or a count that is not a non-negative integer drops the whole plan
-(absent ≠ zero), and only a settled workflow's outputs count. An org's own template reports a plan
-the same way; the names are namespaced `scp…` so none does by accident.
+fetches. The plugin reads them all-or-nothing (absent ≠ zero), and only a settled workflow's.
 
-**5. The apply template is derived from the plan template, never bound.** An `infrastructure`
-binding on Argo Workflows names its PLAN template; the apply template is its `-apply` sibling
-(`scp-infra-plan-v1` → `scp-infra-apply-v1`, `acme-net-plan` → `acme-net-apply`;
-`infraApplyTemplateFor`). One binding per (target, Type) stays the model, and no binding can point
-a plan change's trigger at an apply. A binding whose name has no `-plan` segment is refused
-(`infra_declaration_refused`). And the shipped `scp-infra-apply-v*` template is reachable ONLY
-through this gate: any trigger the lane did not derive whose target ref names it — a `configuration`
-binding pointed at it, with a recipe supplying a digest — is refused (`assertNotAnUngatedInfraApply`).
+**5. The shipped infra templates have ONE door.** An `infrastructure` binding on Argo Workflows names
+its PLAN template; the apply template is its `-apply` sibling (`infraApplyTemplateFor`), recorded at
+plan time. Both `scp-infra-plan-v*` and `scp-infra-apply-v*` are reachable ONLY through this lane,
+enforced twice:
 
-**6. Reserved parameters.** A recipe's parameters flow verbatim into the trigger and anyone who can
-propose a change can write one. The lane's keys are bounds, not conveniences:
+- in `reconcile.ts`, with a Decision: any trigger the lane did not derive whose target ref names
+  either template is refused (`infra_template_outside_lane` — a `configuration` binding pointed at
+  `scp-infra-plan-v1` with a recipe steering the workspace, probe D);
+- at the plugin host's executor client (`plugin-host/infra-template-guard.ts`), the one door every
+  server path to an executor passes — wave triggers, declared-hook runs (`pipeline-hook-runs.ts`),
+  continuous-probe schedules (`continuous-probe-driver.ts`), dependency bumps (`bump-dispatch.ts`,
+  `bump-gate.ts`). A trigger naming an infra template is refused unless the intent OBJECT is the one
+  the lane built (a WeakSet, so nothing in data — a parameter, a recipe, a binding, a replicated row —
+  can forge it); a schedule naming one is always refused. Census of submitting sites run with no
+  filters (`grep -rna '\.trigger(\|ensureSchedule('`); the host is the choke point rather than a
+  guard per site because the next caller would escape a per-site census.
 
-`environment`, `stateWorkspace`, `region`, `infraPath`, `sourceRepo`, `sourceCommit`, `sourceRef`,
-`planDigest`, `planChangeObjectId`, `changeObjectId`, `targetObjectId`
-(`INFRA_LANE_RESERVED_PARAMETERS`).
+**6. Reserved parameters.** `environment`, `stateWorkspace`, `region`, `infraPath`, `sourceRepo`,
+`sourceCommit`, `sourceRef`, `planDigest`, `planChangeObjectId`, `changeObjectId`, `targetObjectId`
+(`INFRA_LANE_RESERVED_PARAMETERS`). A recipe that names any is refused (`infra_recipe_restates_bound`)
+and the lane's values are spread last; outside the lane, §5 refuses the template itself, so no
+binding submits an infra template with recipe-chosen values. M28.4's server-reserved-parameter table
+(`reserved-trigger-parameters.ts`) was not on `main` when this merged; these keys belong in it.
 
-Two defences, deliberately both: a recipe that names any of them is **refused** with a Decision
-(`infra_recipe_restates_bound`), and reconcile spreads the lane's values **last** (the ADR-0052 rule),
-so even with the refusal gone the lane's digest is the one sent. Every key the script reads is
-always sent — `infraPath` at its default `.` rather than omitted — so there is no key left open for a
-recipe to fill. When M28.4's server-reserved-parameter table lands, these keys belong in it.
+**7. Scoped to one target; its source is declared; state belongs to the operator.** The wave target
+is a `deployment-target`, which must declare:
 
-**7. Scoped to an environment; state belongs to the operator.** The wave target is a
-`deployment-target`; its `properties.environment` (e.g. `prod-us-east-1`) is required and names the
-state: each target gets the OpenTofu workspace `<environment>` or, for an ADR-0044 region target,
-`<environment>-<region>`, so two regions of one environment never share a state. Where in the repo
-the configuration lives is the target's `properties.infrastructurePath` (default the root). A plan
-must be pinned to a full commit id — a branch would let the configuration move between the plan an
-approver reads and the apply that follows it.
+- `properties.environment` (e.g. `prod-us-east-1`), and optionally `region`;
+- `properties.infrastructureRepo` — the ONE repo its infrastructure comes from. A plan runs the
+  repository's own code (providers, `data "external"`) with the operator's credentials in the pod,
+  so a plan whose `sourceRef.repo` is anything else is refused (`infra_source_not_declared`), and a
+  target declaring none refuses every plan (`infra_source_undeclared`). Probe C submitted
+  `attacker/evil` before this. It is a fact about the target, set by whoever may write the target;
+- optionally `properties.infrastructurePath` (default the repo root).
+
+Each target gets its own OpenTofu workspace, `<environment>[-<region>]--o<org id>--t<target id>`: the
+readable part leads, and the org and target identities mean two regions of one environment, two
+targets named alike, or two orgs' `prod` on one operator backend never share a state. A plan must be
+pinned to a full commit id.
 
 The **state backend is chart values** (`catalog.infra.stateBackend.type` + non-secret `config`),
-rendered into a `-backend-config` file; the template writes an override that replaces whatever
-backend the org's configuration declares. The templates **do not render until a backend is named**,
-and a backend with no image fails the render. Cloud and backend credentials are an operator-
-provisioned Secret in the Argo namespace (`catalog.infra.credentialsSecret`, `envFrom`); SCP holds
-none and no credential grant was extended (charter principle 1). The infra pods run as their own
-ServiceAccount — at the executor's `workflowtaskresults` floor — so cloud authority bound to it by
-workload identity never reaches a build pod running a tenant's Dockerfile.
+rendered into a `-backend-config` file and supplied by an override the script writes. A directory
+carrying ANY other override file (`override.tf[.json]`, `*_override.tf[.json]`), a `backend` block or a
+`cloud` block is **refused before init**: OpenTofu merges overrides in lexical order and the last
+wins, so an org `zz_override.tf` beat the script's override (measured by the verification). The
+templates do not render until a backend is named, and a backend with no image fails the render.
+
+**Credentials are per phase.** `scp-infra-plan-credentials` and `scp-infra-apply-credentials`, each an
+operator-provisioned Secret mounted with `envFrom`, and each phase its own ServiceAccount
+(`scp-infra-plan` / `scp-infra-apply`, both at the executor's `workflowtaskresults` floor) for workload
+identity. **The plan's cloud credentials must be read-only**: a plan runs the repository's code
+before anyone has approved anything. Its state-backend access is read + lock (a consistent plan
+takes the lock) plus creating the workspace on an environment's first plan. Only the apply identity,
+reached solely through the gate, may change infrastructure. SCP holds none of these; no credential
+grant was extended (charter principle 1).
+
+**Concurrency.** Both templates hold the Argo mutex `scp-infra-{{workflow.parameters.stateWorkspace}}`
+(`spec.synchronization.mutexes`, present in the vendored v4.0.7 Workflow CRD as "v3.6 and after"), so
+a plan and an apply of one workspace — or two applies of different plans — queue instead of racing
+the backend's lock. That a mutex NAME may be parameterised is Argo's documented form; the CRD only
+types it as a string, and no live controller in this repo has evaluated it.
 
 **8. One image.** The templates run the existing `scp-runner-iac` image (tofu 1.12.6 copied out of
 the upstream image, which carries `ONBUILD RUN exit 1` and cannot be a base). It gains `jq`, the
-script's only new need; managed-iac's `run.sh` and behaviour are unchanged. The script ships as
-`deploy/helm-bundled/files/scp-infra.sh` in a ConfigMap, byte-identical (helm-verify) to the file the
-integration test runs. The air-gap `install.sh` retargets `catalog.infra.image` to the same
-digest-pinned ref it gives `managedIac.runnerImage`.
+script's only new need (owner ruling 2026-09-24: acceptable in the shared image); managed-iac's
+`run.sh` and behaviour are unchanged. The script ships as `deploy/helm-bundled/files/scp-infra.sh` in a
+ConfigMap, byte-identical (helm-verify) to the file the integration test runs. The air-gap
+`install.sh` retargets `catalog.infra.image` to the same digest-pinned ref it gives
+`managedIac.runnerImage`.
 
 ## Consequences
 
 - **Parity.** API: `POST /changes` with `properties.infrastructure.applyPlan`; the evidence on
   `GET /changes/{id}:explain`. SDK/`ScpClient`: the existing `changes.propose`/`explain`/`accept`;
   the declaration's schema and property name are exported from `@scp/schemas`. CLI:
-  `scp change propose --apply-plan <id>`, and `scp change explain` prints each target's plan.
-  UI: the existing plan chip renders the evidence; an accepted plan change offers "Apply this plan";
-  an apply change names its plan. IaC: the binding (`type: infrastructure`,
-  `externalRef: scp-infra-plan-v1`) and the target's `environment` are already declarable through
-  coordination-as-code; a plan and its apply are runtime changes, not desired state — N/A.
+  `scp change propose --apply-plan <id>`, and `scp change explain` prints each target's plan (both
+  proved through commander end to end). UI: the existing plan chip renders the evidence; an accepted
+  plan change offers "Apply this plan" — only for a plan the Argo lane ran; an apply change names its
+  plan. IaC: the binding (`type: infrastructure`, `externalRef: scp-infra-plan-v1`) and the target's
+  `environment`/`infrastructureRepo` are declarable through coordination-as-code; a plan and its
+  apply are runtime changes, not desired state — N/A.
 - **An apply has two approvals of different kinds**: the plan change's acceptance (the approval of
-  the plan) and, afterwards, the apply change's own acceptance (acceptance of the result). Only the
-  first gates the trigger.
-- **Rollback is not replay.** A rollback of an infrastructure change through this lane is refused;
-  rolling infrastructure back is planning the prior commit and applying that plan through the same
-  gate.
-- **Not proved here:** Argo itself. The integration test drives the real reconcile loop and the real
-  plugin against a loopback Argo API and runs the real script in the real image, but no workflow
-  controller ever evaluated these templates; `tools/helm-verify` holds the rendered wiring (args,
-  outputs, required parameters, hardening, script bytes) to the script's contract instead. The
-  `globalName` → `status.outputs` channel is Argo's documented behaviour and was not observed live.
-- **Not proved here:** a real cloud provider. The counterparty run uses the local backend and the
-  built-in `terraform_data` resource (no provider download, no network).
-- **Two concurrent applies of the same workspace from different plans** are serialised only by the
-  state backend's lock (`-lock-timeout=120s`); the server serialises decisions per target, not per
-  workspace. An Argo `synchronization` mutex keyed on the workspace would close this and was not
-  added untested.
-- **managed-iac's own apply path still has no production caller** (above). D2 keeps it unchanged;
-  this ADR records the measurement rather than acting on it.
+  the plan, by someone other than its proposer) and, afterwards, the apply change's own acceptance.
+  Only the first gates the trigger.
+- **Rollback is not replay.** Rolling infrastructure back is planning the prior commit and applying
+  that plan through the same gate.
+- **A pruned plan-trigger Decision fails closed**: an apply whose plan's record is gone is refused
+  (`infra_plan_record_missing`), never re-derived.
+- **Not proved here:** Argo itself (no workflow controller evaluated these templates; helm-verify
+  holds the rendered wiring, and `globalName` → `status.outputs` and a templated mutex name are
+  Argo's documented behaviour, not observed live); a real cloud provider (local backend,
+  `terraform_data`).
+- **managed-iac's apply** has no production caller (nothing sets `iacAction`). Owner ruling
+  2026-09-24: bind it to an accepted plan's digest by this lane's rule, in a separate follow-on PR in
+  M28.
+
+## Addendum (2026-09-24) — what the adversarial verification of PR #415 found, and the fix
+
+Two blocking holes, both found by probes that went red against the first version: the apply re-derived
+its place at apply time and the digest did not cover the place (probe A: approved for region r1,
+applied into r2, `applied:true` against real tofu; probe B: plan template swapped after approval); and
+a plan ran whatever repo the proposer named with the operator's credentials (probe C). Plus: the
+side-door guard covered only the apply template and only the wave-trigger path (probe D); an org
+override file could replace the state backend; a declared apply on a non-Argo executor was silently
+ignored; no separation of duties; state shared by environment name across targets and orgs. Each is
+fixed above (§1a, §2, §3, §5, §7) and each fix has a test that goes red when it is removed (PR body).
+The build lane had the same repo property; see ADR-0053's addendum.
