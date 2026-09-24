@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import type { ExecutorType } from "@scp/schemas";
+import { asTrustDomainId, type ExecutorType } from "@scp/schemas";
 import {
   createTestComponent,
   createTestOrg,
@@ -11,6 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { upsertObjectByUrn } from "../graph/objects-repo.js";
 import {
   BuildDestinationRefused,
   BuildSourceRefused,
@@ -102,6 +103,43 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
       // not have to strip a scheme in a templating language, where getting it wrong pushes to the
       // wrong registry rather than erroring.
       imageDestination: "ghcr.io/agentkitproject/agentkitprofile-app"
+    });
+  });
+
+  it("a REPLICATED registry is never a push destination — its address was written by another domain", async () => {
+    // ADR-0056 addendum 3: a peer's writer chose this `serverUrl`; following it would push this
+    // domain's build wherever that peer pointed it. Registries are created domainLocal per site.
+    const component = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
+    const { object: replica } = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "execution-system",
+        actorObjectId: org.orgId,
+        requestId: "replicated-registry",
+        urn: `urn:scp:${org.orgId}:execution-system:reg-replica-${randomUUID().slice(0, 8)}`,
+        name: "reg-replica",
+        properties: { kind: "ghcr", serverUrl: "https://registry.peer.invalid" },
+        federationImport: {
+          originDomainId: asTrustDomainId(randomUUID()),
+          revision: 1,
+          provenance: null
+        }
+      })
+    );
+    await admin.relationships.create({
+      typeId: "publishes_to",
+      fromId: component.id,
+      toId: replica.id,
+      properties: { repository: "acme/widget" }
+    });
+    const err = await resolve(component.id, SOURCE_REF).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(BuildDestinationRefused);
+    expect((err as BuildDestinationRefused).inputContext).toMatchObject({
+      gate: "build_destination_replicated_registry",
+      registryExecutionSystemId: replica.id
     });
   });
 
