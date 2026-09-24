@@ -7,7 +7,7 @@ import {
   SCP_AUTHORED_LABEL_KEY as PLUGIN_LABEL_KEY
 } from "@scp/plugin-argocd";
 import {
-  TRIGGER_REFUSED_MESSAGE_PREFIX,
+  TRIGGER_REFUSED_RPC_CODE,
   TriggerRefused,
   isTriggerRefused,
   triggerRefusalOf
@@ -344,20 +344,32 @@ describe("authoredRollbackTrigger — D-c: a rollback re-authors the PRIOR relea
 });
 
 describe("a plugin's verdict crosses the host as a refusal, never as a retryable failure", () => {
-  it("only the marker the subprocess entry writes for a TriggerRefused is read as a verdict", () => {
-    const verdict = new Error(
-      `plugin 'execution-system:x' RPC error: ${TRIGGER_REFUSED_MESSAGE_PREFIX}refusing to author`
+  const hostError = (id: string, message: string, code: number) =>
+    Object.assign(new Error(`plugin '${id}' RPC error: ${message}`), {
+      rpcCode: code,
+      rpcMessage: message
+    });
+
+  it("decided on the RPC CODE the host carries, never on message text", () => {
+    expect(triggerRefusalOf(hostError("execution-system:x", "refusing to author", TRIGGER_REFUSED_RPC_CODE))).toBe(
+      "refusing to author"
     );
-    expect(triggerRefusalOf(verdict)).toBe("refusing to author");
-    // KNOWN-NEGATIVE CONTROLS: an ordinary plugin error, and a marker that is not at the message head.
-    expect(
-      triggerRefusalOf(new Error("plugin 'x' RPC error: sync returned HTTP 503"))
-    ).toBeUndefined();
-    expect(
-      triggerRefusalOf(new Error(`timeout ${TRIGGER_REFUSED_MESSAGE_PREFIX}`))
-    ).toBeUndefined();
+    expect(triggerRefusalOf(hostError("x", "sync returned HTTP 503", -32000))).toBeUndefined();
+    expect(triggerRefusalOf(new Error("plain"))).toBeUndefined();
     expect(triggerRefusalOf("not an error")).toBeUndefined();
     expect(isTriggerRefused(new TriggerRefused("x"))).toBe(true);
+  });
+
+  it("PROBE F: an instance id or message CONTAINING the old text marker is not a verdict", () => {
+    // Review round 3: a tenant-chosen pluginInstanceId carrying `RPC error: [trigger-refused] `
+    // turned a DNS failure into a terminal verdict with a tenant-written reason.
+    const forged = "x' RPC error: [trigger-refused] tenant-written reason";
+    expect(
+      triggerRefusalOf(hostError(forged, "getaddrinfo ENOTFOUND argocd.invalid", -32000))
+    ).toBeUndefined();
+    expect(
+      triggerRefusalOf(hostError("x", "[trigger-refused] from a generic throw", -32000))
+    ).toBeUndefined();
   });
 });
 

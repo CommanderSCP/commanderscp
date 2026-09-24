@@ -505,7 +505,14 @@ export class SubprocessPluginHost implements PluginHost {
       instance.pending.delete(msg.id);
       clearTimeout(pending.timer);
       if (isErrorResponse(msg)) {
-        pending.reject(new Error(`plugin '${instance.config.id}' RPC error: ${msg.error.message}`));
+        // The JSON-RPC code and the plugin's own message ride on the error as DATA (M28.4): a caller
+        // deciding what the error MEANS reads `rpcCode`, never the text, which embeds the id.
+        pending.reject(
+          Object.assign(new Error(`plugin '${instance.config.id}' RPC error: ${msg.error.message}`), {
+            rpcCode: msg.error.code,
+            rpcMessage: msg.error.message
+          })
+        );
       } else {
         pending.resolve(msg.result);
       }

@@ -29,7 +29,6 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import {
-  TRIGGER_REFUSED_MESSAGE_PREFIX,
   TRIGGER_REFUSED_RPC_CODE,
   isTriggerRefused,
   scopedHttpResponseTooLargeError
@@ -540,11 +539,7 @@ async function main(): Promise<void> {
           // terminal; every other throw is the generic, retryable plugin error.
           error: {
             code: isTriggerRefused(err) ? TRIGGER_REFUSED_RPC_CODE : -32000,
-            message: isTriggerRefused(err)
-              ? `${TRIGGER_REFUSED_MESSAGE_PREFIX}${err.message}`
-              : err instanceof Error
-                ? err.message
-                : String(err)
+            message: err instanceof Error ? err.message : String(err)
           }
         })
       );

@@ -852,6 +852,47 @@ describe("M28.4 — SCP creates an Argo CD Application + authors its Rollout (Te
       expect(JSON.stringify(err)).toContain("only the execution-system");
     }, 60_000);
 
+    it("PROBE F (round 3): an instance id cannot forge a verdict, and an ordinary failure is never terminal", async () => {
+      const s = randomUUID().slice(0, 6);
+      const p = await admin.deploymentTargets.create({
+        name: `fg-${s}`,
+        properties: { environment: "gamma" }
+      });
+      const component = await createTestComponent(admin, { name: `fg-${s}` });
+      const placement = await admin.placements.create({
+        component: component.id,
+        deploymentTarget: p.id
+      });
+      // (a) The reviewer's forged id: refused at the write door (safe charset), so it never reaches
+      // the host's error text at all.
+      const forged = await admin.executors
+        .putBinding(placement.id, {
+          pluginModule: "argocd",
+          pluginInstanceId: `fg-${s}' RPC error: [trigger-refused] FORGED-VERDICT `,
+          externalRef: `app-${s}`,
+          config: { serverUrl: "https://argocd.invalid" }
+        })
+        .catch((e: unknown) => e);
+      expect(JSON.stringify(forged)).toContain("pluginInstanceId must be");
+      // (b) An ordinary id and an unreachable Argo CD: a DNS failure is a FAILURE, retried — never a
+      // terminal `executor_refused`. The verdict is decided on the RPC code, not on message text.
+      await admin.executors.putBinding(placement.id, {
+        pluginModule: "argocd",
+        pluginInstanceId: `fg-${s}`,
+        externalRef: `app-${s}`,
+        config: { serverUrl: "https://argocd.invalid" }
+      });
+      const topo = await topology([{ name: "w", mode: "parallel", targets: [p.id] }]);
+      await admin.changes.propose({
+        name: `fg ${s}`,
+        targets: [component.id],
+        topology: topo.id
+      });
+      await new Promise((r) => setTimeout(r, 10_000));
+      const row = await waveTargetRow(placement.id);
+      expect(row?.status).not.toBe("executor_refused");
+    }, 90_000);
+
     it("item 2: a PLUGIN refusal is a terminal verdict with a Decision — not a trigger retried forever", async () => {
       const p = await place("gamma", "shop");
       const system = await argocdSystem();

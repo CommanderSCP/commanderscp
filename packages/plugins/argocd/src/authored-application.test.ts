@@ -39,7 +39,16 @@ function rollout(
   return {
     apiVersion: "argoproj.io/v1alpha1",
     kind: "Rollout",
-    metadata: { name: "checkout", namespace: "shop", labels: { [SCP_AUTHORED_LABEL_KEY]: "true" } },
+    metadata: {
+      name: "checkout",
+      namespace: "shop",
+      // Exactly the renderer's label set (review round 3 pins it).
+      labels: {
+        "app.kubernetes.io/name": "checkout",
+        "app.kubernetes.io/managed-by": "commanderscp",
+        [SCP_AUTHORED_LABEL_KEY]: "true"
+      }
+    },
     spec: {
       selector: { matchLabels: { "app.kubernetes.io/name": "checkout" } },
       template: {
@@ -420,6 +429,66 @@ describe("the second layer — only a carrier render the operator declared is ev
           spec: { type: "ClusterIP", selector: {}, ports: [{ port: 80, targetPort: 80 }] }
         }),
       /only a blue-green Rollout switches between/
+    ],
+    // REVIEW ROUND 3 — pinned to EXACTLY what the renderer emits.
+    [
+      "a selector targeting another app's pods",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.selector.matchLabels = {
+          "app.kubernetes.io/name": "payments-api"
+        }),
+      /selector.matchLabels is not exactly what SCP authors/
+    ],
+    [
+      "pod-template labels for another app",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.template.metadata.labels = {
+          "app.kubernetes.io/name": "payments-api"
+        }),
+      /template.metadata.labels is not exactly what SCP authors/
+    ],
+    [
+      "an extra pod-template label",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].spec.template.metadata.labels.extra = "1"),
+      /template.metadata.labels is not exactly what SCP authors/
+    ],
+    [
+      "an extra Rollout label",
+      (d) => (d.spec.source.helm.valuesObject.manifests[0].metadata.labels.team = "x"),
+      /metadata.labels.team is not a field/
+    ],
+    [
+      "an image containing a newline",
+      (d) =>
+        (d.spec.source.helm.valuesObject.manifests[0].spec.template.spec.containers[0].image =
+          "ghcr.io/acme/x:1\nsecurityContext: {privileged: true}"),
+      /image is not a single-token image reference/
+    ],
+    [
+      "a blue-green Service whose selector points at another app",
+      (d) => {
+        const m = d.spec.source.helm.valuesObject.manifests;
+        m[0].spec.strategy = {
+          blueGreen: {
+            activeService: "checkout-active",
+            previewService: "checkout-preview",
+            autoPromotionEnabled: true,
+            autoPromotionSeconds: 30
+          }
+        };
+        const svc = (name: string, app: string) => ({
+          apiVersion: "v1",
+          kind: "Service",
+          metadata: { name, namespace: "shop", labels: m[0].metadata.labels },
+          spec: {
+            type: "ClusterIP",
+            selector: { "app.kubernetes.io/name": app },
+            ports: [{ name: "http", port: 8080, targetPort: 8080 }]
+          }
+        });
+        m.push(svc("checkout-active", "checkout"), svc("checkout-preview", "payments-api"));
+      },
+      /spec.selector is not exactly what SCP authors/
     ]
   ];
 

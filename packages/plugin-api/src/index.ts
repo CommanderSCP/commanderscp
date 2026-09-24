@@ -192,23 +192,22 @@ export class TriggerRefused extends Error {
 /** The JSON-RPC error code a `TriggerRefused` travels under (the generic plugin error is -32000). */
 export const TRIGGER_REFUSED_RPC_CODE = -32010;
 
-/** The prefix a `TriggerRefused`'s message travels with across the process boundary, so the server
- *  can tell a verdict from a failure without the host changing its error shape: the host surfaces
- *  every plugin error as `plugin '<id>' RPC error: <message>`, and only the subprocess entry — for a
- *  `TriggerRefused` and nothing else — writes this marker at the start of `<message>`. */
-export const TRIGGER_REFUSED_MESSAGE_PREFIX = "[trigger-refused] ";
-
-/** The refusal carried by a host error, or `undefined` for an ordinary (retryable) failure. */
-export function triggerRefusalOf(err: unknown): string | undefined {
-  if (!(err instanceof Error)) return undefined;
-  const marker = `RPC error: ${TRIGGER_REFUSED_MESSAGE_PREFIX}`;
-  const at = err.message.indexOf(marker);
-  return at === -1 ? undefined : err.message.slice(at + marker.length);
-}
-
 /** Structural check — survives module duplication, where `instanceof` would not. */
 export function isTriggerRefused(err: unknown): err is TriggerRefused {
   return err instanceof Error && err.name === "TriggerRefused";
+}
+
+/** The refusal carried by a host error, or `undefined` for an ordinary (retryable) failure.
+ *
+ *  Decided on the JSON-RPC CODE the host carries as data (`rpcCode`), NEVER on message text: the
+ *  host's message embeds the instance id, and an earlier text-marker version let a tenant-chosen id
+ *  containing the marker turn a DNS failure into a terminal verdict with a tenant-written reason
+ *  (review probe F). Only the subprocess entry sets the code, and only for a `TriggerRefused`. */
+export function triggerRefusalOf(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const { rpcCode, rpcMessage } = err as Error & { rpcCode?: unknown; rpcMessage?: unknown };
+  if (rpcCode !== TRIGGER_REFUSED_RPC_CODE) return undefined;
+  return typeof rpcMessage === "string" ? rpcMessage : err.message;
 }
 
 export interface AbortResult {

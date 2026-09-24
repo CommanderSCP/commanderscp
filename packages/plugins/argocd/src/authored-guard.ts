@@ -143,7 +143,31 @@ function checkMetadata(
   return problems;
 }
 
-function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]): string[] {
+/** The labels the renderer stamps on a Rollout and its Services (`renderAuthoredDeployment`). */
+function manifestLabels(rolloutName: string): Record<string, string> {
+  return {
+    "app.kubernetes.io/name": rolloutName,
+    "app.kubernetes.io/managed-by": "commanderscp",
+    "commanderscp.io/authored": "true"
+  };
+}
+
+/** EXACT equality of a string map — no extra key, no other value (review round 3: a selector or
+ *  label set naming ANOTHER app's pods is how a Service or Rollout reaches workloads it never owned). */
+function exactly(where: string, got: unknown, want: Record<string, string>): string[] {
+  if (!isRecord(got)) return [`${where} is missing`];
+  const same =
+    Object.keys(got).length === Object.keys(want).length &&
+    Object.entries(want).every(([k, v]) => got[k] === v);
+  return same ? [] : [`${where} is not exactly what SCP authors for this Rollout`];
+}
+
+function checkRolloutSpec(
+  where: string,
+  spec: unknown,
+  serviceNames: string[],
+  rolloutName: string
+): string[] {
   if (!isRecord(spec)) return [`${where} is missing`];
   const problems = onlyKeys(where, spec, [
     "replicas",
@@ -165,7 +189,11 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
   if (!isRecord(selector)) problems.push(`${where}.selector is missing`);
   else {
     problems.push(...onlyKeys(`${where}.selector`, selector, ["matchLabels"]));
-    problems.push(...stringMap(`${where}.selector.matchLabels`, selector.matchLabels));
+    problems.push(
+      ...exactly(`${where}.selector.matchLabels`, selector.matchLabels, {
+        "app.kubernetes.io/name": rolloutName
+      })
+    );
   }
   const template = spec.template;
   if (!isRecord(template)) problems.push(`${where}.template is missing`);
@@ -175,7 +203,11 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
     if (!isRecord(template.metadata)) problems.push(`${where}.template.metadata is missing`);
     else {
       problems.push(...onlyKeys(`${where}.template.metadata`, template.metadata, ["labels"]));
-      problems.push(...stringMap(`${where}.template.metadata.labels`, template.metadata.labels));
+      problems.push(
+        ...exactly(`${where}.template.metadata.labels`, template.metadata.labels, {
+          "app.kubernetes.io/name": rolloutName
+        })
+      );
     }
     const pod = template.spec;
     if (!isRecord(pod)) problems.push(`${where}.template.spec is missing`);
@@ -191,7 +223,11 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
           continue;
         }
         problems.push(...onlyKeys(at, c, ["name", "image", "ports"]));
-        if (!isStr(c.name) || !isStr(c.image)) problems.push(`${at} needs a name and an image`);
+        if (c.name !== "app") problems.push(`${at}.name must be "app"`);
+        // No whitespace of any kind — a newline in an image ref is a second YAML line in the chart.
+        if (!(typeof c.image === "string" && /^\S{1,512}$/.test(c.image))) {
+          problems.push(`${at}.image is not a single-token image reference`);
+        }
         if (c.ports !== undefined) {
           if (!Array.isArray(c.ports)) problems.push(`${at}.ports is not a list`);
           for (const port of Array.isArray(c.ports) ? c.ports : []) {
@@ -299,7 +335,7 @@ function checkRolloutSpec(where: string, spec: unknown, serviceNames: string[]):
   return problems;
 }
 
-function checkService(where: string, spec: unknown): string[] {
+function checkService(where: string, spec: unknown, rolloutName: string): string[] {
   if (!isRecord(spec)) return [`${where}.spec is missing`];
   const problems = onlyKeys(`${where}.spec`, spec, ["type", "selector", "ports"]);
   if (spec.type !== "ClusterIP") {
@@ -307,7 +343,9 @@ function checkService(where: string, spec: unknown): string[] {
       `${where}.spec.type must be ClusterIP — the carrier never exposes a Service outside the cluster`
     );
   }
-  problems.push(...stringMap(`${where}.spec.selector`, spec.selector));
+  problems.push(
+    ...exactly(`${where}.spec.selector`, spec.selector, { "app.kubernetes.io/name": rolloutName })
+  );
   for (const port of Array.isArray(spec.ports) ? spec.ports : [null]) {
     if (!isRecord(port)) {
       problems.push(`${where}.spec.ports must be a list of ports`);
@@ -329,6 +367,9 @@ function checkManifests(manifests: unknown[], namespace: string): string[] {
     unknown
   >[];
   if (rollouts.length !== 1) problems.push("the carrier must carry exactly one Rollout");
+  const rolloutMeta = (rollouts[0] as Record<string, unknown> | undefined)?.metadata;
+  const rolloutName =
+    isRecord(rolloutMeta) && typeof rolloutMeta.name === "string" ? rolloutMeta.name : "";
   manifests.forEach((m, i) => {
     const where = `manifests[${i}]`;
     if (!isRecord(m)) {
@@ -346,7 +387,9 @@ function checkManifests(manifests: unknown[], namespace: string): string[] {
     }
     if (m.apiVersion !== expectedVersion)
       problems.push(`${where}.apiVersion must be ${expectedVersion}`);
-    problems.push(...checkMetadata(where, m.metadata, "any-string", MANIFEST_ANNOTATIONS));
+    problems.push(
+      ...checkMetadata(where, m.metadata, manifestLabels(rolloutName), MANIFEST_ANNOTATIONS)
+    );
     if (isRecord(m.metadata) && m.metadata.namespace !== namespace) {
       problems.push(`${where} does not land in the Application's destination namespace`);
     }
@@ -354,9 +397,13 @@ function checkManifests(manifests: unknown[], namespace: string): string[] {
       const names = services
         .map((s) => (isRecord(s.metadata) ? s.metadata.name : undefined))
         .filter((n): n is string => typeof n === "string");
-      problems.push(...checkRolloutSpec(`${where}.spec`, m.spec, names));
+      problems.push(...checkRolloutSpec(`${where}.spec`, m.spec, names, rolloutName));
     } else {
-      problems.push(...checkService(where, m.spec));
+      const name = isRecord(m.metadata) ? m.metadata.name : undefined;
+      if (name !== `${rolloutName}-active` && name !== `${rolloutName}-preview`) {
+        problems.push(`${where} is not one of the Rollout's own active/preview Services`);
+      }
+      problems.push(...checkService(where, m.spec, rolloutName));
     }
   });
   return problems;
