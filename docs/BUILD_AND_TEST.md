@@ -1761,6 +1761,15 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     rather than launched by `@scp/runner-launcher`. Mode C stays the no-execution-system fallback.
     - **DoD:** one material derivation feeds both executors; the Mode A/B path never launches a
       container from `scpd`, asserted by the absence of a launcher call on that path.
+    - **STATUS 2026-09-23: BLOCKED on an owner decision — nothing built.** "The same
+      `deriveOpsRunMaterial` output" includes a certificate minted by SCP's per-domain CA, and
+      delivering that to an Argo pod conflicts with the charter: the host-login grant is scoped to a
+      *managed executor*, and "bundled backends keep their own infrastructure credentials" /
+      "opting into a bundled backend ends managed-execution eligibility". The four bound keys
+      (role, inventory, allowlist, principals) are not in question; the credential is. Options,
+      the blast-radius analysis (a token in Workflow parameters becomes a domain-wide `root`
+      certificate for anyone who can read Workflows first) and a recommendation are in
+      [ADR-0054](adr/0054-host-ops-through-argo-workflows-credential-delivery.md) (Proposed).
   - **M28.3 — infrastructure buildout for an environment.** An `infraLaneTriggerParameters` seam
     (the lane that does not exist today) and `scp-infra-plan-v1` / `scp-infra-apply-v1`, scoped to a
     `deployment-target` carrying `properties.environment` — the `prod-us-east-1` case. Plan is
