@@ -24,8 +24,22 @@ export const WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS = "ops_declaration_refus
 export const WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION =
   "change.wave_target.ops_declaration_refused";
 
+/** Terminal status (M28.3, ADR-0056): an `infrastructure` change the Argo lane cannot derive a plan
+ *  trigger for — no environment on the target, no pinned commit, a binding with no plan template. */
+export const WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS = "infra_declaration_refused";
+export const WAVE_TARGET_INFRA_DECLARATION_REFUSED_AUDIT_ACTION =
+  "change.wave_target.infra_declaration_refused";
+
+/** Terminal status (M28.3, ADR-0056): an APPLY whose plan is not approved, not current, not this
+ *  target's, or already being applied. The apply template is never triggered. */
+export const WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS = "infra_apply_refused";
+export const WAVE_TARGET_INFRA_APPLY_REFUSED_AUDIT_ACTION = "change.wave_target.infra_apply_refused";
+
 export type TriggerParameterRefusalStatus =
-  typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS;
+  | typeof WAVE_TARGET_DESTINATION_REFUSED_STATUS
+  | typeof WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
+  | typeof WAVE_TARGET_INFRA_DECLARATION_REFUSED_STATUS
+  | typeof WAVE_TARGET_INFRA_APPLY_REFUSED_STATUS;
 
 export abstract class TriggerParameterRefusal extends Error {
   abstract readonly status: TriggerParameterRefusalStatus;

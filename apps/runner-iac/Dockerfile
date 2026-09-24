@@ -60,7 +60,7 @@
 # one supervised run. Revisit only alongside a matching change to the launcher's copy-in step.
 FROM alpine:3.24
 
-RUN apk add --no-cache bash git ca-certificates
+RUN apk add --no-cache bash git ca-certificates jq
 
 # The upstream OpenTofu image's only contribution here is its statically-linked `tofu` binary.
 # `COPY --from` an image reference (unlike `FROM`) does not trigger that image's ONBUILD, so this

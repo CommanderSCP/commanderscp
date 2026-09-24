@@ -179,6 +179,46 @@ bundledExecutor:
           build:
             requests: { cpu: 250m, memory: 512Mi }
             limits: { cpu: "2", memory: 2Gi }
+      # scp-infra-plan-v1 / scp-infra-apply-v1 (M28.3, ADR-0056): infrastructure buildout for an
+      # environment, plan → approve → apply. NOT RENDERED until `stateBackend.type` is set — that
+      # is the operator's switch, because the templates must never run without somewhere real to
+      # keep state. Shares buildImage.sourceHost and the `gitToken` key of `credentialsSecret` for
+      # its source checkout (one git read identity for the whole catalog).
+      infra:
+        # scp-runner-iac (apps/runner-iac) — the SAME image the Mode C managed-iac executor
+        # launches, reused rather than duplicated: one place `tofu` is pinned. First-party, so no
+        # upstream default; the air-gap install.sh sets it from the bundle, a connected install
+        # sets it to the published ghcr.io/commanderscp/scp-runner-iac ref (pin by digest).
+        image: ""
+        # THE STATE BACKEND IS A DEPLOYMENT-LEVEL OPERATOR SETTING (D2 — the ADR-0049 precedent for
+        # the egress allowlist): chart values, never tenant data SCP holds. `type` is an OpenTofu
+        # backend name (s3, gcs, azurerm, pg, kubernetes, http, …); `config` is its NON-SECRET
+        # settings, rendered to a `-backend-config` file. The template writes an override that
+        # replaces whatever backend block the org's own configuration declares, so an org config
+        # cannot move state somewhere the operator did not choose. Each environment gets its own
+        # workspace in this backend (`<environment>[-<region>]`, derived by SCP).
+        stateBackend:
+          type: ""
+          config: {}
+        # The Secret holding CLOUD and STATE-BACKEND credentials, mounted as environment variables
+        # (every key becomes one: AWS_ACCESS_KEY_ID, ARM_CLIENT_SECRET, PG_CONN_STR, …). OPTIONAL at
+        # mount. NOT created by this chart and never read by SCP — the operator provisions it in
+        # this namespace, exactly as the build template's push Secret (charter principle 1).
+        credentialsSecret: scp-infra-credentials
+        # The identity infra pods run as. Separate from `buildServiceAccount` ON PURPOSE: an
+        # operator using workload identity (IRSA, GKE WI) binds CLOUD authority to this account,
+        # and a build pod running a tenant's Dockerfile must never inherit it. The chart grants it
+        # only the executor's workflowtaskresults floor; a `kubernetes` state backend needs the
+        # operator to add a Role for its Secrets/Leases.
+        serviceAccount: scp-infra
+        # Optional `.tofurc` (CLI configuration) — typically a `provider_installation` network
+        # mirror, which is how an AIR-GAPPED install gets providers. Mounted as TF_CLI_CONFIG_FILE.
+        cliConfig: ""
+        runAsUser: 1000
+        activeDeadlineSeconds: 3600
+        resources:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: "1", memory: 1Gi }
     # Per-CONTAINER resources. Upstream ships neither workload with any, which makes both
     # BestEffort — unbounded, and first evicted under node pressure.
     resources:

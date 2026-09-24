@@ -125,6 +125,11 @@ import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
 import { TriggerParameterRefusal } from "./trigger-parameter-refusal.js";
 import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
+import {
+  assertNotAnUngatedInfraApply,
+  infraLaneTriggerParameters,
+  type InfraLaneOutcome
+} from "./infra-lane-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
 export const RECONCILE_QUEUE = "coordination-reconcile-tick";
@@ -1331,6 +1336,56 @@ async function blockWaveTarget(
   return true;
 }
 
+/** A RE-APPLY OF AN APPLIED PLAN (M28.3, ADR-0056): succeeded, and NOTHING triggered.
+ *
+ *  Not a refusal — the change asked for a state that already holds, and failing it would make an
+ *  idempotent retry of a successful apply look like a broken one. Not silent either: the verdict is
+ *  a Decision (with the change that did apply it) and an audit event, and the wave target carries
+ *  the plan it would have applied, so the evidence renders exactly as the real apply's does. Claimed
+ *  first, through the same `pending|triggering` guard every trigger takes, so a tick racing this one
+ *  cannot also trigger it. */
+async function recordInfraApplyNoop(
+  tx: TenantTx,
+  args: {
+    orgId: string;
+    change: ChangeRow;
+    waveId: string;
+    waveTargetId: string;
+    targetObjectId: string;
+    executorPluginId: string;
+    noop: Extract<InfraLaneOutcome, { kind: "noop" }>;
+  }
+): Promise<void> {
+  const claimed = await claimWaveTargetForTriggering(tx, args.orgId, args.waveTargetId);
+  if (!claimed) return;
+  const decision = await insertDecision(tx, {
+    orgId: args.orgId,
+    kind: "wave_target",
+    subjectId: args.change.objectId,
+    verdict: "allow",
+    inputContext: {
+      waveId: args.waveId,
+      targetObjectId: args.targetObjectId,
+      requestedType: "infrastructure",
+      executorPluginId: args.executorPluginId,
+      ...args.noop.inputContext
+    },
+    reasonTree: { summary: args.noop.summary }
+  });
+  await appendAuditEvent(tx, {
+    orgId: args.orgId,
+    actorId: SYSTEM_ACTOR_ID,
+    action: "change.wave_target.infra_apply_noop",
+    subjectId: args.change.objectId,
+    reason: args.noop.summary,
+    decisionId: decision.id,
+    requestId: "reconcile"
+  });
+  await updateWaveTargetObserved(tx, args.orgId, args.waveTargetId, "succeeded", {
+    plan: args.noop.plan
+  });
+}
+
 /** Can this target's executor honour the change's recipe. See docs/coordination.md §797. */
 async function resolveRecipeRefusal(
   client: { describeCapabilities: () => Promise<ExecutorCapabilities> },
@@ -1710,6 +1765,58 @@ async function triggerWaveTarget(
       const binding = resolution.binding;
       const externalRef = binding?.externalRef ?? null;
 
+      // THE INFRASTRUCTURE LANE (M28.3, ADR-0056) — and the APPLY GATE, which is why it runs HERE,
+      // inside the claim transaction and before `trigger()`: an apply is the one trigger that must
+      // be preceded by a human decision about a specific plan, so this call can refuse (terminal,
+      // Decision + audit) or conclude there is nothing to do (a re-apply of an applied plan) as well
+      // as derive parameters. It runs after binding resolution because the binding's externalRef
+      // names the PLAN template the apply template is derived from. Deleting this call must make
+      // `infra-lane.integration.test.ts` red — "built, never installed" is found no other way.
+      const infra = await infraLaneTriggerParameters(tx, {
+        orgId,
+        targetObjectId,
+        type,
+        changeObjectId: change.objectId,
+        sourceRef: change.sourceRef,
+        isRollback,
+        pluginModule: executorModule,
+        executorInstanceId: instanceId,
+        externalRef,
+        recipeParameterKeys: recipeParameters ? Object.keys(recipeParameters) : []
+      }).catch(asRefusal);
+      if (infra instanceof TriggerParameterRefusal) {
+        await refuseTrigger(tx, infra);
+        return null;
+      }
+      if (infra?.kind === "noop") {
+        await recordInfraApplyNoop(tx, {
+          orgId,
+          change,
+          waveId,
+          waveTargetId,
+          targetObjectId,
+          executorPluginId: instanceId,
+          noop: infra
+        });
+        return null;
+      }
+      // Every trigger this lane did NOT derive is held away from the shipped apply template: a
+      // binding of another Type, or a recipe, pointing there would be an apply nobody approved.
+      if (infra === undefined) {
+        try {
+          assertNotAnUngatedInfraApply(externalRef);
+        } catch (err) {
+          await refuseTrigger(tx, asRefusal(err));
+          return null;
+        }
+      }
+      const triggerRef = infra ? infra.templateRef : externalRef;
+      // The lane's values are spread LAST and win, as host-reaching material does (ADR-0052): an
+      // apply's `planDigest` is the approval, and a recipe restating it would replace the gate's
+      // answer with an assertion.
+      const triggerParameters =
+        parameters || infra ? { ...(parameters ?? {}), ...(infra?.parameters ?? {}) } : undefined;
+
       // An indirect resolution is recorded, not left implicit. See docs/coordination.md §808.
       const provenance = resolutionProvenance(resolution);
       if (provenance) {
@@ -1773,7 +1880,9 @@ async function triggerWaveTarget(
       }
 
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
-      return claimed ? { kind, priorStateRef, externalRef, parameters } : null;
+      return claimed
+        ? { kind, priorStateRef, externalRef: triggerRef, parameters: triggerParameters }
+        : null;
     });
 
     if (!claim) return; // no longer pending/triggering — another tick already handled it.
