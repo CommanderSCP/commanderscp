@@ -40,14 +40,20 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
     commit: "a".repeat(40)
   };
 
-  async function resolve(componentId: string, sourceRef: unknown, type: ExecutorType = "image") {
+  async function resolve(
+    componentId: string,
+    sourceRef: unknown,
+    type: ExecutorType = "image",
+    recipeParameters?: Record<string, unknown>
+  ) {
     return withTenantTx(server.deps.db, org.orgId, (tx) =>
       buildLaneTriggerParameters(tx, {
         orgId: org.orgId,
         targetObjectId: componentId,
         type,
         sourceRef,
-        changeObjectId: "01a0c000-0000-7000-8000-000000000000"
+        changeObjectId: "01a0c000-0000-7000-8000-000000000000",
+        recipeParameters
       })
     );
   }
@@ -253,6 +259,34 @@ describe("buildLaneTriggerParameters (Testcontainers)", () => {
       imageRepository: "acme/widget",
       registryUrl: "https://ghcr.io"
     });
+  });
+
+  it("M28.1 — a recipe restating a destination key is refused even when NO registry is declared", async () => {
+    // The no-registry case is the sharpest one: with nothing derived, the recipe's value would be
+    // the ONLY destination the executor sees.
+    const id = await componentPublishingTo(null);
+    const err = await resolve(id, SOURCE_REF, "rpm", {
+      rpmUploadUrl: "https://x.invalid/upload"
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BuildDestinationRefused);
+    expect((err as BuildDestinationRefused).inputContext).toMatchObject({
+      gate: "build_destination_recipe",
+      recipeDestinationKeys: ["rpmUploadUrl"]
+    });
+  });
+
+  it("M28.1 — a recipe adding NON-destination keys is untouched (the narrowing is only the destination)", async () => {
+    const id = await componentPublishingTo("acme/widget");
+    expect(await resolve(id, SOURCE_REF, "image", { migrationFlag: "on" })).toMatchObject({
+      imageDestination: "ghcr.io/acme/widget"
+    });
+  });
+
+  it("M28.1 — a no-class Type's recipe may still name any key: SCP derives no destination to protect", async () => {
+    const id = await componentPublishingTo("acme/widget");
+    expect(
+      await resolve(id, SOURCE_REF, "npm", { registryUrl: "https://npm.example" })
+    ).toMatchObject({ sourceCommit: "a".repeat(40) });
   });
 
   it.each(["npm", "deb", "maven", "python", "go", "chart", "vm-image"] as const)(

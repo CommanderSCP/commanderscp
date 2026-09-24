@@ -171,9 +171,19 @@ bundledExecutor:
       # for its source checkout and `credentialsSecret` for its publish — one catalog, one
       # checkout, one push identity (a unified Gitea serves OCI and RPM from the same account).
       buildRpm:
-        # scp-builder-rpm (apps/builder-rpm) — FIRST-PARTY, so there is no upstream ref to default
-        # to, and the template is NOT RENDERED until this is set. The air-gap install.sh sets it
-        # from the bundle; a connected install sets it to the published ghcr.io/commanderscp ref.
+        # scp-builder-rpm (apps/builder-rpm) — FIRST-PARTY, and scp-build-rpm-v1 is NOT RENDERED
+        # until this is set.
+        #   Air-gap:   nothing to do — install.sh sets it from the bundle, digest-pinned.
+        #   Connected: run the `publish-images` workflow (it builds and pushes this image and prints
+        #              its ref + digest in the run summary), then
+        #                scripts/scp-bundled.sh enable argo-workflows \
+        #                  --set bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage=ghcr.io/commanderscp/scp-builder-rpm:sha-<commit>@sha256:<digest>
+        # NO DEFAULT, deliberately, and the same as every managed runner image (managedIac/Dep/Scan/
+        # Ops.runnerImage in deploy/helm): the release publishes first-party images only as
+        # `sha-<commit>` (and a moving `latest`, never deployed from), so there is no versioned ref
+        # a chart default could name that is guaranteed to exist. A default pointing at a tag
+        # nothing publishes would render a template whose pod fails ImagePullBackOff at its last
+        # step — the one outcome this switch exists to prevent.
         builderImage: ""
         resources:
           build:
@@ -186,9 +196,15 @@ bundledExecutor:
       # its source checkout (one git read identity for the whole catalog).
       infra:
         # scp-runner-iac (apps/runner-iac) — the SAME image the Mode C managed-iac executor
-        # launches, reused rather than duplicated: one place `tofu` is pinned. First-party, so no
-        # upstream default; the air-gap install.sh sets it from the bundle, a connected install
-        # sets it to the published ghcr.io/commanderscp/scp-runner-iac ref (pin by digest).
+        # launches, reused rather than duplicated: one place `tofu` is pinned.
+        #   Air-gap:   nothing to do — install.sh sets it from the bundle, digest-pinned.
+        #   Connected: the `publish-images` workflow publishes ghcr.io/commanderscp/scp-runner-iac:
+        #              sha-<commit>; pass that ref (with its @sha256 digest) to
+        #                scripts/scp-bundled.sh enable argo-workflows \
+        #                  --set bundledExecutor.argoWorkflows.catalog.infra.image=<ref> \
+        #                  --set bundledExecutor.argoWorkflows.catalog.infra.stateBackend.type=<backend>
+        # NO DEFAULT, for buildRpm.builderImage's reason: no versioned first-party ref is guaranteed
+        # to exist for a chart default to name.
         image: ""
         # THE STATE BACKEND IS A DEPLOYMENT-LEVEL OPERATOR SETTING (D2 — the ADR-0049 precedent for
         # the egress allowlist): chart values, never tenant data SCP holds. `type` is an OpenTofu
