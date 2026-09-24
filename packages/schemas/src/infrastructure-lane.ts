@@ -57,6 +57,9 @@ export const SourceAllowlistSchema = z.object({
   executionSystemId: z.string().uuid(),
   /** Sorted and deduplicated. Empty — or never set — means nothing may run with this system. */
   repos: z.array(z.string()),
+  /** False when the system has been re-pointed (its `kind`/`serverUrl`/`namespace`/`tokenSecretKey`
+   *  differ from when the list was set): then NOTHING is allowed until it is set again. */
+  routingCurrent: z.boolean(),
   recordedBySubjectId: z.string().uuid().nullable(),
   updatedAt: z.string().datetime().nullable()
 });

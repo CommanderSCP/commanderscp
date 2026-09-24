@@ -88,15 +88,13 @@ describe("a coordinated-change is system-minted (Testcontainers)", () => {
     // by an Operator whose token simply does not work.
     // `execution-system`, not `component`: the generic door refuses a component for an unrelated
     // reason (it must belong to a service), so using one would have made this control pass on the
-    // wrong refusal — it did, on the first run.
+    // wrong refusal — it did, on the first run. NO properties: an execution system's properties
+    // need `secret:write` (ADR-0056 addendum 3), which an Operator does not hold.
     const res = await server.app.inject({
       method: "POST",
       url: "/api/v1/objects/execution-system",
       headers: { authorization: `Bearer ${operator.token}` },
-      payload: {
-        name: `ordinary-${randomUUID().slice(0, 8)}`,
-        properties: { kind: "argocd", serverUrl: "https://argocd.example" }
-      }
+      payload: { name: `ordinary-${randomUUID().slice(0, 8)}` }
     });
     expect(res.statusCode, res.body).toBe(201);
   });

@@ -27,6 +27,7 @@ describe("SourceAllowlistCard", () => {
     getSourceAllowlist.mockResolvedValue({
       executionSystemId: "sys-1",
       repos: ["acme/*", "acme/infra"],
+      routingCurrent: true,
       recordedBySubjectId: null,
       updatedAt: null
     });
@@ -43,12 +44,28 @@ describe("SourceAllowlistCard", () => {
     getSourceAllowlist.mockResolvedValue({
       executionSystemId: "sys-1",
       repos: [],
+      routingCurrent: true,
       recordedBySubjectId: null,
       updatedAt: null
     });
     const view = renderCard();
     for (let i = 0; i < 20 && !view.html().includes("source-allowlist"); i++) await flush();
     expect(view.byTestId("source-allowlist-empty").textContent).toContain("No repos may run");
+    view.unmount();
+  });
+
+  it("warns that NOTHING may run when the system was re-pointed after the list was set", async () => {
+    getSourceAllowlist.mockReset();
+    getSourceAllowlist.mockResolvedValue({
+      executionSystemId: "sys-1",
+      repos: ["acme/infra"],
+      routingCurrent: false,
+      recordedBySubjectId: null,
+      updatedAt: null
+    });
+    const view = renderCard();
+    for (let i = 0; i < 50 && !view.html().includes("source-allowlist-stale"); i++) await flush();
+    expect(view.byTestId("source-allowlist-stale").textContent).toContain("re-pointed");
     view.unmount();
   });
 });

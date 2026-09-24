@@ -1,5 +1,5 @@
 {
-  "id": "4ea802eb-f4bb-4a89-b629-1212fab82f48",
+  "id": "7b6c7e9d-7259-4346-81a1-bdbe3abf786d",
   "prevId": "5d53b461-c79d-497b-b24d-44a46e360923",
   "version": "7",
   "dialect": "postgresql",
@@ -3397,6 +3397,12 @@
         "repos": {
           "name": "repos",
           "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "routing_fingerprint": {
+          "name": "routing_fingerprint",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },

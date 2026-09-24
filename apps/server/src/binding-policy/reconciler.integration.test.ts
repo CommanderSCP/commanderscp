@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ScpClient } from "@scp/sdk";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { executorBindings } from "../db/schema.js";
@@ -24,10 +25,15 @@ import {
 describe("binding reconciler (ADR-0046 section 4)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
+  /** An execution system's properties need `secret:write` at the org root (ADR-0056 addendum 3). */
+  let adminId: string;
 
   beforeAll(async () => {
     server = await listenTestServer();
     org = await createTestOrg(server, "reconciler");
+    adminId = (
+      await new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken }).auth.me()
+    ).subjectObjectId;
   });
 
   afterAll(async () => {
@@ -88,6 +94,7 @@ describe("binding reconciler (ADR-0046 section 4)", () => {
       });
       const system = await createObject(tx, {
         ...base,
+        actorObjectId: adminId,
         typeId: "execution-system",
         name: `es-${label}`,
         properties: { kind: "argocd", pluginModule: "argocd" }
@@ -262,10 +269,14 @@ describe("binding reconciler (ADR-0046 section 4)", () => {
 describe("binding reconciler — per-target attribution survives batching (b5-perf)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
+  let adminId: string;
 
   beforeAll(async () => {
     server = await listenTestServer();
     org = await createTestOrg(server, "reconciler-attr");
+    adminId = (
+      await new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken }).auth.me()
+    ).subjectObjectId;
   });
 
   afterAll(async () => {
@@ -322,7 +333,7 @@ describe("binding reconciler — per-target attribution survives batching (b5-pe
     const system = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       createObject(tx, {
         orgId: org.orgId,
-        actorObjectId: org.orgId,
+        actorObjectId: adminId,
         requestId: "attr-system",
         typeId: "execution-system",
         name: "es-attr",

@@ -3,6 +3,7 @@ CREATE TABLE "execution_system_source_allowlists" (
 	"org_id" uuid NOT NULL,
 	"execution_system_object_id" uuid NOT NULL,
 	"repos" text[] NOT NULL,
+	"routing_fingerprint" text NOT NULL,
 	"recorded_by_subject_id" uuid NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );

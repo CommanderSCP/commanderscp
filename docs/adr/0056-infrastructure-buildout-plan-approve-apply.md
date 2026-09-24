@@ -172,8 +172,9 @@ on what runs with credentials cannot be data its own subject can write.
 The plan's record also carries the execution system's identity (id, `serverUrl`, `namespace`), and
 an apply is refused if the system was re-pointed since (`infra_plan_scope_changed`, probe E).
 
-Each target gets its own OpenTofu workspace, `<environment-slug>-<12 hex>` (`deriveStateWorkspace`):
-the slug is the lowercased environment and region, the digest is sha256 of org + target + region, and
+Each target gets its own OpenTofu workspace, `<environment-slug>-<24 hex>` (`deriveStateWorkspace`):
+the slug is the lowercased environment and region, the digest is 96 bits of sha256 over org + target +
+environment + region (so two environments whose slugs truncate alike still differ), and
 the whole is a lowercase RFC 1123 label of at most 63 characters, because the strictest backend —
 `kubernetes`, which labels each workspace's Secret `tfstateWorkspace=<workspace>` — caps a label value
 at 63 (every earlier name was ≥ 78). A digest collision is checked, not assumed away: a plan whose

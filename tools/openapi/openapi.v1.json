@@ -99026,6 +99026,9 @@
                         "type": "string"
                       }
                     },
+                    "routingCurrent": {
+                      "type": "boolean"
+                    },
                     "recordedBySubjectId": {
                       "anyOf": [
                         {
@@ -99054,6 +99057,7 @@
                   "required": [
                     "executionSystemId",
                     "repos",
+                    "routingCurrent",
                     "recordedBySubjectId",
                     "updatedAt"
                   ],
@@ -99275,6 +99279,9 @@
                         "type": "string"
                       }
                     },
+                    "routingCurrent": {
+                      "type": "boolean"
+                    },
                     "recordedBySubjectId": {
                       "anyOf": [
                         {
@@ -99303,6 +99310,7 @@
                   "required": [
                     "executionSystemId",
                     "repos",
+                    "routingCurrent",
                     "recordedBySubjectId",
                     "updatedAt"
                   ],

@@ -75,6 +75,7 @@ import {
   listSecretKeys,
   resolveSecretRefs
 } from "../secrets/secrets-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 /** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `gitlab-discovery`,
  *  `argocd-discovery`) — same allowlist discipline as `executor-bindings-repo.ts`'s
@@ -106,7 +107,11 @@ async function bindTargetToExecutionSystem(
     permission: "object:write",
     scopeObjectId: sys.id
   });
-  const identity = executionSystemBindingIdentity(sys, executionSystemId);
+  const identity = executionSystemBindingIdentity(
+    sys,
+    executionSystemId,
+    (await ensureFederationSelf(tx, orgId)).domainId
+  );
   return upsertExecutorBinding(tx, {
     orgId,
     targetObjectId,
@@ -246,6 +251,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
   ) => ({
     executionSystemId: systemId,
     repos: row?.repos ?? [],
+    routingCurrent: row?.routingCurrent ?? true,
     recordedBySubjectId: row?.recordedBySubjectId ?? null,
     updatedAt: row?.updatedAt.toISOString() ?? null
   });

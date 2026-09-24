@@ -13,6 +13,8 @@ import { objects, sourceMappings } from "../db/schema.js";
 import { registryForComponent } from "./component-pipeline.js";
 import { getSourceAllowlist, repoAllowedBy } from "./source-allowlist.js";
 import { globMatch } from "./glob-match.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
+import { isLocallyAuthoredExecutionSystem } from "../authz/execution-system-routing-door.js";
 import {
   TriggerParameterRefusal,
   WAVE_TARGET_DESTINATION_REFUSED_AUDIT_ACTION,
@@ -163,6 +165,7 @@ export async function buildLaneTriggerParameters(
     // picking one of several would be exactly the silent guess the pipeline view refuses to make.
     const registry = await registryForComponent(tx, input.orgId, input.targetObjectId);
     if (registry.state === "declared") {
+      await assertRegistryLocallyAuthored(tx, input.orgId, registry, type);
       assertRegistryServes(registry, type, format);
       Object.assign(params, destinationParameters(registry, format));
     }
@@ -214,10 +217,14 @@ async function assertSourceIsDeclared(
   const allowlist = await getSourceAllowlist(tx, input.orgId, input.executionSystemId);
   const notAllowed = repos.filter((r) => !repoAllowedBy(allowlist, r));
   if (notAllowed.length > 0) {
+    const stale = allowlist !== undefined && !allowlist.routingCurrent;
     throw new BuildSourceRefused(
       `refusing to build ${notAllowed.map((r) => `'${r}'`).join(", ")}: execution system ` +
-        `${input.executionSystemId} does not allow ${notAllowed.length === 1 ? "that repo" : "those repos"} ` +
-        `to run with its credentials (its source allowlist is [${(allowlist?.repos ?? []).join(", ")}]).`,
+        (stale
+          ? `${input.executionSystemId} was re-pointed after its source allowlist was set, so that list ` +
+            `allows nothing until someone re-sets it for the new endpoint (ADR-0056 addendum 3).`
+          : `${input.executionSystemId} does not allow ${notAllowed.length === 1 ? "that repo" : "those repos"} ` +
+            `to run with its credentials (its source allowlist is [${(allowlist?.repos ?? []).join(", ")}]).`),
       {
         remediation:
           "add the repo to the execution system's source allowlist (secret:write at the org root) " +
@@ -225,7 +232,8 @@ async function assertSourceIsDeclared(
         inputContext: {
           gate: "build_source_not_allowed",
           ...base,
-          allowedRepos: allowlist?.repos ?? []
+          allowedRepos: allowlist?.repos ?? [],
+          allowlistRoutingCurrent: allowlist?.routingCurrent ?? null
         }
       }
     );
@@ -301,6 +309,41 @@ function assertRecipeDoesNotRestateDestination(
         `packageFormats), then cancel/rollback/re-propose the change`,
       // The keys only, never the values: a refused destination is not worth persisting verbatim.
       inputContext: { gate: "build_destination_recipe", type, recipeDestinationKeys: restated }
+    }
+  );
+}
+
+/** A REPLICATED registry never names a push destination here: its `webUrl`/`serverUrl` were written
+ *  by another domain's writer (`isLocallyAuthoredExecutionSystem`, ADR-0056 addendum 3). Registries
+ *  are created `domainLocal` per site, so this is the anomaly, refused rather than followed. */
+async function assertRegistryLocallyAuthored(
+  tx: TenantTx,
+  orgId: string,
+  registry: DeclaredRegistry,
+  type: ArtifactClass
+): Promise<void> {
+  if (!registry.executionSystemId) return;
+  const [row] = await tx
+    .select({ originDomainId: objects.originDomainId })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), eq(objects.id, registry.executionSystemId)))
+    .limit(1);
+  const self = await ensureFederationSelf(tx, orgId);
+  if (row && isLocallyAuthoredExecutionSystem(row, self.domainId)) return;
+  throw new BuildDestinationRefused(
+    `refusing to trigger this '${type}' build: its registry '${registry.name ?? registry.executionSystemId}' ` +
+      `is an execution system replicated from domain '${row?.originDomainId ?? "unknown"}', and a ` +
+      `replicated system's address is never a push destination here.`,
+    {
+      remediation:
+        "point this component's publishes_to edge at this domain's own registry (created domainLocal), " +
+        "then cancel/rollback/re-propose the change",
+      inputContext: {
+        gate: "build_destination_replicated_registry",
+        type,
+        registryExecutionSystemId: registry.executionSystemId,
+        originDomainId: row?.originDomainId ?? null
+      }
     }
   );
 }

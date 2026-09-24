@@ -212,11 +212,15 @@ export interface ExecutionSystemIdentity {
   namespace: string;
 }
 
+/** Hex digits of the workspace digest: 96 bits, leaving 38 characters of the 63 for the slug. */
+export const WORKSPACE_DIGEST_HEX = 24;
+
 /** THE WORKSPACE NAME — derived, stable, and ≤ 63 lowercase characters. A readable slug of the
  *  environment (and region) leads, so an operator browsing the backend sees `prod-us-east-1-…`; a
- *  12-hex digest of org + target + region makes it unique per target, so two regions of one
- *  environment, two targets named alike, or two orgs' `prod` on one operator backend never share
- *  a state. Collisions of the digest are CHECKED, not assumed away (`assertWorkspaceUnclaimed`). */
+ *  24-hex digest of org + target + environment + region makes it unique per target, so two regions
+ *  of one environment, two targets named alike, or two orgs' `prod` on one operator backend never
+ *  share a state — and the slug, being truncated, is never the part that separates them. Collisions
+ *  of the digest are CHECKED, not assumed away (`assertWorkspaceUnclaimed`). */
 export function deriveStateWorkspace(input: {
   orgId: string;
   targetObjectId: string;
@@ -224,9 +228,9 @@ export function deriveStateWorkspace(input: {
   region: string;
 }): string {
   const digest = createHash("sha256")
-    .update(`${input.orgId}\0${input.targetObjectId}\0${input.region}`)
+    .update(`${input.orgId}\0${input.targetObjectId}\0${input.environment}\0${input.region}`)
     .digest("hex")
-    .slice(0, 12);
+    .slice(0, WORKSPACE_DIGEST_HEX);
   const slug = (input.region ? `${input.environment}-${input.region}` : input.environment)
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
@@ -407,10 +411,14 @@ async function assertRepoAllowed(
 ): Promise<void> {
   const allowlist = await getSourceAllowlist(tx, input.orgId, system.id);
   if (repoAllowedBy(allowlist, repo)) return;
+  const stale = allowlist !== undefined && !allowlist.routingCurrent;
   throw new refusal(
-    `execution system ${system.id} does not allow '${repo}' to run with its credentials (its source ` +
-      `allowlist is [${(allowlist?.repos ?? []).join(", ")}]). The target may declare the repo; only ` +
-      `the system's allowlist lets it run there.`,
+    stale
+      ? `execution system ${system.id} was re-pointed after its source allowlist was set, so that ` +
+          `list allows nothing until someone re-sets it for the new endpoint (ADR-0056 addendum 3).`
+      : `execution system ${system.id} does not allow '${repo}' to run with its credentials (its source ` +
+          `allowlist is [${(allowlist?.repos ?? []).join(", ")}]). The target may declare the repo; only ` +
+          `the system's allowlist lets it run there.`,
     {
       remediation:
         "have someone with secret:write at the org root add the repo to the execution system's source " +
@@ -419,13 +427,14 @@ async function assertRepoAllowed(
         gate: "infra_source_not_allowed",
         repo,
         executionSystemId: system.id,
-        allowedRepos: allowlist?.repos ?? []
+        allowedRepos: allowlist?.repos ?? [],
+        allowlistRoutingCurrent: allowlist?.routingCurrent ?? null
       }
     }
   );
 }
 
-/** A 12-hex digest can collide; if another target's plan already used this workspace, refuse rather
+/** A 24-hex digest can still collide; if another target's plan already used this workspace, refuse rather
  *  than share its state. */
 async function assertWorkspaceUnclaimed(
   tx: TenantTx,

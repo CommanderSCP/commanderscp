@@ -3,6 +3,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executionSystemSourceAllowlists, objects } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
+import { executionSystemRoutingFingerprint } from "../authz/execution-system-routing-door.js";
 
 /**
  * AN EXECUTION SYSTEM'S SOURCE-REPO ALLOWLIST (M28.3 re-verify, owner ruling R1, ADR-0056 §7a).
@@ -16,6 +17,12 @@ import { globMatch } from "./glob-match.js";
  *
  * An entry is `owner/name` or `owner/*`. A system with no row allows nothing; an INLINE binding has
  * no system and so no allowlist, and these lanes refuse it.
+ *
+ * BOUND TO THE SYSTEM'S ROUTING (ADR-0056 addendum 3, belt-and-braces to the routing door): each row
+ * records the fingerprint of the system's `kind`/`serverUrl`/`namespace`/`tokenSecretKey` when it
+ * was set, and a reader whose live system no longer matches reads NOTHING ALLOWED. The list names
+ * which repos may run at one destination with one credential; re-pointing the system — by any door,
+ * a replicated revision included — means someone with `secret:write` re-sets it for the new one.
  */
 
 export const ALLOWLIST_ENTRY = /^[A-Za-z0-9._-]+\/([A-Za-z0-9._-]+|\*)$/;
@@ -26,6 +33,8 @@ export class SourceAllowlistInvalid extends Error {}
 export interface SourceAllowlist {
   executionSystemObjectId: string;
   repos: string[];
+  /** False when the live system's routing is not what the list was set for — then nothing is allowed. */
+  routingCurrent: boolean;
   recordedBySubjectId: string;
   updatedAt: Date;
 }
@@ -53,6 +62,21 @@ export async function putSourceAllowlist(
   }
 ): Promise<SourceAllowlist> {
   const repos = validateSourceAllowlist(input.repos);
+  // The fingerprint is read off the LIVE system in this transaction, never taken from the caller.
+  const [system] = await tx
+    .select({ properties: objects.properties })
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, input.orgId),
+        eq(objects.id, input.executionSystemObjectId),
+        eq(objects.typeId, "execution-system"),
+        isNull(objects.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!system) throw new SourceAllowlistInvalid("the execution system does not exist");
+  const routingFingerprint = executionSystemRoutingFingerprint(system.properties);
   const now = new Date();
   const [row] = await tx
     .insert(executionSystemSourceAllowlists)
@@ -61,6 +85,7 @@ export async function putSourceAllowlist(
       orgId: input.orgId,
       executionSystemObjectId: input.executionSystemObjectId,
       repos,
+      routingFingerprint,
       recordedBySubjectId: input.recordedBySubjectId,
       updatedAt: now
     })
@@ -69,13 +94,19 @@ export async function putSourceAllowlist(
         executionSystemSourceAllowlists.orgId,
         executionSystemSourceAllowlists.executionSystemObjectId
       ],
-      set: { repos, recordedBySubjectId: input.recordedBySubjectId, updatedAt: now }
+      set: {
+        repos,
+        routingFingerprint,
+        recordedBySubjectId: input.recordedBySubjectId,
+        updatedAt: now
+      }
     })
     .returning();
   if (!row) throw new Error("failed to record the source allowlist");
   return {
     executionSystemObjectId: row.executionSystemObjectId,
     repos: row.repos,
+    routingCurrent: true,
     recordedBySubjectId: row.recordedBySubjectId,
     updatedAt: row.updatedAt
   };
@@ -90,7 +121,7 @@ export async function getSourceAllowlist(
   // and an allowlist is only an allowlist of a LIVE execution system — joined here, so a caller
   // holding a stale id reads "nothing allowed" (docs/graph.md §125f).
   const [joined] = await tx
-    .select({ row: executionSystemSourceAllowlists })
+    .select({ row: executionSystemSourceAllowlists, systemProperties: objects.properties })
     .from(executionSystemSourceAllowlists)
     .innerJoin(
       objects,
@@ -113,6 +144,8 @@ export async function getSourceAllowlist(
   return {
     executionSystemObjectId: row.executionSystemObjectId,
     repos: row.repos,
+    routingCurrent:
+      row.routingFingerprint === executionSystemRoutingFingerprint(joined.systemProperties),
     recordedBySubjectId: row.recordedBySubjectId,
     updatedAt: row.updatedAt
   };
@@ -120,6 +153,6 @@ export async function getSourceAllowlist(
 
 /** Is `repo` one the system allows? Exact, or an `owner/*` entry for its owner. */
 export function repoAllowedBy(allowlist: SourceAllowlist | undefined, repo: string): boolean {
-  if (!allowlist) return false;
+  if (!allowlist || !allowlist.routingCurrent) return false;
   return allowlist.repos.some((entry) => entry === repo || globMatch(entry, repo));
 }

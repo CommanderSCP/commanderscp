@@ -548,12 +548,19 @@ export function SourceAllowlistCard({
     queryFn: () => client.executors.getSourceAllowlist(systemId)
   });
   const repos = allowlistQuery.data?.repos ?? [];
+  const stale = allowlistQuery.data?.routingCurrent === false;
   return (
     <Card>
       <CardHeader>
         <CardTitle>Source allowlist</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
+        {stale && (
+          <p className="text-sm text-amber-700" data-testid="source-allowlist-stale">
+            This system was re-pointed after the list was set, so nothing may run until it is set
+            again for the new endpoint (requires secret:write).
+          </p>
+        )}
         {repos.length === 0 ? (
           <p className="text-sm text-slate-500" data-testid="source-allowlist-empty">
             No repos may run with this system's credentials. Set them with{" "}

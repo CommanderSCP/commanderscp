@@ -80,6 +80,11 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
 
   // ---- deliberate escalation bars: org-root so a NARROWER binding cannot satisfy them -----------
   {
+    site: "authz/execution-system-routing-door.ts :: assertMayWriteExecutionSystemRouting() :: secret:write",
+    cls: "escalation-bar",
+    why: "an execution system's properties decide where its triggers go and which stored credential they carry (M28.3 final re-verify, probe E: an Operator re-pointed a sandbox system at the prod Argo). Org-root ON PURPOSE and the bar for setting that credential: an object:write holder at that system — or at the org root — must not be able to move the credential's destination. Installed at the repo's local write choke point and at hand-fill (ADR-0056 addendum 3)"
+  },
+  {
     site: "authz/identity-mapping-door.ts :: assertMayWriteIdentityMapping() :: role_binding:write",
     cls: "escalation-bar",
     why: "mapping a group to an IdP claim delegates to the directory the decision of who holds whatever that group carries — an org-wide federation act with no narrower object it belongs to. Org-root ON PURPOSE: a service-scoped role_binding:write holder must not be able to point a claim they control at a group. The second bar (every binding the group already holds must be one the actor could have written) is per-binding at that binding's own scope, so it is not an org-root pin and is not listed here"

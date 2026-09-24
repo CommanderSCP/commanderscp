@@ -24194,6 +24194,7 @@ export type GetExecutionSystemSourceAllowlistResponses = {
     200: {
         executionSystemId: string;
         repos: Array<string>;
+        routingCurrent: boolean;
         recordedBySubjectId: string | null;
         updatedAt: string | null;
     };
@@ -24268,6 +24269,7 @@ export type PutExecutionSystemSourceAllowlistResponses = {
     200: {
         executionSystemId: string;
         repos: Array<string>;
+        routingCurrent: boolean;
         recordedBySubjectId: string | null;
         updatedAt: string | null;
     };

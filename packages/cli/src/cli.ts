@@ -6487,6 +6487,12 @@ export function buildProgram(): Command {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
+      if (!result.routingCurrent) {
+        console.log(
+          "STALE — the system was re-pointed since this list was set, so NOTHING may run until it is " +
+            "set again (secret:write):"
+        );
+      }
       if (result.repos.length === 0) console.log("(none — nothing may run with this system)");
       for (const repo of result.repos) console.log(repo);
     });

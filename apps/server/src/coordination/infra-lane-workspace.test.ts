@@ -33,7 +33,7 @@ describe("deriveStateWorkspace", () => {
         environment: "prod-us-east-1",
         region: ""
       })
-    ).toMatch(/^prod-us-east-1-[0-9a-f]{12}$/);
+    ).toMatch(/^prod-us-east-1-[0-9a-f]{24}$/);
   });
 
   it("is STABLE for one target, and DIFFERENT across targets, regions and orgs of one environment", () => {
@@ -42,5 +42,19 @@ describe("deriveStateWorkspace", () => {
     expect(at(ORG, T1)).toBe(at(ORG, T1));
     const all = [at(ORG, T1), at(ORG, T2), at(ORG, T1, "amer"), at(T2, T1)];
     expect(new Set(all).size).toBe(all.length);
+  });
+
+  it("hashes the ENVIRONMENT too, so two environments whose slugs truncate alike never share a state", () => {
+    // Both slugs cut to the same 38 characters; only the digest can tell them apart.
+    const long = "a".repeat(60);
+    const ws1 = deriveStateWorkspace({ orgId: ORG, targetObjectId: T1, environment: `${long}x`, region: "" });
+    const ws2 = deriveStateWorkspace({ orgId: ORG, targetObjectId: T1, environment: `${long}y`, region: "" });
+    expect(ws1.slice(0, 38)).toBe(ws2.slice(0, 38));
+    expect(ws1).not.toBe(ws2);
+  });
+
+  it("carries a 24-hex (96-bit) digest", () => {
+    const ws = deriveStateWorkspace({ orgId: ORG, targetObjectId: T1, environment: "prod", region: "" });
+    expect(ws).toMatch(/^prod-[0-9a-f]{24}$/);
   });
 });

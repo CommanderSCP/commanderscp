@@ -1031,6 +1031,79 @@ describe(
       ).toMatchObject({ changed: ["executionSystemNamespace"] });
     });
 
+    it("PROBE E (operator) — an Operator cannot re-point a permissive SANDBOX system at the prod Argo; a secret:write re-point voids its allowlist", async () => {
+      // The final re-verify's probe, kept: an admin's sandbox system, elsewhere, allowing a scratch
+      // repo; an Operator (object:write) re-points it at the prod Argo, binds a target to it,
+      // re-declares the target's repo and proposes. Before the routing door, `attacker/evil` was
+      // submitted to the prod Argo with the prod plan credentials.
+      const opUser = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+      const op = new ScpClient({ baseUrl: server.baseUrl, token: opUser.token });
+      const elsewhere = {
+        kind: "argo-workflows",
+        serverUrl: "http://127.0.0.1:9",
+        namespace: NAMESPACE,
+        allowInternalEgress: true
+      };
+      const sandbox = await admin.object("execution-system").create({
+        name: `sandbox-${randomUUID().slice(0, 6)}`,
+        properties: elsewhere
+      });
+      await admin.executors.putSourceAllowlist(sandbox.id, ["attacker/evil"]);
+
+      const repoint = await op
+        .object("execution-system")
+        .update(sandbox.id, { properties: { ...elsewhere, serverUrl: argoUrl } })
+        .then(() => undefined)
+        .catch((e: unknown) => e as { status?: number; problem?: { detail?: string } });
+      expect(repoint?.status, "an Operator re-pointed an execution system").toBe(403);
+      expect(repoint?.problem?.detail).toMatch(/secret:write/);
+      expect((await admin.object("execution-system").get(sandbox.id)).properties).toMatchObject({
+        serverUrl: "http://127.0.0.1:9"
+      });
+      // Renaming stays at object:write — only the properties are the credentials' routing.
+      await op
+        .object("execution-system")
+        .update(sandbox.id, { name: `sandbox-renamed-${randomUUID().slice(0, 6)}` });
+
+      // THE BELT: a LEGITIMATE re-point (secret:write) still voids the list set for the old endpoint.
+      await admin
+        .object("execution-system")
+        .update(sandbox.id, { properties: { ...elsewhere, serverUrl: argoUrl } });
+      const target = await admin.deploymentTargets.create({
+        name: `probe-e-op-${randomUUID().slice(0, 6)}`,
+        properties: {
+          environment: ENVIRONMENT,
+          region: "eop",
+          infrastructurePath: "infra",
+          infrastructureRepo: "attacker/evil"
+        }
+      });
+      await op.executors.putBinding(target.id, {
+        executionSystemId: sandbox.id,
+        type: "infrastructure",
+        externalRef: "scp-infra-plan-v1"
+      });
+      const proposeEvil = () =>
+        op.changes.propose({
+          name: `e ${randomUUID().slice(0, 6)}`,
+          targets: [target.id],
+          type: "infrastructure",
+          sourceRef: { repo: "attacker/evil", commit: "d".repeat(40) }
+        });
+      const stale = await proposeEvil();
+      await settle(stale.id, "infra_declaration_refused");
+      expect(
+        byGate(await decisionsOf(stale.id), "infra_source_not_allowed")?.inputContext
+      ).toMatchObject({ repo: "attacker/evil", allowlistRoutingCurrent: false });
+
+      // CONTROL: re-set for the new endpoint, the same plan is submitted — staleness was the reason.
+      await admin.executors.putSourceAllowlist(sandbox.id, ["attacker/evil"]);
+      const current = await proposeEvil();
+      expect((await submissionFor(current.id)).parameters).toMatchObject({
+        sourceRepo: "attacker/evil"
+      });
+    });
+
     it("SEPARATION OF DUTIES reads the DECLARER — the human who REPORTED a plan cannot accept it", async () => {
       // A change-source report is proposed by the system on the reporter's behalf; the reporter is
       // recorded as the declarer, and separation of duties reads both.

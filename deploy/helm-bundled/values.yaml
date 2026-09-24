@@ -232,7 +232,7 @@ bundledExecutor:
         # otherwise beat it (measured) — so its override is the only one, replacing any `backend`
         # or `cloud` block a normal file declares, and OpenTofu's own record of the configured
         # backend is checked after init. Each deployment-target gets its own workspace in this
-        # backend, `<environment-slug>-<12-hex digest of org+target+region>`, derived by SCP: a
+        # backend, `<environment-slug>-<24-hex digest of org+target+environment+region>`, derived by SCP: a
         # lowercase RFC 1123 label of at most 63 characters, so every backend accepts it —
         # `kubernetes` included, whose Secret label `tfstateWorkspace` caps at 63.
         stateBackend:

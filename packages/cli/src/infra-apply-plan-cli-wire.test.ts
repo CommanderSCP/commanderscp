@@ -18,11 +18,18 @@ vi.mock("@scp/sdk", () => {
     executors = {
       putSourceAllowlist: async (system: string, repos: string[]) => {
         allowlistCalls.push({ system, repos });
-        return { executionSystemId: system, repos, recordedBySubjectId: null, updatedAt: null };
+        return {
+          executionSystemId: system,
+          repos,
+          routingCurrent: true,
+          recordedBySubjectId: null,
+          updatedAt: null
+        };
       },
       getSourceAllowlist: async (system: string) => ({
         executionSystemId: system,
         repos: ["acme/infra", "acme/*"],
+        routingCurrent: true,
         recordedBySubjectId: null,
         updatedAt: null
       })

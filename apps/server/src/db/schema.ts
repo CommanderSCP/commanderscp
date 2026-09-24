@@ -2627,6 +2627,10 @@ export const executionSystemSourceAllowlists = pgTable(
       .references(() => objects.id),
     /** `owner/name`, or an `owner/*` glob. Empty = nothing may run with this system's credentials. */
     repos: text("repos").array().notNull(),
+    /** The system's routing (`kind`, `serverUrl`, `namespace`, `tokenSecretKey`) the list was set FOR,
+     *  as `executionSystemRoutingFingerprint`. A reader whose live system no longer matches reads
+     *  "nothing allowed": the list follows the credentials' destination, never a re-point of it. */
+    routingFingerprint: text("routing_fingerprint").notNull(),
     /** Stamped server-side from the authenticated subject. */
     recordedBySubjectId: uuid("recorded_by_subject_id").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
