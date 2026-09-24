@@ -1807,24 +1807,46 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         Application whose single source is an operator-installed pass-through carrier chart. The
         SCP-authored Rollout sits in its values, and `@scp/plugin-argocd` creates or updates the
         Application, then syncs it.
-      - The Rollout's steps come from the release topology wave that names the target's place
-        (`rollout`, the D12 vocabulary). Every authored pause is timed.
+      - **Where the steps come from** (owner D-a): the component's own D12 declaration wins; the
+        release-topology wave that names the target's place applies where it declares none. Every
+        authored pause is timed, and blue-green is supported with `autoPromotionSeconds` required
+        (owner D-b). A rollback re-authors the prior manifest recorded as `priorStateRef`, and the
+        first deployment's rollback is refused (owner D-c).
+      - **Adversarial review of #413 found two BLOCKING defects, both fixed by property:**
+        - **A recipe could smuggle an Application.** A campaign recipe carrying
+          `scpAuthoredApplication` for an undeclared component reached Argo CD as a
+          cluster-admin-by-proxy write. Fix: one server-reserved-keys table and one choke point in
+          `reconcile.ts`, covering the deploy, ops and build-destination keys (M28.1's
+          `BUILD_DESTINATION_PARAMETER_KEYS` is folded in, and M28.2's ops keys register there). A
+          plugin second layer validates every authored document against the operator's declared
+          carrier, project, namespaces and kinds.
+        - **The bundled token was cluster-admin by proxy.** It was granted on an unscoped `default`
+          project. Fix: a dedicated AppProject (carrier-only source, allowlisted namespaces, nothing
+          cluster-scoped, Rollout and Service only), with `CreateNamespace` dropped.
+      - **Also fixed:**
+        - helm-verify's RBAC pin now parses the CSV properly.
+        - The authoring door is content-checked, and what reaches Argo CD is compared EXACTLY with
+          the server's derivation.
+        - A paused or unfinished canary now reports `running`, no longer `succeeded`. This
+          overturns a test that had pinned the hazard.
+        - Names are collision-free.
+        - Every refusal branch is tested through the production path.
       - **Proved by:**
-        - `argocd-authored-deployment.integration.test.ts`: two waves through the real reconcile
-          loop and the real subprocess plugin, against a recording Argo CD stand-in that plays the
-          controller. Deleting the reconcile call makes it red.
-        - The ADR-0008 §3 standing tests (`authored-application.test.ts`, and the same stand-in in
-          the integration suite) go red on an added `promote` call.
-        - helm-verify pins the bundled SCP account's exact Argo CD grants.
+        - `argocd-authored-deployment.integration.test.ts` (16 cases through the real reconcile loop
+          and subprocess plugin, against a recording, content-aware Argo CD stand-in). Deleting the
+          reconcile call makes it red.
+        - `authored-application.test.ts` (ADR-0008 §3 standing tests, the second layer, and phase
+          gating).
+        - `reserved-trigger-parameters.test.ts`, whose lane-key census fails on any key nobody
+          classified.
+        - helm-verify: the exact grant set, the AppProject, and seven render refusals.
         - `deployment-authoring-reachability.test.ts`.
-      - **Real counterparty:** a disposable kind cluster with the vendored CRDs. Server-side
-        `--validate=strict` dry-runs passed, and a negative control was refused.
-      - **Not proved:**
-        - A live Argo CD repo-server or Rollouts controller: no image is cached, and the homelab
-          cluster was left untouched.
-        - Rollback of an authored target is **refused** (D7), not performed.
-        - Blue-green is not authored (D4).
-      - Three owner questions are listed in the ADR.
+        - Every guard is mutation-proved (logged in the PR).
+      - **Real counterparty:** a disposable kind cluster with the vendored CRDs. The AppProject,
+        five strategy renders and their Applications passed server-side `--validate=strict`
+        dry-runs, and a negative control was refused.
+      - **Not proved:** a live Argo CD repo-server, RBAC or AppProject evaluation, or a Rollouts
+        controller. No image is cached locally, and the homelab cluster was left untouched.
   - **M28.5 — the cross-cutting proof.** One estate exercising all four paths, so no increment can
     be green while the capability is unreachable — the M27.9 lesson as a standing gate.
     - **DoD:** deleting the wiring for any one lane makes a test red.
