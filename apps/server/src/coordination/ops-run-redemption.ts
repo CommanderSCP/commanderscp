@@ -136,6 +136,8 @@ export interface CreateOpsRunRedemptionInput {
 /** The Workflow parameters the Argo path adds. Neither is a secret: one is ciphertext, the other is
  *  a row id that is useless without the secret. */
 export const ARGO_OPS_DELIVERY_KEYS = ["opsRunTokenSealed", "opsRunId"] as const;
+// (The lane spells these as OPS_RUN_TOKEN_SEALED_PARAMETER / OPS_RUN_ID_PARAMETER, which is what the
+// reserved-trigger-parameters census reads; ops-argo-pin.test.ts asserts the two agree.)
 
 /**
  * RECONCILE-TIME, in the trigger's transaction: derive the bound (the SAME `deriveOpsBound` Mode C

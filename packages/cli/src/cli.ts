@@ -101,6 +101,9 @@ import type {
   OperatorCredential
 } from "@scp/schemas";
 import {
+  ARGOCD_AUTHORING_PROPERTY,
+  ArgoCdAuthoringSchema,
+  type ArgoCdAuthoring,
   DesiredStateManifestSchema,
   ExecutorTypeSchema,
   outpostClaimantTokens,
@@ -6444,6 +6447,30 @@ export function buildProgram(): Command {
         "Argo CD ClusterIP). This is a DECLARATION, not a grant: the server also requires its host to " +
         "be in the operator's SCP_INTERNAL_EGRESS_HOSTS allowlist, or egress stays blocked (ADR-0003)"
     )
+    // M28.4 (ADR-0055): where this Argo CD reads the carrier chart SCP-authored Applications render
+    // through. Without it, SCP imports and coordinates this Argo CD's Applications and creates none.
+    .option(
+      "--authoring-repo <url>",
+      "repository holding the scp-authored-manifests carrier chart (enables SCP-authored Applications)"
+    )
+    .option("--authoring-path <path>", "carrier chart path within a git --authoring-repo")
+    .option("--authoring-chart <name>", "carrier chart name within a Helm --authoring-repo")
+    .option(
+      "--authoring-revision <rev>",
+      "the carrier's pinned revision (tag, commit, or chart version)"
+    )
+    .option(
+      "--authoring-project <project>",
+      "the SCOPED Argo CD project authored Applications go in — never `default` (ADR-0055)"
+    )
+    .option(
+      "--authoring-cluster <name...>",
+      "an Argo CD cluster NAME a deployment-target's `cluster` may target (repeatable; default: in-cluster only)"
+    )
+    .option(
+      "--authoring-namespace <namespace...>",
+      "a namespace SCP may author into (repeatable) — the project's destinations"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -6455,8 +6482,48 @@ export function buildProgram(): Command {
           tokenKey?: string;
           validate: boolean;
           allowInternalEgress?: boolean;
+          authoringRepo?: string;
+          authoringPath?: string;
+          authoringChart?: string;
+          authoringRevision?: string;
+          authoringProject?: string;
+          authoringNamespace?: string[];
+          authoringCluster?: string[];
         }
       ) => {
+        // Validated HERE, before anything is written, with the server's own schema: a half-declared
+        // carrier would otherwise register cleanly and surface only as a refused first deploy.
+        let authoring: ArgoCdAuthoring | undefined;
+        const authoringFlags = [
+          opts.authoringRepo,
+          opts.authoringPath,
+          opts.authoringChart,
+          opts.authoringRevision,
+          opts.authoringProject,
+          opts.authoringNamespace
+        ];
+        if (authoringFlags.some((f) => f !== undefined)) {
+          const parsed = ArgoCdAuthoringSchema.safeParse({
+            repoURL: opts.authoringRepo,
+            ...(opts.authoringPath !== undefined ? { path: opts.authoringPath } : {}),
+            ...(opts.authoringChart !== undefined ? { chart: opts.authoringChart } : {}),
+            targetRevision: opts.authoringRevision,
+            project: opts.authoringProject,
+            namespaces: opts.authoringNamespace ?? [],
+            ...(opts.authoringCluster ? { clusters: opts.authoringCluster } : {})
+          });
+          if (!parsed.success) {
+            throw new Error(
+              `the --authoring-* flags do not describe a carrier: ` +
+                parsed.error.issues
+                  .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+                  .join("; ") +
+                ` (need --authoring-repo, --authoring-revision, a scoped --authoring-project, at ` +
+                `least one --authoring-namespace, and exactly one of --authoring-path / --authoring-chart)`
+            );
+          }
+          authoring = parsed.data;
+        }
         const client = await clientFromStoredCredentials(opts);
         const serverUrl = opts.url.replace(/\/+$/, "");
         const tokenKey = opts.tokenKey ?? `${opts.name}-argocd-token`;
@@ -6490,7 +6557,8 @@ export function buildProgram(): Command {
               kind: "argocd",
               serverUrl,
               tokenSecretKey: tokenKey,
-              ...(opts.allowInternalEgress ? { allowInternalEgress: true } : {})
+              ...(opts.allowInternalEgress ? { allowInternalEgress: true } : {}),
+              ...(authoring ? { [ARGOCD_AUTHORING_PROPERTY]: authoring } : {})
             }
           },
           { idempotencyKey: randomUUID() }
@@ -6498,6 +6566,12 @@ export function buildProgram(): Command {
         console.log(
           `Registered execution-system '${opts.name}' (${created.id}). Token stored as secret '${tokenKey}'.`
         );
+        if (authoring) {
+          console.log(
+            `Authoring enabled: a component declaring properties.deployment and bound here gets an ` +
+              `Application SCP creates, rendered through ${authoring.repoURL} @ ${authoring.targetRevision}.`
+          );
+        }
         // Credential locality: `connect` chooses where it lives. See docs/cli.md §103.
         try {
           const self = await client.federation.self();

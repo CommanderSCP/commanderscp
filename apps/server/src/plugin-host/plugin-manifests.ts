@@ -122,6 +122,39 @@ export function validatePluginConfig(module: string, config: unknown): void {
   validateProperties(manifest.configSchema, config ?? {});
 }
 
+/** Config keys a module DECLARES that only the privileged `execution-system` object may supply
+ *  (M28.4 fix round, ADR-0055 D9). `authoring` is the operator's bound on what SCP may author into
+ *  that Argo CD — carrier, project, namespaces — so a tenant writing an INLINE binding's config must
+ *  never be able to set it: that would let `object:write` choose its own bound. The same rule
+ *  ADR-0003 applies to `allowInternalEgress`. */
+export const SYSTEM_ONLY_CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
+  argocd: ["authoring"]
+};
+
+/** Refuse an inline binding config that sets a system-only key — at every binding write door. */
+export function assertNoSystemOnlyConfig(module: string, config: unknown): void {
+  const keys = (SYSTEM_ONLY_CONFIG_KEYS[module] ?? []).filter(
+    (k) => config !== null && typeof config === "object" && Object.hasOwn(config, k)
+  );
+  if (keys.length > 0) {
+    throw badRequest(
+      `an inline '${module}' binding may not set ${keys.join(", ")} — only the execution-system ` +
+        `object declares it (ADR-0055). Bind through an execution-system that carries it.`
+    );
+  }
+}
+
+/** Strip system-only keys from an inline binding's stored config — the READ-side twin of
+ *  `assertNoSystemOnlyConfig`, for rows written before the write door refused them. */
+export function withoutSystemOnlyConfig(
+  module: string,
+  config: Record<string, unknown>
+): Record<string, unknown> {
+  const keys = SYSTEM_ONLY_CONFIG_KEYS[module] ?? [];
+  if (keys.length === 0) return config;
+  return Object.fromEntries(Object.entries(config).filter(([k]) => !keys.includes(k)));
+}
+
 /** The config keys a module's own manifest DECLARES.
  *
  *  Used to carry module-specific settings from an `execution-system` object into a system-backed

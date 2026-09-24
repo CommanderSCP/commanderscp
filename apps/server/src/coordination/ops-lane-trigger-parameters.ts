@@ -54,6 +54,12 @@ export class OpsDeclarationRefused extends TriggerParameterRefusal {
   readonly action = WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION;
 }
 
+/** The two Workflow parameters the Argo path delivers (ADR-0054 D3), spelled as constants so the
+ *  reserved-trigger-parameters census reads them out of this lane and `RESERVED_BY_LANE["ops-argo"]`
+ *  registers them. */
+export const OPS_RUN_TOKEN_SEALED_PARAMETER = "opsRunTokenSealed";
+export const OPS_RUN_ID_PARAMETER = "opsRunId";
+
 /** A recipe restating a bound or delivery key (ADR-0052/0054) — terminal, with a Decision. */
 export class OpsRecipeRefused extends OpsMaterialRefusal {}
 
@@ -246,7 +252,10 @@ export async function opsLaneTriggerParameters(
       },
       masterKey: input.masterKey
     });
-    return { opsRunTokenSealed, opsRunId };
+    return {
+      [OPS_RUN_TOKEN_SEALED_PARAMETER]: opsRunTokenSealed,
+      [OPS_RUN_ID_PARAMETER]: opsRunId
+    };
   }
 
   const material = await deriveOpsRunMaterial(tx, {

@@ -240,5 +240,13 @@ export async function deriveOpsRunMaterial(
     expiresAt: issued.expiresAt
   });
 
-  return { ...bound, opsCredentialSecretKey };
+  // Spelled key by key rather than `...bound`: the reserved-trigger-parameters census reads a
+  // lane's keys out of this return, and a spread would hide them from it.
+  return {
+    opsRole: bound.opsRole,
+    opsInventory: bound.opsInventory,
+    opsEgressAllowlist: bound.opsEgressAllowlist,
+    opsPrincipals: bound.opsPrincipals,
+    opsCredentialSecretKey
+  };
 }

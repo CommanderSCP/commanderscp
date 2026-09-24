@@ -2274,6 +2274,157 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   }
 }
 
+/**
+ * M28.4 (ADR-0055) — WHAT THE SCP ACCOUNT MAY DO IN THE BUNDLED ARGO CD, parsed the way Argo CD
+ * parses it. The first version of this check kept only lines beginning with the literal
+ * `"p, scp-coordinator,"`, so `g, scp-coordinator, role:admin`, an unspaced
+ * `p,scp-coordinator,applications,action/*,*\/*,allow`, a permissive `policy.default` and a
+ * `policy.<overlay>.csv` key all passed it. Now: every `policy*.csv` key is read, every line is
+ * split on commas and trimmed (Casbin's own tokenisation), comments are dropped, and the account's
+ * `p` grants, its `g` bindings and `policy.default` are all returned for the caller to pin EXACTLY.
+ */
+function scpArgoCdPolicy(
+  data: Record<string, string> | undefined,
+  account = "scp-coordinator"
+): { grants: string[]; bindings: string[]; policyDefault: string } {
+  const grants: string[] = [];
+  const bindings: string[] = [];
+  for (const [key, value] of Object.entries(data ?? {})) {
+    if (!/^policy(\..+)?\.csv$/.test(key)) continue;
+    for (const raw of value.split("\n")) {
+      const line = raw.replace(/#.*$/, "").trim();
+      if (!line) continue;
+      const fields = line.split(",").map((f) => f.trim());
+      if (fields[0] === "p" && fields[1] === account) grants.push(fields.join(", "));
+      if (fields[0] === "g" && fields.slice(1).includes(account)) bindings.push(fields.join(", "));
+    }
+  }
+  return {
+    grants: grants.sort(),
+    bindings,
+    policyDefault: (data?.["policy.default"] ?? "").trim()
+  };
+}
+
+/** Known-positive controls for `scpArgoCdPolicy`, run on every helm-verify: a parser that cannot
+ *  see these would pass a chart that grants them (the "claim about a tool" rule, CLAUDE.md). */
+function selfTestScpArgoCdPolicy(): void {
+  const cases: [
+    string,
+    Record<string, string>,
+    (p: ReturnType<typeof scpArgoCdPolicy>) => boolean
+  ][] = [
+    [
+      "g binding",
+      { "policy.csv": "g, scp-coordinator, role:admin" },
+      (p) => p.bindings.length === 1
+    ],
+    [
+      "unspaced grant",
+      { "policy.csv": "p,scp-coordinator,applications,action/*,*/*,allow" },
+      (p) => p.grants.includes("p, scp-coordinator, applications, action/*, */*, allow")
+    ],
+    [
+      "overlay key",
+      { "policy.extra.csv": "p, scp-coordinator, applications, delete, */*, allow" },
+      (p) => p.grants.length === 1
+    ],
+    [
+      "permissive default",
+      { "policy.default": "role:admin" },
+      (p) => p.policyDefault === "role:admin"
+    ]
+  ];
+  for (const [what, data, seen] of cases) {
+    assert(
+      seen(scpArgoCdPolicy(data)),
+      `[argocd-rbac self-test] the policy parser cannot see a ${what}`
+    );
+  }
+}
+
+/** Pins the SCP account's Argo CD authority EXACTLY. `authoringProject` null ⇒ read/sync only. */
+function verifyScpArgoCdGrants(
+  docs: K8sDoc[],
+  label: string,
+  authoringProject: string | null
+): void {
+  const rbacCm = docs.find(
+    (d) => d.kind === "ConfigMap" && d.metadata?.name === "argocd-rbac-cm"
+  ) as (K8sDoc & { data?: Record<string, string> }) | undefined;
+  assert(rbacCm, `[${label}] bundled Argo CD rendered no argocd-rbac-cm`);
+  const policy = scpArgoCdPolicy(rbacCm?.data);
+  const expectedGrants = [
+    ...(authoringProject
+      ? [
+          `p, scp-coordinator, applications, create, ${authoringProject}/*, allow`,
+          `p, scp-coordinator, applications, update, ${authoringProject}/*, allow`
+        ]
+      : []),
+    "p, scp-coordinator, applications, get, */*, allow",
+    "p, scp-coordinator, applications, sync, */*, allow"
+  ].sort();
+  assert(
+    JSON.stringify(policy.grants) === JSON.stringify(expectedGrants),
+    `[${label}] bundled Argo CD grants the SCP account ${JSON.stringify(policy.grants)}; expected exactly ${JSON.stringify(expectedGrants)} — anything beyond get/sync everywhere and create/update in the authoring project lets SCP drive a Rollout (ADR-0008 §3) or reach the cluster (ADR-0055)`
+  );
+  assert(
+    policy.bindings.length === 0,
+    `[${label}] the SCP account is bound to a role (${policy.bindings.join("; ")}) — its authority must be exactly its own p-lines`
+  );
+  assert(
+    policy.policyDefault === "",
+    `[${label}] argocd-rbac-cm sets policy.default '${policy.policyDefault}', which every account (SCP's included) inherits`
+  );
+}
+
+/** The dedicated authoring AppProject, pinned EXACTLY (ADR-0055 D2). */
+function verifyAuthoringProject(
+  docs: K8sDoc[],
+  label: string,
+  expected: { project: string; carrierRepoURL: string; namespaces: string[] }
+): void {
+  const projects = docs.filter((d) => d.kind === "AppProject");
+  assert(
+    projects.length === 1,
+    `[${label}] expected exactly one AppProject, got ${projects.length}`
+  );
+  const spec = (projects[0]?.spec ?? {}) as Record<string, unknown>;
+  assert(
+    projects[0]?.metadata?.name === expected.project,
+    `[${label}] AppProject is not named '${expected.project}'`
+  );
+  const want = {
+    sourceRepos: [expected.carrierRepoURL],
+    destinations: expected.namespaces.map((namespace) => ({
+      server: "https://kubernetes.default.svc",
+      namespace
+    })),
+    clusterResourceWhitelist: [],
+    namespaceResourceWhitelist: [
+      { group: "argoproj.io", kind: "Rollout" },
+      { group: "", kind: "Service" }
+    ]
+  };
+  const got = {
+    sourceRepos: spec.sourceRepos,
+    destinations: spec.destinations,
+    clusterResourceWhitelist: spec.clusterResourceWhitelist,
+    namespaceResourceWhitelist: spec.namespaceResourceWhitelist
+  };
+  assert(
+    JSON.stringify(got) === JSON.stringify(want),
+    `[${label}] the authoring AppProject is ${JSON.stringify(got)}; expected exactly ${JSON.stringify(want)} — any wider and SCP's token is cluster-admin by proxy through Argo CD's controller`
+  );
+  const extraKeys = Object.keys(spec).filter(
+    (k) => !["description", ...Object.keys(want)].includes(k)
+  );
+  assert(
+    extraKeys.length === 0,
+    `[${label}] the authoring AppProject carries unexpected spec keys ${extraKeys.join(", ")}`
+  );
+}
+
 /** Assertions for the SEPARATE bundled-backends chart. See docs/helm-verify.md §30. */
 function verifyBundledChart(docs: K8sDoc[]): void {
   const label = "bundled";
@@ -2302,6 +2453,14 @@ function verifyBundledChart(docs: K8sDoc[]): void {
       `[${label}] bundled backend namespace '${ns}' rendered no resources`
     );
   }
+
+  // M28.4 (ADR-0055) — ADR-0008 §3 AT THE CREDENTIAL. SCP's Argo CD account may read and sync
+  // everything and create/update Applications in the authoring project; it may never run a resource
+  // action (Argo Rollouts' promote/abort/retry/restart/pause/resume), patch or delete a managed
+  // resource (`update/*`, `delete`), or override. An allowlist of exact grants, not a denylist: a
+  // grant nobody listed here is a failure.
+  // Authoring is OFF by default: the account reads and syncs, and creates nothing.
+  verifyScpArgoCdGrants(bundled, label, null);
 
   // Every image must be RETARGETED — an un-rewritten upstream ref 404s in an air-gapped registry.
   const bundledImages = bundled
@@ -3026,6 +3185,77 @@ function main(): void {
       "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless"
     ])
   );
+
+  // M28.4 (ADR-0055) — SCP-authored Applications: the dedicated AppProject and the exact grant set
+  // when authoring is ON, and the chart's own refusals of every unscoped configuration.
+  console.log("helm-verify: checking the bundled Argo CD authoring project (ADR-0055)...");
+  {
+    selfTestScpArgoCdPolicy();
+    const base = [
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
+      "--set",
+      "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3"
+    ];
+    const authoring = {
+      project: "scp-authored",
+      carrierRepoURL: "https://gitea.example/platform/gitops.git",
+      namespaces: ["shop", "shop-gamma"]
+    };
+    const on = [
+      ...base,
+      "--set",
+      `bundledExecutor.argocd.authoring.project=${authoring.project}`,
+      "--set",
+      `bundledExecutor.argocd.authoring.carrierRepoURL=${authoring.carrierRepoURL}`,
+      "--set",
+      `bundledExecutor.argocd.authoring.namespaces={${authoring.namespaces.join(",")}}`
+    ];
+    const docs = renderBundledChart(on);
+    verifyScpArgoCdGrants(docs, "authoring", authoring.project);
+    verifyAuthoringProject(docs, "authoring", authoring);
+    // Authoring OFF renders no project at all.
+    assert(
+      renderBundledChart(base).every((d) => d.kind !== "AppProject"),
+      "[authoring] authoring disabled must render no AppProject"
+    );
+    // Every unscoped configuration is REFUSED at render, not rendered and trusted.
+    const refusals: [string, string[]][] = [
+      [
+        "the unscoped default project",
+        ["--set", "bundledExecutor.argocd.authoring.project=default"]
+      ],
+      ["kube-system", ["--set", "bundledExecutor.argocd.authoring.namespaces={kube-system}"]],
+      [
+        "Argo CD's own namespace",
+        ["--set", "bundledExecutor.argocd.authoring.namespaces={scp-argocd}"]
+      ],
+      [
+        "a bundled backend's namespace",
+        ["--set", "bundledExecutor.argocd.authoring.namespaces={scp-gitea}"]
+      ],
+      ["the default namespace", ["--set", "bundledExecutor.argocd.authoring.namespaces={default}"]],
+      ["no carrier", ["--set", "bundledExecutor.argocd.authoring.carrierRepoURL="]],
+      ["no namespaces", ["--set", "bundledExecutor.argocd.authoring.namespaces=null"]]
+    ];
+    for (const [what, override] of refusals) {
+      let refused = false;
+      try {
+        renderRaw(BUNDLED_CHART_DIR, "scp-bundled", [...on, ...override]);
+      } catch (err) {
+        refused = /ADR-0055/.test(String((err as { stderr?: unknown }).stderr ?? err));
+      }
+      assert(
+        refused,
+        `[authoring] the chart must REFUSE ${what} with an ADR-0055 error, and rendered it`
+      );
+    }
+    console.log(
+      `  authoring project pinned exactly; ${refusals.length} unscoped configurations refused at render`
+    );
+  }
 
   // M15.4 federation-role guardrail (CHART-RENDER-TIME LINT, NOT runtime authority) — explicit
   // positive AND negative cases. The operator sets both federationRole and the enabled flags; this

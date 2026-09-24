@@ -125,7 +125,7 @@ import {
   upsertComponentConvergence,
   upsertComponentRollout
 } from "./rollout-convergence-repo.js";
-import { validatePluginConfig } from "../plugin-host/plugin-manifests.js";
+import { assertNoSystemOnlyConfig, validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 
 /** Rejects a diff creating a component with no owning service. See docs/coordination-as-code.md §103. */
 function assertComponentsContained(diff: PlanDiff): void {
@@ -255,6 +255,7 @@ function assertInlineBindingsValid(diff: PlanDiff): void {
       );
     }
     validatePluginConfig(target.pluginModule, target.config);
+    assertNoSystemOnlyConfig(target.pluginModule, target.config);
   }
 }
 

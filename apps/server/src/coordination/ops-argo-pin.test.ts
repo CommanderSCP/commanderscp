@@ -9,6 +9,12 @@ import {
   validateArgoOpsPin,
   type ArgoOpsPinInput
 } from "./ops-argo-pin.js";
+import { ARGO_OPS_DELIVERY_KEYS } from "./ops-run-redemption.js";
+import {
+  OPS_RUN_ID_PARAMETER,
+  OPS_RUN_TOKEN_SEALED_PARAMETER
+} from "./ops-lane-trigger-parameters.js";
+import { RESERVED_BY_LANE } from "./reserved-trigger-parameters.js";
 
 /** The Argo host-ops pin's write-time validation (M28.2 fix round, ADR-0054 D9). An unusable pin is
  *  refused at the DOOR, so it can never be the reason a run is refused later. */
@@ -89,6 +95,14 @@ describe("the Argo host-ops pin", () => {
     // read-back would silently not run for it.
     for (const t of OPS_ARGO_CATALOG_TEMPLATES) expect(SCP_OPS_TEMPLATE_PATTERN.test(t)).toBe(true);
     expect(SCP_OPS_TEMPLATE_PATTERN.test("scp-build-image-v1")).toBe(false);
+  });
+});
+
+describe("the Argo delivery keys are ONE set, and reserved", () => {
+  it("the lane's constants, the redemption module's list and RESERVED_BY_LANE['ops-argo'] agree", () => {
+    const lane = [OPS_RUN_TOKEN_SEALED_PARAMETER, OPS_RUN_ID_PARAMETER].sort();
+    expect([...ARGO_OPS_DELIVERY_KEYS].sort()).toEqual(lane);
+    expect([...RESERVED_BY_LANE["ops-argo"]!.keys].sort()).toEqual(lane);
   });
 });
 

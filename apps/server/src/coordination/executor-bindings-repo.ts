@@ -20,7 +20,9 @@ import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/cont
 import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
 import {
   assertEveryModuleHasManifest,
-  declaredConfigKeys
+  assertNoSystemOnlyConfig,
+  declaredConfigKeys,
+  withoutSystemOnlyConfig
 } from "../plugin-host/plugin-manifests.js";
 
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
@@ -70,12 +72,27 @@ export function executionSystemPluginConfig(
 /** RESERVED plugin-instance-id namespace: only `executionSystemInstanceId()` may mint ids under it. */
 export const EXECUTION_SYSTEM_INSTANCE_PREFIX = "execution-system:";
 
+/** The charset a caller-supplied plugin instance id must match: no whitespace, quotes or
+ *  brackets, so an id can never carry text a reader of an error message could mistake for anything
+ *  else. (':' is allowed; the reserved `execution-system:` prefix is refused separately.) */
+export const SAFE_INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
 /** Refuse an instance id inside the reserved namespace. See docs/coordination.md §434. */
 export function assertNotReservedInstanceId(pluginInstanceId: string): void {
   if (pluginInstanceId.startsWith(EXECUTION_SYSTEM_INSTANCE_PREFIX)) {
     throw new Error(
       `pluginInstanceId '${pluginInstanceId}' uses the reserved '${EXECUTION_SYSTEM_INSTANCE_PREFIX}' namespace — ` +
         `bind via --execution-system instead of naming its instance id directly`
+    );
+  }
+  // A SAFE CHARSET for every caller-supplied id (M28.4 review round 3). An instance id is echoed
+  // into host error text (`plugin '<id>' RPC error: …`), logs and Decisions; free text there let a
+  // tenant plant a string that later parsing mistook for a plugin's verdict (probe F). Validated on
+  // WRITE only — the /v1 schemas are unchanged, so no stored row or response shape moves.
+  if (!SAFE_INSTANCE_ID.test(pluginInstanceId)) {
+    throw badRequest(
+      `pluginInstanceId must be 1–128 characters of letters, digits, '.', '_', ':' or '-', starting ` +
+        `with a letter or digit`
     );
   }
 }
@@ -288,6 +305,9 @@ export async function upsertExecutorBinding(
   // path can't reintroduce the hole by forgetting the check.
   if (!input.executionSystemId) {
     assertNotReservedInstanceId(input.pluginInstanceId);
+    // The repo-level net for execution-system-only config keys (ADR-0055 D9): every inline write
+    // door — the route, the IaC apply, the binding-policy reconciler — passes through here.
+    assertNoSystemOnlyConfig(input.pluginModule, input.config);
   }
   // Key the "is this an update or an insert" lookup on (target, TYPE). Without the Type the lookup
   // found "the" binding and UPDATED it — which is exactly how binding a component's second pipeline
@@ -896,7 +916,12 @@ export async function resolveExecutorPluginInstance(
   // Resolve the plugin identity and config from one of two. See docs/coordination.md §468.
   let pluginModule: string = binding.pluginModule;
   let pluginInstanceId = binding.pluginInstanceId;
-  let tenantConfig = (binding.config ?? {}) as Record<string, unknown>;
+  // An inline binding NEVER supplies an execution-system-only key, even from a row stored before
+  // the write door refused it (ADR-0055 D9) — stripped, not trusted.
+  let tenantConfig = withoutSystemOnlyConfig(
+    binding.pluginModule,
+    (binding.config ?? {}) as Record<string, unknown>
+  );
   let secretRefs = binding.secretRefs;
   // Two-layer internal-egress allowance (ADR-0003): the execution-system's declared intent AND the
   // operator's SCP_INTERNAL_EGRESS_HOSTS allowlist must BOTH permit. Never from tenant binding config.
