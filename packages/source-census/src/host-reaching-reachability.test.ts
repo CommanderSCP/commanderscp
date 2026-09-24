@@ -44,7 +44,21 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
   recordIssuance:
     "ADR-0051 D5's detective control — the ONLY thing that bounds CA compromise, since short " +
     "TTLs provably do not",
-  reconcileSerials: "surfaces a serial a host accepted that SCP never issued — the forgery signal"
+  reconcileSerials: "surfaces a serial a host accepted that SCP never issued — the forgery signal",
+  // M28.2 — host ops through an org's Argo Workflows (ADR-0054).
+  deriveOpsBound:
+    "the ONE derivation both executors share; if Mode C stopped calling it, the two paths could " +
+    "diverge on which hosts a run touches",
+  isOpsLane:
+    "decides which triggers are host-reaching at all; unreachable means the Argo path derives " +
+    "nothing and the pod has no token",
+  createOpsRunRedemption:
+    "stores the Argo run's bound and seals its one-time token; with no caller no scp-ops-v1 pod " +
+    "can ever reach its material",
+  redeemOpsRun:
+    "the redeem door's logic — single-use, windowed, audited; with no caller the Argo path " +
+    "cannot obtain a certificate",
+  registerOpsRunRedemptionRoutes: "puts the redeem door on the public API"
 };
 
 const isTest = (p: string): boolean =>
