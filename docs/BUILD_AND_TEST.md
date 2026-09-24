@@ -1800,6 +1800,69 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     - **DoD:** SCP creates an Application and a Rollout for a component it did not import, and
       **still only reads** rollout state — ADR-0008 §3 asserted by a test that goes red if any write
       verb reaches a Rollout's status.
+    - **Status (2026-09-23): BUILT, [ADR-0055](adr/0055-authored-argocd-deployments.md).**
+      - **D3's premise was measured false:** SCP emitted no Kubernetes deployment config anywhere.
+        So the door is the executor `trigger` it already has, with no new verb and no git write. A
+        deploy lane (`deploy-lane-trigger-parameters.ts`, called from `reconcile.ts`) derives an
+        Application whose single source is an operator-installed pass-through carrier chart. The
+        SCP-authored Rollout sits in its values, and `@scp/plugin-argocd` creates or updates the
+        Application, then syncs it.
+      - **Where the steps come from** (owner D-a): the component's own D12 declaration wins; the
+        release-topology wave that names the target's place applies where it declares none. Every
+        authored pause is timed, and blue-green is supported with `autoPromotionSeconds` required
+        (owner D-b). Blue-green is declared in the wave plan: a component-level D12 construct would
+        need a `/v1` exception, because adding a `oneOf` member to the `/plans` response is a
+        measured oasdiff break. **The owner ruled on 2026-09-24 that it stays wave-plan only.**
+      - **A rollback re-authors the prior release's content** (owner D-c) under today's carrier and
+        project, and re-validates it against today's authoring. A target whose destination has
+        changed is refused, and the first deployment's rollback is refused.
+      - **Review round 2 fixed four more defects:**
+        - **BLOCKING — a rollback bypassed the namespace allowlist.**
+        - **A running plugin kept stale config.** The general host fix is owned by #414. This PR
+          re-validates server-side against the current authoring on every trigger, so a stale
+          plugin can only be stricter than the server, and its refusal is terminal.
+        - **`authoring` could come from a tenant's inline binding.** It is now refused at every
+          write door and stripped on read.
+        - **Plugin refusals retried forever.** They are now terminal `executor_refused` verdicts,
+          with a Decision.
+
+        The validator is also value-level now, and the server runs it too. The reserved-key census
+        discovers its lanes.
+      - **Adversarial review of #413 found two BLOCKING defects, both fixed by property:**
+        - **A recipe could smuggle an Application.** A campaign recipe carrying
+          `scpAuthoredApplication` for an undeclared component reached Argo CD as a
+          cluster-admin-by-proxy write. Fix: one server-reserved-keys table and one choke point in
+          `reconcile.ts`, covering the deploy, ops and build-destination keys (M28.1's
+          `BUILD_DESTINATION_PARAMETER_KEYS` is folded in, and M28.2's ops keys register there). A
+          plugin second layer validates every authored document against the operator's declared
+          carrier, project, namespaces and kinds.
+        - **The bundled token was cluster-admin by proxy.** It was granted on an unscoped `default`
+          project. Fix: a dedicated AppProject (carrier-only source, allowlisted namespaces, nothing
+          cluster-scoped, Rollout and Service only), with `CreateNamespace` dropped.
+      - **Also fixed:**
+        - helm-verify's RBAC pin now parses the CSV properly.
+        - The authoring door is content-checked, and what reaches Argo CD is compared EXACTLY with
+          the server's derivation.
+        - A paused or unfinished canary now reports `running`, no longer `succeeded`. This
+          overturns a test that had pinned the hazard.
+        - Names are collision-free.
+        - Every refusal branch is tested through the production path.
+      - **Proved by:**
+        - `argocd-authored-deployment.integration.test.ts` (16 cases through the real reconcile loop
+          and subprocess plugin, against a recording, content-aware Argo CD stand-in). Deleting the
+          reconcile call makes it red.
+        - `authored-application.test.ts` (ADR-0008 §3 standing tests, the second layer, and phase
+          gating).
+        - `reserved-trigger-parameters.test.ts`, whose lane-key census fails on any key nobody
+          classified.
+        - helm-verify: the exact grant set, the AppProject, and seven render refusals.
+        - `deployment-authoring-reachability.test.ts`.
+        - Every guard is mutation-proved (logged in the PR).
+      - **Real counterparty:** a disposable kind cluster with the vendored CRDs. The AppProject,
+        five strategy renders and their Applications passed server-side `--validate=strict`
+        dry-runs, and a negative control was refused.
+      - **Not proved:** a live Argo CD repo-server, RBAC or AppProject evaluation, or a Rollouts
+        controller. No image is cached locally, and the homelab cluster was left untouched.
   - **M28.5 — the cross-cutting proof.** One estate exercising all four paths, so no increment can
     be green while the capability is unreachable — the M27.9 lesson as a standing gate.
     - **DoD:** deleting the wiring for any one lane makes a test red.

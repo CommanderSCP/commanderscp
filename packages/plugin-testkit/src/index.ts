@@ -13,6 +13,15 @@ export {
 // from the package root so both real-Docker integration suites (@scp/server promotion-scan-step,
 // @scp/plugin-managed-iac) import it the same way.
 export { resolveRunnerImage, type ResolveRunnerImageOptions } from "./runner-image.js";
+// M28.4 (ADR-0055): the recording Argo CD stand-in both the plugin's unit suite and the server's
+// integration suite run against, so ADR-0008 §3 is enforced by ONE implementation of "what may
+// write a Rollout".
+export {
+  startArgoCdStandIn,
+  type ArgoCdStandIn,
+  type StandInApplication,
+  type StandInRequest
+} from "./argocd-standin.js";
 import type {
   ControlOutcomeStatus,
   ControlPlugin,

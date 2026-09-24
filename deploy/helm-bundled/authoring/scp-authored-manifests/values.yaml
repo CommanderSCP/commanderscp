@@ -1,0 +1,3 @@
+# Set per Application by CommanderSCP through `spec.source.helm.valuesObject`. Empty here: the
+# chart renders nothing unless an authored Application says what.
+manifests: []

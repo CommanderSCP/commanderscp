@@ -49,6 +49,23 @@ bundledExecutor:
     # The scoped, non-admin account SCP mints in the bundled Argo CD and coordinates through. The
     # auto-wire hook (in the MAIN chart) mints its token and stores it as an SCP secret.
     scpAccount: scp-coordinator
+    # M28.4 (ADR-0055): SCP-AUTHORED Applications. OFF by default (`project: ""`). When set, the chart
+    # renders a DEDICATED AppProject and grants the SCP account `create` + `update` on Applications in
+    # THAT project only (everywhere else it keeps `get` + `sync`). The project is the bound, because
+    # Argo CD's controller is cluster-admin and upstream's `default` project allows any repo, any
+    # destination and cluster-scoped kinds — a token scoped to `default` is cluster-admin by proxy:
+    #   sourceRepos               = [carrierRepoURL] only
+    #   destinations              = `namespaces` on the in-cluster server only
+    #   clusterResourceWhitelist  = [] (no cluster-scoped kind — no Namespace, no ClusterRoleBinding)
+    #   namespaceResourceWhitelist= Rollout + Service only (the authored kinds)
+    # The account is never granted `action/*` (Argo Rollouts' promote/abort/retry/restart/pause/resume
+    # run through resource actions) nor `update/*` / `delete`: ADR-0008 §3, enforced at the
+    # credential. `default`, `kube-*`, and every bundled/SCP control namespace are refused at render.
+    # Mirror the same three facts on the Argo CD execution-system's `properties.authoring`.
+    authoring:
+      project: ""
+      carrierRepoURL: ""
+      namespaces: []
     # Per-CONTAINER resource requests/limits. Modest defaults sized for a coordination-tier install.
     #
     # KEYED BY CONTAINER NAME, and RE-KEYED 2026-09-20 from the component names this block used to
