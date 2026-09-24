@@ -1731,7 +1731,7 @@ async function triggerWaveTarget(
               externalRef,
               waveTargetId,
               executorConfig,
-              ...(recipeParameters ? { recipeParameters } : {}),
+              recipeParameters,
               masterKey
             }).catch(asRefusal);
       if (opsParameters instanceof TriggerParameterRefusal) {

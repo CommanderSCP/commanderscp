@@ -75,7 +75,7 @@ export interface OpsLaneTriggerParameterInput {
    *  reads `opsSealingPublicKey` and `opsSourceAddresses` from it. */
   executorConfig?: Record<string, unknown>;
   /** The campaign recipe's parameters, if any — checked against the closed set (ADR-0052). */
-  recipeParameters?: Record<string, unknown>;
+  recipeParameters?: Record<string, unknown> | undefined;
   masterKey: Buffer;
 }
 

@@ -1,7 +1,6 @@
 import {
   constants as cryptoConstants,
   createHash,
-  createPublicKey,
   publicEncrypt,
   randomBytes,
   randomUUID,
@@ -24,7 +23,6 @@ import {
 import { ScpCaAuthority } from "./scp-ca-authority.js";
 import { activeAuthorityForDomain, recordIssuance } from "./ssh-ca-repo.js";
 import { getSecretValue } from "../secrets/secrets-repo.js";
-import { OpsMaterialRefusal } from "./trigger-parameter-refusal.js";
 import {
   OpsSealingKeyRefused,
   argoOpsPinForDomain,
