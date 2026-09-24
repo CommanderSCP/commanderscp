@@ -16,6 +16,7 @@ import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { managedIacWorkspaceKey, ManagedIacWorkspaceRefInvalid } from "@scp/plugin-managed-iac";
 import { isLocallyAuthoredExecutionSystem } from "../authz/execution-system-routing-door.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
@@ -321,6 +322,17 @@ export async function upsertExecutorBinding(
     // The repo-level net for execution-system-only config keys (ADR-0055 D9): every inline write
     // door — the route, the IaC apply, the binding-policy reconciler — passes through here.
     assertNoSystemOnlyConfig(input.pluginModule, input.config);
+  }
+  // managed-iac's externalRef NAMES A DIRECTORY (its workspace). Refused here, at every binding write
+  // door, unless it is already a plain name — the plugin refuses rather than maps it too, so no two
+  // refs can reach one directory and `..` reaches nothing (#417 probes G and H).
+  if (input.pluginModule === "managed-iac" && input.externalRef != null) {
+    try {
+      managedIacWorkspaceKey(input.externalRef);
+    } catch (err) {
+      if (err instanceof ManagedIacWorkspaceRefInvalid) throw badRequest(err.message);
+      throw err;
+    }
   }
   // Key the "is this an update or an insert" lookup on (target, TYPE). Without the Type the lookup
   // found "the" binding and UPDATED it — which is exactly how binding a component's second pipeline

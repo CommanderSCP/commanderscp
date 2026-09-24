@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import { resolveRunnerImage } from "@scp/plugin-testkit";
@@ -19,7 +19,8 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { decisions } from "../db/schema.js";
+import { decisions, executorBindings } from "../db/schema.js";
+import { createManagedIacExecutorPlugin } from "@scp/plugin-managed-iac";
 
 /**
  * M28.3b — MODE C APPLY, UNDER THE SAME GATE (ADR-0056 addendum 4).
@@ -286,5 +287,102 @@ describe("M28.3b: managed-iac (Mode C) apply of an accepted plan", { timeout: 30
     const p2 = await proposePlan(second.id);
     expect((await settled(p2.id)).status).toBe("infra_declaration_refused");
     expect(await gatesOf(p2.id)).toContain("infra_workspace_collision");
+  });
+
+  const bindTo = async (externalRef: string) => {
+    const t = await admin.deploymentTargets.create({ name: `ws-${randomUUID().slice(0, 6)}` });
+    await admin.executors.putBinding(t.id, {
+      pluginModule: "managed-iac",
+      pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,
+      config: {},
+      type: "infrastructure",
+      externalRef
+    });
+    return t;
+  };
+  const refusalOf = (p: Promise<unknown>) =>
+    p.then(
+      () => undefined,
+      (e: unknown) => e as { status?: number; problem?: { detail?: string } }
+    );
+
+  it("PROBE G — refs that USED to sanitize to one directory: 'alias/X' is refused at bind, and a case-alias collides", async () => {
+    const id = randomUUID().slice(0, 6);
+    // The door: a ref that is not already a plain name never reaches a binding.
+    const err = await refusalOf(bindTo(`alias/${id}`));
+    expect(err?.status, "a managed-iac binding named a non-plain workspace").toBe(400);
+    expect(err?.problem?.detail).toMatch(/not a plain workspace name/);
+    // A case-insensitive filesystem would make these one directory — so the lane treats them as one.
+    const first = await bindTo(`alias_${id}`);
+    const second = await bindTo(`ALIAS_${id}`);
+    const p1 = await proposePlan(first.id);
+    await settled(p1.id);
+    const p2 = await proposePlan(second.id);
+    expect((await settled(p2.id)).status).toBe("infra_declaration_refused");
+    expect(await gatesOf(p2.id)).toContain("infra_workspace_collision");
+  });
+
+  it("PROBE H — '..', '.', and a row written before the door: refused at bind, and refused by the lane", async () => {
+    for (const ref of ["..", ".", "a/../b"]) {
+      expect((await refusalOf(bindTo(ref)))?.status, ref).toBe(400);
+    }
+    // A binding row that predates the door (written straight to the table) is refused at plan time.
+    const t = await bindTo(`legit-${randomUUID().slice(0, 6)}`);
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(executorBindings)
+        .set({ externalRef: ".." })
+        .where(and(eq(executorBindings.orgId, org.orgId), eq(executorBindings.targetObjectId, t.id)))
+    );
+    const p = await proposePlan(t.id);
+    expect((await settled(p.id)).status).toBe("infra_declaration_refused");
+    expect(await gatesOf(p.id)).toContain("infra_workspace_ref_invalid");
+    const atRoot = (await readdir(workspaceRoot)).filter((f) =>
+      [".tfplan", "plan.json", "state-history", "terraform.tfstate"].includes(f)
+    );
+    expect(atRoot, "a run wrote into the workspace ROOT").toEqual([]);
+  });
+
+  it("the runner applies ONLY the approved `.tfplan`: a saved plan swapped under an unchanged plan.json is refused", async (ctx) => {
+    if (!requireDocker(ctx)) return;
+    const target = await managedIacTarget("network-approved");
+    const { plan } = await acceptedPlanAt(target.id);
+    const ws = workspaceOf(target.id);
+    const approvedEvidence = await readFile(join(ws, "plan.json"), "utf8");
+    // OUTSIDE SCP: a second plan made in this workspace (the plugin driven directly, no change, no
+    // gate) replaces `.tfplan`; then the approved evidence is put back, so plan.json still matches.
+    await writeFile(join(ws, "main.tf"), MAIN_TF("network-swapped"), "utf8");
+    const direct = createManagedIacExecutorPlugin();
+    const dctx = {
+      orgId: org.orgId,
+      scopeKey: "out-of-band",
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      secrets: { get: async () => undefined },
+      http: {
+        request: async () => {
+          throw new Error("never");
+        }
+      },
+      config: {
+        runnerImage: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,
+        workspaceRoot,
+        networkMode: "none",
+        statePath: join(workspaceRoot, `out-of-band-${randomUUID().slice(0, 6)}.json`)
+      }
+    };
+    const outOfBand = await direct.trigger(dctx, {
+      kind: "sync",
+      targetRef: target.id,
+      parameters: { iacAction: "plan" },
+      idempotencyKey: `oob-${randomUUID().slice(0, 8)}`
+    });
+    expect((await direct.status(dctx, outOfBand)).phase).toBe("succeeded");
+    expect(await readFile(join(ws, "plan.json"), "utf8")).not.toBe(approvedEvidence);
+    await writeFile(join(ws, "plan.json"), approvedEvidence, "utf8");
+
+    const apply = await proposeApply(target.id, plan.id);
+    const t = await settled(apply.id);
+    expect(t.status, "the swapped saved plan was applied").toBe("failed");
+    expect(await stateOf(target.id), "the swapped plan changed infrastructure").toBeUndefined();
   });
 });

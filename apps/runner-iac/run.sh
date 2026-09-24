@@ -60,6 +60,20 @@ case "$ACTION" in
       echo "scp-runner-iac: apply requires a prior 'plan' run in this same workspace (.tfplan missing)" >&2
       exit 1
     fi
+    # THE APPLIED FILE IS THE APPROVED PLAN (ADR-0056 addendum 4). The server approved a plan by the
+    # digest of `tofu show -json` of its `.tfplan` — exactly what the plan action wrote to plan.json —
+    # so re-derive it here from the `.tfplan` about to be applied, and refuse (exit 3) unless it is
+    # that plan. plan.json is evidence; .tfplan is what runs, and anything that can write the
+    # workspace could replace one without the other.
+    if [ -z "${SCP_APPROVED_PLAN_DIGEST:-}" ]; then
+      echo "scp-runner-iac: apply requires SCP_APPROVED_PLAN_DIGEST (the approved plan's digest)" >&2
+      exit 3
+    fi
+    in_workspace="$(tofu show -json .tfplan | sha256sum | cut -d' ' -f1)"
+    if [ "$in_workspace" != "$SCP_APPROVED_PLAN_DIGEST" ]; then
+      echo "scp-runner-iac: the saved plan is ${in_workspace:0:12}, not the approved ${SCP_APPROVED_PLAN_DIGEST:0:12} — refusing to apply it" >&2
+      exit 3
+    fi
     mkdir -p state-history
     if [ -f terraform.tfstate ]; then
       cp terraform.tfstate "state-history/$(date -u +%Y%m%dT%H%M%SZ)-pre-apply.tfstate"

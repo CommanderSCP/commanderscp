@@ -2631,6 +2631,9 @@ export const executionSystemSourceAllowlists = pgTable(
      *  `executionSystemRoutingFingerprint`. A reader whose live system no longer matches reads
      *  "nothing allowed": the list follows the credentials' destination, never a re-point of it. */
     routingFingerprint: text("routing_fingerprint").notNull(),
+    /** Which `executionSystemRoutingFingerprint` produced it. 1 = #415's four fields (rows written
+     *  before 0124 default to it and are checked under it); every write stamps the current one. */
+    routingFingerprintVersion: integer("routing_fingerprint_version").notNull().default(1),
     /** Stamped server-side from the authenticated subject. */
     recordedBySubjectId: uuid("recorded_by_subject_id").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()

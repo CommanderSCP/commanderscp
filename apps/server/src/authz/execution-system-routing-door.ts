@@ -91,20 +91,54 @@ function normalisedUrl(value: unknown): unknown {
   }
 }
 
+/** Every http(s) URL-valued string, at any depth, in its normalised spelling — so `https://x` and
+ *  `https://x/` are one value wherever a URL appears (`serverUrl`, `webUrl`, a manifest's own). */
+function normaliseUrls(value: unknown): unknown {
+  if (typeof value === "string") {
+    return /^\s*https?:\/\//i.test(value) ? normalisedUrl(value) : value;
+  }
+  if (Array.isArray(value)) return value.map(normaliseUrls);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, normaliseUrls(v)])
+    );
+  }
+  return value;
+}
+
+/** THE FINGERPRINT'S VERSION, stored on each allowlist row (#417 verification, SHOULD-FIX 3). v1 is
+ *  what #415 shipped — four named fields — and a v1 row is still checked under v1, so upgrading
+ *  does not void every existing allowlist; the next `secret:write` re-set writes the current one. */
+export const ROUTING_FINGERPRINT_VERSION = 2;
+const V1_FIELDS = ["kind", "serverUrl", "namespace", "tokenSecretKey"] as const;
+
 /** sha256 over the WHOLE canonical `properties` object, so an allowlist set for one system cannot
  *  follow any change to it. The whole object, not a list of routing keys, for the routing door's own
  *  reason: every property routes (`webUrl` addresses a push, `allowInternalEgress` widens egress,
  *  `authoring` bounds what is authored, and a manifest-declared key is carried into plugin config),
  *  and a named list is where the next key hides. Only `serverUrl` is normalised, so a spelling of
  *  the same URL is not a change. */
-export function executionSystemRoutingFingerprint(properties: unknown): string {
+export function executionSystemRoutingFingerprint(
+  properties: unknown,
+  version: number = ROUTING_FINGERPRINT_VERSION
+): string {
   const props = (properties && typeof properties === "object" ? properties : {}) as Record<
     string,
     unknown
   >;
-  const canonical: Record<string, unknown> = { ...props };
-  if (Object.hasOwn(props, "serverUrl")) canonical["serverUrl"] = normalisedUrl(props["serverUrl"]);
-  return createHash("sha256").update(canonicalJson(canonical)).digest("hex");
+  if (version === 1) {
+    // EXACTLY the #415 function, so a row it wrote still verifies.
+    const fields: Record<string, unknown> = {};
+    for (const key of V1_FIELDS) {
+      fields[key] = key === "serverUrl" ? normalisedUrl(props[key]) : (props[key] ?? null);
+    }
+    return createHash("sha256").update(canonicalJson(fields)).digest("hex");
+  }
+  if (version !== 2) {
+    // An unknown version never verifies: a row from a newer server fails closed here.
+    return `unknown-fingerprint-version-${version}`;
+  }
+  return createHash("sha256").update(canonicalJson(normaliseUrls(props))).digest("hex");
 }
 
 /** A REPLICATED execution system is never executable here. Its routing was written by another

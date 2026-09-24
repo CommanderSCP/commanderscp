@@ -147,8 +147,9 @@ describe("M23.1: managed-iac launches through the injected RunnerLauncher", () =
       // A CONFIG READ for this plugin (server-injected, default "none") — unlike managed-dep, whose
       // charter clause carries no operator qualifier and passes a literal.
       networkMode: "none",
-      // No rollback extras in this intent, so nothing non-secret to pass.
-      env: [],
+      // An APPLY carries the approved digest to the runner, which re-derives it from `.tfplan` before
+      // applying (ADR-0056 addendum 4). Not a secret, so `env`, not `secretEnv`.
+      env: [`SCP_APPROVED_PLAN_DIGEST=${APPROVED_PLAN_DIGEST}`],
       // No `infraCredsSecretKeys` in this ctx, so no credentials are materialised. When they ARE,
       // they go HERE and not into `env` — the Docker adapter delivers `secretEnv` through a
       // mode-0600 `--env-file` instead of `-e`, and the Kubernetes adapter must deliver it as a

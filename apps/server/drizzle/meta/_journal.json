@@ -869,6 +869,13 @@
       "when": 1790266739785,
       "tag": "0123_execution_system_source_allowlists",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1790273765307,
+      "tag": "0124_allowlist_fingerprint_version",
+      "breakpoints": true
     }
   ]
 }

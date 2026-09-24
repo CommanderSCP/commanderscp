@@ -3,7 +3,10 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executionSystemSourceAllowlists, objects } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
-import { executionSystemRoutingFingerprint } from "../authz/execution-system-routing-door.js";
+import {
+  executionSystemRoutingFingerprint,
+  ROUTING_FINGERPRINT_VERSION
+} from "../authz/execution-system-routing-door.js";
 
 /**
  * AN EXECUTION SYSTEM'S SOURCE-REPO ALLOWLIST (M28.3 re-verify, owner ruling R1, ADR-0056 §7a).
@@ -85,6 +88,7 @@ export async function putSourceAllowlist(
       executionSystemObjectId: input.executionSystemObjectId,
       repos,
       routingFingerprint,
+      routingFingerprintVersion: ROUTING_FINGERPRINT_VERSION,
       recordedBySubjectId: input.recordedBySubjectId,
       updatedAt: now
     })
@@ -96,6 +100,7 @@ export async function putSourceAllowlist(
       set: {
         repos,
         routingFingerprint,
+        routingFingerprintVersion: ROUTING_FINGERPRINT_VERSION,
         recordedBySubjectId: input.recordedBySubjectId,
         updatedAt: now
       }
@@ -144,7 +149,8 @@ export async function getSourceAllowlist(
     executionSystemObjectId: row.executionSystemObjectId,
     repos: row.repos,
     routingCurrent:
-      row.routingFingerprint === executionSystemRoutingFingerprint(joined.systemProperties),
+      row.routingFingerprint ===
+      executionSystemRoutingFingerprint(joined.systemProperties, row.routingFingerprintVersion),
     recordedBySubjectId: row.recordedBySubjectId,
     updatedAt: row.updatedAt
   };

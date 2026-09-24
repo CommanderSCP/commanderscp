@@ -100,16 +100,42 @@ function asConfig(config: unknown): ManagedIacConfig {
   };
 }
 
-/** Server-controlled per-(org, target) workspace — sanitized so neither `orgId` nor `targetRef`
- *  can ever escape `workspaceRoot` (no separators/`..` survive the replace). Persists across
- *  plan -> apply -> rollback for the same target (the tofu state/plan lifecycle needs that). */
+/** THE WORKSPACE IDENTITY — the one function the server's infra lane and this plugin share
+ *  (ADR-0056 addendum 4; #417 verification probes G and H). A `targetRef` names a directory ONLY if
+ *  it is already a plain name: a letter or digit, then letters, digits, `.`, `_`, `-`. Anything else
+ *  is REFUSED, never sanitized — sanitizing was lossy (`alias/X` and `alias_X` became one directory,
+ *  so two targets applied each other's plans past the lane's collision check) and `..` resolved to
+ *  the workspace root. With a non-lossy key, the lane's collision check and the directory this
+ *  plugin writes are the same thing. */
+export const MANAGED_IAC_WORKSPACE_REF = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export class ManagedIacWorkspaceRefInvalid extends Error {
+  constructor(ref: string) {
+    super(
+      `managed-iac: targetRef '${ref}' is not a plain workspace name (${MANAGED_IAC_WORKSPACE_REF}) — ` +
+        `refusing it rather than mapping it onto a directory another ref could also reach`
+    );
+    this.name = "ManagedIacWorkspaceRefInvalid";
+  }
+}
+
+/** The workspace directory name for a `targetRef` (absent ⇒ `default`), or a refusal. */
+export function managedIacWorkspaceKey(targetRef: string | undefined): string {
+  const ref = targetRef ?? "default";
+  if (!MANAGED_IAC_WORKSPACE_REF.test(ref)) throw new ManagedIacWorkspaceRefInvalid(ref);
+  return ref;
+}
+
+/** Server-controlled per-(org, target) workspace. `orgId` is a server id (sanitized as defence in
+ *  depth); `targetRef` goes through {@link managedIacWorkspaceKey}, which refuses rather than maps.
+ *  Persists across plan -> apply -> rollback for the same target (the tofu lifecycle needs that). */
 function workspaceDirFor(
   config: ManagedIacConfig,
   orgId: string,
   targetRef: string | undefined
 ): string {
   const safe = (s: string): string => s.replace(/[^A-Za-z0-9._-]/g, "_");
-  return join(config.workspaceRoot, safe(orgId), safe(targetRef ?? "default"));
+  return join(config.workspaceRoot, safe(orgId), managedIacWorkspaceKey(targetRef));
 }
 
 /** WHERE THE TRANSIENT `--env-file` IS STAGED. See docs/plugins.md §418. */
@@ -326,7 +352,9 @@ async function trigger(
     return { externalId: existing.externalId };
   }
 
-  const workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
+  // Resolved INSIDE the recorded region below: a refused workspace name is a recorded failure, never
+  // an unrecorded rejection of trigger().
+  let workspaceDir = "";
   let outcome: PendingOutcome = { externalId, succeeded: false, detail: "" };
 
   // THE REDACTION SET FOR THE FAILURE PATH. See docs/plugins.md §429.
@@ -342,6 +370,7 @@ async function trigger(
       redact
     },
     async () => {
+      workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
       await mkdir(workspaceDir, { recursive: true });
       const infraCreds = await resolveInfraCreds(ctx, config);
       secretValues = Object.values(infraCreds);
@@ -436,7 +465,13 @@ async function trigger(
           iacAction,
           workspaceDir,
           cacheKey,
-          infraCreds
+          infraCreds,
+          // THE RUNNER'S HALF (#417 verification, SHOULD-FIX 2): the check above reads `plan.json`,
+          // the EVIDENCE; `run.sh apply` re-derives the digest from `.tfplan` — the file it is about to
+          // apply — and refuses unless it is this one. Not a secret, so plain `-e`.
+          iacAction === "apply"
+            ? { SCP_APPROVED_PLAN_DIGEST: String(intent.parameters?.planDigest) }
+            : {}
         );
         // `plan` action writes `/workspace/plan.json` fresh; `apply` leaves the PRIOR `plan`
         // action's file untouched (`run.sh` never regenerates it), so this still reports the plan

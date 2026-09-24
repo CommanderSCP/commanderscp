@@ -17,6 +17,7 @@ import {
   objects
 } from "../db/schema.js";
 import { createHash } from "node:crypto";
+import { managedIacWorkspaceKey, ManagedIacWorkspaceRefInvalid } from "@scp/plugin-managed-iac";
 import { canonicalJson } from "../util/canonical-json.js";
 import { getSourceAllowlist, repoAllowedBy } from "./source-allowlist.js";
 import { insertDecision } from "./decisions-repo.js";
@@ -694,8 +695,26 @@ async function managedIacLane(
   input: InfraLaneInput,
   declaration: Declaration
 ): Promise<InfraLaneOutcome | undefined> {
-  const workspace = input.externalRef ?? input.targetObjectId;
-  const stateWorkspace = `${MANAGED_IAC_LANE_MODULE}:${workspace}`;
+  // THE PLUGIN'S OWN WORKSPACE IDENTITY (`managedIacWorkspaceKey`), so the collision check below and
+  // the directory the plugin writes are one thing: a ref that is not already a plain name is refused,
+  // never mapped (#417 probe G: `alias/X` and `alias_X` shared one directory past this check).
+  let workspace: string;
+  try {
+    workspace = managedIacWorkspaceKey(input.externalRef ?? input.targetObjectId);
+  } catch (err) {
+    if (!(err instanceof ManagedIacWorkspaceRefInvalid)) throw err;
+    throw new InfraDeclarationRefused(
+      `this target's managed-iac binding names externalRef '${input.externalRef}', which is not a ` +
+        `plain workspace name — refusing it rather than mapping it onto a directory another ref could reach.`,
+      {
+        remediation:
+          "re-bind with an externalRef of letters, digits, '.', '_' and '-' (starting with a letter or digit), or none",
+        inputContext: { gate: "infra_workspace_ref_invalid", externalRef: input.externalRef }
+      }
+    );
+  }
+  // Compared case-INSENSITIVELY: a case-insensitive filesystem would make `Net` and `net` one directory.
+  const stateWorkspace = `${MANAGED_IAC_LANE_MODULE}:${workspace.toLowerCase()}`;
   if (input.isRollback) {
     if (declaration.phase === "apply") {
       throw new InfraApplyRefused(
