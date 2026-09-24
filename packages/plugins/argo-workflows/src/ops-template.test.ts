@@ -203,6 +203,10 @@ describe("scp-ops-v1 read-back: an EXACT allowlist of the chart's shape", () => 
         });
       })
     ],
+    [
+      "a second template, even one nothing references",
+      mutate((t) => void t.spec.templates.push({ name: "spare", container: { image: "evil" } }))
+    ],
     ["args appended", mutate((t) => void (container(t).args = ["--x"]))],
     [
       "an extra env var",
