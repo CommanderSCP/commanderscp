@@ -12,7 +12,9 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { objects } from "../db/schema.js";
+import { executionSystemSourceAllowlists, objects } from "../db/schema.js";
+import { getSourceAllowlist, putSourceAllowlist } from "../coordination/source-allowlist.js";
+import { executionSystemRoutingFingerprint } from "./execution-system-routing-door.js";
 import { upsertObjectByUrn } from "../graph/objects-repo.js";
 import { handFillObject } from "../federation/handfill-repo.js";
 import { pairPeer } from "../federation/peers-repo.js";
@@ -274,6 +276,48 @@ describe("execution-system routing: secret:write at every write door (Testcontai
       .object("execution-system")
       .update(sys.id, { properties: { ...ROUTED, serverUrl: "https://argo.prod.invalid" } });
     expect(moved.properties).toMatchObject({ serverUrl: "https://argo.prod.invalid" });
+  });
+
+  it("UPGRADE — an allowlist row written before the fingerprint version existed is still honoured (v1), and a re-set upgrades it", async () => {
+    // #417 verification (SHOULD-FIX 3): widening the fingerprint must not void every #415-era row.
+    const sys = await admin.object("execution-system").create({
+      name: `upgrade-${randomUUID().slice(0, 8)}`,
+      properties: { ...ROUTED, webUrl: "https://argo-ui.sandbox.invalid" }
+    });
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await putSourceAllowlist(tx, {
+        orgId: org.orgId,
+        executionSystemObjectId: sys.id,
+        repos: ["acme/infra"],
+        recordedBySubjectId: operator.objectId
+      });
+      // What a #415 server wrote: the four-field fingerprint, and (after 0124) version 1 by default.
+      await tx
+        .update(executionSystemSourceAllowlists)
+        .set({
+          routingFingerprint: executionSystemRoutingFingerprint(sys.properties, 1),
+          routingFingerprintVersion: 1
+        })
+        .where(eq(executionSystemSourceAllowlists.executionSystemObjectId, sys.id));
+    });
+    const read = () =>
+      withTenantTx(server.deps.db, org.orgId, (tx) => getSourceAllowlist(tx, org.orgId, sys.id));
+    expect((await read())?.routingCurrent, "a v1 row was voided by the upgrade").toBe(true);
+    // A re-point still voids it under v1.
+    await admin
+      .object("execution-system")
+      .update(sys.id, { properties: { ...ROUTED, serverUrl: "https://argo.prod.invalid" } });
+    expect((await read())?.routingCurrent).toBe(false);
+    // The next re-set writes the CURRENT version.
+    await admin.executors.putSourceAllowlist(sys.id, ["acme/infra"]);
+    const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(executionSystemSourceAllowlists)
+        .where(eq(executionSystemSourceAllowlists.executionSystemObjectId, sys.id))
+    );
+    expect(row?.routingFingerprintVersion).toBe(2);
+    expect((await read())?.routingCurrent).toBe(true);
   });
 
   it("FEDERATION — a REPLICATED system is accepted (the origin's authority) but never executable here", async () => {

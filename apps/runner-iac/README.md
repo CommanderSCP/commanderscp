@@ -19,7 +19,10 @@ docker build -t scp-runner-iac:dev apps/runner-iac
 ```
 
 Interface: `docker create --network <mode> --name <name> --env-file <vaulted infra creds> [-e
-PRIOR_STATE_FILE=...] scp-runner-iac <plan|apply|rollback>` then `docker cp <workspace-dir>/.
+PRIOR_STATE_FILE=...] [-e SCP_APPROVED_PLAN_DIGEST=...] scp-runner-iac <plan|apply|rollback>`. An
+`apply` refuses (exit 3) unless `sha256(tofu show -json .tfplan)` — the digest the plan action's
+`plan.json` carries — equals `SCP_APPROVED_PLAN_DIGEST`: it applies only the plan SCP approved
+(ADR-0056 addendum 4) then `docker cp <workspace-dir>/.
 <container>:/workspace`, `docker start -a`, `docker cp <container>:/workspace <workspace-dir>`,
 `docker rm -f` — see `run.sh`'s own doc comment for the full per-action contract (evidence files
 written back into `/workspace`, state-history snapshots, `PRIOR_STATE_FILE` for rollback). NEVER a

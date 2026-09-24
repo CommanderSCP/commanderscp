@@ -1,0 +1,462 @@
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { and, eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ScpClient } from "@scp/sdk";
+import { resolveRunnerImage } from "@scp/plugin-testkit";
+import { mkdtempTrackedForFile } from "@scp/test-tmpdir";
+import {
+  createTestOrg,
+  createTestUser,
+  listenTestServer,
+  waitUntil,
+  type ListeningTestServer,
+  type TestOrg
+} from "../test-support/harness.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { decisions, executorBindings } from "../db/schema.js";
+import { createManagedIacExecutorPlugin } from "@scp/plugin-managed-iac";
+
+/**
+ * M28.3b — MODE C APPLY, UNDER THE SAME GATE (ADR-0056 addendum 4).
+ *
+ * Before this, nothing in production set `iacAction`, so every managed-iac run was a plan and no
+ * plan could ever be applied. Now a managed-iac plan is recorded like the Argo lane's, its
+ * acceptance is its approval (by someone other than its proposer), and an apply change naming it
+ * runs `iacAction: "apply"` with the approved digest — which the plugin checks against the plan in
+ * the workspace before it launches anything.
+ *
+ * THE REAL COUNTERPARTY: the real reconcile loop, the real `@scp/plugin-managed-iac` in the real
+ * subprocess plugin host, and each run in the real `scp-runner-iac` container with OpenTofu's local
+ * backend. The configuration is `terraform_data` (built into OpenTofu, so no provider download and
+ * no network). It is written into the plugin's per-(org, target) workspace directly, which is where
+ * managed-iac reads configuration from in production — a campaign recipe cannot target managed-iac.
+ */
+
+const execFileAsync = promisify(execFile);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const RUNNER_IAC_CONTEXT = resolve(__dirname, "../../../../apps/runner-iac");
+
+const MAIN_TF = (content: string) =>
+  [
+    'resource "terraform_data" "network" {',
+    `  input = "${content}"`,
+    "}",
+    "",
+    'output "network" {',
+    "  value = terraform_data.network.output",
+    "}",
+    ""
+  ].join("\n");
+
+async function dockerAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync("docker", ["info"], { timeout: 20_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let dockerReady = false;
+/** A visible skip locally, never in CI (the integration job has Docker). */
+function requireDocker(ctx: { skip: () => void }): boolean {
+  if (dockerReady) return true;
+  if (process.env.CI) {
+    throw new Error("[managed-iac-apply] CI is set and no Docker daemon is reachable");
+  }
+  console.warn("[managed-iac-apply] no reachable Docker daemon — the real runner did NOT run");
+  ctx.skip();
+  return false;
+}
+
+describe("M28.3b: managed-iac (Mode C) apply of an accepted plan", { timeout: 300_000 }, () => {
+  let server: ListeningTestServer;
+  let org: TestOrg;
+  let admin: ScpClient;
+  /** A second subject with `change:accept`: a plan's proposer (admin) may not accept it. */
+  let approver: ScpClient;
+  let workspaceRoot = "";
+  const prevRunnerImage = process.env.SCP_MANAGED_IAC_RUNNER_IMAGE;
+  const prevWorkspaceRoot = process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT;
+
+  beforeAll(async () => {
+    dockerReady = await dockerAvailable();
+    workspaceRoot = await mkdtempTrackedForFile(join(tmpdir(), "scp-managed-iac-apply-"));
+    process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT = workspaceRoot;
+    process.env.SCP_MANAGED_IAC_RUNNER_IMAGE = dockerReady
+      ? await resolveRunnerImage({
+          refEnvVar: "SCP_RUNNER_IAC_IMAGE_REF",
+          localTag: "scp-runner-iac:m28-3b-integration",
+          context: RUNNER_IAC_CONTEXT
+        })
+      : "scp-runner-iac:absent";
+    server = await listenTestServer({
+      withEventRelay: true,
+      withReconcileLoop: true,
+      pluginHostOptions: {
+        callTimeoutMs: 120_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
+    });
+    org = await createTestOrg(server, "m28-3b-managed-iac");
+    admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const approverUser = await createTestUser(server, org, [
+      { role: "Administrator", scope: org.orgId }
+    ]);
+    approver = new ScpClient({ baseUrl: server.baseUrl, token: approverUser.token });
+  }, 600_000);
+
+  afterAll(async () => {
+    await server?.close();
+    if (prevRunnerImage === undefined) delete process.env.SCP_MANAGED_IAC_RUNNER_IMAGE;
+    else process.env.SCP_MANAGED_IAC_RUNNER_IMAGE = prevRunnerImage;
+    if (prevWorkspaceRoot === undefined) delete process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT;
+    else process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT = prevWorkspaceRoot;
+  });
+
+  /** The plugin's workspace for a target bound with no externalRef (mirrors `workspaceDirFor`). */
+  const workspaceOf = (targetId: string) => {
+    const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
+    return join(workspaceRoot, safe(org.orgId), safe(targetId));
+  };
+
+  async function managedIacTarget(content: string) {
+    const target = await admin.deploymentTargets.create({
+      name: `miac-${randomUUID().slice(0, 6)}`
+    });
+    await admin.executors.putBinding(target.id, {
+      pluginModule: "managed-iac",
+      pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,
+      config: {},
+      type: "infrastructure"
+    });
+    await mkdir(workspaceOf(target.id), { recursive: true });
+    await writeFile(join(workspaceOf(target.id), "main.tf"), MAIN_TF(content), "utf8");
+    return target;
+  }
+
+  const proposePlan = (targetId: string) =>
+    admin.changes.propose({
+      name: `plan ${randomUUID().slice(0, 6)}`,
+      targets: [targetId],
+      type: "infrastructure"
+    });
+  const proposeApply = (targetId: string, planChangeId: string) =>
+    admin.changes.propose({
+      name: `apply ${randomUUID().slice(0, 6)}`,
+      targets: [targetId],
+      type: "infrastructure",
+      properties: { infrastructure: { applyPlan: planChangeId } }
+    });
+
+  const waveTargetOf = async (changeId: string) =>
+    (await admin.changes.explain(changeId)).plan?.waves.flatMap((w) => w.targets)[0];
+  const settled = (changeId: string) =>
+    waitUntil(
+      async () => {
+        const t = await waveTargetOf(changeId);
+        return t && (t.status.endsWith("_refused") || ["succeeded", "failed"].includes(t.status))
+          ? t
+          : undefined;
+      },
+      { describe: `change ${changeId}'s wave target settles`, timeoutMs: 240_000 }
+    );
+  const waitForState = (changeId: string, state: string) =>
+    waitUntil(
+      async () => ((await admin.changes.get(changeId)).state === state ? true : undefined),
+      { describe: `change ${changeId} reaches '${state}'`, timeoutMs: 60_000 }
+    );
+  const gatesOf = async (changeId: string) =>
+    (
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx.select().from(decisions).where(eq(decisions.subjectId, changeId))
+      )
+    ).map((d) => (d.inputContext as { gate?: string } | null)?.gate);
+
+  async function stateOf(targetId: string): Promise<string | undefined> {
+    try {
+      const raw = await readFile(join(workspaceOf(targetId), "terraform.tfstate"), "utf8");
+      const state = JSON.parse(raw) as {
+        resources?: { instances: { attributes: { input: { value: string } } }[] }[];
+      };
+      return state.resources?.[0]?.instances[0]?.attributes.input.value;
+    } catch {
+      return undefined;
+    }
+  }
+  const historyOf = async (targetId: string) =>
+    readdir(join(workspaceOf(targetId), "state-history")).catch(() => [] as string[]);
+
+  /** A plan, run for real, accepted by the approver. */
+  async function acceptedPlanAt(targetId: string) {
+    const plan = await proposePlan(targetId);
+    const t = await settled(plan.id);
+    expect(t.status, JSON.stringify(t)).toBe("succeeded");
+    expect(t.observed?.plan?.ref).toMatch(/^[0-9a-f]{64}$/);
+    await waitForState(plan.id, "validating");
+    await approver.changes.accept(plan.id, "reviewed the plan");
+    return { plan, digest: t.observed!.plan!.ref };
+  }
+
+  it("PLAN → ACCEPT → APPLY: the accepted plan is applied for real, and a re-apply is a no-op", async (ctx) => {
+    if (!requireDocker(ctx)) return;
+    const target = await managedIacTarget("network-v1");
+    const { plan, digest } = await acceptedPlanAt(target.id);
+    // A plan is recorded like the Argo lane's — which is what the apply is built from.
+    expect(await gatesOf(plan.id)).toContain("infra_plan_trigger");
+    expect(await stateOf(target.id), "a PLAN applied something").toBeUndefined();
+
+    const apply = await proposeApply(target.id, plan.id);
+    const t = await settled(apply.id);
+    expect(t.status, JSON.stringify(t)).toBe("succeeded");
+    expect(t.observed?.plan?.ref, "the apply reports the plan it applied").toBe(digest);
+    expect(await stateOf(target.id), "the accepted plan was not applied").toBe("network-v1");
+    expect(await gatesOf(apply.id)).toContain("infra_apply_trigger");
+    const history = await historyOf(target.id);
+
+    // RE-APPLY: nothing launched, success recorded with the reason.
+    const again = await proposeApply(target.id, plan.id);
+    const t2 = await settled(again.id);
+    expect(t2.status).toBe("succeeded");
+    expect(await gatesOf(again.id)).toContain("infra_apply_noop");
+    expect(await historyOf(target.id), "a second apply ran").toEqual(history);
+  });
+
+  it("an apply of a plan that is NOT ACCEPTED is refused — nothing launched, a Decision", async (ctx) => {
+    if (!requireDocker(ctx)) return;
+    const target = await managedIacTarget("network-unapproved");
+    const plan = await proposePlan(target.id);
+    expect((await settled(plan.id)).status).toBe("succeeded");
+    const apply = await proposeApply(target.id, plan.id);
+    const t = await settled(apply.id);
+    expect(t.status).toBe("infra_apply_refused");
+    expect(await gatesOf(apply.id)).toContain("infra_plan_not_approved");
+    expect(await stateOf(target.id), "an unapproved plan was applied").toBeUndefined();
+  });
+
+  it("SEPARATION OF DUTIES — a managed-iac plan's proposer cannot accept it", async (ctx) => {
+    if (!requireDocker(ctx)) return;
+    const target = await managedIacTarget("network-sod");
+    const plan = await proposePlan(target.id);
+    expect((await settled(plan.id)).status).toBe("succeeded");
+    await waitForState(plan.id, "validating");
+    const err = await admin.changes
+      .accept(plan.id, "my own plan")
+      .then(() => undefined)
+      .catch((e: unknown) => e as { status?: number });
+    expect(err?.status, "the proposer accepted their own managed-iac plan").toBe(409);
+  });
+
+  it("a SUPERSEDED plan is refused: a newer plan in the same workspace is what the workspace holds", async (ctx) => {
+    if (!requireDocker(ctx)) return;
+    const target = await managedIacTarget("network-old");
+    const { plan } = await acceptedPlanAt(target.id);
+    await writeFile(join(workspaceOf(target.id), "main.tf"), MAIN_TF("network-new"), "utf8");
+    const newer = await proposePlan(target.id);
+    expect((await settled(newer.id)).status).toBe("succeeded");
+    const apply = await proposeApply(target.id, plan.id);
+    expect((await settled(apply.id)).status).toBe("infra_apply_refused");
+    expect(await gatesOf(apply.id)).toContain("infra_plan_superseded");
+    expect(await stateOf(target.id)).toBeUndefined();
+  });
+
+  /** Binds (or RE-binds) a target's managed-iac pipeline to a workspace ref. */
+  const bindRef = async (targetId: string, externalRef: string) =>
+    admin.executors.putBinding(targetId, {
+      pluginModule: "managed-iac",
+      pluginInstanceId: `miac-${targetId.slice(0, 8)}`,
+      config: {},
+      type: "infrastructure",
+      externalRef
+    });
+
+  it("two targets over TIME in ONE workspace: the second target's plan is refused (they would apply each other's)", async () => {
+    // Two LIVE bindings cannot share a workspace (probe I, the unique index). Across time they can:
+    // the first target planned there, then moved away, and the workspace still holds its plan and
+    // state. The lane's collision check reads the recorded plans, and is what refuses this.
+    const shared = `shared-${randomUUID().slice(0, 6)}`;
+    const first = await admin.deploymentTargets.create({ name: `ws-${randomUUID().slice(0, 6)}` });
+    const second = await admin.deploymentTargets.create({ name: `ws-${randomUUID().slice(0, 6)}` });
+    await bindRef(first.id, shared);
+    const p1 = await proposePlan(first.id);
+    await settled(p1.id);
+    await bindRef(first.id, `moved-${randomUUID().slice(0, 6)}`);
+    await bindRef(second.id, shared);
+    const p2 = await proposePlan(second.id);
+    expect((await settled(p2.id)).status).toBe("infra_declaration_refused");
+    expect(await gatesOf(p2.id)).toContain("infra_workspace_collision");
+  });
+
+  const bindTo = async (externalRef: string) => {
+    const t = await admin.deploymentTargets.create({ name: `ws-${randomUUID().slice(0, 6)}` });
+    await admin.executors.putBinding(t.id, {
+      pluginModule: "managed-iac",
+      pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,
+      config: {},
+      type: "infrastructure",
+      externalRef
+    });
+    return t;
+  };
+  const refusalOf = (p: Promise<unknown>) =>
+    p.then(
+      () => undefined,
+      (e: unknown) => e as { status?: number; problem?: { detail?: string } }
+    );
+
+  it("PROBE G — refs that USED to sanitize to one directory: 'alias/X' is refused at bind, and a case-alias collides", async () => {
+    const id = randomUUID().slice(0, 6);
+    // The door: a ref that is not already a plain name never reaches a binding.
+    const err = await refusalOf(bindTo(`alias/${id}`));
+    expect(err?.status, "a managed-iac binding named a non-plain workspace").toBe(400);
+    expect(err?.problem?.detail).toMatch(/not a plain workspace name/);
+    // A case-insensitive filesystem would make these one directory — so the door (live bindings)…
+    const first = await bindTo(`alias_${id}`);
+    const live = await refusalOf(bindTo(`ALIAS_${id}`));
+    expect(live?.status, "a case-alias of a live binding's workspace was accepted").toBe(409);
+    // …and the lane (a workspace a moved-away target planned in) both treat them as one.
+    const p1 = await proposePlan(first.id);
+    await settled(p1.id);
+    await bindRef(first.id, `moved-${id}`);
+    const second = await bindTo(`ALIAS_${id}`);
+    const p2 = await proposePlan(second.id);
+    expect((await settled(p2.id)).status).toBe("infra_declaration_refused");
+    expect(await gatesOf(p2.id)).toContain("infra_workspace_collision");
+  });
+
+  it("PROBE H — '..', '.', and a row written before the door: refused at bind, and refused by the lane", async () => {
+    for (const ref of ["..", ".", "a/../b"]) {
+      expect((await refusalOf(bindTo(ref)))?.status, ref).toBe(400);
+    }
+    // A binding row that predates the door (written straight to the table) is refused at plan time.
+    const t = await bindTo(`legit-${randomUUID().slice(0, 6)}`);
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(executorBindings)
+        .set({ externalRef: ".." })
+        .where(
+          and(eq(executorBindings.orgId, org.orgId), eq(executorBindings.targetObjectId, t.id))
+        )
+    );
+    const p = await proposePlan(t.id);
+    expect((await settled(p.id)).status).toBe("infra_declaration_refused");
+    expect(await gatesOf(p.id)).toContain("infra_workspace_ref_invalid");
+    const atRoot = (await readdir(workspaceRoot)).filter((f) =>
+      [".tfplan", "plan.json", "state-history", "terraform.tfstate"].includes(f)
+    );
+    expect(atRoot, "a run wrote into the workspace ROOT").toEqual([]);
+  });
+
+  it("PROBE I — no OTHER binding can reach a target's workspace: another Type, another target's ref, a hook lane, a relabel", async () => {
+    const victim = await managedIacTarget("victim-v1");
+    const attacker = await admin.deploymentTargets.create({
+      name: `atk-${randomUUID().slice(0, 6)}`
+    });
+    const put = (targetId: string, body: Record<string, unknown>) =>
+      refusalOf(
+        admin.executors.putBinding(targetId, {
+          pluginModule: "managed-iac",
+          pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,
+          config: {},
+          ...body
+        } as Parameters<typeof admin.executors.putBinding>[1])
+      );
+    // (a) managed-iac drives `infrastructure` only — a `configuration` binding bypassed the lane.
+    const typed = await put(attacker.id, {
+      type: "configuration",
+      externalRef: `own-${randomUUID().slice(0, 6)}`
+    });
+    expect(typed?.status, "a non-infrastructure managed-iac binding was accepted").toBe(400);
+    // (b) one workspace, one binding: another target naming the victim's workspace key, in any case…
+    for (const ref of [victim.id, victim.id.toUpperCase()]) {
+      const taken = await put(attacker.id, { type: "infrastructure", externalRef: ref });
+      expect(taken?.status, `another target bound to the victim's workspace '${ref}'`).toBe(409);
+    }
+    // …and a second LANE of the victim itself (a hook lane never goes through the infra lane).
+    const hook = await put(victim.id, { type: "infrastructure", lane: "test" });
+    expect(hook?.status, "a hook-lane managed-iac binding shared the workspace").toBe(409);
+    // A relabel is a binding write too.
+    const relabel = await server.app.inject({
+      method: "PATCH",
+      url: `/api/v1/executors/${victim.id}/binding?type=infrastructure`,
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { type: "configuration" }
+    });
+    expect(relabel.statusCode, relabel.body).toBe(409);
+
+    // A row that predates the door (written straight to the table) is refused by the lane at trigger.
+    const legacy = await admin.deploymentTargets.create({
+      name: `legacy-${randomUUID().slice(0, 6)}`
+    });
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.insert(executorBindings).values({
+        id: randomUUID(),
+        orgId: org.orgId,
+        targetObjectId: legacy.id,
+        type: "configuration",
+        pluginModule: "managed-iac",
+        pluginInstanceId: `miac-${randomUUID().slice(0, 8)}`,
+        config: {},
+        secretRefs: {},
+        allowedHosts: []
+      })
+    );
+    const c = await admin.changes.propose({
+      name: `cfg ${randomUUID().slice(0, 6)}`,
+      targets: [legacy.id],
+      type: "configuration"
+    });
+    expect((await settled(c.id)).status).toBe("infra_declaration_refused");
+    expect(await gatesOf(c.id)).toContain("managed_iac_not_infrastructure");
+  });
+
+  it("the runner applies ONLY the approved `.tfplan`: a saved plan swapped under an unchanged plan.json is refused", async (ctx) => {
+    if (!requireDocker(ctx)) return;
+    const target = await managedIacTarget("network-approved");
+    const { plan } = await acceptedPlanAt(target.id);
+    const ws = workspaceOf(target.id);
+    const approvedEvidence = await readFile(join(ws, "plan.json"), "utf8");
+    // OUTSIDE SCP: a second plan made in this workspace (the plugin driven directly, no change, no
+    // gate) replaces `.tfplan`; then the approved evidence is put back, so plan.json still matches.
+    await writeFile(join(ws, "main.tf"), MAIN_TF("network-swapped"), "utf8");
+    const direct = createManagedIacExecutorPlugin();
+    const dctx = {
+      orgId: org.orgId,
+      scopeKey: "out-of-band",
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      secrets: { get: async () => undefined },
+      http: {
+        request: async () => {
+          throw new Error("never");
+        }
+      },
+      config: {
+        runnerImage: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,
+        workspaceRoot,
+        networkMode: "none",
+        statePath: join(workspaceRoot, `out-of-band-${randomUUID().slice(0, 6)}.json`)
+      }
+    };
+    const outOfBand = await direct.trigger(dctx, {
+      kind: "sync",
+      targetRef: target.id,
+      parameters: { iacAction: "plan" },
+      idempotencyKey: `oob-${randomUUID().slice(0, 8)}`
+    });
+    expect((await direct.status(dctx, outOfBand)).phase).toBe("succeeded");
+    expect(await readFile(join(ws, "plan.json"), "utf8")).not.toBe(approvedEvidence);
+    await writeFile(join(ws, "plan.json"), approvedEvidence, "utf8");
+
+    const apply = await proposeApply(target.id, plan.id);
+    const t = await settled(apply.id);
+    expect(t.status, "the swapped saved plan was applied").toBe("failed");
+    expect(await stateOf(target.id), "the swapped plan changed infrastructure").toBeUndefined();
+  });
+});

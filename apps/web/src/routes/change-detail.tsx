@@ -7,6 +7,7 @@ import type { Change, ChangeState, ChangeStageDependencyTarget } from "@scp/sdk"
 import type { ApprovalRequest } from "@scp/schemas";
 import {
   InfrastructureChangeDeclarationSchema,
+  isInfraApplyGateModule,
   INFRASTRUCTURE_DECLARATION_PROPERTY
 } from "@scp/schemas";
 import { client } from "../lib/client";
@@ -178,14 +179,15 @@ export function ChangeDetailPage(): React.JSX.Element {
   const appliesPlan = infraDeclaration.success ? infraDeclaration.data.applyPlan : null;
   const plannedTargets = waves
     .flatMap((w) => w.targets)
-    // ONLY a plan the apply gate serves: one the Argo Workflows lane ran. managed-iac reports the
-    // same plan evidence, and offering "Apply" for it would propose an apply the server refuses.
+    // ONLY a plan the apply gate serves — the Argo Workflows lane's or managed-iac's, the SAME list
+    // the server's lane reads (`INFRA_APPLY_GATE_MODULES`). Any other executor's plan evidence would
+    // propose an apply the server refuses.
     .filter(
       (t) =>
         t.category === "infrastructure" &&
         t.observed?.plan?.ref &&
         t.executor?.basis === "triggered" &&
-        t.executor.pluginModule === "argo-workflows"
+        isInfraApplyGateModule(t.executor.pluginModule)
     )
     .map((t) => t.targetObjectId);
   const canApplyPlan =

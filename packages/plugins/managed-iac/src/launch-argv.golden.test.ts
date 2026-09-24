@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 import { RUNNER_LAUNCHER_DEADLINE_LABEL, RUNNER_LAUNCHER_OWNER_LABEL } from "@scp/runner-launcher";
+import { APPROVED_PLAN_DIGEST, seedApprovedPlan } from "./test-support/approved-plan.js";
 
 /** The golden Docker argv, recorded before anything moves. See docs/plugins.md §437. */
 
@@ -268,12 +269,13 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
     );
     const ref = await plugin.trigger(c, {
       kind: "rollback",
-      targetRef: "prod/eu-west-1",
+      // A plain name: a separator is REFUSED now, never sanitized into one (#417 probe G).
+      targetRef: "prod-eu-west-1",
       priorStateRef: "state-history/2026-08-17.tfstate",
       idempotencyKey: "k2"
     });
 
-    const w = workspaceDir("prod_eu-west-1");
+    const w = workspaceDir("prod-eu-west-1");
     const opts = runOpts(123_456, 16 * 1024 * 1024);
     expect(
       normaliseEnvFile(calls, "k2"),
@@ -347,11 +349,12 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
     // copy-out entirely on a failed `start` — a refactor that gives all three one shared sequence
     // must break this test, or it has silently changed what evidence survives a failed run.
     startOk = false;
+    await seedApprovedPlan(workspaceRoot);
     const plugin = createManagedIacExecutorPlugin();
     const ref = await plugin.trigger(ctx(), {
       kind: "sync",
       targetRef: "t1",
-      parameters: { iacAction: "apply" },
+      parameters: { iacAction: "apply", planDigest: APPROVED_PLAN_DIGEST },
       idempotencyKey: "k3"
     });
 
@@ -369,6 +372,9 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
           "scp.executor=scp-managed-iac",
           "--label",
           "scp.run-id=k3",
+          // The approved digest, which `run.sh apply` checks `.tfplan` against (ADR-0056 addendum 4).
+          "-e",
+          `SCP_APPROVED_PLAN_DIGEST=${APPROVED_PLAN_DIGEST}`,
           "scp-runner-iac:vetted",
           "apply"
         ],

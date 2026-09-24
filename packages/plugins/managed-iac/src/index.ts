@@ -66,6 +66,12 @@ const DEFAULT_NETWORK_MODE = "none";
 /** Filenames a tenant may supply via `intent.parameters.sourceFiles` — no path separators, no
  *  `..`, no leading-dot traversal; just plain tofu source/tfvars filenames. */
 const SAFE_FILENAME = /^[A-Za-z0-9._-]+$/;
+/** Names the WORKSPACE owns, never a tenant's source: the saved plan an apply applies, its evidence
+ *  (whose digest the apply gate approved), the state and its history, OpenTofu's own directory. A
+ *  source file with one of these names would replace what the approval was about. */
+const WORKSPACE_OWNED =
+  /^(\.tfplan|plan\.json|terraform\.tfstate(\.backup)?|state-history|\.terraform.*)$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 function asConfig(config: unknown): ManagedIacConfig {
   const c = config as Partial<ManagedIacConfig> | undefined;
@@ -94,16 +100,42 @@ function asConfig(config: unknown): ManagedIacConfig {
   };
 }
 
-/** Server-controlled per-(org, target) workspace — sanitized so neither `orgId` nor `targetRef`
- *  can ever escape `workspaceRoot` (no separators/`..` survive the replace). Persists across
- *  plan -> apply -> rollback for the same target (the tofu state/plan lifecycle needs that). */
+/** THE WORKSPACE IDENTITY — the one function the server's infra lane and this plugin share
+ *  (ADR-0056 addendum 4; #417 verification probes G and H). A `targetRef` names a directory ONLY if
+ *  it is already a plain name: a letter or digit, then letters, digits, `.`, `_`, `-`. Anything else
+ *  is REFUSED, never sanitized — sanitizing was lossy (`alias/X` and `alias_X` became one directory,
+ *  so two targets applied each other's plans past the lane's collision check) and `..` resolved to
+ *  the workspace root. With a non-lossy key, the lane's collision check and the directory this
+ *  plugin writes are the same thing. */
+export const MANAGED_IAC_WORKSPACE_REF = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export class ManagedIacWorkspaceRefInvalid extends Error {
+  constructor(ref: string) {
+    super(
+      `managed-iac: targetRef '${ref}' is not a plain workspace name (${MANAGED_IAC_WORKSPACE_REF}) — ` +
+        `refusing it rather than mapping it onto a directory another ref could also reach`
+    );
+    this.name = "ManagedIacWorkspaceRefInvalid";
+  }
+}
+
+/** The workspace directory name for a `targetRef` (absent ⇒ `default`), or a refusal. */
+export function managedIacWorkspaceKey(targetRef: string | undefined): string {
+  const ref = targetRef ?? "default";
+  if (!MANAGED_IAC_WORKSPACE_REF.test(ref)) throw new ManagedIacWorkspaceRefInvalid(ref);
+  return ref;
+}
+
+/** Server-controlled per-(org, target) workspace. `orgId` is a server id (sanitized as defence in
+ *  depth); `targetRef` goes through {@link managedIacWorkspaceKey}, which refuses rather than maps.
+ *  Persists across plan -> apply -> rollback for the same target (the tofu lifecycle needs that). */
 function workspaceDirFor(
   config: ManagedIacConfig,
   orgId: string,
   targetRef: string | undefined
 ): string {
   const safe = (s: string): string => s.replace(/[^A-Za-z0-9._-]/g, "_");
-  return join(config.workspaceRoot, safe(orgId), safe(targetRef ?? "default"));
+  return join(config.workspaceRoot, safe(orgId), managedIacWorkspaceKey(targetRef));
 }
 
 /** WHERE THE TRANSIENT `--env-file` IS STAGED. See docs/plugins.md §418. */
@@ -263,6 +295,12 @@ async function writeSourceFiles(
         `managed-iac: illegal source filename '${name}' (must match ${SAFE_FILENAME})`
       );
     }
+    if (WORKSPACE_OWNED.test(name)) {
+      throw new Error(
+        `managed-iac: source filename '${name}' names a file the workspace owns (the saved plan, ` +
+          `its evidence or the state) — refusing to overwrite it`
+      );
+    }
     await writeFile(join(workspaceDir, name), content, "utf8");
   }
 }
@@ -314,7 +352,9 @@ async function trigger(
     return { externalId: existing.externalId };
   }
 
-  const workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
+  // Resolved INSIDE the recorded region below: a refused workspace name is a recorded failure, never
+  // an unrecorded rejection of trigger().
+  let workspaceDir = "";
   let outcome: PendingOutcome = { externalId, succeeded: false, detail: "" };
 
   // THE REDACTION SET FOR THE FAILURE PATH. See docs/plugins.md §429.
@@ -330,6 +370,7 @@ async function trigger(
       redact
     },
     async () => {
+      workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
       await mkdir(workspaceDir, { recursive: true });
       const infraCreds = await resolveInfraCreds(ctx, config);
       secretValues = Object.values(infraCreds);
@@ -382,15 +423,55 @@ async function trigger(
         }
       } else {
         const sourceFiles = intent.parameters?.sourceFiles as Record<string, string> | undefined;
-        if (sourceFiles) await writeSourceFiles(workspaceDir, sourceFiles);
         const iacAction = (intent.parameters?.iacAction as "plan" | "apply" | undefined) ?? "plan";
+        if (iacAction !== "plan" && iacAction !== "apply") {
+          outcome = {
+            externalId,
+            succeeded: false,
+            detail: `managed-iac: FAILED CLOSED — unknown iacAction '${String(iacAction)}'`
+          };
+          return;
+        }
+        if (iacAction === "apply") {
+          // THE EXECUTOR-SIDE HALF OF THE APPLY GATE (ADR-0056 addendum 4). The server approved ONE
+          // plan, by digest; `run.sh apply` applies whatever `.tfplan` the workspace holds. So before
+          // anything launches: no new source (an apply applies what was reviewed, nothing else), and
+          // the workspace's plan evidence must be the approved plan's — a newer plan in the same
+          // workspace, or none, is refused rather than applied.
+          const approved = intent.parameters?.planDigest;
+          const inWorkspace = await summarizePlanFile(workspaceDir);
+          const refusal = sourceFiles
+            ? "an apply takes no source files — it applies the approved plan already in the workspace"
+            : typeof approved !== "string" || !SHA256.test(approved)
+              ? "an apply names no approved plan digest"
+              : inWorkspace?.ref !== approved
+                ? `the workspace's plan is ${inWorkspace?.ref ? inWorkspace.ref.slice(0, 12) : "absent"}, ` +
+                  `and the approved plan is ${approved.slice(0, 12)}`
+                : undefined;
+          if (refusal !== undefined) {
+            outcome = {
+              externalId,
+              succeeded: false,
+              detail: `managed-iac apply: FAILED CLOSED — ${refusal}; nothing was applied`,
+              ...(inWorkspace ? { plan: inWorkspace } : {})
+            };
+            return;
+          }
+        }
+        if (sourceFiles) await writeSourceFiles(workspaceDir, sourceFiles);
         const result = await runRunnerContainer(
           config,
           resolveLauncher,
           iacAction,
           workspaceDir,
           cacheKey,
-          infraCreds
+          infraCreds,
+          // THE RUNNER'S HALF (#417 verification, SHOULD-FIX 2): the check above reads `plan.json`,
+          // the EVIDENCE; `run.sh apply` re-derives the digest from `.tfplan` — the file it is about to
+          // apply — and refuses unless it is this one. Not a secret, so plain `-e`.
+          iacAction === "apply"
+            ? { SCP_APPROVED_PLAN_DIGEST: String(intent.parameters?.planDigest) }
+            : {}
         );
         // `plan` action writes `/workspace/plan.json` fresh; `apply` leaves the PRIOR `plan`
         // action's file untouched (`run.sh` never regenerates it), so this still reports the plan

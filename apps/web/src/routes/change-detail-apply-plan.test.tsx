@@ -153,7 +153,9 @@ describe("change detail: Apply this plan", () => {
     view.unmount();
   });
 
-  it("is ABSENT for a plan the Argo lane did not run — managed-iac's evidence has no apply gate yet", () => {
+  it("is OFFERED for a managed-iac plan too — the same gate serves Mode C (ADR-0056 addendum 4)", async () => {
+    propose.mockReset();
+    propose.mockResolvedValue({ id: APPLY_CHANGE_ID });
     const data = explain();
     const wave = (data.plan as unknown as { waves: { targets: unknown[] }[] }).waves[0]!;
     wave.targets = [
@@ -161,6 +163,28 @@ describe("change detail: Apply this plan", () => {
         PLANNED_TARGET,
         { plan: { ref: "b".repeat(64), add: 1, change: 0, destroy: 0 } },
         "managed-iac"
+      )
+    ];
+    const view = renderPage(data);
+    view.click("apply-plan-button");
+    await flush();
+    expect(propose).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targets: [PLANNED_TARGET],
+        properties: { infrastructure: { applyPlan: PLAN_CHANGE_ID } }
+      })
+    );
+    view.unmount();
+  });
+
+  it("is ABSENT for a plan an executor the apply gate does not serve ran", () => {
+    const data = explain();
+    const wave = (data.plan as unknown as { waves: { targets: unknown[] }[] }).waves[0]!;
+    wave.targets = [
+      target(
+        PLANNED_TARGET,
+        { plan: { ref: "b".repeat(64), add: 1, change: 0, destroy: 0 } },
+        "terraform"
       )
     ];
     const view = renderPage(data);

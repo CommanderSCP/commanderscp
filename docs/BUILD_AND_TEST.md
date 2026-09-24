@@ -1942,6 +1942,36 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         because its `tokenSecretKey` names the receiver's secret. Belt and braces: each allowlist row
         is bound to the system's routing fingerprint, so any re-point voids it until someone sets it
         again. The workspace digest is now 24 hex over org + target + environment + region.
+      - *managed-iac (Mode C) applies through the same gate (M28.3b, 2026-09-24; ADR-0056 addendum
+        4).* Before this, the plugin was the only production reader of `iacAction` and nothing
+        wrote it, so every managed-iac run was a plan. The infra lane now engages for managed-iac as
+        well (`INFRA_APPLY_GATE_MODULES`, shared with the UI), and both lanes go through ONE
+        `evaluateApplyGate` that owns accepted, succeeded-here-with-a-digest-and-record, superseded,
+        in-flight, no-op re-apply and SoD. A lane supplies only its place (for managed-iac, the
+        workspace) and how it applies (`iacAction: "apply"` plus the approved digest). The plugin
+        refuses, before launching, an apply whose digest is not the workspace's `plan.json`, and the
+        plugin host refuses an `iacAction: "apply"` the lane did not authorize. "Apply this plan" is
+        offered for managed-iac plans. Proved against the real counterparty: the reconcile loop, the
+        plugin in the subprocess host, and `scp-runner-iac` with a local backend
+        (`managed-iac-apply.integration.test.ts`). Deleting the wiring turns all five tests red. The
+        allowlist routing fingerprint now covers the whole `properties` object (the #415 verifier's
+        NIT). *Not proved:* a managed-iac plan's configuration still arrives as it always did, by
+        being present in the workspace, because a recipe cannot target managed-iac. How an org
+        populates that workspace is unchanged and out of scope.
+        - *Verification of #417 found three more gaps.*
+          - The lane and the plugin disagreed on what a workspace is: the lane keyed collisions on
+            the raw ref, the plugin sanitized it, so `alias/X` and `alias_X` shared one directory.
+            One non-lossy `managedIacWorkspaceKey` is now used by the lane, the plugin and the
+            binding door. It refuses a non-plain ref (including `..`) and never maps one.
+          - The digest bound the evidence file rather than the applied one. `run.sh apply` now
+            re-derives it from `.tfplan` and refuses a mismatch, proved against the real runner with
+            a swapped `.tfplan`.
+          - The widened fingerprint would have voided every #415-era allowlist on upgrade. It is now
+            versioned (0124): old rows are checked under v1 until someone re-sets them.
+          - The re-verify found a fourth gap: a `configuration`-typed or hook-lane managed-iac
+            binding bypassed the lane and planned into another target's workspace. Closed at the
+            binding door: `infrastructure` only, plus a partial unique index (0125) on the
+            workspace key.
   - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
     import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
     Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.

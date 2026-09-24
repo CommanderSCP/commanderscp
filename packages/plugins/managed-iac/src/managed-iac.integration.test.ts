@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 import { resolveRunnerImage } from "@scp/plugin-testkit";
 import { createManagedIacExecutorPlugin } from "./index.js";
+import { planDigestIn } from "./test-support/approved-plan.js";
 
 /** REAL-DOCKER integration test (BUILD_AND_TEST.md §8 M7 DoD). See docs/plugins.md §451. */
 
@@ -133,10 +134,12 @@ describe.runIf(await dockerAvailable())(
         // Gate block, concretely proven: plan alone made no infrastructure change.
         expect(await readState(workspaceRoot)).toBeUndefined();
 
+        // An apply names the plan it applies (ADR-0056 addendum 4) — the digest the server approved.
+        const v1Digest = await planDigestIn(derivedWorkspace(workspaceRoot));
         const applyRef = await plugin.trigger(ctx, {
           kind: "sync",
           targetRef: TARGET_REF,
-          parameters: { iacAction: "apply" },
+          parameters: { iacAction: "apply", planDigest: v1Digest },
           idempotencyKey: "apply-v1"
         });
         expect((await plugin.status(ctx, applyRef)).phase).toBe("succeeded");
@@ -150,7 +153,7 @@ describe.runIf(await dockerAvailable())(
         const dedupRef = await plugin.trigger(dedupCtx, {
           kind: "sync",
           targetRef: TARGET_REF,
-          parameters: { iacAction: "apply" },
+          parameters: { iacAction: "apply", planDigest: v1Digest },
           idempotencyKey: "apply-v1"
         });
         expect(dedupRef.externalId).toBe(applyRef.externalId);
@@ -166,7 +169,10 @@ describe.runIf(await dockerAvailable())(
         await plugin.trigger(ctx, {
           kind: "sync",
           targetRef: TARGET_REF,
-          parameters: { iacAction: "apply" },
+          parameters: {
+            iacAction: "apply",
+            planDigest: await planDigestIn(derivedWorkspace(workspaceRoot))
+          },
           idempotencyKey: "apply-v2"
         });
         expect((await readState(workspaceRoot))?.output).toBe("v2");

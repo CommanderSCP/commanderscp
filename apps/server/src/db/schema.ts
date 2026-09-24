@@ -1418,6 +1418,14 @@ export const executorBindings = pgTable(
       table.type,
       table.lane
     ),
+    /** ONE managed-iac binding per WORKSPACE (#417 re-verify, probe I). managed-iac's workspace is
+     *  its externalRef, else the target id (`managedIacWorkspaceKey`), and a second binding naming the
+     *  same one — another target's, another Type, a hook lane — would plan into it, rewriting the plan
+     *  an approver accepted there. Lowercased, as the lane's collision check is. Partial on the module;
+     *  bindings are hard-deleted, so there is no tombstoned row for it to keep claiming the key. */
+    uniqueIndex("executor_bindings_managed_iac_workspace_uq")
+      .on(table.orgId, sql`lower(coalesce(${table.externalRef}, ${table.targetObjectId}::text))`)
+      .where(sql`${table.pluginModule} = 'managed-iac'`),
     index("executor_bindings_org").on(table.orgId),
     /** drizzle/0105 — the reconciler's own sweep: every row it manages, for one policy or across
      *  the domain. Partial, because a hand-bound row is never a candidate for it. */
@@ -2627,10 +2635,13 @@ export const executionSystemSourceAllowlists = pgTable(
       .references(() => objects.id),
     /** `owner/name`, or an `owner/*` glob. Empty = nothing may run with this system's credentials. */
     repos: text("repos").array().notNull(),
-    /** The system's routing (`kind`, `serverUrl`, `namespace`, `tokenSecretKey`) the list was set FOR,
-     *  as `executionSystemRoutingFingerprint`. A reader whose live system no longer matches reads
+    /** The system's properties (every one routes) the list was set FOR, as
+     *  `executionSystemRoutingFingerprint`. A reader whose live system no longer matches reads
      *  "nothing allowed": the list follows the credentials' destination, never a re-point of it. */
     routingFingerprint: text("routing_fingerprint").notNull(),
+    /** Which `executionSystemRoutingFingerprint` produced it. 1 = #415's four fields (rows written
+     *  before 0124 default to it and are checked under it); every write stamps the current one. */
+    routingFingerprintVersion: integer("routing_fingerprint_version").notNull().default(1),
     /** Stamped server-side from the authenticated subject. */
     recordedBySubjectId: uuid("recorded_by_subject_id").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()

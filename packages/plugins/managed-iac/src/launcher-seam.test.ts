@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 import type { RunnerLauncher, RunnerSpec } from "@scp/runner-launcher";
 import { createManagedIacExecutorPlugin } from "./index.js";
+import { APPROVED_PLAN_DIGEST, seedApprovedPlan } from "./test-support/approved-plan.js";
 
 /** The standing gate that the port is installed, not present. See docs/plugins.md §447. */
 
@@ -121,10 +122,11 @@ describe("M23.1: managed-iac launches through the injected RunnerLauncher", () =
 
     const c = ctx();
     (c.config as Record<string, unknown>).dockerBinary = "/usr/local/bin/docker";
+    await seedApprovedPlan(workspaceRoot);
     const ref = await plugin.trigger(c, {
       kind: "sync",
       targetRef: "t1",
-      parameters: { iacAction: "apply" },
+      parameters: { iacAction: "apply", planDigest: APPROVED_PLAN_DIGEST },
       idempotencyKey: "seam-2"
     });
 
@@ -145,8 +147,9 @@ describe("M23.1: managed-iac launches through the injected RunnerLauncher", () =
       // A CONFIG READ for this plugin (server-injected, default "none") — unlike managed-dep, whose
       // charter clause carries no operator qualifier and passes a literal.
       networkMode: "none",
-      // No rollback extras in this intent, so nothing non-secret to pass.
-      env: [],
+      // An APPLY carries the approved digest to the runner, which re-derives it from `.tfplan` before
+      // applying (ADR-0056 addendum 4). Not a secret, so `env`, not `secretEnv`.
+      env: [`SCP_APPROVED_PLAN_DIGEST=${APPROVED_PLAN_DIGEST}`],
       // No `infraCredsSecretKeys` in this ctx, so no credentials are materialised. When they ARE,
       // they go HERE and not into `env` — the Docker adapter delivers `secretEnv` through a
       // mode-0600 `--env-file` instead of `-e`, and the Kubernetes adapter must deliver it as a

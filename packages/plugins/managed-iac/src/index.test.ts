@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
+import { APPROVED_PLAN_DIGEST, seedApprovedPlan } from "./test-support/approved-plan.js";
 
 /** Unit tests with every Docker invocation mocked. See docs/plugins.md §410. */
 
@@ -396,10 +397,11 @@ describe("MEDIUM (pass 5): a budget kill and a silent exit are distinguishable I
     const statePath = join(workspaceRoot, `${key}.json`);
     const plugin = createManagedIacExecutorPlugin();
     const c = ctx({ statePath, timeoutMs: 60 });
+    await seedApprovedPlan(workspaceRoot);
     const ref = await plugin.trigger(c, {
       kind: "sync",
       targetRef: "t1",
-      parameters: { iacAction: "apply", sourceFiles: { "main.tf": "# tf" } },
+      parameters: { iacAction: "apply", planDigest: APPROVED_PLAN_DIGEST },
       idempotencyKey: key
     });
     // A SEPARATE PLUGIN INSTANCE for the read, so nothing can be served from process memory: this

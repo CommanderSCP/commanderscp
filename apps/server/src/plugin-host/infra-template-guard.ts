@@ -43,6 +43,12 @@ export function assertInfraTemplateTrigger(intent: TriggerIntent): void {
   if (ref !== undefined && INFRA_CATALOG_TEMPLATE.test(ref) && !authorized.has(intent)) {
     throw new InfraTemplateOutsideLane(ref, "trigger");
   }
+  // THE MODE C APPLY'S DOOR (ADR-0056 addendum 4). managed-iac applies when a trigger says
+  // `iacAction: "apply"` — a PARAMETER, which a hook, a probe or a bump could carry as easily as a
+  // template name. Refused unless the lane built this very intent, whatever the module.
+  if (intent.parameters?.["iacAction"] === "apply" && !authorized.has(intent)) {
+    throw new InfraTemplateOutsideLane("iacAction=apply", "trigger");
+  }
 }
 
 export function assertInfraTemplateSchedule(spec: ScheduleSpec): void {

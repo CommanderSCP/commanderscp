@@ -27,6 +27,15 @@ export const InfrastructureChangeDeclarationSchema = z
   .strict();
 export type InfrastructureChangeDeclaration = z.infer<typeof InfrastructureChangeDeclarationSchema>;
 
+/** THE EXECUTORS THE APPLY GATE SERVES (ADR-0056; the managed-iac half is its addendum 4). A plan run by
+ *  one of these, once accepted, can be applied; a declared apply on any other executor is refused.
+ *  The server's lane and the UI's "Apply this plan" read this one list, so they cannot disagree. */
+export const INFRA_APPLY_GATE_MODULES = ["argo-workflows", "managed-iac"] as const;
+
+export function isInfraApplyGateModule(module: string | null | undefined): boolean {
+  return (INFRA_APPLY_GATE_MODULES as readonly string[]).includes(module ?? "");
+}
+
 /** The shipped catalog pair (deploy/helm-bundled/templates/argo-workflows-catalog.yaml). */
 export const INFRA_CATALOG_PLAN_TEMPLATE = "scp-infra-plan-v1";
 export const INFRA_CATALOG_APPLY_TEMPLATE = "scp-infra-apply-v1";
@@ -57,8 +66,8 @@ export const SourceAllowlistSchema = z.object({
   executionSystemId: z.string().uuid(),
   /** Sorted and deduplicated. Empty — or never set — means nothing may run with this system. */
   repos: z.array(z.string()),
-  /** False when the system has been re-pointed (its `kind`/`serverUrl`/`namespace`/`tokenSecretKey`
-   *  differ from when the list was set): then NOTHING is allowed until it is set again. */
+  /** False when the system's properties have changed since the list was set (any of them: every
+   *  property routes): then NOTHING is allowed until it is set again. */
   routingCurrent: z.boolean(),
   recordedBySubjectId: z.string().uuid().nullable(),
   updatedAt: z.string().datetime().nullable()

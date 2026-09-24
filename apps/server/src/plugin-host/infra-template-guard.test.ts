@@ -36,6 +36,20 @@ describe("infra-template-guard", () => {
     expect(() => assertInfraTemplateTrigger({ kind: "sync" })).not.toThrow();
   });
 
+  it("refuses a managed-iac APPLY (a parameter, not a template name) unless the lane built the intent", () => {
+    const apply = (): TriggerIntent => ({
+      kind: "sync",
+      targetRef: "any-workspace",
+      parameters: { iacAction: "apply", planDigest: "a".repeat(64) }
+    });
+    expect(() => assertInfraTemplateTrigger(apply())).toThrow(InfraTemplateOutsideLane);
+    expect(() => assertInfraTemplateTrigger(authorizeInfraLaneIntent(apply()))).not.toThrow();
+    // A plan is not gated here — the lane still derives it, but a plan applies nothing.
+    expect(() =>
+      assertInfraTemplateTrigger({ kind: "sync", parameters: { iacAction: "plan" } })
+    ).not.toThrow();
+  });
+
   it("refuses ANY schedule naming an infra template — a plan or apply on a cron is never the lane's", () => {
     expect(() =>
       assertInfraTemplateSchedule({

@@ -241,9 +241,9 @@ ConfigMap, byte-identical (helm-verify) to the file the integration test runs. T
   holds the rendered wiring, and `globalName` → `status.outputs` and a templated mutex name are
   Argo's documented behaviour, not observed live); a real cloud provider (local backend,
   `terraform_data`).
-- **managed-iac's apply** has no production caller (nothing sets `iacAction`). Owner ruling
+- **managed-iac's apply** had no production caller (nothing set `iacAction`). Owner ruling
   2026-09-24: bind it to an accepted plan's digest by this lane's rule, in a separate follow-on PR in
-  M28.
+  M28 — done, addendum 4.
 
 ## Addendum (2026-09-24) — what the adversarial verification of PR #415 found, and the fix
 
@@ -308,8 +308,10 @@ never executes a replicated system:
 - A binding row that already names one does not resolve.
 - A replicated registry is never a build's push destination (`build_destination_replicated_registry`).
 
-**Belt and braces.** Each source-allowlist row records a fingerprint of the system's `kind`,
-`serverUrl` (normalised), `namespace` and `tokenSecretKey` at the moment it was set. When the live
+**Belt and braces.** Each source-allowlist row records a fingerprint of the system's whole
+canonical `properties` object (`serverUrl` normalised) at the moment it was set — the whole object,
+for the door's own reason (as first merged it named four fields and so missed `webUrl`,
+`allowInternalEgress`, `authoring` and every manifest-declared key; widened in addendum 4). When the live
 system no longer matches, readers see NOTHING ALLOWED (`routingCurrent: false` on the GET, and the
 CLI and the UI say so). A legitimate re-point, whether by a `secret:write` holder or by a replicated
 revision, therefore voids the list until someone sets it again for the new endpoint.
@@ -317,3 +319,99 @@ revision, therefore voids the list until someone sets it again for the new endpo
 **Also.** The state workspace digest is now 24 hex characters (96 bits) over org + target +
 environment + region. Two environments whose slugs truncate to the same prefix no longer rely on the
 target id alone to be told apart.
+
+## Addendum 4 (2026-09-24) — managed-iac (Mode C) applies through the same gate
+
+**Before.** managed-iac had one production reader of `iacAction` (the plugin) and no production
+writer, so every production managed-iac run was a plan and no plan could be applied.
+
+**The rule, reused, not duplicated.** The lane now engages for the executors in
+`INFRA_APPLY_GATE_MODULES` (`argo-workflows`, `managed-iac`; `@scp/schemas`, read by the UI too),
+and both go through ONE `evaluateApplyGate`. A lane supplies only three things: its place as it is
+now and as the plan recorded it (compared key by key), any extra recheck (the Argo half re-checks the
+source allowlist), and how it expresses the apply. Everything else is the gate's, for both lanes:
+- the plan is accepted, succeeded at this target on this executor instance, and carries a digest
+  and a recorded trigger;
+- it is not superseded and no apply of it is in flight;
+- a re-apply of an applied plan is a no-op;
+- the proposer cannot accept their own plan (`infra_plan_separation_of_duties` keys on the
+  recorded trigger, which managed-iac plans now write).
+
+**managed-iac's place is its workspace.** The plugin keeps one workspace per (org,
+`intent.targetRef`), and reconcile's `targetRef` is the binding's externalRef, else the target id.
+A plan records that workspace, and an apply must still resolve to it. A second target's plan into a
+workspace another target already planned in is refused (`infra_workspace_collision`), because the
+two would apply each other's plans.
+
+**Its apply is `iacAction: "apply"` with the approved digest.** `run.sh apply` applies whatever
+`.tfplan` the workspace holds. So the plugin refuses before launching anything when:
+- the workspace's `plan.json` is not the approved digest (a newer plan, or none);
+- the apply carries no digest;
+- the apply brings source files.
+
+It also refuses any source file that names a workspace-owned file (`.tfplan`, `plan.json`, the
+state, `.terraform*`), so the evidence the approval was about cannot be replaced. This is the
+executor-side half, as the Argo template's re-plan-and-compare is for the other lane. The plugin
+host refuses any `iacAction: "apply"` the lane did not authorize, whichever server path carries it.
+`iacAction` is a server-reserved trigger key.
+
+**Unchanged:** managed-iac's execution model (ephemeral `scp-runner-iac` container, vaulted
+credentials, copied-in workspace). Its own rollback restores a prior state snapshot and applies
+nothing, so it stays. A rollback that declares an apply is refused. Configuration still reaches a
+managed-iac workspace as it did before; a campaign recipe cannot target managed-iac.
+
+**Also (the #415 verifier's NIT).** The source-allowlist routing fingerprint now covers the
+execution system's WHOLE canonical `properties`. The first version named four fields and so missed
+`webUrl`, `allowInternalEgress`, `authoring` and every manifest-declared key.
+
+**The #417 verification round.**
+- **The workspace identity is one non-lossy function** (BLOCKING, probes G and H).
+  - The lane keyed its collision check on the raw ref, while the plugin sanitized that ref into a
+    directory name. So `alias/X` and `alias_X` shared one directory past `infra_workspace_collision`,
+    and `..` resolved to the workspace root.
+  - `managedIacWorkspaceKey` (exported by `@scp/plugin-managed-iac`) now REFUSES any ref that is not
+    already a plain name. It never maps one. It is used in three places: the plugin, the lane (for
+    rows that predate the door; gate `infra_workspace_ref_invalid`), and the binding write door (400).
+  - Collisions compare case-insensitively, since a case-insensitive filesystem would join `Net` and
+    `net`.
+- **The runner verifies the file it applies** (SHOULD-FIX).
+  - The plugin's pre-launch check reads `plan.json`, which is only evidence; `run.sh apply` applies
+    `.tfplan`. So the runner now re-derives `sha256(tofu show -json .tfplan)`, the same bytes the
+    plan action wrote to `plan.json`, and refuses (exit 3) unless it equals `SCP_APPROVED_PLAN_DIGEST`.
+  - A `.tfplan` swapped under an unchanged `plan.json` is refused against the real runner.
+- **The fingerprint is VERSIONED rather than a re-set upgrade step** (SHOULD-FIX).
+  - Each allowlist row carries `routing_fingerprint_version` (0124, `DEFAULT 1`). Rows written by
+    #415's code are v1 and are still checked under v1's four fields. Every write stamps v2.
+  - Upgrading therefore voids nothing, and a row gains the wider binding at its next `secret:write`
+    re-set. Versioning was chosen because it was cheap (one column) and a mandatory re-set of every
+    allowlist is an upgrade step an operator could miss and see as an outage.
+  - Until the re-set, a v1 row is blind to the fields v1 never covered. That is accepted because the
+    routing door (addendum 3) is the primary control on those fields and the fingerprint is the
+    second one.
+  - An unknown version never verifies.
+- **URL spelling** (NIT). v2 normalises every http(s) URL-valued property at any depth, so
+  `https://x` and `https://x/` are one value.
+- **One workspace, one binding** (re-verify, probe I). The lane's collision check guards only
+  infra-lane plans. A `configuration`-typed or hook-lane managed-iac binding naming another
+  target's workspace ran there and rewrote the plan an approver had accepted. That was
+  interference, not an unapproved apply. Two fixes now stand at the binding door:
+  - managed-iac binds the `infrastructure` Type only, and a relabel away from it is refused;
+  - a partial unique index (0125) keys `lower(coalesce(external_ref, target_object_id))`, one
+    live managed-iac binding per org. Bindings are hard-deleted, so no tombstone keeps a key.
+
+  A row that predates the door is refused by the lane at trigger time
+  (`managed_iac_not_infrastructure`). The lane's collision check still covers the one case the
+  index cannot see: a workspace a moved-away target planned in. **Upgrade note:** 0125 fails to
+  apply if an org already has two managed-iac bindings sharing a workspace. That is exactly the
+  unsafe state, so the operator must resolve it first.
+
+**Proved by** `managed-iac-apply.integration.test.ts`. It runs the real reconcile loop and the real
+plugin in the real subprocess host, with each run in the real `scp-runner-iac` container on
+OpenTofu's local backend. It covers:
+- plan → accept → apply applies for real, and a re-apply is a no-op with no second run;
+- an unaccepted plan's apply is refused;
+- the proposer cannot accept;
+- a superseded plan is refused;
+- the shared-workspace collision is refused.
+
+`apply-digest.test.ts` covers the plugin half. Each guard is mutation-proved (PR body).

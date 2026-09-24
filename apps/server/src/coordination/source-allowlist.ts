@@ -3,7 +3,10 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executionSystemSourceAllowlists, objects } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
-import { executionSystemRoutingFingerprint } from "../authz/execution-system-routing-door.js";
+import {
+  executionSystemRoutingFingerprint,
+  ROUTING_FINGERPRINT_VERSION
+} from "../authz/execution-system-routing-door.js";
 
 /**
  * AN EXECUTION SYSTEM'S SOURCE-REPO ALLOWLIST (M28.3 re-verify, owner ruling R1, ADR-0056 §7a).
@@ -19,8 +22,7 @@ import { executionSystemRoutingFingerprint } from "../authz/execution-system-rou
  * no system and so no allowlist, and these lanes refuse it.
  *
  * BOUND TO THE SYSTEM'S ROUTING (ADR-0056 addendum 3, belt-and-braces to the routing door): each row
- * records the fingerprint of the system's `kind`/`serverUrl`/`namespace`/`tokenSecretKey` when it
- * was set, and a reader whose live system no longer matches reads NOTHING ALLOWED. The list names
+ * records the fingerprint of the system's whole `properties` object when it was set, and a reader whose live system no longer matches reads NOTHING ALLOWED. The list names
  * which repos may run at one destination with one credential; re-pointing the system — by any door,
  * a replicated revision included — means someone with `secret:write` re-sets it for the new one.
  */
@@ -86,6 +88,7 @@ export async function putSourceAllowlist(
       executionSystemObjectId: input.executionSystemObjectId,
       repos,
       routingFingerprint,
+      routingFingerprintVersion: ROUTING_FINGERPRINT_VERSION,
       recordedBySubjectId: input.recordedBySubjectId,
       updatedAt: now
     })
@@ -97,6 +100,7 @@ export async function putSourceAllowlist(
       set: {
         repos,
         routingFingerprint,
+        routingFingerprintVersion: ROUTING_FINGERPRINT_VERSION,
         recordedBySubjectId: input.recordedBySubjectId,
         updatedAt: now
       }
@@ -145,7 +149,8 @@ export async function getSourceAllowlist(
     executionSystemObjectId: row.executionSystemObjectId,
     repos: row.repos,
     routingCurrent:
-      row.routingFingerprint === executionSystemRoutingFingerprint(joined.systemProperties),
+      row.routingFingerprint ===
+      executionSystemRoutingFingerprint(joined.systemProperties, row.routingFingerprintVersion),
     recordedBySubjectId: row.recordedBySubjectId,
     updatedAt: row.updatedAt
   };
