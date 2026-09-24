@@ -1773,6 +1773,31 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     - **DoD:** SCP creates an Application and a Rollout for a component it did not import, and
       **still only reads** rollout state — ADR-0008 §3 asserted by a test that goes red if any write
       verb reaches a Rollout's status.
+    - **Status (2026-09-23): BUILT, [ADR-0055](adr/0055-authored-argocd-deployments.md).**
+      - **D3's premise was measured false:** SCP emitted no Kubernetes deployment config anywhere.
+        So the door is the executor `trigger` it already has, with no new verb and no git write. A
+        deploy lane (`deploy-lane-trigger-parameters.ts`, called from `reconcile.ts`) derives an
+        Application whose single source is an operator-installed pass-through carrier chart. The
+        SCP-authored Rollout sits in its values, and `@scp/plugin-argocd` creates or updates the
+        Application, then syncs it.
+      - The Rollout's steps come from the release topology wave that names the target's place
+        (`rollout`, the D12 vocabulary). Every authored pause is timed.
+      - **Proved by:**
+        - `argocd-authored-deployment.integration.test.ts`: two waves through the real reconcile
+          loop and the real subprocess plugin, against a recording Argo CD stand-in that plays the
+          controller. Deleting the reconcile call makes it red.
+        - The ADR-0008 §3 standing tests (`authored-application.test.ts`, and the same stand-in in
+          the integration suite) go red on an added `promote` call.
+        - helm-verify pins the bundled SCP account's exact Argo CD grants.
+        - `deployment-authoring-reachability.test.ts`.
+      - **Real counterparty:** a disposable kind cluster with the vendored CRDs. Server-side
+        `--validate=strict` dry-runs passed, and a negative control was refused.
+      - **Not proved:**
+        - A live Argo CD repo-server or Rollouts controller: no image is cached, and the homelab
+          cluster was left untouched.
+        - Rollback of an authored target is **refused** (D7), not performed.
+        - Blue-green is not authored (D4).
+      - Three owner questions are listed in the ADR.
   - **M28.5 — the cross-cutting proof.** One estate exercising all four paths, so no increment can
     be green while the capability is unreachable — the M27.9 lesson as a standing gate.
     - **DoD:** deleting the wiring for any one lane makes a test red.
