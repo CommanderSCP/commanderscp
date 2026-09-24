@@ -39,6 +39,11 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
   assertInfraTemplateTrigger:
     "is the plugin host's door for every server path that submits a template name",
   assertInfraTemplateSchedule: "is the same door for schedules",
+  getSourceAllowlist:
+    "reads the execution system's source allowlist — the one bound on which repos may run with its " +
+    "credentials that a target's or component's own editor cannot move (owner ruling R1)",
+  putSourceAllowlist: "is the ONE (secret:write) door that writes that allowlist",
+  repoAllowedBy: "is the allowlist's match, used by BOTH the infra and the build lane",
   infraApplyTemplateFor:
     "derives the apply template from the bound plan template, so no binding can point a plan's " +
     "trigger at an apply"
@@ -98,6 +103,26 @@ describe("the infrastructure lane is INSTALLED, not merely built", () => {
     expect(used.test(stripComments(commentedOut))).toBe(false);
   });
 
+  it("the source allowlist has ONE write door — the secret:write route — and nothing replicates or applies it", () => {
+    // Owner ruling R1: not writable through inline binding config, IaC by a non-privileged role, or
+    // federation replication. The route is its only writer; no other production file names the table.
+    // (Server-side: the SDK and CLI methods of the same name call that route over HTTP.)
+    expect(callersOf("putSourceAllowlist").filter((p) => p.startsWith("apps/server/"))).toEqual([
+      "apps/server/src/routes/executors.ts"
+    ]);
+    const touching = PRODUCTION_SOURCES.filter((p) =>
+      /\bexecutionSystemSourceAllowlists\b/.test(read(p))
+    ).sort();
+    expect(touching).toEqual([
+      "apps/server/src/coordination/source-allowlist.ts",
+      "apps/server/src/db/schema.ts"
+    ]);
+    const route = read("apps/server/src/routes/executors.ts");
+    expect(route).toMatch(
+      /permission: "secret:write",\s*scopeObjectId: auth\.orgId\s*\}\);\s*const sys = await executionSystemOf/
+    );
+  });
+
   it("the lane's authority at the plugin host is granted by reconcile ALONE", () => {
     // Anything else that could mark an intent would be a second, ungated way through the door.
     expect(callersOf("authorizeInfraLaneIntent")).toEqual([
@@ -139,6 +164,12 @@ describe("the infrastructure lane is INSTALLED, not merely built", () => {
     expect(host).toMatch(
       /ensureSchedule: async \(spec: ScheduleSpec\) => \{\s*assertInfraTemplateSchedule\(spec\);\s*return call<void>\("ensureSchedule", \{ spec \}\);/
     );
+  });
+
+  it("the lane derives the state workspace it sends (the ≤63-char, per-target name) — same file", () => {
+    const lane = read("apps/server/src/coordination/infra-lane-trigger-parameters.ts");
+    expect(lane).toMatch(/const stateWorkspace = deriveStateWorkspace\(\{/);
+    expect(lane).toMatch(/params\.stateWorkspace = place\.stateWorkspace;/);
   });
 
   it("the accept gate holds an infrastructure plan's separation of duties", () => {
