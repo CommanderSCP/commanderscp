@@ -1,0 +1,13 @@
+apiVersion: v2
+name: scp-authored-manifests
+description: >-
+  The CARRIER for deployments CommanderSCP authors (M28.4, docs/adr/0055-authored-argocd-deployments.md).
+  It renders `.Values.manifests` verbatim and nothing else, so the Argo Rollout an SCP-authored
+  Application carries in its Helm values is exactly what Argo CD applies. The operator installs it
+  once where their Argo CD can read it — a path in a git repository Argo CD already syncs from, or a
+  Helm repository — and names that location in the Argo CD execution-system's
+  `properties.authoring`. SCP never writes to git and never talks to the cluster: it writes the
+  Application to Argo CD's API, and Argo CD's own controller applies what this chart renders.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

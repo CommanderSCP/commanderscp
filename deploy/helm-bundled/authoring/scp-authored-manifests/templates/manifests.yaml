@@ -1,0 +1,7 @@
+{{- /* Pass-through, deliberately: every byte of what lands in the cluster was authored by SCP's
+       server (`apps/server/src/coordination/deploy-lane-trigger-parameters.ts`) and is asserted
+       there. A template here that computed anything would be a second author nobody tests. */ -}}
+{{- range .Values.manifests }}
+---
+{{ toYaml . }}
+{{- end }}

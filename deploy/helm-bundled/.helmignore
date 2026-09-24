@@ -4,3 +4,6 @@
 *.tgz
 .DS_Store
 README.md
+# M28.4: the authored-deployment carrier is its OWN chart, shipped beside this one in the air-gap
+# bundle, never part of this release.
+authoring/

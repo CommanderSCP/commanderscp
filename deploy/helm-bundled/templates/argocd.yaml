@@ -55,6 +55,11 @@ metadata:
 {{- else if eq $cmName "argocd-rbac-cm" -}}
 {{- $existing := default "" (get $data "policy.csv") -}}
 {{- $scoped := printf "p, %s, applications, get, */*, allow\np, %s, applications, sync, */*, allow" $a.scpAccount $a.scpAccount -}}
+{{- /* M28.4 (ADR-0055): create/update of Applications in ONE project — SCP-authored ones. Never
+       `action/*`, `update/*` or `delete`: ADR-0008 §3 at the credential (values.yaml). */ -}}
+{{- if $a.scpAuthoringProject -}}
+{{- $scoped = printf "%s\np, %s, applications, create, %s/*, allow\np, %s, applications, update, %s/*, allow" $scoped $a.scpAccount $a.scpAuthoringProject $a.scpAccount $a.scpAuthoringProject -}}
+{{- end -}}
 {{- $_ := set $data "policy.csv" (printf "%s\n%s\n" (trim $existing) $scoped) -}}
 {{- else if eq $cmName "argocd-cmd-params-cm" -}}
 {{- $_ := set $data "server.insecure" "true" -}}

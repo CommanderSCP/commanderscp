@@ -1942,6 +1942,30 @@ function verifyBundledChart(docs: K8sDoc[]): void {
     );
   }
 
+  // M28.4 (ADR-0055) — ADR-0008 §3 AT THE CREDENTIAL. SCP's Argo CD account may read and sync
+  // everything and create/update Applications in the authoring project; it may never run a resource
+  // action (Argo Rollouts' promote/abort/retry/restart/pause/resume), patch or delete a managed
+  // resource (`update/*`, `delete`), or override. An allowlist of exact grants, not a denylist: a
+  // grant nobody listed here is a failure.
+  const rbacCm = bundled.find(
+    (d) => d.kind === "ConfigMap" && d.metadata?.name === "argocd-rbac-cm"
+  ) as (K8sDoc & { data?: Record<string, string> }) | undefined;
+  const scpGrants = (rbacCm?.data?.["policy.csv"] ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("p, scp-coordinator,"))
+    .sort();
+  const expectedGrants = [
+    "p, scp-coordinator, applications, create, default/*, allow",
+    "p, scp-coordinator, applications, get, */*, allow",
+    "p, scp-coordinator, applications, sync, */*, allow",
+    "p, scp-coordinator, applications, update, default/*, allow"
+  ];
+  assert(
+    JSON.stringify(scpGrants) === JSON.stringify(expectedGrants),
+    `[${label}] bundled Argo CD grants the SCP account ${JSON.stringify(scpGrants)}; expected exactly ${JSON.stringify(expectedGrants)} — anything beyond get/sync everywhere and create/update in the authoring project lets SCP drive a Rollout (ADR-0008 §3)`
+  );
+
   // Every image must be RETARGETED — an un-rewritten upstream ref 404s in an air-gapped registry.
   const bundledImages = bundled
     .flatMap((d) => {
