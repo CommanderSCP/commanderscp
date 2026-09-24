@@ -33,6 +33,42 @@ export type ExecutorType = z.infer<typeof ExecutorTypeSchema>;
 export const ArtifactClassSchema = ExecutorTypeSchema.exclude(["infrastructure", "configuration"]);
 export type ArtifactClass = z.infer<typeof ArtifactClassSchema>;
 
+/** WHAT KIND OF REPOSITORY A BUILT ARTIFACT IS PUBLISHED INTO (M28.1, ADR-0053).
+ *
+ *  The destination half of the artifact class. A registry is an `execution-system` reached by a
+ *  `publishes_to` edge, and its `properties.kind` already names the PRODUCT (`gitea`, `harbor`) —
+ *  which cannot answer this, because one product serves several formats: ADR-0012 makes Gitea the
+ *  unified registry for OCI images AND rpm AND npm. So the formats a registry serves are their own
+ *  declared data, `properties.packageFormats`, and this is the closed set SCP can derive a
+ *  destination for. A format outside it is still storable on a registry; it just never matches. */
+export const PackageFormatSchema = z.enum(["oci", "rpm"]);
+export type PackageFormat = z.infer<typeof PackageFormatSchema>;
+
+/** What a registry that declares no `packageFormats` serves. Every registry that existed before
+ *  M28.1 was a container registry, so this default is what lets them keep working untouched. */
+export const DEFAULT_REGISTRY_PACKAGE_FORMATS: readonly PackageFormat[] = ["oci"];
+
+/** Type → the destination format its build publishes into (ADR-0053's table).
+ *
+ *  `null` means SCP has NO destination class for that Type yet: it derives no destination
+ *  parameters for it and does not consult the registry at all. That is deliberately not a guess in
+ *  either direction — handing an npm build an OCI `host/repository` was the defect, and refusing
+ *  one because its registry is "wrong" would claim knowledge of a format SCP does not model.
+ *  `chart` is `null` rather than `oci` because `helm push` addresses a registry NAMESPACE and takes
+ *  the repository from Chart.yaml, so the `host/repository` SCP assembles for images is not its
+ *  input. `vm-image` publishes to an image store (ADR-0049), never an OCI registry. */
+export const DESTINATION_FORMAT_OF_TYPE: Record<ArtifactClass, PackageFormat | null> = {
+  image: "oci",
+  rpm: "rpm",
+  deb: null,
+  npm: null,
+  maven: null,
+  python: null,
+  go: null,
+  chart: null,
+  "vm-image": null
+};
+
 /** Which LANE a binding serves.
  *
  *  DEFINED HERE, not in `binding-policy.ts`, although the policy effect is its other consumer:

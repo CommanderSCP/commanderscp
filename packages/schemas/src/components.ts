@@ -361,7 +361,13 @@ export const ComponentPipelineRegistrySchema = z.object({
    *  `acme/checkout-api`) when it is a string; null otherwise. */
   repository: z.string().nullable(),
   /** How many `publishes_to` edges the component has here — 0, 1, or the count behind `ambiguous`. */
-  edgeCount: z.number().int()
+  edgeCount: z.number().int(),
+  /** The formats this registry DECLARES it serves, `properties.packageFormats` read verbatim
+   *  (M28.1, ADR-0053) — e.g. `["oci","rpm"]` for a unified Gitea. `null` when it declares none,
+   *  which the build lane reads as `["oci"]` (`DEFAULT_REGISTRY_PACKAGE_FORMATS`); `[]` when the
+   *  property is present but not a list of strings, which serves nothing. Always `null` unless
+   *  `declared`. OPTIONAL on the wire so a response from an older server still parses. */
+  packageFormats: z.array(z.string()).nullable().optional()
 });
 export type ComponentPipelineRegistry = z.infer<typeof ComponentPipelineRegistrySchema>;
 

@@ -17,6 +17,11 @@ function stripReserved(args: Record<string, unknown>): Record<string, unknown> {
   const reserved = new Set<string>([...SERVER_DERIVED_OPS_KEYS, ...ARGO_OPS_DELIVERY_KEYS]);
   return Object.fromEntries(Object.entries(args).filter(([k]) => !reserved.has(k)));
 }
+import {
+  TriggerParameterRefusal,
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION,
+  WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS
+} from "./trigger-parameter-refusal.js";
 
 /**
  * WHAT A HOST-REACHING TRIGGER TELLS `managed-ops` — the production caller `deriveOpsRunMaterial`
@@ -40,7 +45,12 @@ function stripReserved(args: Record<string, unknown>): Record<string, unknown> {
 export const OPS_CATALOG_ROLES = ["os_package", "config_file", "scheduled_unit"] as const;
 export type OpsCatalogRole = (typeof OPS_CATALOG_ROLES)[number];
 
-export class OpsDeclarationRefused extends Error {}
+/** Typed so `reconcile.ts` terminalises the target with a Decision instead of retrying a verdict
+ *  every tick (ADR-0053 — the same property the build lane's destination refusal has). */
+export class OpsDeclarationRefused extends TriggerParameterRefusal {
+  readonly status = WAVE_TARGET_OPS_DECLARATION_REFUSED_STATUS;
+  readonly action = WAVE_TARGET_OPS_DECLARATION_REFUSED_AUDIT_ACTION;
+}
 
 export interface OpsLaneTriggerParameterInput {
   orgId: string;
@@ -91,6 +101,18 @@ export function isOpsLane(pluginModule: string | null, externalRef: string | nul
  *  model answers it. It is not a campaign recipe, and it cannot be: `managed-ops` is in
  *  `RECIPE_FORBIDDEN_EXECUTOR_MODULES`, so a recipe naming this executor terminalises the target
  *  before it reaches here. That refusal is what makes `properties.ops` the only door. */
+/** The Decision's inputs for an ops-lane refusal — queryable the way the build lane's
+ *  `gate: build_destination_format` is. `reason` is the closed set of causes below, never free text;
+ *  the argument VALUES are deliberately not carried (they can name hosts and paths), only whether
+ *  any were given. */
+function opsRefusalContext(
+  reason: "no_declaration" | "unknown_role" | "malformed_arguments" | "target_unresolved",
+  role: string | null,
+  hasArguments: boolean
+): Record<string, unknown> {
+  return { gate: "ops_declaration", reason, role, hasArguments };
+}
+
 function readDeclaration(bag: unknown): {
   role: OpsCatalogRole;
   arguments: Record<string, unknown>;
@@ -100,7 +122,8 @@ function readDeclaration(bag: unknown): {
     throw new OpsDeclarationRefused(
       "this change targets a host-reaching executor but declares no operation. Set " +
         "`properties.ops` to `{ role, arguments }`, naming one of: " +
-        `${OPS_CATALOG_ROLES.join(", ")}.`
+        `${OPS_CATALOG_ROLES.join(", ")}.`,
+      { inputContext: opsRefusalContext("no_declaration", null, false) }
     );
   }
   const role = (ops as Record<string, unknown>)["role"];
@@ -109,7 +132,14 @@ function readDeclaration(bag: unknown): {
       `'${String(role)}' is not a role in the signed task catalog. The catalog is CLOSED to the ` +
         `three classes the charter's 2026-07-12 host-reaching amendment enumerates: ` +
         `${OPS_CATALOG_ROLES.join(", ")}. Adding a fourth is a charter conversation, not a ` +
-        `parameter.`
+        `parameter.`,
+      {
+        inputContext: opsRefusalContext(
+          "unknown_role",
+          typeof role === "string" ? role : null,
+          (ops as Record<string, unknown>)["arguments"] !== undefined
+        )
+      }
     );
   }
   const args = (ops as Record<string, unknown>)["arguments"];
@@ -118,7 +148,8 @@ function readDeclaration(bag: unknown): {
   // worth surfacing, because it means the author believed they were passing something.
   if (args !== undefined && (typeof args !== "object" || args === null || Array.isArray(args))) {
     throw new OpsDeclarationRefused(
-      "`properties.ops.arguments` must be an object of the role's own arguments."
+      "`properties.ops.arguments` must be an object of the role's own arguments.",
+      { inputContext: opsRefusalContext("malformed_arguments", role, true) }
     );
   }
   return { role: role as OpsCatalogRole, arguments: (args as Record<string, unknown>) ?? {} };
@@ -165,7 +196,14 @@ export async function opsLaneTriggerParameters(
     .limit(1);
   if (!target) {
     throw new OpsDeclarationRefused(
-      `refusing to derive host-reaching material: target ${input.targetObjectId} does not resolve.`
+      `refusing to derive host-reaching material: target ${input.targetObjectId} does not resolve.`,
+      {
+        inputContext: opsRefusalContext(
+          "target_unresolved",
+          declaration.role,
+          Object.keys(declaration.arguments).length > 0
+        )
+      }
     );
   }
 

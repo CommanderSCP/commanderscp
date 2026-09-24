@@ -36,6 +36,18 @@ waits for readiness, and — for Argo CD — flips the matching flag on the SCP 
 **auto-wire hook** (mints the scoped Argo CD token, zero token plumbing) and **NetworkPolicy egress**
 turn on. Pass `--scp-release <name> --scp-namespace <ns>` if your SCP release isn't `scp`/`default`.
 
+**The RPM build catalog template (`scp-build-rpm-v1`, ADR-0053) needs one flag on a connected
+install.** Its builder, `scp-builder-rpm`, is first-party, so the chart has no upstream ref to default
+to and does not render the template until you name the image. Run the `publish-images` workflow
+(it pushes `ghcr.io/commanderscp/scp-builder-rpm:sha-<commit>` and prints the digest), then:
+
+```bash
+scripts/scp-bundled.sh enable argo-workflows \
+  --set bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage=ghcr.io/commanderscp/scp-builder-rpm:sha-<commit>@sha256:<digest>
+```
+
+`scp-build-image-v1` needs nothing: its images are upstream. The air-gap `install.sh` sets both.
+
 **Air-gap:** you don't run this directly — the signed bundle's `install.sh` calls it for every backend
 the bundle carries, passing the retargeted, digest-pinned images via `--set`. One `./install.sh` and
 the enabled backends come up.
