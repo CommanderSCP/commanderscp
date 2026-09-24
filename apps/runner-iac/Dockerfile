@@ -42,10 +42,16 @@
 # comparison before changing base distros again — `apt`/`apk` dependency shapes for `git`
 # specifically are the deciding factor, not general distro reputation.
 #
-# Packages installed on top of the slim base are exactly what run.sh (see its own doc comment for
-# the credential-confinement contract this depends on) needs at runtime: `bash` (run.sh's
-# shebang), `git` (module fetch), `ca-certificates` (provider HTTPS — OpenTofu registry + provider
-# downloads over TLS). No compilers, no package-manager cache, no extra tooling — every extra byte
+# Packages installed on top of the slim base are exactly what the image's two scripts need at
+# runtime: run.sh (managed-iac, Mode C — see its own doc comment for the credential-confinement
+# contract this depends on) and deploy/helm-bundled/files/scp-infra.sh (the scp-infra-plan-v1 /
+# scp-infra-apply-v1 catalog templates an org's Argo Workflows runs in THIS image, M28.3 /
+# ADR-0056 — one pinned tofu for both lanes rather than two images that drift). `bash` (both
+# shebangs), `git` (module fetch; scp-infra.sh's checkout by commit), `ca-certificates` (provider
+# HTTPS — OpenTofu registry + provider downloads over TLS), `jq` (scp-infra.sh's plan digest and
+# add/change/destroy tally, read from `tofu show -json` — structured, never human stdout; measured
+# `apk info -R jq` on alpine:3.24: musl + libonig only, and nothing managed-iac's run.sh
+# executes). No compilers, no package-manager cache, no extra tooling — every extra byte
 # here is extra attack surface in a container that, for the duration of one run, holds real
 # (scoped, vaulted) infrastructure credentials. Re-pin the `ghcr.io/opentofu/opentofu:<ver>` tag
 # below to the newest 1.x release as new patches ship.
@@ -60,7 +66,7 @@
 # one supervised run. Revisit only alongside a matching change to the launcher's copy-in step.
 FROM alpine:3.24
 
-RUN apk add --no-cache bash git ca-certificates
+RUN apk add --no-cache bash git ca-certificates jq
 
 # The upstream OpenTofu image's only contribution here is its statically-linked `tofu` binary.
 # `COPY --from` an image reference (unlike `FROM`) does not trigger that image's ONBUILD, so this

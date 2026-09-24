@@ -36,6 +36,7 @@ import {
   assertOrgRetainsAdministrativeFloor,
   objectTouchesRoleAuthority
 } from "../authz/role-binding-door.js";
+import { assertMayWriteExecutionSystemRouting } from "../authz/execution-system-routing-door.js";
 import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { assertOutpostPeerBinding, isPeerBoundObjectType } from "../federation/outpost-binding.js";
@@ -286,6 +287,16 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       actorObjectId: input.actorObjectId,
       before: {},
       after: labels,
+      subject: `${input.typeId} '${input.name}'`
+    });
+    // THE EXECUTION-SYSTEM ROUTING DOOR (`authz/execution-system-routing-door.ts`). On CREATE every
+    // property is new, so a system carrying any needs `secret:write` at the org root.
+    await assertMayWriteExecutionSystemRouting(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      before: {},
+      after: properties,
       subject: `${input.typeId} '${input.name}'`
     });
     // The fifth authoring refusal, ending a common first experience. See docs/graph.md §93.
@@ -700,6 +711,16 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       actorObjectId: input.actorObjectId,
       before: existing.labels as Record<string, unknown>,
       after: nextLabels,
+      subject: `${input.typeId} '${existing.urn}'`
+    });
+    // The UPDATE half of the routing door: `before` is the STORED properties, so a rename that
+    // re-sends them unchanged stays at `object:write`, and a re-point does not.
+    await assertMayWriteExecutionSystemRouting(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      before: existing.properties as Record<string, unknown>,
+      after: nextProperties,
       subject: `${input.typeId} '${existing.urn}'`
     });
     // The update half of the un-declaration guard. See docs/graph.md §109.

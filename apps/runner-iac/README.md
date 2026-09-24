@@ -6,6 +6,12 @@ BUILD_AND_TEST.md §8 M7 item 3): pinned OpenTofu + a minimal shell run shim (`r
 else. No Node app code lives here (docs/DESIGN.md §3) — the `scpd` image carries no IaC toolchain
 at all; this is the only place `tofu` exists in the whole system.
 
+**Also the image of the Argo Workflows infra catalog (M28.3, ADR-0056).** `scp-infra-plan-v1` and
+`scp-infra-apply-v1` (deploy/helm-bundled) run `deploy/helm-bundled/files/scp-infra.sh` in this
+image, in the org's own cluster — CommanderSCP triggers and observes them and runs nothing. One
+pinned `tofu` serves both lanes; `jq` is here for that script (plan digest and tally), not for
+`run.sh`.
+
 Not an npm workspace package — a plain Docker build context.
 
 ```

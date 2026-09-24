@@ -80,6 +80,11 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
 
   // ---- deliberate escalation bars: org-root so a NARROWER binding cannot satisfy them -----------
   {
+    site: "authz/execution-system-routing-door.ts :: assertMayWriteExecutionSystemRouting() :: secret:write",
+    cls: "escalation-bar",
+    why: "an execution system's properties decide where its triggers go and which stored credential they carry (M28.3 final re-verify, probe E: an Operator re-pointed a sandbox system at the prod Argo). Org-root ON PURPOSE and the bar for setting that credential: an object:write holder at that system — or at the org root — must not be able to move the credential's destination. Installed at the repo's local write choke point and at hand-fill (ADR-0056 addendum 3)"
+  },
+  {
     site: "authz/identity-mapping-door.ts :: assertMayWriteIdentityMapping() :: role_binding:write",
     cls: "escalation-bar",
     why: "mapping a group to an IdP claim delegates to the directory the decision of who holds whatever that group carries — an org-wide federation act with no narrower object it belongs to. Org-root ON PURPOSE: a service-scoped role_binding:write holder must not be able to point a claim they control at a group. The second bar (every binding the group already holds must be one the actor could have written) is per-binding at that binding's own scope, so it is not an org-root pin and is not listed here"
@@ -169,6 +174,11 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     site: "routes/executors.ts :: GET /api/v1/secrets :: object:read",
     cls: "escalation-bar",
     why: "lists which credential keys the org holds; belongs with the credential doors above, not with the object reads"
+  },
+  {
+    site: "routes/executors.ts :: PUT /api/v1/execution-systems/:idOrUrn/source-allowlist :: secret:write",
+    cls: "escalation-bar",
+    why: "M28.3 owner ruling R1 (ADR-0056 §7a) — which source repos may run WITH an execution system's credentials. It bounds what the secrets above are used for, so it takes their bar: never object:write, which a target's or component's own editor holds (re-verification probe C2 re-declared the repo that way). Org root, because the credentials it bounds are org-wide"
   },
   {
     site: "routes/executors.ts :: DELETE /api/v1/secrets/:key :: secret:write",

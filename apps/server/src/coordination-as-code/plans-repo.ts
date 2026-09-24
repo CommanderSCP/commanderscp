@@ -126,6 +126,7 @@ import {
   upsertComponentRollout
 } from "./rollout-convergence-repo.js";
 import { assertNoSystemOnlyConfig, validatePluginConfig } from "../plugin-host/plugin-manifests.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 /** Rejects a diff creating a component with no owning service. See docs/coordination-as-code.md §103. */
 function assertComponentsContained(diff: PlanDiff): void {
@@ -1540,7 +1541,11 @@ export async function executePlanDiff(
       // Every `authorize()` — including `object:write` at this system (prepareApplyChecks) — has
       // already run to completion, so validating the system here cannot be an oracle.
       const sys = await getObjectByIdOrUrnAnyType(tx, orgId, target.executionSystemId);
-      const identity = executionSystemBindingIdentity(sys, target.executionSystemId);
+      const identity = executionSystemBindingIdentity(
+        sys,
+        target.executionSystemId,
+        (await ensureFederationSelf(tx, orgId)).domainId
+      );
       await upsertExecutorBinding(tx, {
         orgId,
         targetObjectId,

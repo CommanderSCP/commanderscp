@@ -40,6 +40,7 @@ import type {
   PluginHost,
   PluginHostInstanceConfig
 } from "./contract.js";
+import { assertInfraTemplateSchedule, assertInfraTemplateTrigger } from "./infra-template-guard.js";
 import { resolveCallPolicy } from "./call-policy.js";
 import {
   encodeMessage,
@@ -335,11 +336,19 @@ export class SubprocessPluginHost implements PluginHost {
       this.call(instanceId, method, params) as Promise<T>;
     return {
       observe: (since?: Cursor) => call("observe", { since }),
-      trigger: (intent: TriggerIntent) => call<ExternalRunRef>("trigger", { intent }),
+      // The infra catalog templates' one door (ADR-0056 §5): refused here unless the infrastructure
+      // lane built this very intent, whichever server path is submitting it.
+      trigger: async (intent: TriggerIntent) => {
+        assertInfraTemplateTrigger(intent);
+        return call<ExternalRunRef>("trigger", { intent });
+      },
       status: (ref: ExternalRunRef) => call<ExecutionStatus>("status", { ref }),
       abort: (ref: ExternalRunRef) => call<AbortResult>("abort", { ref }),
       describeCapabilities: () => call<ExecutorCapabilities>("describeCapabilities"),
-      ensureSchedule: (spec: ScheduleSpec) => call<void>("ensureSchedule", { spec }),
+      ensureSchedule: async (spec: ScheduleSpec) => {
+        assertInfraTemplateSchedule(spec);
+        return call<void>("ensureSchedule", { spec });
+      },
       removeSchedule: (scheduleId: string) => call<void>("removeSchedule", { scheduleId })
     };
   }

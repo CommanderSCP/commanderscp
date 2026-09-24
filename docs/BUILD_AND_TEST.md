@@ -1864,6 +1864,84 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     surfaced for approval before apply; state backend per D2.
     - **DoD:** a plan is persisted and rendered as evidence, and **apply cannot run without an
       approved plan** (mutation-proved, not documented). Re-apply of an unchanged plan is a no-op.
+    - **State (2026-09-23): built — [ADR-0056](adr/0056-infrastructure-buildout-plan-approve-apply.md).**
+      A plan and its apply are two changes, and **accepting the plan change is approving the plan** —
+      the existing `validating → accepted` gate, quorum policies and all, not a second approval
+      model. The plan runs `scp-infra-plan-v1`; its sha256 digest and add/change/destroy tally come
+      back through the workflow's global outputs (the argo-workflows plugin's `status()` now reads
+      them) as the SAME `observed.plan` evidence managed-iac reports, so it is persisted on the wave
+      target, served by `explain`, printed by `scp change explain` and drawn by the existing plan
+      chip. An apply (`properties.infrastructure.applyPlan`, `scp change propose --apply-plan`, or
+      "Apply this plan" in the UI) is triggered only if `infraLaneTriggerParameters` finds that plan
+      accepted, succeeded at this target on this executor with a digest, not superseded by a newer
+      plan, and not already being applied — refused otherwise, terminal, with a Decision. A re-apply
+      of an applied plan succeeds as a no-op with no trigger. The digest rides into
+      `scp-infra-apply-v1`, which re-plans the approved commit and applies only if the re-plan's
+      digest matches (no change → no-op; drift → refuse). State lives in the operator's backend
+      (chart values), one workspace per target. Proved by `infra-lane.integration.test.ts` (17
+      tests): the real reconcile loop and plugin against a loopback Argo API, with each submitted
+      workflow EXECUTED by the shipped `scp-infra.sh` in the real `scp-runner-iac` image — plan →
+      approve → apply → re-plan shows `0 add / 0 change / 0 destroy`, a wrong digest exits 3, two
+      plans of the same inputs share a digest. Twenty-odd mutations each turned a test red for its own
+      reason (PR body). Permanent in CI (the image is published and pulled already).
+      - *What was hard / surprising.* (a) The only existing approval gate runs AFTER execution
+        (`accept` ends a change's life), and there is no mid-execution hold — so "approve then apply"
+        became two changes rather than a pause, which is what let the gate be reused whole. (b) There
+        is nowhere every org has to keep a plan file between two workflows, and SCP must not hold one
+        (state, secrets) — so the apply RE-PLANS and compares a digest over the change set; the whole
+        `tofu show -json` document carries a timestamp and would never match. (c) `managed-iac`'s own
+        apply has **no production caller** — nothing sets `iacAction` — measured, recorded, left
+        alone per D2. (d) A recipe could restate every bound the lane derives (the M28.4 finding);
+        the lane now refuses that and spreads its bounds last, and the test separates the two layers.
+      - *What the DoD did NOT prove.* No Argo workflow controller evaluated these templates — the
+        rendered wiring (args, outputs, required parameters, hardening, script bytes, the
+        per-workspace mutex) is held by `tools/helm-verify`, and `globalName` → `status.outputs` and a
+        templated mutex name are Argo's documented behaviour, not observed live. The real
+        counterparty is the `local` backend and the built-in `terraform_data` resource — no cloud
+        provider, no network.
+      - *The first version was NOT safe, and the DoD as written did not catch it (2026-09-24).* An
+        adversarial verification of PR #415 found two blocking holes with probes that went red: the
+        apply RE-DERIVED its place at apply time and the digest covered only the change set, so a
+        plan approved for region `r1` was applied into `r2` (measured `applied:true` in real tofu),
+        and a swapped plan template went unnoticed; and a plan ran whatever repo the proposer named
+        with the operator's credentials. Plus eight more (a side door via a `configuration` binding to
+        the PLAN template, and via hook runs/probes; an org `zz_override.tf` beating the backend
+        override; a declared apply silently ignored on a non-Argo executor; no separation of duties;
+        state shared across targets/orgs by environment name; comment-blind census; an untested CLI
+        wire). Fixed in the same PR (ADR-0056 §1a/§2/§3/§5/§7 and its addendum): the apply is built
+        from the plan's RECORDED submission and refused if the place changed; the digest covers the
+        place and backend; the target declares its `infrastructureRepo`; the plugin host is the one
+        door for both infra templates; plan and apply have separate, and for the plan read-only,
+        credentials; proposer ≠ acceptor; one workspace per target carrying org and target identity.
+        The build lane had the same repo property and now builds only a declared source (ADR-0053
+        addendum). Every fix has a test that goes red when it is removed.
+      - *And the fix round was not closed either (second re-verification, 2026-09-24).* The repo
+        binding was circular — `infrastructureRepo` is `object:write`, so an Operator re-declared it
+        and planned their own repo — and the backend refusal missed `.tofu` overrides, a JSON backend
+        and a commented `backend` keyword. Owner ruling R1 moved the repo's AUTHORITY onto the
+        execution system: a source allowlist in its own table, written only with `secret:write` at
+        the org root (migration 0123, ADR-0056 §7a), required by both the infra and the build lane;
+        an inline binding is refused. The script now refuses every override spelling and checks
+        OpenTofu's own record of the backend it configured instead of text-matching HCL. Workspaces
+        fit a Kubernetes label (≤ 63). Owner ruling R2: a build component with no source mapping of
+        its Type is refused. **Deploying this needs estate data first** — every real-executor build
+        or infra target bound through an execution system whose allowlist names its repo, with a
+        source mapping of its Type (see the M28.3 PR for the list).
+      - *And R1 was defeated one level up (final re-verification, 2026-09-24, probe E).* The
+        allowlist bounded WHICH repos may run with a system's credentials, but `object:write` could
+        move WHERE those credentials go. An Operator re-pointed an admin's permissive sandbox system
+        at the prod Argo, and the attacker repo was planned there with the prod plan credentials. The
+        build lane had the same hole. The fix is by property (ADR-0056 addendum 3): ANY change to an
+        execution-system's properties needs `secret:write` at the org root. That is every property,
+        not a list of keys, because the schema is open, the carried keys grow with each manifest, and
+        `webUrl` turned out to address a registry push. The rule is enforced at the repo's write
+        choke point and at hand-fill, and each door has a permanent test: generic
+        POST/PATCH/PUT, IaC apply, overlays, hand-fill, and `scp connect`. M28.4's `authoring` was
+        editable by an Operator through the same doors and is closed by the same rule. A replicated
+        system is never bindable, never resolvable and never a push destination at the receiver,
+        because its `tokenSecretKey` names the receiver's secret. Belt and braces: each allowlist row
+        is bound to the system's routing fingerprint, so any re-point voids it until someone sets it
+        again. The workspace digest is now 24 hex over org + target + environment + region.
   - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
     import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
     Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.

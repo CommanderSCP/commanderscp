@@ -307,3 +307,12 @@ For an Application that manages a Rollout:
 ## Resolved question
 
 **Component-level blue-green.** Declaring it per component would need `blueGreen` in the D12 wire schema, which oasdiff measures as a `/v1` response break on `/plans`. **The owner ruled on 2026-09-24 that blue-green stays at the wave-plan level** (D13).
+
+## Addendum (2026-09-24) — `authoring` was writable at `object:write` until M28.3
+
+D9 kept `authoring` off INLINE binding config because only the execution-system object may declare
+it. But until M28.3, the execution-system object's own properties were writable with plain
+`object:write` through the generic object PATCH/PUT, IaC apply and overlays. So an Operator could
+still choose the bound, one level up. [ADR-0056 addendum 3](0056-infrastructure-buildout-plan-approve-apply.md)
+closes this: any change to an execution system's properties now needs `secret:write` at the org root,
+at every write door, and a replicated system is never executable at the receiver.

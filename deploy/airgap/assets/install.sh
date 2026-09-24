@@ -411,6 +411,11 @@ if [[ "$MODE" == "helm" ]]; then
     if [[ -n "${SCP_BUILDER_RPM_DIGEST:-}" ]]; then
       BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage=${SCP_BUILDER_RPM_RETARGETED_REF:-${REGISTRY}/scp-builder-rpm:${BUNDLE_VERSION}@${SCP_BUILDER_RPM_DIGEST}}")
     fi
+    # scp-infra-plan-v1 / scp-infra-apply-v1's image (M28.3) — scp-runner-iac, which rides every
+    # bundle, retargeted and digest-pinned exactly as managedIac.runnerImage is above. Setting it does
+    # NOT render the infra templates: they render only once the operator names a state backend
+    # (catalog.infra.stateBackend.type), which is theirs to choose and this script never guesses.
+    BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.infra.image=${RUNNER_IAC_REF}")
     BUNDLED_APPLY+=(argo-workflows)
   fi
   if [[ -n "${ARGO_ROLLOUTS_DIGEST:-}" ]]; then

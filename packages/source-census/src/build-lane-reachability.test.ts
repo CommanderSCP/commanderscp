@@ -111,4 +111,13 @@ describe("the build lane's destination derivation is INSTALLED, not merely built
     expect(derivation).toContain("DESTINATION_FORMAT_OF_TYPE[type]");
     expect(derivation).toContain("assertRegistryServes(registry, type, format)");
   });
+
+  it("the derivation checks WHOSE code is built — the source repo against the declared sources", () => {
+    // M28.3 verification (ADR-0053 addendum): a proposer-chosen repo built and pushed with the
+    // operator's credentials. The check covers both the sourceRef and a recipe's sourceRepo.
+    const derivation = read("apps/server/src/coordination/build-trigger-parameters.ts");
+    expect(derivation).toMatch(
+      /await assertSourceIsDeclared\(tx, input, type, \[\s*repo,\s*readString\(input\.recipeParameters, "sourceRepo"\)\s*\]\);/
+    );
+  });
 });

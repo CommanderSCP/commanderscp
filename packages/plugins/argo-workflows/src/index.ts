@@ -121,6 +121,9 @@ interface ArgoWorkflowStatus {
   finishedAt?: string;
   message?: string;
   progress?: string; // "N/M" (assumption #6)
+  /** The workflow's GLOBAL outputs — every output parameter a template exports with `globalName`.
+   *  Read by status() for the plan-evidence contract below; nothing else here looks at it. */
+  outputs?: { parameters?: { name?: string; value?: string }[] };
 }
 
 interface ArgoWorkflow {
@@ -314,6 +317,45 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   };
 }
 
+/** THE PLAN-EVIDENCE CONTRACT (M28.3, ADR-0056). A workflow that exports these four global outputs
+ *  reports a structured plan, and it comes back as `observed.plan` — the same shape managed-iac
+ *  reports, so the persisted evidence, the plan chip and the apply gate read one field whichever
+ *  executor ran the plan. `scp-infra-plan-v1`/`scp-infra-apply-v1` export them; an org's own
+ *  template may too. NAMESPACED `scp…` so no template reports a plan by accident.
+ *
+ *  ALL OR NOTHING, and never a zero standing in for a miss (absent ≠ zero, principle 6): a digest
+ *  that is not a sha256, or a count that is not a non-negative integer, drops the whole plan rather
+ *  than reporting a partial one. The digest is what an apply is bound to; a malformed one must read
+ *  as "no plan reported", which the apply gate refuses, never as some other plan. */
+export const PLAN_OUTPUT_PARAMETERS = {
+  ref: "scpPlanDigest",
+  add: "scpPlanAdd",
+  change: "scpPlanChange",
+  destroy: "scpPlanDestroy"
+} as const;
+
+function planFromOutputs(
+  outputs: ArgoWorkflowStatus["outputs"]
+): NonNullable<ExecutionStatus["observed"]>["plan"] | undefined {
+  const byName = new Map<string, string>();
+  for (const p of outputs?.parameters ?? []) {
+    if (typeof p?.name === "string" && typeof p.value === "string") {
+      byName.set(p.name, p.value.trim());
+    }
+  }
+  const ref = byName.get(PLAN_OUTPUT_PARAMETERS.ref);
+  if (ref === undefined || !/^[0-9a-f]{64}$/.test(ref)) return undefined;
+  const count = (name: string): number | undefined => {
+    const raw = byName.get(name);
+    return raw !== undefined && /^(0|[1-9][0-9]{0,8})$/.test(raw) ? Number(raw) : undefined;
+  };
+  const add = count(PLAN_OUTPUT_PARAMETERS.add);
+  const change = count(PLAN_OUTPUT_PARAMETERS.change);
+  const destroy = count(PLAN_OUTPUT_PARAMETERS.destroy);
+  if (add === undefined || change === undefined || destroy === undefined) return undefined;
+  return { ref, add, change, destroy };
+}
+
 async function status(ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus> {
   const config = asConfig(ctx.config);
   const name = parseWorkflowName(ref.externalId);
@@ -342,10 +384,18 @@ async function status(ctx: PluginContext, ref: ExternalRunRef): Promise<Executio
       ? "aborted"
       : mapWorkflowPhase(rawPhase, ctx);
 
+  // Only a SETTLED workflow's outputs are evidence: a global output appears as the step exporting
+  // it finishes, and a plan read mid-run would be persisted before the run had concluded. A FAILED
+  // run's outputs are kept — a refused apply still reports the plan it refused, which is exactly
+  // what an operator needs to see next to the refusal.
+  const plan =
+    phase === "succeeded" || phase === "failed" ? planFromOutputs(wf.status?.outputs) : undefined;
+
   return {
     phase,
     detail: wf.status?.message ?? `phase=${rawPhase ?? "unknown"}`,
-    progress: computeProgress(wf.status?.progress, phase)
+    progress: computeProgress(wf.status?.progress, phase),
+    ...(plan ? { observed: { plan } } : {})
   };
 }
 
