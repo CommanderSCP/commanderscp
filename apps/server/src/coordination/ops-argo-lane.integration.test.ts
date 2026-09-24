@@ -92,6 +92,10 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
   let domainId: TrustDomainId;
   let host: PluginHost;
   const submissions: Submission[] = [];
+  /** What the fake Argo reports for every Workflow. `Running` by default: a real Workflow cannot
+   *  finish before its pod has redeemed, and the redeem door refuses a change that is no longer
+   *  executing. */
+  let argoPhase = "Running";
   /** When armed, the managed-ops launcher THROWS — the Argo path must never reach it. */
   let launcherArmed = true;
   const modeCStaged: {
@@ -170,7 +174,7 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
       return {
         status: 200,
         headers: {},
-        body: { metadata: { name: "x" }, status: { phase: "Succeeded" } }
+        body: { metadata: { name: "x" }, status: { phase: argoPhase } }
       };
     }
     return { status: 404, headers: {}, body: {} };
@@ -346,6 +350,7 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
   }, 180_000);
 
   beforeEach(() => {
+    argoPhase = "Running";
     launcherArmed = true;
     launcherTouches.length = 0;
     opsRedemptionRateLimiter.reset();
@@ -507,6 +512,17 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
     expect(events.at(-1)!.reason).toContain("burned");
   });
 
+  it("a CANCELLED change's token buys nothing — 409, audited, no certificate", async () => {
+    const { token, change, sub } = await argoRun();
+    await admin.changes.cancel(change.id, "operator stopped the package change");
+    await expect(
+      anonymous.opsRuns.redeem(token, generateEphemeralSshKeypair().openSshPublicKey)
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await auditActions(change.id)).at(-1)!.reason).toContain("change_not_executing");
+    const [row] = (await redemptionRows()).filter((r) => r.id === sub.parameters["opsRunId"]);
+    expect(row!.issuedSerial).toBeNull();
+  });
+
   it("EXPIRED: a token past its window is 410 and audited", async () => {
     const { token, sub, change } = await argoRun();
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -638,6 +654,7 @@ describe("host ops through Argo Workflows (M28.2, Testcontainers)", () => {
   it("a ROLLBACK derives nothing on the Argo path — no token, no redemption row", async () => {
     const product = await fleet();
     await bindArgo(product);
+    argoPhase = "Succeeded";
     const original = await propose(product);
     await tick(8);
     await admin.changes.accept(original.id);

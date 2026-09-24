@@ -1794,7 +1794,11 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         reaches only through an Argo token); the amendment states this rather than claiming the
         precondition is met unchanged. And `assertNoRecipeOverride` (ADR-0052) had **no production
         caller** until this lane — `managed-ops` is recipe-forbidden so it never mattered; on
-        `argo-workflows` it does.
+        `argo-workflows` it does. CI's first round found two things the local run did not: the
+        dangling-row census needed a verdict for the new `ops_run_redemptions.change_object_id`
+        (which prompted refusing redemption for a change no longer `executing` — a cancelled
+        change's token must not buy a certificate), and the cross-uid class M27.9 recorded, met
+        again: a bind-mounted `/work` left container-owned files the CI uid could not sweep.
       - **What the DoD did not prove.** Argo itself never ran: the runner was started with
         `docker run` carrying the env and mounts the template renders, and helm-verify checks the
         render, but no workflow-controller, emissary executor or real cluster NetworkPolicy

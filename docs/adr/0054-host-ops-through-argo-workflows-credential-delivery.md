@@ -60,8 +60,10 @@ The door opens a tenant transaction from the ids in the token and locks the row.
 first (constant-time), and only then the row's state, so a caller without the secret learns nothing.
 It refuses:
 a burned row (≥ 3 wrong secrets); a replay (the stolen-token signal); a row past its window, which is
-**equal to the certificate TTL, never longer** (600 s — the same constant as Mode C); and a domain
-whose active CA changed since derivation. On success it issues the certificate over the pod's key
+**equal to the certificate TTL, never longer** (600 s — the same constant as Mode C); a change that
+is no longer `executing` (cancelled, rolled back or deleted after its Workflow was submitted — the
+operator who stopped it believes no host will be touched); and a domain whose active CA changed
+since derivation. On success it issues the certificate over the pod's key
 with the same TTL, principals and key-id scheme as Mode C (plus `:run=<id>`), writes the issuance
 row, marks the redemption, and appends the audit event — **one transaction** (ADR-0051 D5).
 

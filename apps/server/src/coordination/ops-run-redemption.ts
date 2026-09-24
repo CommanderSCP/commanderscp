@@ -11,7 +11,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { TrustDomainId } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { opsRunRedemptions } from "../db/schema.js";
+import { changes, objects, opsRunRedemptions } from "../db/schema.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import {
@@ -226,7 +226,14 @@ export async function createOpsRunRedemption(
 }
 
 export type RedemptionRefusal =
-  "malformed" | "unknown" | "bad_secret" | "burned" | "replayed" | "expired" | "authority_changed";
+  | "malformed"
+  | "unknown"
+  | "bad_secret"
+  | "burned"
+  | "replayed"
+  | "expired"
+  | "change_not_executing"
+  | "authority_changed";
 
 export interface RedeemedMaterial extends OpsRunBound {
   runId: string;
@@ -323,6 +330,21 @@ export async function redeemOpsRun(db: Db, input: RedeemOpsRunInput): Promise<Re
     }
     if (row.expiresAt.getTime() <= Date.now()) {
       return refuse("expired", `the redemption window closed at ${row.expiresAt.toISOString()}`);
+    }
+    // THE RUN MUST STILL BE WANTED. A change cancelled, rolled back or deleted after its Workflow
+    // was submitted must not be able to buy a certificate in the minutes its token has left: the
+    // operator who stopped it believes no host will be touched.
+    const [change] = await tx
+      .select({ state: changes.state, deletedAt: objects.deletedAt })
+      .from(changes)
+      .innerJoin(objects, and(eq(objects.orgId, changes.orgId), eq(objects.id, changes.objectId)))
+      .where(and(eq(changes.orgId, row.orgId), eq(changes.objectId, row.changeObjectId)))
+      .limit(1);
+    if (!change || change.deletedAt || change.state !== "executing") {
+      return refuse(
+        "change_not_executing",
+        `the change is ${change ? (change.deletedAt ? "deleted" : `'${change.state}'`) : "gone"}, not executing`
+      );
     }
     const authorityRow = await activeAuthorityForDomain(tx, row.orgId, row.domainId);
     if (!authorityRow || authorityRow.id !== row.authorityId) {

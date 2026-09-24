@@ -42,6 +42,7 @@ function problemFor(refusal: RedemptionRefusal, detail: string): ProblemError {
       return new ProblemError(410, "Gone", { detail });
     case "replayed":
     case "burned":
+    case "change_not_executing":
     case "authority_changed":
       return conflict(detail);
   }

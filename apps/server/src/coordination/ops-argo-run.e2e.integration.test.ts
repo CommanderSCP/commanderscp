@@ -20,7 +20,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { objects, opsRunRedemptions } from "../db/schema.js";
+import { changes, objects, opsRunRedemptions } from "../db/schema.js";
 import { enrolDomain, reconcileSerials } from "./ssh-ca-repo.js";
 import { replaceMembership } from "./infrastructure-members-repo.js";
 import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
@@ -92,6 +92,15 @@ async function mintArgoRun(
     targets: [productId],
     properties: { ops: declaration }
   });
+  // EXECUTING, as the change is when reconcile triggers its wave target — this file drives the
+  // reconcile-side call directly rather than a tick, and the redeem door refuses any change that
+  // is not executing.
+  await withTenantTx(server.deps.db, org.orgId, (tx) =>
+    tx
+      .update(changes)
+      .set({ state: "executing" })
+      .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+  );
   const params = await withTenantTx(server.deps.db, org.orgId, (tx) =>
     opsLaneTriggerParameters(tx, {
       orgId: org.orgId,
@@ -118,8 +127,6 @@ async function mintArgoRun(
  *  file, read-only root, /work and /tmp writable, no capabilities. Fresh /work per run — an
  *  emptyDir in the real pod. */
 async function runArgoRunner(sealed: string): Promise<{ output: string; ok: boolean }> {
-  const workDir = await mkdtempTrackedForFile(join(tmpdir(), "scp-ops-argo-work-"));
-  await execFileAsync("chmod", ["a+rwX", workDir]);
   const apiUrl = server.baseUrl.replace(/\/api\/v1\/?$/, "");
   const args = [
     "run",
@@ -135,8 +142,13 @@ async function runArgoRunner(sealed: string): Promise<{ output: string; ok: bool
     "ALL",
     "--security-opt",
     "no-new-privileges",
-    "-v",
-    `${workDir}:/work`,
+    // /work is a TMPFS owned by the image's uid — the emptyDir it is in the pod, and NOT a bind
+    // mount. Measured in CI (#414's first run): with a bind mount the runner creates
+    // `/work/.ansible/cp` as ITS uid, which differs from the CI runner's, and the tracked-tmpdir
+    // sweep then fails with EACCES on rmdir. This box's uid happens to equal the image's, so it
+    // passed here — the cross-uid class M27.9 recorded, met again.
+    "--tmpfs",
+    "/work:rw,uid=1000,gid=1000,mode=0755",
     "-v",
     `${sealDir}:/var/run/scp-ops/sealing:ro`,
     "-e",
