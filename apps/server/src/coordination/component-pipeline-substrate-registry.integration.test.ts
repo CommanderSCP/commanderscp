@@ -77,7 +77,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
 
   async function registrySystem(
     name: string,
-    opts: { domainLocal: boolean; webUrl?: string; kind?: unknown }
+    opts: { domainLocal: boolean; webUrl?: string; kind?: unknown; packageFormats?: unknown }
   ): Promise<GraphObject> {
     return admin.object("execution-system").create({
       name,
@@ -85,7 +85,8 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
       properties: {
         kind: opts.kind ?? "gitea",
         serverUrl: "https://registry.hq.invalid/",
-        ...(opts.webUrl ? { webUrl: opts.webUrl } : {})
+        ...(opts.webUrl ? { webUrl: opts.webUrl } : {}),
+        ...(opts.packageFormats !== undefined ? { packageFormats: opts.packageFormats } : {})
       }
     });
   }
@@ -198,7 +199,8 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
       kind: null,
       url: null,
       repository: null,
-      edgeCount: 0
+      edgeCount: 0,
+      packageFormats: null
     });
   });
 
@@ -225,8 +227,40 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
       // `webUrl` wins over `serverUrl`, trailing slash trimmed, NO guessed deep path.
       url: "https://registry.hq.invalid/ui",
       repository: "acme/checkout-api",
-      edgeCount: 1
+      edgeCount: 1,
+      // Declares none — the build lane reads that as ["oci"], but the VIEW says what was declared.
+      packageFormats: null
     });
+  });
+
+  it("registry: `packageFormats` is READ verbatim off the object (M28.1) — and a malformed value reads as serving nothing", async () => {
+    const component = await createOrphanComponent(server, org, uniq("formats-registry"));
+    const unified = await registrySystem(uniq("unified"), {
+      domainLocal: true,
+      packageFormats: ["oci", "rpm"]
+    });
+    await admin.relationships.create({
+      typeId: "publishes_to",
+      fromId: component.id,
+      toId: unified.id,
+      properties: { repository: "acme" }
+    });
+    expect((await pipelineOf(component.id)).registry).toMatchObject({
+      state: "declared",
+      packageFormats: ["oci", "rpm"]
+    });
+
+    const other = await createOrphanComponent(server, org, uniq("malformed-formats"));
+    const malformed = await registrySystem(uniq("malformed"), {
+      domainLocal: true,
+      packageFormats: "rpm"
+    });
+    await admin.relationships.create({
+      typeId: "publishes_to",
+      fromId: other.id,
+      toId: malformed.id
+    });
+    expect((await pipelineOf(other.id)).registry).toMatchObject({ packageFormats: [] });
   });
 
   it("registry: a DELETED `publishes_to` edge no longer counts — `declared` returns to `none` with edgeCount 0 (a tombstone is not a declaration)", async () => {
@@ -253,7 +287,8 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
       kind: null,
       url: null,
       repository: null,
-      edgeCount: 0
+      edgeCount: 0,
+      packageFormats: null
     });
   });
 
@@ -283,7 +318,8 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
       kind: null,
       url: null,
       repository: null,
-      edgeCount: 2
+      edgeCount: 2,
+      packageFormats: null
     });
   });
 

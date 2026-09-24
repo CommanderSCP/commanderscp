@@ -400,6 +400,11 @@ if [[ "$MODE" == "helm" ]]; then
     if [[ -n "${CATALOG_GIT_DIGEST:-}" ]]; then
       BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.buildImage.gitImage=${CATALOG_GIT_RETARGETED_REF:-${REGISTRY}/catalog-git:${BUNDLE_VERSION}@${CATALOG_GIT_DIGEST}}")
     fi
+    # scp-build-rpm-v1's first-party builder (M28.1). Setting it is also what RENDERS that template:
+    # it has no upstream default, so without this line an air-gapped install has no RPM build.
+    if [[ -n "${SCP_BUILDER_RPM_DIGEST:-}" ]]; then
+      BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.catalog.buildRpm.builderImage=${SCP_BUILDER_RPM_RETARGETED_REF:-${REGISTRY}/scp-builder-rpm:${BUNDLE_VERSION}@${SCP_BUILDER_RPM_DIGEST}}")
+    fi
     BUNDLED_APPLY+=(argo-workflows)
   fi
   if [[ -n "${ARGO_ROLLOUTS_DIGEST:-}" ]]; then

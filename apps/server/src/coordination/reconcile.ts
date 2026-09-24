@@ -123,6 +123,7 @@ import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook
 import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 import { clampSingletonSeconds } from "../events/pgboss-limits.js";
 import { buildLaneTriggerParameters } from "./build-trigger-parameters.js";
+import { TriggerParameterRefusal } from "./trigger-parameter-refusal.js";
 import { opsLaneTriggerParameters } from "./ops-lane-trigger-parameters.js";
 
 /** The resumable reconciliation loop. See docs/coordination.md §740. */
@@ -1405,6 +1406,13 @@ async function resolveRecipeRefusal(
 }
 
 /** Triggers one wave target. See docs/coordination.md §799. */
+/** Turn a typed refusal into a value and rethrow everything else — an unexpected error is not a
+ *  verdict, and must keep taking the retry path rather than terminalising a target. */
+function asRefusal(err: unknown): TriggerParameterRefusal {
+  if (err instanceof TriggerParameterRefusal) return err;
+  throw err;
+}
+
 async function triggerWaveTarget(
   db: Db,
   orgId: string,
@@ -1599,6 +1607,31 @@ async function triggerWaveTarget(
       if (refused) return;
     }
 
+    // A DERIVATION THAT REFUSED (ADR-0053). Terminal, with a Decision and an audit event, through
+    // the same `blockWaveTarget` every other refusal here uses — never the catch-and-retry below,
+    // which is for errors, and which re-fired a verdict every tick explained only by a log line.
+    // `trigger()` is never reached: returning null from the claim transaction is the early exit.
+    const refuseTrigger = (tx: TenantTx, refusal: TriggerParameterRefusal) =>
+      blockWaveTarget(tx, {
+        orgId,
+        change,
+        waveId,
+        waveTargetId,
+        targetObjectId,
+        status: refusal.status,
+        action: refusal.action,
+        summary: refusal.message,
+        remediation: refusal.remediation,
+        reason: refusal.message,
+        inputContext: {
+          waveId,
+          targetObjectId,
+          requestedType: type,
+          executorPluginId: instanceId,
+          ...refusal.inputContext
+        }
+      });
+
     const claim = await withTenantTx(db, orgId, async (tx) => {
       let kind: TriggerIntent["kind"];
       let priorStateRef: unknown = null;
@@ -1622,8 +1655,15 @@ async function triggerWaveTarget(
             targetObjectId,
             type,
             sourceRef: change.sourceRef,
-            changeObjectId: change.objectId
-          });
+            changeObjectId: change.objectId,
+            // Read only to REFUSE a recipe that restates a derived destination (ADR-0053 §4a) —
+            // the one narrowing of "the recipe wins" below.
+            recipeParameters
+          }).catch(asRefusal);
+      if (sourceParameters instanceof TriggerParameterRefusal) {
+        await refuseTrigger(tx, sourceParameters);
+        return null;
+      }
       // HOST-REACHING MATERIAL (M27.9). This call is the whole of the seam: M27 built
       // `deriveOpsRunMaterial`'s parts and `managed-ops`'s refusal to run without them, and nothing
       // in between, so a census for production callers found the producers at ZERO and every gate
@@ -1642,11 +1682,19 @@ async function triggerWaveTarget(
               changeObjectId: change.objectId,
               pluginModule: executorModule,
               masterKey
-            });
+            }).catch(asRefusal);
+      if (opsParameters instanceof TriggerParameterRefusal) {
+        await refuseTrigger(tx, opsParameters);
+        return null;
+      }
       // The RECIPE WINS on a key collision, deliberately: a recipe is an operator's explicit
       // instruction for this campaign, and silently overriding it with a derived value would make
       // the authored document a lie. Merged rather than either/or so a recipe-driven build still
       // gets the source identity it would otherwise have to restate.
+      //
+      // EXCEPT a build DESTINATION, which a recipe cannot reach this merge carrying: for a Type
+      // whose destination SCP derives, `buildLaneTriggerParameters` refuses a recipe naming any
+      // `BUILD_DESTINATION_PARAMETER_KEYS` above (ADR-0053 §4a), so no collision on those exists.
       //
       // EXCEPT for host-reaching material, which is spread LAST and therefore wins (ADR-0052).
       // These are not conveniences an operator might reasonably restate: `opsInventory` is which

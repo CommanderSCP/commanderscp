@@ -312,6 +312,201 @@ spec:
                 optional: true
         resources:
           {{- toYaml $c.buildImage.resources.build | nindent 10 }}
+{{- if $c.buildRpm.builderImage }}
+---
+# =============================================================================================
+# scp-build-rpm-v1 — THE SHIPPED RPM BUILD (M28.1, ADR-0053).
+#
+# SRPM from the component's spec, RPM from that SRPM, and a PUT of each binary RPM to the
+# package-repo destination SCP derived (`rpmUploadUrl` — a `registry` whose `packageFormats`
+# includes `rpm`, reached by the component's `publishes_to` edge; D1). Versioned in the name for
+# the same reason `scp-build-image-v1` is.
+#
+# OFF UNTIL THE OPERATOR NAMES ITS IMAGE. `scp-builder-rpm` is first-party (no maintained public
+# image ships rpmbuild — see apps/builder-rpm/Dockerfile), so there is no upstream ref a connected
+# install could default to. The air-gap install.sh sets it from the bundle; a connected install
+# sets it to the published ref. Unset, this template simply does not exist, and a binding naming
+# it is refused by Argo at submit — the same shape as every managed runner being off until its
+# image is supplied, and never a template that fails at its last step.
+#
+# ---------------------------------------------------------------------------------------------
+# THE SECURITY CONTEXT, MEASURED THE WAY THE IMAGE TEMPLATE'S WAS — AND THE ANSWER IS "NONE".
+#
+# `scp-build-image-v1` carries four relaxations because rootless BuildKit must create a user
+# namespace. rpmbuild creates nothing of the kind: it is a process that reads a tree and writes
+# files. So the method was copied, not the settings: the build was run under the fully hardened
+# profile and each denial read, rather than starting from BuildKit's list and removing items.
+#
+# Run as uid 1000, root filesystem READ-ONLY, every capability dropped, no_new_privs set, and the
+# runtime's default seccomp and AppArmor profiles (measured 2026-09-23 with docker's defaults —
+# the same RuntimeDefault class — building and publishing a compiled C package end to end). It
+# was denied exactly two things, both writes, and both were fixed by pointing the write at the
+# workspace rather than by relaxing anything:
+#
+#   `/var/tmp/rpm-tmp.*`  rpmbuild's scriptlet files      -> `--define _tmppath /work/tmp`
+#   `/tmp/find-debuginfo.*` debuginfo extraction mktemp   -> `TMPDIR=/work/tmp`
+#
+# So nothing below is relaxed, and `tools/helm-verify` asserts that it stays that way: a later
+# edit that adds a capability or unsets `readOnlyRootFilesystem` here is a regression, not a
+# tuning. NOT yet measured on the cluster's own runtime (the image template's four were): that
+# needs a cluster apply, which is an owner action.
+#
+# What an RPM build can still do: run the spec's `%build` — arbitrary code from the tenant's own
+# repository — as uid 1000 in a one-shot pod, whose token grants only `workflowtaskresults` (the
+# same `scp-build` identity as the image template) and whose only credential is the package push
+# secret. That is the same residual as a Dockerfile's RUN steps, without the shared-namespace
+# caveat BuildKit's `--oci-worker-no-process-sandbox` adds.
+# =============================================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: scp-build-rpm-v1
+  namespace: {{ $w.namespace }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+    commanderscp.io/catalog: build-rpm
+    commanderscp.io/catalog-version: v1
+spec:
+  # The same near-powerless identity as scp-build-image-v1, for the same reason: this pod runs
+  # the tenant's own `%build`.
+  serviceAccountName: {{ $c.buildServiceAccount }}
+  entrypoint: build-and-publish
+  # WHAT SCP SENDS for an `rpm` Type (build-trigger-parameters.ts). EVERY key it can send is
+  # declared here — an undeclared one would be refused at submit — and the e2e test
+  # (`rpm-build-lane.integration.test.ts`) fails if the derivation ever emits a key this list does
+  # not name. The four with no default are REQUIRED, and Argo refuses to submit without them:
+  #   sourceRepo / sourceCommit  what to build, pinned to a commit
+  #   rpmSpec                    the component's `properties.rpmSpec`. NO DEFAULT, unlike the
+  #                              image template's `Dockerfile`: a spec has no conventional name,
+  #                              so a default would be a guessed file.
+  #   rpmUploadUrl               assembled by SCP; no default, so an unresolvable destination
+  #                              refuses rather than publishing somewhere else.
+  arguments:
+    parameters:
+      - name: sourceRepo
+      - name: sourceCommit
+      - name: rpmSpec
+      - name: rpmUploadUrl
+      - name: rpmRepositoryUrl
+        value: ""
+      - name: packageRepository
+        value: ""
+      - name: registryUrl
+        value: ""
+      - name: registryName
+        value: ""
+      - name: sourceRef
+        value: ""
+      - name: changeObjectId
+        value: ""
+  templates:
+    - name: build-and-publish
+      inputs:
+        parameters:
+          - name: sourceRepo
+          - name: sourceCommit
+          - name: rpmSpec
+          - name: rpmUploadUrl
+          - name: rpmRepositoryUrl
+          - name: packageRepository
+          - name: registryUrl
+          - name: registryName
+          - name: sourceRef
+          - name: changeObjectId
+      securityContext:
+        fsGroup: 1000
+      # ONE writable path. rpmbuild's topdir, its temp files, $HOME and the checkout all live on
+      # it — the image template needs four mounts because rootlesskit hardcodes three of its paths.
+      volumes:
+        - name: workspace
+          emptyDir: {}
+      # ---- 1. SOURCE, PINNED TO THE COMMIT ---------------------------------------------------
+      # IDENTICAL to scp-build-image-v1's fetch-source, and `tools/helm-verify` asserts it stays
+      # identical: fetching by commit rather than by branch is the property that makes the
+      # published package correspond to a known revision, and two copies of it must not drift.
+      initContainers:
+        - name: fetch-source
+          image: {{ $c.buildImage.gitImage }}
+          mirrorVolumeMounts: true
+          command: [sh, -eu, -c]
+          args:
+            - |
+              set -eu
+              repo="$0"; commit="$1"
+              : "${GIT_TOKEN:=}"
+              host="{{ $c.buildImage.sourceHost }}"
+              if [ -n "$GIT_TOKEN" ]; then
+                remote="https://x-access-token:${GIT_TOKEN}@${host}/${repo}.git"
+              else
+                remote="https://${host}/${repo}.git"
+              fi
+              mkdir -p /work/src && cd /work/src
+              git init -q .
+              git remote add origin "$remote"
+              git fetch -q --depth 1 origin "$commit"
+              git checkout -q FETCH_HEAD
+              # Prove what was fetched, so the log records the revision rather than the request.
+              echo "fetched $(git rev-parse HEAD) from ${repo}"
+            - "{{`{{inputs.parameters.sourceRepo}}`}}"
+            - "{{`{{inputs.parameters.sourceCommit}}`}}"
+          env:
+            - name: GIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.credentialsSecret }}
+                  key: gitToken
+                  optional: true
+          resources:
+            {{- toYaml $c.buildImage.resources.fetch | nindent 12 }}
+      # ---- 2. SRPM -> RPM -> PUBLISH, UNPRIVILEGED --------------------------------------------
+      # The script is `apps/builder-rpm/build-rpm.sh`, baked into the image as
+      # /usr/local/bin/scp-build-rpm, so the bytes that ship are the bytes the real-counterparty
+      # test runs against a real Gitea. Parameters arrive POSITIONALLY (`args`), never
+      # interpolated into shell source.
+      container:
+        image: {{ $c.buildRpm.builderImage }}
+        command: [/usr/local/bin/scp-build-rpm]
+        args:
+          - "{{`{{inputs.parameters.rpmSpec}}`}}"
+          - "{{`{{inputs.parameters.rpmUploadUrl}}`}}"
+          - "{{`{{inputs.parameters.sourceCommit}}`}}"
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+          - name: workspace
+            mountPath: /work
+        env:
+          - name: SCP_SOURCE_DIR
+            value: /work/src
+          - name: SCP_WORK_DIR
+            value: /work
+          # The SAME Secret and keys as the image template's registry push. A unified Gitea
+          # (ADR-0012) takes one identity for its OCI and its RPM registry, and SCP holds neither:
+          # the operator creates this Secret, and only the build pod reads it.
+          - name: REGISTRY_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: {{ $c.credentialsSecret }}
+                key: registryUsername
+                optional: true
+          - name: REGISTRY_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ $c.credentialsSecret }}
+                key: registryPassword
+                optional: true
+        resources:
+          {{- toYaml $c.buildRpm.resources.build | nindent 10 }}
+{{- end }}
 ---
 # The near-powerless identity above, and the one grant Argo's executor cannot run without.
 apiVersion: v1
