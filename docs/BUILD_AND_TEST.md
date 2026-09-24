@@ -1794,6 +1794,41 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     surfaced for approval before apply; state backend per D2.
     - **DoD:** a plan is persisted and rendered as evidence, and **apply cannot run without an
       approved plan** (mutation-proved, not documented). Re-apply of an unchanged plan is a no-op.
+    - **State (2026-09-23): built — [ADR-0056](adr/0056-infrastructure-buildout-plan-approve-apply.md).**
+      A plan and its apply are two changes, and **accepting the plan change is approving the plan** —
+      the existing `validating → accepted` gate, quorum policies and all, not a second approval
+      model. The plan runs `scp-infra-plan-v1`; its sha256 digest and add/change/destroy tally come
+      back through the workflow's global outputs (the argo-workflows plugin's `status()` now reads
+      them) as the SAME `observed.plan` evidence managed-iac reports, so it is persisted on the wave
+      target, served by `explain`, printed by `scp change explain` and drawn by the existing plan
+      chip. An apply (`properties.infrastructure.applyPlan`, `scp change propose --apply-plan`, or
+      "Apply this plan" in the UI) is triggered only if `infraLaneTriggerParameters` finds that plan
+      accepted, succeeded at this target on this executor with a digest, not superseded by a newer
+      plan, and not already being applied — refused otherwise, terminal, with a Decision. A re-apply
+      of an applied plan succeeds as a no-op with no trigger. The digest rides into
+      `scp-infra-apply-v1`, which re-plans the approved commit and applies only if the re-plan's
+      digest matches (no change → no-op; drift → refuse). State lives in the operator's backend
+      (chart values), one workspace per environment. Proved by `infra-lane.integration.test.ts` (10
+      tests): the real reconcile loop and plugin against a loopback Argo API, with each submitted
+      workflow EXECUTED by the shipped `scp-infra.sh` in the real `scp-runner-iac` image — plan →
+      approve → apply → re-plan shows `0 add / 0 change / 0 destroy`, a wrong digest exits 3, two
+      plans of the same inputs share a digest. Eight mutations each turned a test red for its own
+      reason (PR body). Permanent in CI (the image is published and pulled already).
+      - *What was hard / surprising.* (a) The only existing approval gate runs AFTER execution
+        (`accept` ends a change's life), and there is no mid-execution hold — so "approve then apply"
+        became two changes rather than a pause, which is what let the gate be reused whole. (b) There
+        is nowhere every org has to keep a plan file between two workflows, and SCP must not hold one
+        (state, secrets) — so the apply RE-PLANS and compares a digest over the change set; the whole
+        `tofu show -json` document carries a timestamp and would never match. (c) `managed-iac`'s own
+        apply has **no production caller** — nothing sets `iacAction` — measured, recorded, left
+        alone per D2. (d) A recipe could restate every bound the lane derives (the M28.4 finding);
+        the lane now refuses that and spreads its bounds last, and the test separates the two layers.
+      - *What the DoD did NOT prove.* No Argo workflow controller evaluated these templates — the
+        rendered wiring (args, outputs, required parameters, hardening, script bytes) is held by
+        `tools/helm-verify`, and `globalName` → `status.outputs` is Argo's documented behaviour, not
+        observed live. The real counterparty is the `local` backend and the built-in
+        `terraform_data` resource — no cloud provider, no network. Concurrent applies of DIFFERENT
+        plans to one workspace are serialised only by the backend's state lock.
   - **M28.4 — deployment: create ArgoCD Applications and author Rollouts.** Complete the
     import-or-create pair the owner asked for (2026-09-22: "in our case we'll need to create") for
     Argo CD *and* Argo Rollouts; emit the Rollout manifest whose steps correspond to the wave plan.

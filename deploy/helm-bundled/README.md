@@ -48,6 +48,25 @@ scripts/scp-bundled.sh enable argo-workflows \
 
 `scp-build-image-v1` needs nothing: its images are upstream. The air-gap `install.sh` sets both.
 
+**The infrastructure templates (`scp-infra-plan-v1` / `scp-infra-apply-v1`, ADR-0056) render only
+once you name a state backend** — that is the switch, because they must never run with nowhere real
+to keep state. The backend is yours (a deployment-level setting, never tenant data SCP holds); each
+environment gets its own workspace in it. Credentials go in a Secret you create in the Argo
+namespace (`catalog.infra.credentialsSecret`, every key becomes an env var) — SCP never reads it.
+
+```bash
+scripts/scp-bundled.sh enable argo-workflows \
+  --set bundledExecutor.argoWorkflows.catalog.infra.image=ghcr.io/commanderscp/scp-runner-iac:sha-<commit>@sha256:<digest> \
+  --set bundledExecutor.argoWorkflows.catalog.infra.stateBackend.type=s3 \
+  --set bundledExecutor.argoWorkflows.catalog.infra.stateBackend.config.bucket=acme-tofu-state \
+  --set bundledExecutor.argoWorkflows.catalog.infra.stateBackend.config.region=us-east-1
+```
+
+The air-gap `install.sh` sets the image (it is `scp-runner-iac`, already in the bundle); the backend
+is always yours to name. Then bind a deployment-target's `infrastructure` pipeline to
+`scp-infra-plan-v1`, propose a plan pinned to a commit, accept it, and apply it with
+`scp change propose --apply-plan <plan change id>`.
+
 **Air-gap:** you don't run this directly — the signed bundle's `install.sh` calls it for every backend
 the bundle carries, passing the retargeted, digest-pinned images via `--set`. One `./install.sh` and
 the enabled backends come up.
