@@ -1620,7 +1620,7 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **`overridable: true` is reachable only for deployment-wide platform freezes** (ADR-0040 §9) — an open owner question, because closing it means either giving the wave boundary an override path or expanding component targets to placements at the accept edge, and the second is a real tightening.
 
 
-### M27 — `scp-runner-ops`: host-reaching managed execution (the last Mode-C runner) — **M27.1–M27.8 DONE (PRs #403–#410); M27.9 OPEN**
+### M27 — `scp-runner-ops`: host-reaching managed execution (the last Mode-C runner) — **DONE, 2026-09-23** (PRs #403–#411)
 
 *Owner direction 2026-09-22: "we need everything as the deliverable" — BYO credential integration, the SCP-CA fallback, the locked-down image, the catalog and the gates all land as one capability, not a first slice followed by a maybe.*
 
@@ -1680,7 +1680,7 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
       **It was found only by giving `enrolDomain` a production caller** — which is the whole point
       of M27.9, and the reason its gate is written over reachability rather than over this bug.
 
-  - **M27.9 — THE SEAM: the server actually produces what the runner requires.** M27.1–8 each met a
+  - **M27.9 — THE SEAM: the server actually produces what the runner requires (#411).** M27.1–8 each met a
     definition of done that never required the capability to be *reachable*. A census for production
     callers found `compileInventory`, `egressAllowlistFor`, `enrolDomain`, `recordIssuance` and
     `reconcileSerials` with **zero** — nothing in `apps/server` wrote the `ops*` keys the plugin
