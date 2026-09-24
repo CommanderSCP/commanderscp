@@ -155,7 +155,7 @@ is a `deployment-target`, which must declare:
 it as `attacker/evil` and had that planned with the plan credentials (re-verification probe C2). A
 plan now runs only if its repo is ALSO in the binding's execution system's **source allowlist** —
 `owner/name` or `owner/*` entries, stored in its own table (`execution_system_source_allowlists`,
-migration 0121) and written through ONE door: `PUT /v1/execution-systems/{id}/source-allowlist`, with
+migration 0123) and written through ONE door: `PUT /v1/execution-systems/{id}/source-allowlist`, with
 `secret:write` at the org root (the class that sets a secret; audit event
 `execution_system.source_allowlist.set`). Not a property on the execution-system object — object
 properties are written with `object:write` through the object routes, coordination-as-code and

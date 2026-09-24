@@ -1920,7 +1920,7 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
         and planned their own repo — and the backend refusal missed `.tofu` overrides, a JSON backend
         and a commented `backend` keyword. Owner ruling R1 moved the repo's AUTHORITY onto the
         execution system: a source allowlist in its own table, written only with `secret:write` at
-        the org root (migration 0121, ADR-0056 §7a), required by both the infra and the build lane;
+        the org root (migration 0123, ADR-0056 §7a), required by both the infra and the build lane;
         an inline binding is refused. The script now refuses every override spelling and checks
         OpenTofu's own record of the backend it configured instead of text-matching HCL. Workspaces
         fit a Kubernetes label (≤ 63). Owner ruling R2: a build component with no source mapping of
