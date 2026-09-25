@@ -891,3 +891,106 @@ describe("T8/T12 — unreadable must never collapse into empty (the whole prune 
     expect(() => parseKubernetesImages("---\n<!doctype html>\n")).toThrow(ManifestParseError);
   });
 });
+
+describe("parseKubernetesImages — serverImage/controllerImage (M29.8a reader check)", () => {
+  // Found by the M29.8a reader test against this repo's OWN deploy/helm-bundled/values.yaml:
+  // `bundledExecutor.argoWorkflows.serverImage`/`.controllerImage` produced NO row at all — not
+  // even `unresolved` — because nothing in this file looked at any key but `image` (trap 11, taken
+  // literally). Both are Argo Workflows' two tracked images, so the M21 dependency-subscription
+  // inventory this parser also feeds would have silently never seen either as a declared dependency
+  // of this repo's own `argo-workflows` component.
+
+  it("a bare `serverImage:` scalar is read exactly like a bare `image:` scalar", () => {
+    const entry = at(
+      parseKubernetesImages("serverImage: quay.io/argoproj/argocli:v4.0.7\n"),
+      "quay.io/argoproj/argocli"
+    );
+    expect(entry).toMatchObject({
+      constraint: "pinned",
+      declared: "v4.0.7",
+      declaredIn: "serverImage",
+      line: 1
+    });
+  });
+
+  it("a bare `controllerImage:` scalar is read the same way, independently of serverImage", () => {
+    const declared = parseKubernetesImages(
+      [
+        "serverImage: quay.io/argoproj/argocli:v4.0.7",
+        "controllerImage: quay.io/argoproj/workflow-controller:v4.0.7"
+      ].join("\n")
+    );
+    expect(at(declared, "quay.io/argoproj/argocli")?.declared).toBe("v4.0.7");
+    expect(at(declared, "quay.io/argoproj/workflow-controller")?.declared).toBe("v4.0.7");
+  });
+
+  it("this repo's REAL values.yaml shape: nested under bundledExecutor.argoWorkflows", () => {
+    const declared = parseKubernetesImages(
+      [
+        "bundledExecutor:",
+        "  argoWorkflows:",
+        "    serverImage: quay.io/argoproj/argocli:v4.0.7",
+        "    controllerImage: quay.io/argoproj/workflow-controller:v4.0.7"
+      ].join("\n")
+    );
+    expect(at(declared, "quay.io/argoproj/argocli")).toMatchObject({
+      declared: "v4.0.7",
+      declaredIn: "bundledExecutor.argoWorkflows.serverImage"
+    });
+    expect(at(declared, "quay.io/argoproj/workflow-controller")).toMatchObject({
+      declared: "v4.0.7",
+      declaredIn: "bundledExecutor.argoWorkflows.controllerImage"
+    });
+  });
+
+  it("a malformed serverImage value is reported unresolved, never silently dropped", () => {
+    // Same malformed shape the `image:` suite pins as its own reference case (an empty repository
+    // name, which every malformed manifest in an org would otherwise collide on as one identity).
+    const declared = parseKubernetesImages('serverImage: ":1.0"\n');
+    expect(declared).toHaveLength(1);
+    expect(declared[0]).toMatchObject({
+      constraint: "unresolved",
+      coordinate: "serverImage",
+      declaredIn: "serverImage"
+    });
+    expect(declared[0]!.note).toContain("not a well-formed image reference");
+  });
+
+  it("a Go-templated serverImage value is reported unresolved, same as `image:` would be", () => {
+    const declared = parseKubernetesImages('serverImage: "{{ .Values.x }}"\n');
+    expect(declared).toHaveLength(1);
+    expect(declared[0]!.constraint).toBe("unresolved");
+    expect(declared[0]!.note).toContain("Go template");
+  });
+
+  it("a digest-only serverImage is pinned by digest, same rule as `image:`", () => {
+    const entry = at(
+      parseKubernetesImages(`serverImage: quay.io/argoproj/argocli@${DIGEST}\n`),
+      "quay.io/argoproj/argocli"
+    );
+    expect(entry?.constraint).toBe("pinned");
+    expect(entry?.digest).toBe(DIGEST);
+    expect(entry?.declared).toBeUndefined();
+  });
+
+  it("a duplicated serverImage key is reported, never silently picked between", () => {
+    const declared = parseKubernetesImages(
+      "serverImage: quay.io/argoproj/argocli:v4.0.7\nserverImage: quay.io/argoproj/argocli:v4.0.8\n"
+    );
+    expect(declared).toHaveLength(1);
+    expect(declared[0]).toMatchObject({ constraint: "unresolved", declaredIn: "serverImage" });
+    expect(declared[0]!.note).toContain("declared more than once");
+  });
+
+  it("absent serverImage/controllerImage keys mint nothing (no false positive on an ordinary chart)", () => {
+    expect(parseKubernetesImages("replicaCount: 2\n")).toEqual([]);
+  });
+
+  it("serverImage and an unrelated ordinary `image:` in the SAME file are both read independently", () => {
+    const declared = parseKubernetesImages(
+      ["image: acme/api:1.2.3", "serverImage: quay.io/argoproj/argocli:v4.0.7"].join("\n")
+    );
+    expect(at(declared, "acme/api")?.declared).toBe("1.2.3");
+    expect(at(declared, "quay.io/argoproj/argocli")?.declared).toBe("v4.0.7");
+  });
+});

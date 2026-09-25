@@ -919,6 +919,9 @@ importers:
 
   packages/source-census:
     devDependencies:
+      '@scp/dependency-manifests':
+        specifier: workspace:*
+        version: link:../dependency-manifests
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1

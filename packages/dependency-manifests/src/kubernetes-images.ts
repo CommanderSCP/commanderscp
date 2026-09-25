@@ -203,6 +203,7 @@ export function parseKubernetesImages(content: string): DeclaredDependency[] {
 function walk(node: Node, path: string, ctx: WalkContext, underImageKey: boolean): void {
   if (isMap(node)) {
     readMapping(node, path, ctx, underImageKey);
+    readAdditionalCompleteImageKeys(node, path, ctx);
     for (const pair of node.items) {
       const key = pair.key;
       const value = pair.value;
@@ -300,6 +301,101 @@ function unreadSiblingNote(names: readonly string[]): string | undefined {
     "are not fields at all and nothing reads them. Put the version in the `image:` reference " +
     "itself, or declare the image as an `image:` block with `repository:` and `tag:` under it"
   );
+}
+
+/**
+ * Key names whose value, when a plain scalar, is a COMPLETE image reference exactly like a bare
+ * `image:` (rule a) — for charts that spell "the image" under a project-specific name instead of the
+ * Kubernetes-conventional `image`. Found missing entirely (M29.8a reader check): this repo's own
+ * `deploy/helm-bundled/values.yaml` declares Argo Workflows' two tracked images as `serverImage:` /
+ * `controllerImage:`, and neither produced any row at all — not even an `unresolved` one, because
+ * nothing here looked at those keys — which means the M21 dependency-subscription inventory this
+ * parser also feeds would have silently never seen either image as a declared dependency of this
+ * repo's own `argo-workflows` component.
+ *
+ * Deliberately NOT folded into {@link IMAGE_KEY}/{@link IMAGE_KEYS}: those drive the split-shape
+ * (`registry`+`repository`+`tag`+`digest`) sibling logic and the `underImageKey` context a nested
+ * mapping inherits from `image:`, and every declaration under these two keys anywhere in this repo is
+ * a flat, complete scalar — nothing here exercises siblings or nested context. Widening the much more
+ * load-bearing set risks a duplicate/anchor/split-shape interaction the file's own "trap" comments
+ * spent real effort keeping narrow (trap 11: "nothing is matched by prefix or by substring"). This is
+ * additive and independent instead: it can only ADD occurrences alongside `readMapping`'s, on a
+ * SEPARATE pass, and never changes what the `image:` key's own logic reports.
+ */
+const ADDITIONAL_COMPLETE_IMAGE_KEYS = ["serverImage", "controllerImage"] as const;
+
+/** {@link ADDITIONAL_COMPLETE_IMAGE_KEYS}, each treated as its own independent bare `image:` scalar
+ *  (rule a) — malformed-check, split, and the same resolved/unresolved shape `readMapping`'s
+ *  `image.kind === "text"` branch produces, minus registry/tag/digest joining (there is no sibling
+ *  concept for these keys). Runs on EVERY mapping, unconditionally — the same rule (a) applies
+ *  regardless of `underImageKey`, exactly as a bare `image:` scalar does. */
+function readAdditionalCompleteImageKeys(map: YAMLMap, path: string, ctx: WalkContext): void {
+  for (const keyName of ADDITIONAL_COMPLETE_IMAGE_KEYS) {
+    const pairs = map.items.filter(
+      (item) => isScalar(item.key) && String(item.key.value) === keyName
+    );
+    if (pairs.length === 0) continue;
+    const keyPath = joinPath(path, keyName);
+    if (pairs.length > 1) {
+      const last = pairs[pairs.length - 1]!;
+      ctx.push({
+        resolved: false,
+        coordinate: keyPath,
+        pinned: false,
+        keyPath,
+        line: nodeLine(ctx, (last.value ?? last.key) as Node),
+        note: `'${keyName}' is declared more than once in this mapping; Helm's YAML takes the last and a reader takes the first, so which one this image actually uses is not knowable from the file — remove the duplicate`
+      });
+      continue;
+    }
+    const read = readKey(pairs[0], keyPath, true);
+    if (read.kind === "absent") continue;
+    if (read.kind === "unresolved") {
+      ctx.push({
+        resolved: false,
+        coordinate: read.path,
+        pinned: false,
+        keyPath: read.path,
+        line: nodeLine(ctx, read.node),
+        note: read.why
+      });
+      continue;
+    }
+    const split = splitImageRef(read.text);
+    const malformed = !isUsableCoordinate(split.name)
+      ? "its repository is empty, or has whitespace or an empty path segment"
+      : split.tag === ""
+        ? "an empty tag"
+        : split.digest !== undefined && !isDigestShaped(split.digest)
+          ? `'${split.digest}' is not an OCI digest (an algorithm such as sha256, then ':', then its full-length hex)`
+          : undefined;
+    if (malformed !== undefined) {
+      ctx.push({
+        resolved: false,
+        coordinate: read.path,
+        declared: read.text,
+        pinned: false,
+        keyPath: read.path,
+        line: nodeLine(ctx, read.node),
+        note: `'${read.text}' is not a well-formed image reference (${malformed})`
+      });
+      continue;
+    }
+    const version = split.tag === undefined ? undefined : parseComparableVersion(split.tag);
+    ctx.push({
+      resolved: true,
+      coordinate: split.name,
+      ...(split.tag !== undefined ? { declared: split.tag } : {}),
+      ...(split.digest !== undefined ? { digest: split.digest } : {}),
+      pinned: split.tag !== undefined || split.digest !== undefined,
+      keyPath: read.path,
+      line: nodeLine(ctx, read.node),
+      note:
+        split.tag !== undefined && version === undefined
+          ? `tag "${split.tag}" carries no parseable version core; it must be skipped, never string-ordered`
+          : undefined
+    });
+  }
 }
 
 /** The whole shape logic, applied in image context. See docs/dependency-manifests.md §45. */
