@@ -96,6 +96,57 @@ changes never gains the rights of the process that installs software, and neithe
 The Standard Stack follows SCP's version: one SCP upgrade upgrades every backend to the versions that release was tested
 with. The customer never picks an Argo version.
 
+## 3a. How the stack controller stands things up
+
+Almost every part of this exists today as a one-shot script or Job. The controller runs them continuously, from declared
+state, instead of once by hand.
+
+- **What it is.** `scp-stackd`, a small Kubernetes controller shipped in the main CommanderSCP chart. It runs under its own
+  ServiceAccount, with rights to the backends' CRDs and namespaces only (§3).
+- **Where desired state lives.** In SCP, like everything else. The customer's choices, versions and sizing are SCP data,
+  written through the API. The controller is an ordinary API client of `scpd`: it reads the desired stack and writes back
+  status (health, version, readiness, what each backend still needs). No new required stateful service is added
+  (principle 4); a CRD is not needed for this.
+- **What it applies.** The vendored `deploy/helm-bundled` chart, rendered **in-process** and applied with Kubernetes
+  server-side apply under a field manager of its own. It prunes by label and waits for readiness, which is exactly what
+  `scripts/scp-bundled.sh` does once today.
+  - Because nothing is stored as a Helm release, Helm's 1 MB release limit, the reason the bundle lives outside the main
+    chart, does not apply.
+  - The manifests and image references are fixed per SCP release, and the air-gap install retargets them to the bundle
+    registry as it already does.
+- **How it wires.** After a backend is ready, the controller does the auto-wire work: it mints the scoped account and
+  token, publishes the TLS CA, opens NetworkPolicy egress and registers the execution system through `scpd`'s API. The
+  logic that lives in the auto-wire Job binaries today (`apps/server/src/bundled-*-autowire-bin.ts`) moves into the
+  controller, and the missing last step of registering the execution system is included. For canary, it serves the
+  authoring carrier from the bundled Gitea and creates the AppProject.
+- **Upgrades.** A new SCP release carries new pinned stack manifests. The controller re-applies them backend by backend and
+  checks each is healthy before moving to the next. If one fails, it re-applies the last good set and reports the failure
+  on the Stack page.
+- **Credentials.** A value entered in SCP is handed to the controller, which writes it into the backend's Secret (D2).
+  `scpd` does not keep it.
+- **Target clusters.** Two things have to reach the clusters SCP deploys *to*, not only the one it runs in:
+  - **Argo Rollouts' controller and CRDs** must exist in every cluster a Rollout lands in. When a target cluster is
+    registered, SCP authors an Argo CD Application that installs Rollouts there, through the same authoring path M28.4
+    built.
+  - **Argo CD needs that cluster's credentials.** Registering a cluster in SCP hands them to Argo CD through the same
+    passthrough. Argo CD holds them, as the charter requires of a bundled backend.
+- **Imported backends (D5).** The controller registers and configures an imported system through its API: for Argo CD, the
+  SCP account, RBAC and AppProject. It uses an admin credential the customer enters once and that the controller then
+  holds, so the customer does not. It does not touch the install itself unless lifecycle adoption is chosen.
+- **Without Kubernetes.** The Argo family is Kubernetes-native, so on a VM-only install (compose or Ansible) there is
+  nothing to run them on. Two options:
+  1. The installer stands up a single-node k3s as the stack's substrate.
+  2. That install runs only what does not need Kubernetes: Gitea as a container, and SCP's managed runners (Mode C) for IaC
+     and host operations.
+
+  Recommendation: option 1, offered when the installer finds no cluster, since option 2 cannot do canary deploys at all.
+- **Per role.** The same controller, with the role's default stack (§5). A retrans runs the controller with an empty
+  stack, or not at all.
+
+The honest risks are in CRD handling and in adopting imported installs. The Argo CRDs are cluster-scoped, and upgrading them
+is where upstream upgrades most often break, so the controller applies CRDs as their own step and checks they are ready.
+Lifecycle adoption of an install SCP did not make is refused unless SCP recognises its shape (the open point under D5).
+
 ## 4. The customer journey this produces
 
 1. **Install, one command, any substrate.** `scp install --role commander|outpost|retrans [--profile eval|production]
