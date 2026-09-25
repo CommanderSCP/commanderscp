@@ -16,6 +16,7 @@ import type {
   ChangeState,
   ChangeWaitStatus,
   CreateObjectRequest,
+  CurrentUser,
   Decision,
   DesiredStateManifest,
   DoctorCheck,
@@ -2083,6 +2084,30 @@ export function buildProgram(): Command {
         console.log(`Logged in as '${username}' (org: ${result.org}). Token stored.`);
       }
     );
+
+  // M29.1 (the front door) — the plain way to confirm "am I actually logged in", the same
+  // question `scp install`'s own DoD asks ("reaches a logged-in admin session"). Session-based
+  // (GET /auth/me), so it also confirms the STORED credentials from `scp login`/`scp install`
+  // still resolve to a live session, not just that a token was written to disk.
+  program
+    .command("whoami")
+    .description("Show the currently authenticated session")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const me = await client.auth.me();
+      printResult(me, opts.output, (item) => {
+        const u = item as CurrentUser;
+        return {
+          username: u.username,
+          org: u.orgName,
+          userId: u.userId,
+          instanceRole: u.instanceRole,
+          roles: u.roleBindings.map((b) => b.roleName).join(",") || "-"
+        };
+      });
+    });
 
   // pat (Personal Access Tokens — BUILD_AND_TEST.md §8 M2 item 3)
   const patCmd = program.command("pat").description("Manage Personal Access Tokens");

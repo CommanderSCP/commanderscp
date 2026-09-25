@@ -1,5 +1,10 @@
 name: Deploy Drills (M8 kind / air-gap / Ansible)
 
+# A FOURTH drill was added 2026-09-25 (M29.1, docs/adr/0059-front-door.md): `scp-install-drill`, at
+# the bottom of this file — `scp install --role commander` against a fresh kind cluster. It has
+# only been run locally (recorded in the M29.1 PR) as of this addition; it has not yet had its own
+# hosted-runner CI run, unlike the three below.
+#
 # The three heavy M8 deployment drills (BUILD_AND_TEST.md §8 M8 DoD). These are OPT-IN
 # (workflow_dispatch + nightly schedule), NEVER merge-gating — same posture as
 # nightly-live-sandbox.yml. Why not per-PR gates:
@@ -45,7 +50,7 @@ on:
   workflow_dispatch:
     inputs:
       drill:
-        description: "Which drill to run (all | kind | ansible | airgap | bundled-argocd)"
+        description: "Which drill to run (all | kind | ansible | airgap | bundled-argocd | scp-install)"
         required: false
         default: "all"
 
@@ -206,3 +211,41 @@ jobs:
           version: v0.27.0
       - name: Run the bundled Argo CD auto-wire E2E drill
         run: bash scripts/bundled-argocd-drill.sh
+
+  scp-install-drill:
+    name: "scp install: helm install -> credential from the installer's own terminal -> login -> stack ready/needs -> HQ outpost"
+    # M29.1 (the front door, docs/adr/0059-front-door.md). Same posture as the three drills above —
+    # nightly/on-demand, never merge-gating — and NOT folded into either of them: it needs a
+    # DIFFERENT kind version. kind v0.27.0 (every drill above) cannot load an image into
+    # `kindest/node:v1.36.1` (the pin `tools/ci-mirror/images.list` and CI job "4e" already use) —
+    # measured directly while building this drill: `ERROR: unknown containerd config version: 4
+    # (supported versions: 2 and 3)`. kind v0.32.0 is what this job pins.
+    needs: bundled-argocd-drill # serialized (see ansible-drill for why this ordering is kept)
+    if: >-
+      always() && (
+      github.event_name == 'schedule' ||
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'scp-install')
+    runs-on: ubuntu-latest
+    # A full `helm install` of the whole chart (postgres, api, worker, the stack controller) PLUS
+    # all five Standard Stack backends actually installing and reporting ready/needs — measured at
+    # ~3 minutes end to end when this drill was written. 40 gives ample headroom.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Reclaim disk (see the "DISK" note in this file's header)
+        run: bash .github/scripts/free-disk.sh
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - name: Install helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: latest
+      - name: Install kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+      - name: Install kind (binary only — the drill creates its own cluster; v0.32.0, see this job's comment)
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        with:
+          install_only: true
+          version: v0.32.0
+      - name: Run the scp install kind drill
+        run: bash scripts/scp-install-kind-drill.sh
