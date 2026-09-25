@@ -72,7 +72,7 @@ describe("the stack spec is enumerated values only", () => {
 
   it("M29.2: what scpd hands back of a wiring is a sha256 and a counter per backend — never an endpoint", () => {
     // Covered by the leaf walk above; pinned by name so a widened wiring entry is a named failure.
-    const shape = z.toJSONSchema(StackSpecDocumentSchema, { io: "input" }) as {
+    const shape = z.toJSONSchema(StackSpecDocumentSchema, { io: "input" }) as unknown as {
       properties: { wiring: { items: { properties: Record<string, unknown> } } };
     };
     expect(Object.keys(shape.properties.wiring.items.properties).sort()).toEqual([
