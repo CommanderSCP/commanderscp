@@ -1413,6 +1413,20 @@ Extending this class allowlist further requires owner sign-off.
 
 Amendment approved 2026-09-23 (owner decision, M28.2).
 
+`scp-managed-dep` may additionally write vendored upstream install manifests, and the digest pins and version defaults derived from them, into CommanderSCP's own repository only — never into a tenant's repository, and never any other content.
+
+This is the `re-vendor` bump strategy (M29.8a, ADR-0059): a component whose dependency is a vendored upstream Standard Stack backend (Argo CD, Argo Workflows, Argo Rollouts, Argo Events, Gitea) bumps by re-fetching and re-vendoring the upstream manifest set at the new tag, not by editing one version string in place.
+
+Untrusted upstream bytes never reach the repository-write credential. The orchestrator fetches by commit SHA where the upstream project addresses content that way, verifies authenticity (checksums or provenance where upstream publishes them, and a cosign signature check against the expected upstream identity for every image before its digest is pinned), and resolves and verifies image digests; it treats the fetched manifest bytes as opaque, parsing only small metadata (release descriptors, checksums) to do this. It never parses the vendored manifest itself.
+
+The vendored manifest's own parsing, splitting, `helm template` rendering (Gitea only) and rewriting of `values.yaml`/`bundle-images.ts`/`images.list`/the chart's retarget-source fields runs in a second, credential-free, `--network none` sandbox, given only the bytes the orchestrator already fetched and verified. This sandbox holds no credential of any kind and reaches no host; running `helm template` against a locally-supplied chart is not a network operation and needs none.
+
+The orchestrator commits only the files that sandbox returns, and only after confirming every returned path is a member of the fixed, enumerated set of paths this backend's re-vendor is defined to touch — never a caller-supplied or tenant-supplied path — and that the target repository is the one CommanderSCP is configured to vendor its own stack into, which is never tenant-configurable.
+
+`scp-managed-dep` may do nothing else new under this amendment: it authors no other content, targets no other repository, and the executor verb set is unchanged.
+
+Amendment approved 2026-09-25 (owner decision, in response to the M29.8a #420 adversarial review).
+
 CommanderSCP's per-domain SSH certificate authority may issue the per-run host-login certificate for a host-reaching run that CommanderSCP submits to an organization's Argo Workflows, rather than only for a run CommanderSCP's own managed executor launches.
 
 The grant is stated as what CommanderSCP enforces. CommanderSCP cannot attest the template, the image or the pod that redeems a run token in a cluster it reaches only through an Argo API token, so the grant does not rest on any claim about the redeemer. It rests on the following, each enforced by CommanderSCP:
