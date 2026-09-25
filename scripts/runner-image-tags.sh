@@ -62,12 +62,13 @@ builder_rpm_hash=$(find apps/builder-rpm -type f -exec sha256sum {} + | sort | s
 # directory alone — it bundles workspace packages and CARRIES the vendored chart and the helm pin
 # (E4: the image IS the release's stack), so every one of those is part of what it is. A chart bump
 # with no controller change must still yield a new image.
+# TRACKED files only: this tag is computed in job 4c (fresh checkout) AND in the integration job
+# (after `pnpm build`), and a build drops dist/, *.tsbuildinfo and .turbo/ into these very paths —
+# a `find` over them made the two jobs disagree and the integration pull 404 (measured, first CI run).
 stackd_hash=$(
-  {
-    find apps/stackd packages/schemas/src packages/sdk/src deploy/helm-bundled -type f \
-      -not -path '*/node_modules/*' -not -path '*/dist/*' -not -path '*/bundle/*' -exec sha256sum {} +
-    sha256sum tools/helm/pin.env tools/node/pin.env pnpm-lock.yaml package.json tsconfig.base.json
-  } | sort | sha256sum | cut -c1-16
+  git ls-files -z apps/stackd packages/schemas packages/sdk deploy/helm-bundled \
+      tools/helm/pin.env tools/node/pin.env pnpm-lock.yaml package.json tsconfig.base.json \
+    | xargs -0 sha256sum | sort | sha256sum | cut -c1-16
 )
 
 echo "SCP_RUNNER_SCAN_IMAGE_REF=${registry}/scp-runner-scan:${scan_hash}"
