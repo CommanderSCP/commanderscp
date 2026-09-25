@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScopedHttpRequest, ScopedHttpResponse } from "@scp/plugin-api";
 import type { ResolveRunnerLauncher, RunnerSpec } from "@scp/runner-launcher";
 import { runSandbox, type FullSandboxInput } from "@scp/vendor-refresh";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   bumpBranchFor,
   createManagedDepExecutorPlugin,
@@ -34,12 +34,16 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
 
 // `orchestrateRevendor` (unlike the old in-process planner) writes real scratch files for the
-// sandbox exchange — a REAL, per-test-run temp dir, cleaned up by the OS same as every other
-// mkdtemp-under-tmpdir use in this package's tests.
+// sandbox exchange — a REAL, per-file temp dir, explicitly swept in `afterAll` (a leaked
+// `/tmp/scp-revendor-test-*` is exactly what `pnpm -w test`'s tmpdir-leak-sweep flags — the OS does
+// NOT clean this up on its own).
 const WORKSPACE_ROOT = await mkdtemp(join(tmpdir(), "scp-revendor-test-"));
 function workspaceRoot(): string {
   return WORKSPACE_ROOT;
 }
+afterAll(async () => {
+  await rm(WORKSPACE_ROOT, { recursive: true, force: true });
+});
 
 const REPO = "CommanderSCP/commanderscp";
 const BASE_BRANCH = "main";
