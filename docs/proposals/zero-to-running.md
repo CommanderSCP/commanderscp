@@ -259,11 +259,23 @@ Two loops are needed: one that keeps **our release** current, and one that gets 
 
 ### 9.1 Our release: upstream to a tested, published stack
 
-1. **Watch upstream on a schedule.** A daily maintenance workflow checks each vendored backend's upstream releases and
-   re-vendors a new version with `tools/vendor-refresh`: fetch that tag's manifests, pin every image by digest, and update
-   the air-gap image list. It opens one PR per backend bump. Like `publish-images.yml`, this is a maintenance job that
-   needs the internet; the PR it opens is verified by the normal offline CI (principle 5 governs verification and
-   runtime, not the bot that fetches upstream).
+1. **Watch upstream with SCP's own dependency subscriptions (owner, 2026-09-25: "leverage that as default").** M21
+   already does this job for customers' code: it polls third-party container images **daily** and **authors the bump commit
+   itself** (Mode C, `managed-dep`), delivered as a PR or an auto-merge per subscription (ADR-0032). The CommanderSCP repo is
+   registered as a service on SCP's own commander, with one component per vendored backend. Each backend gets a dependency
+   subscription on its upstream line, patch-only or minor-plus-patch per 4 below. This is SCP keeping SCP current, the
+   charter's *CommanderSCP Managing CommanderSCP*, and no separate bot is needed. What M21 needs added:
+   - **A re-vendor bump strategy.** A new Argo CD version can change CRDs and RBAC in the vendored `install.yaml`, not only
+     image tags, so a tag-string edit can pass CI and still break a real controller. Components that vendor an upstream
+     install declare a bump strategy that runs `tools/vendor-refresh`: fetch the tag's full manifests, pin every image by
+     digest, update the air-gap image list, then commit. The default tag edit stays for everything else.
+   - **A reader check.** `parseKubernetesImages` must pick up every image in the vendored manifests and in
+     `deploy/helm-bundled/values.yaml`, including multi-document files and split parts such as
+     `argo-workflows/install-part-0N.yaml`. The inventory must list them all before this counts as covered, proved by a
+     test that goes red if a vendored image is missing from it.
+
+   Where it runs: dependency polling is commander-only because it egresses, so it runs on the commander that publishes
+   SCP, which today is the homelab.
 2. **Scan what we pin, continuously.** The same schedule scans every pinned stack image with the vendored Trivy against a
    fresh vulnerability DB (SCP's own `scp-managed-scan` machinery, pointed at our own stack). A new HIGH or CRITICAL finding
    that an upstream release fixes opens the bump PR immediately, instead of waiting for the daily version check.
@@ -306,6 +318,6 @@ backend versions to track.
 
 ### 9.3 Build order
 
-9.1 steps 1–3 and 5 go first (M29.8), because they are what stops the pinned versions going stale in our own repo, whoever
+9.1 steps 1–3 and 5 go first (M29.8: the re-vendor bump strategy, the vendored-image reader check, scan-triggered bumps, the upgrade-path proof and the release gate), because they are what stops the pinned versions going stale in our own repo, whoever
 runs SCP. 9.2 needs the stack controller (M29.4) and lands with it.
 
