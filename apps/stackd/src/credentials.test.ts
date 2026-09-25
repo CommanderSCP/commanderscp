@@ -286,16 +286,16 @@ describe("the controller delivers credentials entered through SCP into the backe
   it("refuses an envelope sealed to another key, one past its notAfter, and a target outside the catalog", async () => {
     const r = rig();
     await r.tick();
-    const cases: [Partial<StackCredentialDelivery>, string][] = [
-      [{ keyId: "0".repeat(64) }, "wrong-key"],
-      [{ notAfter: new Date(Date.now() - 1000).toISOString() }, "expired"],
-      // Enum-valid names, but not a pair the catalog has: AWS keys belong to the infra Secrets.
-      [{ key: "AWS_REGION" }, "not-in-catalog"]
+    const cases: [Partial<StackCredentialDelivery>, string, string][] = [
+      [{ keyId: "0".repeat(64) }, "wrong-key", "registryPassword"],
+      [{ notAfter: new Date(Date.now() - 1000).toISOString() }, "expired", "registryPassword"],
+      // GENUINELY SEALED to a target the catalog does not have (enum-valid names, but AWS keys
+      // belong to the infra Secrets) — what anyone holding the public key and the table could
+      // make. The tag verifies; the catalog is what refuses it.
+      [{}, "not-in-catalog", "AWS_REGION"]
     ];
-    for (const [over, reason] of cases) {
-      r.pending.push(
-        await r.sealed({ secretName: "scp-build-registry", key: "registryPassword" }, "v", over)
-      );
+    for (const [over, reason, key] of cases) {
+      r.pending.push(await r.sealed({ secretName: "scp-build-registry", key }, "v", over));
       await r.tick();
       expect(r.acks.at(-1)!.req).toMatchObject({ outcome: "refused", reason });
     }
