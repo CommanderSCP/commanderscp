@@ -6,6 +6,7 @@
 {{- if not $w.controllerImage }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .controllerImage is empty — the vendored, retargeted workflow-controller image is required." }}{{- end -}}
 {{- if not $w.vendoredServerImage }}{{ fail "bundledExecutor.argoWorkflows.vendoredServerImage is empty — this is the retarget SOURCE (the upstream ref the vendored file currently declares). Fail-closed rather than silently skip the retarget." }}{{- end -}}
 {{- if not $w.vendoredControllerImage }}{{ fail "bundledExecutor.argoWorkflows.vendoredControllerImage is empty — same reasoning as vendoredServerImage." }}{{- end -}}
+{{- if not $w.executorImage }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .executorImage is empty — every workflow pod runs the argoexec executor, and an air-gapped one cannot pull upstream's default." }}{{- end -}}
 # =============================================================================================
 # Bundled Argo Workflows (Mode B — bundled CI/build/test). Vendored, UNMODIFIED upstream v4.0.7
 # rendered into {{ $w.namespace }} via commanderscp.renderVendoredBackend, with only the two images
@@ -69,7 +70,7 @@
     "resources" $w.resources
     "containerArgs" (dict
       "argo-server" (list (printf "--tls-certificate-secret-name=%s" $w.tlsSecretName) "--namespaced" (printf "--managed-namespace=%s" $w.namespace))
-      "workflow-controller" (list "--namespaced" (printf "--managed-namespace=%s" $w.namespace)))
+      "workflow-controller" (list "--namespaced" (printf "--managed-namespace=%s" $w.namespace) (printf "--executor-image=%s" $w.executorImage)))
     "bindInNamespace" (list "argo-binding" "argo-server-binding")
   ) }}
 

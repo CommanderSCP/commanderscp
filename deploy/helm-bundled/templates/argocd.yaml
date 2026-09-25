@@ -4,6 +4,8 @@
 {{- if not $a.valkeyImage }}{{ fail "bundledExecutor.argocd.enabled=true but .valkeyImage is empty — the vendored Valkey image is required." }}{{- end -}}
 {{- if not $a.vendoredImage }}{{ fail "bundledExecutor.argocd.vendoredImage is empty — this is the retarget SOURCE (the upstream ref the vendored file currently declares), never the customer-facing default. Fail-closed rather than silently skip the retarget." }}{{- end -}}
 {{- if not $a.vendoredRedisImage }}{{ fail "bundledExecutor.argocd.vendoredRedisImage is empty — same reasoning as vendoredImage, for the redis->valkey substitution." }}{{- end -}}
+{{- if not $a.dexImage }}{{ fail "bundledExecutor.argocd.enabled=true but .dexImage is empty — the vendored, retargeted Dex image is required (argocd-dex-server never starts without it)." }}{{- end -}}
+{{- if not $a.vendoredDexImage }}{{ fail "bundledExecutor.argocd.vendoredDexImage is empty — same reasoning as vendoredImage, for the Dex retarget (M29.2)." }}{{- end -}}
 {{- $ns := $a.namespace -}}
 # =============================================================================================
 # Bundled Argo CD (Mode B — ADR-0002, docs/proposals/bundled-executor-backends.md). OPT-IN.
@@ -37,8 +39,12 @@ metadata:
 {{- if not (contains $a.vendoredRedisImage $raw) -}}
 {{- fail (printf "bundledExecutor.argocd.vendoredRedisImage %q is not present in the vendored manifest — the redis->valkey retarget would silently do nothing." $a.vendoredRedisImage) -}}
 {{- end -}}
+{{- if not (contains $a.vendoredDexImage $raw) -}}
+{{- fail (printf "bundledExecutor.argocd.vendoredDexImage %q is not present in the vendored manifest — the Dex retarget would silently do nothing." $a.vendoredDexImage) -}}
+{{- end -}}
 {{- $raw = $raw | replace $a.vendoredImage $a.image -}}
 {{- $raw = $raw | replace $a.vendoredRedisImage $a.valkeyImage -}}
+{{- $raw = $raw | replace $a.vendoredDexImage $a.dexImage -}}
 {{- $raw = $raw | replace "namespace: argocd" (printf "namespace: %s" $ns) -}}
 {{- $clusterScoped := list "CustomResourceDefinition" "ClusterRole" "ClusterRoleBinding" -}}
 {{- $out := list -}}

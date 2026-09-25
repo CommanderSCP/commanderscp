@@ -1,255 +1,88 @@
 #!/usr/bin/env bash
-# scp-bundled — enable a CommanderSCP Standard Stack backend in ONE command.
+# scp-bundled — RENDER a CommanderSCP Standard Stack backend (diagnostics only).
 #
-# The bundled executor backends (Argo CD + Valkey, Argo Workflows, Argo Events, Gitea) live in the
-# `deploy/helm-bundled` chart, NOT the main `commanderscp` chart: their vendored upstream manifests
-# (Argo Workflows alone is 11 MB) far exceed Helm's 1 MB release-Secret limit, so they cannot ride a
-# `helm install`. This wrapper renders the chart and delivers it the way upstream intends — with
-# `kubectl apply --server-side` (no stored release ⇒ no 1 MB ceiling; server-side ⇒ the large CRDs
-# don't overflow the client-side last-applied annotation) — then, for Argo CD / Gitea, flips the
-# matching flag on the main SCP release so its auto-wire hook + NetworkPolicy egress turn on. All of
-# that is hidden behind a single verb:
+# INSTALLING AND WIRING A BUNDLED BACKEND IS THE STACK CONTROLLER'S JOB (M29.4 ADR-0058, M29.2
+# ADR-0060), through SCP itself:
 #
-#     scripts/scp-bundled.sh enable argocd
-#     scripts/scp-bundled.sh enable gitea --scp-release scp --scp-namespace scp
-#     scripts/scp-bundled.sh enable argo-workflows --set bundledExecutor.argoWorkflows.serverImage=myreg/argocli:v4.0.7 ...
-#     scripts/scp-bundled.sh render gitea   # print the manifest, apply nothing
+#     scp stack enable argocd          # or Admin › Stack in the web UI
 #
-# NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
-# existing Harbor is served via the import path (coordinated as an execution system), not bundled.
+# The controller installs the backend from the deploy/helm-bundled chart its image carries, then, in
+# the same reconcile, wires it into SCP: the scoped account's token, the TLS trust, both egress
+# layers and the execution-system registration. There is no hook Job to wait for, no `helm upgrade`
+# flag to flip and no bind command to copy from a log — which is everything this script's old
+# `enable` verb did by hand, and why it is gone (it now refuses, naming the command above).
 #
-# Connected installs need zero image flags (the chart defaults to the upstream refs). The air-gap
-# install.sh calls this with --set/--values carrying the retargeted, digest-pinned images.
+#     scripts/scp-bundled.sh render gitea   # print what the chart renders for one backend
 #
-# Requires: helm, kubectl. Does NOT require the SCP release to be Helm-managed — if it isn't (e.g.
-# GitOps/ArgoCD-managed), the backend is still applied and the wrapper prints the one flag to set in
-# your SCP values instead of running `helm upgrade`.
+# `render` stays because it is still useful: it prints the manifest a backend renders to, with the
+# chart's defaults or your --set/--values, and applies nothing.
+#
+# Requires: helm.
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHART_DIR="${SCP_BUNDLED_CHART_DIR:-${ROOT_DIR}/deploy/helm-bundled}"
-SCP_CHART_DIR="${SCP_MAIN_CHART_DIR:-${ROOT_DIR}/deploy/helm}"
-SCP_RELEASE="scp"
 SCP_NAMESPACE="default"
-WAIT_TIMEOUT="600s"
-# Helm's patience for the SCP release upgrade, which BLOCKS ON THE AUTO-WIRE HOOK JOB. It MUST be
-# strictly greater than that Job's `activeDeadlineSeconds` (600 — deploy/helm/templates/bundled-*
-# -autowire-job.yaml), otherwise Helm gives up at the exact instant the Job does and reports the
-# useless "post-upgrade hooks failed ... Job in progress" instead of the Job's real terminal state.
-# That equal-timeout collision is why 12 consecutive air-gap-drill failures produced zero diagnostic
-# detail. Deliberately a SEPARATE knob from --wait-timeout (the backend rollout wait): raising the
-# rollout wait must not silently re-create the collision.
-SCP_WAIT_TIMEOUT="900s"
-DRY_RUN=0
 declare -a HELM_EXTRA=()
 
 usage() {
   cat >&2 <<EOF
-Usage: scp-bundled.sh <enable|render> <argocd|argo-workflows|argo-rollouts|argo-events|gitea> [options]
+Usage: scp-bundled.sh render <argocd|argo-workflows|argo-rollouts|argo-events|gitea> [options]
 
-  enable   render the backend, kubectl apply --server-side, wait for readiness, and (argocd/gitea)
-           turn on the SCP release's auto-wire hook + NetworkPolicy
   render   print the rendered manifest to stdout and exit (apply nothing)
 
+  (enable is retired: the stack controller installs and wires backends — \`scp stack enable <backend>\`)
+
 Options:
-  --scp-release <name>     SCP Helm release name (default: scp)
-  --scp-namespace <ns>     namespace of the SCP release + its bundled-backend NetworkPolicy (default: default)
-  --values <file>          extra Helm values file (repeatable) — e.g. air-gap retargeted images
-  --set <key=value>        extra Helm --set (repeatable) — e.g. a retargeted image ref
-  --wait-timeout <dur>     readiness wait per backend rollout (default: 600s)
-  --scp-wait-timeout <dur> helm timeout for the SCP release upgrade, which blocks on the auto-wire
-                           hook Job (default: 900s). MUST exceed the hook Job's
-                           activeDeadlineSeconds (600s) or helm masks the Job's real failure.
+  --scp-namespace <ns>     namespace of the SCP release (the backends' ingress policies admit it)
+  --values <file>          extra Helm values file (repeatable)
+  --set <key=value>        extra Helm --set (repeatable)
   --chart <dir>            bundled chart dir (default: deploy/helm-bundled)
-  --scp-chart <dir>        main SCP chart dir for the hook/NetworkPolicy upgrade (default: deploy/helm)
-  --dry-run                same as 'render' — print, apply nothing
 EOF
   exit "${1:-2}"
 }
 
-# Progress goes to STDERR — STDOUT is reserved for the rendered manifest (the `render` verb prints
-# it, and even in `enable` mode keeping STDOUT clean means `scp-bundled.sh render X | kubectl ...`
-# and future pipes never ingest a progress line.
-log() { echo "==> $*" >&2; }
 fail() { echo "scp-bundled: $*" >&2; exit 1; }
 
 [ $# -ge 2 ] || usage 2
 VERB="$1"; BACKEND="$2"; shift 2
-case "$VERB" in enable|render) : ;; *) usage 2 ;; esac
-[ "$VERB" = "render" ] && DRY_RUN=1
+case "$VERB" in
+  render) : ;;
+  enable)
+    echo "scp-bundled: 'enable' is retired (M29.2, ADR-0060). The stack controller installs AND wires" >&2
+    echo "  bundled backends through SCP — run:  scp stack enable ${BACKEND}   (or Admin › Stack)." >&2
+    echo "  It registers the execution system, its token, TLS trust and egress with no further step." >&2
+    exit 2 ;;
+  *) usage 2 ;;
+esac
 
-# backend name -> (values key, namespace, main-chart flag it flips on the SCP release or "")
-TLS_SECRET="argo-server-tls"
-CA_SECRET="scp-argo-workflows-ca"
 case "$BACKEND" in
-  argocd)         KEY="argocd";        NS="scp-argocd";         SCP_FLAG="bundledExecutor.argocd.enabled" ;;
-  argo-workflows) KEY="argoWorkflows"; NS="scp-argo-workflows"; SCP_FLAG="" ;;
-  # (TLS_SECRET/CA_SECRET are only consulted for argo-workflows; see ensure_argo_server_tls)
-  # Rollouts is NOT an executor SCP coordinates (ADR-0008 §3), so it flips no SCP-release flag:
-  # there is no auto-wire hook to run and no NetworkPolicy to open, because SCP never calls it.
-  argo-rollouts)  KEY="argoRollouts";  NS="scp-argo-rollouts";  SCP_FLAG="" ;;
-  argo-events)    KEY="argoEvents";    NS="scp-argo-events";    SCP_FLAG="" ;;
-  gitea)          KEY="gitea";         NS="scp-gitea";          SCP_FLAG="bundledExecutor.gitea.enabled" ;;
+  argocd)         KEY="argocd" ;;
+  argo-workflows) KEY="argoWorkflows" ;;
+  argo-rollouts)  KEY="argoRollouts" ;;
+  argo-events)    KEY="argoEvents" ;;
+  gitea)          KEY="gitea" ;;
   *) echo "scp-bundled: unknown backend '$BACKEND'" >&2; usage 2 ;;
 esac
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --scp-release)   SCP_RELEASE="$2"; shift 2 ;;
     --scp-namespace) SCP_NAMESPACE="$2"; shift 2 ;;
-    --wait-timeout)  WAIT_TIMEOUT="$2"; shift 2 ;;
-    --scp-wait-timeout) SCP_WAIT_TIMEOUT="$2"; shift 2 ;;
     --chart)         CHART_DIR="$2"; shift 2 ;;
-    --scp-chart)     SCP_CHART_DIR="$2"; shift 2 ;;
     --values)        HELM_EXTRA+=(--values "$2"); shift 2 ;;
     --set)           HELM_EXTRA+=(--set "$2"); shift 2 ;;
-    --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage 0 ;;
     *) echo "scp-bundled: unknown option '$1'" >&2; usage 2 ;;
   esac
 done
 
 command -v helm >/dev/null 2>&1 || fail "helm not found on PATH"
-command -v kubectl >/dev/null 2>&1 || fail "kubectl not found on PATH"
 [ -f "${CHART_DIR}/Chart.yaml" ] || fail "bundled chart not found at ${CHART_DIR} (pass --chart)"
 
-# ---- 0b. argo-workflows only: a PERSISTENT server certificate ---------------------------------
-# argo-server mints a fresh self-signed certificate on EVERY start unless handed one. Measured
-# across three restarts: three distinct fingerprints, each `valid_from` matching pod start. That
-# makes the CA unpinnable — SCP's `executorTls` trust works until this pod restarts and then fails
-# verification with an error that reads like SCP's own misconfiguration.
-#
-# So the certificate is generated ONCE, here, and never again: the guard is the Secret's existence,
-# so re-running `enable` is idempotent and does NOT rotate it. Rotating means deleting the Secret
-# deliberately and re-running, which is the only way it should ever happen, because the CA has to
-# be re-distributed to SCP in the same breath.
-ensure_argo_server_tls() {
-  kubectl get namespace "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS" >/dev/null
-  if kubectl -n "$NS" get secret "$TLS_SECRET" >/dev/null 2>&1; then
-    log "TLS secret ${TLS_SECRET} already present in ${NS} — reusing it (NOT rotating)"
-    return 0
-  fi
-  command -v openssl >/dev/null 2>&1 || fail "openssl not found on PATH — needed once, to mint argo-server's persistent certificate"
-  log "minting a persistent self-signed certificate for argo-server → secret ${TLS_SECRET}"
-  local dir; dir="$(mktemp -d)"
-  # SANs cover every name SCP may dial it by. `argo-server.<ns>.svc.cluster.local` is the one the
-  # SSRF allowlist and the executor config use; the shorter forms are included so an operator
-  # testing by hand does not hit a name mismatch and conclude the cert is broken.
-  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -subj "/O=CommanderSCP/CN=argo-server.${NS}.svc" \
-    -addext "subjectAltName=DNS:argo-server,DNS:argo-server.${NS},DNS:argo-server.${NS}.svc,DNS:argo-server.${NS}.svc.cluster.local" \
-    -keyout "${dir}/tls.key" -out "${dir}/tls.crt" >/dev/null 2>&1 \
-    || { rm -rf "$dir"; fail "openssl failed to mint the argo-server certificate"; }
-  kubectl -n "$NS" create secret tls "$TLS_SECRET" \
-    --cert "${dir}/tls.crt" --key "${dir}/tls.key" >/dev/null \
-    || { rm -rf "$dir"; fail "could not create secret ${TLS_SECRET} in ${NS}"; }
-  # The CA SCP verifies against. Self-signed, so the certificate IS its own CA. Placed in SCP's
-  # namespace under `ca.crt`, which is the key deploy/helm's executorTls mount requires.
-  kubectl -n "$SCP_NAMESPACE" create secret generic "$CA_SECRET" \
-    --from-file=ca.crt="${dir}/tls.crt" --dry-run=client -o yaml | kubectl apply -f - >/dev/null \
-    || { rm -rf "$dir"; fail "could not publish the CA to ${SCP_NAMESPACE}/${CA_SECRET}"; }
-  rm -rf "$dir"
-  log "CA published to ${SCP_NAMESPACE}/${CA_SECRET} — set executorTls.enabled=true and executorTls.existingSecret=${CA_SECRET} on the SCP release"
-}
-if [ "$BACKEND" = "argo-workflows" ]; then
-  ensure_argo_server_tls
-fi
-
-# ---- 1. Render just this backend from the bundled chart --------------------------------------
-log "rendering ${BACKEND} from ${CHART_DIR}"
 MANIFEST="$(helm template scp-bundled "$CHART_DIR" \
   --set "bundledExecutor.${KEY}.enabled=true" \
   --set "bundledExecutor.scpNamespace=${SCP_NAMESPACE}" \
   ${HELM_EXTRA[@]+"${HELM_EXTRA[@]}"})"
-[ -n "$MANIFEST" ] || fail "render produced an empty manifest for '${BACKEND}' — is the backend name correct?"
-
-if [ "$DRY_RUN" -eq 1 ]; then
-  printf '%s\n' "$MANIFEST"
-  exit 0
-fi
-
-# ---- 2. Apply server-side (required: large CRDs overflow client-side apply's annotation) -----
-log "applying ${BACKEND} to the cluster (kubectl apply --server-side) → namespace ${NS}"
-printf '%s\n' "$MANIFEST" | kubectl apply --server-side --force-conflicts -f -
-
-# ---- 3. Wait for the backend's workloads to become ready ------------------------------------
-log "waiting for ${BACKEND} workloads in ${NS} to become ready (timeout ${WAIT_TIMEOUT})"
-kubectl rollout status --namespace "$NS" --timeout "$WAIT_TIMEOUT" \
-  $(kubectl get deploy,statefulset -n "$NS" -o name 2>/dev/null) 2>/dev/null || {
-    echo "scp-bundled: WARNING — not all ${BACKEND} workloads reported ready within ${WAIT_TIMEOUT}; check: kubectl get pods -n ${NS}" >&2
-  }
-
-# Dump everything an operator needs to diagnose a FAILED auto-wire hook. A failed `helm upgrade
-# --wait` on a hook says only "post-upgrade hooks failed" and names the Job — never why. Helm's
-# hook-delete-policy is `before-hook-creation,hook-succeeded`, so a FAILED Job and its pods are still
-# there at this point; this prints the Job's describe (events: DeadlineExceeded, BackoffLimitExceeded,
-# image pull errors) and EVERY attempt pod's logs (the bin's own error — e.g. the 300s
-# `waitFor ... timed out` that a missing kube-API egress allow produces).
-dump_autowire_diagnostics() {
-  local component="${BACKEND}-autowire"
-  echo "--- scp-bundled: auto-wire hook diagnostics (${component}, namespace ${SCP_NAMESPACE}) ---" >&2
-  kubectl get jobs,pods -n "$SCP_NAMESPACE" -l "app.kubernetes.io/component=${component}" >&2 2>&1 || true
-  local job
-  for job in $(kubectl get jobs -n "$SCP_NAMESPACE" -l "app.kubernetes.io/component=${component}" -o name 2>/dev/null); do
-    echo "--- describe ${job} ---" >&2
-    kubectl describe -n "$SCP_NAMESPACE" "$job" >&2 2>&1 || true
-  done
-  local pod
-  for pod in $(kubectl get pods -n "$SCP_NAMESPACE" -l "app.kubernetes.io/component=${component}" \
-                 --sort-by=.metadata.creationTimestamp -o name 2>/dev/null); do
-    echo "--- describe ${pod} ---" >&2
-    kubectl describe -n "$SCP_NAMESPACE" "$pod" >&2 2>&1 || true
-    echo "--- logs ${pod} ---" >&2
-    kubectl logs -n "$SCP_NAMESPACE" "$pod" --tail=-1 >&2 2>&1 || true
-  done
-  # THE BACKEND SIDE OF THE CONNECTION — added 2026-08-29 after an auto-wire failure that the
-  # diagnostics above could not explain. The hook's only symptom is Node's `TypeError: fetch
-  # failed`, which is a CONNECTION-level error carrying no HTTP status, no address and no DNS
-  # detail. Everything printed above describes the CLIENT; a connection has two ends, and the
-  # evidence that decides between "nothing is listening", "the Service has no endpoints", "DNS
-  # does not resolve" and "the request was refused" is all on the other one.
-  #
-  # Without this, diagnosing costs a full CI round-trip per hypothesis — and each of
-  # NetworkPolicy, the Service port, `server.insecure` and apply ordering had to be eliminated
-  # that way, none of which this dump could have confirmed or denied.
-  echo "--- backend service/endpoints in $NS ---" >&2
-  kubectl get svc,endpoints -n "$NS" >&2 2>&1 || true
-  echo "--- backend pods ---" >&2
-  kubectl get pods -n "$NS" -o wide >&2 2>&1 || true
-  # Whether the flag the chart sets is actually IN EFFECT in the running container, which is a
-  # different claim from "the ConfigMap contains it" — the env ref is `optional: true`, so a key
-  # that lands late leaves the server on TLS and every plain-HTTP client failing at the socket.
-  echo "--- argocd-server effective env (insecure flag) ---" >&2
-  local srvpod
-  srvpod="$(kubectl get pod -n "$NS" -l app.kubernetes.io/name=argocd-server \
-              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  if [ -n "$srvpod" ]; then
-    kubectl exec -n "$NS" "$srvpod" -- env 2>/dev/null | grep -i insecure >&2 || \
-      echo "    ARGOCD_SERVER_INSECURE not set in the container" >&2
-  fi
-  echo "--- end auto-wire hook diagnostics ---" >&2
-}
-
-# ---- 4. For argocd: flip the flag on the SCP release (auto-wire hook + NetworkPolicy) --
-if [ -n "$SCP_FLAG" ]; then
-  if helm status "$SCP_RELEASE" --namespace "$SCP_NAMESPACE" >/dev/null 2>&1; then
-    log "enabling ${SCP_FLAG} on SCP release '${SCP_RELEASE}' (auto-wire hook + NetworkPolicy egress)"
-    [ -f "${SCP_CHART_DIR}/Chart.yaml" ] || fail "main SCP chart not found at ${SCP_CHART_DIR} (pass --scp-chart)"
-    # --timeout uses SCP_WAIT_TIMEOUT (900s), NOT WAIT_TIMEOUT — see its definition above: helm must
-    # OUTLAST the hook Job's activeDeadlineSeconds so the Job's real failure surfaces.
-    if ! helm upgrade "$SCP_RELEASE" "$SCP_CHART_DIR" \
-      --namespace "$SCP_NAMESPACE" --reuse-values \
-      --set "${SCP_FLAG}=true" --wait --timeout "$SCP_WAIT_TIMEOUT"; then
-      dump_autowire_diagnostics
-      fail "helm upgrade of SCP release '${SCP_RELEASE}' FAILED (see the ${BACKEND}-autowire hook diagnostics above)"
-    fi
-  else
-    echo "scp-bundled: SCP Helm release '${SCP_RELEASE}' not found in namespace '${SCP_NAMESPACE}'." >&2
-    echo "  ${BACKEND} is applied. To finish wiring it, set '${SCP_FLAG}=true' in your SCP deployment:" >&2
-    echo "    - Helm-managed:  helm upgrade ${SCP_RELEASE} deploy/helm --reuse-values --set ${SCP_FLAG}=true" >&2
-    echo "    - GitOps-managed: set ${SCP_FLAG}: true in the SCP values your GitOps tool renders" >&2
-  fi
-fi
-
-log "done — ${BACKEND} enabled."
+[ -n "$MANIFEST" ] || fail "render produced an empty manifest for '${BACKEND}'"
+printf '%s\n' "$MANIFEST"

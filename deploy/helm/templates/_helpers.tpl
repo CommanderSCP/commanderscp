@@ -112,29 +112,6 @@ not the runner namespace, not a backend namespace.
 {{- end -}}
 
 {{/*
-The label set carried by EVERY bundled-executor auto-wire HOOK pod (argocd, gitea, and any future
-one) — the chart's selector labels PLUS the `commanderscp.io/autowire-hook` marker.
-
-Why the marker exists (M11/M15.1 air-gap-drill regression): an auto-wire hook pod's FIRST action is
-a cross-namespace Secret read against the in-cluster Kubernetes API (`https://kubernetes.default.svc`
-— see apps/server/src/bundled-{argocd,gitea}-autowire-bin.ts). It carries this chart's selector
-labels, so the chart's OWN `-default-deny` NetworkPolicy selects it, and nothing in the chart allowed
-egress to the API server: the hook hung on its 300s `waitFor`, the Job burned its
-`activeDeadlineSeconds`, and `helm upgrade --wait` died with "post-upgrade hooks failed ... Job in
-progress". The fix is the `-allow-kube-api-autowire` policy in networkpolicy.yaml, which selects
-EXACTLY this label set — so the API-server allow reaches the short-lived install-time hook pods and
-NOTHING else (api/worker/postgres keep the unmodified default-deny posture).
-
-Defined ONCE here, and consumed in exactly two places (the hook Job pod templates and that policy's
-podSelector), so a future auto-wire hook opts in by using this helper rather than by a reviewer
-remembering to extend a hardcoded list of component names.
-*/}}
-{{- define "commanderscp.autowireHookSelectorLabels" -}}
-{{ include "commanderscp.selectorLabels" . }}
-commanderscp.io/autowire-hook: "true"
-{{- end -}}
-
-{{/*
 commanderscp.federationRole — validate + echo the federation role (commander|outpost|retrans).
 Mirrors `deploy/helm-bundled`'s helper of the SAME name (that chart's own doc comment) — but
 UNLIKE that one, this is not render-time-lint-only metadata: it's wired to `SCP_FEDERATION_ROLE`
@@ -559,7 +536,7 @@ since those three differ between the migrations Job and the api/worker Deploymen
 
        THE TWO DEFAULTS ARE INHERITANCES, not new opinions: an empty `imagePullSecrets` takes
        `.Values.imagePullSecrets` and an empty `imagePullPolicy` takes `.Values.image.pullPolicy`,
-       which are exactly what the api, worker, migrations and both auto-wire pods use. `resources`
+       which are exactly what the api, worker and migrations pods use. `resources`
        has no chart-wide default to inherit and is therefore empty unless set — see values.yaml. */}}
 {{- $rk := .Values.managedRunners.kubernetes -}}
 {{- $pullSecrets := $rk.imagePullSecrets | default .Values.imagePullSecrets -}}
@@ -576,9 +553,8 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ $rk.resources | toJson | quote }}
 {{- end }}
 {{- /* Node's global fetch cannot take a custom CA without an undici Agent, so the in-cluster API
-       server's certificate is trusted through this variable — the SAME mechanism the two shipped
-       in-cluster callers (bundled-{argocd,gitea}-autowire-bin.ts) already rely on, and the reason
-       they document it. Without it every API call from the adapter fails TLS verification. */}}
+       server's certificate is trusted through this variable. Without it every API call from the
+       adapter fails TLS verification. */}}
 - name: NODE_EXTRA_CA_CERTS
   value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 {{- end }}
