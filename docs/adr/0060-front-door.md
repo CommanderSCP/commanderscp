@@ -159,13 +159,33 @@ schema-based response serialization strips unknown fields from `ProblemSchema`, 
 `mustChangePassword: boolean` is the field a client should actually poll). `POST /auth/password`
 (`changeLocalPassword`, SDK `client.auth.changePassword`, CLI `scp passwd`, web
 `/change-password` — `RequireAuth.tsx` redirects there whenever `mustChangePassword` is true) clears
-the flag. `scp install`'s own login (step 4) and `seed.ts`'s demo-data login both call
-`changePassword(oneTimePassword, oneTimePassword)` immediately after — same value in and out, which
-clears the flag without changing what the password actually IS, so the operator's printed password
-keeps working for their own first login while automation isn't blocked by a gate meant for a human.
-The Helm-release-history exposure is unchanged by this fix (still real, still lower severity — a
-`helm get hooks` reader already has `get secrets` in the namespace, the same population §2 above
-already accepts) and is not separately closed here.
+the flag.
+
+**#422 re-verify, BLOCKING 0 — a same-password "change" was itself accepted.** Measured live:
+submitting the SAME string as `currentPassword` and `newPassword` returned 204 and cleared
+`mustChangePassword` without touching the stored hash at all — every automated caller (`scp
+install`'s own login, `seed.ts`'s demo-seed login, every drill/harness that needed past the gate)
+did exactly that, so the printed one-time password never actually stopped working. Fixed at the
+root: `changeLocalPassword` now refuses `newPassword === currentPassword` (`same-as-current`, a
+400). Every caller census'd above now mints a genuinely fresh, different password instead:
+- `scp install`'s `finishLogin` changes to a fresh password and prints it once — a SECOND
+  one-time-shown credential, but one that (unlike the first) was never rendered by the chart into
+  any Kubernetes Secret or Helm release record at all, so it closes the Helm-release-history
+  exposure this ADR previously left open for good measure (not just for the operator's own use —
+  nothing after it in this process needs the FIRST password again).
+- `seed.ts`'s demo-seed changes to a fresh, throwaway password, seeds, then resets the account
+  DIRECTLY (a db write, not a second `changeLocalPassword` call, which would itself refuse
+  restoring the same value) back to the ORIGINAL printed password AND re-arms
+  `mustChangePassword` — the only caller that needs the operator's real first login to still go
+  through the SAME forced-change door a non-demo install would, because the whole point of this
+  path is that the operator's read the log line already.
+- Every drill/script/integration-test call site uses a one-off fresh, thrown-away password with no
+  further consequence.
+
+Changing the password also now **revokes every OTHER live session for the same user** (never the
+session that MADE the change, identified by its own token — a stray leaked credential, e.g. from
+`helm get hooks`, stops being usable to open a NEW session the moment a real change happens, not
+only the printed password itself).
 
 ### 3. `stackd.enabled` stays off at the chart's OWN default; `scp install` turns it on
 
