@@ -377,7 +377,10 @@ const { FakeScpApiError, sdkCalls, hoistedStackView } = vi.hoisted(() => {
                   needs: [],
                   observedAt: "2026-09-25T00:00:00Z"
                 }
-              : null
+              : null,
+          // M29.2 (ADR-0061): stack-cli.ts's stackBackendRow reads b.wiring — null (unwired) is a
+          // valid, well-formed value for this mock's purposes.
+          wiring: null
         },
         ...(["argo-workflows", "argo-events", "argo-rollouts", "gitea"] as const).map(
           (backend) => ({
@@ -385,7 +388,8 @@ const { FakeScpApiError, sdkCalls, hoistedStackView } = vi.hoisted(() => {
             enabled: false,
             sizeTier: "small",
             purgeGeneration: 0,
-            status: null
+            status: null,
+            wiring: null
           })
         )
       ]
