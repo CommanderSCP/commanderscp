@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Command } from "commander";
 import { StackBackendSchema, type StackView } from "@scp/schemas";
+import { stackAuthoringLine } from "./stack-cli.js";
 
 /** `scp stack …` over a mocked SDK (M29.4, ADR-0058): each verb reaches its ScpClient method. */
 
@@ -238,6 +239,25 @@ describe("scp stack", () => {
       .mock.calls.map((c) => String(c[0]))
       .join("\n");
     expect(printed).toContain("this organization is served");
+  });
+
+  it("M29.3: status says whether canary authoring is on, and that a canary is refused while it is off", async () => {
+    await run(["status"]);
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join("\n");
+    expect(printed).toContain("canary authoring: OFF — a component asking for a canary is refused");
+    const on = view();
+    on.authoring = {
+      ...on.authoring,
+      configured: true,
+      carrierRevision: "0123456789abcdef0123456789abcdef01234567",
+      clusters: ["edge-1"]
+    };
+    expect(stackAuthoringLine(on)).toBe(
+      "canary authoring: on — project scp-authored, namespace scp-apps, carrier 0123456789ab, clusters in-cluster, edge-1"
+    );
   });
 
   it("purge refuses without --i-understand-data-loss, before any call", async () => {

@@ -162,13 +162,15 @@ async function gitea(
   g: GiteaCtx,
   method: "GET" | "POST",
   p: string,
-  json?: unknown
+  json?: unknown,
+  discardBody = false
 ): Promise<{ status: number; body: unknown }> {
   return g.http.request({
     method,
     url: `${g.base}/api/v1${p}`,
     headers: { authorization: g.auth },
-    ...(json !== undefined ? { json } : {})
+    ...(json !== undefined ? { json } : {}),
+    ...(discardBody ? { discardBody } : {})
   });
 }
 
@@ -208,38 +210,71 @@ export async function pushCarrier(g: GiteaCtx, files: Map<string, Buffer>): Prom
     throw new Error(`reading the carrier repository: HTTP ${repo.status}`);
   }
 
+  // Read the branch, push what differs, and read it again: the commit handed on is the one whose
+  // tree was just SEEN to equal `files` — never an id taken from a response.
+  for (let attempt = 0; ; attempt += 1) {
+    const { headSha, live } = await readBranch(g);
+    const ops = changeOps(files, live);
+    if (ops.length === 0 && headSha) return headSha;
+    if (attempt > 0) {
+      throw new Error(
+        `the carrier repository did not settle on its content (${ops.length} files differ)`
+      );
+    }
+    // The response echoes every file written (megabytes, with the Rollouts CRDs): drained, not read.
+    const pushed = await gitea(
+      g,
+      "POST",
+      `${repoPath}/contents`,
+      {
+        branch: BRANCH,
+        message: "CommanderSCP stack controller: authoring carrier and Rollouts installs",
+        files: ops
+      },
+      true
+    );
+    if (pushed.status !== 201) throw new Error(`pushing the carrier: HTTP ${pushed.status}`);
+  }
+}
+
+async function readBranch(
+  g: GiteaCtx
+): Promise<{ headSha: string | null; live: Map<string, string> }> {
   const head = await gitea(g, "GET", `${repoPath}/branches/${BRANCH}`);
   const live = new Map<string, string>();
-  let headSha: string | null = null;
-  if (head.status === 200) {
-    headSha = (head.body as { commit?: { id?: string } }).commit?.id ?? null;
-    if (headSha) {
-      for (let page = 1; page < 50; page += 1) {
-        const tree = await gitea(
-          g,
-          "GET",
-          `${repoPath}/git/trees/${headSha}?recursive=true&per_page=1000&page=${page}`
-        );
-        if (tree.status !== 200) throw new Error(`reading the carrier tree: HTTP ${tree.status}`);
-        const body = tree.body as {
-          tree?: { path?: string; type?: string; sha?: string }[];
-          truncated?: boolean;
-        };
-        for (const e of body.tree ?? []) {
-          if (e.type === "blob" && e.path && e.sha) live.set(e.path, e.sha);
-        }
-        if (!body.truncated) break;
-      }
-    }
-  } else if (head.status !== 404) {
-    throw new Error(`reading the carrier branch: HTTP ${head.status}`);
+  if (head.status === 404) return { headSha: null, live };
+  if (head.status !== 200) throw new Error(`reading the carrier branch: HTTP ${head.status}`);
+  const headSha = (head.body as { commit?: { id?: string } }).commit?.id ?? null;
+  if (!headSha || !/^[0-9a-f]{40}$/.test(headSha)) {
+    throw new Error("the carrier branch names no commit");
   }
+  for (let page = 1; page < 50; page += 1) {
+    const tree = await gitea(
+      g,
+      "GET",
+      `${repoPath}/git/trees/${headSha}?recursive=true&per_page=1000&page=${page}`
+    );
+    if (tree.status !== 200) throw new Error(`reading the carrier tree: HTTP ${tree.status}`);
+    const body = tree.body as {
+      tree?: { path?: string; type?: string; sha?: string }[];
+      truncated?: boolean;
+    };
+    for (const e of body.tree ?? []) {
+      if (e.type === "blob" && e.path && e.sha) live.set(e.path, e.sha);
+    }
+    if (!body.truncated) break;
+  }
+  return { headSha, live };
+}
 
+function changeOps(
+  files: Map<string, Buffer>,
+  live: Map<string, string>
+): Record<string, unknown>[] {
   const ops: Record<string, unknown>[] = [];
   for (const [p, content] of files) {
     const have = live.get(p);
-    const want = gitBlobSha(content);
-    if (have === want) continue;
+    if (have === gitBlobSha(content)) continue;
     ops.push({
       operation: have === undefined ? "create" : "update",
       path: p,
@@ -250,17 +285,7 @@ export async function pushCarrier(g: GiteaCtx, files: Map<string, Buffer>): Prom
   for (const [p, sha] of live) {
     if (!files.has(p)) ops.push({ operation: "delete", path: p, sha });
   }
-  if (ops.length === 0 && headSha) return headSha;
-  const pushed = await gitea(g, "POST", `${repoPath}/contents`, {
-    branch: BRANCH,
-    message: "CommanderSCP stack controller: authoring carrier and Rollouts installs",
-    files: ops
-  });
-  const sha = (pushed.body as { commit?: { sha?: string } } | undefined)?.commit?.sha;
-  if (pushed.status !== 201 || !sha || !/^[0-9a-f]{40}$/.test(sha)) {
-    throw new Error(`pushing the carrier: HTTP ${pushed.status}`);
-  }
-  return sha;
+  return ops;
 }
 
 // ---- Argo CD: projects and Applications -----------------------------------------------------------

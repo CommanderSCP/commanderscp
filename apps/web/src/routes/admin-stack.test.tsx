@@ -417,6 +417,13 @@ describe("Admin › Stack", () => {
     );
   });
 
+  it("M29.3: the page says canary deployments are off — and that a canary is refused — until authoring is on", async () => {
+    const page = await mount();
+    expect(page.byTestId("stack-authoring").textContent).toContain(
+      "a component asking for a canary is refused"
+    );
+  });
+
   it("M29.2: Rotate is offered for a wired, called backend and goes through its SDK verb with NO credential", async () => {
     const page = await mount();
     expect(page.container.querySelector('[data-testid="stack-rotate-argo-events"]')).toBeNull();

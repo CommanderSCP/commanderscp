@@ -79,7 +79,21 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
     "refuses every writer but the stack at the object write choke point — the tenant re-point refusal",
   attachServedOrg: "is the instance operator's decision to serve another organization",
   detachServedOrg: "stops serving one",
-  listServedOrgs: "is the served-organizations read"
+  listServedOrgs: "is the served-organizations read",
+  // M29.3 (ADR-0062): canary out of the box. (In-file steps — pushCarrier, the projects, the
+  // Rollouts-to-target Application, refuseUnauthoredRollout — are proved by deletion instead:
+  // `authoring.test.ts`, `stack-authoring.integration.test.ts` and the kind suite go red.)
+  reconcileAuthoring:
+    "is the authoring step — carrier, projects, Rollouts on every target, the hand-off; with no caller Rollouts installs and nothing can author a canary",
+  storeAuthoring: "persists the controller's authoring hand-off with its audit link",
+  withdrawAuthoring:
+    "withdraws authoring when a backend it needs is disabled or unwired — without it a canary is authored against a carrier that is gone",
+  stackAuthoringDocument:
+    "derives the registered Argo CD's authoring from the hand-off and release constants — the only source of it",
+  readStackAuthoringAsTenant: "reads the hand-off inside the tenant transaction that routes a trigger",
+  registeredArgoCdAuthoring:
+    "is how the deploy lane takes a registration's authoring from the stack, never its properties",
+  stackAuthoringView: "is the Stack page's (and `scp stack status`'s) authoring line"
 };
 
 const isTest = (p: string): boolean =>
