@@ -13,6 +13,7 @@ import {
 } from "@scp/schemas";
 import { clientFromStoredCredentials } from "./client-factory.js";
 import { printResult, type OutputFormat } from "./output.js";
+import { registerStackCredentialCommands } from "./stack-credentials-cli.js";
 
 /**
  * `scp stack …` — the Standard Stack (M29.4, ADR-0058). Reading is an ordinary session call.
@@ -318,6 +319,9 @@ export function registerStackCommands(program: Command): void {
         console.log(body);
       }
     });
+
+  // M29.5 (ADR-0062): `scp stack credential …` and `scp stack workload-identity …`.
+  registerStackCredentialCommands(stack);
 }
 
 /** `scp instance-operator …` — the instance-operator role (owner decision 2026-09-25). */
