@@ -48,7 +48,6 @@ import {
   dropWiring,
   isWireableBackend,
   listServedOrgs,
-  readWiringsAsTenant,
   readWiringsOnClient,
   reconcileStackRegistrations,
   stackServesOrg,

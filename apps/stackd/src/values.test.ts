@@ -105,11 +105,23 @@ describe("deriveBackendValues", () => {
   it("scales every request and limit by the tier (small = the chart's defaults)", async () => {
     const r = await release();
     const small = deriveBackendValues(
-      { backend: "argocd", enabled: true, sizeTier: "small", purgeGeneration: 0, rotateGeneration: 0 },
+      {
+        backend: "argocd",
+        enabled: true,
+        sizeTier: "small",
+        purgeGeneration: 0,
+        rotateGeneration: 0
+      },
       ctx(r)
     );
     const large = deriveBackendValues(
-      { backend: "argocd", enabled: true, sizeTier: "large", purgeGeneration: 0, rotateGeneration: 0 },
+      {
+        backend: "argocd",
+        enabled: true,
+        sizeTier: "large",
+        purgeGeneration: 0,
+        rotateGeneration: 0
+      },
       ctx(r)
     );
     const res = (v: Record<string, unknown>) =>
@@ -129,7 +141,13 @@ describe("deriveBackendValues", () => {
       "gitea.image": "reg/gitea:1"
     });
     const events = deriveBackendValues(
-      { backend: "argo-events", enabled: true, sizeTier: "small", purgeGeneration: 0, rotateGeneration: 0 },
+      {
+        backend: "argo-events",
+        enabled: true,
+        sizeTier: "small",
+        purgeGeneration: 0,
+        rotateGeneration: 0
+      },
       ctx(r)
     );
     const be = events["bundledExecutor"] as Record<string, Record<string, unknown>>;
@@ -140,7 +158,13 @@ describe("deriveBackendValues", () => {
   it("carries Gitea's read-back secrets, and refuses to render Gitea without them", async () => {
     const r = await release();
     const v = deriveBackendValues(
-      { backend: "gitea", enabled: true, sizeTier: "small", purgeGeneration: 0, rotateGeneration: 0 },
+      {
+        backend: "gitea",
+        enabled: true,
+        sizeTier: "small",
+        purgeGeneration: 0,
+        rotateGeneration: 0
+      },
       ctx(r)
     );
     expect(
@@ -153,7 +177,13 @@ describe("deriveBackendValues", () => {
     const { gitea: _omit, ...without } = ctx(r);
     expect(() =>
       deriveBackendValues(
-        { backend: "gitea", enabled: true, sizeTier: "small", purgeGeneration: 0, rotateGeneration: 0 },
+        {
+          backend: "gitea",
+          enabled: true,
+          sizeTier: "small",
+          purgeGeneration: 0,
+          rotateGeneration: 0
+        },
         without
       )
     ).toThrow(/secrets/);

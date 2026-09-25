@@ -82,7 +82,11 @@ describe("the stack controller's inputs", () => {
 
   it("the backend HTTP client is used only by wiring.ts, and only against an endpoint derived from the render", () => {
     const users = sources
-      .filter((s) => s.file !== "backend-http.ts" && /\bnodeBackendHttp\(|\.http\b|requireHttp\(/.test(code(s.text)))
+      .filter(
+        (s) =>
+          s.file !== "backend-http.ts" &&
+          /\bnodeBackendHttp\(|\.http\b|requireHttp\(/.test(code(s.text))
+      )
       .map((s) => s.file)
       .sort();
     // controller.ts constructs it; wiring.ts is its only caller.

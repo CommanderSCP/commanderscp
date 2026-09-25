@@ -17,7 +17,6 @@ import {
   CALLED_BACKENDS,
   REGISTRATION_KIND,
   SELECT_WIRINGS,
-  isWireableBackend,
   wiringOf,
   type WireableBackend,
   type Wiring,

@@ -382,21 +382,25 @@ describe("M29.2 the stack controller wires every backend it installs into SCP (k
     const nodeIps = nodes.items.flatMap((n) =>
       n.status.addresses.filter((a) => a.type === "InternalIP").map((a) => a.address)
     );
-    await fixture("POST", "/apis/networking.k8s.io/v1/namespaces/scp-argo-workflows/networkpolicies", {
-      apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicy",
-      metadata: { name: "kind-harness-admit-node", namespace: "scp-argo-workflows" },
-      spec: {
-        podSelector: { matchLabels: { app: "argo-server" } },
-        policyTypes: ["Ingress"],
-        ingress: [
-          {
-            from: nodeIps.map((ip) => ({ ipBlock: { cidr: `${ip}/32` } })),
-            ports: [{ protocol: "TCP", port: 2746 }]
-          }
-        ]
+    await fixture(
+      "POST",
+      "/apis/networking.k8s.io/v1/namespaces/scp-argo-workflows/networkpolicies",
+      {
+        apiVersion: "networking.k8s.io/v1",
+        kind: "NetworkPolicy",
+        metadata: { name: "kind-harness-admit-node", namespace: "scp-argo-workflows" },
+        spec: {
+          podSelector: { matchLabels: { app: "argo-server" } },
+          policyTypes: ["Ingress"],
+          ingress: [
+            {
+              from: nodeIps.map((ip) => ({ ipBlock: { cidr: `${ip}/32` } })),
+              ports: [{ protocol: "TCP", port: 2746 }]
+            }
+          ]
+        }
       }
-    });
+    );
     const comp = await createTestComponent(tenant, { name: "kind-wf-comp" });
     await tenant.executors.putBinding(comp.id, { executionSystemId: sys.id });
     const resolved = (await resolveFor(comp.id))!;
