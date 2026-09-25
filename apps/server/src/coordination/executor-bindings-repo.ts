@@ -847,6 +847,13 @@ export function managedRunnerSettings(): {
  *    AND IT MEANS OFF: with no image, a managed-dep dispatch fails closed here before a container
  *    could be launched or a credential minted. That is the deployment-level expression of "managed
  *    execution is never a default" (ADR-0006) for the one class that writes to a user's repository.
+ *  - SCP_MANAGED_DEP_REVENDOR_RUNNER_IMAGE — the vetted, pinned `scp-runner-dep-vendor` SANDBOX
+ *    (M29.8a, ADR-0059) the `re-vendor` strategy launches. UNSET means `re-vendor` specifically is
+ *    off; `bump`/`merge` are governed by `SCP_MANAGED_DEP_RUNNER_IMAGE` alone and are unaffected.
+ *  - SCP_MANAGED_DEP_SCP_REPO — `owner/repo`, the ONE repository `re-vendor` may ever write to
+ *    (ADR-0059's containment half named "the target repository is the one CommanderSCP is
+ *    configured to vendor its own stack into, which is never tenant-configurable"). UNSET means
+ *    `re-vendor` specifically is off, same as an unset revendor runner image.
  *  - SCP_MANAGED_DEP_WORKSPACE_ROOT — operator root under which per-run scratch dirs are made.
  *
  * THERE IS DELIBERATELY NO NETWORK-MODE SETTING, and its absence IS the charter rather than an
@@ -889,6 +896,8 @@ export function managedRunnerSettings(): {
  */
 export function managedDepServerSettings(): {
   runnerImage: string | undefined;
+  revendorRunnerImage: string | undefined;
+  scpRepo: string | undefined;
   workspaceRoot: string;
   dockerBinary: string;
   runnerLauncher: "docker" | "kubernetes";
@@ -896,6 +905,8 @@ export function managedDepServerSettings(): {
 } {
   return {
     runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE,
+    revendorRunnerImage: process.env.SCP_MANAGED_DEP_REVENDOR_RUNNER_IMAGE,
+    scpRepo: process.env.SCP_MANAGED_DEP_SCP_REPO,
     workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep"),
     // The operator's runtime, and now the whole launcher slice. See docs/coordination.md §463.
     ...managedRunnerSettings()
@@ -1122,6 +1133,11 @@ export async function resolveExecutorPluginInstance(
       );
     }
     serverInjected.runnerImage = settings.runnerImage;
+    // UNSET IS FINE HERE (unlike `runnerImage` above): re-vendor is a STRATEGY of this same
+    // executor, not a separate binding, and its own absence-check lives in `triggerRevendor` itself
+    // — a binding that never re-vendors must not be refused for a sandbox it never launches.
+    serverInjected.revendorRunnerImage = settings.revendorRunnerImage;
+    serverInjected.scpRepo = settings.scpRepo;
     // No `networkMode` — see `managedDepServerSettings`. The plugin uses a literal.
     serverInjected.workspaceRoot = settings.workspaceRoot;
     Object.assign(serverInjected, managedRunnerSettings());

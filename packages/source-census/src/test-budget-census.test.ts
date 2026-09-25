@@ -17,6 +17,10 @@ const NON_DEFAULT_BUDGETS: Record<string, { ms: number; why: string }> = {
   "@scp/runner-launcher": {
     ms: 30_000,
     why: "holds the repo's heaviest unit sweeps; 3,548ms isolated worst case, 7,485ms observed under the parallel graph"
+  },
+  "@scp/vendor-refresh": {
+    ms: 30_000,
+    why: "gitea-plan.test.ts shells out to the real `helm template` binary against a local fixture chart, and argoproj-plan.test.ts/plan.test.ts each start a real (loopback-only) HTTP server"
   }
 };
 

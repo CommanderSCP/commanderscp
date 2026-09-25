@@ -529,6 +529,16 @@ managedIac:
 # -------------------------------------------------------------------------------------------
 managedDep:
   runnerImage: ""
+  # THE `re-vendor` STRATEGY'S SANDBOX (M29.8a — ADR-0059, charter amendment 2026-09-25). A SEPARATE
+  # image from `runnerImage` above: credential-free and `--network none` UNCONDITIONALLY (never a
+  # registry-pull-qualified exception, same posture as `runnerImage`'s own egress clause), and this
+  # is the one that parses/`helm template`s/rewrites a re-vendor's bytes — the orchestrator itself
+  # never does. Empty means `re-vendor` is not enabled; `bump`/`merge` are unaffected either way.
+  revendorRunnerImage: ""
+  # `owner/repo` — the ONE repository `re-vendor` may ever write to (ADR-0059's containment half:
+  # "the target repository is the one CommanderSCP is configured to vendor its own stack into,
+  # which is never tenant-configurable"). Empty means `re-vendor` is not enabled.
+  scpRepo: ""
   workspaceRoot: /var/lib/scp/managed-dep
 
 # -------------------------------------------------------------------------------------------

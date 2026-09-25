@@ -47,7 +47,12 @@ The caller also runs the component namespace-scoped (`--namespaced`), so it neve
 {{- $bindHere := (.bindInNamespace | default (list)) -}}
 {{- $raw := .manifest -}}
 {{- range $pair := (.replaces | default (list)) -}}
-{{- $raw = $raw | replace (index $pair 0) (index $pair 1) -}}
+{{- $from := index $pair 0 -}}
+{{- $to := index $pair 1 -}}
+{{- if not (contains $from $raw) -}}
+{{- fail (printf "commanderscp.renderVendoredBackend (%s): retarget source %q is not present in the vendored manifest — replace would silently do nothing, leaving an un-retargeted upstream ref live. Either the vendored file was re-vendored without updating the matching values.yaml vendoredXxx field, or that field was hand-edited out of sync. Fail-closed rather than ship a chart that pulls an un-air-gapped image." .component $from) -}}
+{{- end -}}
+{{- $raw = $raw | replace $from $to -}}
 {{- end -}}
 {{- $out := list -}}
 {{- range $doc := splitList "\n---\n" $raw -}}

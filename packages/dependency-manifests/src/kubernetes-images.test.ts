@@ -820,14 +820,13 @@ describe("T17 — duplicate keys, and the composer scan that was quadratic", () 
   });
 });
 
-describe("T11 — `image` is an EXACT key, never a substring", () => {
-  it("imagePullPolicy, imagePullSecrets, initImage and global.imageRegistry declare nothing", () => {
+describe("T11 — `image` is an EXACT key, never a bare substring — but an `xImage` SUFFIX now is (M29.8a)", () => {
+  it("imagePullPolicy, imagePullSecrets, imageCredentials and global.imageRegistry declare nothing", () => {
     const declarations = parseKubernetesImages(
       [
         "imagePullPolicy: Always",
         "imagePullSecrets:",
         "  - name: regcred",
-        "initImage: acme/init:1.0.0",
         "imageCredentials:",
         "  registry: ghcr.io",
         "global:",
@@ -835,8 +834,21 @@ describe("T11 — `image` is an EXACT key, never a substring", () => {
       ].join("\n")
     );
     // A count IS the assertion here, and it is a negative control: every one of those keys contains
-    // "image", and a substring match would mint five phantom dependencies.
+    // "image" as a substring, but NONE of them end in the `xImage` camelCase suffix
+    // (`readAdditionalCompleteImageKeys`'s property, M29.8a) — a substring match anywhere would mint
+    // four phantom dependencies; this parser matches neither a bare substring nor a prefix.
     expect(declarations).toEqual([]);
+  });
+
+  it("initImage DOES resolve — it genuinely ends in the `xImage` suffix, same property as serverImage/valkeyImage", () => {
+    // Moved out of the negative control above (2026-09-25 review, finding 4): the reader census's
+    // independent oracle disagreeing with an EARLIER, key-list version of this parser is what found
+    // `valkeyImage`/`builderImage`/`gitImage` missing in this repo's own values.yaml. `initImage` is
+    // the same shape by the same property (ends in `Image`, camelCase) and SHOULD resolve — a chart
+    // spelling an init container's image this way is exactly the case the property-based rule exists
+    // to catch, and asserting it declares nothing would be re-introducing the enumerated-list gap.
+    const entry = at(parseKubernetesImages("initImage: acme/init:1.0.0\n"), "acme/init");
+    expect(entry).toMatchObject({ declared: "1.0.0", declaredIn: "initImage" });
   });
 });
 
@@ -889,5 +901,139 @@ describe("T8/T12 — unreadable must never collapse into empty (the whole prune 
     // NEGATIVE CONTROL, and it is the whole prune argument: a NON-empty scalar root still throws.
     // Without this the assertions above are satisfied by dropping trap 8 altogether.
     expect(() => parseKubernetesImages("---\n<!doctype html>\n")).toThrow(ManifestParseError);
+  });
+});
+
+describe("parseKubernetesImages — serverImage/controllerImage (M29.8a reader check)", () => {
+  // Found by the M29.8a reader test against this repo's OWN deploy/helm-bundled/values.yaml:
+  // `bundledExecutor.argoWorkflows.serverImage`/`.controllerImage` produced NO row at all — not
+  // even `unresolved` — because nothing in this file looked at any key but `image` (trap 11, taken
+  // literally). Both are Argo Workflows' two tracked images, so the M21 dependency-subscription
+  // inventory this parser also feeds would have silently never seen either as a declared dependency
+  // of this repo's own `argo-workflows` component.
+
+  it("a bare `serverImage:` scalar is read exactly like a bare `image:` scalar", () => {
+    const entry = at(
+      parseKubernetesImages("serverImage: quay.io/argoproj/argocli:v4.0.7\n"),
+      "quay.io/argoproj/argocli"
+    );
+    expect(entry).toMatchObject({
+      constraint: "pinned",
+      declared: "v4.0.7",
+      declaredIn: "serverImage",
+      line: 1
+    });
+  });
+
+  it("a bare `controllerImage:` scalar is read the same way, independently of serverImage", () => {
+    const declared = parseKubernetesImages(
+      [
+        "serverImage: quay.io/argoproj/argocli:v4.0.7",
+        "controllerImage: quay.io/argoproj/workflow-controller:v4.0.7"
+      ].join("\n")
+    );
+    expect(at(declared, "quay.io/argoproj/argocli")?.declared).toBe("v4.0.7");
+    expect(at(declared, "quay.io/argoproj/workflow-controller")?.declared).toBe("v4.0.7");
+  });
+
+  it("this repo's REAL values.yaml shape: nested under bundledExecutor.argoWorkflows", () => {
+    const declared = parseKubernetesImages(
+      [
+        "bundledExecutor:",
+        "  argoWorkflows:",
+        "    serverImage: quay.io/argoproj/argocli:v4.0.7",
+        "    controllerImage: quay.io/argoproj/workflow-controller:v4.0.7"
+      ].join("\n")
+    );
+    expect(at(declared, "quay.io/argoproj/argocli")).toMatchObject({
+      declared: "v4.0.7",
+      declaredIn: "bundledExecutor.argoWorkflows.serverImage"
+    });
+    expect(at(declared, "quay.io/argoproj/workflow-controller")).toMatchObject({
+      declared: "v4.0.7",
+      declaredIn: "bundledExecutor.argoWorkflows.controllerImage"
+    });
+  });
+
+  it("a malformed serverImage value is reported unresolved, never silently dropped", () => {
+    // Same malformed shape the `image:` suite pins as its own reference case (an empty repository
+    // name, which every malformed manifest in an org would otherwise collide on as one identity).
+    const declared = parseKubernetesImages('serverImage: ":1.0"\n');
+    expect(declared).toHaveLength(1);
+    expect(declared[0]).toMatchObject({
+      constraint: "unresolved",
+      coordinate: "serverImage",
+      declaredIn: "serverImage"
+    });
+    expect(declared[0]!.note).toContain("not a well-formed image reference");
+  });
+
+  it("a Go-templated serverImage value is reported unresolved, same as `image:` would be", () => {
+    const declared = parseKubernetesImages('serverImage: "{{ .Values.x }}"\n');
+    expect(declared).toHaveLength(1);
+    expect(declared[0]!.constraint).toBe("unresolved");
+    expect(declared[0]!.note).toContain("Go template");
+  });
+
+  it("a digest-only serverImage is pinned by digest, same rule as `image:`", () => {
+    const entry = at(
+      parseKubernetesImages(`serverImage: quay.io/argoproj/argocli@${DIGEST}\n`),
+      "quay.io/argoproj/argocli"
+    );
+    expect(entry?.constraint).toBe("pinned");
+    expect(entry?.digest).toBe(DIGEST);
+    expect(entry?.declared).toBeUndefined();
+  });
+
+  it("a duplicated serverImage key is reported, never silently picked between", () => {
+    const declared = parseKubernetesImages(
+      "serverImage: quay.io/argoproj/argocli:v4.0.7\nserverImage: quay.io/argoproj/argocli:v4.0.8\n"
+    );
+    expect(declared).toHaveLength(1);
+    expect(declared[0]).toMatchObject({ constraint: "unresolved", declaredIn: "serverImage" });
+    expect(declared[0]!.note).toContain("declared more than once");
+  });
+
+  it("absent serverImage/controllerImage keys mint nothing (no false positive on an ordinary chart)", () => {
+    expect(parseKubernetesImages("replicaCount: 2\n")).toEqual([]);
+  });
+
+  it("serverImage and an unrelated ordinary `image:` in the SAME file are both read independently", () => {
+    const declared = parseKubernetesImages(
+      ["image: acme/api:1.2.3", "serverImage: quay.io/argoproj/argocli:v4.0.7"].join("\n")
+    );
+    expect(at(declared, "acme/api")?.declared).toBe("1.2.3");
+    expect(at(declared, "quay.io/argoproj/argocli")?.declared).toBe("v4.0.7");
+  });
+
+  // BY PROPERTY, NOT A KEY LIST (2026-09-25 review, finding 4): the independent reader census
+  // (packages/source-census/src/vendored-image-inventory-census.test.ts) found THREE MORE `xImage`
+  // keys this repo's own values.yaml already used — `valkeyImage`, `builderImage`, `gitImage` — that
+  // an earlier, exact-two-name version of this rule missed silently. None of these three are
+  // hardcoded anywhere in this file; they resolve because they share the SAME property (a camelCase
+  // key ending in `Image`), which is the whole point of generalising past an enumerated list.
+  it("resolves ANY camelCase *Image key, not just serverImage/controllerImage — valkeyImage/builderImage/gitImage", () => {
+    const declared = parseKubernetesImages(
+      [
+        "valkeyImage: valkey/valkey:8-alpine",
+        "builderImage: ghcr.io/commanderscp/scp-builder-rpm:sha-abc123",
+        "gitImage: alpine/git:2.47.2"
+      ].join("\n")
+    );
+    expect(at(declared, "valkey/valkey")?.declared).toBe("8-alpine");
+    expect(at(declared, "ghcr.io/commanderscp/scp-builder-rpm")?.declared).toBe("sha-abc123");
+    expect(at(declared, "alpine/git")?.declared).toBe("2.47.2");
+  });
+
+  it("MUTATION PROOF (review's own ask): renaming an xImage key to a NEW, never-hardcoded name still resolves", () => {
+    // The exact failure mode named in the review — "renaming serverImage/controllerImage keys keeps
+    // it 22/22 green" — applied to THIS parser instead of the census: a key this file has never seen
+    // before, `totallyNovelWidgetImage`, must still resolve, because the rule is "ends in Image", not
+    // "is one of these strings".
+    const entry = at(
+      parseKubernetesImages("totallyNovelWidgetImage: acme/widget:9.9.9\n"),
+      "acme/widget"
+    );
+    expect(entry?.declared).toBe("9.9.9");
   });
 });

@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@scp/dependency-manifests": "workspace:*",
     "@types/node": "^22.10.0",
     "typescript": "~5.8.0",
     "vitest": "^3.0.0",

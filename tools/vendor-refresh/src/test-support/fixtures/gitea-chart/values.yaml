@@ -1,0 +1,22 @@
+# Fixture defaults, deliberately small. vendor-refresh's real gitea render passes the same --set
+# flags the real gitea-charts/gitea chart takes; this fixture only needs to accept them without
+# erroring, and to shape its output enough to exercise the strip + extract logic.
+postgresql:
+  enabled: true
+postgresql-ha:
+  enabled: true
+valkey-cluster:
+  enabled: true
+valkey:
+  enabled: true
+replicaCount: 1
+gitea:
+  config:
+    database:
+      DB_TYPE: postgres
+  admin:
+    existingSecret: ""
+image:
+  registry: docker.gitea.com
+  repository: gitea
+  tag: "" # defaults to .Chart.AppVersion + -rootless, mirroring the real chart's convention
