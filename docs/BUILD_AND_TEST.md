@@ -2203,7 +2203,9 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     - **DoD:** a component's canary advances through its steps on a real Rollouts controller in kind; disabling authoring
       produces the refusal Decision rather than a plain rolling update.
   - **M29.4 — the stack controller and the Stack page** (the foundation: E1–E4).
-    - The desired-state API, and `scp stack status|enable|disable|upgrade|diagnostics`, with IaC parity.
+    - The desired-state API, and `scp stack status|enable|disable|upgrade|diagnostics`. IaC parity is **N/A**: this is
+      instance-scoped operator configuration, like the other instance-level operator settings, not org data a stack
+      manifest owns (ADR-0058 §8; DoD amended 2026-09-25).
     - The controller reconciles and reports health, version and "needs" per backend, rolls upgrades backend by backend with
       health checks, and falls back to the last good set.
     - The Stack page in the UI.
