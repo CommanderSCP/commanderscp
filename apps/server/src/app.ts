@@ -82,7 +82,9 @@ declare module "fastify" {
 }
 
 export interface BuildAppOptions {
-  logger?: boolean;
+  /** `true`/`false`, or a level and a stream — the second is for tests that must read every line
+   *  the server logs (M29.5: the scan proving a credential value never reaches a log). */
+  logger?: boolean | { level: string; stream: { write(line: string): unknown } };
 }
 
 /** Builds (but does not start listening on) the Fastify app. See docs/server.md §3. */
