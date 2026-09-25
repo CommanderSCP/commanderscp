@@ -50,7 +50,7 @@ describe("the stack controller's inputs", () => {
     expect(ctor.replace(/\s/g, "")).toBe("{baseUrl}");
   });
 
-  it("calls exactly four API operations: the spec read, the status write, the wiring hand-off and its withdrawal", () => {
+  it("calls exactly seven API operations: the spec read, the status write, the wiring hand-off and its withdrawal, and (M29.5) the sealing key, the sealed deliveries and their confirmation", () => {
     const calls = new Set<string>();
     for (const s of sources) {
       for (const m of code(s.text).matchAll(/client\.(\w+)\.(\w+)\(/g))
@@ -58,7 +58,10 @@ describe("the stack controller's inputs", () => {
       for (const m of code(s.text).matchAll(/client\.(\w+)\(/g)) calls.add(m[1]!);
     }
     expect([...calls].sort()).toEqual([
+      "stack.ackCredentialDelivery",
+      "stack.credentialDeliveries",
       "stack.deleteWiring",
+      "stack.putSealingKey",
       "stack.putStatus",
       "stack.putWiring",
       "stack.spec"
@@ -125,11 +128,42 @@ describe("the stack controller's inputs", () => {
       // M29.2: per backend, a sha256 and a counter (stack-spec-census) — compared with the hash of
       // facts the controller derives itself; it can make the controller re-wire, never re-point.
       "wiring",
+      // M29.5: a sha256 or null — compared with the controller's own key id, it can make the
+      // controller re-publish its PUBLIC key, never use another.
+      "credentialSealingKeySha256",
+      // M29.5: enumerated slot + enumerated provider + that provider's anchored pattern
+      // (stack-spec-census), re-validated by `validWorkloadIdentities` before it is used.
+      "workloadIdentities",
       "group",
       "versions",
       "replicas",
       "template"
     ]);
     expect([...fields].filter((f) => !allowed.has(f))).toEqual([]);
+  });
+
+  it("M29.5: a sealed delivery reaches exactly one writer, whose namespace is derived from the backend and whose Secret and key are held to the catalog", () => {
+    const creds = code(sources.find((s) => s.file === "credentials.ts")!.text);
+    // The deliveries are read in one place, and each is re-parsed there.
+    const readers = sources
+      .filter((s) => /\.credentialDeliveries\(/.test(code(s.text)))
+      .map((s) => s.file)
+      .sort();
+    expect(readers).toEqual(["controller.ts", "credentials.ts"]);
+    expect(creds).toMatch(/StackCredentialDeliverySchema\.safeParse\(item\)/);
+    // The write step: the namespace is the backend's own, the target is a catalog entry.
+    const writer = creds.slice(creds.indexOf("export async function writeCredential"));
+    expect(writer).toMatch(/if \(!isCatalogTarget\(d\.backend, d\.secretName, d\.key\)\)/);
+    expect(writer).toMatch(/const namespace = backendNamespace\(deps\.release, d\.backend/);
+    // …and nothing else in the controller writes a backend Secret from a delivery.
+    const writers = sources
+      .filter((s) => /\bwriteCredential\(/.test(code(s.text)))
+      .map((s) => s.file)
+      .sort();
+    expect(writers).toEqual(["credentials.ts"]);
+    // The opened value is never logged: no log line in credentials.ts interpolates it.
+    for (const m of creds.matchAll(/deps\.log\(([\s\S]*?)\);/g)) {
+      expect(m[1], m[1]).not.toMatch(/plaintext|opened\.|\bvalue\b/);
+    }
   });
 });

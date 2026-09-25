@@ -6,6 +6,7 @@ import {
   index,
   integer,
   jsonb,
+  pgSequence,
   pgTable,
   primaryKey,
   text,
@@ -2735,7 +2736,13 @@ export const stackSettings = pgTable(
     controllerCredentialId: uuid("controller_credential_id"),
     /** M29.2 — true once the bootstrap organization has been served by default (on the first
      *  wiring). Never set back: an operator who detaches it later is not overruled. */
-    servedOrgsInitialized: boolean("served_orgs_initialized").notNull().default(false)
+    servedOrgsInitialized: boolean("served_orgs_initialized").notNull().default(false),
+    /** M29.5 (ADR-0062) — the stack controller's X25519 PUBLIC key (base64 of 32 bytes), published
+     *  through its own door; every credential entered through SCP is sealed to it. The private half
+     *  never leaves the controller's namespace. */
+    credentialSealingKey: text("credential_sealing_key"),
+    credentialSealingKeySha256: text("credential_sealing_key_sha256"),
+    credentialSealingKeyAt: timestamp("credential_sealing_key_at", { withTimezone: true })
   },
   (t) => [
     check("stack_settings_singleton_ck", sql`${t.id} = 'instance'`),
@@ -2835,6 +2842,82 @@ export const stackBackendRegistrations = pgTable(
     check(
       "stack_backend_registrations_backend_ck",
       sql`${t.backend} IN ('argocd', 'argo-workflows', 'argo-events', 'gitea')`
+    )
+  ]
+);
+
+/** M29.5 — every sealed delivery takes the next value: the controller refuses a delivery at or
+ *  below the highest it has applied for that target, so a replayed envelope is refused. */
+export const stackCredentialSeq = pgSequence("stack_credential_seq");
+
+/**
+ * CREDENTIALS ENTERED THROUGH SCP, ON THEIR WAY TO A BACKEND'S SECRET (M29.5, ADR-0062).
+ *
+ * One row per catalog target (backend, Secret, key — `STACK_CREDENTIAL_CATALOG`). THE VALUE IS
+ * NEVER HERE: `envelope` is the value SEALED to the stack controller's public key (X25519 +
+ * AES-256-GCM, the header as additional data), which scpd cannot open; it exists only until the
+ * controller confirms the write into the backend namespace's Secret, then it is nulled. What stays
+ * is metadata: who asked, when, whether it was delivered. Instance-tier and operator-only:
+ * `scp_app` has no grant on it at all.
+ */
+export const stackCredentials = pgTable(
+  "stack_credentials",
+  {
+    backend: text("backend").notNull(),
+    secretName: text("secret_name").notNull(),
+    key: text("key").notNull(),
+    state: text("state").notNull(),
+    pendingOp: text("pending_op"),
+    deliveryId: uuid("delivery_id"),
+    seq: bigint("seq", { mode: "number" }),
+    sealedTo: text("sealed_to"),
+    notAfter: timestamp("not_after", { withTimezone: true }),
+    envelope: jsonb("envelope"),
+    requestedBy: jsonb("requested_by"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    lastError: text("last_error")
+  },
+  (t) => [
+    primaryKey({ columns: [t.backend, t.secretName, t.key], name: "stack_credentials_pkey" }),
+    uniqueIndex("stack_credentials_delivery_uq").on(t.deliveryId),
+    check("stack_credentials_state_ck", sql`${t.state} IN ('pending', 'set', 'failed', 'unset')`),
+    check(
+      "stack_credentials_pending_ck",
+      sql`(${t.state} = 'pending') = (${t.pendingOp} IS NOT NULL AND ${t.envelope} IS NOT NULL)`
+    ),
+    check(
+      "stack_credentials_op_ck",
+      sql`${t.pendingOp} IS NULL OR ${t.pendingOp} IN ('set', 'delete')`
+    )
+  ]
+);
+
+/**
+ * WORKLOAD IDENTITIES DECLARED FOR THE STACK'S SERVICEACCOUNTS (M29.5, ADR-0062) — preferred
+ * wherever the substrate provides them, so nothing needs entering at all. One row per enumerated
+ * slot; the provider and its pattern-bound identifier are what the controller turns into the
+ * provider's annotation on that ServiceAccount. Tenant-read (the spec read goes through the request
+ * pool), operator-write.
+ */
+export const stackWorkloadIdentities = pgTable(
+  "stack_workload_identities",
+  {
+    backend: text("backend").notNull(),
+    serviceAccount: text("service_account").notNull(),
+    provider: text("provider").notNull(),
+    identifier: text("identifier").notNull(),
+    declaredBy: jsonb("declared_by").notNull(),
+    declaredAt: timestamp("declared_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.backend, t.serviceAccount],
+      name: "stack_workload_identities_pkey"
+    }),
+    check(
+      "stack_workload_identities_provider_ck",
+      sql`${t.provider} IN ('aws-irsa', 'gke-workload-identity', 'azure-workload-identity')`
     )
   ]
 );

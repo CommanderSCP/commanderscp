@@ -7275,7 +7275,8 @@ export const zGetStackResponse = z.object({
                     'upgrade-rolled-back',
                     'data-retained',
                     'state-integrity',
-                    'wiring'
+                    'wiring',
+                    'credentials'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7345,7 +7346,8 @@ export const zPutStackBackendResponse = z.object({
                     'upgrade-rolled-back',
                     'data-retained',
                     'state-integrity',
-                    'wiring'
+                    'wiring',
+                    'credentials'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7415,7 +7417,8 @@ export const zPurgeStackBackendResponse = z.object({
                     'upgrade-rolled-back',
                     'data-retained',
                     'state-integrity',
-                    'wiring'
+                    'wiring',
+                    'credentials'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7485,7 +7488,8 @@ export const zPutStackSettingsResponse = z.object({
                     'upgrade-rolled-back',
                     'data-retained',
                     'state-integrity',
-                    'wiring'
+                    'wiring',
+                    'credentials'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7555,7 +7559,8 @@ export const zRequestStackUpgradeResponse = z.object({
                     'upgrade-rolled-back',
                     'data-retained',
                     'state-integrity',
-                    'wiring'
+                    'wiring',
+                    'credentials'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7627,7 +7632,8 @@ export const zGetStackDiagnosticsResponse = z.object({
                         'upgrade-rolled-back',
                         'data-retained',
                         'state-integrity',
-                        'wiring'
+                        'wiring',
+                        'credentials'
                     ]),
                     message: z.string().min(1).max(500)
                 })).max(20),
@@ -7703,7 +7709,43 @@ export const zGetStackSpecResponse = z.object({
         ]),
         factsSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
         rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
-    }))
+    })),
+    credentialSealingKeySha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+    workloadIdentities: z.array(z.union([
+        z.object({
+            backend: z.enum(['argo-workflows', 'argocd']),
+            serviceAccount: z.enum([
+                'scp-infra-plan',
+                'scp-infra-apply',
+                'argocd-application-controller',
+                'argocd-server'
+            ]),
+            provider: z.literal('aws-irsa'),
+            identifier: z.string().max(600).regex(/^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_\/-]{1,512}$/)
+        }),
+        z.object({
+            backend: z.enum(['argo-workflows', 'argocd']),
+            serviceAccount: z.enum([
+                'scp-infra-plan',
+                'scp-infra-apply',
+                'argocd-application-controller',
+                'argocd-server'
+            ]),
+            provider: z.literal('gke-workload-identity'),
+            identifier: z.string().max(600).regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$/)
+        }),
+        z.object({
+            backend: z.enum(['argo-workflows', 'argocd']),
+            serviceAccount: z.enum([
+                'scp-infra-plan',
+                'scp-infra-apply',
+                'argocd-application-controller',
+                'argocd-server'
+            ]),
+            provider: z.literal('azure-workload-identity'),
+            identifier: z.string().max(600).regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)
+        })
+    ]))
 });
 
 /**
@@ -7772,7 +7814,8 @@ export const zRotateStackBackendResponse = z.object({
                     'upgrade-rolled-back',
                     'data-retained',
                     'state-integrity',
-                    'wiring'
+                    'wiring',
+                    'credentials'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7859,6 +7902,505 @@ export const zAttachStackServedOrgResponse = z.object({
         })
     }))
 });
+
+/**
+ * Success
+ */
+export const zListStackCredentialsResponse = z.object({
+    secrets: z.array(z.object({
+        backend: z.enum(['argo-workflows']),
+        secretName: z.enum([
+            'scp-build-registry',
+            'scp-infra-plan-credentials',
+            'scp-infra-apply-credentials'
+        ]),
+        purpose: z.string(),
+        keys: z.array(z.object({
+            backend: z.enum(['argo-workflows']),
+            secretName: z.enum([
+                'scp-build-registry',
+                'scp-infra-plan-credentials',
+                'scp-infra-apply-credentials'
+            ]),
+            key: z.enum([
+                'gitToken',
+                'registryUsername',
+                'registryPassword',
+                'registryHost',
+                'AWS_ACCESS_KEY_ID',
+                'AWS_SECRET_ACCESS_KEY',
+                'AWS_SESSION_TOKEN',
+                'AWS_REGION',
+                'ARM_CLIENT_ID',
+                'ARM_CLIENT_SECRET',
+                'ARM_TENANT_ID',
+                'ARM_SUBSCRIPTION_ID',
+                'GOOGLE_CREDENTIALS',
+                'GOOGLE_PROJECT',
+                'PG_CONN_STR',
+                'TF_HTTP_USERNAME',
+                'TF_HTTP_PASSWORD',
+                'VAULT_TOKEN',
+                'CLOUDFLARE_API_TOKEN',
+                'GITHUB_TOKEN'
+            ]),
+            description: z.string(),
+            state: z.enum([
+                'unset',
+                'pending',
+                'set',
+                'failed'
+            ]),
+            pendingOp: z.enum(['set', 'delete']).nullable(),
+            requestedBy: z.object({
+                mechanism: z.enum([
+                    'session-role',
+                    'credential',
+                    'bootstrap-env-token',
+                    'install'
+                ]),
+                orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+                userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+                username: z.string().nullable(),
+                credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+            }).nullable(),
+            requestedAt: z.string().nullable(),
+            deliveredAt: z.string().nullable(),
+            error: z.string().nullable()
+        }))
+    })),
+    workloadIdentities: z.array(z.object({
+        backend: z.enum(['argo-workflows', 'argocd']),
+        serviceAccount: z.enum([
+            'scp-infra-plan',
+            'scp-infra-apply',
+            'argocd-application-controller',
+            'argocd-server'
+        ]),
+        description: z.string(),
+        binding: z.union([
+            z.object({
+                provider: z.literal('aws-irsa'),
+                identifier: z.string().max(600).regex(/^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_\/-]{1,512}$/)
+            }),
+            z.object({
+                provider: z.literal('gke-workload-identity'),
+                identifier: z.string().max(600).regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$/)
+            }),
+            z.object({
+                provider: z.literal('azure-workload-identity'),
+                identifier: z.string().max(600).regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)
+            })
+        ]).nullable(),
+        declaredBy: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        }).nullable(),
+        declaredAt: z.string().nullable()
+    })),
+    sealingKey: z.object({
+        published: z.boolean(),
+        publishedAt: z.string().nullable()
+    })
+});
+
+/**
+ * Success
+ */
+export const zDeleteStackCredentialResponse = z.object({
+    backend: z.enum(['argo-workflows']),
+    secretName: z.enum([
+        'scp-build-registry',
+        'scp-infra-plan-credentials',
+        'scp-infra-apply-credentials'
+    ]),
+    key: z.enum([
+        'gitToken',
+        'registryUsername',
+        'registryPassword',
+        'registryHost',
+        'AWS_ACCESS_KEY_ID',
+        'AWS_SECRET_ACCESS_KEY',
+        'AWS_SESSION_TOKEN',
+        'AWS_REGION',
+        'ARM_CLIENT_ID',
+        'ARM_CLIENT_SECRET',
+        'ARM_TENANT_ID',
+        'ARM_SUBSCRIPTION_ID',
+        'GOOGLE_CREDENTIALS',
+        'GOOGLE_PROJECT',
+        'PG_CONN_STR',
+        'TF_HTTP_USERNAME',
+        'TF_HTTP_PASSWORD',
+        'VAULT_TOKEN',
+        'CLOUDFLARE_API_TOKEN',
+        'GITHUB_TOKEN'
+    ]),
+    description: z.string(),
+    state: z.enum([
+        'unset',
+        'pending',
+        'set',
+        'failed'
+    ]),
+    pendingOp: z.enum(['set', 'delete']).nullable(),
+    requestedBy: z.object({
+        mechanism: z.enum([
+            'session-role',
+            'credential',
+            'bootstrap-env-token',
+            'install'
+        ]),
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        username: z.string().nullable(),
+        credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }).nullable(),
+    requestedAt: z.string().nullable(),
+    deliveredAt: z.string().nullable(),
+    error: z.string().nullable()
+});
+
+/**
+ * Success
+ */
+export const zSetStackCredentialResponse = z.object({
+    backend: z.enum(['argo-workflows']),
+    secretName: z.enum([
+        'scp-build-registry',
+        'scp-infra-plan-credentials',
+        'scp-infra-apply-credentials'
+    ]),
+    key: z.enum([
+        'gitToken',
+        'registryUsername',
+        'registryPassword',
+        'registryHost',
+        'AWS_ACCESS_KEY_ID',
+        'AWS_SECRET_ACCESS_KEY',
+        'AWS_SESSION_TOKEN',
+        'AWS_REGION',
+        'ARM_CLIENT_ID',
+        'ARM_CLIENT_SECRET',
+        'ARM_TENANT_ID',
+        'ARM_SUBSCRIPTION_ID',
+        'GOOGLE_CREDENTIALS',
+        'GOOGLE_PROJECT',
+        'PG_CONN_STR',
+        'TF_HTTP_USERNAME',
+        'TF_HTTP_PASSWORD',
+        'VAULT_TOKEN',
+        'CLOUDFLARE_API_TOKEN',
+        'GITHUB_TOKEN'
+    ]),
+    description: z.string(),
+    state: z.enum([
+        'unset',
+        'pending',
+        'set',
+        'failed'
+    ]),
+    pendingOp: z.enum(['set', 'delete']).nullable(),
+    requestedBy: z.object({
+        mechanism: z.enum([
+            'session-role',
+            'credential',
+            'bootstrap-env-token',
+            'install'
+        ]),
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        username: z.string().nullable(),
+        credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }).nullable(),
+    requestedAt: z.string().nullable(),
+    deliveredAt: z.string().nullable(),
+    error: z.string().nullable()
+});
+
+/**
+ * Success
+ */
+export const zDeleteStackWorkloadIdentityResponse = z.object({
+    secrets: z.array(z.object({
+        backend: z.enum(['argo-workflows']),
+        secretName: z.enum([
+            'scp-build-registry',
+            'scp-infra-plan-credentials',
+            'scp-infra-apply-credentials'
+        ]),
+        purpose: z.string(),
+        keys: z.array(z.object({
+            backend: z.enum(['argo-workflows']),
+            secretName: z.enum([
+                'scp-build-registry',
+                'scp-infra-plan-credentials',
+                'scp-infra-apply-credentials'
+            ]),
+            key: z.enum([
+                'gitToken',
+                'registryUsername',
+                'registryPassword',
+                'registryHost',
+                'AWS_ACCESS_KEY_ID',
+                'AWS_SECRET_ACCESS_KEY',
+                'AWS_SESSION_TOKEN',
+                'AWS_REGION',
+                'ARM_CLIENT_ID',
+                'ARM_CLIENT_SECRET',
+                'ARM_TENANT_ID',
+                'ARM_SUBSCRIPTION_ID',
+                'GOOGLE_CREDENTIALS',
+                'GOOGLE_PROJECT',
+                'PG_CONN_STR',
+                'TF_HTTP_USERNAME',
+                'TF_HTTP_PASSWORD',
+                'VAULT_TOKEN',
+                'CLOUDFLARE_API_TOKEN',
+                'GITHUB_TOKEN'
+            ]),
+            description: z.string(),
+            state: z.enum([
+                'unset',
+                'pending',
+                'set',
+                'failed'
+            ]),
+            pendingOp: z.enum(['set', 'delete']).nullable(),
+            requestedBy: z.object({
+                mechanism: z.enum([
+                    'session-role',
+                    'credential',
+                    'bootstrap-env-token',
+                    'install'
+                ]),
+                orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+                userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+                username: z.string().nullable(),
+                credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+            }).nullable(),
+            requestedAt: z.string().nullable(),
+            deliveredAt: z.string().nullable(),
+            error: z.string().nullable()
+        }))
+    })),
+    workloadIdentities: z.array(z.object({
+        backend: z.enum(['argo-workflows', 'argocd']),
+        serviceAccount: z.enum([
+            'scp-infra-plan',
+            'scp-infra-apply',
+            'argocd-application-controller',
+            'argocd-server'
+        ]),
+        description: z.string(),
+        binding: z.union([
+            z.object({
+                provider: z.literal('aws-irsa'),
+                identifier: z.string().max(600).regex(/^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_\/-]{1,512}$/)
+            }),
+            z.object({
+                provider: z.literal('gke-workload-identity'),
+                identifier: z.string().max(600).regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$/)
+            }),
+            z.object({
+                provider: z.literal('azure-workload-identity'),
+                identifier: z.string().max(600).regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)
+            })
+        ]).nullable(),
+        declaredBy: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        }).nullable(),
+        declaredAt: z.string().nullable()
+    })),
+    sealingKey: z.object({
+        published: z.boolean(),
+        publishedAt: z.string().nullable()
+    })
+});
+
+/**
+ * Success
+ */
+export const zPutStackWorkloadIdentityResponse = z.object({
+    secrets: z.array(z.object({
+        backend: z.enum(['argo-workflows']),
+        secretName: z.enum([
+            'scp-build-registry',
+            'scp-infra-plan-credentials',
+            'scp-infra-apply-credentials'
+        ]),
+        purpose: z.string(),
+        keys: z.array(z.object({
+            backend: z.enum(['argo-workflows']),
+            secretName: z.enum([
+                'scp-build-registry',
+                'scp-infra-plan-credentials',
+                'scp-infra-apply-credentials'
+            ]),
+            key: z.enum([
+                'gitToken',
+                'registryUsername',
+                'registryPassword',
+                'registryHost',
+                'AWS_ACCESS_KEY_ID',
+                'AWS_SECRET_ACCESS_KEY',
+                'AWS_SESSION_TOKEN',
+                'AWS_REGION',
+                'ARM_CLIENT_ID',
+                'ARM_CLIENT_SECRET',
+                'ARM_TENANT_ID',
+                'ARM_SUBSCRIPTION_ID',
+                'GOOGLE_CREDENTIALS',
+                'GOOGLE_PROJECT',
+                'PG_CONN_STR',
+                'TF_HTTP_USERNAME',
+                'TF_HTTP_PASSWORD',
+                'VAULT_TOKEN',
+                'CLOUDFLARE_API_TOKEN',
+                'GITHUB_TOKEN'
+            ]),
+            description: z.string(),
+            state: z.enum([
+                'unset',
+                'pending',
+                'set',
+                'failed'
+            ]),
+            pendingOp: z.enum(['set', 'delete']).nullable(),
+            requestedBy: z.object({
+                mechanism: z.enum([
+                    'session-role',
+                    'credential',
+                    'bootstrap-env-token',
+                    'install'
+                ]),
+                orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+                userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+                username: z.string().nullable(),
+                credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+            }).nullable(),
+            requestedAt: z.string().nullable(),
+            deliveredAt: z.string().nullable(),
+            error: z.string().nullable()
+        }))
+    })),
+    workloadIdentities: z.array(z.object({
+        backend: z.enum(['argo-workflows', 'argocd']),
+        serviceAccount: z.enum([
+            'scp-infra-plan',
+            'scp-infra-apply',
+            'argocd-application-controller',
+            'argocd-server'
+        ]),
+        description: z.string(),
+        binding: z.union([
+            z.object({
+                provider: z.literal('aws-irsa'),
+                identifier: z.string().max(600).regex(/^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_\/-]{1,512}$/)
+            }),
+            z.object({
+                provider: z.literal('gke-workload-identity'),
+                identifier: z.string().max(600).regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$/)
+            }),
+            z.object({
+                provider: z.literal('azure-workload-identity'),
+                identifier: z.string().max(600).regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)
+            })
+        ]).nullable(),
+        declaredBy: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        }).nullable(),
+        declaredAt: z.string().nullable()
+    })),
+    sealingKey: z.object({
+        published: z.boolean(),
+        publishedAt: z.string().nullable()
+    })
+});
+
+/**
+ * Success
+ */
+export const zPutStackCredentialSealingKeyResponse = z.void();
+
+/**
+ * Success
+ */
+export const zListStackCredentialDeliveriesResponse = z.object({
+    items: z.array(z.object({
+        deliveryId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        seq: z.int().gte(1).lte(9007199254740991),
+        backend: z.enum(['argo-workflows']),
+        secretName: z.enum([
+            'scp-build-registry',
+            'scp-infra-plan-credentials',
+            'scp-infra-apply-credentials'
+        ]),
+        key: z.enum([
+            'gitToken',
+            'registryUsername',
+            'registryPassword',
+            'registryHost',
+            'AWS_ACCESS_KEY_ID',
+            'AWS_SECRET_ACCESS_KEY',
+            'AWS_SESSION_TOKEN',
+            'AWS_REGION',
+            'ARM_CLIENT_ID',
+            'ARM_CLIENT_SECRET',
+            'ARM_TENANT_ID',
+            'ARM_SUBSCRIPTION_ID',
+            'GOOGLE_CREDENTIALS',
+            'GOOGLE_PROJECT',
+            'PG_CONN_STR',
+            'TF_HTTP_USERNAME',
+            'TF_HTTP_PASSWORD',
+            'VAULT_TOKEN',
+            'CLOUDFLARE_API_TOKEN',
+            'GITHUB_TOKEN'
+        ]),
+        op: z.enum(['set', 'delete']),
+        keyId: z.string().regex(/^[0-9a-f]{64}$/),
+        notAfter: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+        envelope: z.object({
+            v: z.literal(1),
+            epk: z.string().regex(/^[A-Za-z0-9+\/]{43}={1}$/),
+            nonce: z.string().regex(/^[A-Za-z0-9+\/]{16}={0}$/),
+            ciphertext: z.string().max(65536).regex(/^[A-Za-z0-9+\/]*={0,2}$/),
+            tag: z.string().regex(/^[A-Za-z0-9+\/]{22}={2}$/)
+        })
+    }))
+});
+
+/**
+ * Success
+ */
+export const zAckStackCredentialDeliveryResponse = z.void();
 
 /**
  * Success

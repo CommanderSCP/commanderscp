@@ -19091,7 +19091,7 @@ export type GetStackResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring' | 'credentials';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19199,7 +19199,7 @@ export type PutStackBackendResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring' | 'credentials';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19304,7 +19304,7 @@ export type PurgeStackBackendResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring' | 'credentials';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19409,7 +19409,7 @@ export type PutStackSettingsResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring' | 'credentials';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19512,7 +19512,7 @@ export type RequestStackUpgradeResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring' | 'credentials';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19595,7 +19595,7 @@ export type GetStackDiagnosticsResponses = {
                     targetVersion: string | null;
                     lastError: string | null;
                     needs: Array<{
-                        code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                        code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring' | 'credentials';
                         message: string;
                     }>;
                     observedAt: string;
@@ -19681,6 +19681,23 @@ export type GetStackSpecResponses = {
             factsSha256: string | null;
             rotationGeneration: number | null;
         }>;
+        credentialSealingKeySha256: string | null;
+        workloadIdentities: Array<{
+            backend: 'argo-workflows' | 'argocd';
+            serviceAccount: 'scp-infra-plan' | 'scp-infra-apply' | 'argocd-application-controller' | 'argocd-server';
+            provider: 'aws-irsa';
+            identifier: string;
+        } | {
+            backend: 'argo-workflows' | 'argocd';
+            serviceAccount: 'scp-infra-plan' | 'scp-infra-apply' | 'argocd-application-controller' | 'argocd-server';
+            provider: 'gke-workload-identity';
+            identifier: string;
+        } | {
+            backend: 'argo-workflows' | 'argocd';
+            serviceAccount: 'scp-infra-plan' | 'scp-infra-apply' | 'argocd-application-controller' | 'argocd-server';
+            provider: 'azure-workload-identity';
+            identifier: string;
+        }>;
     };
 };
 
@@ -19697,7 +19714,7 @@ export type PutStackStatusData = {
             targetVersion: string | null;
             lastError: string | null;
             needs: Array<{
-                code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring' | 'credentials';
                 message: string;
             }>;
             detail: Array<string>;
@@ -19928,7 +19945,7 @@ export type RotateStackBackendResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring' | 'credentials';
                     message: string;
                 }>;
                 observedAt: string;
@@ -20186,6 +20203,702 @@ export type AttachStackServedOrgResponses = {
 };
 
 export type AttachStackServedOrgResponse = AttachStackServedOrgResponses[keyof AttachStackServedOrgResponses];
+
+export type ListStackCredentialsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/stack/credentials';
+};
+
+export type ListStackCredentialsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListStackCredentialsError = ListStackCredentialsErrors[keyof ListStackCredentialsErrors];
+
+export type ListStackCredentialsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        secrets: Array<{
+            backend: 'argo-workflows';
+            secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+            purpose: string;
+            keys: Array<{
+                backend: 'argo-workflows';
+                secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+                key: 'gitToken' | 'registryUsername' | 'registryPassword' | 'registryHost' | 'AWS_ACCESS_KEY_ID' | 'AWS_SECRET_ACCESS_KEY' | 'AWS_SESSION_TOKEN' | 'AWS_REGION' | 'ARM_CLIENT_ID' | 'ARM_CLIENT_SECRET' | 'ARM_TENANT_ID' | 'ARM_SUBSCRIPTION_ID' | 'GOOGLE_CREDENTIALS' | 'GOOGLE_PROJECT' | 'PG_CONN_STR' | 'TF_HTTP_USERNAME' | 'TF_HTTP_PASSWORD' | 'VAULT_TOKEN' | 'CLOUDFLARE_API_TOKEN' | 'GITHUB_TOKEN';
+                description: string;
+                state: 'unset' | 'pending' | 'set' | 'failed';
+                pendingOp: 'set' | 'delete' | null;
+                requestedBy: {
+                    mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                    orgId: string | null;
+                    userId: string | null;
+                    username: string | null;
+                    credentialId: string | null;
+                } | null;
+                requestedAt: string | null;
+                deliveredAt: string | null;
+                error: string | null;
+            }>;
+        }>;
+        workloadIdentities: Array<{
+            backend: 'argo-workflows' | 'argocd';
+            serviceAccount: 'scp-infra-plan' | 'scp-infra-apply' | 'argocd-application-controller' | 'argocd-server';
+            description: string;
+            binding: {
+                provider: 'aws-irsa';
+                identifier: string;
+            } | {
+                provider: 'gke-workload-identity';
+                identifier: string;
+            } | {
+                provider: 'azure-workload-identity';
+                identifier: string;
+            } | null;
+            declaredBy: {
+                mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                orgId: string | null;
+                userId: string | null;
+                username: string | null;
+                credentialId: string | null;
+            } | null;
+            declaredAt: string | null;
+        }>;
+        sealingKey: {
+            published: boolean;
+            publishedAt: string | null;
+        };
+    };
+};
+
+export type ListStackCredentialsResponse = ListStackCredentialsResponses[keyof ListStackCredentialsResponses];
+
+export type DeleteStackCredentialData = {
+    body?: never;
+    path: {
+        backend: 'argo-workflows';
+        secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+        key: 'gitToken' | 'registryUsername' | 'registryPassword' | 'registryHost' | 'AWS_ACCESS_KEY_ID' | 'AWS_SECRET_ACCESS_KEY' | 'AWS_SESSION_TOKEN' | 'AWS_REGION' | 'ARM_CLIENT_ID' | 'ARM_CLIENT_SECRET' | 'ARM_TENANT_ID' | 'ARM_SUBSCRIPTION_ID' | 'GOOGLE_CREDENTIALS' | 'GOOGLE_PROJECT' | 'PG_CONN_STR' | 'TF_HTTP_USERNAME' | 'TF_HTTP_PASSWORD' | 'VAULT_TOKEN' | 'CLOUDFLARE_API_TOKEN' | 'GITHUB_TOKEN';
+    };
+    query?: never;
+    url: '/instance/stack/credentials/{backend}/{secretName}/{key}';
+};
+
+export type DeleteStackCredentialErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteStackCredentialError = DeleteStackCredentialErrors[keyof DeleteStackCredentialErrors];
+
+export type DeleteStackCredentialResponses = {
+    /**
+     * Success
+     */
+    202: {
+        backend: 'argo-workflows';
+        secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+        key: 'gitToken' | 'registryUsername' | 'registryPassword' | 'registryHost' | 'AWS_ACCESS_KEY_ID' | 'AWS_SECRET_ACCESS_KEY' | 'AWS_SESSION_TOKEN' | 'AWS_REGION' | 'ARM_CLIENT_ID' | 'ARM_CLIENT_SECRET' | 'ARM_TENANT_ID' | 'ARM_SUBSCRIPTION_ID' | 'GOOGLE_CREDENTIALS' | 'GOOGLE_PROJECT' | 'PG_CONN_STR' | 'TF_HTTP_USERNAME' | 'TF_HTTP_PASSWORD' | 'VAULT_TOKEN' | 'CLOUDFLARE_API_TOKEN' | 'GITHUB_TOKEN';
+        description: string;
+        state: 'unset' | 'pending' | 'set' | 'failed';
+        pendingOp: 'set' | 'delete' | null;
+        requestedBy: {
+            mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+            orgId: string | null;
+            userId: string | null;
+            username: string | null;
+            credentialId: string | null;
+        } | null;
+        requestedAt: string | null;
+        deliveredAt: string | null;
+        error: string | null;
+    };
+};
+
+export type DeleteStackCredentialResponse = DeleteStackCredentialResponses[keyof DeleteStackCredentialResponses];
+
+export type SetStackCredentialData = {
+    body: {
+        value: string;
+    };
+    path: {
+        backend: 'argo-workflows';
+        secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+        key: 'gitToken' | 'registryUsername' | 'registryPassword' | 'registryHost' | 'AWS_ACCESS_KEY_ID' | 'AWS_SECRET_ACCESS_KEY' | 'AWS_SESSION_TOKEN' | 'AWS_REGION' | 'ARM_CLIENT_ID' | 'ARM_CLIENT_SECRET' | 'ARM_TENANT_ID' | 'ARM_SUBSCRIPTION_ID' | 'GOOGLE_CREDENTIALS' | 'GOOGLE_PROJECT' | 'PG_CONN_STR' | 'TF_HTTP_USERNAME' | 'TF_HTTP_PASSWORD' | 'VAULT_TOKEN' | 'CLOUDFLARE_API_TOKEN' | 'GITHUB_TOKEN';
+    };
+    query?: never;
+    url: '/instance/stack/credentials/{backend}/{secretName}/{key}';
+};
+
+export type SetStackCredentialErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetStackCredentialError = SetStackCredentialErrors[keyof SetStackCredentialErrors];
+
+export type SetStackCredentialResponses = {
+    /**
+     * Success
+     */
+    202: {
+        backend: 'argo-workflows';
+        secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+        key: 'gitToken' | 'registryUsername' | 'registryPassword' | 'registryHost' | 'AWS_ACCESS_KEY_ID' | 'AWS_SECRET_ACCESS_KEY' | 'AWS_SESSION_TOKEN' | 'AWS_REGION' | 'ARM_CLIENT_ID' | 'ARM_CLIENT_SECRET' | 'ARM_TENANT_ID' | 'ARM_SUBSCRIPTION_ID' | 'GOOGLE_CREDENTIALS' | 'GOOGLE_PROJECT' | 'PG_CONN_STR' | 'TF_HTTP_USERNAME' | 'TF_HTTP_PASSWORD' | 'VAULT_TOKEN' | 'CLOUDFLARE_API_TOKEN' | 'GITHUB_TOKEN';
+        description: string;
+        state: 'unset' | 'pending' | 'set' | 'failed';
+        pendingOp: 'set' | 'delete' | null;
+        requestedBy: {
+            mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+            orgId: string | null;
+            userId: string | null;
+            username: string | null;
+            credentialId: string | null;
+        } | null;
+        requestedAt: string | null;
+        deliveredAt: string | null;
+        error: string | null;
+    };
+};
+
+export type SetStackCredentialResponse = SetStackCredentialResponses[keyof SetStackCredentialResponses];
+
+export type DeleteStackWorkloadIdentityData = {
+    body?: never;
+    path: {
+        backend: 'argo-workflows' | 'argocd';
+        serviceAccount: 'scp-infra-plan' | 'scp-infra-apply' | 'argocd-application-controller' | 'argocd-server';
+    };
+    query?: never;
+    url: '/instance/stack/workload-identities/{backend}/{serviceAccount}';
+};
+
+export type DeleteStackWorkloadIdentityErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteStackWorkloadIdentityError = DeleteStackWorkloadIdentityErrors[keyof DeleteStackWorkloadIdentityErrors];
+
+export type DeleteStackWorkloadIdentityResponses = {
+    /**
+     * Success
+     */
+    200: {
+        secrets: Array<{
+            backend: 'argo-workflows';
+            secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+            purpose: string;
+            keys: Array<{
+                backend: 'argo-workflows';
+                secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+                key: 'gitToken' | 'registryUsername' | 'registryPassword' | 'registryHost' | 'AWS_ACCESS_KEY_ID' | 'AWS_SECRET_ACCESS_KEY' | 'AWS_SESSION_TOKEN' | 'AWS_REGION' | 'ARM_CLIENT_ID' | 'ARM_CLIENT_SECRET' | 'ARM_TENANT_ID' | 'ARM_SUBSCRIPTION_ID' | 'GOOGLE_CREDENTIALS' | 'GOOGLE_PROJECT' | 'PG_CONN_STR' | 'TF_HTTP_USERNAME' | 'TF_HTTP_PASSWORD' | 'VAULT_TOKEN' | 'CLOUDFLARE_API_TOKEN' | 'GITHUB_TOKEN';
+                description: string;
+                state: 'unset' | 'pending' | 'set' | 'failed';
+                pendingOp: 'set' | 'delete' | null;
+                requestedBy: {
+                    mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                    orgId: string | null;
+                    userId: string | null;
+                    username: string | null;
+                    credentialId: string | null;
+                } | null;
+                requestedAt: string | null;
+                deliveredAt: string | null;
+                error: string | null;
+            }>;
+        }>;
+        workloadIdentities: Array<{
+            backend: 'argo-workflows' | 'argocd';
+            serviceAccount: 'scp-infra-plan' | 'scp-infra-apply' | 'argocd-application-controller' | 'argocd-server';
+            description: string;
+            binding: {
+                provider: 'aws-irsa';
+                identifier: string;
+            } | {
+                provider: 'gke-workload-identity';
+                identifier: string;
+            } | {
+                provider: 'azure-workload-identity';
+                identifier: string;
+            } | null;
+            declaredBy: {
+                mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                orgId: string | null;
+                userId: string | null;
+                username: string | null;
+                credentialId: string | null;
+            } | null;
+            declaredAt: string | null;
+        }>;
+        sealingKey: {
+            published: boolean;
+            publishedAt: string | null;
+        };
+    };
+};
+
+export type DeleteStackWorkloadIdentityResponse = DeleteStackWorkloadIdentityResponses[keyof DeleteStackWorkloadIdentityResponses];
+
+export type PutStackWorkloadIdentityData = {
+    body: {
+        provider: 'aws-irsa';
+        identifier: string;
+    } | {
+        provider: 'gke-workload-identity';
+        identifier: string;
+    } | {
+        provider: 'azure-workload-identity';
+        identifier: string;
+    };
+    path: {
+        backend: 'argo-workflows' | 'argocd';
+        serviceAccount: 'scp-infra-plan' | 'scp-infra-apply' | 'argocd-application-controller' | 'argocd-server';
+    };
+    query?: never;
+    url: '/instance/stack/workload-identities/{backend}/{serviceAccount}';
+};
+
+export type PutStackWorkloadIdentityErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutStackWorkloadIdentityError = PutStackWorkloadIdentityErrors[keyof PutStackWorkloadIdentityErrors];
+
+export type PutStackWorkloadIdentityResponses = {
+    /**
+     * Success
+     */
+    200: {
+        secrets: Array<{
+            backend: 'argo-workflows';
+            secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+            purpose: string;
+            keys: Array<{
+                backend: 'argo-workflows';
+                secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+                key: 'gitToken' | 'registryUsername' | 'registryPassword' | 'registryHost' | 'AWS_ACCESS_KEY_ID' | 'AWS_SECRET_ACCESS_KEY' | 'AWS_SESSION_TOKEN' | 'AWS_REGION' | 'ARM_CLIENT_ID' | 'ARM_CLIENT_SECRET' | 'ARM_TENANT_ID' | 'ARM_SUBSCRIPTION_ID' | 'GOOGLE_CREDENTIALS' | 'GOOGLE_PROJECT' | 'PG_CONN_STR' | 'TF_HTTP_USERNAME' | 'TF_HTTP_PASSWORD' | 'VAULT_TOKEN' | 'CLOUDFLARE_API_TOKEN' | 'GITHUB_TOKEN';
+                description: string;
+                state: 'unset' | 'pending' | 'set' | 'failed';
+                pendingOp: 'set' | 'delete' | null;
+                requestedBy: {
+                    mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                    orgId: string | null;
+                    userId: string | null;
+                    username: string | null;
+                    credentialId: string | null;
+                } | null;
+                requestedAt: string | null;
+                deliveredAt: string | null;
+                error: string | null;
+            }>;
+        }>;
+        workloadIdentities: Array<{
+            backend: 'argo-workflows' | 'argocd';
+            serviceAccount: 'scp-infra-plan' | 'scp-infra-apply' | 'argocd-application-controller' | 'argocd-server';
+            description: string;
+            binding: {
+                provider: 'aws-irsa';
+                identifier: string;
+            } | {
+                provider: 'gke-workload-identity';
+                identifier: string;
+            } | {
+                provider: 'azure-workload-identity';
+                identifier: string;
+            } | null;
+            declaredBy: {
+                mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                orgId: string | null;
+                userId: string | null;
+                username: string | null;
+                credentialId: string | null;
+            } | null;
+            declaredAt: string | null;
+        }>;
+        sealingKey: {
+            published: boolean;
+            publishedAt: string | null;
+        };
+    };
+};
+
+export type PutStackWorkloadIdentityResponse = PutStackWorkloadIdentityResponses[keyof PutStackWorkloadIdentityResponses];
+
+export type PutStackCredentialSealingKeyData = {
+    body: {
+        publicKey: string;
+        keyId: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/stack/credential-sealing-key';
+};
+
+export type PutStackCredentialSealingKeyErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutStackCredentialSealingKeyError = PutStackCredentialSealingKeyErrors[keyof PutStackCredentialSealingKeyErrors];
+
+export type PutStackCredentialSealingKeyResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type PutStackCredentialSealingKeyResponse = PutStackCredentialSealingKeyResponses[keyof PutStackCredentialSealingKeyResponses];
+
+export type ListStackCredentialDeliveriesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/stack/credential-deliveries';
+};
+
+export type ListStackCredentialDeliveriesErrors = {
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListStackCredentialDeliveriesError = ListStackCredentialDeliveriesErrors[keyof ListStackCredentialDeliveriesErrors];
+
+export type ListStackCredentialDeliveriesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            deliveryId: string;
+            seq: number;
+            backend: 'argo-workflows';
+            secretName: 'scp-build-registry' | 'scp-infra-plan-credentials' | 'scp-infra-apply-credentials';
+            key: 'gitToken' | 'registryUsername' | 'registryPassword' | 'registryHost' | 'AWS_ACCESS_KEY_ID' | 'AWS_SECRET_ACCESS_KEY' | 'AWS_SESSION_TOKEN' | 'AWS_REGION' | 'ARM_CLIENT_ID' | 'ARM_CLIENT_SECRET' | 'ARM_TENANT_ID' | 'ARM_SUBSCRIPTION_ID' | 'GOOGLE_CREDENTIALS' | 'GOOGLE_PROJECT' | 'PG_CONN_STR' | 'TF_HTTP_USERNAME' | 'TF_HTTP_PASSWORD' | 'VAULT_TOKEN' | 'CLOUDFLARE_API_TOKEN' | 'GITHUB_TOKEN';
+            op: 'set' | 'delete';
+            keyId: string;
+            notAfter: string;
+            envelope: {
+                v: 1;
+                epk: string;
+                nonce: string;
+                ciphertext: string;
+                tag: string;
+            };
+        }>;
+    };
+};
+
+export type ListStackCredentialDeliveriesResponse = ListStackCredentialDeliveriesResponses[keyof ListStackCredentialDeliveriesResponses];
+
+export type AckStackCredentialDeliveryData = {
+    body: {
+        outcome: 'applied';
+        seq: number;
+    } | {
+        outcome: 'refused';
+        seq: number;
+        reason: 'tampered' | 'wrong-key' | 'replayed' | 'expired' | 'not-in-catalog';
+    };
+    path: {
+        deliveryId: string;
+    };
+    query?: never;
+    url: '/instance/stack/credential-deliveries/{deliveryId}/ack';
+};
+
+export type AckStackCredentialDeliveryErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AckStackCredentialDeliveryError = AckStackCredentialDeliveryErrors[keyof AckStackCredentialDeliveryErrors];
+
+export type AckStackCredentialDeliveryResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type AckStackCredentialDeliveryResponse = AckStackCredentialDeliveryResponses[keyof AckStackCredentialDeliveryResponses];
 
 export type GetInstanceOperatorSelfData = {
     body?: never;

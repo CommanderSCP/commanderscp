@@ -10,8 +10,11 @@ import {
   type StackBackendStatusReport,
   type StackNeed,
   type StackSettings,
-  type StackSpecDocument
+  type StackSpecDocument,
+  type StackWorkloadIdentitySpec
 } from "@scp/schemas";
+import type { CredentialApi } from "./credentials.js";
+import { applyWorkloadIdentities, validWorkloadIdentities } from "./workload-identity.js";
 import type { HelmRenderer } from "./helm.js";
 import { KubeError, type KubeClient } from "./kube.js";
 import {
@@ -80,6 +83,10 @@ export interface StackApi {
   /** M29.2: the hand-off after a backend is healthy, and its withdrawal on disable. */
   putWiring(backend: StackBackend, req: PutStackWiringRequest): Promise<void>;
   deleteWiring(backend: StackBackend): Promise<void>;
+  /** M29.5: the sealing key, the sealed deliveries and their confirmation (`credentials.ts`). */
+  putSealingKey: CredentialApi["putSealingKey"];
+  credentialDeliveries: CredentialApi["credentialDeliveries"];
+  ackCredentialDelivery: CredentialApi["ackCredentialDelivery"];
 }
 
 export interface ControllerDeps {
@@ -112,6 +119,12 @@ export interface ControllerDeps {
   /** M29.2: what the wiring step needs: a client for the backends' own APIs, and the labels that
    *  select scpd's pods (the egress NetworkPolicy's subject). */
   wiring?: { http: BackendHttp; scpPodLabels: Record<string, string> };
+  /** M29.5: credentials through SCP — deliver the sealed envelopes scpd holds into the backends'
+   *  Secrets (`deliverCredentials`), and name what a ready backend still needs entered. */
+  credentials?: {
+    deliver: (recordedKeySha256: string | null) => Promise<unknown>;
+    needs: (backend: StackBackend) => Promise<StackNeed[]>;
+  };
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -186,7 +199,18 @@ export async function renderBackend(
   const objects = stamp(parseManifests(text), spec.backend, deps.release.version);
   if (objects.length === 0) throw new Error(`the chart rendered nothing for ${spec.backend}`);
   assertStackSet(objects, namespace, `the render of ${spec.backend}`, deps.kinds ?? STACK_KINDS);
-  return { objects, fingerprint: fingerprint(objects), needs: backendNeeds(spec, values, ctx) };
+  // M29.5: declared workload identities become annotations on the objects about to be applied —
+  // before the fingerprint, so declaring (or withdrawing) one is a change that is applied.
+  const identityNeeds = applyWorkloadIdentities(
+    spec.backend,
+    objects,
+    memory(deps).workloadIdentities
+  );
+  return {
+    objects,
+    fingerprint: fingerprint(objects),
+    needs: [...backendNeeds(spec, values, ctx), ...identityNeeds]
+  };
 }
 
 // ---- applying -----------------------------------------------------------------------------------
@@ -345,11 +369,17 @@ function report(
 interface Memory {
   appliedAt: Map<StackBackend, number>;
   digests: Map<StackBackend, StateDigests>;
+  /** M29.5: this tick's declared workload identities (re-validated from the spec). */
+  workloadIdentities: StackWorkloadIdentitySpec[];
 }
 const memoryByController = new WeakMap<ControllerDeps, Memory>();
 function memory(deps: ControllerDeps): Memory {
   let m = memoryByController.get(deps);
-  if (!m) memoryByController.set(deps, (m = { appliedAt: new Map(), digests: new Map() }));
+  if (!m)
+    memoryByController.set(
+      deps,
+      (m = { appliedAt: new Map(), digests: new Map(), workloadIdentities: [] })
+    );
   return m;
 }
 
@@ -478,11 +508,12 @@ export async function reconcileBackend(
       health.ready && deps.afterReady
         ? await deps.afterReady(backend, desired.objects, { spec, recorded: recordedWiring })
         : [];
+    const credentialNeeds = health.ready ? await credentialNeedsOf(deps, backend) : [];
     return {
       report: rep({
         phase: health.ready ? "ready" : "degraded",
         runningVersion: lastGood.release,
-        needs: [...desired.needs, ...wired],
+        needs: [...desired.needs, ...wired, ...credentialNeeds],
         detail: health.detail,
         ...(health.ready ? {} : { lastError: "a workload that was healthy is not available" })
       }),
@@ -767,6 +798,18 @@ async function disable(
   };
 }
 
+/** M29.5: what a ready backend still needs entered through SCP (key names only). */
+async function credentialNeedsOf(
+  deps: ControllerDeps,
+  backend: StackBackend
+): Promise<StackNeed[]> {
+  if (!deps.credentials) return [];
+  return deps.credentials.needs(backend).catch((err: unknown): StackNeed[] => {
+    deps.log(`${backend}: could not check its credentials: ${String(err)}`);
+    return [];
+  });
+}
+
 /** A healthy set becomes the last good one; what it no longer renders is pruned — except data,
  *  which is kept as retained until a purge. */
 async function promote(
@@ -813,12 +856,13 @@ async function promote(
   const wired = deps.afterReady
     ? await deps.afterReady(backend, desired.objects, { spec, recorded: recordedWiring })
     : [];
+  const credentialNeeds = await credentialNeedsOf(deps, backend);
   deps.log(`${backend}: ready at ${release}`);
   return {
     report: rep({
       phase: "ready",
       runningVersion: release,
-      needs: [...desired.needs, ...wired],
+      needs: [...desired.needs, ...wired, ...credentialNeeds],
       detail: health.detail
     }),
     state: next
@@ -849,6 +893,21 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
     }
     return body;
   };
+  // M29.5: the declared workload identities for this tick's renders, and the credential
+  // deliveries — before the backends and again after each, so a value entered through SCP never
+  // waits behind a long install for more than one backend's turn.
+  memory(deps).workloadIdentities = validWorkloadIdentities(spec.workloadIdentities);
+  const deliver = async () => {
+    if (!deps.credentials) return;
+    try {
+      await deps.credentials.deliver(spec.credentialSealingKeySha256 ?? null);
+    } catch (err) {
+      deps.log(
+        `credential delivery failed (retried): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  };
+  await deliver();
   let last: PutStackStatusRequest | undefined;
   for (const backend of StackBackendSchema.options) {
     const backendSpec = specs.get(backend) ?? {
@@ -893,6 +952,7 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
       );
     }
     last = await publish();
+    await deliver();
   }
   return last!;
 }

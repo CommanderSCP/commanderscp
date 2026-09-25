@@ -336,6 +336,15 @@ import {
   listStackServedOrgs as listStackServedOrgsRequest,
   attachStackServedOrg as attachStackServedOrgRequest,
   detachStackServedOrg as detachStackServedOrgRequest,
+  // M29.5 — credentials through SCP (ADR-0062).
+  listStackCredentials as listStackCredentialsRequest,
+  setStackCredential as setStackCredentialRequest,
+  deleteStackCredential as deleteStackCredentialRequest,
+  putStackWorkloadIdentity as putStackWorkloadIdentityRequest,
+  deleteStackWorkloadIdentity as deleteStackWorkloadIdentityRequest,
+  putStackCredentialSealingKey as putStackCredentialSealingKeyRequest,
+  listStackCredentialDeliveries as listStackCredentialDeliveriesRequest,
+  ackStackCredentialDelivery as ackStackCredentialDeliveryRequest,
   getInstanceOperatorSelf as getInstanceOperatorSelfRequest,
   listInstanceOperators as listInstanceOperatorsRequest,
   grantInstanceOperator as grantInstanceOperatorRequest,
@@ -561,6 +570,14 @@ import type {
   PutStackStatusRequest,
   PutStackWiringRequest,
   StackServedOrgList,
+  AckStackCredentialDeliveryRequest,
+  PutStackCredentialSealingKeyRequest,
+  PutStackWorkloadIdentityRequest,
+  StackCredentialDeliveryList,
+  StackCredentialKeyView,
+  StackCredentialsView,
+  StackCredentialTarget,
+  StackWorkloadIdentityTarget,
   InstanceOperatorGrant,
   InstanceOperatorGrantList,
   InstanceAuditEventList,
@@ -2378,6 +2395,101 @@ export class ScpClient {
         headers: operatorHeaders(operatorToken)
       });
       return unwrap(result);
+    },
+    /** M29.5 — the credential catalog and each key's state: metadata only, never a value
+     *  (instance authority). */
+    credentials: async (operatorToken?: string): Promise<StackCredentialsView> => {
+      const result = await listStackCredentialsRequest({
+        client: this.client,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    /** M29.5 — enter (or rotate) one credential. WRITE-ONLY: sealed to the stack controller, which
+     *  writes it into the backend's Secret; nothing reads it back. */
+    setCredential: async (
+      target: StackCredentialTarget,
+      value: string,
+      operatorToken?: string
+    ): Promise<StackCredentialKeyView> => {
+      const result = await setStackCredentialRequest({
+        client: this.client,
+        path: target,
+        body: { value },
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    /** M29.5 — remove one credential key from the backend's Secret. */
+    deleteCredential: async (
+      target: StackCredentialTarget,
+      operatorToken?: string
+    ): Promise<StackCredentialKeyView> => {
+      const result = await deleteStackCredentialRequest({
+        client: this.client,
+        path: target,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    /** M29.5 — declare a ServiceAccount's workload identity (IRSA, GKE WI, Azure WI). */
+    putWorkloadIdentity: async (
+      target: StackWorkloadIdentityTarget,
+      req: PutStackWorkloadIdentityRequest,
+      operatorToken?: string
+    ): Promise<StackCredentialsView> => {
+      const result = await putStackWorkloadIdentityRequest({
+        client: this.client,
+        path: target,
+        body: req,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    deleteWorkloadIdentity: async (
+      target: StackWorkloadIdentityTarget,
+      operatorToken?: string
+    ): Promise<StackCredentialsView> => {
+      const result = await deleteStackWorkloadIdentityRequest({
+        client: this.client,
+        path: target,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    /** M29.5 — the controller publishes its sealing key (its credential ONLY). */
+    putSealingKey: async (
+      req: PutStackCredentialSealingKeyRequest,
+      operatorToken: string
+    ): Promise<void> => {
+      const result = await putStackCredentialSealingKeyRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrapVoid(result);
+    },
+    /** M29.5 — the sealed envelopes waiting for the controller (its credential ONLY). */
+    credentialDeliveries: async (operatorToken: string): Promise<StackCredentialDeliveryList> => {
+      const result = await listStackCredentialDeliveriesRequest({
+        client: this.client,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    /** M29.5 — the controller confirms (or refuses) one delivery (its credential ONLY). */
+    ackCredentialDelivery: async (
+      deliveryId: string,
+      req: AckStackCredentialDeliveryRequest,
+      operatorToken: string
+    ): Promise<void> => {
+      const result = await ackStackCredentialDeliveryRequest({
+        client: this.client,
+        path: { deliveryId },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrapVoid(result);
     }
   };
 

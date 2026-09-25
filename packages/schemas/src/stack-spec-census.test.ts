@@ -6,6 +6,7 @@ import {
   PutStackWiringRequestSchema,
   StackSpecDocumentSchema
 } from "./stack.js";
+import { STACK_WORKLOAD_IDENTITY_PROVIDERS } from "./stack-credentials.js";
 
 /**
  * THE STACK CONTROLLER'S INPUT HAS NO FREE STRING (M29.4, ADR-0058).
@@ -31,6 +32,16 @@ type Json = {
 
 const SHA256_HEX = "^[0-9a-f]{64}$";
 
+/** M29.5: a declared workload identity's identifier — an IAM role ARN, a Google service account
+ *  email, a GUID — each bound by its provider's anchored pattern, and only at that one path. The
+ *  controller writes it as an ANNOTATION VALUE on an object it builds itself (never through helm),
+ *  so it cannot become YAML, a key or a different object. */
+const IDENTIFIER_PATTERNS = new Set<string>(
+  // As zod emits it: the RegExp source (which escapes `/`).
+  Object.values(STACK_WORKLOAD_IDENTITY_PROVIDERS).map((p) => new RegExp(p.pattern).source)
+);
+const IDENTIFIER_PATH = /^\$\.workloadIdentities\[\]\|\d+\.identifier$/;
+
 function leaves(schema: Json, at: string): { at: string; schema: Json }[] {
   if (schema.properties) {
     return Object.entries(schema.properties).flatMap(([k, v]) => leaves(v, `${at}.${k}`));
@@ -44,8 +55,15 @@ function leaves(schema: Json, at: string): { at: string; schema: Json }[] {
 function freeStringLeaves(s: z.ZodType): string[] {
   const json = z.toJSONSchema(s, { io: "input" }) as Json;
   return leaves(json, "$")
-    .filter(({ schema }) => {
+    .filter(({ at, schema }) => {
       if (schema.enum || schema.const !== undefined) return false;
+      if (
+        schema.type === "string" &&
+        IDENTIFIER_PATH.test(at) &&
+        schema.pattern !== undefined &&
+        IDENTIFIER_PATTERNS.has(schema.pattern)
+      )
+        return false;
       // A sha256 in lowercase hex is the one permitted string: it can only be COMPARED against
       // bytes the controller already holds, never rendered into a manifest.
       if (schema.type === "string" && schema.pattern === SHA256_HEX) return false;
@@ -63,6 +81,17 @@ describe("the stack spec is enumerated values only", () => {
   it("…and so is everything a write to it can carry", () => {
     expect(freeStringLeaves(PutStackBackendRequestSchema)).toEqual([]);
     expect(freeStringLeaves(PutStackSettingsRequestSchema)).toEqual([]);
+  });
+
+  it("M29.5: a workload identity's identifier is pattern-bound, and the exemption is that path and those patterns only", () => {
+    // Every pattern is anchored at both ends, so no identifier can carry anything past it.
+    for (const p of IDENTIFIER_PATTERNS) expect(p).toMatch(/^\^.*\$$/);
+    // The same pattern anywhere else is still a free string.
+    const pattern = [...IDENTIFIER_PATTERNS][0]!;
+    const elsewhere = StackSpecDocumentSchema.extend({
+      note: z.string().regex(new RegExp(pattern))
+    });
+    expect(freeStringLeaves(elsewhere)).toEqual([expect.stringMatching(/^\$\.note: /)]);
   });
 
   it("the census fires on a schema that has a free string (known-positive control)", () => {

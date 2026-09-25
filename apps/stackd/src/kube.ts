@@ -173,8 +173,10 @@ export class KubeClient {
     return opts.collection ? base : `${base}/${encodeURIComponent(ref.name)}`;
   }
 
-  /** Server-side apply. JSON is YAML, so the apply-patch content type takes it as-is. */
-  async apply(obj: KubeObject): Promise<void> {
+  /** Server-side apply. JSON is YAML, so the apply-patch content type takes it as-is. A field
+   *  manager other than the controller's own is only for fields the controller owns key by key
+   *  (M29.5: each credential key has its own, so setting one never drops another). */
+  async apply(obj: KubeObject, fieldManager: string = FIELD_MANAGER): Promise<void> {
     const path = await this.pathFor({
       apiVersion: obj.apiVersion,
       kind: obj.kind,
@@ -183,7 +185,7 @@ export class KubeClient {
     });
     await this.call({
       method: "PATCH",
-      path: `${path}?fieldManager=${FIELD_MANAGER}&force=true`,
+      path: `${path}?fieldManager=${encodeURIComponent(fieldManager)}&force=true`,
       body: JSON.stringify(obj),
       contentType: "application/apply-patch+yaml"
     });
@@ -191,11 +193,15 @@ export class KubeClient {
 
   /** A JSON merge patch — only for the one field the controller sets outside a render (the
    *  rotation annotation that rolls argo-server onto a new certificate, `wiring.ts`). */
-  async mergePatch(ref: ObjectRef, patch: Record<string, unknown>): Promise<void> {
+  async mergePatch(
+    ref: ObjectRef,
+    patch: Record<string, unknown>,
+    opts: { fieldManager?: string } = {}
+  ): Promise<void> {
     const path = await this.pathFor(ref);
     await this.call({
       method: "PATCH",
-      path: `${path}?fieldManager=${FIELD_MANAGER}-rotation`,
+      path: `${path}?fieldManager=${encodeURIComponent(opts.fieldManager ?? `${FIELD_MANAGER}-rotation`)}`,
       body: JSON.stringify(patch),
       contentType: "application/merge-patch+json"
     });

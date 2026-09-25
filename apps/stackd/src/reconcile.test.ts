@@ -132,6 +132,13 @@ const KINDS = [
   }))
 ];
 
+/** M29.5's three doors, inert: the reconcile suites here drive no credential delivery. */
+const NO_CREDENTIAL_API = {
+  putSealingKey: async () => undefined,
+  credentialDeliveries: async () => ({ items: [] }),
+  ackCredentialDelivery: async () => undefined
+};
+
 function harness(): Harness {
   const kube = new FakeKube((o) => !imageOf(o)?.includes("broken"));
   const client = new KubeClient(kube);
@@ -146,7 +153,9 @@ function harness(): Harness {
       rotateGeneration: 0
     })),
     integrity: [],
-    wiring: []
+    wiring: [],
+    credentialSealingKeySha256: null,
+    workloadIdentities: []
   };
   // scpd's side: the status row keeps the digests of the latest report, and the spec hands them
   // back as `integrity` (apps/server routes/stack.ts).
@@ -166,6 +175,7 @@ function harness(): Harness {
           inventorySha256: recorded.get(backend)?.inventorySha256 ?? null
         }))
       }),
+      ...NO_CREDENTIAL_API,
       putStatus: async (req) => {
         statuses.push(structuredClone(req));
         for (const b of req.backends) {
@@ -530,6 +540,7 @@ describe("the stack controller's reconcile", () => {
       },
       putStatus: async () => undefined,
       putWiring: async () => undefined,
+      ...NO_CREDENTIAL_API,
       deleteWiring: async () => undefined
     };
     const controller = startStackController(h.deps, { intervalMs: 1 });

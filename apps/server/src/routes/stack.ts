@@ -58,6 +58,7 @@ import {
   type Wiring,
   type WiringRow
 } from "../stack/wiring.js";
+import { SELECT_WORKLOAD_IDENTITIES, workloadIdentitySpecs } from "../stack/credentials.js";
 
 /**
  * THE STANDARD STACK's API (M29.4, ADR-0058). Two audiences, two kinds of door:
@@ -96,6 +97,8 @@ interface SettingsRow extends Record<string, unknown> {
   controller_release: string | null;
   controller_observed_upgrade_generation: number | null;
   controller_seen_at: Date | string | null;
+  /** M29.5 — the sha256 of the sealing key the controller published (null until it has). */
+  credential_sealing_key_sha256?: string | null;
 }
 
 interface StackRows {
@@ -105,6 +108,8 @@ interface StackRows {
   wirings: Wiring[];
   /** M29.2 — whether the stack serves the reader's org; null when no org is reading. */
   servesThisOrg: boolean | null;
+  /** M29.5 — the declared workload identities (the controller renders them as annotations). */
+  workloadIdentities: Record<string, unknown>[];
 }
 
 const iso = (v: Date | string | null): string | null =>
@@ -218,7 +223,11 @@ export function stackSpecOf(rows: StackRows): StackSpecDocument {
         factsSha256: hexOrNull(w?.factsSha256 ?? null),
         rotationGeneration: w?.rotationGeneration ?? null
       };
-    })
+    }),
+    // M29.5: a sha256 (compared with the controller's own key), and the declared identities, each
+    // re-parsed so a row that no longer matches its provider's pattern is never handed over.
+    credentialSealingKeySha256: hexOrNull(rows.settings?.credential_sealing_key_sha256 ?? null),
+    workloadIdentities: workloadIdentitySpecs(rows.workloadIdentities)
   };
 }
 
@@ -231,7 +240,8 @@ const SELECT_BACKENDS = sql`
     FROM stack_backends`;
 const SELECT_SETTINGS = sql`
   SELECT update_policy, upgrade_generation, controller_release,
-         controller_observed_upgrade_generation, controller_seen_at
+         controller_observed_upgrade_generation, controller_seen_at,
+         credential_sealing_key_sha256
     FROM stack_settings WHERE id = 'instance'`;
 
 async function readStackRows(
@@ -243,7 +253,8 @@ async function readStackRows(
   const wirings = ((await exec(sql.raw(SELECT_WIRINGS))) as WiringRow[]).flatMap(
     (r) => wiringOf(r) ?? []
   );
-  return { backends, settings: settings[0], wirings, servesThisOrg };
+  const workloadIdentities = await exec(sql.raw(SELECT_WORKLOAD_IDENTITIES));
+  return { backends, settings: settings[0], wirings, servesThisOrg, workloadIdentities };
 }
 
 /** Reads through the request-serving pool; the tables' `tenant_read` policy is `USING (true)`. */
@@ -273,7 +284,13 @@ async function readStackOnClient(client: pg.PoolClient): Promise<StackRows> {
          FROM stack_settings WHERE id = 'instance'`
     )
   ).rows[0];
-  return { backends, settings, wirings: await readWiringsOnClient(client), servesThisOrg: null };
+  return {
+    backends,
+    settings,
+    wirings: await readWiringsOnClient(client),
+    servesThisOrg: null,
+    workloadIdentities: (await client.query(SELECT_WORKLOAD_IDENTITIES)).rows
+  };
 }
 
 const SURFACE = "the Standard Stack";
