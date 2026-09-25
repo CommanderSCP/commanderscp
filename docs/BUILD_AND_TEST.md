@@ -2232,6 +2232,18 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
         on its RWO volume (fixed: `Recreate`, censused). **What the DoD does not prove**: the in-cluster pod path runs
         in CI only through the image suite (`--self-test`) — the full-chart run is local and recorded in the PR; an
         evalInCluster `helm upgrade` of the main chart fails on the postgres-eval hook PVC (pre-existing, not stackd).
+      - **Review round (2026-09-25, #421; ADR-0058 revised).** Owner decision on §7: instance-operator authority is a
+        ROLE on the user's login (drizzle/0127 `instance_operator_grants`; `/instance/operators*`; `scp
+        instance-operator`), the Stack page has no credential field, and the first grant needs an operator credential
+        or `instanceOperator.grantBootstrapAdmin` — **M29.1's installer sets that value**. Every instance-level stack
+        write and grant is in `instance_audit_events`, hash-chained, same tx. B1: the controller runs in its own
+        namespace; the render refuses the release/runner/backend namespace; helm-verify evaluates takeover rights
+        across a value matrix; the kind suite proves the runner token is refused the takeover Job. S1: state in the
+        controller's namespace, digests on scpd's status row, read-back held to `STACK_KINDS` + namespace and
+        re-stamped. S2: credential checksum on the pod template. S3: data kept on disable; explicit purge. N1: the
+        controller's credential is `scope='stack-controller'`, and only it writes status. N2: rotation revokes by the
+        recorded credential id. N3: egress to the API server's endpoints and scpd's api pods only. Drills: scp-runner-ops
+        built and scp-builder-rpm stood in, both passed (`drill-images.test.ts` censuses every daemon-sourced image).
   - **M29.5 — credentials through SCP (D2).** A write-only passthrough, from the API to the controller to the backend's
     Secret; `scpd` persists nothing and cannot read it back. The audit records the key, never the value. Workload identity
     is preferred where available.
