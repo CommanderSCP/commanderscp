@@ -2427,7 +2427,11 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
       changes to the dispatcher itself — squarely the kind of "default on, for our own five components" work (b)
       already scopes separately. Recommendation: build it as part of (b), where the dispatcher is being made to select
       and register these components automatically anyway.
-    - **(b) Default on:** SCP registers its own repo and backends, and creates the stack's dependency subscriptions by
+    - **(b) Default on:** the stack's **companion images** (for example Argo CD's Dex and Argo Workflows' argoexec, whose
+      tags do not follow the backend's) get their own dependency subscriptions and signature checks, so no stack image is
+      bumped by hand (decided 2026-09-25 on #423). The dispatcher selector that chooses `re-vendor` for the vendored
+      backends, and persisting the classification as a Decision (principle 6), both land here. SCP registers its own repo
+      and backends, and creates the stack's dependency subscriptions by
       default on the publishing commander (the homelab first) — including, per (a)'s note above, the per-dependency
       `bump_strategy` field and the dispatcher logic that reads it to select `re-vendor` for the five vendored
       backends. A scan-triggered bump fires when a pinned image has a fixable CRITICAL or HIGH. The publish-time
