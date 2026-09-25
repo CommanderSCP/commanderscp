@@ -244,3 +244,68 @@ red.
   deploy that advances through its steps, and an infra plan and apply, with **no command addressed to any backend** (no
   `kubectl` into a backend namespace, no backend URL). This is also the first run of the M28 lanes against real
   controllers, which M28 never had.
+
+## 9. Keeping the stack current (owner question, 2026-09-25)
+
+*"How will we ensure we're continuously updating our sub-services (ex: ArgoCD) with the latest? We want to be sure we're
+getting those updated so we resolve security findings often."*
+
+**Today there is no loop at all.** Each backend is vendored as a pinned upstream manifest under
+`deploy/helm-bundled/vendor/*` (Argo CD `v3.4.5`, Argo Rollouts `v1.10.0`, Argo Workflows `v4.0.7`, …). No Renovate or
+Dependabot is configured, no scheduled job checks upstream, and the one security sweep so far (2026-08-31) was run by
+hand. Nothing tells anyone that a pinned backend has fallen behind or picked up a CVE.
+
+Two loops are needed: one that keeps **our release** current, and one that gets **installed instances** onto it.
+
+### 9.1 Our release: upstream to a tested, published stack
+
+1. **Watch upstream on a schedule.** A daily maintenance workflow checks each vendored backend's upstream releases and
+   re-vendors a new version with `tools/vendor-refresh`: fetch that tag's manifests, pin every image by digest, and update
+   the air-gap image list. It opens one PR per backend bump. Like `publish-images.yml`, this is a maintenance job that
+   needs the internet; the PR it opens is verified by the normal offline CI (principle 5 governs verification and
+   runtime, not the bot that fetches upstream).
+2. **Scan what we pin, continuously.** The same schedule scans every pinned stack image with the vendored Trivy against a
+   fresh vulnerability DB (SCP's own `scp-managed-scan` machinery, pointed at our own stack). A new HIGH or CRITICAL finding
+   that an upstream release fixes opens the bump PR immediately, instead of waiting for the daily version check.
+3. **Prove the upgrade, not just the install.** Every bump PR runs `tools/helm-verify` and M29.7's kind-cluster proof
+   twice: once from a fresh install, and once **upgrading from the previous published release**. That second run, with
+   builds, a canary and an infra plan/apply continuing to work across the upgrade, is what makes taking updates often
+   safe rather than brave.
+4. **Merge policy by severity** (targets, owner to confirm):
+
+   | Change | Merge | Target time to release |
+   |---|---|---|
+   | Security patch (fixes a CRITICAL) | Automatic once green | 72 hours |
+   | Security patch (fixes a HIGH) | Automatic once green | 7 days |
+   | Other patch release | Automatic once green | Next release |
+   | Minor version | Reviewed | Next release |
+   | Major version | Planned as its own piece of work | By plan |
+5. **A release gate.** Publishing an SCP release fails if any stack image has a fixable CRITICAL finding that the release
+   does not take. The release notes list each backend's version and the CVEs the release fixes.
+6. **A release train.** SCP releases on a fixed cadence (weekly is suggested), with an out-of-band patch release whenever
+   step 2 finds a fixable CRITICAL. Today `publish-images` is run by hand; it becomes the train's last step.
+
+### 9.2 Installed instances: getting them onto the fixed release
+
+The stack follows SCP's release (§3), so keeping a customer current means keeping their SCP current, with no separate
+backend versions to track.
+
+1. **Updates are automatic by default** (charter, *Automatic by Default*). A connected instance's stack controller checks the
+   release feed; on a signed patch release it applies the upgrade using §3a's backend-by-backend, health-checked rollout
+   with fallback to the last good set. Minor releases are offered on the Stack page, and applied automatically only if
+   the customer opts in. A customer can switch updates to manual, per instance.
+2. **Air-gapped instances** receive each release as a signed bundle through the existing CDS/bundle path. The Stack page
+   shows "a bundle is available that fixes N CVEs", and loading it is one action.
+3. **Live exposure, even before a fix exists.** Each instance scans its **running** stack images with its own scanner on a
+   schedule, and shows findings, version and exposure age on the Stack page. A CVE disclosed after a release is visible
+   the day the vulnerability DB learns of it, not at the next upgrade.
+4. **Imported backends (D5).** Under configuration takeover, SCP does not upgrade them. It scans their images, shows their
+   version and findings next to the bundled ones, and recommends lifecycle adoption when the install is recognised.
+5. **SCP upgrades itself.** Upgrading SCP's own server through this path is the charter's long-term *CommanderSCP Managing
+   CommanderSCP* vision. On the homelab it is a GitOps bump today, and a checkbox once 9.2.1 exists.
+
+### 9.3 Build order
+
+9.1 steps 1–3 and 5 go first (M29.8), because they are what stops the pinned versions going stale in our own repo, whoever
+runs SCP. 9.2 needs the stack controller (M29.4) and lands with it.
+
