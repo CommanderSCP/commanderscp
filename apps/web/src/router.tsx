@@ -30,7 +30,8 @@ import { AssemblyBoardPage, AssemblyDetailLayout } from "./routes/assembly-detai
 import { IdentityPage } from "./routes/identity";
 import { ConnectArgoCdPage } from "./routes/connect-argocd";
 import { ConnectKindPage } from "./routes/connect";
-import { SetupPage } from "./routes/setup";
+import { SetupPage, useOrgIsEmpty } from "./routes/setup";
+import { SkeletonRows } from "./components/ui/skeleton";
 import { AdminDependenciesPage } from "./routes/admin-dependencies";
 import { AdminGovernancePage } from "./routes/admin-governance";
 import { AdminAccessPage } from "./routes/admin-access";
@@ -53,9 +54,24 @@ const authenticatedLayoutRoute = createRoute({
   component: AuthenticatedLayout
 });
 
-/** HOME is site-shaped (outpost-ui.md §9.3). See docs/web.md §149. */
+/** HOME is site-shaped (outpost-ui.md §9.3). See docs/web.md §149.
+ *
+ * M29.1 (the front door) — an org with nothing configured (`useOrgIsEmpty`, setup.tsx: zero
+ * execution systems, zero deployment targets, zero components) lands on the setup flow instead of
+ * its dashboard. `/setup` is unchanged and still reachable directly (and linked from navigation,
+ * AppShell.tsx), so this is only which component "/" itself renders — no redirect, no URL change.
+ */
 function HomePage(): React.JSX.Element {
   const { user } = useAuth();
+  const isEmpty = useOrgIsEmpty();
+  if (isEmpty === undefined) {
+    return (
+      <div className="p-6">
+        <SkeletonRows n={4} />
+      </div>
+    );
+  }
+  if (isEmpty) return <SetupPage />;
   return user?.instanceRole === "outpost" ? <OutpostDashboardPage /> : <DashboardPage />;
 }
 

@@ -53,6 +53,53 @@ export interface SetupChecklistData {
   sourceMappingCounts?: Partial<Record<SourceKind, number>>;
 }
 
+/**
+ * M29.1 (the front door) — precise definition of "an org with nothing configured": zero execution
+ * systems, zero deployment targets, and zero components. Any ONE of the three existing means the
+ * org has begun onboarding, so the ordinary dashboard is shown instead — this is deliberately
+ * narrower than "nothing at all has ever happened" (a freeze or a campaign with no components
+ * still routes to the dashboard), because those presuppose a component/target to act on, and an
+ * org that has none of those three has nothing yet for them to act on either. `undefined` means
+ * "still loading" (at least one of the three calls hasn't answered), never treated as empty — a
+ * slow network must not flash the setup flow at a returning user with a populated org.
+ */
+export interface EmptyOrgCheckData {
+  executionSystems?: { items: unknown[] };
+  deploymentTargets?: { items: unknown[] };
+  components?: { items: unknown[] };
+}
+
+export function isOrgEmpty(data: EmptyOrgCheckData): boolean | undefined {
+  if (!data.executionSystems || !data.deploymentTargets || !data.components) return undefined;
+  return (
+    data.executionSystems.items.length === 0 &&
+    data.deploymentTargets.items.length === 0 &&
+    data.components.items.length === 0
+  );
+}
+
+/** `limit: 1` on every call — this only needs to know "zero or more", never the count, so it stays
+ *  cheap enough to run on every authenticated page load (router.tsx's `HomePage`). */
+export function useOrgIsEmpty(): boolean | undefined {
+  const executionSystemsQuery = useQuery({
+    queryKey: ["home", "empty-check", "execution-systems"],
+    queryFn: () => client.object("execution-system").list({ limit: 1 })
+  });
+  const deploymentTargetsQuery = useQuery({
+    queryKey: ["home", "empty-check", "deployment-targets"],
+    queryFn: () => client.deploymentTargets.list({ limit: 1 })
+  });
+  const componentsQuery = useQuery({
+    queryKey: ["home", "empty-check", "components"],
+    queryFn: () => client.components.list({ limit: 1 })
+  });
+  return isOrgEmpty({
+    executionSystems: executionSystemsQuery.data,
+    deploymentTargets: deploymentTargetsQuery.data,
+    components: componentsQuery.data
+  });
+}
+
 export interface ChecklistRowView {
   key: string;
   icon: LucideIcon;

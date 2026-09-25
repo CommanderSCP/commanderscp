@@ -25,7 +25,8 @@ const {
   FreezeRow,
   PlatformFreezeCard,
   PlatformFreezeRow,
-  SetupChecklistCard
+  SetupChecklistCard,
+  isOrgEmpty
 } = await import("./setup");
 
 function elementByTestId(html: string, testId: string): string {
@@ -46,6 +47,39 @@ function elementByTestId(html: string, testId: string): string {
 }
 
 // Checklist: the honesty math (pure), then the rendering (real destinations + no fabricated 0s).
+
+// M29.1 (the front door) — HomePage's routing decision. Pure so it's provable without a DOM,
+// react-query or the mocked SDK a full HomePage render would need.
+describe("isOrgEmpty — HomePage's routing decision (router.tsx)", () => {
+  it("undefined while any one of the three calls hasn't answered — never treated as empty", () => {
+    expect(isOrgEmpty({})).toBeUndefined();
+    expect(isOrgEmpty({ executionSystems: { items: [] } })).toBeUndefined();
+    expect(
+      isOrgEmpty({ executionSystems: { items: [] }, deploymentTargets: { items: [] } })
+    ).toBeUndefined();
+  });
+
+  it("empty: all three lists are empty", () => {
+    expect(
+      isOrgEmpty({
+        executionSystems: { items: [] },
+        deploymentTargets: { items: [] },
+        components: { items: [] }
+      })
+    ).toBe(true);
+  });
+
+  it("MUTATION: any ONE non-empty list is enough to keep the ordinary dashboard", () => {
+    const base = {
+      executionSystems: { items: [] },
+      deploymentTargets: { items: [] },
+      components: { items: [] }
+    };
+    expect(isOrgEmpty({ ...base, executionSystems: { items: [{ id: "1" }] } })).toBe(false);
+    expect(isOrgEmpty({ ...base, deploymentTargets: { items: [{ id: "1" }] } })).toBe(false);
+    expect(isOrgEmpty({ ...base, components: { items: [{ id: "1" }] } })).toBe(false);
+  });
+});
 
 describe("buildChecklistRows — the honesty math behind every count", () => {
   it("a row whose call hasn't answered yet reports an UNDEFINED count, never a fabricated 0", () => {
