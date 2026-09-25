@@ -85,8 +85,8 @@ describe("scp whoami", () => {
 
   it("without stored credentials, refuses with the same message every other command uses", async () => {
     await rm(path.join(configDir, "credentials.json"));
-    await expect(
-      (await program()).parseAsync(["node", "scp", "whoami"])
-    ).rejects.toThrow(/Not logged in/);
+    await expect((await program()).parseAsync(["node", "scp", "whoami"])).rejects.toThrow(
+      /Not logged in/
+    );
   });
 });

@@ -650,7 +650,9 @@ export async function runInstall(
     namespace: opts.namespace,
     releaseName: opts.releaseName
   });
-  shell.log(`bootstrap admin one-time password (shown once — not stored in plaintext): ${password}`);
+  shell.log(
+    `bootstrap admin one-time password (shown once — not stored in plaintext): ${password}`
+  );
 
   let pf: PortForward | null = null;
   let baseUrl = opts.baseUrl;
@@ -761,7 +763,13 @@ async function finishLogin(
   shell.log(`\nInstall complete. API base URL: ${opts.baseUrl}`);
   shell.log(`  scp whoami        (confirm the session)`);
   shell.log(`  scp stack status  (backend health)`);
-  return { baseUrl: opts.baseUrl, loggedInAs: opts.adminUsername, org: login.org, stack, hqOutpostDeclared };
+  return {
+    baseUrl: opts.baseUrl,
+    loggedInAs: opts.adminUsername,
+    org: login.org,
+    stack,
+    hqOutpostDeclared
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -778,14 +786,22 @@ export function registerInstallCommand(program: Command): void {
     .requiredOption("--role <role>", "commander|outpost|retrans")
     .option("--profile <profile>", "eval|production", "eval")
     .option("--mode <mode>", "kube|compose", "kube")
-    .option("--bundle <dir>", "an extracted air-gap bundle directory (implies signed, offline install)")
+    .option(
+      "--bundle <dir>",
+      "an extracted air-gap bundle directory (implies signed, offline install)"
+    )
     .option("--registry <ref>", "air-gap: target registry (see install.sh --help)")
     .option("--pubkey <path>", "air-gap: EXTERNAL cosign public key (see install.sh --help)")
     .option("--insecure-registry", "air-gap: allow plain-HTTP/self-signed registries")
     .option("--kube-context <ctx>", "kube context to install into (default: current context)")
     .option("--namespace <ns>", "Kubernetes namespace", "scp")
     .option("--release-name <name>", "Helm release name", "scp")
-    .option("--with <backend>", "enable a backend beyond the role default (repeatable)", collect, [])
+    .option(
+      "--with <backend>",
+      "enable a backend beyond the role default (repeatable)",
+      collect,
+      []
+    )
     .option("--without <backend>", "disable a role-default backend (repeatable)", collect, [])
     .option("--yes", "skip the interactive stack checklist (use role defaults + --with/--without)")
     .option("--org-name <name>", "bootstrap org name", "default")
@@ -793,8 +809,15 @@ export function registerInstallCommand(program: Command): void {
     .option("--base-url <url>", "reach the API here instead of this installer's own port-forward")
     .option("--port-forward-port <n>", "local port for the installer's port-forward", "18080")
     .option("--timeout <seconds>", "helm --wait timeout", "300")
-    .option("--stack-timeout <seconds>", "how long to wait for the stack controller to report", "300")
-    .option("--bootstrap-k3s", "install a single-node k3s if no cluster is reachable (connected only)")
+    .option(
+      "--stack-timeout <seconds>",
+      "how long to wait for the stack controller to report",
+      "300"
+    )
+    .option(
+      "--bootstrap-k3s",
+      "install a single-node k3s if no cluster is reachable (connected only)"
+    )
     .option(
       "--set <key=value>",
       "an extra raw helm --set (repeatable) — escape hatch for a value this command has no flag for",

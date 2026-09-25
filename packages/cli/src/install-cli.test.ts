@@ -71,7 +71,9 @@ describe("resolveDesiredBackends", () => {
   });
 
   it("rejects an unknown backend name — parsed against the schema, never a copied list", () => {
-    expect(() => resolveDesiredBackends("commander", ["harbor"], [])).toThrow(/backend must be one of/);
+    expect(() => resolveDesiredBackends("commander", ["harbor"], [])).toThrow(
+      /backend must be one of/
+    );
   });
 
   it("is stable-ordered (schema order), not flag-insertion order", () => {
@@ -194,17 +196,20 @@ describe("readBootstrapAdminPassword — the credential-surfacing step", () => {
     expect(pw).toBe("correct-horse-battery-staple");
   });
 
-  it("MUTATION: if the Secret is never readable (the surfacing step deleted/broken), this throws " +
-    "rather than silently falling back to a pod log — proving the step is load-bearing", async () => {
-    const shell = fakeShell({ readSecretKey: async () => null });
-    await expect(
-      readBootstrapAdminPassword(
-        shell,
-        { namespace: "scp", releaseName: "scp" },
-        { attempts: 2, delayMs: 1 }
-      )
-    ).rejects.toThrow(/could not read the bootstrap admin password/);
-  });
+  it(
+    "MUTATION: if the Secret is never readable (the surfacing step deleted/broken), this throws " +
+      "rather than silently falling back to a pod log — proving the step is load-bearing",
+    async () => {
+      const shell = fakeShell({ readSecretKey: async () => null });
+      await expect(
+        readBootstrapAdminPassword(
+          shell,
+          { namespace: "scp", releaseName: "scp" },
+          { attempts: 2, delayMs: 1 }
+        )
+      ).rejects.toThrow(/could not read the bootstrap admin password/);
+    }
+  );
 
   it("reads the exact Secret name the chart generates (secrets-generated.yaml)", async () => {
     const seen: unknown[] = [];
@@ -220,7 +225,12 @@ describe("readBootstrapAdminPassword — the credential-surfacing step", () => {
       { attempts: 1, delayMs: 1 }
     );
     expect(seen).toEqual([
-      { context: undefined, namespace: "ns1", name: "myrel-commanderscp-bootstrap-admin", key: "password" }
+      {
+        context: undefined,
+        namespace: "ns1",
+        name: "myrel-commanderscp-bootstrap-admin",
+        key: "password"
+      }
     ]);
   });
 });
@@ -237,7 +247,12 @@ function stackView(
   // `status` is null at all).
   return {
     settings: { updatePolicy: "automatic", upgradeGeneration: 1 },
-    controller: { release: "1.0.0", lastSeenAt: "2026-09-25T00:00:00Z", reporting: true, observedUpgradeGeneration: 1 },
+    controller: {
+      release: "1.0.0",
+      lastSeenAt: "2026-09-25T00:00:00Z",
+      reporting: true,
+      observedUpgradeGeneration: 1
+    },
     backends: StackBackendSchema.options.map((backend) => {
       const s = statuses[backend];
       return {
@@ -253,7 +268,10 @@ function stackView(
                 runningVersion: s === "ready" ? "1.0.0" : null,
                 targetVersion: "1.0.0",
                 lastError: null,
-                needs: s === "needs" ? [{ code: "state-backend", message: "needs a state backend" }] : [],
+                needs:
+                  s === "needs"
+                    ? [{ code: "state-backend", message: "needs a state backend" }]
+                    : [],
                 observedAt: "2026-09-25T00:00:00Z"
               }
       };
@@ -271,7 +289,9 @@ describe("waitForStackReport", () => {
   it("also accepts 'needs' as a report — the DoD's explicit escape hatch", async () => {
     const client = { stack: { get: async () => stackView({ gitea: "needs" }) } };
     const result = await waitForStackReport(client, ["gitea"], 5, 1);
-    expect(result.backends.find((b) => b.backend === "gitea")?.status?.needs.length).toBeGreaterThan(0);
+    expect(
+      result.backends.find((b) => b.backend === "gitea")?.status?.needs.length
+    ).toBeGreaterThan(0);
   });
 
   it("polls until every desired backend reports, not just the first one", async () => {
@@ -280,7 +300,9 @@ describe("waitForStackReport", () => {
       stack: {
         get: async () => {
           call += 1;
-          return call < 3 ? stackView({ gitea: "ready" }) : stackView({ gitea: "ready", argocd: "needs" });
+          return call < 3
+            ? stackView({ gitea: "ready" })
+            : stackView({ gitea: "ready", argocd: "needs" });
         }
       }
     };
@@ -340,13 +362,15 @@ const { FakeScpApiError, sdkCalls, hoistedStackView } = vi.hoisted(() => {
                 }
               : null
         },
-        ...(["argo-workflows", "argo-events", "argo-rollouts", "gitea"] as const).map((backend) => ({
-          backend,
-          enabled: false,
-          sizeTier: "small",
-          purgeGeneration: 0,
-          status: null
-        }))
+        ...(["argo-workflows", "argo-events", "argo-rollouts", "gitea"] as const).map(
+          (backend) => ({
+            backend,
+            enabled: false,
+            sizeTier: "small",
+            purgeGeneration: 0,
+            status: null
+          })
+        )
       ]
     };
   }
@@ -409,7 +433,12 @@ describe("declareHqOutpost", () => {
     const calls: unknown[] = [];
     const client = {
       federation: {
-        self: async () => ({ domainId: "dom-1", name: "hq", role: "commander" as const, publicKey: "pk" }),
+        self: async () => ({
+          domainId: "dom-1",
+          name: "hq",
+          role: "commander" as const,
+          publicKey: "pk"
+        }),
         createOutpost: async (req: unknown) => {
           calls.push(req);
           return {};
@@ -423,7 +452,12 @@ describe("declareHqOutpost", () => {
   it("a 409 (already declared) is treated as success — idempotent re-run", async () => {
     const client = {
       federation: {
-        self: async () => ({ domainId: "dom-1", name: "hq", role: "commander" as const, publicKey: "pk" }),
+        self: async () => ({
+          domainId: "dom-1",
+          name: "hq",
+          role: "commander" as const,
+          publicKey: "pk"
+        }),
         createOutpost: async () => {
           throw new FakeScpApiError(409);
         }
@@ -435,7 +469,12 @@ describe("declareHqOutpost", () => {
   it("any other failure propagates — 409 is the only status swallowed", async () => {
     const client = {
       federation: {
-        self: async () => ({ domainId: "dom-1", name: "hq", role: "commander" as const, publicKey: "pk" }),
+        self: async () => ({
+          domainId: "dom-1",
+          name: "hq",
+          role: "commander" as const,
+          publicKey: "pk"
+        }),
         createOutpost: async () => {
           throw new FakeScpApiError(500);
         }
@@ -450,70 +489,73 @@ describe("declareHqOutpost", () => {
 // ---------------------------------------------------------------------------------------------
 
 describe("runInstall — kube mode", () => {
-  it("helm installs with the role/profile values, reads+deletes the credential, logs in, enables " +
-    "the role's backends, and declares the HQ outpost — all through the given --base-url (no port-forward)", async () => {
-    const shell = fakeShell();
-    const summary = await runInstall(
-      {
-        role: "commander",
-        profile: "eval",
-        mode: "kube",
-        namespace: "scp",
-        releaseName: "scp",
-        with: [],
-        without: ["argo-workflows", "argo-events", "argo-rollouts", "gitea"], // keep the test to one backend
-        yes: true,
-        orgName: "default",
-        adminUsername: "admin",
-        baseUrl: "http://127.0.0.1:9-fake/api/v1",
-        portForwardPort: 18080,
-        helmTimeoutSeconds: 60,
-        stackTimeoutSeconds: 1,
-        dryRun: false,
-        bootstrapK3s: false,
-        set: []
-      },
-      shell
-    );
+  it(
+    "helm installs with the role/profile values, reads+deletes the credential, logs in, enables " +
+      "the role's backends, and declares the HQ outpost — all through the given --base-url (no port-forward)",
+    async () => {
+      const shell = fakeShell();
+      const summary = await runInstall(
+        {
+          role: "commander",
+          profile: "eval",
+          mode: "kube",
+          namespace: "scp",
+          releaseName: "scp",
+          with: [],
+          without: ["argo-workflows", "argo-events", "argo-rollouts", "gitea"], // keep the test to one backend
+          yes: true,
+          orgName: "default",
+          adminUsername: "admin",
+          baseUrl: "http://127.0.0.1:9-fake/api/v1",
+          portForwardPort: 18080,
+          helmTimeoutSeconds: 60,
+          stackTimeoutSeconds: 1,
+          dryRun: false,
+          bootstrapK3s: false,
+          set: []
+        },
+        shell
+      );
 
-    const execCalls = (shell as Shell & { __calls: { method: string; args: unknown[] }[] }).__calls.filter(
-      (c) => c.method === "exec"
-    );
-    const helmCall = execCalls.find((c) => (c.args[0] as string) === "helm");
-    expect(helmCall).toBeDefined();
-    const helmArgs = helmCall!.args[1] as string[];
-    expect(helmArgs).toContain("--set");
-    expect(helmArgs).toContain("federationRole=commander");
-    expect(helmArgs).toContain("bootstrap.orgName=default");
+      const execCalls = (
+        shell as Shell & { __calls: { method: string; args: unknown[] }[] }
+      ).__calls.filter((c) => c.method === "exec");
+      const helmCall = execCalls.find((c) => (c.args[0] as string) === "helm");
+      expect(helmCall).toBeDefined();
+      const helmArgs = helmCall!.args[1] as string[];
+      expect(helmArgs).toContain("--set");
+      expect(helmArgs).toContain("federationRole=commander");
+      expect(helmArgs).toContain("bootstrap.orgName=default");
 
-    const redactCalls = (shell as Shell & { __calls: { method: string; args: unknown[] }[] }).__calls.filter(
-      (c) => c.method === "redactSecretKey"
-    );
-    expect(redactCalls).toHaveLength(1);
+      const redactCalls = (
+        shell as Shell & { __calls: { method: string; args: unknown[] }[] }
+      ).__calls.filter((c) => c.method === "redactSecretKey");
+      expect(redactCalls).toHaveLength(1);
 
-    expect(sdkCalls.find((c) => c.method === "login")).toEqual({
-      method: "login",
-      args: ["admin", "correct-horse-battery-staple"]
-    });
-    expect(sdkCalls.find((c) => c.method === "stack.putBackend")?.args).toEqual([
-      "argocd",
-      { enabled: true }
-    ]);
-    expect(sdkCalls.find((c) => c.method === "federation.createOutpost")).toBeDefined();
-    // Measured against a real kind cluster: without this, HQ-outpost declare 400s — the chart's
-    // federationRole=commander value alone never reaches the org's federation identity row.
-    expect(sdkCalls.find((c) => c.method === "federation.init")?.args).toEqual([
-      { name: "default", role: "commander" }
-    ]);
+      expect(sdkCalls.find((c) => c.method === "login")).toEqual({
+        method: "login",
+        args: ["admin", "correct-horse-battery-staple"]
+      });
+      expect(sdkCalls.find((c) => c.method === "stack.putBackend")?.args).toEqual([
+        "argocd",
+        { enabled: true }
+      ]);
+      expect(sdkCalls.find((c) => c.method === "federation.createOutpost")).toBeDefined();
+      // Measured against a real kind cluster: without this, HQ-outpost declare 400s — the chart's
+      // federationRole=commander value alone never reaches the org's federation identity row.
+      expect(sdkCalls.find((c) => c.method === "federation.init")?.args).toEqual([
+        { name: "default", role: "commander" }
+      ]);
 
-    expect(summary.hqOutpostDeclared).toBe(true);
-    expect(summary.loggedInAs).toBe("admin");
+      expect(summary.hqOutpostDeclared).toBe(true);
+      expect(summary.loggedInAs).toBe("admin");
 
-    // Credentials were actually saved (config-store.ts), so a following `scp whoami` would work —
-    // the DoD's "reaches a logged-in admin session", not just a printed token.
-    const saved = JSON.parse(await readFile(path.join(configDir, "credentials.json"), "utf8"));
-    expect(saved.token).toBe("tok-1");
-  });
+      // Credentials were actually saved (config-store.ts), so a following `scp whoami` would work —
+      // the DoD's "reaches a logged-in admin session", not just a printed token.
+      const saved = JSON.parse(await readFile(path.join(configDir, "credentials.json"), "utf8"));
+      expect(saved.token).toBe("tok-1");
+    }
+  );
 
   it("retrans never touches the stack API and never declares an HQ outpost", async () => {
     const shell = fakeShell();

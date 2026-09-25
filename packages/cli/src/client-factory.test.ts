@@ -34,7 +34,12 @@ beforeEach(async () => {
   delete process.env.SCP_API_URL;
   await writeFile(
     path.join(configDir, "credentials.json"),
-    JSON.stringify({ baseUrl: REMOTE, token: "tok", org: "acme", expiresAt: "2030-01-01T00:00:00Z" })
+    JSON.stringify({
+      baseUrl: REMOTE,
+      token: "tok",
+      org: "acme",
+      expiresAt: "2030-01-01T00:00:00Z"
+    })
   );
 });
 
