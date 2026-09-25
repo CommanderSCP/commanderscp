@@ -115,6 +115,14 @@ async function main() {
   await api("POST", "/auth/login", { username: USER, password: PASS });
   console.log("logged in");
 
+  // #422 re-verify — ensureBootstrapAdmin always sets mustChangePassword:true (or, on a
+  // demo-seeded instance, seed.ts re-arms it after its own run — the operator's real first login
+  // must still go through a genuine forced change). Everything below needs past that gate; a
+  // fresh, thrown-away password satisfies it (a same-password "change" is refused server-side).
+  const freshPassword = `fixture-${Math.random().toString(36).slice(2)}`;
+  await api("POST", "/auth/password", { currentPassword: PASS, newPassword: freshPassword });
+  console.log("cleared the forced-password-change flag");
+
   // ------------------------------------------------------------- checkout-api (replica)
   // The component is the commander's, imported by federation under the commander's URN. Resolve by
   // the well-known URN first, then by exact name across the list — never create it. The org

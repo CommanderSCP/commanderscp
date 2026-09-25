@@ -99,6 +99,16 @@ LOGIN_RESPONSE="$(curl -fsS -X POST "$BASE_URL/api/v1/auth/login" \
   -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}")"
 TOKEN="$(node -e 'console.log(JSON.parse(process.argv[1]).token)' "$LOGIN_RESPONSE")"
 
+# #422 re-verify — ensureBootstrapAdmin always sets mustChangePassword:true; SCP_SEED_DEMO=true's
+# demo-seed login clears it temporarily but RE-ARMS it once seeding finishes (seed.ts's own
+# reset-and-rearm design — the operator's real first login must still go through a genuine forced
+# change). This script's own login above is exactly that "operator's real first login": clear it
+# before the poll below, which is gated the same as any write (the gate does not distinguish
+# GET from POST).
+source "${ROOT_DIR}/scripts/lib/clear-forced-password-change.sh"
+echo "==> clearing the forced-password-change flag"
+scp_clear_forced_password_change "$BASE_URL/api/v1" "$TOKEN" "$ADMIN_PASSWORD"
+
 echo "==> waiting for the demo seed (SCP_SEED_DEMO=true, seed.ts) to land"
 for i in $(seq 1 30); do
   if curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/v1/objects/service" \

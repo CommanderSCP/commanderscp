@@ -248,14 +248,11 @@ fi
 # drill's own path, no `scp install` in the loop) leaves ensureBootstrapAdmin's
 # mustChangePassword:true set, which requireAuth now enforces against EVERY route but
 # /auth/{me,logout,password} -- including the POST /api/v1/services golden-path call right below.
-# #422 re-verify BLOCKING 0: a same-password "change" is refused server-side now (it never actually
-# changed anything), so this must be a genuinely fresh, different password -- thrown away right
-# after (TOKEN, not ADMIN_PASSWORD, is what the rest of this drill uses).
-FRESH_PW="drill-$(head -c18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
-CHANGE_PW_STATUS="$(curl -fsS -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/v1/auth/password" \
-  -H "authorization: Bearer ${TOKEN}" -H "content-type: application/json" \
-  -d "{\"currentPassword\":\"${ADMIN_PASSWORD}\",\"newPassword\":\"${FRESH_PW}\"}")"
-[ "$CHANGE_PW_STATUS" = "204" ] || { echo "FAIL: clearing the forced-password-change flag returned ${CHANGE_PW_STATUS}" >&2; exit 1; }
+# #422 re-verify BLOCKING 0: a same-password "change" is refused server-side now, so this must be
+# a genuinely fresh, different password -- thrown away right after (TOKEN, not ADMIN_PASSWORD, is
+# what the rest of this drill uses).
+source "${ROOT_DIR}/scripts/lib/clear-forced-password-change.sh"
+scp_clear_forced_password_change "${BASE_URL}/api/v1" "$TOKEN" "$ADMIN_PASSWORD"
 
 CREATE_RESPONSE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" \
   -H "authorization: Bearer ${TOKEN}" -H "content-type: application/json" \

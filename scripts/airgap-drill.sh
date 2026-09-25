@@ -309,9 +309,8 @@ TOKEN="$(curl -fsS -X POST "${BASE_URL}/api/v1/auth/login" -H 'content-type: app
 # including the POST below. #422 re-verify BLOCKING 0: a same-password "change" is refused
 # server-side now, so this uses a genuinely fresh, thrown-away password (TOKEN is what the rest of
 # this drill relies on, not PW).
-FRESH_PW="drill-$(head -c18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
-CHANGE_PW_STATUS="$(curl -fsS -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/v1/auth/password" -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' -d "{\"currentPassword\":\"${PW}\",\"newPassword\":\"${FRESH_PW}\"}")"
-[ "$CHANGE_PW_STATUS" = "204" ] || { echo "FAIL: clearing the forced-password-change flag returned ${CHANGE_PW_STATUS}" >&2; exit 1; }
+source "${ROOT_DIR}/scripts/lib/clear-forced-password-change.sh"
+scp_clear_forced_password_change "${BASE_URL}/api/v1" "$TOKEN" "$PW"
 CREATE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' -d '{"name":"airgap-drill-service"}')"
 printf '%s' "$CREATE" | grep -q '"airgap-drill-service"' || { echo "FAIL: golden path service registration failed: $CREATE" >&2; exit 1; }
 log "PASS: golden path succeeded under the enforced zero-egress policy"

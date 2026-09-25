@@ -84,6 +84,15 @@ export SCP_API_URL="$BASE_URL/api/v1"
 echo "==> scp login"
 "${CLI_BIN[@]}" login --username admin --password "$ADMIN_PASSWORD"
 
+# #422 re-verify — ensureBootstrapAdmin always sets mustChangePassword:true; SCP_SEED_DEMO=true's
+# demo-seed login clears it temporarily but RE-ARMS it once seeding finishes (seed.ts's own
+# reset-and-rearm design — the operator's real first login must still go through a genuine forced
+# change). This script's own login above is exactly that "operator's real first login": clear it
+# before the writes below.
+source "${ROOT_DIR}/scripts/lib/clear-forced-password-change.sh"
+echo "==> scp passwd (clear the forced-password-change flag)"
+scp_clear_forced_password_change_via_cli CLI_BIN "$ADMIN_PASSWORD"
+
 echo "==> scp object create service --name billing"
 "${CLI_BIN[@]}" object create service --name billing
 
