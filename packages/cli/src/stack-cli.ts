@@ -6,6 +6,8 @@ import {
   StackUpdatePolicySchema,
   type StackBackend,
   type StackBackendView,
+  type StackServedOrg,
+  type StackServedOrgList,
   type StackSizeTier,
   type StackView
 } from "@scp/schemas";
@@ -65,6 +67,8 @@ export function stackBackendRow(b: StackBackendView): Record<string, string> {
     running: s?.runningVersion ?? "-",
     target: s?.targetVersion ?? "-",
     needs: s && s.needs.length > 0 ? s.needs.map((n) => n.code).join(",") : "-",
+    // M29.2: whether it is wired into SCP (registered, token, TLS trust, egress) and where.
+    wired: b.wiring === null ? "n/a" : b.wiring.wired ? (b.wiring.serverUrl ?? "yes") : "no",
     error: s?.lastError ?? "-"
   };
 }
@@ -88,7 +92,15 @@ function printStack(view: StackView, output: OutputFormat): void {
     console.log(JSON.stringify(view, null, 2));
     return;
   }
-  console.log(stackControllerLine(view) + "\n");
+  console.log(stackControllerLine(view));
+  if (view.servesThisOrg !== null) {
+    console.log(
+      view.servesThisOrg
+        ? "this organization is served: every wired backend is registered here as an execution system"
+        : "this organization is NOT served by the Standard Stack (an instance operator can: `scp stack attach`)"
+    );
+  }
+  console.log("");
   printResult(view.backends, output, (item) => stackBackendRow(item as StackBackendView));
   for (const b of view.backends) {
     for (const need of b.status?.needs ?? []) {
@@ -213,6 +225,76 @@ export function registerStackCommands(program: Command): void {
       const client = await clientFromStoredCredentials(opts);
       printStack(await client.stack.putSettings({ updatePolicy: parsed.data }, token), opts.output);
     });
+
+  stack
+    .command("rotate <backend>")
+    .description(
+      "Rotate a wired backend's credentials: the stack controller mints a new scoped token (for Argo Workflows also a new server certificate), hands it to SCP and revokes the old one"
+    )
+    .option(
+      "--operator-token <token>",
+      "a deployment operator credential (else $SCP_OPERATOR_TOKEN; else your login's instance-operator role)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (raw: string, opts: StackCliOpts) => {
+      const backend = backendOf(raw);
+      const client = await clientFromStoredCredentials(opts);
+      printStack(await client.stack.rotate(backend, operatorTokenOf(opts)), opts.output);
+    });
+
+  const printOrgs = (list: StackServedOrgList, output: OutputFormat) =>
+    printResult(list.items, output, (raw) => {
+      const o = raw as StackServedOrg;
+      return {
+        org: o.orgName,
+        id: o.orgId,
+        attachedBy: o.attachedBy.username ?? o.attachedBy.mechanism,
+        attachedAt: o.attachedAt
+      };
+    });
+
+  stack
+    .command("orgs")
+    .description(
+      "The organizations the Standard Stack serves — its wired backends are registered in each, all driving the same scoped accounts"
+    )
+    .option(
+      "--operator-token <token>",
+      "a deployment operator credential (else $SCP_OPERATOR_TOKEN; else your login's instance-operator role)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: StackCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      printOrgs(await client.stack.orgs(operatorTokenOf(opts)), opts.output);
+    });
+
+  for (const verb of ["attach", "detach"] as const) {
+    stack
+      .command(`${verb} <orgId>`)
+      .description(
+        verb === "attach"
+          ? "Serve another organization with the Standard Stack (its tenants then drive the same scoped backend accounts as every served org)"
+          : "Stop serving an organization (its registrations stay, with their bindings, and refuse to resolve)"
+      )
+      .option(
+        "--operator-token <token>",
+        "a deployment operator credential (else $SCP_OPERATOR_TOKEN; else your login's instance-operator role)"
+      )
+      .option("--base-url <url>", "API base URL override")
+      .option("--output <format>", "json|table", "table")
+      .action(async (orgId: string, opts: StackCliOpts) => {
+        const client = await clientFromStoredCredentials(opts);
+        const token = operatorTokenOf(opts);
+        printOrgs(
+          verb === "attach"
+            ? await client.stack.attachOrg(orgId, token)
+            : await client.stack.detachOrg(orgId, token),
+          opts.output
+        );
+      });
+  }
 
   stack
     .command("diagnostics")

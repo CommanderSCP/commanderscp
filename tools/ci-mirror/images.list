@@ -150,6 +150,17 @@ docker.io/kindest/node@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1
 # Always` and a merely-loaded image would still be pulled from quay.io — the air-gap retarget
 # (`stackd.imageOverrides`) is what the test exercises. The tag is the vendored manifest's own.
 quay.io/argoproj/argo-events@sha256:a83d2699ae536c54fcd83c25e1a10f0193e57411628172a358f8c8e775743e94  quay.io/argoproj/argo-events:v1.9.10
+# M29.2 — the backends the stack controller WIRES in the same cluster (apps/server
+# `stack-wiring.kind.test.ts`): a real Argo CD (with its Dex and the Valkey cache), a real Argo
+# Workflows (server, controller, and the argoexec every workflow pod runs), and the Gitea above.
+# Pushed into the harness registry and retargeted exactly as argo-events is. Tags are the vendored
+# manifests' / the helm-bundled chart's own.
+quay.io/argoproj/argocd@sha256:224e454cfd8c1818fec3ed17b72b2034c9a3915fa819e1dcccafc753776d446a  quay.io/argoproj/argocd:v3.4.5
+ghcr.io/dexidp/dex@sha256:b8469881d3cb3a73001506f0d3aaefecb9c45d2311c1e0f405d8ac538316c59d  ghcr.io/dexidp/dex:v2.45.0
+docker.io/valkey/valkey@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507  valkey/valkey:8-alpine
+quay.io/argoproj/argocli@sha256:8c141b1acd26df3de70724aedaae0ee5a7d361cdf744a1daa6a1596f205cee50  quay.io/argoproj/argocli:v4.0.7
+quay.io/argoproj/workflow-controller@sha256:8e3ca93350c18348e50cdb1899f37d672f9995d9bf51412d86dee52da22fff19  quay.io/argoproj/workflow-controller:v4.0.7
+quay.io/argoproj/argoexec@sha256:eb2a7ca4d678a0c8c4f2de44f815f02d9eb12ac4609855f897744139aef220b4  quay.io/argoproj/argoexec:v4.0.7
 
 # --- The root Dockerfile's Node base image (consumer form 4) --------------------------------------
 # Found 2026-08-31 by the census the E2E blackhole steps now enforce: `FROM node:22-trixie-slim`

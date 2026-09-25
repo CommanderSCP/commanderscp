@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   PutStackBackendRequestSchema,
   PutStackSettingsRequestSchema,
+  PutStackWiringRequestSchema,
   StackSpecDocumentSchema
 } from "./stack.js";
 
@@ -67,6 +68,44 @@ describe("the stack spec is enumerated values only", () => {
   it("the census fires on a schema that has a free string (known-positive control)", () => {
     const widened = StackSpecDocumentSchema.extend({ carrierRepoUrl: z.string() });
     expect(freeStringLeaves(widened)).toEqual([expect.stringMatching(/^\$\.carrierRepoUrl: /)]);
+  });
+
+  it("M29.2: what scpd hands back of a wiring is a sha256 and a counter per backend — never an endpoint", () => {
+    // Covered by the leaf walk above; pinned by name so a widened wiring entry is a named failure.
+    const shape = z.toJSONSchema(StackSpecDocumentSchema, { io: "input" }) as unknown as {
+      properties: { wiring: { items: { properties: Record<string, unknown> } } };
+    };
+    expect(Object.keys(shape.properties.wiring.items.properties).sort()).toEqual([
+      "backend",
+      "factsSha256",
+      "rotationGeneration"
+    ]);
+  });
+
+  it("M29.2: a wiring hand-off can only name an in-cluster Service — no path, no credentials, no other host", () => {
+    const ok = (serverUrl: string) =>
+      PutStackWiringRequestSchema.safeParse({
+        serverUrl,
+        namespace: null,
+        caPem: null,
+        account: "a",
+        token: "t",
+        factsSha256: "a".repeat(64),
+        rotationGeneration: 0
+      }).success;
+    expect(ok("http://argocd-server.scp-argocd.svc")).toBe(true);
+    expect(ok("https://argo-server.scp-argo-workflows.svc:2746")).toBe(true);
+    expect(ok("http://scp-gitea-http.scp-gitea.svc.cluster.local:3000")).toBe(true);
+    for (const bad of [
+      "https://attacker.example.com",
+      "http://argocd-server.scp-argocd.svc/api",
+      "http://user:pw@argocd-server.scp-argocd.svc",
+      "http://argocd-server.scp-argocd.svc?x=1",
+      "ftp://argocd-server.scp-argocd.svc",
+      "http://10.0.0.1"
+    ]) {
+      expect(ok(bad), bad).toBe(false);
+    }
   });
 
   it("the write bodies are strict: an unknown key is refused, not silently dropped", () => {

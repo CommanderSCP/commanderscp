@@ -418,23 +418,29 @@ if [[ "$MODE" == "helm" ]]; then
   if [[ -n "$KUBE_CONTEXT" ]]; then
     HELM_ARGS+=(--kube-context "$KUBE_CONTEXT")
   fi
-  # Bundled executor backends (Mode B) are delivered SEPARATELY from the SCP release — via the
-  # deploy/helm-bundled chart + scp-bundled.sh, applied AFTER the SCP install below — NOT the main
-  # chart: their vendored manifests exceed Helm's 1 MB release-Secret limit (packaging them into the
-  # SCP release breaks `helm install` outright). Here we only record which backends THIS bundle
-  # carries and each one's retargeted, digest-pinned image --set args (values-driven, never a
-  # hardcoded template ref — avoiding the eval-postgres air-gap trap noted below).
+  # Bundled executor backends (Mode B) are NOT part of the SCP release: their vendored manifests
+  # exceed Helm's 1 MB release-Secret limit. The stack controller installs them (M29.4) and wires
+  # them into SCP (M29.2) when an operator enables one through SCP. Here we only record which
+  # backends THIS bundle carries and each one's retargeted, digest-pinned image, which the
+  # controller is handed below as `stackd.imageOverrides` (values-driven, never a hardcoded
+  # template ref — avoiding the eval-postgres air-gap trap noted below).
   BUNDLED_APPLY=()
   BUNDLED_SET_ARGOCD=(); BUNDLED_SET_WORKFLOWS=(); BUNDLED_SET_EVENTS=(); BUNDLED_SET_GITEA=()
   BUNDLED_SET_ROLLOUTS=()
   if [[ -n "${ARGOCD_DIGEST:-}" ]]; then
     BUNDLED_SET_ARGOCD=(--set "bundledExecutor.argocd.image=${ARGOCD_RETARGETED_REF:-${REGISTRY}/argocd:${BUNDLE_VERSION}@${ARGOCD_DIGEST}}"
       --set "bundledExecutor.argocd.valkeyImage=${VALKEY_RETARGETED_REF:-${REGISTRY}/valkey:${BUNDLE_VERSION}@${VALKEY_DIGEST}}")
+    if [[ -n "${ARGOCD_DEX_DIGEST:-}" ]]; then
+      BUNDLED_SET_ARGOCD+=(--set "bundledExecutor.argocd.dexImage=${ARGOCD_DEX_RETARGETED_REF:-${REGISTRY}/argocd-dex:${BUNDLE_VERSION}@${ARGOCD_DEX_DIGEST}}")
+    fi
     BUNDLED_APPLY+=(argocd)
   fi
   if [[ -n "${ARGO_WORKFLOWS_CLI_DIGEST:-}" ]]; then
     BUNDLED_SET_WORKFLOWS=(--set "bundledExecutor.argoWorkflows.serverImage=${ARGO_WORKFLOWS_CLI_RETARGETED_REF:-${REGISTRY}/argo-workflows-cli:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CLI_DIGEST}}"
       --set "bundledExecutor.argoWorkflows.controllerImage=${ARGO_WORKFLOWS_CONTROLLER_RETARGETED_REF:-${REGISTRY}/argo-workflows-controller:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CONTROLLER_DIGEST}}")
+    if [[ -n "${ARGO_WORKFLOWS_EXEC_DIGEST:-}" ]]; then
+      BUNDLED_SET_WORKFLOWS+=(--set "bundledExecutor.argoWorkflows.executorImage=${ARGO_WORKFLOWS_EXEC_RETARGETED_REF:-${REGISTRY}/argo-workflows-exec:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_EXEC_DIGEST}}")
+    fi
     # The build catalog's images travel with the controller. Retargeted here rather than left at
     # their upstream defaults, because scp-build-image-v1's chart values point at docker.io — a
     # value an air-gapped build pod cannot reach, and which would fail only once a build ran.
@@ -484,10 +490,16 @@ if [[ "$MODE" == "helm" ]]; then
   # handed to it as `stackd.imageOverrides` — so when the controller installs a backend (the Stack
   # page, `scp stack enable`), it pulls the bytes this bundle carried from this registry, never
   # quay.io. Only the controller's retargetable image fields are passed (the controller refuses any
-  # other key): catalog.ops.runnerImage is not one — the controller renders no ops catalog. This
-  # sets the values; it does not turn the controller on (`stackd.enabled` — M29.1's installer does).
+  # other key): catalog.ops.runnerImage is not one — the controller renders no ops catalog.
+  # M29.2 (ADR-0061): the controller is TURNED ON here. It is the only way a bundled backend is
+  # installed and wired any more (scp-bundled.sh's `enable` is retired), and the bootstrap admin
+  # gets the instance-operator role once (the one-shot seam, ADR-0058 §7) so the first login can
+  # enable backends on Admin › Stack — no credential to hunt for, no command to run against a
+  # backend. M29.1's `scp install --bundle` subsumes this script.
   if [[ -n "${SCP_STACKD_DIGEST:-}" ]]; then
-    HELM_ARGS+=(--set "stackd.image.repository=${REGISTRY}/scp-stackd"
+    HELM_ARGS+=(--set "stackd.enabled=true"
+      --set "instanceOperator.grantBootstrapAdmin=true"
+      --set "stackd.image.repository=${REGISTRY}/scp-stackd"
       --set "stackd.image.tag=${BUNDLE_VERSION}@${SCP_STACKD_DIGEST}")
     STACKD_OVERRIDES=""
     for kv in ${BUNDLED_SET_ARGOCD[@]+"${BUNDLED_SET_ARGOCD[@]}"} \
@@ -498,7 +510,8 @@ if [[ "$MODE" == "helm" ]]; then
       [[ "$kv" == bundledExecutor.* ]] || continue
       key="${kv%%=*}"; key="${key#bundledExecutor.}"; ref="${kv#*=}"
       case "$key" in
-        argocd.image|argocd.valkeyImage|argoWorkflows.serverImage|argoWorkflows.controllerImage|\
+        argocd.image|argocd.valkeyImage|argocd.dexImage|argoWorkflows.serverImage|\
+        argoWorkflows.controllerImage|argoWorkflows.executorImage|\
         argoWorkflows.catalog.buildImage.builderImage|argoWorkflows.catalog.buildImage.gitImage|\
         argoWorkflows.catalog.buildRpm.builderImage|argoWorkflows.catalog.infra.image|\
         argoRollouts.image|argoEvents.image|gitea.image)
@@ -574,34 +587,28 @@ if [[ "$MODE" == "helm" ]]; then
 
   echo "   helm ${HELM_ARGS[*]}"
   if [[ $DRY_RUN -eq 1 ]]; then
-    echo "   [dry-run] not running helm upgrade --install (bundled backends this bundle would enable: ${#BUNDLED_APPLY[@]})"
+    echo "   [dry-run] not running helm upgrade --install (bundled backends this bundle carries: ${#BUNDLED_APPLY[@]})"
   else
     helm "${HELM_ARGS[@]}"
-    # Apply each bundled backend THIS bundle carries, via the one-command wrapper: deploy/helm-bundled
-    # rendered + `kubectl apply --server-side` (the vendored manifests exceed Helm's 1 MB release-
-    # Secret limit, so they are NEVER part of the SCP release), and for argocd the wrapper also
-    # flips the SCP release's auto-wire hook + NetworkPolicy. This deploys the Standard Stack the only
-    # way that fits under Kubernetes' Secret limit.
-    NS_ARGS=(); [[ -n "$NAMESPACE" ]] && NS_ARGS=(--scp-namespace "$NAMESPACE")
-    if [[ $SKIP_BUNDLED_BACKENDS -eq 1 ]]; then
-      echo "   --skip-bundled-backends: not running scp-bundled.sh (${#BUNDLED_APPLY[@]} backend(s) this bundle carries are left for the stack controller / 'scp stack enable' to install instead)"
+    # The bundled backends this bundle carries are installed AND wired by the stack controller the
+    # moment one is enabled through SCP — the execution system, its scoped token, TLS trust and
+    # both egress layers, with nothing to run against the backend itself (M29.2, ADR-0061).
+    # `--skip-bundled-backends`/`scp install`'s own stack-enable step (ADR-0060 §1) drove this
+    # before M29.2 landed; the old scp-bundled.sh apply loop it was built to avoid double-running
+    # against is gone now, so this flag is a harmless, unused no-op kept for one release for any
+    # script already passing it.
+    if [[ ${#BUNDLED_APPLY[@]} -gt 0 ]]; then
+      if [[ -n "${SCP_STACKD_DIGEST:-}" ]]; then
+        echo "   STANDARD STACK: this bundle carries ${BUNDLED_APPLY[*]}. Enable any of them on"
+        echo "   Admin › Stack (your bootstrap admin holds the instance-operator role), or:"
+        for be in ${BUNDLED_APPLY[@]+"${BUNDLED_APPLY[@]}"}; do
+          echo "     scp stack enable ${be}"
+        done
+      else
+        echo "   WARNING: this bundle carries backend images (${BUNDLED_APPLY[*]}) but no scp-stackd"
+        echo "   image, so nothing can install them. Rebuild the bundle with the stack controller."
+      fi
     fi
-    for be in ${BUNDLED_APPLY[@]+"${BUNDLED_APPLY[@]}"}; do
-      [[ $SKIP_BUNDLED_BACKENDS -eq 1 ]] && break
-      echo "   == enabling bundled backend: ${be} =="
-      BSET=()
-      case "$be" in
-        argocd)         BSET=(${BUNDLED_SET_ARGOCD[@]+"${BUNDLED_SET_ARGOCD[@]}"}) ;;
-        argo-workflows) BSET=(${BUNDLED_SET_WORKFLOWS[@]+"${BUNDLED_SET_WORKFLOWS[@]}"}) ;;
-        argo-rollouts)  BSET=(${BUNDLED_SET_ROLLOUTS[@]+"${BUNDLED_SET_ROLLOUTS[@]}"}) ;;
-        argo-events)    BSET=(${BUNDLED_SET_EVENTS[@]+"${BUNDLED_SET_EVENTS[@]}"}) ;;
-        gitea)          BSET=(${BUNDLED_SET_GITEA[@]+"${BUNDLED_SET_GITEA[@]}"}) ;;
-      esac
-      bash "${SCRIPT_DIR}/scp-bundled.sh" enable "$be" \
-        --chart "${SCRIPT_DIR}/helm-bundled" --scp-chart "${SCRIPT_DIR}/helm" \
-        --scp-release "$RELEASE_NAME" \
-        ${NS_ARGS[@]+"${NS_ARGS[@]}"} ${BSET[@]+"${BSET[@]}"}
-    done
   fi
 else
   SCPD_REF="${SCPD_RETARGETED_REF:-${REGISTRY}/scpd:${BUNDLE_VERSION}@${SCPD_DIGEST}}"

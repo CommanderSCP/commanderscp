@@ -1,5 +1,6 @@
 import { ScpClient } from "@scp/sdk";
 import { StackBackendSchema } from "@scp/schemas";
+import { nodeBackendHttp } from "./backend-http.js";
 import { resolveHelm, type HelmRenderer } from "./helm.js";
 import { KubeClient, type KubeTransport } from "./kube.js";
 import { assertStackSet, parseManifests } from "./manifests.js";
@@ -7,19 +8,22 @@ import { backendNamespace, loadRelease, type StackRelease } from "./release.js";
 import type { ControllerDeps, StackApi } from "./reconcile.js";
 import { StateStore } from "./state.js";
 import { deriveBackendValues } from "./values.js";
+import { unwireBackend, wireBackend } from "./wiring.js";
 
 /**
  * Assembling a controller from its configuration. The ONLY API client it builds is below, and it
- * uses exactly two operations — the spec read and the status write — with the install-time
- * operator credential and no session: `stack-controller-inputs.test.ts` holds the controller's
- * sources to that.
+ * uses exactly four operations — the spec read, the status write, and (M29.2) the wiring hand-off
+ * and its withdrawal — with the install-time credential and no session:
+ * `controller-inputs.test.ts` holds the controller's sources to that.
  */
 
 export function stackApiFor(baseUrl: string, operatorCredential: string): StackApi {
   const client = new ScpClient({ baseUrl });
   return {
     spec: () => client.stack.spec(operatorCredential),
-    putStatus: (req) => client.stack.putStatus(req, operatorCredential)
+    putStatus: (req) => client.stack.putStatus(req, operatorCredential),
+    putWiring: (backend, req) => client.stack.putWiring(backend, req, operatorCredential),
+    deleteWiring: (backend) => client.stack.deleteWiring(backend, operatorCredential)
   };
 }
 
@@ -38,6 +42,30 @@ export interface ControllerConfig {
   intervalMs: number;
   readyTimeoutMs: number;
   resyncMs: number;
+  /** M29.2: the labels that select scpd's api and worker pods — the chart's own selector labels,
+   *  the subject of the egress NetworkPolicy the controller opens for each wired backend. */
+  scpPodLabels: Record<string, string>;
+}
+
+/** `SCP_STACKD_SCP_POD_LABELS`: a JSON object of label → value, each a valid label. */
+export function parsePodLabels(raw: string | undefined): Record<string, string> {
+  if (raw === undefined || raw.trim() === "") return {};
+  const parsed: unknown = JSON.parse(raw);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("SCP_STACKD_SCP_POD_LABELS must be a JSON object of label: value");
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (
+      !/^([a-z0-9.-]{1,253}\/)?[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$/.test(k) ||
+      typeof v !== "string" ||
+      !/^([A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?)?$/.test(v)
+    ) {
+      throw new Error(`SCP_STACKD_SCP_POD_LABELS: '${k}' is not a label selector entry`);
+    }
+    out[k] = v;
+  }
+  return out;
 }
 
 function num(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
@@ -72,7 +100,8 @@ export function loadControllerConfig(env: NodeJS.ProcessEnv = process.env): Cont
     federationRole: role,
     intervalMs: num(env, "SCP_STACKD_INTERVAL_SECONDS", 30) * 1000,
     readyTimeoutMs: num(env, "SCP_STACKD_READY_TIMEOUT_SECONDS", 600) * 1000,
-    resyncMs: num(env, "SCP_STACKD_RESYNC_SECONDS", 600) * 1000
+    resyncMs: num(env, "SCP_STACKD_RESYNC_SECONDS", 600) * 1000,
+    scpPodLabels: parsePodLabels(env.SCP_STACKD_SCP_POD_LABELS)
   };
 }
 
@@ -91,7 +120,7 @@ export async function buildControllerDeps(
     ...(config.imageOverridesFile ? { imageOverridesFile: config.imageOverridesFile } : {})
   });
   const kube = new KubeClient(transport);
-  return {
+  const deps: ControllerDeps = {
     api: stackApiFor(config.apiUrl, config.operatorCredential),
     kube,
     helm,
@@ -107,6 +136,23 @@ export async function buildControllerDeps(
     log: (line) => console.log(`[scp-stackd] ${line}`),
     ...overrides
   };
+  return installWiringHooks(deps, { http: nodeBackendHttp(), scpPodLabels: config.scpPodLabels });
+}
+
+/**
+ * M29.2 (ADR-0061): the auto-wire. Every ready backend is wired into SCP in the same reconcile;
+ * every disabled one is unwired before it is removed. A hook an override already set is kept.
+ * (wiring.test.ts calls the installed hooks and watches the hand-off happen — a reference to
+ * `wireBackend` that is never called would pass a census, not that test.)
+ */
+export function installWiringHooks(
+  deps: ControllerDeps,
+  wiring: NonNullable<ControllerDeps["wiring"]>
+): ControllerDeps {
+  deps.wiring ??= wiring;
+  deps.afterReady ??= (backend, objects, ctx) => wireBackend(deps, backend, objects, ctx);
+  deps.unwire ??= (backend, ctx) => unwireBackend(deps, backend, ctx);
+  return deps;
 }
 
 /**
@@ -131,7 +177,7 @@ export async function selfTest(opts: {
   const lines = [`helm ${helm.version} at ${helm.binary}; release ${release.version}`];
   for (const backend of StackBackendSchema.options) {
     const values = deriveBackendValues(
-      { backend, enabled: true, sizeTier: "small", purgeGeneration: 0 },
+      { backend, enabled: true, sizeTier: "small", purgeGeneration: 0, rotateGeneration: 0 },
       {
         release,
         scpNamespace: "scp",

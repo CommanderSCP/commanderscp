@@ -42,6 +42,11 @@
 # with `scripts/airgap-drill.sh`, which already has that machinery. THIS harness gates the Job
 # LIFECYCLE, and says so.
 #
+# CORRECTED IN PART (M29.2, kind v0.32.0): kindnet DOES enforce an INGRESS NetworkPolicy — the
+# bundled Argo Workflows' "only scpd's pods" ingress rule dropped every connection from the node to
+# argo-server until a fixture admitted the node (apps/server `stack-wiring.kind.test.ts`). The egress
+# measurement above was not repeated, and containment is still not what this harness claims.
+#
 #   scripts/kind-runner-harness.sh up     create the cluster and write <workdir>/harness.json
 #   scripts/kind-runner-harness.sh down   delete the cluster
 #
@@ -88,8 +93,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STACK_REGISTRY_NAME="${SCP_KIND_STACK_REGISTRY:-scp-kind-registry}"
 STACK_REGISTRY_HOST_PORT="${SCP_KIND_STACK_REGISTRY_PORT:-5001}"
 REGISTRY_IMAGE="${SCP_KIND_REGISTRY_IMAGE:-registry:2}"
-# Images pushed into that registry, as <local ref>=<path in the registry>.
-STACK_IMAGES="${SCP_KIND_STACK_IMAGES:-quay.io/argoproj/argo-events:v1.9.10=argoproj/argo-events:v1.9.10}"
+# Images pushed into that registry, as <local ref>=<path in the registry>. M29.2 adds what the WIRING
+# suite installs for real: Argo CD (+ Dex, Valkey), Argo Workflows (+ the argoexec every workflow pod
+# runs, and alpine for the trivial step) and Gitea — each already mirrored (tools/ci-mirror).
+STACK_IMAGES="${SCP_KIND_STACK_IMAGES:-quay.io/argoproj/argo-events:v1.9.10=argoproj/argo-events:v1.9.10 \
+quay.io/argoproj/argocd:v3.4.5=argoproj/argocd:v3.4.5 \
+ghcr.io/dexidp/dex:v2.45.0=dexidp/dex:v2.45.0 \
+valkey/valkey:8-alpine=valkey/valkey:8-alpine \
+quay.io/argoproj/argocli:v4.0.7=argoproj/argocli:v4.0.7 \
+quay.io/argoproj/workflow-controller:v4.0.7=argoproj/workflow-controller:v4.0.7 \
+quay.io/argoproj/argoexec:v4.0.7=argoproj/argoexec:v4.0.7 \
+docker.gitea.com/gitea:1.26.1-rootless=gitea/gitea:1.26.1-rootless \
+alpine:3.20=library/alpine:3.20}"
 STACKD_NAMESPACE="${SCP_KIND_STACKD_NAMESPACE:-scp-stackd-harness}"
 STACKD_RELEASE="scp"
 # The controller's RELEASE namespace — where scpd would run. Distinct from STACKD_NAMESPACE, as the
@@ -143,6 +158,9 @@ stack_up() {
   # adopts it; a real install orders it by hook weight.)
   log "applying THE CHART'S OWN stack controller RBAC (templates/stackd-rbac.yaml) into ${STACKD_NAMESPACE}"
   kubectl create namespace "$STACKD_NAMESPACE"
+  # M29.2: the controller's one right in SCP's OWN namespace (the per-backend egress policies) is a
+  # Role there, so the release namespace exists before the render is applied.
+  kubectl create namespace "$STACKD_RELEASE_NAMESPACE"
   helm template "$STACKD_RELEASE" "${REPO_ROOT}/deploy/helm" \
     --namespace "$STACKD_RELEASE_NAMESPACE" \
     --set stackd.enabled=true \
@@ -311,8 +329,16 @@ QUOTA
 
   stack_up
 
+  # M29.2: an identity for the wiring suite's FIXTURES — the tenant data it arranges on the backends
+  # (an Argo CD Application, a WorkflowTemplate, a Gitea repository) so a real read has something to
+  # read. Never used for a wiring step: the suite wires with the chart's own stackd identity only.
+  kubectl -n default create serviceaccount scp-kind-fixtures
+  kubectl create clusterrolebinding scp-kind-fixtures --clusterrole=cluster-admin \
+    --serviceaccount=default:scp-kind-fixtures >/dev/null
+
   log "minting a ServiceAccount token and extracting the cluster CA"
-  local token ca_file api_base stackd_token
+  local token ca_file api_base stackd_token fixtures_token
+  fixtures_token="$(kubectl -n default create token scp-kind-fixtures --duration=2h)"
   stackd_token="$(kubectl -n "$STACKD_NAMESPACE" create token "${STACKD_RELEASE}-commanderscp-stackd" --duration=2h)"
   token="$(kubectl -n "$NAMESPACE" create token scp-runner-harness --duration=2h)"
   local nosecrets_token
@@ -342,14 +368,71 @@ QUOTA
   "stackdNamespace": "${STACKD_NAMESPACE}",
   "stackdToken": "${stackd_token}",
   "stackRegistry": "${STACK_REGISTRY_NAME}:5000",
+  "stackReleaseNamespace": "${STACKD_RELEASE_NAMESPACE}",
+  "fixturesToken": "${fixtures_token}",
+  "netnsApiBase": "https://127.0.0.1:6443",
   "createSeconds": $((t1 - t0))
 }
 EOF
   log "harness ready: ${WORKDIR}/harness.json"
 }
 
+# ---- M29.2: RUN A COMMAND FROM INSIDE THE CLUSTER'S NETWORK ---------------------------------------
+# The wiring suite runs scpd and the stack controller in the test process, exactly as M29.4's does —
+# but what it proves is that SCP really talks to the backends it wired: the plugin subprocess dials
+# `argocd-server.scp-argocd.svc`, `https://argo-server.scp-argo-workflows.svc:2746` and
+# `scp-gitea-http.scp-gitea.svc:3000`. Those names and ClusterIPs exist only inside the cluster, so
+# the suite runs in a container that SHARES THE KIND NODE'S NETWORK NAMESPACE — the node's kube-proxy
+# rules route Service IPs from there, and a resolv.conf naming the cluster's CoreDNS with a pod's
+# search path resolves `<svc>.<ns>.svc` the way scpd's own pod would. Nothing about the endpoint is
+# faked or overridden: the URL a test hands a plugin is the one the controller derived. (EGRESS
+# NetworkPolicy is not enforced here; kindnet enforces ingress only — see the header.)
+#
+# The container runs as the caller's uid, which the node image has no passwd entry for unless it
+# happens to be 1000 (a dev box). Testcontainers calls os.userInfo() and fails with
+# `uv_os_get_passwd ENOENT` without one — CI's runner is 1001 — so the host's passwd and group are
+# mounted read-only.
+#
+# Testcontainers still starts Postgres on the host's daemon; from the node's namespace the host is
+# the kind network's gateway, which TESTCONTAINERS_HOST_OVERRIDE names.
+#
+#   scripts/kind-runner-harness.sh in-cluster-net <command…>
+in_cluster_net() {
+  [ $# -gt 0 ] || { echo "usage: $0 in-cluster-net <command...>" >&2; exit 2; }
+  export KUBECONFIG="${WORKDIR}/kubeconfig"
+  local node dns gw image
+  node="$(kind get nodes --name "$CLUSTER_NAME" | head -n1)"
+  [ -n "$node" ] || { echo "[kind-runner-harness] no cluster '${CLUSTER_NAME}' — run up first" >&2; exit 1; }
+  dns="$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')"
+  gw="$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -n1)"
+  image="${NODE_IMAGE:-node:22-trixie-slim}"
+  printf 'nameserver %s\nsearch svc.cluster.local cluster.local\noptions ndots:5\n' "$dns" >"${WORKDIR}/resolv.conf"
+  log "running in ${node}'s network namespace (CoreDNS ${dns}, host ${gw}) on ${image}: $*"
+  docker run --rm \
+    --network "container:${node}" \
+    --user "$(id -u):$(id -g)" \
+    --group-add "$(stat -c %g /var/run/docker.sock)" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /etc/passwd:/etc/passwd:ro \
+    -v /etc/group:/etc/group:ro \
+    -v "${REPO_ROOT}:${REPO_ROOT}" \
+    -v "${WORKDIR}:${WORKDIR}" \
+    -v "${WORKDIR}/resolv.conf:/etc/resolv.conf:ro" \
+    -v "$(command -v helm):/usr/local/bin/helm:ro" \
+    -w "$PWD" \
+    -e HOME=/tmp \
+    -e CI="${CI:-}" \
+    -e SCP_KIND_WORKDIR="$WORKDIR" \
+    -e SCP_KIND_IN_CLUSTER_NET=1 \
+    -e TESTCONTAINERS_HOST_OVERRIDE="$gw" \
+    -e TESTCONTAINERS_RYUK_DISABLED=true \
+    -e SCP_TEST_MAX_FORKS="${SCP_TEST_MAX_FORKS:-}" \
+    "$image" "$@"
+}
+
 case "${1:-up}" in
   up) up ;;
   down) down ;;
-  *) echo "usage: $0 [up|down]" >&2; exit 2 ;;
+  in-cluster-net) shift; in_cluster_net "$@" ;;
+  *) echo "usage: $0 [up|down|in-cluster-net <command...>]" >&2; exit 2 ;;
 esac

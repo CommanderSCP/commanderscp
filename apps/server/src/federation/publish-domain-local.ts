@@ -1,4 +1,5 @@
 import { and, eq, isNull, or } from "drizzle-orm";
+import { assertStackRegistrationWrite } from "../authz/execution-system-routing-door.js";
 import type { GraphObject, SweptRelationship } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, relationships } from "../db/schema.js";
@@ -95,6 +96,16 @@ export async function publishDomainLocalObject(
     .for("update");
   const existing = lockedRows[0];
   if (!existing) throw notFound(`object '${resolved.id}' not found`);
+  // M29.2 (ADR-0061): a Standard Stack registration never federates — publishing it would journal
+  // this instance's in-cluster endpoint and its internal-egress allowance to every peer. The same
+  // door as create/update/delete; publish is refused to every writer, the stack included.
+  await assertStackRegistrationWrite(tx, {
+    orgId: input.orgId,
+    typeId: input.typeId,
+    objectId: existing.id,
+    act: "publish",
+    subject: `${input.typeId} '${existing.id}'`
+  });
 
   // Single-writer authority, checked BEFORE anything is written. Publishing a replica would be this
   // domain claiming authorship of another domain's row — the same violation `updateObject` refuses,

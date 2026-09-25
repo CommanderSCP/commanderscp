@@ -36,7 +36,10 @@ import {
   assertOrgRetainsAdministrativeFloor,
   objectTouchesRoleAuthority
 } from "../authz/role-binding-door.js";
-import { assertMayWriteExecutionSystemRouting } from "../authz/execution-system-routing-door.js";
+import {
+  assertMayWriteExecutionSystemRouting,
+  assertStackRegistrationWrite
+} from "../authz/execution-system-routing-door.js";
 import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { assertOutpostPeerBinding, isPeerBoundObjectType } from "../federation/outpost-binding.js";
@@ -163,6 +166,9 @@ export interface CreateObjectInput extends ScanOverrideGrantDecisionWrite {
   domainLocal?: boolean;
   /** Provenance for the `contains` route, which create cannot see. See docs/graph.md §80. */
   domainLocalInheritedFrom?: { id: string; urn: string };
+  /** M29.2 (ADR-0061): set ONLY by `stack/wiring.ts`, writing a Standard Stack registration.
+   *  Never from a request: `assertStackRegistrationWrite`. */
+  stackManagedWrite?: boolean;
 }
 
 /** Resolves the `domain_id` an object create should use. See docs/graph.md §81. */
@@ -290,15 +296,27 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       subject: `${input.typeId} '${input.name}'`
     });
     // THE EXECUTION-SYSTEM ROUTING DOOR (`authz/execution-system-routing-door.ts`). On CREATE every
-    // property is new, so a system carrying any needs `secret:write` at the org root.
-    await assertMayWriteExecutionSystemRouting(tx, {
+    // property is new, so a system carrying any needs `secret:write` at the org root. A Standard
+    // Stack registration is the stack's own write, authorised by the instance operator who enabled
+    // the backend and served this org (M29.2) — it is checked by the registration door instead.
+    await assertStackRegistrationWrite(tx, {
       orgId: input.orgId,
-      actorObjectId: input.actorObjectId,
       typeId: input.typeId,
-      before: {},
-      after: properties,
+      objectId: input.id,
+      stackManagedWrite: input.stackManagedWrite,
+      act: "create",
       subject: `${input.typeId} '${input.name}'`
     });
+    if (!input.stackManagedWrite) {
+      await assertMayWriteExecutionSystemRouting(tx, {
+        orgId: input.orgId,
+        actorObjectId: input.actorObjectId,
+        typeId: input.typeId,
+        before: {},
+        after: properties,
+        subject: `${input.typeId} '${input.name}'`
+      });
+    }
     // The fifth authoring refusal, ending a common first experience. See docs/graph.md §93.
     await assertScanRuleRequiresScanControl(tx, {
       orgId: input.orgId,
@@ -560,6 +578,8 @@ export interface UpdateObjectInput extends ScanOverrideGrantDecisionWrite {
   federationImport?: FederationImportContext;
   /** The unverified-shadow adoption hatch, and nothing wider. See docs/graph.md §103. */
   unverifiedShadowOverride?: boolean;
+  /** M29.2 (ADR-0061): see `CreateObjectInput.stackManagedWrite`. */
+  stackManagedWrite?: boolean;
 }
 
 // Uses the drizzle query builder. See docs/graph.md §104.
@@ -713,16 +733,28 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       after: nextLabels,
       subject: `${input.typeId} '${existing.urn}'`
     });
-    // The UPDATE half of the routing door: `before` is the STORED properties, so a rename that
-    // re-sends them unchanged stays at `object:write`, and a re-point does not.
-    await assertMayWriteExecutionSystemRouting(tx, {
+    // M29.2: a Standard Stack registration is written by the stack alone — any other update of it,
+    // by anyone, is refused (its routing is the controller's wiring, ADR-0061).
+    await assertStackRegistrationWrite(tx, {
       orgId: input.orgId,
-      actorObjectId: input.actorObjectId,
       typeId: input.typeId,
-      before: existing.properties as Record<string, unknown>,
-      after: nextProperties,
+      objectId: existing.id,
+      stackManagedWrite: input.stackManagedWrite,
+      act: "update",
       subject: `${input.typeId} '${existing.urn}'`
     });
+    // The UPDATE half of the routing door: `before` is the STORED properties, so a rename that
+    // re-sends them unchanged stays at `object:write`, and a re-point does not.
+    if (!input.stackManagedWrite) {
+      await assertMayWriteExecutionSystemRouting(tx, {
+        orgId: input.orgId,
+        actorObjectId: input.actorObjectId,
+        typeId: input.typeId,
+        before: existing.properties as Record<string, unknown>,
+        after: nextProperties,
+        subject: `${input.typeId} '${existing.urn}'`
+      });
+    }
     // The update half of the un-declaration guard. See docs/graph.md §109.
     await assertMayUndeclareRegionMembership(tx, {
       orgId: input.orgId,
@@ -1158,6 +1190,19 @@ export async function deleteObject(
       }
       removedForeignShadow = true;
     }
+  }
+
+  // M29.2 (ADR-0061): a Standard Stack registration is never removed through this door — disabling
+  // the backend (or no longer serving this org) marks it unwired instead, keeping its bindings.
+  if (!input.federationImport) {
+    await assertStackRegistrationWrite(tx, {
+      orgId: input.orgId,
+      typeId: input.typeId,
+      objectId: existing.id,
+      stackManagedWrite: undefined,
+      act: "delete",
+      subject: `${input.typeId} '${existing.urn}'`
+    });
   }
 
   // M15.6 / ADR-0017 §3 — the DELETE half of the un-declaration guard. See docs/graph.md §123.

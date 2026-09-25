@@ -363,6 +363,10 @@ const UNIT_HOOK_OVERRIDES: Record<string, { ms: number; why: string }> = {
     ms: 30_000,
     why: "same warm-up as its CLI siblings (M29.1)"
   },
+  "packages/cli/src/connect-gitea-cli.test.ts": {
+    ms: 30_000,
+    why: "same warm-up; modelled on connect-argo-workflows (M29.2)"
+  },
   "packages/runner-launcher/src/no-spawn-on-kubernetes.behaviour.test.ts": {
     ms: 190_000,
     why: "A BUILD IN A HOOK: `npx tsc -b` with an inner 180_000ms subprocess timeout, because the subject of that file is the built dist rather than the vitest-transformed source. 6.3x the reviewed maximum, deliberately NOT absorbed into it"

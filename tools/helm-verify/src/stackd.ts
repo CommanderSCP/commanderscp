@@ -9,6 +9,7 @@ import {
   parseManifests,
   resolveHelm,
   RETARGETABLE_IMAGE_PATHS,
+  egressPolicyName,
   stamp,
   type KubeObject,
   type StackRelease
@@ -173,6 +174,8 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
   };
   const backendNamespaces = chartValues.stackd.backendNamespaces;
   const stateRole = `${sa}-state`;
+  /** M29.2 (ADR-0061): the one right the controller holds in SCP's own namespace. */
+  const egressRole = `${sa}-egress`;
   const expectedAdded = new Set([
     `Namespace//${sns}`,
     `ServiceAccount/${sns}/${sa}`,
@@ -186,6 +189,8 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     `ConfigMap/${sns}/${sa}-images`,
     `Deployment/${sns}/${sa}`,
     `NetworkPolicy/${sns}/${sa}`,
+    `Role/${ns}/${egressRole}`,
+    `RoleBinding/${ns}/${egressRole}`,
     ...backendNamespaces.flatMap((n) => [`Namespace//${n}`, `RoleBinding/${n}/${sa}`])
   ]);
   const addedKeys = added.map(docKey).sort();
@@ -204,7 +209,10 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
       namespace?: string;
     }[];
     const refersToStackd =
-      roleRef.name === clusterRole || roleRef.name === namespacedRole || roleRef.name === stateRole;
+      roleRef.name === clusterRole ||
+      roleRef.name === namespacedRole ||
+      roleRef.name === stateRole ||
+      roleRef.name === egressRole;
     const bindsStackdSa = subjects.some((s) => s.kind === "ServiceAccount" && s.name === sa);
     if (refersToStackd || bindsStackdSa) {
       const onlyStackd =
@@ -224,7 +232,11 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
       }
       const bindingNs = String(b.metadata?.namespace);
       const allowedHere =
-        roleRef.name === stateRole ? bindingNs === sns : backendNamespaces.includes(bindingNs);
+        roleRef.name === stateRole
+          ? bindingNs === sns
+          : roleRef.name === egressRole
+            ? bindingNs === ns
+            : backendNamespaces.includes(bindingNs);
       if (b.kind === "RoleBinding" && !allowedHere) {
         fail(
           `[stackd] RoleBinding '${b.metadata?.name}' grants the controller '${roleRef.name}' in '${bindingNs}' — the namespaced role belongs only in the backend namespaces, the state role only in ${sns}`
@@ -341,13 +353,74 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
       "[stackd] the controller's pod template carries no checksum of its credential — a rotation would not roll it"
     );
   }
-  // Review N3: DNS, the API server, and scpd's api pods in the RELEASE namespace — nothing else.
+  // M29.2 (ADR-0061): IN SCP'S OWN NAMESPACE THE CONTROLLER MAY WRITE NETWORKPOLICIES AND NOTHING
+  // ELSE — the per-backend egress policies it opens for scpd when it wires a backend. No Secret (the
+  // release namespace holds scpd's database credentials), no workload, no pod: get/patch/delete are
+  // held to the three policy names; `create` cannot be limited by name in RBAC, which ADR-0061 states.
+  {
+    const egressRules = (on.find((d) => docKey(d) === `Role/${ns}/${egressRole}`)?.["rules"] ??
+      []) as Rule[];
+    const policyNames = (["argocd", "argo-workflows", "gitea"] as const)
+      .map((b) => egressPolicyName(b))
+      .sort();
+    const outside = egressRules.filter(
+      (r) =>
+        JSON.stringify(r.apiGroups ?? []) !== JSON.stringify(["networking.k8s.io"]) ||
+        JSON.stringify(r.resources ?? []) !== JSON.stringify(["networkpolicies"])
+    );
+    if (outside.length > 0) {
+      fail(
+        `[stackd] the controller's Role in ${ns} grants something other than NetworkPolicies: ${JSON.stringify(outside)}`
+      );
+    }
+    for (const verb of ["get", "patch", "delete"]) {
+      const rule = egressRules.find((r) => (r.verbs ?? []).includes(verb));
+      if (
+        !rule ||
+        JSON.stringify([...(rule.resourceNames ?? [])].sort()) !== JSON.stringify(policyNames)
+      ) {
+        fail(
+          `[stackd] the controller's '${verb}' on NetworkPolicies in ${ns} is not held to exactly ${JSON.stringify(policyNames)}`
+        );
+      }
+    }
+    if (!egressRules.some((r) => (r.verbs ?? []).includes("create"))) {
+      fail(`[stackd] the controller cannot create its egress NetworkPolicies in ${ns}`);
+    }
+    for (const r of egressRules) {
+      const extra = (r.verbs ?? []).filter(
+        (v) => !["get", "patch", "delete", "create"].includes(v)
+      );
+      if (extra.length > 0)
+        fail(`[stackd] the controller's Role in ${ns} grants ${JSON.stringify(extra)}`);
+    }
+  }
+  // Review N3: DNS, the API server, scpd's api pods in the RELEASE namespace, and (M29.2) the two
+  // backend APIs it mints tokens on, in the backend namespaces only — nothing else.
   const np = on.find((d) => docKey(d) === `NetworkPolicy/${sns}/${sa}`);
   const egress =
     (np?.["spec"] as { egress?: { to?: Record<string, unknown>[]; ports?: { port?: number }[] }[] })
       ?.egress ?? [];
   const kinds = egress.map((r) => {
     const to = r.to ?? [];
+    const sel =
+      to.length === 1
+        ? (to[0]!["namespaceSelector"] as
+            | { matchExpressions?: { key: string; operator: string; values?: string[] }[] }
+            | undefined)
+        : undefined;
+    if (
+      to.length === 1 &&
+      !("podSelector" in to[0]!) &&
+      sel?.matchExpressions?.length === 1 &&
+      sel.matchExpressions[0]!.key === "kubernetes.io/metadata.name" &&
+      sel.matchExpressions[0]!.operator === "In" &&
+      JSON.stringify([...(sel.matchExpressions[0]!.values ?? [])].sort()) ===
+        JSON.stringify([...backendNamespaces].sort()) &&
+      JSON.stringify((r.ports ?? []).map((p) => p.port).sort()) === JSON.stringify([3000, 8080])
+    ) {
+      return "backend-apis";
+    }
     if (to.length === 1 && "namespaceSelector" in to[0]! && !("podSelector" in to[0]!)) {
       return (r.ports ?? []).every((p) => p.port === 53) ? "dns" : "any-namespace";
     }
@@ -360,11 +433,12 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     ) {
       return "scpd-api";
     }
+
     return `other:${JSON.stringify(to)}`;
   });
-  if (JSON.stringify(kinds) !== JSON.stringify(["dns", "kube-api", "scpd-api"])) {
+  if (JSON.stringify(kinds) !== JSON.stringify(["dns", "kube-api", "scpd-api", "backend-apis"])) {
     fail(
-      `[stackd] the controller's egress is ${JSON.stringify(kinds)}, not exactly DNS, the API server and scpd's api pods in ${ns}`
+      `[stackd] the controller's egress is ${JSON.stringify(kinds)}, not exactly DNS, the API server, scpd's api pods in ${ns} and the Argo CD/Gitea APIs (8080/3000) in the backend namespaces`
     );
   }
   for (const d of on.filter(
@@ -472,7 +546,7 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     g = gitea
   ): Promise<KubeObject[]> => {
     const values = deriveBackendValues(
-      { backend, enabled: true, sizeTier: "medium", purgeGeneration: 0 },
+      { backend, enabled: true, sizeTier: "medium", purgeGeneration: 0, rotateGeneration: 0 },
       { release: rel, scpNamespace: ns, federationRole: "commander", gitea: g }
     );
     return stamp(parseManifests(await helm.template(rel.chartDir, values)), backend, rel.version);
@@ -809,10 +883,6 @@ function verifyStackdNamespaceIsolation(
     "stackd.enabled=true",
     "--set",
     "networkPolicy.enabled=true",
-    "--set",
-    "bundledExecutor.argocd.enabled=true",
-    "--set",
-    "bundledExecutor.gitea.enabled=true",
     "--set",
     "managedIac.enabled=true",
     "--set",

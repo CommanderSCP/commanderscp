@@ -43,6 +43,10 @@ name: Deploy Drills (M8 kind / air-gap / Ansible)
 # reclaiming space — see the "Reclaim disk" step.
 #
 # Kept nightly + on-demand, still NEVER merge-gating (each run is minutes-long).
+#
+# The bundled Argo CD auto-wire drill that used to run last is gone with the auto-wire hooks it
+# drilled (M29.2, ADR-0061): the stack controller now wires every bundled backend, and job 4e of
+# ci.yml proves it — on every PR, against a real Argo CD, Argo Workflows and Gitea in kind.
 
 on:
   schedule:
@@ -50,7 +54,7 @@ on:
   workflow_dispatch:
     inputs:
       drill:
-        description: "Which drill to run (all | kind | ansible | airgap | bundled-argocd | scp-install)"
+        description: "Which drill to run (all | kind | ansible | airgap | scp-install)"
         required: false
         default: "all"
 
@@ -177,41 +181,6 @@ jobs:
       - name: Run the genuine zero-egress air-gap install drill
         run: bash scripts/airgap-drill.sh
 
-  bundled-argocd-drill:
-    name: "bundled Argo CD: install -> live token mint+store -> scoped-token auth -> idempotent re-mint"
-    needs: airgap-drill # serialized (see ansible-drill for why this ordering is kept)
-    if: >-
-      always() && (
-      github.event_name == 'schedule' ||
-      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'bundled-argocd')
-    runs-on: ubuntu-latest
-    # 55, not 40: the drill does a full scpd docker build + kind bring-up + in-cluster pull of the
-    # heavy Argo CD stack + TWO helm operations (install, then the wrapper's upgrade), each with its
-    # own --wait/--timeout up to ARGOCD_DRILL_INSTALL_TIMEOUT (900s default), plus the idempotency
-    # re-run. The job ceiling must comfortably exceed the drill's own patience.
-    timeout-minutes: 55
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Reclaim disk (see the "DISK" note in this file's header)
-        run: bash .github/scripts/free-disk.sh
-      - uses: ./.github/actions/setup
-      - run: pnpm build
-      # Drill prerequisites installed in-workflow (same pattern as kind-drill / the integration CI
-      # job) — nightly/on-demand build-time fetch, not a product runtime dependency.
-      - name: Install helm
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
-        with:
-          version: latest
-      - name: Install kubectl
-        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
-      - name: Install kind (binary only — the drill creates its own cluster)
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
-          version: v0.27.0
-      - name: Run the bundled Argo CD auto-wire E2E drill
-        run: bash scripts/bundled-argocd-drill.sh
-
   scp-install-drill:
     name: "scp install: helm install -> credential from the installer's own terminal -> login -> stack ready/needs -> HQ outpost"
     # M29.1 (the front door, docs/adr/0060-front-door.md). Same posture as the three drills above —
@@ -220,7 +189,11 @@ jobs:
     # `kindest/node:v1.36.1` (the pin `tools/ci-mirror/images.list` and CI job "4e" already use) —
     # measured directly while building this drill: `ERROR: unknown containerd config version: 4
     # (supported versions: 2 and 3)`. kind v0.32.0 is what this job pins.
-    needs: bundled-argocd-drill # serialized (see ansible-drill for why this ordering is kept)
+    #
+    # needs: airgap-drill, not bundled-argocd-drill — that job is gone (M29.2, ADR-0061; see this
+    # file's own header note): the stack controller now wires every bundled backend, so its own
+    # dedicated drill was retired in favor of job 4e's per-PR coverage.
+    needs: airgap-drill # serialized (see ansible-drill for why this ordering is kept)
     if: >-
       always() && (
       github.event_name == 'schedule' ||

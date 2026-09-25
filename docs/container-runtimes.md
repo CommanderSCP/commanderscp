@@ -183,7 +183,7 @@ docker save -o runner-scan.tar scp-runner-scan:<tag> && podman load -i runner-sc
   its `unqualified-search-registries`, which in an air-gapped site is a failure with a confusing
   message. Prefer fully-qualified refs in `SCP_MANAGED_*_RUNNER_IMAGE`.
 - **The drill and build scripts are docker-shaped.** `scripts/airgap-drill.sh`,
-  `ansible-drill.sh`, `kind-drill.sh`, `bundled-argocd-drill.sh` and `runner-image-tags.sh` invoke
+  `ansible-drill.sh`, `kind-drill.sh` and `runner-image-tags.sh` invoke
   `docker build` / `docker pull` / `docker image inspect` as literals. These are build-host and CI
   concerns rather than the runtime managed-execution path, so they do not affect the verdict above —
   but a RHEL/podman build host cannot run them as written. Making them honour a

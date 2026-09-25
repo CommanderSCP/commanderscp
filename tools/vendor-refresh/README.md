@@ -59,18 +59,27 @@ they come from the chart's naming convention applied to the release name `scp-gi
 chart version renames either Secret or drops one of the four keys, this tool throws rather than
 silently vendoring nothing — see `gitea-plan.ts`'s extraction checks.
 
-## A known, named gap this tool does NOT close
+## Images this tool reads but does not bump
 
-Argo CD's vendored manifest also declares `ghcr.io/dexidp/dex:v2.45.0` (a Deployment named
-`dex-server`) and `public.ecr.aws/docker/library/redis:8.2.3-alpine` (retargeted to
-`bundledExecutor.argocd.valkeyImage`, an OWNED deviation — never upstream's own version). Dex is
-genuinely **not** tracked anywhere: not in `values.yaml`, not in `bundle-images.ts`, not retargeted by
-`deploy/helm-bundled/templates/argocd.yaml`. A connected install pulls it straight from `ghcr.io` at
-apply time; an air-gapped install has no bundled copy of it at all. This tool's reader (via
-`@scp/dependency-manifests`'s `parseKubernetesImages`) surfaces it in every re-vendor plan's summary
-as "NOT tracked by SCP" precisely so this stays visible rather than silently re-discovered — closing
-it (vendor+pin dex, or disable it in the chart, since SCP never uses Argo CD's SSO login UI) is a
-separate, small piece of work this tool does not attempt.
+Each re-vendor bumps only the images whose tag **is** the backend's `toTag`. That is the sandbox's
+fail-closed property (`sandbox-io.ts`): the orchestrator resolves and cosign-verifies digests only
+for `coordinate:toTag`. The images below have their own versions, so they are named here instead of
+bumped:
+
+- **`ghcr.io/dexidp/dex`** (Argo CD's `dex-server`). Since M29.2 the chart retargets it
+  (`bundledExecutor.argocd.dexImage`, with `vendoredDexImage` as the retarget source) and the air-gap
+  bundle carries it (`bundle-images.ts` `argocd-dex`). The plan summary still lists it as "NOT
+  tracked", because its tag is Dex's own and not Argo CD's. If a re-vendor changes it,
+  `templates/argocd.yaml` **fails the render**: `vendoredDexImage` is then absent from the new
+  manifest, so the retarget cannot be skipped silently. Bump `vendoredDexImage`, `dexImage` and the
+  `argocd-dex` `defaultRef` by hand to the tag in that failure.
+- **`public.ecr.aws/docker/library/redis`**, which the chart retargets to
+  `bundledExecutor.argocd.valkeyImage`. This deviation is owned by SCP and never tracks upstream's
+  version.
+- **`quay.io/argoproj/argoexec`**, the executor every Argo Workflows pod runs
+  (`bundledExecutor.argoWorkflows.executorImage`, `bundle-images.ts` `argo-workflows-exec`, since
+  M29.2). Upstream's `install.yaml` never names it, so this reader cannot see it. Bump it by hand to
+  the same tag as the Argo Workflows re-vendor.
 
 ## Determinism
 

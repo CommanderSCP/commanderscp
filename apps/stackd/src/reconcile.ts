@@ -2,9 +2,11 @@ import { randomBytes } from "node:crypto";
 import {
   StackBackendSchema,
   type PutStackStatusRequest,
+  type PutStackWiringRequest,
   type StackBackend,
   type StackBackendIntegrity,
   type StackBackendSpec,
+  type StackBackendWiringSpec,
   type StackBackendStatusReport,
   type StackNeed,
   type StackSettings,
@@ -39,7 +41,8 @@ import {
   type StateDigests,
   type StateStore
 } from "./state.js";
-import { mintSelfSignedCertificate } from "./tls.js";
+import type { BackendHttp } from "./backend-http.js";
+import { ensureArgoServerTls, type WiringContext } from "./wiring.js";
 import {
   backendNeeds,
   deriveBackendValues,
@@ -66,12 +69,17 @@ import {
  * controller's own last report (a mismatch is refused, and said so), and object by object against
  * `STACK_KINDS` and the backend's namespace, then re-stamped, before a fall back applies it.
  *
- * Seam for M29.2 (auto-wire): `ControllerDeps.afterReady` runs once a backend's set is healthy.
+ * M29.2 (ADR-0061): once a backend's set is healthy, `ControllerDeps.afterReady` wires it into SCP
+ * (`wiring.ts` — token, CA, both egress layers, registration), and before a disabled backend is
+ * removed `ControllerDeps.unwire` takes that back.
  */
 
 export interface StackApi {
   spec(): Promise<StackSpecDocument>;
   putStatus(req: PutStackStatusRequest): Promise<void>;
+  /** M29.2: the hand-off after a backend is healthy, and its withdrawal on disable. */
+  putWiring(backend: StackBackend, req: PutStackWiringRequest): Promise<void>;
+  deleteWiring(backend: StackBackend): Promise<void>;
 }
 
 export interface ControllerDeps {
@@ -93,8 +101,17 @@ export interface ControllerDeps {
   sleep?: (ms: number) => Promise<void>;
   /** The kinds a backend may contain; `STACK_KINDS` unless a test's fake chart needs its own. */
   kinds?: readonly StackKind[];
-  /** M29.2's seam: wiring that needs a healthy backend (registration, tokens, egress). */
-  afterReady?: (backend: StackBackend, objects: KubeObject[]) => Promise<StackNeed[]>;
+  /** M29.2: wiring that needs a healthy backend (token, CA, egress, registration) — `wireBackend`. */
+  afterReady?: (
+    backend: StackBackend,
+    objects: KubeObject[],
+    ctx: WiringContext
+  ) => Promise<StackNeed[]>;
+  /** M29.2: runs before a disabled backend is removed — `unwireBackend`. */
+  unwire?: (backend: StackBackend, ctx: { wasWired: boolean }) => Promise<void>;
+  /** M29.2: what the wiring step needs: a client for the backends' own APIs, and the labels that
+   *  select scpd's pods (the egress NetworkPolicy's subject). */
+  wiring?: { http: BackendHttp; scpPodLabels: Record<string, string> };
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -170,37 +187,6 @@ export async function renderBackend(
   if (objects.length === 0) throw new Error(`the chart rendered nothing for ${spec.backend}`);
   assertStackSet(objects, namespace, `the render of ${spec.backend}`, deps.kinds ?? STACK_KINDS);
   return { objects, fingerprint: fingerprint(objects), needs: backendNeeds(spec, values, ctx) };
-}
-
-/** argo-server's persistent certificate: minted once, never rotated while the Secret exists. */
-export async function ensureArgoServerTls(deps: ControllerDeps): Promise<void> {
-  const namespace = backendNamespace(deps.release, "argo-workflows");
-  const defaults = deps.release.chartValues as {
-    bundledExecutor?: { argoWorkflows?: { tlsSecretName?: string } };
-  };
-  const name = defaults.bundledExecutor?.argoWorkflows?.tlsSecretName || "argo-server-tls";
-  if (await deps.kube.get({ apiVersion: "v1", kind: "Secret", name, namespace })) return;
-  const host = `argo-server.${namespace}`;
-  const minted = mintSelfSignedCertificate({
-    commonName: `${host}.svc`,
-    dnsNames: ["argo-server", host, `${host}.svc`, `${host}.svc.cluster.local`],
-    validDays: 3650
-  });
-  await deps.kube.apply({
-    apiVersion: "v1",
-    kind: "Secret",
-    type: "kubernetes.io/tls",
-    metadata: {
-      name,
-      namespace,
-      labels: {
-        "stack.commanderscp.io/managed-by": "scp-stackd",
-        "stack.commanderscp.io/backend": "argo-workflows"
-      }
-    },
-    stringData: { "tls.crt": minted.certPem, "tls.key": minted.keyPem }
-  });
-  deps.log(`minted argo-server's persistent certificate into ${namespace}/${name}`);
 }
 
 // ---- applying -----------------------------------------------------------------------------------
@@ -399,7 +385,8 @@ export async function reconcileBackend(
   spec: StackBackendSpec,
   settings: StackSettings,
   expected: StackBackendIntegrity | undefined,
-  progress: (r: StackBackendStatusReport) => Promise<void>
+  progress: (r: StackBackendStatusReport) => Promise<void>,
+  recordedWiring?: StackBackendWiringSpec
 ): Promise<Outcome> {
   const { backend } = spec;
   const release = deps.release.version;
@@ -464,7 +451,7 @@ export async function reconcileBackend(
   if (!spec.enabled) {
     const removing = () =>
       progress(rep({ phase: "removing", runningVersion: state.lastGood?.release ?? null }));
-    return disable(deps, spec, state, { save, rep, removing }, mem);
+    return disable(deps, spec, state, { save, rep, removing }, mem, recordedWiring);
   }
 
   // A purge requested while disabled and overtaken by an enable is spent, not deferred: it must
@@ -488,7 +475,9 @@ export async function reconcileBackend(
     }
     const health = await checkReadiness(deps.kube, desired.objects);
     const wired =
-      health.ready && deps.afterReady ? await deps.afterReady(backend, desired.objects) : [];
+      health.ready && deps.afterReady
+        ? await deps.afterReady(backend, desired.objects, { spec, recorded: recordedWiring })
+        : [];
     return {
       report: rep({
         phase: health.ready ? "ready" : "degraded",
@@ -560,7 +549,7 @@ export async function reconcileBackend(
         state
       };
     }
-    return promote(deps, spec, settings, state, desired, health, save, rep);
+    return promote(deps, spec, settings, state, desired, health, save, rep, recordedWiring);
   }
 
   // ATTEMPT.
@@ -586,7 +575,9 @@ export async function reconcileBackend(
     applyError = err instanceof Error ? err.message : String(err);
     health = { ready: false, detail: [applyError] };
   }
-  if (health.ready) return promote(deps, spec, settings, withInventory, desired, health, save, rep);
+  if (health.ready) {
+    return promote(deps, spec, settings, withInventory, desired, health, save, rep, recordedWiring);
+  }
 
   const error =
     applyError ??
@@ -686,12 +677,27 @@ async function disable(
     rep: (fields: ReportFields) => StackBackendStatusReport;
     removing: () => Promise<void>;
   },
-  mem: Memory
+  mem: Memory,
+  recordedWiring?: StackBackendWiringSpec
 ): Promise<Outcome> {
   const { backend } = spec;
   const { save, rep } = io;
   let current = state;
-  if (current.inventory.length > 0 || current.lastGood) {
+  const removing = current.inventory.length > 0 || current.lastGood !== null;
+  const wasWired = Boolean(recordedWiring?.factsSha256);
+  // M29.2: UNWIRE FIRST — scpd stops routing to it (and forgets its token), the egress closes —
+  // then the workloads go. A failure is logged and retried next tick (scpd still reports the
+  // wiring), never a reason to leave a disabled backend running.
+  if ((removing || wasWired) && deps.unwire) {
+    try {
+      await deps.unwire(backend, { wasWired });
+    } catch (err) {
+      deps.log(
+        `${backend}: unwiring failed (retried next tick): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  if (removing) {
     await io.removing();
     // Not a purge, so `prunable` keeps the data: only the workloads and config go.
     await pruneRemoved(deps, backend, current.inventory);
@@ -771,7 +777,8 @@ async function promote(
   desired: DesiredSet,
   health: Readiness,
   save: (s: BackendState) => Promise<void>,
-  rep: (fields: ReportFields) => StackBackendStatusReport
+  rep: (fields: ReportFields) => StackBackendStatusReport,
+  recordedWiring?: StackBackendWiringSpec
 ): Promise<Outcome> {
   const { backend } = spec;
   const release = deps.release.version;
@@ -803,7 +810,9 @@ async function promote(
   const pruned = await pruneRemoved(deps, backend, removed);
   if (pruned.length > 0)
     deps.log(`${backend}: pruned ${pruned.length} objects the set no longer renders`);
-  const wired = deps.afterReady ? await deps.afterReady(backend, desired.objects) : [];
+  const wired = deps.afterReady
+    ? await deps.afterReady(backend, desired.objects, { spec, recorded: recordedWiring })
+    : [];
   deps.log(`${backend}: ready at ${release}`);
   return {
     report: rep({
@@ -823,6 +832,7 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
   const spec = await deps.api.spec();
   const specs = new Map(spec.backends.map((b) => [b.backend, b]));
   const integrity = new Map(spec.integrity.map((i) => [i.backend, i]));
+  const wiring = new Map((spec.wiring ?? []).map((w) => [w.backend, w]));
   const reports = new Map<StackBackend, StackBackendStatusReport>();
   const publish = async (): Promise<PutStackStatusRequest> => {
     const body: PutStackStatusRequest = {
@@ -845,7 +855,8 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
       backend,
       enabled: false,
       sizeTier: "small" as const,
-      purgeGeneration: 0
+      purgeGeneration: 0,
+      rotateGeneration: 0
     };
     try {
       const outcome = await reconcileBackend(
@@ -856,7 +867,8 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
         async (r) => {
           reports.set(backend, r);
           await publish();
-        }
+        },
+        wiring.get(backend)
       );
       reports.set(backend, outcome.report);
     } catch (err) {

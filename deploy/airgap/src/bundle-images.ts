@@ -125,6 +125,16 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     flagDescription: "bundled Argo CD's Valkey cache image to bundle",
     doc: "bundled Argo CD's Valkey cache"
   },
+  // M29.2: Argo CD's Dex — the one vendored Argo CD image that was not retargetable, so an
+  // air-gapped Argo CD never became ready (argocd-dex-server ImagePullBackOff).
+  {
+    name: "argocd-dex",
+    optionStem: "argocd-dex",
+    defaultRef: "ghcr.io/dexidp/dex:v2.45.0",
+    defaultSource: "docker",
+    flagDescription: "bundled Argo CD's Dex image to bundle",
+    doc: "bundled Argo CD's Dex (argocd-dex-server)"
+  },
   {
     name: "argo-workflows-cli",
     optionStem: "argo-workflows-cli",
@@ -140,6 +150,16 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     defaultSource: "docker",
     flagDescription: "bundled Argo Workflows controller image",
     doc: "bundled Argo Workflows controller"
+  },
+  // M29.2: the executor every workflow pod runs — not in the vendored manifest (the controller
+  // defaults to upstream's ref), so an air-gapped workflow's pods could not start without it.
+  {
+    name: "argo-workflows-exec",
+    optionStem: "argo-workflows-exec",
+    defaultRef: "quay.io/argoproj/argoexec:v4.0.7",
+    defaultSource: "docker",
+    flagDescription: "bundled Argo Workflows executor (argoexec) image",
+    doc: "bundled Argo Workflows executor (argoexec, every workflow pod's init/wait container)"
   },
   // The build catalog's two images (scp-build-image-v1). Pulled only where
   // bundledExecutor.argoWorkflows is enabled AND a build lane actually runs — but bundled

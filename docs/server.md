@@ -13,8 +13,8 @@ used to sit inline. Each source file below carries a one-line headline at the si
 - [`apps/server/src/background-work.test.ts`](#apps-server-src-background-work-test-ts) — §11–§14
 - [`apps/server/src/background-work.ts`](#apps-server-src-background-work-ts) — §15–§26
 - [`apps/server/src/boot-checks.ts`](#apps-server-src-boot-checks-ts) — §27–§27
-- [`apps/server/src/bundled-argocd-autowire-bin.ts`](#apps-server-src-bundled-argocd-autowire-bin-ts) — §28–§28
-- [`apps/server/src/bundled-gitea-autowire-bin.ts`](#apps-server-src-bundled-gitea-autowire-bin-ts) — §29–§29
+- (removed in M29.2) `apps/server/src/bundled-argocd-autowire-bin.ts` — §28–§28
+- (removed in M29.2) `apps/server/src/bundled-gitea-autowire-bin.ts` — §29–§29
 - [`apps/server/src/config.ts`](#apps-server-src-config-ts) — §30–§51
 - [`apps/server/src/domain-id-edge.ts`](#apps-server-src-domain-id-edge-ts) — §52–§53
 - [`apps/server/src/error-handler-status.test.ts`](#apps-server-src-error-handler-status-test-ts) — §54–§55
@@ -270,29 +270,24 @@ SEQUENTIAL, IN ORDER, AND `stop()` STOPS IN THE SAME ORDER — preserving exactl
 
 D6 (§7.3) boot-safety check, extracted from `main.ts` so it is directly testable. A PRODUCTION instance must not boot on EPHEMERAL generated secrets: an ephemeral `SCP_SECRETS_MASTER_KEY` orphans every stored credential on restart, and an ephemeral `SCP_COOKIE_SECRET` invalidates every session on restart — neither survives a failover, which is exactly the posture M26 exists to make safe. `evaluation` mode (compose-eval, `pnpm dev`) keeps the zero-required-env boot; the caller emits the loud-not-fatal warning there.
 
-## `apps/server/src/bundled-argocd-autowire-bin.ts`
+## `apps/server/src/bundled-argocd-autowire-bin.ts` (removed)
 
-### §28. Bundled Argo CD auto-wire entrypoint
+### §28. Bundled Argo CD auto-wire entrypoint — REMOVED in M29.2
 
-Bundled Argo CD auto-wire entrypoint (M11 — the "zero token plumbing" step of Mode B, docs/ proposals/bundled-executor-backends.md). `deploy/helm`'s bundled-argocd-autowire Job runs exactly `node dist/bundled-argocd-autowire-bin.js` as a Helm `post-install,post-upgrade` hook when `bundledExecutor.argocd.enabled`. It mints a SCOPED (never admin) Argo CD API token and stores it in SCP's encrypted secret store so an operator can bind any graph object to the `argocd` executor with `--secret-refs '{"tokenSecretKey":"<key>"}'` and no manual token creation.
+The install-time Helm hook that minted a scoped Argo CD token into the bootstrap org's secret store
+and printed a `scp executor bind` command to its pod log. It is gone: the stack controller wires
+every healthy bundled backend itself — token, CA, both egress layers and the execution-system
+registration — in the same reconcile that installed it (`apps/stackd/src/wiring.ts`, ADR-0061). The
+token no longer lands in an org's secret store, where any execution system a tenant registered could
+name it by key; it is kept encrypted at the instance tier (`stack_backend_tokens`).
 
-Why a DB-seed bin (like migrate-bin.ts) rather than the public API: this is INSTALL-TIME bootstrap plumbing, run by the operator's `helm install` (not by scpd at runtime), so it uses the same admin `DATABASE_URL` + `SCP_SECRETS_MASTER_KEY` the migrations Job already uses — no bootstrap PAT chicken-and-egg. It never holds Argo CD's kube credentials: it obtains only a scoped API token (applications get/sync), which is exactly what the credential-asymmetry invariant permits.
+## `apps/server/src/bundled-gitea-autowire-bin.ts` (removed)
 
-Idempotent: re-running (e.g. a `helm upgrade`) simply re-mints + overwrites the stored token. The per-object executor BINDING is deliberately NOT seeded here — bindings attach to a graph object (Component/DeploymentTarget), which the operator creates later; the value delivered here is that the token already exists, so the bind is a single command with no token step.
+### §29. Bundled Gitea auto-wire entrypoint — REMOVED in M29.2
 
-Env contract (all injected by the Helm hook Job): SCP_ARGOCD_SERVER_URL        in-cluster Argo CD API base (http, behind NetworkPolicy), e.g. http://scp-argocd-server.scp-argocd.svc SCP_ARGOCD_ADMIN_SECRET_NS   namespace of Argo CD's initial-admin secret (scp-argocd) SCP_ARGOCD_ADMIN_SECRET_NAME argocd-initial-admin-secret SCP_ARGOCD_ACCOUNT           the scoped account to mint a token for (scp-coordinator) SCP_ARGOCD_TOKEN_SECRET_KEY  the SCP secret key to store the token under SCP_BOOTSTRAP_ORG            the org whose secret store receives the token DATABASE_URL, SCP_SECRETS_MASTER_KEY   admin DB + master key (same as migrate-bin)
-
-## `apps/server/src/bundled-gitea-autowire-bin.ts`
-
-### §29. Bundled Gitea auto-wire entrypoint
-
-Bundled Gitea auto-wire entrypoint (M15.1c — the "zero token plumbing" step of Mode B for the default bundled registry, ADR-0012). `deploy/helm`'s bundled-gitea-autowire Job runs exactly `node dist/bundled-gitea-autowire-bin.js` as a Helm `post-install,post-upgrade` hook when `bundledExecutor.gitea.enabled`. It mints a SCOPED (never admin) Gitea API token — least- privilege scopes, only what a coordinator needs to push code + packages — and stores it in SCP's encrypted secret store so an operator can bind any graph object to a git-provider / registry executor with `--secret-refs '{"tokenSecretKey":"<key>"}'` and no manual token creation.
-
-Mirrors bundled-argocd-autowire-bin.ts. Why a DB-seed bin (like migrate-bin.ts) rather than the public API: this is INSTALL-TIME bootstrap plumbing, run by the operator's `helm install` (not by scpd at runtime), so it uses the same admin `DATABASE_URL` + `SCP_SECRETS_MASTER_KEY` the migrations Job already uses — no bootstrap PAT chicken-and-egg. It never holds Gitea's admin password at runtime: it reads the SCP-generated admin secret once, basic-auths to mint a SCOPED token, and stores only that token — exactly what the credential-asymmetry invariant permits.
-
-Idempotent: re-running (e.g. a `helm upgrade`) DELETEs any pre-existing token of the same name (Gitea rejects a duplicate token NAME with HTTP 400) and re-mints, then overwrites the stored token. The per-object executor BINDING is deliberately NOT seeded here — bindings attach to a graph object the operator creates later; the value delivered here is that the token already exists, so the bind is a single command with no token step.
-
-Env contract (all injected by the Helm hook Job): SCP_GITEA_SERVER_URL         in-cluster Gitea API base (http, behind NetworkPolicy), e.g. http://scp-gitea-http.scp-gitea.svc:3000 SCP_GITEA_ADMIN_SECRET_NS    namespace of the SCP-generated Gitea admin secret (scp-gitea) SCP_GITEA_ADMIN_SECRET_NAME  gitea-admin-secret (keys: username, password) SCP_GITEA_TOKEN_NAME         the name to give the minted token (scp-coordinator) SCP_GITEA_TOKEN_SECRET_KEY   the SCP secret key to store the token under DATABASE_URL, SCP_SECRETS_MASTER_KEY   admin DB + master key (same as migrate-bin)
+As §28, for Gitea: replaced by the stack controller's wiring (`apps/stackd/src/wiring.ts`), which
+mints a `write:repository` + `write:package` token for the admin account, hands it to scpd, and
+revokes every older `scp-stack-` token of that account once scpd holds the new one.
 
 ## `apps/server/src/config.ts`
 

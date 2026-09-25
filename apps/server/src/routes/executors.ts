@@ -76,6 +76,7 @@ import {
   resolveSecretRefs
 } from "../secrets/secrets-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { stackWiredRouting } from "../stack/wired-routing.js";
 
 /** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `gitlab-discovery`,
  *  `argocd-discovery`) — same allowlist discipline as `executor-bindings-repo.ts`'s
@@ -86,6 +87,16 @@ const KNOWN_DISCOVERY_MODULES: PluginModule[] = [
   "gitlab-discovery",
   "argocd-discovery"
 ];
+
+/** M29.2 (ADR-0061): a discovery against a Standard Stack registration runs THAT backend's own
+ *  discovery module, and takes from the caller only the keys that say WHAT to read — an ALLOWLIST,
+ *  so no key that could name an endpoint or a credential (today's or a future plugin's) gets
+ *  through. Everything else comes from the wiring. A backend absent here has no discovery. */
+const STACK_DISCOVERY: Partial<Record<string, { module: string; callerKeys: readonly string[] }>> =
+  {
+    argocd: { module: "argocd-discovery", callerKeys: [] },
+    gitea: { module: "gitea-discovery", callerKeys: ["owner", "repo", "defaultWorkflowId"] }
+  };
 
 /** Bind a target object to a registered `execution-system`. See docs/routes.md §170. */
 async function bindTargetToExecutionSystem(
@@ -935,6 +946,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         let effectiveConfig = request.body.config;
         let effectiveAllowedHosts = request.body.allowedHosts;
         let effectiveSecretRefs = request.body.secretRefs ?? {};
+        let stackSecrets: Record<string, string> | undefined;
+        let trustedCaPem: string | undefined;
         const execSysRef = (request.body.config as Record<string, unknown> | undefined)
           ?.executionSystemId;
         if (typeof execSysRef === "string" && execSysRef.length > 0) {
@@ -949,61 +962,107 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           if (sys.typeId !== "execution-system") {
             throw badRequest(`'${execSysRef}' is a '${sys.typeId}', not an execution-system`);
           }
+          // M29.2 (ADR-0061): a Standard Stack registration is routed by the controller's wiring —
+          // endpoint, token, CA and egress — exactly as the binding path routes it.
+          const stack = await stackWiredRouting(
+            tx,
+            auth.orgId,
+            sys.id,
+            deps.config.secretsMasterKey
+          );
           const props = sys.properties as {
             serverUrl?: string;
             tokenSecretKey?: string;
             allowInternalEgress?: boolean;
           };
-          if (!props.serverUrl) {
-            throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+          if (stack) {
+            const own = STACK_DISCOVERY[stack.backend];
+            if (!own) {
+              throw badRequest(`the bundled ${stack.backend} has no discovery`);
+            }
+            if (request.body.pluginModule !== own.module) {
+              throw badRequest(
+                `'${sys.id}' is the bundled ${stack.backend}: a discovery against it runs '${own.module}', not '${request.body.pluginModule}'`
+              );
+            }
+            // Only the allowlisted keys of the caller's run config (owner/repo …): a plugin's
+            // explicit `baseUrl` outranks `serverUrl` (gitea), so any caller-sent endpoint or
+            // credential key would re-point the stack token — held back here, and by the egress
+            // pin to the wiring's host underneath (M29.2, the M28 class).
+            const sent = (request.body.config as Record<string, unknown>) ?? {};
+            const callerConfig = Object.fromEntries(
+              own.callerKeys.filter((k) => k in sent).map((k) => [k, sent[k]])
+            );
+            effectiveConfig = {
+              ...callerConfig,
+              // Server-governed — these WIN over anything the caller sent. The system id is the
+              // one just resolved (argocd-discovery proposes bindings to it), never the caller's.
+              executionSystemId: sys.id,
+              ...stack.config
+            };
+            stackSecrets = stack.secrets;
+            effectiveAllowedHosts = stack.allowedHosts;
+            allowInternalEgress = stack.allowInternalEgress;
+            trustedCaPem = stack.trustedCaPem;
+          } else {
+            if (!props.serverUrl) {
+              throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+            }
+            let systemHost: string;
+            try {
+              systemHost = new URL(props.serverUrl).hostname;
+            } catch {
+              throw badRequest(`execution-system '${sys.id}' has an unparseable 'serverUrl'`);
+            }
+            // Two-layer (ADR-0003): the system's declared intent AND the operator's
+            // SCP_INTERNAL_EGRESS_HOSTS allowlist must both permit — same resolver as the binding path.
+            allowInternalEgress = resolveInternalEgress(
+              props.serverUrl,
+              props.allowInternalEgress === true
+            );
+            effectiveConfig = {
+              ...((request.body.config as Record<string, unknown>) ?? {}),
+              // Server-governed — these WIN over anything the caller sent.
+              serverUrl: props.serverUrl,
+              ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
+            };
+            effectiveSecretRefs = props.tokenSecretKey
+              ? { [props.tokenSecretKey]: props.tokenSecretKey }
+              : {};
+            // Pin egress to the registered system's OWN host, so the allowance can never be aimed
+            // anywhere else — this, not the permission gate, is what makes the grant narrow.
+            effectiveAllowedHosts = [systemHost];
           }
-          let systemHost: string;
-          try {
-            systemHost = new URL(props.serverUrl).hostname;
-          } catch {
-            throw badRequest(`execution-system '${sys.id}' has an unparseable 'serverUrl'`);
-          }
-          // Two-layer (ADR-0003): the system's declared intent AND the operator's
-          // SCP_INTERNAL_EGRESS_HOSTS allowlist must both permit — same resolver as the binding path.
-          allowInternalEgress = resolveInternalEgress(
-            props.serverUrl,
-            props.allowInternalEgress === true
-          );
-          effectiveConfig = {
-            ...((request.body.config as Record<string, unknown>) ?? {}),
-            // Server-governed — these WIN over anything the caller sent.
-            serverUrl: props.serverUrl,
-            ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
-          };
-          effectiveSecretRefs = props.tokenSecretKey
-            ? { [props.tokenSecretKey]: props.tokenSecretKey }
-            : {};
-          // Pin egress to the registered system's OWN host, so the allowance can never be aimed
-          // anywhere else — this, not the permission gate, is what makes the grant narrow.
-          effectiveAllowedHosts = [systemHost];
         }
         // VALIDATE THE EFFECTIVE CONFIG, NOT THE REQUEST BODY. See docs/routes.md §181.
         validatePluginConfig(request.body.pluginModule, effectiveConfig);
 
-        const resolvedSecrets = await resolveSecretRefs(
-          tx,
-          auth.orgId,
-          effectiveSecretRefs,
-          deps.config.secretsMasterKey
-        );
+        const resolvedSecrets =
+          stackSecrets ??
+          (await resolveSecretRefs(
+            tx,
+            auth.orgId,
+            effectiveSecretRefs,
+            deps.config.secretsMasterKey
+          ));
+        // THE HOST'S INSTANCE ID IS THE SERVER'S, namespaced by org: the host keys instances
+        // globally, so a caller-chosen id shared by two orgs would let one org's run respawn — or
+        // run under — the other's config and token (M29.2 review).
+        const instanceId = `discovery:${auth.orgId}:${request.body.pluginInstanceId}`;
         await host.start([
           {
-            id: request.body.pluginInstanceId,
+            id: instanceId,
             module: request.body.pluginModule as PluginModule,
             orgId: auth.orgId,
             scopeKey: "default",
             config: effectiveConfig,
             secrets: resolvedSecrets,
             allowedHosts: effectiveAllowedHosts,
-            allowInternalEgress
+            allowInternalEgress,
+            ...(trustedCaPem ? { trustedCaPem } : {})
           }
         ]);
-        return host.discovery(request.body.pluginInstanceId).discover();
+        return host.discovery(instanceId).discover();
       });
       reply.status(200).send(proposal);
     }

@@ -1,6 +1,6 @@
 {
-  "id": "2b5b5677-089c-4fbe-8e8c-97c13e19540b",
-  "prevId": "94cd0a7d-a165-4179-b742-b2764c910bf2",
+  "id": "f81d4ec7-ef2d-4b87-b361-2ed9d24de90e",
+  "prevId": "2b5b5677-089c-4fbe-8e8c-97c13e19540b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10080,6 +10080,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "must_change_password": {
+          "name": "must_change_password",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {},

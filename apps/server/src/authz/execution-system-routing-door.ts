@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { hasPermission } from "./resolve.js";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { forbidden } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
 import { canonicalJson } from "../util/canonical-json.js";
 
 /**
@@ -79,6 +80,53 @@ export async function assertMayWriteExecutionSystemRouting(
       `properties decide where its triggers go and which stored credential they carry, so writing ` +
       `them requires 'secret:write' at the organization root — the bar for setting that credential. ` +
       `'object:write' may still rename or relabel it (ADR-0056 addendum 3).`
+  );
+}
+
+/**
+ * THE STANDARD STACK'S REGISTRATIONS ARE WRITTEN BY THE STACK ALONE (M29.2, ADR-0061).
+ *
+ * An `execution-system` that is a bundled backend's registration (a `stack_backend_registrations`
+ * row names it — operator-written, its id allocated before the object) is created, updated and
+ * marked unwired only by `stack/wiring.ts`, which passes `stackManagedWrite`. Every other writer is
+ * refused, whatever it holds — `secret:write` included: its endpoint, CA, token and egress come from
+ * the stack controller's wiring, and a tenant attempt to re-point it is refused here rather than
+ * silently ignored by the resolver (which routes it from the wiring regardless). The flag is not
+ * reachable from any route or request body (`stack-registration-door.test.ts` holds the callers).
+ */
+export async function assertStackRegistrationWrite(
+  tx: TenantTx,
+  args: {
+    orgId: string;
+    typeId: string;
+    objectId: string | undefined;
+    stackManagedWrite?: boolean | undefined;
+    act: "create" | "update" | "delete" | "publish";
+    subject: string;
+  }
+): Promise<void> {
+  if (args.typeId !== EXECUTION_SYSTEM_TYPE_ID || args.objectId === undefined) {
+    if (args.stackManagedWrite) {
+      throw new Error("internal: a stack-managed write must name an execution-system by id");
+    }
+    return;
+  }
+  const res = await tx.execute(sql`
+    SELECT backend FROM stack_backend_registrations
+     WHERE org_id = ${args.orgId} AND object_id = ${args.objectId}`);
+  const backend = (res.rows[0] as { backend?: string } | undefined)?.backend;
+  if (backend === undefined) {
+    if (args.stackManagedWrite) {
+      throw new Error(`internal: ${args.subject} is not a Standard Stack registration`);
+    }
+    return;
+  }
+  // The stack creates and updates its own registrations; nothing deletes or publishes one.
+  if (args.stackManagedWrite && (args.act === "create" || args.act === "update")) return;
+  throw conflict(
+    `cannot ${args.act} ${args.subject}: it is the Standard Stack's registration of the bundled ` +
+      `${backend}, whose endpoint, TLS trust, credential and egress are set by the stack controller ` +
+      `(ADR-0061). Manage it on Admin › Stack or with \`scp stack\`; bind components to it as usual.`
   );
 }
 

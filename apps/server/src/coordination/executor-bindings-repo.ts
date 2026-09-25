@@ -18,6 +18,7 @@ import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { managedIacWorkspaceKey, ManagedIacWorkspaceRefInvalid } from "@scp/plugin-managed-iac";
 import { isLocallyAuthoredExecutionSystem } from "../authz/execution-system-routing-door.js";
+import { stackWiredRouting } from "../stack/wired-routing.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
 import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
@@ -993,6 +994,9 @@ export async function resolveExecutorPluginInstance(
     (binding.config ?? {}) as Record<string, unknown>
   );
   let secretRefs = binding.secretRefs;
+  // M29.2: a stack registration's token and CA, handed over by the controller (never a secret key).
+  let stackSecrets: Record<string, string> | undefined;
+  let trustedCaPem: string | undefined;
   // Two-layer internal-egress allowance (ADR-0003): the execution-system's declared intent AND the
   // operator's SCP_INTERNAL_EGRESS_HOSTS allowlist must BOTH permit. Never from tenant binding config.
   let allowInternalEgress = false;
@@ -1016,40 +1020,56 @@ export async function resolveExecutorPluginInstance(
           `this domain. Register this domain's own system (scp connect) and bind to that.`
       );
     }
+    // M29.2 (ADR-0061): a STANDARD STACK REGISTRATION is routed by the stack controller's wiring
+    // and by nothing on the object — its endpoint, token, CA and egress allowance all come from
+    // `stackWiredRouting`. `null` means an ordinary system, routed below exactly as before.
+    const stack = await stackWiredRouting(tx, input.orgId, sys.id, input.masterKey);
+    if (stack) {
+      pluginModule = stack.pluginModule;
+      pluginInstanceId = executionSystemInstanceId(sys.id);
+      tenantConfig = stack.config;
+      secretRefs = {};
+      stackSecrets = stack.secrets;
+      effectiveAllowedHosts = stack.allowedHosts;
+      allowInternalEgress = stack.allowInternalEgress;
+      trustedCaPem = stack.trustedCaPem;
+    }
     const props = sys.properties as {
       kind?: string;
       serverUrl?: string;
       tokenSecretKey?: string;
       allowInternalEgress?: boolean;
     };
-    // Layer 2 (declared intent) is checked against layer 1 (the operator's env allowlist) inside
-    // resolveInternalEgress — the property alone NEVER grants anything.
-    allowInternalEgress = resolveInternalEgress(
-      props.serverUrl,
-      props.allowInternalEgress === true
-    );
-    // Pin egress to the system's OWN host (server-governed), so an internal-egress grant can only ever
-    // reach the registered system — never a tenant-chosen `binding.allowedHosts` entry. This, not the
-    // permission gate alone, is what keeps the allowance narrow (egress-guard.ts, MAJOR #6).
-    if (props.serverUrl) {
-      try {
-        effectiveAllowedHosts = [new URL(props.serverUrl).hostname];
-      } catch {
-        throw new Error(
-          `execution-system '${sys.id}' has an unparseable 'serverUrl' — refusing to resolve a binding against it`
-        );
+    if (!stack) {
+      // Layer 2 (declared intent) is checked against layer 1 (the operator's env allowlist) inside
+      // resolveInternalEgress — the property alone NEVER grants anything.
+      allowInternalEgress = resolveInternalEgress(
+        props.serverUrl,
+        props.allowInternalEgress === true
+      );
+      // Pin egress to the system's OWN host (server-governed), so an internal-egress grant can only ever
+      // reach the registered system — never a tenant-chosen `binding.allowedHosts` entry. This, not the
+      // permission gate alone, is what keeps the allowance narrow (egress-guard.ts, MAJOR #6).
+      if (props.serverUrl) {
+        try {
+          effectiveAllowedHosts = [new URL(props.serverUrl).hostname];
+        } catch {
+          throw new Error(
+            `execution-system '${sys.id}' has an unparseable 'serverUrl' — refusing to resolve a binding against it`
+          );
+        }
       }
+      if (!props.serverUrl) {
+        throw new Error(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+      }
+      pluginModule = (props.kind ?? "").trim();
+      pluginInstanceId = executionSystemInstanceId(sys.id);
+      // Carries the module's DECLARED settings off the system object — `namespace` for argo-workflows
+      // is the case that forced it. The plugin reads its token via `ctx.secrets.get(<tokenSecretKey>)`;
+      // the system's tokenSecretKey is both the config field name AND the secrets-table key.
+      tenantConfig = executionSystemPluginConfig(props, pluginModule);
+      secretRefs = props.tokenSecretKey ? { [props.tokenSecretKey]: props.tokenSecretKey } : {};
     }
-    if (!props.serverUrl) {
-      throw new Error(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
-    }
-    pluginModule = (props.kind ?? "").trim();
-    pluginInstanceId = executionSystemInstanceId(sys.id);
-    // Carries the module's DECLARED settings off the system object — `namespace` for argo-workflows
-    // is the case that forced it. The plugin reads its token via `ctx.secrets.get(<tokenSecretKey>)`;
-    // the system's tokenSecretKey is both the config field name AND the secrets-table key.
-    tenantConfig = executionSystemPluginConfig(props, pluginModule);
-    secretRefs = props.tokenSecretKey ? { [props.tokenSecretKey]: props.tokenSecretKey } : {};
   }
 
   if (!isKnownExecutorModule(pluginModule)) {
@@ -1058,7 +1078,8 @@ export async function resolveExecutorPluginInstance(
     );
   }
 
-  const resolvedSecrets = await resolveSecretRefs(tx, input.orgId, secretRefs, input.masterKey);
+  const resolvedSecrets =
+    stackSecrets ?? (await resolveSecretRefs(tx, input.orgId, secretRefs, input.masterKey));
 
   const serverInjected: Record<string, unknown> = {
     statePath: join(pluginStateDir(), `${sanitizeInstanceId(pluginInstanceId)}.json`)
@@ -1153,7 +1174,8 @@ export async function resolveExecutorPluginInstance(
       config: { ...tenantConfig, ...serverInjected },
       secrets: resolvedSecrets,
       allowedHosts: effectiveAllowedHosts,
-      allowInternalEgress
+      allowInternalEgress,
+      ...(trustedCaPem ? { trustedCaPem } : {})
     }
   };
 }

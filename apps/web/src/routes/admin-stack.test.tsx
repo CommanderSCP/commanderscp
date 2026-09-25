@@ -30,6 +30,36 @@ function view(over: Partial<StackView> = {}): StackView {
       enabled: backend === "argo-events" || backend === "argo-workflows",
       sizeTier: "small" as const,
       purgeGeneration: 0,
+      rotateGeneration: 0,
+      wiring:
+        backend === "argo-rollouts"
+          ? null
+          : backend === "argo-workflows"
+            ? {
+                wired: true,
+                serverUrl: "https://argo-server.scp-argo-workflows.svc:2746",
+                caSha256: "c".repeat(64),
+                account: "scp-coordinator",
+                wiredAt: new Date(NOW - 5_000).toISOString(),
+                rotationGeneration: 0
+              }
+            : backend === "argo-events"
+              ? {
+                  wired: true,
+                  serverUrl: null,
+                  caSha256: null,
+                  account: null,
+                  wiredAt: new Date(NOW - 5_000).toISOString(),
+                  rotationGeneration: 0
+                }
+              : {
+                  wired: false,
+                  serverUrl: null,
+                  caSha256: null,
+                  account: null,
+                  wiredAt: null,
+                  rotationGeneration: null
+                },
       status:
         backend === "argo-events"
           ? {
@@ -57,6 +87,7 @@ function view(over: Partial<StackView> = {}): StackView {
               }
             : null
     })),
+    servesThisOrg: true,
     ...over
   };
 }
@@ -64,6 +95,23 @@ function view(over: Partial<StackView> = {}): StackView {
 const calls: { method: string; args: unknown[] }[] = [];
 let current: StackView = view();
 let holdsRole = true;
+const ORG_A = "0198f0a0-0000-7000-8000-00000000000a";
+const orgList = {
+  items: [
+    {
+      orgId: ORG_A,
+      orgName: "acme",
+      attachedAt: new Date(NOW - 60_000).toISOString(),
+      attachedBy: {
+        mechanism: "install" as const,
+        orgId: null,
+        userId: null,
+        username: null,
+        credentialId: null
+      }
+    }
+  ]
+};
 
 vi.mock("../lib/client", () => ({
   client: {
@@ -94,6 +142,22 @@ vi.mock("../lib/client", () => ({
         calls.push({ method: "purge", args });
         return current;
       },
+      rotate: async (...args: unknown[]) => {
+        calls.push({ method: "rotate", args });
+        return current;
+      },
+      orgs: async (...args: unknown[]) => {
+        calls.push({ method: "orgs", args });
+        return orgList;
+      },
+      attachOrg: async (...args: unknown[]) => {
+        calls.push({ method: "attachOrg", args });
+        return orgList;
+      },
+      detachOrg: async (...args: unknown[]) => {
+        calls.push({ method: "detachOrg", args });
+        return { items: [] };
+      },
       diagnostics: async (...args: unknown[]) => {
         calls.push({ method: "diagnostics", args });
         return { generatedAt: "2026-09-24T12:00:00.000Z", stack: current, backends: [] };
@@ -106,6 +170,15 @@ vi.mock("../lib/client", () => ({
       putStatus: async () => {
         calls.push({ method: "putStatus", args: [] });
         throw new Error("the browser must never write controller status");
+      },
+      /** M29.2: the controller's wiring doors. A page must never reach them either. */
+      putWiring: async () => {
+        calls.push({ method: "putWiring", args: [] });
+        throw new Error("the browser must never hand over a wiring");
+      },
+      deleteWiring: async () => {
+        calls.push({ method: "deleteWiring", args: [] });
+        throw new Error("the browser must never unwire");
       }
     }
   }
@@ -146,7 +219,8 @@ afterEach(() => {
 describe("Admin › Stack", () => {
   it("reads the stack with the session alone, and shows every backend", async () => {
     const page = await mount();
-    expect(calls.map((c) => c.method).sort()).toEqual(["get", "self"]);
+    // (With the role, the served-organizations panel reads its list too.)
+    expect(calls.map((c) => c.method).sort()).toEqual(["get", "orgs", "self"]);
     for (const b of StackBackendSchema.options)
       expect(page.byTestId(`stack-row-${b}`)).toBeTruthy();
     expect(page.byTestId("stack-phase-argo-events").textContent).toBe("ready");
@@ -192,7 +266,7 @@ describe("Admin › Stack", () => {
     expect(page.byTestId("stack-no-role").textContent).toContain("instance-operator role");
     page.click("stack-toggle-argocd");
     await settle();
-    expect(calls.filter((c) => c.method !== "get" && c.method !== "self")).toEqual([]);
+    expect(calls.filter((c) => !["get", "self", "orgs"].includes(c.method))).toEqual([]);
   });
 
   it("with the role, enable, disable, upgrade and the update policy go through their SDK verbs with NO credential", async () => {
@@ -207,7 +281,7 @@ describe("Admin › Stack", () => {
     policy.value = "manual";
     fire(policy, new Event("change", { bubbles: true }));
     await settle();
-    expect(calls.filter((c) => c.method !== "get" && c.method !== "self")).toEqual([
+    expect(calls.filter((c) => !["get", "self", "orgs"].includes(c.method))).toEqual([
       { method: "putBackend", args: ["argocd", { enabled: true }] },
       { method: "putBackend", args: ["argo-events", { enabled: false }] },
       { method: "requestUpgrade", args: [] },
@@ -309,10 +383,64 @@ describe("Admin › Stack", () => {
     expect(page.byTestId("stack-controller-never").textContent).toContain("nothing is installed");
   });
 
-  it("never touches the controller's two doors", async () => {
+  it("never touches the controller's doors (spec, status, wiring)", async () => {
     const page = await mount();
     page.click("stack-upgrade");
     await settle();
-    expect(calls.some((c) => c.method === "spec" || c.method === "putStatus")).toBe(false);
+    page.click("stack-rotate-argo-workflows");
+    await settle();
+    expect(
+      calls.some((c) => ["spec", "putStatus", "putWiring", "deleteWiring"].includes(c.method))
+    ).toBe(false);
+  });
+
+  // ---- M29.2 (ADR-0061) -----------------------------------------------------------------------
+
+  it("M29.2: each backend's wiring is shown — where scpd reaches it and the CA it trusts; Rollouts is n/a", async () => {
+    const page = await mount();
+    const wf = page.byTestId("stack-wiring-argo-workflows").textContent ?? "";
+    expect(wf).toContain("wired");
+    expect(wf).toContain("https://argo-server.scp-argo-workflows.svc:2746");
+    expect(wf).toContain("CA cccccccccccc");
+    expect(page.byTestId("stack-wiring-argo-events").textContent).toContain("does not call it");
+    expect(page.byTestId("stack-wiring-argo-rollouts").textContent).toBe("n/a");
+    expect(page.byTestId("stack-serves-this-org").textContent).toContain(
+      "This organization is served"
+    );
+  });
+
+  it("M29.2: Rotate is offered for a wired, called backend and goes through its SDK verb with NO credential", async () => {
+    const page = await mount();
+    expect(page.container.querySelector('[data-testid="stack-rotate-argo-events"]')).toBeNull();
+    expect(page.container.querySelector('[data-testid="stack-rotate-argocd"]')).toBeNull();
+    page.click("stack-rotate-argo-workflows");
+    await settle();
+    expect(calls.find((c) => c.method === "rotate")?.args).toEqual(["argo-workflows"]);
+    expect(page.byTestId("stack-notice").textContent).toContain("rotation requested");
+  });
+
+  it("M29.2: without the role there is no served-organizations panel and Rotate is off", async () => {
+    holdsRole = false;
+    const page = await mount();
+    expect(page.container.querySelector('[data-testid="stack-orgs"]')).toBeNull();
+    expect((page.byTestId("stack-rotate-argo-workflows") as HTMLButtonElement).disabled).toBe(true);
+    expect(calls.some((c) => c.method === "orgs")).toBe(false);
+  });
+
+  it("M29.2: an operator serves and stops serving organizations through the SDK", async () => {
+    const page = await mount();
+    expect(page.byTestId(`stack-org-${ORG_A}`).textContent).toContain("by default");
+    page.click(`stack-org-detach-${ORG_A}`);
+    await settle();
+    const id = "0198f0a0-0000-7000-8000-00000000000b";
+    expect((page.byTestId("stack-org-attach") as HTMLButtonElement).disabled).toBe(true);
+    typeInto(page.byTestId("stack-org-attach-id") as HTMLInputElement, id);
+    await settle();
+    page.click("stack-org-attach");
+    await settle();
+    expect(calls.filter((c) => c.method === "detachOrg" || c.method === "attachOrg")).toEqual([
+      { method: "detachOrg", args: [ORG_A] },
+      { method: "attachOrg", args: [id] }
+    ]);
   });
 });

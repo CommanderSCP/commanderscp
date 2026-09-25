@@ -35,6 +35,7 @@ const BUILTIN: Record<string, Resource[]> = {
   "apiextensions.k8s.io/v1": [
     { name: "customresourcedefinitions", kind: "CustomResourceDefinition", namespaced: false }
   ],
+  "networking.k8s.io/v1": [{ name: "networkpolicies", kind: "NetworkPolicy", namespaced: true }],
   "rbac.authorization.k8s.io/v1": [
     { name: "clusterroles", kind: "ClusterRole", namespaced: false },
     { name: "roles", kind: "Role", namespaced: true }
@@ -209,17 +210,50 @@ export class FakeKube implements KubeTransport {
       const existed = this.objects.delete(key);
       return existed ? { status: 200, body: "{}" } : { status: 404, body: "{}" };
     }
+    const prev = this.objects.get(key);
+    // A JSON merge patch (the rotation annotation): merged into what is stored.
+    if (req.contentType === "application/merge-patch+json") {
+      if (!prev) return { status: 404, body: "{}" };
+      const merged = mergeJson(prev, JSON.parse(req.body ?? "{}")) as KubeObject;
+      const gen = Number((prev.metadata as { generation?: number }).generation ?? 1);
+      const bumped: KubeObject = {
+        ...merged,
+        metadata: {
+          ...merged.metadata,
+          generation:
+            JSON.stringify(prev["spec"]) === JSON.stringify(merged["spec"]) ? gen : gen + 1
+        }
+      };
+      this.objects.set(key, bumped);
+      this.merges.push({ kind: resource.kind, name: parsed.name!, body: req.body ?? "" });
+      return { status: 200, body: JSON.stringify(bumped) };
+    }
     // PATCH = server-side apply: the applied object replaces the stored one; generation bumps when
     // the spec changes, the way the API server does.
     const applied = JSON.parse(req.body ?? "{}") as KubeObject;
-    const prev = this.objects.get(key);
+    // The API server writes a Secret's `stringData` into `data`, base64-encoded.
+    if (applied.kind === "Secret" && applied["stringData"]) {
+      const stringData = applied["stringData"] as Record<string, string>;
+      applied["data"] = {
+        ...((applied["data"] as Record<string, string> | undefined) ?? {}),
+        ...Object.fromEntries(
+          Object.entries(stringData).map(([k, v]) => [k, Buffer.from(v).toString("base64")])
+        )
+      };
+      delete applied["stringData"];
+    }
     const prevGen = Number(
       (prev?.metadata as { generation?: number } | undefined)?.generation ?? 0
     );
     const specChanged = JSON.stringify(prev?.["spec"]) !== JSON.stringify(applied["spec"]);
     const stored: KubeObject = {
       ...applied,
-      metadata: { ...applied.metadata, generation: prev && !specChanged ? prevGen : prevGen + 1 }
+      metadata: {
+        ...applied.metadata,
+        // A new object gets a new identity, the way the API server gives it one.
+        uid: (prev?.metadata as { uid?: string } | undefined)?.uid ?? `uid-${++this.uids}`,
+        generation: prev && !specChanged ? prevGen : prevGen + 1
+      }
     };
     this.objects.set(key, stored);
     return { status: 200, body: JSON.stringify(stored) };
@@ -230,7 +264,24 @@ export class FakeKube implements KubeTransport {
     this.objects.set(this.key(o.apiVersion, o.kind, o.metadata.name, o.metadata.namespace), o);
   }
 
+  /** Merge patches received, in order. */
+  readonly merges: { kind: string; name: string; body: string }[] = [];
+  private uids = 0;
+
   applied(): RecordedCall[] {
     return this.calls.filter((c) => c.method === "PATCH");
   }
+}
+
+function mergeJson(base: unknown, patch: unknown): unknown {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const out: Record<string, unknown> =
+    base && typeof base === "object" && !Array.isArray(base)
+      ? { ...(base as Record<string, unknown>) }
+      : {};
+  for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
+    if (v === null) delete out[k];
+    else out[k] = mergeJson(out[k], v);
+  }
+  return out;
 }

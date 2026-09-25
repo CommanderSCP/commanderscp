@@ -132,6 +132,48 @@ subjects:
     name: {{ $name }}
     namespace: {{ $sns }}
 ---
+{{/*
+M29.2 (ADR-0061) — THE NETWORK HALF OF A WIRED BACKEND'S EGRESS. When the controller wires a
+backend into SCP it writes ONE NetworkPolicy into SCP's own namespace, `scp-stack-egress-<backend>`,
+letting scpd's pods reach exactly that backend's pods on its container port — derived from the
+backend's rendered Service, so the endpoint the app-layer egress opens and the one the network opens
+are the same object (no value to set in two places). NetworkPolicies ONLY: no Secret, no workload,
+nothing that reads scpd's credentials. get/patch/delete are held to the three policy names;
+`create` cannot be limited by name in RBAC, so what the controller could add is further allow-only
+policies here — stated in ADR-0061, and bounded by what this controller already holds cluster-wide.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    resourceNames: ["scp-stack-egress-argocd", "scp-stack-egress-argo-workflows", "scp-stack-egress-gitea"]
+    verbs: ["get", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-egress
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $sns }}
+---
 {{/* Bound ONLY by the per-namespace RoleBindings below — never cluster-wide. */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

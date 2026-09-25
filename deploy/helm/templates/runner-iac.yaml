@@ -45,15 +45,15 @@ these are the gates rather than a summary of them:
 
   AND THE CLAUSE IS ABOUT THE CHART, NOT ABOUT THIS ROLE — which is the correction the sentence above
   needed and did not have. A diff can only speak for the object it is handed, and the first version of
-  this paragraph spoke for these `rules` alone: the two bundled-backend autowire Roles, which this
-  chart renders into the BACKENDS' namespaces, were covered by nothing at all, and no assertion
-  anywhere forbade a ClusterRole. (A `delete nodes: yes` was reported against this identity and does
+  this paragraph spoke for these `rules` alone: the (since removed, M29.2) bundled-backend autowire
+  Roles, which this chart rendered into the BACKENDS' namespaces, were covered by nothing at all, and
+  no assertion anywhere forbade a ClusterRole. (A `delete nodes: yes` was reported against this identity and does
   not reproduce: asked with `--as` the runner ServiceAccount it is `no`; the `yes` is the harness
   kubeconfig's, i.e. cluster-admin. The gap was real; that particular reading was not.)
   `helm-verify` now resolves EVERY RoleBinding against EVERY Role in each
-  of the 162 renders, sums the grant per ServiceAccount identity, and holds each of the three
-  identities this chart has — the workload account and the two bundled-backend autowire hooks, whose
-  Roles live in a different namespace — to a pinned total. NO ClusterRole and NO ClusterRoleBinding,
+  of the 162 renders, sums the grant per ServiceAccount identity, and holds the one identity this
+  chart grants to outside the stack controller (whose own gate is `tools/helm-verify/src/stackd.ts`)
+  — the workload account — to a pinned total. NO ClusterRole and NO ClusterRoleBinding,
   in any render and in any template: every grant this chart makes is namespaced, which is what makes
   the cluster-scoped answer structurally "no".
 

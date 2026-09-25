@@ -57,6 +57,12 @@ bundledExecutor:
     # coordinate as `valkeyImage` above (that is SCP's owned substitute, never touched by
     # vendor-refresh, since it is not upstream's own pin). Kept in sync the same way.
     vendoredRedisImage: public.ecr.aws/docker/library/redis:8.2.3-alpine
+    # Argo CD's Dex (Apache-2.0). RETARGETABLE since M29.2: it was the one image of the vendored
+    # install nothing could point at a private registry, so an air-gapped (or blackholed-CI) Argo CD
+    # never became ready — argocd-dex-server sat in ImagePullBackOff.
+    dexImage: ghcr.io/dexidp/dex:v2.45.0
+    # THE RETARGET SOURCE for Dex, kept in sync the same way as vendoredImage above.
+    vendoredDexImage: ghcr.io/dexidp/dex:v2.45.0
     # The scoped, non-admin account SCP mints in the bundled Argo CD and coordinates through. The
     # auto-wire hook (in the MAIN chart) mints its token and stores it as an SCP secret.
     scpAccount: scp-coordinator
@@ -131,6 +137,10 @@ bundledExecutor:
     # bug") — see bundledExecutor.argocd.vendoredImage's comment for the full reasoning.
     vendoredServerImage: quay.io/argoproj/argocli:v4.0.7
     vendoredControllerImage: quay.io/argoproj/workflow-controller:v4.0.7
+    # The executor every workflow POD runs (init/wait containers). RETARGETABLE since M29.2: it is
+    # not in the vendored manifest at all — the controller defaults to the upstream ref — so without
+    # this an air-gapped workflow's pods could not start. Passed as `--executor-image`.
+    executorImage: quay.io/argoproj/argoexec:v4.0.7
     # The Secret holding argo-server's TLS certificate, created by `scp-bundled.sh enable` if it
     # does not exist and NEVER regenerated afterwards.
     #
@@ -143,8 +153,8 @@ bundledExecutor:
     # a multi-node cluster with an unencrypted CNI that token crosses the wire in clear.
     tlsSecretName: argo-server-tls
     # The scoped, non-admin ServiceAccount SCP authenticates as when coordinating this backend —
-    # the same shape as `bundledExecutor.argocd.scpAccount` and `gitea.scpAccount`, which this
-    # backend was missing entirely.
+    # the same shape as `bundledExecutor.argocd.scpAccount` and `gitea.scpAccount`. The stack
+    # controller hands its bound token to SCP when it wires the backend (M29.2, ADR-0061).
     #
     # It is load-bearing rather than cosmetic: argo-server runs `--auth-mode=client`, so every call
     # SCP makes carries THIS account's token and every Kubernetes action is performed AS it. The
