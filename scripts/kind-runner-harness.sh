@@ -42,6 +42,11 @@
 # with `scripts/airgap-drill.sh`, which already has that machinery. THIS harness gates the Job
 # LIFECYCLE, and says so.
 #
+# CORRECTED IN PART (M29.2, kind v0.32.0): kindnet DOES enforce an INGRESS NetworkPolicy — the
+# bundled Argo Workflows' "only scpd's pods" ingress rule dropped every connection from the node to
+# argo-server until a fixture admitted the node (apps/server `stack-wiring.kind.test.ts`). The egress
+# measurement above was not repeated, and containment is still not what this harness claims.
+#
 #   scripts/kind-runner-harness.sh up     create the cluster and write <workdir>/harness.json
 #   scripts/kind-runner-harness.sh down   delete the cluster
 #

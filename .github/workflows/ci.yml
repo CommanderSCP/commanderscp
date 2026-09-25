@@ -815,6 +815,8 @@ jobs:
     # image, its rollout wait, and a manifest `scripts/airgap-drill.sh` still fetches from
     # raw.githubusercontent.com at cluster-build time. NETWORK CONTAINMENT IS NOT GATED HERE and is
     # not claimed to be; it stays with the scheduled air-gap drill, which already has the machinery.
+    # (Corrected in part by M29.2 at kind v0.32.0: kindnet DOES enforce an INGRESS policy — see
+    # scripts/kind-runner-harness.sh. Egress was not re-measured.)
     runs-on: ubuntu-latest
     # Only the mirror population is a real dependency (the seed below races an empty GHCR without
     # it). static-checks and unit-tests were fail-fast ordering, dropped 2026-08-31 for the same
