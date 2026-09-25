@@ -53,6 +53,9 @@ export interface RepoFile {
 export interface RepoSession {
   readFile(path: string, ref: string): Promise<RepoFile | undefined>;
   publishBump(input: PublishBumpInput): Promise<RepoWriteResult>;
+  /** The `re-vendor` strategy's publish — one commit, many files, built through the Git Data API
+   *  (blob-per-file, one tree, one commit) rather than the Contents API's single-file PUT. */
+  publishVendorRefresh(input: PublishVendorRefreshInput): Promise<RepoWriteResult>;
   /** {@link mergeAuthoredBranch} — the merge as its own act, for a branch that already exists and a
    *  commit a governed control already evidenced. See {@link MergeAuthoredBranchInput}. */
   mergeAuthoredBranch(input: MergeAuthoredBranchInput): Promise<MergeOutcome>;
@@ -91,6 +94,37 @@ export interface PublishBumpInput {
   proof: ManifestEditProof;
   delivery: BumpDelivery;
   /** Required when delivery is auto-merge, per the charter. See docs/plugins.md §327. */
+  expectedHeadCommit?: string;
+}
+
+/** One file the `re-vendor` strategy writes. Repo-relative path + its COMPLETE new content — this
+ *  class never patches in place (the same shape as `@scp/vendor-refresh`'s own `VendorFile`). */
+export interface VendorRefreshFile {
+  path: string;
+  content: string;
+}
+
+/**
+ * What a `re-vendor` publish needs — the multi-file analogue of {@link PublishBumpInput}. There is
+ * deliberately no `proof` field: a re-vendor bump's content is composed by the ORCHESTRATOR itself
+ * (a network fetch through the pinned skopeo — see the ADR this strategy shipped with), never by the
+ * isolated, untrusted `scp-runner-dep` container, so there is no untrusted output here for
+ * `verifyManifestOnlyEdit`'s HMAC dance to authorise — the thing that dance defends against does not
+ * exist on this path. What still applies, and is re-checked at the splice site exactly as it is for
+ * `publishBump`: every repo/branch/path/message is asserted safe, and every path in `files` must be
+ * one of `declaredManifestPaths` — refused outright otherwise, before anything is sent.
+ */
+export interface PublishVendorRefreshInput {
+  target: RepoWriteTarget;
+  /** Every file this bump writes. Rejected outright if empty, or if any path is not one of
+   *  `declaredManifestPaths` — the multi-file analogue of `assertDeclaredManifest`. */
+  files: readonly VendorRefreshFile[];
+  /** Every path the `re-vendor` descriptor declared this backend may touch. */
+  declaredManifestPaths: readonly string[];
+  commitMessage: string;
+  pullRequestTitle: string;
+  pullRequestBody: string;
+  delivery: BumpDelivery;
   expectedHeadCommit?: string;
 }
 
@@ -567,6 +601,207 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           }
 
           // Auto-merge, which means a control already evidenced it. See docs/plugins.md §337.
+          const merged = await mergeEvidencedPullRequest(api, {
+            repo: target.repo,
+            pullRequestNumber: prNumber,
+            pullRequestUrl: prUrl,
+            expectedHeadCommit: expectedHeadCommit as string,
+            commitTitle: commitMessage
+          });
+          return {
+            commitSha,
+            pullRequestNumber: merged.pullRequestNumber,
+            pullRequestUrl: merged.pullRequestUrl,
+            merged: merged.merged,
+            ...(merged.mergeRefusal ? { mergeRefusal: merged.mergeRefusal } : {})
+          };
+        },
+
+        /**
+         * THE `re-vendor` STRATEGY'S PUBLISH. One commit, many files, via the Git Data API
+         * (blob-per-file -> one tree -> one commit -> one ref update) — GitHub's Contents API
+         * (what `publishBump` uses) is one file per request and has no multi-file atomic form.
+         */
+        async publishVendorRefresh({
+          target,
+          files,
+          declaredManifestPaths,
+          commitMessage,
+          pullRequestTitle,
+          pullRequestBody,
+          delivery,
+          expectedHeadCommit
+        }): Promise<RepoWriteResult> {
+          // EVERY REFUSAL, BEFORE THE FIRST REQUEST — the same discipline `publishBump` opens with.
+          assertWriteRepo(PROVIDER, target.repo, 2);
+          assertWriteBaseBranch(PROVIDER, target.baseBranch);
+          assertWriteBranch(PROVIDER, target.headBranch);
+          assertBranchIsNotBase(PROVIDER, target.headBranch, target.baseBranch);
+          if (delivery === "auto_merge") assertWriteCommit(PROVIDER, expectedHeadCommit ?? "");
+          assertMessageBound(commitMessage, MAX_COMMIT_MESSAGE_CHARS, "commit message");
+          assertMessageBound(pullRequestTitle, MAX_PR_TITLE_CHARS, "pull-request title");
+          assertMessageBound(pullRequestBody, MAX_PR_BODY_CHARS, "pull-request body");
+          if (files.length === 0) {
+            throw new Error(
+              "managed-dep: publishVendorRefresh was given zero files — there is nothing to commit"
+            );
+          }
+          const declared = new Set(declaredManifestPaths);
+          const undeclared = files.map((f) => f.path).filter((p) => !declared.has(p));
+          if (undeclared.length > 0) {
+            throw new Error(
+              `managed-dep: publishVendorRefresh refuses to write path(s) outside declaredManifestPaths: ${undeclared.join(", ")}`
+            );
+          }
+          for (const file of files) assertWritePath(PROVIDER, file.path);
+
+          // 1. Resolve the base branch's head COMMIT (not just its sha — the tree hangs off the
+          //    commit, and `base_tree` is what lets the new tree include every file this commit does
+          //    NOT touch without re-uploading a blob for each of them).
+          const baseRef = await api(
+            "GET",
+            `/repos/${target.repo}/git/ref/heads/${encodePathSegments(target.baseBranch)}`
+          );
+          if (baseRef.status !== 200) {
+            throw new Error(
+              `managed-dep: cannot resolve base branch '${target.baseBranch}' of '${target.repo}' (HTTP ${baseRef.status})`
+            );
+          }
+          const baseSha = ((baseRef.body as { object?: { sha?: unknown } }).object?.sha ??
+            "") as string;
+          if (!baseSha) {
+            throw new Error(
+              `managed-dep: base branch '${target.baseBranch}' of '${target.repo}' resolved to no sha`
+            );
+          }
+          const baseCommit = await api("GET", `/repos/${target.repo}/git/commits/${baseSha}`);
+          if (baseCommit.status !== 200) {
+            throw new Error(
+              `managed-dep: cannot read base commit '${baseSha}' of '${target.repo}' (HTTP ${baseCommit.status})`
+            );
+          }
+          const baseTreeSha = ((baseCommit.body as { tree?: { sha?: unknown } }).tree?.sha ??
+            "") as string;
+          if (!baseTreeSha) {
+            throw new Error(
+              `managed-dep: base commit '${baseSha}' of '${target.repo}' names no tree`
+            );
+          }
+
+          // 2. ONE BLOB PER FILE.
+          const treeEntries: Array<{ path: string; mode: string; type: string; sha: string }> = [];
+          for (const file of files) {
+            const blob = await api("POST", `/repos/${target.repo}/git/blobs`, {
+              content: Buffer.from(file.content, "utf8").toString("base64"),
+              encoding: "base64"
+            });
+            if (blob.status !== 201) {
+              throw new Error(
+                `managed-dep: creating a blob for '${file.path}' on '${target.repo}' failed (HTTP ${blob.status})`
+              );
+            }
+            const blobSha = ((blob.body as { sha?: unknown }).sha ?? "") as string;
+            if (!blobSha) {
+              throw new Error(`managed-dep: blob creation for '${file.path}' returned no sha`);
+            }
+            treeEntries.push({ path: file.path, mode: "100644", type: "blob", sha: blobSha });
+          }
+
+          // 3. ONE TREE, layered on the base branch's own tree — every file NOT in `files` is
+          //    untouched, exactly as `base_tree` promises.
+          const tree = await api("POST", `/repos/${target.repo}/git/trees`, {
+            base_tree: baseTreeSha,
+            tree: treeEntries
+          });
+          if (tree.status !== 201) {
+            throw new Error(
+              `managed-dep: creating the tree for '${target.repo}' failed (HTTP ${tree.status})`
+            );
+          }
+          const newTreeSha = ((tree.body as { sha?: unknown }).sha ?? "") as string;
+          if (!newTreeSha) {
+            throw new Error("managed-dep: tree creation returned no sha");
+          }
+
+          // 4. ONE COMMIT, parented on the base branch's head.
+          const commit = await api("POST", `/repos/${target.repo}/git/commits`, {
+            message: commitMessage,
+            tree: newTreeSha,
+            parents: [baseSha]
+          });
+          if (commit.status !== 201) {
+            throw new Error(
+              `managed-dep: creating the commit for '${target.repo}' failed (HTTP ${commit.status})`
+            );
+          }
+          const commitSha = ((commit.body as { sha?: unknown }).sha ?? "") as string;
+          if (!commitSha) {
+            throw new Error("managed-dep: commit creation returned no sha");
+          }
+
+          // 5. THE HEAD BRANCH. Create it (201), or — a retry of the SAME logical re-vendor, whose
+          //    branch name carries the originating change's id — force-update it to this run's
+          //    freshly recomputed commit: `planVendorRefresh` is deterministic given the same tag and
+          //    the same base content, so re-pointing the branch converges rather than diverging.
+          const branchCreate = await api("POST", `/repos/${target.repo}/git/refs`, {
+            ref: `refs/heads/${target.headBranch}`,
+            sha: commitSha
+          });
+          if (branchCreate.status !== 201) {
+            if (branchCreate.status !== 422) {
+              throw new Error(
+                `managed-dep: cannot create branch '${target.headBranch}' on '${target.repo}' (HTTP ${branchCreate.status})`
+              );
+            }
+            const update = await api(
+              "PATCH",
+              `/repos/${target.repo}/git/refs/heads/${encodePathSegments(target.headBranch)}`,
+              { sha: commitSha, force: true }
+            );
+            if (update.status !== 200) {
+              throw new Error(
+                `managed-dep: cannot update branch '${target.headBranch}' on '${target.repo}' to the recomputed commit (HTTP ${update.status})`
+              );
+            }
+          }
+
+          // 6. THE PULL REQUEST. Same duplicate story as `publishBump`.
+          let prNumber = 0;
+          let prUrl = "";
+          const pr = await api("POST", `/repos/${target.repo}/pulls`, {
+            title: pullRequestTitle,
+            head: target.headBranch,
+            base: target.baseBranch,
+            body: pullRequestBody
+          });
+          if (pr.status === 201) {
+            const b = pr.body as { number?: unknown; html_url?: unknown };
+            prNumber = typeof b.number === "number" ? b.number : 0;
+            prUrl = typeof b.html_url === "string" ? b.html_url : "";
+          } else if (pr.status === 422) {
+            const existingPr = await findOpenPullRequest(
+              api,
+              target.repo,
+              target.headBranch,
+              target.baseBranch
+            );
+            if (!existingPr) {
+              throw new Error(
+                `managed-dep: the pull request for '${target.headBranch}' -> '${target.baseBranch}' on '${target.repo}' was refused as a duplicate, but no OPEN pull request between exactly those two branches exists — refusing to guess which pull request was meant`
+              );
+            }
+            prNumber = existingPr.number;
+            prUrl = existingPr.url;
+          } else {
+            throw new Error(
+              `managed-dep: opening a pull request for '${target.headBranch}' on '${target.repo}' failed (HTTP ${pr.status})`
+            );
+          }
+
+          if (delivery === "pull_request") {
+            return { commitSha, pullRequestNumber: prNumber, pullRequestUrl: prUrl, merged: false };
+          }
+
           const merged = await mergeEvidencedPullRequest(api, {
             repo: target.repo,
             pullRequestNumber: prNumber,

@@ -2225,15 +2225,56 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     and upgrading from the previous published release. This is the first run of every M28 lane against real controllers.
     - **DoD:** the job is in CI (nightly and on stack-touching PRs), and removing any lane's wiring makes it red.
   - **M29.8 — the stack stays current (proposal §9).**
-    - **(a) Foundation:** a `re-vendor` bump strategy for managed-dep, running `tools/vendor-refresh` to fetch a tag's full
-      manifests, pin by digest and update the air-gap list; and a reader test proving `parseKubernetesImages` inventories
-      every image in `deploy/helm-bundled/vendor/**` and `values.yaml`.
+    - **(a) Foundation — DONE (2026-09-25).** `tools/vendor-refresh` fetches each of the five backends'
+      pinned release manifest (argocd/argo-events from the upstream GitHub source tree; argo-workflows/argo-rollouts
+      from the GitHub Release asset instead — the source tree at those two projects' tags still says `image:
+      …:latest`, a real, MEASURED divergence caught by comparing the tool's fetch against the real network, not
+      assumed; gitea from `helm template` against `gitea-charts/gitea`), resolves every tracked image's digest through
+      the repo's pinned skopeo, and patches `values.yaml`/`bundle-images.ts`/`images.list`. Verified against the real
+      network at the tags already vendored: all five backends come back byte-identical (argocd/argo-events/argo-rollouts/
+      argo-workflows) or script-identical (gitea's four extracted config/init files) to what is already in the tree.
+      Deterministic and offline-tested (a local HTTP server, a local fixture Helm chart, an injected skopeo — the real,
+      network-reaching code lives only in `io.ts`/`cli.ts`, which no test imports).
+
+      The reader check is done too: `packages/source-census/src/vendored-image-inventory-census.test.ts` proves
+      `parseKubernetesImages` inventories every image in `deploy/helm-bundled/vendor/**` (including
+      `argo-workflows/install-part-0N.yaml`'s multi-document split) and `values.yaml`, against an independently-built
+      (plain regex, not the `yaml` library) expected set. It found and fixed a real miss:
+      `bundledExecutor.argoWorkflows.serverImage`/`.controllerImage` produced no row at all — not even `unresolved` —
+      because the parser matched the literal key `image` only; fixed additively (`readAdditionalCompleteImageKeys`,
+      `packages/dependency-manifests/src/kubernetes-images.ts`) without touching the load-bearing `IMAGE_KEY`/`IMAGE_KEYS`
+      set. Mutation-proved three ways (multi-doc handling broken, a whole vendor directory excluded from the census's
+      own walk, the fix's own call site disabled) — each turns the census red for the reason named; see the
+      landing pull request's description for the captured log.
+
+      The `re-vendor` bump strategy is wired into the real `scp-managed-dep` executor
+      (`packages/plugins/managed-dep`) as a third `TriggerIntent` action, exercised end to end against a fixture
+      upstream and a fake GitHub Git Data API (`packages/plugins/managed-dep/src/revendor.test.ts`) — one commit,
+      every file `planVendorRefresh` proposes, one pull request, zero containers launched. ADR-0058 records the
+      charter-consistent design this needed: the runner's unqualified `--network none` clause is untouched because
+      the `re-vendor` strategy never launches `scp-runner-dep` at all — the whole computation (network fetch, skopeo,
+      `helm template`) runs in the orchestrator, extending the SAME orchestrator/runner split the charter's
+      2026-08-15 qualification already states, not a new exception to it.
+
+      **What is NOT built, and is an explicit, reported scope boundary rather than a silent gap:** a
+      per-dependency-line STORED strategy selector and the DISPATCHER-side logic that would read it and automatically
+      construct `action: "re-vendor"` parameters instead of `action: "bump"` ones for the five backend components (the
+      §8a "what dispatches a bump" machinery, `apps/server`). Today, something upstream of the executor (a human, a
+      script, or — in (b) — the automatic dispatcher once it exists) must already know which components use which
+      strategy and construct the matching `TriggerIntent`. Building the STORED, dispatcher-selected version needs its
+      own migration (a `bump_strategy` column with its GRANT/RLS), a decision about where it is declared (a new
+      per-line field vs. a policy effect, mirroring the §3a-i "attachment" question for `dependencySubscription`), and
+      changes to the dispatcher itself — squarely the kind of "default on, for our own five components" work (b)
+      already scopes separately. Recommendation: build it as part of (b), where the dispatcher is being made to select
+      and register these components automatically anyway.
     - **(b) Default on:** SCP registers its own repo and backends, and creates the stack's dependency subscriptions by
-      default on the publishing commander (the homelab first). A scan-triggered bump fires when a pinned image has a
-      fixable CRITICAL or HIGH. The publish-time release gate refuses a fixable CRITICAL.
+      default on the publishing commander (the homelab first) — including, per (a)'s note above, the per-dependency
+      `bump_strategy` field and the dispatcher logic that reads it to select `re-vendor` for the five vendored
+      backends. A scan-triggered bump fires when a pinned image has a fixable CRITICAL or HIGH. The publish-time
+      release gate refuses a fixable CRITICAL.
     - **DoD:** a real upstream patch release produces a SCP-authored re-vendor PR that passes CI including M29.7's upgrade
       run; deleting a vendored image from the reader's reach turns the reader test red; a synthetic fixable CRITICAL
-      blocks publish.
+      blocks publish. *(M29.7 and the scan-triggered/release-gate halves are (b)'s to prove — not re-derived here.)*
 
 ## 9. Verification Mapping
 

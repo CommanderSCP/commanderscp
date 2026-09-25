@@ -154,9 +154,12 @@ describe("parseIntentAction — an unrecognised action never falls through to th
 
   it("reads an explicit action, and REFUSES anything else", () => {
     expect(parseIntentAction({ kind: "custom", parameters: mergeParams })).toBe("merge");
+    expect(parseIntentAction({ kind: "custom", parameters: { action: "re-vendor" } })).toBe(
+      "re-vendor"
+    );
     for (const action of ["Merge", "push", "", 1, null]) {
       expect(() => parseIntentAction({ kind: "custom", parameters: { action } })).toThrow(
-        /must be 'bump' or 'merge'/
+        /must be 'bump', 'merge' or 're-vendor'/
       );
     }
   });

@@ -676,6 +676,9 @@ importers:
       '@scp/runner-launcher':
         specifier: workspace:*
         version: link:../../runner-launcher
+      '@scp/vendor-refresh':
+        specifier: workspace:*
+        version: link:../../../tools/vendor-refresh
     devDependencies:
       '@scp/plugin-testkit':
         specifier: workspace:*
