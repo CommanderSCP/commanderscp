@@ -2,6 +2,8 @@
 {{- $a := .Values.bundledExecutor.argocd -}}
 {{- if not $a.image }}{{ fail "bundledExecutor.argocd.enabled=true but .image is empty — the vendored, retargeted Argo CD image is required (the air-gap install.sh sets it). Fail-closed, like managedIac.runnerImage." }}{{- end -}}
 {{- if not $a.valkeyImage }}{{ fail "bundledExecutor.argocd.enabled=true but .valkeyImage is empty — the vendored Valkey image is required." }}{{- end -}}
+{{- if not $a.vendoredImage }}{{ fail "bundledExecutor.argocd.vendoredImage is empty — this is the retarget SOURCE (the upstream ref the vendored file currently declares), never the customer-facing default. Fail-closed rather than silently skip the retarget." }}{{- end -}}
+{{- if not $a.vendoredRedisImage }}{{ fail "bundledExecutor.argocd.vendoredRedisImage is empty — same reasoning as vendoredImage, for the redis->valkey substitution." }}{{- end -}}
 {{- $ns := $a.namespace -}}
 # =============================================================================================
 # Bundled Argo CD (Mode B — ADR-0002, docs/proposals/bundled-executor-backends.md). OPT-IN.
@@ -29,8 +31,14 @@ metadata:
     # chart-render-time guardrail lint (tools/helm-verify). Not runtime authority.
     commanderscp.io/federation-role: {{ include "commanderscp.federationRole" . }}
 {{- $raw := .Files.Get "vendor/argocd/install.yaml" -}}
-{{- $raw = $raw | replace "quay.io/argoproj/argocd:v3.4.5" $a.image -}}
-{{- $raw = $raw | replace "public.ecr.aws/docker/library/redis:8.2.3-alpine" $a.valkeyImage -}}
+{{- if not (contains $a.vendoredImage $raw) -}}
+{{- fail (printf "bundledExecutor.argocd.vendoredImage %q is not present in the vendored manifest — the retarget would silently do nothing. Re-run tools/vendor-refresh, which keeps this field in sync, or fix the hand edit that drifted it." $a.vendoredImage) -}}
+{{- end -}}
+{{- if not (contains $a.vendoredRedisImage $raw) -}}
+{{- fail (printf "bundledExecutor.argocd.vendoredRedisImage %q is not present in the vendored manifest — the redis->valkey retarget would silently do nothing." $a.vendoredRedisImage) -}}
+{{- end -}}
+{{- $raw = $raw | replace $a.vendoredImage $a.image -}}
+{{- $raw = $raw | replace $a.vendoredRedisImage $a.valkeyImage -}}
 {{- $raw = $raw | replace "namespace: argocd" (printf "namespace: %s" $ns) -}}
 {{- $clusterScoped := list "CustomResourceDefinition" "ClusterRole" "ClusterRoleBinding" -}}
 {{- $out := list -}}

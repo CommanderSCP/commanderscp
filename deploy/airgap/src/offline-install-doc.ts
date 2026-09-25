@@ -95,8 +95,9 @@ reading — read it once before running it against a production system).
 
 ## The managed-execution runner images (and why install.sh does not switch them on)
 
-The bundle carries all four ephemeral runner images — \`scp-runner-iac\`, \`scp-runner-scan\`,
-\`scp-runner-dep\`, \`scp-runner-ops\` — unconditionally, so every managed-execution class is
+The bundle carries all five ephemeral runner images — \`scp-runner-iac\`, \`scp-runner-scan\`,
+\`scp-runner-dep\`, \`scp-runner-dep-vendor\`, \`scp-runner-ops\` — unconditionally, so every
+managed-execution class is
 **installable** offline.
 Two things do not follow from that, and both are worth knowing before you plan a rollout: none of
 them is **enabled**, and not every deployment mode can **run** one.
@@ -133,6 +134,7 @@ class's on/off control, and here the setting is an environment variable on the \
 | \`scp-runner-iac\` | managed-IaC releases for orgs without a pipeline | \`SCP_MANAGED_IAC_RUNNER_IMAGE=<printed ref>\` |
 | \`scp-runner-scan\` | the commander's promotion-scan toolchain (trivy + oscap) | \`SCP_MANAGED_SCAN_RUNNER_IMAGE=<printed ref>\` |
 | \`scp-runner-dep\` | the isolated manifest editor for dependency bumps | \`SCP_MANAGED_DEP_RUNNER_IMAGE=<printed ref>\` — this class WRITES to your repositories |
+| \`scp-runner-dep-vendor\` | the credential-free, network-none sandbox the \`re-vendor\` bump strategy launches (M29.8a) | \`SCP_MANAGED_DEP_REVENDOR_RUNNER_IMAGE=<printed ref>\` — only needed if you re-vendor a bundled Standard Stack backend yourself; \`bump\`/\`merge\` work without it |
 | \`scp-runner-ops\` | OS packages, config files, cron/systemd units — the only HOST-REACHING class | \`SCP_MANAGED_OPS_RUNNER_IMAGE=<printed ref>\` — this class HOLDS HOST LOGIN CREDENTIALS. It ALSO needs \`SCP_MANAGED_OPS_CATALOG_PUBKEY_SECRET_KEY\`, and refuses to run without it: the cosign-signed task catalog is what bounds a host-reaching run, and an unverified catalog with host credentials is the whole hazard rather than a rough edge |
 
 Add the ones you want to the \`scp\` service's \`environment:\` block in the retargeted compose file

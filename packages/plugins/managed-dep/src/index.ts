@@ -29,6 +29,12 @@ import {
   // the diagnosis, and dropping it is the defect this plugin's failure `detail` was built out of.
   type RunnerResult
 } from "@scp/runner-launcher";
+import { isBackendName, type BackendName } from "@scp/vendor-refresh";
+import {
+  DEFAULT_REVENDOR_FETCH_DEPS,
+  orchestrateRevendor,
+  type RevendorFetchDeps
+} from "./revendor-orchestrator.js";
 import {
   coordinateRuleCandidates,
   isDependencyEcosystem,
@@ -59,6 +65,19 @@ import {
 export interface ManagedDepConfig {
   /** SERVER-INJECTED (never tenant): the vetted, pinned `scp-runner-dep` image reference. */
   runnerImage: string;
+  /** SERVER-INJECTED (never tenant): the vetted, pinned `scp-runner-dep-vendor` SANDBOX image the
+   *  `re-vendor` strategy launches (ADR-0059) — a SEPARATE image from `runnerImage` above: this one
+   *  is credential-free and `--network none` unconditionally, and does the parsing/`helm template`/
+   *  rewriting the orchestrator itself no longer does. Unset means `re-vendor` is not enabled — a
+   *  `bump`/`merge` dispatch is unaffected. */
+  revendorRunnerImage?: string;
+  /** SERVER-INJECTED (never tenant): `owner/repo` — the ONE repository `re-vendor` may ever write
+   *  to (ADR-0059's other containment half: "the target repository is the one CommanderSCP is
+   *  configured to vendor its own stack into, which is never tenant-configurable"). A `re-vendor`
+   *  descriptor whose `repo` does not equal this is refused BEFORE a credential is minted — never
+   *  trusted from the intent alone, which is server-composed but not itself an authority boundary.
+   *  Unset means `re-vendor` is not enabled, same as an unset `revendorRunnerImage`. */
+  scpRepo?: string;
   /** SERVER-INJECTED (never tenant): operator root under which per-run scratch dirs are made. */
   workspaceRoot: string;
   /** ms before the container run is killed as hung (TENANT config). Default 5 minutes — a manifest
@@ -111,11 +130,11 @@ export const CONTENT_BEARING_KEYS = [
   "command"
 ] as const;
 
-/** Which of the two acts an intent is asking for. Absent means `bump`, so every intent built before
- *  the merge action existed keeps its meaning — and a value this plugin does not know is REFUSED
- *  rather than defaulted, because defaulting an unknown action to the authoring one would silently
- *  edit a repository for a request that asked for something else. */
-export type ManagedDepAction = "bump" | "merge";
+/** Which of the three acts an intent is asking for. Absent means `bump`, so every intent built before
+ *  the merge/re-vendor actions existed keeps its meaning — and a value this plugin does not know is
+ *  REFUSED rather than defaulted, because defaulting an unknown action to the authoring one would
+ *  silently edit a repository for a request that asked for something else. */
+export type ManagedDepAction = "bump" | "merge" | "re-vendor";
 
 /** What the SERVER's actuator seam sends. Every field is a reference to something that already
  *  exists, or a version token. Nothing here can hold a file body. */
@@ -171,6 +190,43 @@ export interface ParsedMergeDescriptor {
   commitTitle: string;
 }
 
+/** What `action: "re-vendor"` sends. Distinct from {@link ManagedDepIntentParameters}: there is no
+ *  `ecosystem`/`coordinate`/`manifestPath`/`fromVersion`/`toVersion` here — a re-vendor names a
+ *  BACKEND and a TAG, not one manifest and one version (ADR-0059). */
+export interface ManagedDepRevendorIntentParameters {
+  action: "re-vendor";
+  /** One of `@scp/vendor-refresh`'s `BACKEND_NAMES`. */
+  backend: string;
+  fromTag: string;
+  toTag: string;
+  /** `owner/repo` — the single repository this run's credential is scoped to. Always the repo that
+   *  vendors the backend (CommanderSCP's own repository, for every backend `tools/vendor-refresh`
+   *  names today). */
+  repo: string;
+  baseBranch: string;
+  changeObjectId: string;
+  delivery: BumpDelivery;
+  expectedHeadCommit?: string;
+  /** Every file this backend's re-vendor may touch — the vendored manifest(s), `values.yaml`,
+   *  `bundle-images.ts` and (when already listed) `images.list`. `planVendorRefresh`'s own output is
+   *  re-checked against this set before anything is sent (ADR-0059's containment half). */
+  declaredManifestPaths: string[];
+}
+
+/** A re-vendor descriptor, validated. See docs/plugins.md's bump-descriptor sibling. */
+export interface ParsedRevendorDescriptor {
+  backend: BackendName;
+  fromTag: string;
+  toTag: string;
+  repo: string;
+  baseBranch: string;
+  headBranch: string;
+  changeObjectId: string;
+  delivery: BumpDelivery;
+  expectedHeadCommit?: string;
+  declaredManifestPaths: string[];
+}
+
 /** The provider name descriptor-time refusals carry. The descriptor is validated before a provider
  *  arm is even resolved, and only the GitHub arm exists (`resolveRepoWriter`), so naming it here is
  *  accurate rather than a placeholder — and the SAME asserts run again inside the arm at the actual
@@ -196,7 +252,7 @@ function refuseContentBearingKeys(params: Record<string, unknown>): void {
 
 function requiredString(
   params: Record<string, unknown>,
-  key: keyof ManagedDepIntentParameters
+  key: keyof ManagedDepIntentParameters | keyof ManagedDepRevendorIntentParameters
 ): string {
   const value = params[key];
   if (typeof value !== "string" || value.trim() === "") {
@@ -224,8 +280,9 @@ export function parseIntentAction(intent: TriggerIntent): ManagedDepAction {
   const raw = (intent.parameters ?? {})["action" satisfies keyof ManagedDepIntentParameters];
   if (raw === undefined || raw === "bump") return "bump";
   if (raw === "merge") return "merge";
+  if (raw === "re-vendor") return "re-vendor";
   throw new Error(
-    `managed-dep: intent.parameters.action must be 'bump' or 'merge' (got ${JSON.stringify(raw)})`
+    `managed-dep: intent.parameters.action must be 'bump', 'merge' or 're-vendor' (got ${JSON.stringify(raw)})`
   );
 }
 
@@ -382,6 +439,93 @@ export function parseBumpMergeDescriptor(intent: TriggerIntent): ParsedMergeDesc
   };
 }
 
+/** A version token never spans lines or carries control bytes — the same rule
+ *  {@link parseBumpDescriptor} applies to `fromVersion`/`toVersion`. */
+function assertNoControlBytes(label: string, value: string): void {
+  // eslint-disable-next-line no-control-regex -- the point is to reject control characters
+  if (/[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(
+      `managed-dep: ${label} contains a newline or control character — a tag is one token on one line`
+    );
+  }
+}
+
+/** Turn a `re-vendor` intent into a descriptor, or throw. See ADR-0059. */
+export function parseRevendorDescriptor(intent: TriggerIntent): ParsedRevendorDescriptor {
+  const params = (intent.parameters ?? {}) as Record<string, unknown>;
+
+  refuseContentBearingKeys(params);
+
+  const backendRaw = requiredString(params, "backend");
+  if (!isBackendName(backendRaw)) {
+    throw new Error(
+      `managed-dep: unknown backend '${backendRaw}' (expected one of the @scp/vendor-refresh BACKEND_NAMES)`
+    );
+  }
+  const backend: BackendName = backendRaw;
+
+  const repo = requiredString(params, "repo");
+  assertWriteRepo(DESCRIPTOR_PROVIDER, repo, 2);
+  const baseBranch = requiredString(params, "baseBranch");
+  assertWriteBaseBranch(DESCRIPTOR_PROVIDER, baseBranch);
+
+  const fromTag = requiredString(params, "fromTag");
+  const toTag = requiredString(params, "toTag");
+  assertNoControlBytes("fromTag", fromTag);
+  assertNoControlBytes("toTag", toTag);
+  if (fromTag === toTag) {
+    throw new Error(
+      `managed-dep: fromTag and toTag are both '${fromTag}' — there is no re-vendor to author`
+    );
+  }
+
+  const changeObjectId = requiredChangeObjectId(params);
+  const delivery = params.delivery;
+  if (delivery !== "pull_request" && delivery !== "auto_merge") {
+    throw new Error(
+      `managed-dep: intent.parameters.delivery must be 'pull_request' or 'auto_merge' (got ${JSON.stringify(delivery)})`
+    );
+  }
+  const expectedHeadCommit =
+    delivery === "auto_merge" ? requiredString(params, "expectedHeadCommit") : undefined;
+  if (expectedHeadCommit !== undefined) {
+    assertWriteCommit(DESCRIPTOR_PROVIDER, expectedHeadCommit);
+  }
+
+  const declaredRaw = params.declaredManifestPaths;
+  if (!Array.isArray(declaredRaw) || declaredRaw.length === 0) {
+    throw new Error(
+      "managed-dep: intent.parameters.declaredManifestPaths is required and must be a non-empty array of the vendor file paths this backend's re-vendor may touch"
+    );
+  }
+  const declaredManifestPaths = declaredRaw.map((value, i) => {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new Error(
+        `managed-dep: intent.parameters.declaredManifestPaths[${i}] is not a non-empty string`
+      );
+    }
+    assertWritePath(DESCRIPTOR_PROVIDER, value);
+    return value;
+  });
+
+  const headBranch = bumpBranchFor(changeObjectId);
+  assertWriteBranch(DESCRIPTOR_PROVIDER, headBranch);
+  assertBranchIsNotBase(DESCRIPTOR_PROVIDER, headBranch, baseBranch);
+
+  return {
+    backend,
+    fromTag,
+    toTag,
+    repo,
+    baseBranch,
+    headBranch,
+    changeObjectId,
+    delivery,
+    ...(expectedHeadCommit ? { expectedHeadCommit } : {}),
+    declaredManifestPaths
+  };
+}
+
 function asConfig(config: unknown): ManagedDepConfig {
   const c = config as Partial<ManagedDepConfig> | undefined;
   if (!c?.runnerImage) {
@@ -395,6 +539,8 @@ function asConfig(config: unknown): ManagedDepConfig {
   return {
     ...c,
     runnerImage: c.runnerImage,
+    revendorRunnerImage: c.revendorRunnerImage,
+    scpRepo: c.scpRepo,
     workspaceRoot: c.workspaceRoot,
     timeoutMs: c.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     dockerBinary: c.dockerBinary ?? "docker",
@@ -572,10 +718,181 @@ async function triggerMerge(
   }
 }
 
+/**
+ * THE `re-vendor` STRATEGY (ADR-0059, owner decision 2026-09-25 — "split + small amendment").
+ * Unlike `bump`, this launches a SECOND, credential-free, `--network none` sandbox
+ * (`scp-runner-dep-vendor`) — `orchestrateRevendor` (`revendor-orchestrator.ts`) is the orchestrator
+ * half: it fetches upstream (by commit sha where possible), cosign-verifies what it can, refuses a
+ * downgrade, and launches the sandbox with the verified bytes. The sandbox parses/splits/`helm
+ * template`s/rewrites/classifies and returns files; THIS function still runs the SAME containment
+ * check (`declaredManifestPaths`) that always gated a re-vendor and still does the one commit.
+ */
+async function triggerRevendor(
+  ctx: PluginContext,
+  intent: TriggerIntent,
+  writerConfig: ManagedDepConfig,
+  externalId: string,
+  resolveLauncher: ResolveRunnerLauncher,
+  revendorFetchDeps: RevendorFetchDeps
+): Promise<void> {
+  let descriptor: ParsedRevendorDescriptor;
+  try {
+    descriptor = parseRevendorDescriptor(intent);
+  } catch (err) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail: err instanceof Error ? err.message : String(err)
+    });
+    return;
+  }
+
+  if (!writerConfig.revendorRunnerImage) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail:
+        "managed-dep: re-vendor is not enabled (revendorRunnerImage is unset) — the split sandbox " +
+        "(ADR-0059) has no vetted image to launch, so this run refuses before a credential is minted"
+    });
+    return;
+  }
+  if (!writerConfig.scpRepo) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail:
+        "managed-dep: re-vendor is not enabled (scpRepo is unset) — there is no configured target " +
+        "repository to bound this strategy to, so this run refuses before a credential is minted"
+    });
+    return;
+  }
+  if (descriptor.repo !== writerConfig.scpRepo) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail:
+        `managed-dep: REFUSED (repo_not_scp_repo) — the descriptor names '${descriptor.repo}', but ` +
+        `re-vendor may only ever write to the configured scpRepo ('${writerConfig.scpRepo}'). Nothing ` +
+        "was reached, and no credential was minted."
+    });
+    return;
+  }
+
+  let writer: RepoWriter;
+  try {
+    writer = resolveRepoWriter(writerConfig);
+  } catch (err) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail: err instanceof Error ? err.message : String(err)
+    });
+    return;
+  }
+
+  try {
+    const outcome = await writer.withRunCredential(ctx, descriptor.repo, async (session) => {
+      const { plan, classification, fetchNote, deletePaths } = await orchestrateRevendor(
+        ctx,
+        {
+          revendorRunnerImage: writerConfig.revendorRunnerImage!,
+          workspaceRoot: writerConfig.workspaceRoot,
+          timeoutMs: writerConfig.timeoutMs,
+          dockerBinary: writerConfig.dockerBinary,
+          runnerLauncher: writerConfig.runnerLauncher,
+          kubernetes: writerConfig.kubernetes
+        },
+        descriptor.backend,
+        descriptor.toTag,
+        descriptor.baseBranch,
+        session,
+        descriptor.declaredManifestPaths,
+        resolveLauncher,
+        revendorFetchDeps
+      );
+
+      // THE CONTAINMENT CHECK (ADR-0059): every file the sandbox returns must be one this run was
+      // authorised to touch. Refused before a single blob is created. `session.publishVendorRefresh`
+      // re-checks the SAME set at the splice site — this is the first, earlier gate.
+      const declared = new Set(descriptor.declaredManifestPaths);
+      const undeclared = plan.files.map((f) => f.path).filter((p) => !declared.has(p));
+      if (undeclared.length > 0) {
+        return {
+          succeeded: false,
+          detail:
+            `managed-dep: REFUSED (undeclared_paths) — the sandbox proposed path(s) outside ` +
+            `declaredManifestPaths: ${undeclared.join(", ")}. Nothing was written to '${descriptor.repo}'.`
+        } satisfies PendingOutcome;
+      }
+
+      // THE CLASSIFICATION-DRIVEN DELIVERY DOWNGRADE (ADR-0059 finding 1): any change the classifier
+      // could not confine to a tracked image's own tag/digest is delivered as a pull request for a
+      // human to read, REGARDLESS of what delivery the descriptor asked for — the same downgrade
+      // shape the bump path already applies for a split-line anchor edit (see `trigger()`'s
+      // `splitShape` below).
+      const requiresReview = classification.class === "requires-review";
+      const delivery = requiresReview ? "pull_request" : descriptor.delivery;
+
+      const commitMessage = `chore(deps): re-vendor ${descriptor.backend} ${descriptor.fromTag} -> ${descriptor.toTag}`;
+      const pullRequestBody = [
+        "Authored by CommanderSCP's `scp-managed-dep` executor's `re-vendor` strategy (ADR-0059).",
+        "",
+        `- backend: \`${descriptor.backend}\``,
+        `- ${descriptor.fromTag} -> ${descriptor.toTag}`,
+        `- ${fetchNote}`,
+        `- classification: \`${classification.class}\`${requiresReview ? " — delivered as a pull request regardless of the requested delivery; a human reads the diff before anything merges" : ""}`,
+        ...classification.reasons.map((r) => `  - ${r}`),
+        "",
+        plan.summary,
+        "",
+        `Branch \`${descriptor.headBranch}\` carries the originating change's id, which is how the push`,
+        "this commit produces correlates back to that change instead of being read as an unrelated release."
+      ].join("\n");
+
+      const result = await session.publishVendorRefresh({
+        target: {
+          repo: descriptor.repo,
+          baseBranch: descriptor.baseBranch,
+          headBranch: descriptor.headBranch
+        },
+        files: plan.files,
+        declaredManifestPaths: descriptor.declaredManifestPaths,
+        // STALE PARTS (2026-09-25 third re-review) — computed by orchestrateRevendor itself, from
+        // its own directory listing; never anything the sandbox reported.
+        deletePaths,
+        commitMessage,
+        pullRequestTitle: commitMessage,
+        pullRequestBody,
+        delivery,
+        ...(descriptor.expectedHeadCommit
+          ? { expectedHeadCommit: descriptor.expectedHeadCommit }
+          : {})
+      });
+
+      return {
+        succeeded: true,
+        result,
+        detail: result.merged
+          ? `managed-dep: re-vendor ${descriptor.backend} ${descriptor.fromTag} -> ${descriptor.toTag} merged as ${result.commitSha} (#${result.pullRequestNumber})`
+          : `managed-dep: re-vendor ${descriptor.backend} ${descriptor.fromTag} -> ${descriptor.toTag} opened as ${result.pullRequestUrl || `#${result.pullRequestNumber}`}${result.mergeRefusal ? ` — ${result.mergeRefusal}` : ""}`
+      } satisfies PendingOutcome;
+    });
+    recordOutcome(ctx, externalId, outcome);
+    ctx.logger.info("managed-dep: re-vendor run complete", {
+      externalId,
+      repo: descriptor.repo,
+      backend: descriptor.backend,
+      succeeded: outcome.succeeded
+    });
+  } catch (err) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail: `managed-dep: ${err instanceof Error ? err.message : String(err)}`
+    });
+  }
+}
+
 async function trigger(
   ctx: PluginContext,
   intent: TriggerIntent,
-  resolveLauncher: ResolveRunnerLauncher
+  resolveLauncher: ResolveRunnerLauncher,
+  revendorFetchDeps: RevendorFetchDeps
 ): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   // THE BARE KEY, because it becomes a container NAME — see managed-scan's note of the same shape.
@@ -596,6 +913,10 @@ async function trigger(
   }
   if (action === "merge") {
     await triggerMerge(ctx, intent, config, externalId);
+    return { externalId };
+  }
+  if (action === "re-vendor") {
+    await triggerRevendor(ctx, intent, config, externalId, resolveLauncher, revendorFetchDeps);
     return { externalId };
   }
 
@@ -801,14 +1122,18 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-/** THE LAUNCHER SEAM. See docs/plugins.md §301. */
+/** THE LAUNCHER SEAM. See docs/plugins.md §301. `revendorFetchDeps` is the SAME shape of seam for
+ *  the `re-vendor` strategy's network reach (ADR-0059): the default is the real, network-reaching
+ *  implementation, and every test injects a fixture-backed one instead — never a mock of this
+ *  factory's caller. */
 export function createManagedDepExecutorPlugin(
   // THE DEFAULT IS THE SELECTING RESOLVER, NOT THE DOCKER ONE. See docs/plugins.md §302.
-  resolveLauncher: ResolveRunnerLauncher = resolveRunnerLauncher
+  resolveLauncher: ResolveRunnerLauncher = resolveRunnerLauncher,
+  revendorFetchDeps: RevendorFetchDeps = DEFAULT_REVENDOR_FETCH_DEPS
 ): ExecutorPlugin {
   return {
     observe,
-    trigger: (ctx, intent) => trigger(ctx, intent, resolveLauncher),
+    trigger: (ctx, intent) => trigger(ctx, intent, resolveLauncher, revendorFetchDeps),
     status,
     abort,
     describeCapabilities

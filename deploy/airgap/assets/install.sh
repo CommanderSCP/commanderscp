@@ -329,8 +329,8 @@ echo
 # =================================================================================================
 # THE MANAGED-EXECUTION RUNNERS — WHICH LEVER EXISTS IN WHICH MODE
 # =================================================================================================
-# All four runners (`scp-runner-iac`, `scp-runner-scan`, `scp-runner-dep`, `scp-runner-ops`)
-# ride every bundle
+# All five runners (`scp-runner-iac`, `scp-runner-scan`, `scp-runner-dep`, `scp-runner-dep-vendor`,
+# `scp-runner-ops`) ride every bundle
 # (deploy/airgap/src/bundle-images.ts explains why unconditionally), and the generic
 # BUNDLE_IMAGE_NAMES loops above have already verified, pushed and digest-re-confirmed every one of
 # them. None of them is switched on by this script. What each mode's step-4 block prints below is
@@ -541,6 +541,10 @@ if [[ "$MODE" == "helm" ]]; then
       echo "     scp-runner-dep   ${SCP_RUNNER_DEP_RETARGETED_REF:-${REGISTRY}/scp-runner-dep:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_DIGEST}}"
       echo "                      (this class WRITES to your repositories — ADR-0032 §8)"
     fi
+    if [[ -n "${SCP_RUNNER_DEP_VENDOR_DIGEST:-}" ]]; then
+      echo "     scp-runner-dep-vendor  ${SCP_RUNNER_DEP_VENDOR_RETARGETED_REF:-${REGISTRY}/scp-runner-dep-vendor:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_VENDOR_DIGEST}}"
+      echo "                      (managedDep.revendorRunnerImage — the re-vendor sandbox, M29.8a; only needed if you re-vendor a bundled backend)"
+    fi
     if [[ -n "${SCP_RUNNER_OPS_DIGEST:-}" ]]; then
       echo "     scp-runner-ops   ${SCP_RUNNER_OPS_RETARGETED_REF:-${REGISTRY}/scp-runner-ops:${BUNDLE_VERSION}@${SCP_RUNNER_OPS_DIGEST}}"
       echo "                      (the only HOST-REACHING class — it holds host login credentials)"
@@ -612,6 +616,10 @@ else
     if [[ -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
       echo "     scp-runner-dep   SCP_MANAGED_DEP_RUNNER_IMAGE=${SCP_RUNNER_DEP_RETARGETED_REF:-${REGISTRY}/scp-runner-dep:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_DIGEST}}"
       echo "                      (this class WRITES to your repositories — ADR-0032 §8)"
+    fi
+    if [[ -n "${SCP_RUNNER_DEP_VENDOR_DIGEST:-}" ]]; then
+      echo "     scp-runner-dep-vendor  SCP_MANAGED_DEP_REVENDOR_RUNNER_IMAGE=${SCP_RUNNER_DEP_VENDOR_RETARGETED_REF:-${REGISTRY}/scp-runner-dep-vendor:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_VENDOR_DIGEST}}"
+      echo "                      (the re-vendor sandbox, M29.8a — only needed if you re-vendor a bundled backend yourself)"
     fi
     if [[ -n "${SCP_RUNNER_OPS_DIGEST:-}" ]]; then
       echo "     scp-runner-ops   SCP_MANAGED_OPS_RUNNER_IMAGE=${SCP_RUNNER_OPS_RETARGETED_REF:-${REGISTRY}/scp-runner-ops:${BUNDLE_VERSION}@${SCP_RUNNER_OPS_DIGEST}}"

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: gitea
+description: Fixture stand-in for gitea-charts/gitea, used ONLY by vendor-refresh's own tests. Never
+  a real chart, never fetched over the network — `helm template` is pointed at this local directory.
+type: application
+version: 12.6.0-fixture
+appVersion: "1.26.1-fixture"

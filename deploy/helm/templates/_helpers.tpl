@@ -504,6 +504,15 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ .Values.managedDep.runnerImage | quote }}
 - name: SCP_MANAGED_DEP_WORKSPACE_ROOT
   value: {{ .Values.managedDep.workspaceRoot | quote }}
+{{- /* M29.8a (ADR-0059) — the `re-vendor` strategy's own sandbox image. Gated on the SAME
+       `managedDep.runnerImage` (not a second `enabled` flag): `re-vendor` is a strategy of the
+       `scp-managed-dep` executor, not a separate class, so it rides the same on/off control; an
+       empty `revendorRunnerImage` still leaves `bump`/`merge` fully enabled, and `triggerRevendor`
+       itself refuses (before a credential is minted) when this specific value is unset. */}}
+- name: SCP_MANAGED_DEP_REVENDOR_RUNNER_IMAGE
+  value: {{ .Values.managedDep.revendorRunnerImage | quote }}
+- name: SCP_MANAGED_DEP_SCP_REPO
+  value: {{ .Values.managedDep.scpRepo | quote }}
 {{- end }}
 {{- if .Values.managedOps.runnerImage }}
 {{- /* M27 — host-reaching managed execution (charter 2026-07-12 amendment). Gated on the image

@@ -233,6 +233,77 @@ export async function verifyImageSignature(
   }
 }
 
+/**
+ * KEYLESS (identity-based) image signature verification — `cosign verify <ref>
+ * --certificate-identity-regexp <pattern> --certificate-oidc-issuer <issuer>`, the standard
+ * Sigstore invocation for "was this signed by CI running as this workflow, without a key either
+ * side manages" (ADR-0059, M29.8a: verifying an upstream Standard Stack image's signature against
+ * its expected publishing identity before pinning its digest).
+ *
+ * THE HONEST LIMIT OF WHAT THIS CAN BE TESTED FOR OFFLINE: real keyless verification checks a
+ * Fulcio-issued certificate chain and (unless `--insecure-ignore-tlog` is set) a Rekor transparency
+ * log entry — both are network operations this repo's own conventions refuse to exercise in a test
+ * ("tests never touch the internet"). `createKeylessImageVerifier`'s injected `runFn` seam (mirroring
+ * `createSkopeoDigestResolver`'s) lets a test prove the INVOCATION CONTRACT — the exact argv this
+ * builds, and how it interprets cosign's exit code and stdout — without asserting anything about
+ * Sigstore's actual cryptography, exactly as `verifyImage`'s own (untested) keyful path already does
+ * for a real registry call. A `VerificationStatus` of `"unavailable"` is a DISTINCT, non-blocking
+ * outcome from `"unverified"` (cosign is reachable but reports no matching signature) precisely so a
+ * caller can choose to fail-open-with-a-loud-record rather than treat "I could not check" as "it
+ * passed" — see `docs/adr/0059-revendor-bump-strategy-network-split.md`'s own "Consequences" section
+ * for why this repo does not yet claim universal upstream-image-signing coverage.
+ */
+export interface KeylessImageVerifyResult {
+  status: "verified" | "unverified" | "unavailable";
+  detail: string;
+}
+
+export interface KeylessIdentity {
+  /** A regex `cosign --certificate-identity-regexp` matches against the signing workflow's subject
+   *  (e.g. `^https://github\\.com/argoproj/argo-cd/`). */
+  identityRegexp: string;
+  /** The OIDC issuer the certificate must have been issued against (e.g.
+   *  `https://token.actions.githubusercontent.com` for GitHub Actions-signed releases). */
+  oidcIssuer: string;
+}
+
+/** Build a keyless verifier. `runFn` is injectable ONLY for tests — real callers take the default,
+ *  which shells out to the pinned cosign binary. */
+export function createKeylessImageVerifier(
+  runFn: (bin: string, args: string[]) => { stdout: string; stderr: string } = (bin, args) =>
+    run(bin, args, { log: false })
+): (imageRef: string, identity: KeylessIdentity) => KeylessImageVerifyResult {
+  return (imageRef, identity) => {
+    const resolved = resolveCosign();
+    if (resolved.source === "missing") {
+      return {
+        status: "unavailable",
+        detail:
+          "no cosign binary is available (checked SCP_COSIGN_BIN, the vendored path, and PATH)"
+      };
+    }
+    const args = [
+      "verify",
+      "--certificate-identity-regexp",
+      identity.identityRegexp,
+      "--certificate-oidc-issuer",
+      identity.oidcIssuer,
+      imageRef
+    ];
+    try {
+      const { stdout, stderr } = runFn(resolved.bin, args);
+      return { status: "verified", detail: (stdout + stderr).trim() || "Verified OK" };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // cosign's own distinction: "no matching signatures" is an ANSWER (this image is not signed
+      // the way expected), never a transport/tooling failure — both are reported as `unverified`
+      // here because this caller's only decision is "may I pin this digest", and the reason is kept
+      // in `detail` either way rather than collapsed into a boolean.
+      return { status: "unverified", detail: message };
+    }
+  };
+}
+
 /** Read a bundled public key file's bytes back out (used by verify-bundle.ts to sanity-check the file exists and is non-empty before trusting it). */
 export async function readPublicKey(pubKeyPath: string): Promise<string> {
   const content = await readFile(pubKeyPath, "utf8");

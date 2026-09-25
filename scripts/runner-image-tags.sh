@@ -44,6 +44,25 @@ dep_hash=$(
   } | sort | sha256sum | cut -c1-16
 )
 
+# scp-runner-dep-vendor (M29.8a, ADR-0059): the `re-vendor` strategy's sandbox. UNLIKE every runner
+# above, its build CONTEXT is the repo root (apps/runner-dep-vendor/Dockerfile's own header explains
+# why — it needs the whole pnpm workspace to resolve `@scp/vendor-refresh`'s `workspace:*` deps), so
+# hashing `find apps/runner-dep-vendor` alone would miss the one thing that actually determines the
+# image's CONTENTS: what @scp/vendor-refresh (and its own workspace dep, @scp/dependency-manifests)
+# compiles to. Hashed instead: the Dockerfile/build-context files under apps/runner-dep-vendor
+# itself, the pinned helm archive checksum, the pinned Node base (shared with every other image),
+# both source packages' own trees, and the lockfile `pnpm install --frozen-lockfile` resolves
+# against — everything a change to any of which would change what `docker build` actually produces,
+# and NOTHING outside that set, so an unrelated PR does not bust this image's cache.
+dep_vendor_hash=$(
+  {
+    find apps/runner-dep-vendor -type f -exec sha256sum {} +
+    find tools/vendor-refresh/src -type f -exec sha256sum {} +
+    find packages/dependency-manifests/src -type f -exec sha256sum {} +
+    sha256sum tools/helm/pin.env tools/node/pin.env pnpm-lock.yaml
+  } | sort | sha256sum | cut -c1-16
+)
+
 # scp-sshd-fixture (M27.9 item d): a TEST HOST, not a runner — a real `sshd` trusting a CA the test
 # mints at run time. It lives under tools/ rather than apps/runner-* deliberately: `@scp/airgap`
 # requires every apps/runner-* directory to be bundled and activatable, and this image must never
@@ -75,6 +94,7 @@ echo "SCP_RUNNER_SCAN_IMAGE_REF=${registry}/scp-runner-scan:${scan_hash}"
 echo "SCP_STACKD_IMAGE_REF=${registry}/scp-stackd:${stackd_hash}"
 echo "SCP_RUNNER_IAC_IMAGE_REF=${registry}/scp-runner-iac:${iac_hash}"
 echo "SCP_RUNNER_DEP_IMAGE_REF=${registry}/scp-runner-dep:${dep_hash}"
+echo "SCP_RUNNER_DEP_VENDOR_IMAGE_REF=${registry}/scp-runner-dep-vendor:${dep_vendor_hash}"
 echo "SCP_RUNNER_OPS_IMAGE_REF=${registry}/scp-runner-ops:${ops_hash}"
 echo "SCP_SSHD_FIXTURE_IMAGE_REF=${registry}/scp-sshd-fixture:${sshd_fixture_hash}"
 echo "SCP_BUILDER_RPM_IMAGE_REF=${registry}/scp-builder-rpm:${builder_rpm_hash}"

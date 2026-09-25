@@ -203,6 +203,7 @@ export function parseKubernetesImages(content: string): DeclaredDependency[] {
 function walk(node: Node, path: string, ctx: WalkContext, underImageKey: boolean): void {
   if (isMap(node)) {
     readMapping(node, path, ctx, underImageKey);
+    readAdditionalCompleteImageKeys(node, path, ctx);
     for (const pair of node.items) {
       const key = pair.key;
       const value = pair.value;
@@ -300,6 +301,122 @@ function unreadSiblingNote(names: readonly string[]): string | undefined {
     "are not fields at all and nothing reads them. Put the version in the `image:` reference " +
     "itself, or declare the image as an `image:` block with `repository:` and `tag:` under it"
   );
+}
+
+/**
+ * BY PROPERTY, NOT BY A GROWING LIST (2026-09-25 review, finding 4): any key whose NAME ends in
+ * `Image` (camelCase, `image` itself excepted — that is rule (a)'s own job) is treated as a
+ * project-specific spelling of "the image", and its value, when a plain scalar, is a COMPLETE image
+ * reference exactly like a bare `image:`. The first version of this enumerated exactly two key names
+ * (`serverImage`, `controllerImage`) found by hand against one file; the census built to prove
+ * coverage (`packages/source-census/src/vendored-image-inventory-census.test.ts`) found the SAME
+ * repo's OWN `values.yaml` ALSO declares `valkeyImage`, `builderImage` and `gitImage` this way, and a
+ * key-name RENAME (there is nothing structural distinguishing `serverImage` from `valkeyImage`) would
+ * have kept the enumerated version 22/22 green while missing every one of them — the growing list is
+ * exactly the "by symptom, not by property" trap CLAUDE.md warns about. The suffix rule generalises to
+ * every future `xImage` field with no further edits here.
+ *
+ * `imagePullPolicy` / `imagePullSecrets` are unaffected: neither ENDS in `Image` (they end in
+ * `Policy`/`Secrets`), so the suffix rule excludes them by construction, not by a denylist.
+ *
+ * Deliberately NOT folded into {@link IMAGE_KEY}/{@link IMAGE_KEYS}: those drive the split-shape
+ * (`registry`+`repository`+`tag`+`digest`) sibling logic and the `underImageKey` context a nested
+ * mapping inherits from `image:`, and every declaration under an `xImage` key anywhere in this repo is
+ * a flat, complete scalar — nothing here exercises siblings or nested context. Widening the much more
+ * load-bearing set risks a duplicate/anchor/split-shape interaction the file's own "trap" comments
+ * spent real effort keeping narrow (trap 11: "nothing is matched by prefix or by substring" — the
+ * suffix rule below is a DIFFERENT, deliberately narrower match than "contains image anywhere"). This
+ * is additive and independent instead: it can only ADD occurrences alongside `readMapping`'s, on a
+ * SEPARATE pass, and never changes what the `image:` key's own logic reports.
+ */
+const ADDITIONAL_COMPLETE_IMAGE_KEY_SUFFIX = "Image";
+
+function isAdditionalCompleteImageKey(name: string): boolean {
+  return (
+    name !== IMAGE_KEY &&
+    name.length > ADDITIONAL_COMPLETE_IMAGE_KEY_SUFFIX.length &&
+    name.endsWith(ADDITIONAL_COMPLETE_IMAGE_KEY_SUFFIX)
+  );
+}
+
+/** Every key matching {@link isAdditionalCompleteImageKey} in this mapping, each treated as its own
+ *  independent bare `image:` scalar (rule a) — malformed-check, split, and the same resolved/
+ *  unresolved shape `readMapping`'s `image.kind === "text"` branch produces, minus registry/tag/digest
+ *  joining (there is no sibling concept for these keys). Runs on EVERY mapping, unconditionally — the
+ *  same rule (a) applies regardless of `underImageKey`, exactly as a bare `image:` scalar does. */
+function readAdditionalCompleteImageKeys(map: YAMLMap, path: string, ctx: WalkContext): void {
+  const keyNames = new Set<string>();
+  for (const item of map.items) {
+    if (!isScalar(item.key)) continue;
+    const name = String(item.key.value);
+    if (isAdditionalCompleteImageKey(name)) keyNames.add(name);
+  }
+  for (const keyName of keyNames) {
+    const pairs = map.items.filter(
+      (item) => isScalar(item.key) && String(item.key.value) === keyName
+    );
+    if (pairs.length === 0) continue;
+    const keyPath = joinPath(path, keyName);
+    if (pairs.length > 1) {
+      const last = pairs[pairs.length - 1]!;
+      ctx.push({
+        resolved: false,
+        coordinate: keyPath,
+        pinned: false,
+        keyPath,
+        line: nodeLine(ctx, (last.value ?? last.key) as Node),
+        note: `'${keyName}' is declared more than once in this mapping; Helm's YAML takes the last and a reader takes the first, so which one this image actually uses is not knowable from the file — remove the duplicate`
+      });
+      continue;
+    }
+    const read = readKey(pairs[0], keyPath, true);
+    if (read.kind === "absent") continue;
+    if (read.kind === "unresolved") {
+      ctx.push({
+        resolved: false,
+        coordinate: read.path,
+        pinned: false,
+        keyPath: read.path,
+        line: nodeLine(ctx, read.node),
+        note: read.why
+      });
+      continue;
+    }
+    const split = splitImageRef(read.text);
+    const malformed = !isUsableCoordinate(split.name)
+      ? "its repository is empty, or has whitespace or an empty path segment"
+      : split.tag === ""
+        ? "an empty tag"
+        : split.digest !== undefined && !isDigestShaped(split.digest)
+          ? `'${split.digest}' is not an OCI digest (an algorithm such as sha256, then ':', then its full-length hex)`
+          : undefined;
+    if (malformed !== undefined) {
+      ctx.push({
+        resolved: false,
+        coordinate: read.path,
+        declared: read.text,
+        pinned: false,
+        keyPath: read.path,
+        line: nodeLine(ctx, read.node),
+        note: `'${read.text}' is not a well-formed image reference (${malformed})`
+      });
+      continue;
+    }
+    const version = split.tag === undefined ? undefined : parseComparableVersion(split.tag);
+    ctx.push({
+      resolved: true,
+      coordinate: split.name,
+      ...(split.tag !== undefined ? { declared: split.tag } : {}),
+      ...(split.digest !== undefined ? { digest: split.digest } : {}),
+      pinned: split.tag !== undefined || split.digest !== undefined,
+      keyPath: read.path,
+      line: nodeLine(ctx, read.node),
+      note:
+        split.tag !== undefined && version === undefined
+          ? `tag "${split.tag}" carries no parseable version core; it must be skipped, never string-ordered`
+          : undefined
+    });
+  }
 }
 
 /** The whole shape logic, applied in image context. See docs/dependency-manifests.md §45. */
