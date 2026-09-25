@@ -83,6 +83,14 @@ interface TableVerdict {
  * docs/graph.md §125f rather than here, because a count goes stale and a verdict should not.
  */
 const VERDICTS: TableVerdict[] = [
+  // ---- M29.2: a Standard Stack backend's registration in a served org (ADR-0061) --------------
+  {
+    table: "stack_backend_registrations",
+    column: "object_id",
+    verdict: "reader-fails-closed",
+    why: "no FK (the id is allocated BEFORE the object, in the operator tx) and no scp_app DELETE grant: the row is the instance's claim that this id is the bundled backend's registration in that org. The object it names cannot be tombstoned through any door — `assertStackRegistrationWrite` refuses every delete of it at the objects-repo choke point, the stack's own included, since unwire and detach make it refuse to resolve instead. If it were tombstoned anyway, every reader fails closed: bindings resolve their target LIVE before `stackWiredRouting` runs, and `upsertRegisteredObject` reads the object `deleted_at IS NULL` and then tries to re-create the same id, which the tombstoned row still holds, so the reconcile fails loudly rather than routing anything. See docs/graph.md §125f",
+    deleteGrant: false
+  },
   // ---- M28.3: an execution system's source allowlist (ADR-0056 §7a) ----------------------------
   {
     table: "execution_system_source_allowlists",
