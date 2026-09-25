@@ -132,20 +132,40 @@ export class FakeKube implements KubeTransport {
     }
     if (o.kind === "Deployment" || o.kind === "StatefulSet") {
       const want = (o["spec"] as { replicas?: number } | undefined)?.replicas ?? 1;
-      const ok = this.readyWhen(o);
+      const key = this.key(o.apiVersion, o.kind, o.metadata.name, o.metadata.namespace);
+      if (this.readyWhen(o)) {
+        this.everReady.add(key);
+        return {
+          ...o,
+          status: {
+            observedGeneration: gen,
+            replicas: want,
+            updatedReplicas: want,
+            readyReplicas: want,
+            availableReplicas: want
+          }
+        };
+      }
+      // A STALLED ROLLING UPDATE, the way the API server reports one (measured on kind): the new
+      // pods exist and are not available, and — if a previous revision ever ran — the OLD pods are
+      // still there and still available. A readiness check that only counts `available` passes it.
+      const stalledOverOld = this.everReady.has(key);
       return {
         ...o,
         status: {
           observedGeneration: gen,
-          replicas: want,
+          replicas: stalledOverOld ? want * 2 : want,
           updatedReplicas: want,
-          readyReplicas: ok ? want : 0,
-          availableReplicas: ok ? want : 0
+          readyReplicas: stalledOverOld ? want : 0,
+          availableReplicas: stalledOverOld ? want : 0,
+          ...(o.kind === "StatefulSet" ? { currentRevision: "old", updateRevision: "new" } : {})
         }
       };
     }
     return o;
   }
+
+  private readonly everReady = new Set<string>();
 
   async request(req: KubeRequest): Promise<KubeResponse> {
     const parsed = this.parse(req.path);

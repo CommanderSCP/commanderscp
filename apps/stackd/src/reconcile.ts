@@ -457,7 +457,7 @@ export async function reconcileBackend(
   const error =
     applyError ??
     `release ${release} did not become healthy within ${deps.readyTimeoutMs / 1000}s: ${health.detail
-      .filter((d) => !/ (\d+)\/\1 available/.test(d))
+      .filter((d) => !/: (\d+)\/\1 (available|ready), \d+ updated$/.test(d))
       .slice(0, 3)
       .join("; ")}`;
   const attempt = {

@@ -21,12 +21,20 @@ interface WorkloadStatus {
   readyReplicas?: number;
   updatedReplicas?: number;
   availableReplicas?: number;
+  currentRevision?: string;
+  updateRevision?: string;
   desiredNumberScheduled?: number;
   numberAvailable?: number;
   updatedNumberScheduled?: number;
 }
 
-/** One workload's verdict, from its live object. Pure — exported for the unit suite. */
+/**
+ * One workload's verdict, from its live object — `kubectl rollout status`'s rules, not a looser
+ * paraphrase of them. MEASURED on kind, not assumed: a one-replica Deployment rolling to an image
+ * that never pulls keeps its OLD pod available (maxUnavailable rounds to 0), so "available >= 1 and
+ * updated >= 1" reads as healthy while the new pod sits in ImagePullBackOff. The rollout is done
+ * only when no pod of an older revision remains and every updated pod is available.
+ */
 export function workloadVerdict(live: KubeObject): { ready: boolean; line: string } {
   const name = `${live.kind.toLowerCase()} ${live.metadata.namespace ?? ""}/${live.metadata.name}`;
   const generation = Number((live.metadata as { generation?: number }).generation ?? 0);
@@ -37,17 +45,29 @@ export function workloadVerdict(live: KubeObject): { ready: boolean; line: strin
   if (live.kind === "DaemonSet") {
     const want = status.desiredNumberScheduled ?? 0;
     const ok =
-      (status.numberAvailable ?? 0) >= want && (status.updatedNumberScheduled ?? 0) >= want;
-    return { ready: ok, line: `${name}: ${status.numberAvailable ?? 0}/${want} available` };
+      (status.updatedNumberScheduled ?? 0) >= want && (status.numberAvailable ?? 0) >= want;
+    return {
+      ready: ok,
+      line: `${name}: ${status.numberAvailable ?? 0}/${want} available, ${status.updatedNumberScheduled ?? 0} updated`
+    };
   }
   const spec = (live["spec"] ?? {}) as { replicas?: number };
   const want = spec.replicas ?? 1;
-  const available =
-    live.kind === "StatefulSet" ? (status.readyReplicas ?? 0) : (status.availableReplicas ?? 0);
-  const ok = available >= want && (status.updatedReplicas ?? 0) >= want;
+  const updated = status.updatedReplicas ?? 0;
+  const total = status.replicas ?? 0;
+  if (live.kind === "StatefulSet") {
+    const ready = status.readyReplicas ?? 0;
+    const sameRevision =
+      status.updateRevision === undefined || status.currentRevision === status.updateRevision;
+    const ok = ready >= want && updated >= want && sameRevision;
+    return { ready: ok, line: `${name}: ${ready}/${want} ready, ${updated} updated` };
+  }
+  const available = status.availableReplicas ?? 0;
+  const ok = updated >= want && total <= updated && available >= updated;
+  const old = total > updated ? `, ${total - updated} old pending termination` : "";
   return {
     ready: ok,
-    line: `${name}: ${available}/${want} available, ${status.updatedReplicas ?? 0} updated`
+    line: `${name}: ${available}/${want} available, ${updated} updated${old}`
   };
 }
 

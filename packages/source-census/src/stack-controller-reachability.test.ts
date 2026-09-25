@@ -1,0 +1,110 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { trackedFiles } from "./tracked.js";
+import { stripComments } from "./ts.js";
+
+/**
+ * THE INSTALLATION GATE for the Standard Stack controller (M29.4, ADR-0058).
+ *
+ * "Built, never installed" is this repo's dominant defect, and a controller is its purest form: a
+ * reconcile loop every test drives directly, reachable from no binary, passes every behavioural
+ * test while installing nothing. Each function below is load-bearing for the path from the API to
+ * a running backend, and each must have a caller that is not a test, in a file other than its own.
+ * (In-file wiring — the loop calling `reconcileStack` — is proved by deleting it: the kind suite
+ * and `reconcile.test.ts` both go red.) Sources are read with comments stripped and with
+ * `readFileSync`, never a grep tool (BUILD_AND_TEST.md §4.4b).
+ */
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, "../../..");
+
+const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
+  // The binary.
+  startStackController: "is the reconcile loop; with no caller the image starts and does nothing",
+  buildControllerDeps: "assembles the controller from its configuration and the pinned helm",
+  loadControllerConfig: "reads the controller's deployment facts (API URL, credential, namespace)",
+  inClusterTransport: "is the controller's ONLY route to the Kubernetes API in a pod",
+  resolveHelm: "asserts the helm binary IS the pin before anything is rendered",
+  loadRelease: "loads the chart the image carries and the deploy-time image retargets",
+  // The reconcile.
+  deriveBackendValues: "is the only place helm values are made from the typed spec",
+  backendNeeds: "names the templates a backend cannot render yet (the Stack page's 'needs')",
+  parseManifests: "turns a render into the objects that are applied",
+  stamp: "labels every applied object — the label is what prune and removal require",
+  fingerprint: "decides whether a set changed, and so whether to apply and health-check it",
+  checkReadiness: "is the health check an upgrade must pass before it counts",
+  mintSelfSignedCertificate:
+    "gives argo-server the persistent certificate it cannot start well without",
+  // The server half.
+  registerStackRoutes: "puts the stack's desired state, and the controller's two doors, on the API",
+  registerStackCommands: "is `scp stack …`",
+  provisionInstallTimePrincipals:
+    "records the controller's credential and scp_operator's login at install; with no caller the controller is locked out",
+  provisionInstallOperatorCredential:
+    "hashes the chart-generated controller credential into the table",
+  provisionOperatorRole: "gives scp_operator its login so the operator doors can write at all"
+};
+
+const isTest = (p: string): boolean =>
+  p.includes(".test.") || p.includes("/test-support/") || p.includes("/testkit/");
+
+const PRODUCTION_SOURCES = trackedFiles(REPO_ROOT).filter(
+  (p) =>
+    (p.startsWith("apps/") || p.startsWith("packages/")) &&
+    p.endsWith(".ts") &&
+    !p.endsWith(".d.ts") &&
+    !isTest(p)
+);
+
+const stripped = new Map<string, string>();
+const read = (p: string): string => {
+  let text = stripped.get(p);
+  if (text === undefined) {
+    text = stripComments(readFileSync(resolve(REPO_ROOT, p), "utf8"));
+    stripped.set(p, text);
+  }
+  return text;
+};
+
+function definitionFiles(name: string): Set<string> {
+  const declaration = new RegExp(`export (?:async )?function ${name}\\b`);
+  return new Set(PRODUCTION_SOURCES.filter((p) => declaration.test(read(p))));
+}
+
+function callersOf(name: string): string[] {
+  const defined = definitionFiles(name);
+  const used = new RegExp(`\\b${name}\\s*\\(`);
+  return PRODUCTION_SOURCES.filter((p) => !defined.has(p)).filter((p) => used.test(read(p)));
+}
+
+describe("the stack controller is INSTALLED, not merely built", () => {
+  it.each(Object.entries(MUST_HAVE_A_PRODUCTION_CALLER))(
+    "%s has at least one non-test caller",
+    (name, why) => {
+      expect(
+        callersOf(name),
+        `${name}() has NO production caller outside its own file. It ${why}. A test calling it ` +
+          `directly does not make it reachable. Wire it, or delete it and say so.`
+      ).not.toEqual([]);
+    }
+  );
+
+  it("every name in the census is DEFINED somewhere (a rename must not empty the gate)", () => {
+    for (const name of Object.keys(MUST_HAVE_A_PRODUCTION_CALLER)) {
+      expect(
+        [...definitionFiles(name)],
+        `${name} is in the census but nothing exports it`
+      ).not.toEqual([]);
+    }
+  });
+
+  it("the binary's entrypoint starts the loop (main.ts -> startStackController)", () => {
+    expect(read("apps/stackd/src/main.ts")).toMatch(/\bstartStackController\s*\(/);
+  });
+
+  it("the migrations entrypoint provisions the install-time principals", () => {
+    expect(read("apps/server/src/migrate-bin.ts")).toMatch(/\bprovisionInstallTimePrincipals\s*\(/);
+  });
+});

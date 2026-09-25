@@ -388,6 +388,9 @@ describe("the stack controller's reconcile", () => {
     await controller.firstTick;
     await controller.stop();
     expect(controller.lastTickAt()).not.toBeNull();
+    expect(h.statuses.length, "the loop published no status: it never reconciled").toBeGreaterThan(
+      0
+    );
     expect(last(h, "argo-events").phase).toBe("ready");
   });
 

@@ -389,6 +389,58 @@ operatorApi:
   databaseUrlSecret: ""
   databaseUrlSecretKey: SCP_OPERATOR_DATABASE_URL
 
+# -------------------------------------------------------------------------------------------
+# THE STANDARD STACK CONTROLLER, scp-stackd (M29.4, ADR-0058, charter "Managed Standard Stack").
+#
+# A separate Deployment under its OWN ServiceAccount that installs, upgrades and removes the
+# bundled backends (Argo CD, Argo Workflows, Argo Rollouts, Argo Events, Gitea) from the desired
+# state an operator declares through SCP (`scp stack enable argo-events`, the Stack page). It
+# renders the vendored deploy/helm-bundled chart carried IN ITS IMAGE with a pinned helm and
+# applies it server-side; there is no Helm release, so no 1 MB limit, and no chart value here
+# selects what it installs.
+#
+# ITS RIGHTS ARE NEAR CLUSTER-ADMIN, and the chart says so rather than hiding it. The upstream Argo
+# installs create CustomResourceDefinitions, ClusterRoles and ClusterRoleBindings, and creating a
+# role that grants what you do not hold requires `escalate`; binding one requires `bind`. The
+# mitigation is SEPARATION: no scpd pod runs as this identity or mounts its credential, the
+# namespaced rights exist only inside the five backend namespaces below (created by this chart,
+# each with its own RoleBinding), and nothing a tenant writes reaches it (ADR-0058).
+#
+# OFF BY DEFAULT IN M29.4; M29.1's installer (`scp install`) turns it on for every new install, and
+# the chart default flips once that ships (ADR-0058 "the default flip").
+# -------------------------------------------------------------------------------------------
+stackd:
+  enabled: false
+  image:
+    repository: ghcr.io/commanderscp/scp-stackd
+    # Empty = the scpd image's tag: the stack's versions ARE the SCP release's (E4).
+    tag: ""
+    pullPolicy: IfNotPresent
+  # The namespaces the bundled backends install into — deploy/helm-bundled's defaults, which the
+  # controller reads from the chart in its image. tools/helm-verify fails if the two lists differ.
+  # This chart CREATES them (so the controller never needs cluster-wide namespace or Secret rights)
+  # and keeps them on uninstall: they hold the backends' data.
+  backendNamespaces:
+    - scp-argocd
+    - scp-argo-workflows
+    - scp-argo-rollouts
+    - scp-argo-events
+    - scp-gitea
+  # Air-gap image retargets: `<values path under bundledExecutor>: <image ref>`, e.g.
+  #   argoEvents.image: registry.internal/scp/argo-events:v1.9.10@sha256:…
+  # Only image fields are accepted (the controller refuses any other key). The air-gap install.sh
+  # sets these; a connected install leaves them empty and pulls the upstream refs the chart pins.
+  imageOverrides: {}
+  intervalSeconds: 30
+  # How long one backend may take to become healthy before the controller falls back to its last
+  # good set (or, on a first install, reports it failed).
+  readyTimeoutSeconds: 600
+  # How often an unchanged, healthy backend is re-applied to undo drift.
+  resyncSeconds: 600
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
 eventBus:
   # postgres (default, zero extra dependency) | nats (DESIGN §8 — optional JetStream backend).
   backend: postgres

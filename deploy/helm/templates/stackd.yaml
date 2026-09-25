@@ -1,0 +1,185 @@
+{{- if .Values.stackd.enabled }}
+{{- if .Values.federation.serverMtls.enabled }}
+{{- fail "stackd.enabled with federation.serverMtls.enabled is not supported yet: serverMtls turns scpd's whole listener into HTTPS, and the stack controller dials scpd in-cluster over plain HTTP. Terminate federation mTLS at the ingress (ingress.mtls) instead — see ADR-0058" }}
+{{- end }}
+{{- $name := printf "%s-stackd" (include "commanderscp.fullname" .) }}
+{{/*
+THE STACK CONTROLLER (M29.4, ADR-0058). See values.yaml `stackd` and stackd-rbac.yaml.
+
+ITS CREDENTIAL. One Secret, generated once and kept (the secrets-generated.yaml pattern: a
+pre-install/pre-upgrade hook at weight -10, `hook-failed` delete policy, values preserved by
+`lookup`), holding:
+  - `credential` — the controller's instance operator credential, `scp_op_<id>.<secret>`. Mounted
+    into exactly two pods: this Deployment, which presents it, and the migrations Job, which
+    records its argon2 hash (provision-install.ts). No api/worker pod gets it, no route returns it,
+    and nothing a tenant can read contains it.
+  - `operatorDatabasePassword` — `scp_operator`'s login, when the operator supplied no connection
+    of their own (`commanderscp.generatesOperatorDbPassword`).
+Replacing the Secret by hand rotates both; the migrations Job revokes the previous credential.
+*/}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+{{- $credential := printf "scp_op_%s.%s" (randAlphaNum 22) (randAlphaNum 43) }}
+{{- $operatorDbPassword := randAlphaNum 32 }}
+{{- if $existing }}
+{{- if hasKey $existing.data "credential" }}{{- $credential = index $existing.data "credential" | b64dec }}{{- end }}
+{{- if hasKey $existing.data "operatorDatabasePassword" }}{{- $operatorDbPassword = index $existing.data "operatorDatabasePassword" | b64dec }}{{- end }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": hook-failed
+type: Opaque
+stringData:
+  credential: {{ $credential | quote }}
+  {{- if eq (include "commanderscp.generatesOperatorDbPassword" .) "true" }}
+  operatorDatabasePassword: {{ $operatorDbPassword | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-images
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+data:
+  # Air-gap retargets of the bundled images — image fields ONLY; the controller refuses any other
+  # key (apps/stackd/src/release.ts `parseImageOverrides`).
+  images.json: {{ toJson .Values.stackd.imageOverrides | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+spec:
+  # ONE controller. Two would race each other's applies and fallbacks; there is no leader
+  # election because there is nothing to gain from a second replica but that race.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "commanderscp.stackdSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "commanderscp.stackdSelectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/images: {{ toJson .Values.stackd.imageOverrides | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      # The only pod in this chart that mounts THIS identity's token.
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: stackd
+          image: {{ include "commanderscp.stackdImage" . }}
+          imagePullPolicy: {{ .Values.stackd.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: SCP_STACKD_API_URL
+              value: {{ printf "http://%s-api.%s.svc:%v/api/v1" (include "commanderscp.fullname" .) .Release.Namespace .Values.api.service.port | quote }}
+            - name: SCP_STACKD_OPERATOR_CREDENTIAL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $name }}
+                  key: credential
+            - name: SCP_STACKD_SCP_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SCP_STACKD_RELEASE
+              value: {{ include "commanderscp.stackdRelease" . | quote }}
+            - name: SCP_FEDERATION_ROLE
+              value: {{ include "commanderscp.federationRole" . | quote }}
+            - name: SCP_STACKD_IMAGE_OVERRIDES_FILE
+              value: /etc/scp-stackd/images.json
+            - name: SCP_STACKD_INTERVAL_SECONDS
+              value: {{ .Values.stackd.intervalSeconds | quote }}
+            - name: SCP_STACKD_READY_TIMEOUT_SECONDS
+              value: {{ .Values.stackd.readyTimeoutSeconds | quote }}
+            - name: SCP_STACKD_RESYNC_SECONDS
+              value: {{ .Values.stackd.resyncSeconds | quote }}
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 4
+          resources:
+            {{- toYaml .Values.stackd.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: images
+              mountPath: /etc/scp-stackd
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: images
+          configMap:
+            name: {{ $name }}-images
+{{- if .Values.networkPolicy.enabled }}
+{{- $kubeApi := .Values.networkPolicy.kubeApi | default dict }}
+{{- $kubeApiCidrs := $kubeApi.cidrs | default (list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16") }}
+{{- $kubeApiPorts := $kubeApi.ports | default (list 443 6443) }}
+---
+{{/*
+The controller's network: DNS, the Kubernetes API (the same private-range ipBlock the auto-wire
+hook policy uses — kube-apiserver is host-networked and matched post-DNAT, see networkpolicy.yaml)
+and scpd's API pods. Nothing else: it never talks to a backend directly, and it has no route to
+Postgres. Its pods carry no `commanderscp.selectorLabels`, so none of the chart-wide allows apply.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "commanderscp.stackdSelectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        {{- range $kubeApiCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range $kubeApiPorts }}
+        - { protocol: TCP, port: {{ . }} }
+        {{- end }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "commanderscp.apiSelectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+{{- end }}
+{{- end }}

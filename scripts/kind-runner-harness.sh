@@ -70,11 +70,77 @@ WORKSPACE_HOST="${WORKDIR}/workspace"
 NODE_WORKSPACE="/scp-workspace"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ---- M29.4: the STACK CONTROLLER's half of the harness (ADR-0058) ------------------------------
+# The controller installs a real bundled backend (Argo Events: 3 CRDs, cluster RBAC, a Deployment)
+# into this cluster, through the API alone, and falls back from a release that never becomes
+# healthy. Two things it needs that the runner half does not:
+#
+#   A REGISTRY THE NODE CAN PULL FROM. The vendored upstream manifests say `imagePullPolicy:
+#   Always`, so an image merely `kind load`ed is still pulled — from quay.io, which CI blackholes.
+#   That is the air-gap install's situation exactly, and the answer is the same: retarget the
+#   backend's image to a registry inside the boundary (`stackd.imageOverrides`, what install.sh
+#   does). Here that registry is `registry:2` (already mirrored for the Testcontainers tier) on the
+#   kind network, with containerd told to reach it over plain HTTP.
+#
+#   THE CHART'S OWN STACKD RBAC. Rendered from deploy/helm with `helm template`, applied as-is, and
+#   a token minted for its ServiceAccount — so the controller runs with exactly the rights a
+#   `helm install` grants it, and a verb the chart forgot is a 403 here.
+STACK_REGISTRY_NAME="${SCP_KIND_STACK_REGISTRY:-scp-kind-registry}"
+STACK_REGISTRY_HOST_PORT="${SCP_KIND_STACK_REGISTRY_PORT:-5001}"
+REGISTRY_IMAGE="${SCP_KIND_REGISTRY_IMAGE:-registry:2}"
+# Images pushed into that registry, as <local ref>=<path in the registry>.
+STACK_IMAGES="${SCP_KIND_STACK_IMAGES:-quay.io/argoproj/argo-events:v1.9.10=argoproj/argo-events:v1.9.10}"
+STACKD_NAMESPACE="${SCP_KIND_STACKD_NAMESPACE:-scp-stackd-harness}"
+STACKD_RELEASE="scp"
+
 log() { printf '\n[kind-runner-harness] %s\n' "$*" >&2; }
 
 down() {
   kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
-  log "cluster '${CLUSTER_NAME}' deleted"
+  docker rm -f "$STACK_REGISTRY_NAME" >/dev/null 2>&1 || true
+  log "cluster '${CLUSTER_NAME}' and registry '${STACK_REGISTRY_NAME}' deleted"
+}
+
+# The stack controller's registry and RBAC. Called from `up` once the cluster exists.
+stack_up() {
+  log "starting ${REGISTRY_IMAGE} as ${STACK_REGISTRY_NAME} on the kind network"
+  docker rm -f "$STACK_REGISTRY_NAME" >/dev/null 2>&1 || true
+  docker run -d --restart=always --network kind --name "$STACK_REGISTRY_NAME" \
+    -p "127.0.0.1:${STACK_REGISTRY_HOST_PORT}:5000" "$REGISTRY_IMAGE" >/dev/null
+
+  # containerd resolves `<registry>:5000/...` through hosts.toml under config_path (set by the
+  # containerdConfigPatches in the cluster config above).
+  local node
+  for node in $(kind get nodes --name "$CLUSTER_NAME"); do
+    docker exec "$node" mkdir -p "/etc/containerd/certs.d/${STACK_REGISTRY_NAME}:5000"
+    printf '[host."http://%s:5000"]\n' "$STACK_REGISTRY_NAME" \
+      | docker exec -i "$node" cp /dev/stdin "/etc/containerd/certs.d/${STACK_REGISTRY_NAME}:5000/hosts.toml"
+  done
+
+  local pair src dst i
+  for pair in $STACK_IMAGES; do
+    src="${pair%%=*}"
+    dst="127.0.0.1:${STACK_REGISTRY_HOST_PORT}/${pair#*=}"
+    docker image inspect "$src" >/dev/null 2>&1 || {
+      echo "[kind-runner-harness] ${src} is not in the local image store — run scripts/ci-mirror.sh seed (CI) or docker pull it (a developer box)" >&2
+      exit 1
+    }
+    docker tag "$src" "$dst"
+    for i in 1 2 3 4 5; do
+      docker push "$dst" >/dev/null && break
+      [ "$i" = 5 ] && { echo "[kind-runner-harness] could not push ${dst}" >&2; exit 1; }
+      sleep 2
+    done
+    log "pushed ${src} as ${STACK_REGISTRY_NAME}:5000/${pair#*=}"
+  done
+
+  log "applying THE CHART'S OWN stack controller RBAC (templates/stackd-rbac.yaml) in ${STACKD_NAMESPACE}"
+  kubectl create namespace "$STACKD_NAMESPACE"
+  helm template "$STACKD_RELEASE" "${REPO_ROOT}/deploy/helm" \
+    --namespace "$STACKD_NAMESPACE" \
+    --set stackd.enabled=true \
+    --show-only templates/stackd-rbac.yaml \
+    | kubectl apply -f -
 }
 
 up() {
@@ -95,6 +161,10 @@ up() {
   cat >"${WORKDIR}/kind-config.yaml" <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
 nodes:
   - role: control-plane
     extraMounts:
@@ -231,8 +301,11 @@ spec:
     limits.memory: 8Gi
 QUOTA
 
+  stack_up
+
   log "minting a ServiceAccount token and extracting the cluster CA"
-  local token ca_file api_base
+  local token ca_file api_base stackd_token
+  stackd_token="$(kubectl -n "$STACKD_NAMESPACE" create token "${STACKD_RELEASE}-commanderscp-stackd" --duration=2h)"
   token="$(kubectl -n "$NAMESPACE" create token scp-runner-harness --duration=2h)"
   local nosecrets_token
   nosecrets_token="$(kubectl -n "${NAMESPACE}-nosecrets" create token scp-runner-harness --duration=2h)"
@@ -258,6 +331,9 @@ QUOTA
   "workspaceHost": "${WORKSPACE_HOST}",
   "nodeWorkspace": "${NODE_WORKSPACE}",
   "runnerImage": "${RUNNER_IMAGE}",
+  "stackdNamespace": "${STACKD_NAMESPACE}",
+  "stackdToken": "${stackd_token}",
+  "stackRegistry": "${STACK_REGISTRY_NAME}:5000",
   "createSeconds": $((t1 - t0))
 }
 EOF

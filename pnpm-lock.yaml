@@ -205,6 +205,9 @@ importers:
       '@scp/source-census':
         specifier: workspace:*
         version: link:../../packages/source-census
+      '@scp/stackd':
+        specifier: workspace:*
+        version: link:../stackd
       '@scp/test-tmpdir':
         specifier: workspace:*
         version: link:../../packages/test-tmpdir
@@ -977,6 +980,12 @@ importers:
       '@scp/runner-launcher':
         specifier: workspace:*
         version: link:../../packages/runner-launcher
+      '@scp/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@scp/stackd':
+        specifier: workspace:*
+        version: link:../../apps/stackd
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
