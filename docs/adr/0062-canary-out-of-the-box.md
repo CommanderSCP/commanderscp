@@ -116,6 +116,16 @@ nothing said.
   already cover them).
 - **One served org** still (ADR-0061 §7): the authoring project and namespace are shared by the
   one org the stack serves; per-org projects and namespaces are M29.6's per-org isolation.
+- **Found on the way (the kind run, not any review):** real Argo CD answers a GET of an
+  Application that does not exist with **403** "permission denied" unless the caller names its
+  `?project=`, so ADR-0055's plugin could never CREATE an authored Application against a real Argo
+  CD — its stand-in answered 404. `@scp/plugin-argocd` now GETs with the authoring project, a create
+  that collides with an Application of that name in another project is a terminal `TriggerRefused`,
+  and `startArgoCdStandIn` models Argo CD's answer (removing `?project=` turns the plugin suite red).
+  Gitea's multi-file contents API echoes every file it wrote (megabytes with the Rollouts CRDs), past
+  the backend client's 1 MB response cap: the push drains that body and hands on the commit whose
+  tree it then READ back equal to what it pushed. Unrelated and not fixed here: on disable, the
+  best-effort Argo CD token revocation (ADR-0061 §8) answered HTTP 415 in the run.
 - **What the DoD does not prove:** the kind suite (`stack-canary.kind.test.ts`) has ONE cluster, so
   a Rollouts-to-target Application is proved to be authored, admitted by the stack project and NOT
   handed over while unhealthy — against a registered but unreachable cluster — and not proved to
