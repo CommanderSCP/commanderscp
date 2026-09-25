@@ -1,5 +1,4 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "@tanstack/react-router";
 import { client } from "../lib/client";
 import { useAuth } from "../lib/auth-context";
 import { Button } from "../components/ui/button";
@@ -16,8 +15,7 @@ import { BrandMark } from "../components/layout/BrandMark";
  * show refusals.
  */
 export function ChangePasswordPage(): React.JSX.Element {
-  const navigate = useNavigate();
-  const { refresh, user } = useAuth();
+  const { user } = useAuth();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -38,8 +36,17 @@ export function ChangePasswordPage(): React.JSX.Element {
     setSubmitting(true);
     try {
       await client.auth.changePassword(currentPassword, newPassword);
-      await refresh();
-      await navigate({ to: "/" });
+      // #422 re-verify — measured live (a real Playwright run, not a guess): a client-side
+      // navigate() here raced RequireAuth's own effect on the dashboard route against React
+      // Query's cache-update notification for the CURRENT user's mustChangePassword — sometimes
+      // landing on the dashboard, sometimes bounced straight back to /change-password because the
+      // guard's very next render still read the stale cached value. A full page load sidesteps
+      // that class of race entirely: the browser's fresh GET /auth/me on reload can only ever see
+      // the server's ACTUAL current state (mustChangePassword: false, since changePassword above
+      // already succeeded), never a client-cache snapshot that hasn't caught up yet. This page is
+      // a one-time detour, not a route a user bounces through repeatedly, so trading the SPA's
+      // usual no-reload navigation for a guaranteed-correct one here is a good trade.
+      window.location.assign("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not change password");
     } finally {
