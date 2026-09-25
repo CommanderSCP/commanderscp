@@ -44,7 +44,24 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
     "records the controller's credential and scp_operator's login at install; with no caller the controller is locked out",
   provisionInstallOperatorCredential:
     "hashes the chart-generated controller credential into the table",
-  provisionOperatorRole: "gives scp_operator its login so the operator doors can write at all"
+  provisionOperatorRole: "gives scp_operator its login so the operator doors can write at all",
+  // The review round (#421): the instance-operator role, the audit chain, the read-back checks.
+  requireInstanceAuthority:
+    "is the one check every instance-level stack write passes — a session holding the role, or a full operator credential",
+  sessionHoldsInstanceOperator: "is how the Stack page learns whether to offer its switches",
+  requireStackControllerCredential:
+    "is what keeps the controller's scoped credential to the spec and status doors",
+  appendInstanceAudit: "writes every instance-level stack write into the hash chain, in its tx",
+  verifyInstanceAuditChain: "re-verifies the chain on every read of it",
+  registerInstanceOperatorRoutes: "puts the grant/revoke doors and the audit chain on the API",
+  registerInstanceOperatorCommands: "is `scp instance-operator …`",
+  grantBootstrapInstanceOperator:
+    "is the M29.1 installer's seam: the bootstrap admin's first grant with no SQL",
+  assertStackSet:
+    "holds every render and every stored set to the kinds and namespace a backend may contain",
+  refViolation: "is what a prune checks before it deletes anything",
+  stateDigests: "is what the controller reports to scpd about the state it left",
+  inventoryDigest: "is how the controller checks its stored inventory against scpd's record"
 };
 
 const isTest = (p: string): boolean =>
