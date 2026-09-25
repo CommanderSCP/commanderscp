@@ -52,7 +52,8 @@ One run does, in order:
    call.
 4. **Log in** with it (`ScpClient.login`), confirming a real round trip, and store the session the
    same way `scp login` does (`saveCredentials`) — a normal `scp whoami` afterward just works.
-5. **Delete the bootstrap-admin Secret**, now that a real login has proven the password worked.
+5. **Blank the bootstrap-admin Secret's `password` key** (never delete it — §2 below), now that a
+   real login has proven the password worked.
 6. **Declare this instance's federation identity** (`POST /federation/init`) with the chosen role.
    Measured against a real kind cluster while building this command: `SCP_FEDERATION_ROLE` (a chart
    value, `config.federationRole`) does **not** set the org's federation-identity row — that row is
@@ -71,6 +72,25 @@ One run does, in order:
    with `--peer` set to this instance's own domain id), idempotently: a 409 (already declared, e.g.
    a re-run) is treated as success.
 9. Print a summary and exit.
+
+**#422 adversarial review, BLOCKING 1 — `--mode compose` never actually reached compose.** The
+`docker compose up` call built an isolated `env` (the same values steps 2/3 need) but never passed
+it to the process (`run(shell, "docker", [...])` with no `{ env }`), so every compose install
+launched a default eval commander with its OWN bootstrap password, and the installer's step 4 login
+(against ITS `opts.password`, never the container's actual one) failed every time. Fixed by passing
+`{ env }`; mutation-proven (reverted the fix, confirmed the compose-mode test fails for exactly this
+reason, restored).
+
+**#422 adversarial review, SHOULD-FIX 6 — re-running `scp install` was claimed idempotent but
+threw.** Step 3's password read-back (`readBootstrapAdminPassword`) throws once step 5 has already
+blanked the Secret on a prior run, and step 2's `helm upgrade` still re-passed
+`instanceOperator.grantBootstrapAdmin=true` on every re-run regardless. Fixed: the read now uses a
+short retry (5 attempts, 400ms apart) then treats a blank/absent password as "already installed" and
+returns an idle `InstallSummary` early, skipping the grant and the rest of credential surfacing
+rather than throwing. (A separate, NOT independently fixed here: the eval-profile `helm upgrade`
+can itself fail on the postgres-eval hook's PVC/Service under helm v3.20.2 — BUILD_AND_TEST.md
+~L2292 already tracks this; a re-run's idempotency claim depends on it and is only as good as that
+known issue allows today.)
 
 **No cluster? `--bootstrap-k3s`** installs a single-node k3s
 (`curl -sfL https://get.k3s.io | sh -`, proposal §3a option 1) — small, and connected-only by
@@ -124,19 +144,50 @@ Leaving the Secret (blanked or not) in place after a failed or skipped install i
 under a mid-install operator), and if the admin row already exists (a re-run), a stray unconsumed
 password is simply never read back by anything.
 
-### 3. `stackd.enabled` flips to the chart's own default (`true`)
+**#422 adversarial review, SHOULD-FIX 3/4 — blanking the Secret is not enough on its own.** The
+plaintext still sits in **Helm's own release history** (`helm get hooks`/`helm history`, retained
+regardless of what happens to the live Secret object), and — the sharper problem — nothing stopped
+the printed password from working forever: a second login with it kept succeeding indefinitely, so
+"shown once" was a claim about where the password started, never about how long it kept working.
+Fixed with a real one-time-use property, independent of the chart entirely: a new
+`users.must_change_password` column (migration 0128), set unconditionally whenever
+`ensureBootstrapAdmin` creates an admin from a handed-in password (`local-auth.ts`). `requireAuth`
+gates every route but `POST /auth/password`, `GET /auth/me` and `POST /auth/logout` behind it
+(`require-auth.ts`) — a 403 whose `detail` is prefixed `password change required:` (Fastify's
+schema-based response serialization strips unknown fields from `ProblemSchema`, so a bespoke
+`extensions.code` never reaches the wire on a route that doesn't declare it; `GET /auth/me`'s
+`mustChangePassword: boolean` is the field a client should actually poll). `POST /auth/password`
+(`changeLocalPassword`, SDK `client.auth.changePassword`, CLI `scp passwd`, web
+`/change-password` — `RequireAuth.tsx` redirects there whenever `mustChangePassword` is true) clears
+the flag. `scp install`'s own login (step 4) and `seed.ts`'s demo-data login both call
+`changePassword(oneTimePassword, oneTimePassword)` immediately after — same value in and out, which
+clears the flag without changing what the password actually IS, so the operator's printed password
+keeps working for their own first login while automation isn't blocked by a gate meant for a human.
+The Helm-release-history exposure is unchanged by this fix (still real, still lower severity — a
+`helm get hooks` reader already has `get secrets` in the namespace, the same population §2 above
+already accepts) and is not separately closed here.
 
-Per proposal D3 ("the Standard Stack is on by default for a new install") and ADR-0058's own
-"Consequences" ("the flip is planned, not assumed… at which point the chart default flips in the
-same change"): a **bare** `helm install`, with no `scp install` involved at all, now gets the stack
-controller. `scp install` no longer needs to turn it on — it sets `instanceOperator.grantBootstrapAdmin`
-explicitly (a one-shot seam that stays opt-in) and, for `--role retrans`, turns `stackd.enabled` back
-**off** (nothing to install; the near-cluster-admin controller is a grant to refuse, not a default to
-accept — proposal §3a "Per role": "a retrans runs the controller with an empty stack, or not at
-all").
+### 3. `stackd.enabled` stays off at the chart's OWN default; `scp install` turns it on
 
-Flipping a chart default that far downstream broke three `tools/helm-verify` renders that had
-assumed "off unless asked" as their baseline (all fixed in this PR, not deferred):
+**Reversed from this ADR's first version**, which flipped the chart's bare-`helm install` default to
+`true` per proposal D3. The #422 adversarial review's orchestrator decision (2026-09-25, consistent
+with the charter's "on by default for new installs") is **option (a): the chart default stays
+`false`; `scp install` sets it explicitly `true`** (for every role but `retrans` — unchanged, still
+never on for a retrans: "a retrans runs the controller with an empty stack, or not at all",
+proposal §3a). Why: "on by default for new installs" describes what a person running `scp install`
+gets, not what a bare `helm install`/`helm template` renders — and the LIVE risk (§2a below) makes a
+default-on chart actively dangerous under GitOps, where nothing runs `scp install` at all. New
+installs still go through the installer and are unaffected; an **existing** bare-`helm-install`
+deployment tracking `main` is never surprised by a stack controller it never asked for showing up on
+its next sync.
+
+`scp install` now always sets `stackd.enabled` explicitly (`true` for `commander`/`outpost`, `false`
+for `retrans`) rather than only setting it when turning the controller ON — an install must be able
+to state "off" as loudly as "on", the same lesson the diff-test baseline below is fixed for.
+
+Flipping the chart's own default (this ADR's first version) had broken three `tools/helm-verify`
+renders that assumed "off unless asked" as their baseline; those fixes stay, now as defense for the
+"off, unless `scp install` asks" behavior instead:
 
 - the "kitchen sink" render, which turns on `federation.serverMtls.enabled` — a real, ADR-0058
   guard (`stackd.enabled` with `serverMtls.enabled` refuses to render: the controller dials scpd
@@ -144,26 +195,66 @@ assumed "off unless asked" as their baseline (all fixed in this PR, not deferred
 - the M23.6 socket-invariant matrix (162 value combinations, asserting the managed runner is the
   ONLY identity holding a grant) — stackd's own reviewed ClusterRole was tripping an assertion it
   was never meant to be evaluated against; every point in the matrix now turns stackd off;
-- the M29.4 "enabling the stack controller must add exactly its own objects" diff test, whose "off"
-  baseline no longer said so explicitly — the diff silently became `added: []` against the new
-  default-on baseline instead of failing. This is the exact shape CLAUDE.md's grep-blind-spot
-  warning describes: a test that stops testing anything and stays green. Fixed by stating the
-  baseline (`--set stackd.enabled=false`) rather than relying on an implicit one.
+- the M29.4 "enabling the stack controller must add exactly its own objects" diff test, which now
+  states its "off" baseline explicitly (`--set stackd.enabled=false`) rather than relying on
+  whatever the chart default happens to be — the exact shape CLAUDE.md's grep-blind-spot warning
+  describes: a test that silently stops testing anything and stays green if the default under it
+  ever moves again.
+
+### 2a. GitOps/Argo CD: `existingSecret` overrides for every chart-generated credential (#422 LIVE RISK)
+
+`lookup` (used by §2's Secret and by `postgres`/`appSecrets`/the stackd credential) queries the
+**live cluster**; `helm template` — which is ALL Argo CD's repo-server ever runs — has no live
+cluster context, so `lookup` always returns nothing there. A `stackd.enabled: true` release tracked
+by Argo CD with `selfHeal` therefore regenerates the stack controller's credential AND
+`scp_operator`'s database password on **every sync**. The credential mostly self-heals (ADR-0058's
+rotation path revokes the old id), but the password does not: `apps/server/src/db/provision.ts`
+refuses to reset `scp_operator`'s live password when it no longer matches the connection string
+("refusing to reset the password for role scp_operator") — so the very next migrations Job PreSync
+hook fails, and every sync after it, until an operator intervenes by hand. Measured as a real risk
+to the owner's homelab cluster, which tracks `main` under Argo CD with `selfHeal` and will pick up
+`stackd.enabled` the moment a chart change turns it on for that release.
+
+Fixed with three `existingSecret`-style overrides — set, the chart takes the value verbatim and
+never generates or reads its own copy, so nothing about it can drift between syncs:
+`operatorApi.databaseUrlSecret`/`operatorApi.databaseUrlSecretKey` (pre-existing, M22.9),
+`stackd.existingCredentialSecret`/`stackd.existingCredentialSecretKey` (new,
+`stackd.namespace`-scoped), `bootstrap.existingAdminPasswordSecret`/
+`bootstrap.existingAdminPasswordSecretKey` (new, release-namespace-scoped). Exact keys, shapes and
+the one-time bootstrap sequence a GitOps operator needs before first turning `stackd.enabled` on:
+`deploy/helm/README.md` § "GitOps / Argo CD". `tools/helm-verify`'s
+`verifyExistingSecretOverrides` renders twice with all three set and asserts (a) neither generated
+Secret renders, (b) every referencing `secretKeyRef.name`/`.key` names the pre-provisioned Secret
+literally, not just "is stable across renders" — an earlier version of this check compared
+`secretKeyRef` objects for byte-identical output across two renders and did NOT catch a mutation
+pointing the reference at the wrong secret, because a `secretKeyRef` is a K8s-native reference
+resolved at pod-start, not template time, so it is byte-identical regardless of what it points at.
 
 ### 4. `install.sh` grows three flags, and stops double-installing backends
 
 `--kube-context` (forwarded to `helm`), `--timeout` (added `--wait --timeout` to the helm
 invocation — **it had none before this ADR**, so an air-gapped install previously reported success
 the instant the API server accepted the release, not once pods were actually Ready), and
-`--skip-bundled-backends`. The third exists because of the stackd default flip: `install.sh`'s
-helm branch already ran a **second**, older mechanism for the Argo/Gitea backends
-(`scp-bundled.sh enable <backend>`, `kubectl apply --server-side` under a different field manager)
-that pre-dates the stack controller. With `stackd.enabled` now on by default, an air-gapped
-`scp install` would apply the same backend through **both** mechanisms — real risk of two field
-managers fighting over the same objects, not merely wasted work. `scp install --bundle` passes
+`--skip-bundled-backends`. The third exists because `scp install` turns `stackd.enabled` on
+explicitly (§3): `install.sh`'s helm branch already ran a **second**, older mechanism for the
+Argo/Gitea backends (`scp-bundled.sh enable <backend>`, `kubectl apply --server-side` under a
+different field manager) that pre-dates the stack controller. With the controller enabled, an
+air-gapped `scp install` would apply the same backend through **both** mechanisms — real risk of two
+field managers fighting over the same objects, not merely wasted work. `scp install --bundle` passes
 `--skip-bundled-backends` and drives backend-enable through the Standard Stack API instead (the
 same step as the connected path); a bare `install.sh` invocation (no `scp install`) is unaffected
 — it still enables backends the old way, exactly as before.
+
+**#422 adversarial review, SHOULD-FIX 7 — `--kube-context` was resolved more than once.** Every
+`kubectl`/`helm` call re-read `$KUBECONFIG`'s current-context independently, so nothing pinned them
+all to the SAME cluster if the ambient current-context changed mid-run, and `scp-bundled.sh` (called
+from `install.sh`) had no `--kube-context` of its own at all — a split-brain where `install.sh`'s own
+`helm` calls targeted one context and its `scp-bundled.sh enable` calls silently targeted whatever
+was ambient. Fixed by resolving the context ONCE, building an isolated `KUBECONFIG` from it
+(`kubectl config view --minify --context=… --flatten`, the same technique
+`scp-install-kind-drill.sh` already used) immediately after arg parsing in both `install.sh` and
+`scp-bundled.sh` (which gained the flag), and printing the resolved target cluster before acting —
+even under `--yes` — in `install-cli.ts` (`target: kube context '…', namespace '…', release '…'`).
 
 ### 5. An empty org's home route
 
@@ -175,6 +266,19 @@ flash the setup flow at a returning user with a populated org. `router.tsx`'s `H
 itself renders differently. `/setup` was **already** linked from navigation
 (`AppShell.tsx`, both the commander and outpost nav trees existed before this ADR) — nothing to
 add there.
+
+**#422 adversarial review, SHOULD-FIX 8 — two more states `isOrgEmpty` had conflated with
+"loading".** First, a permanent lookup **error** (not merely slow) also returned `undefined`
+forever, so `HomePage` rendered the empty-org skeleton indefinitely instead of ever showing anything
+— fixed by threading `isError` from all three queries into a new `anyErrored` field; an error now
+resolves `isOrgEmpty` to `false` (render the dashboard, which then shows its own error state, rather
+than hang). Second, the three `limit: 1` queries are scoped to what the CALLER can read, not to the
+org as a whole — a user narrowly scoped to a team with nothing configured yet, in an otherwise
+populated org, satisfied "all three empty" and got routed into setup as if the ORG were new. Fixed
+by requiring the caller also hold an org-representative role (`ORG_REPRESENTATIVE_ROLE_NAMES =
+["Owner", "OrgAdmin"]`, read from `GET /auth/me`'s `roleBindings` — already-available data, avoiding
+a new org-wide-count endpoint) before "all three empty" is treated as "the org is new"; a narrowly
+scoped non-admin caller in a populated org now always sees the dashboard.
 
 ## Consequences
 
@@ -211,3 +315,25 @@ add there.
   through `scp install`; a freshly `scp install`ed commander does not yet have Argo CD wired as a
   coordinated execution system. Not started here deliberately — it is the concurrent M29.2 lane's
   scope (`apps/stackd` + the auto-wire seam were out of bounds for this branch).
+- **`$SCP_API_URL` only overrides a STORED session's base URL when it names the SAME host** (#422
+  SHOULD-FIX 5, an M28-class hole: `clientFromStoredCredentials`, `packages/cli/src/client-factory.ts`
+  — an ambient env var previously decided, unconditionally, where the stored session TOKEN got
+  re-sent). A same-host, different-port override (the `scp install`/drill port-forward reopening on
+  a new ephemeral port — the reason this existed at all) still works; a different-HOST value now
+  refuses and asks for an explicit `--base-url` instead, since a flag on the same command line is
+  consent and an inherited env var is not. `scp login`'s OWN `resolveLoginBaseUrl` is unchanged —
+  a separate, pre-existing door (no stored token to leak yet at that point) out of scope here.
+- **`redactSecretKey`'s `kubectl patch` failure is loud, not swallowed** (#422 SHOULD-FIX 9). It
+  previously ignored the patch's exit code; a failed blank (RBAC denied, object recreated
+  mid-install, …) silently left the plaintext live in the Secret while the installer reported
+  success. It now throws with the exact remediation `kubectl patch` command on failure — caught at
+  the call site so the rest of the install still completes (the login already succeeded; the
+  operator can re-run the redaction command by hand), but printed as a WARNING that cannot be
+  missed rather than swallowed.
+- **Every release still gets FIVE fixed-name backend namespaces** (`argocd`, `argo-workflows`,
+  `argo-rollouts`, `argo-events`, `gitea` by default — ADR-0058 §4) when the stack controller is
+  enabled, whichever release turned it on first. Two `stackd.enabled: true` releases cannot
+  currently share one cluster: the second install's controller would collide with the first's
+  namespaces/RBAC. Not fixed here (a real multi-release-per-cluster story is namespace-prefixing or
+  scoping work of its own, out of this ADR's scope) — documented per the #422 review's NIT so it
+  is a known limitation, not a silent trap.
