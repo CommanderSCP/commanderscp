@@ -19,7 +19,11 @@
 #
 # Exits the calling script (via `exit 1`) on failure — a script that reaches this point already
 # depends on the gate being clear, so a silent failure here would just surface as a confusing 403
-# several steps later instead.
+# several steps later instead. Prints the FRESH password to stdout (only that, nothing else) — the
+# account's password really did change, so a caller that logs in AGAIN later (e2e-web.sh's own
+# Playwright run, driving a real browser login) must capture and use it instead of its own now-stale
+# variable. A caller that only needs the CURRENT session's token (the common case — TOKEN keeps
+# working with no further action) can simply not capture it.
 scp_clear_forced_password_change() {
   local base_url="$1" token="$2" current_password="$3"
   local fresh
@@ -32,6 +36,7 @@ scp_clear_forced_password_change() {
     echo "scp_clear_forced_password_change: POST /auth/password returned ${status} (expected 204)" >&2
     exit 1
   fi
+  printf '%s' "$fresh"
 }
 
 # scp_clear_forced_password_change_via_cli — same purpose, for scripts that already log in through

@@ -310,7 +310,7 @@ TOKEN="$(curl -fsS -X POST "${BASE_URL}/api/v1/auth/login" -H 'content-type: app
 # server-side now, so this uses a genuinely fresh, thrown-away password (TOKEN is what the rest of
 # this drill relies on, not PW).
 source "${ROOT_DIR}/scripts/lib/clear-forced-password-change.sh"
-scp_clear_forced_password_change "${BASE_URL}/api/v1" "$TOKEN" "$PW"
+scp_clear_forced_password_change "${BASE_URL}/api/v1" "$TOKEN" "$PW" >/dev/null
 CREATE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' -d '{"name":"airgap-drill-service"}')"
 printf '%s' "$CREATE" | grep -q '"airgap-drill-service"' || { echo "FAIL: golden path service registration failed: $CREATE" >&2; exit 1; }
 log "PASS: golden path succeeded under the enforced zero-egress policy"

@@ -93,26 +93,22 @@ echo "bootstrap admin password extracted (redacted)"
 ADMIN_USERNAME="admin"
 ORG_NAME="default"
 
-echo "==> logging in (to poll for the demo seed landing before starting Playwright)"
-LOGIN_RESPONSE="$(curl -fsS -X POST "$BASE_URL/api/v1/auth/login" \
-  -H 'content-type: application/json' \
-  -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}")"
-TOKEN="$(node -e 'console.log(JSON.parse(process.argv[1]).token)' "$LOGIN_RESPONSE")"
-
-# #422 re-verify — ensureBootstrapAdmin always sets mustChangePassword:true; SCP_SEED_DEMO=true's
-# demo-seed login clears it temporarily but RE-ARMS it once seeding finishes (seed.ts's own
-# reset-and-rearm design — the operator's real first login must still go through a genuine forced
-# change). This script's own login above is exactly that "operator's real first login": clear it
-# before the poll below, which is gated the same as any write (the gate does not distinguish
-# GET from POST).
-source "${ROOT_DIR}/scripts/lib/clear-forced-password-change.sh"
-echo "==> clearing the forced-password-change flag"
-scp_clear_forced_password_change "$BASE_URL/api/v1" "$TOKEN" "$ADMIN_PASSWORD"
-
+# #422 re-verify — the demo seed's OWN login (seed.ts's loginAndSeedDemoData, inside the scp
+# container) resets the account back to THIS printed password and RE-ARMS mustChangePassword once
+# it finishes (the operator's real first login must still go through a genuine forced change, the
+# same as a non-demo install) — so ADMIN_PASSWORD above is exactly right for Playwright's own
+# first browser login below, unmodified. The forced-change screen that login hits is handled
+# transparently by apps/web/e2e/fixtures.ts's loginAsAdmin (every OTHER spec) and explicitly,
+# with assertions, by apps/web/e2e/00-forced-password-change.spec.ts — never here: this script no
+# longer authenticates at all, avoiding the exact staleness bug a bash-side clear-then-forget
+# had (the shared account's password only ever changes ONCE, inside the browser, and the fixture
+# is the one place that then knows the new value).
+#
+# Waiting for the demo seed via the LOG LINE seed.ts itself prints, not an authenticated API
+# poll — this script has no session to poll with anymore, and doesn't need one.
 echo "==> waiting for the demo seed (SCP_SEED_DEMO=true, seed.ts) to land"
 for i in $(seq 1 30); do
-  if curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/v1/objects/service" \
-      | grep -q '"checkout"'; then
+  if "${COMPOSE[@]}" logs scp 2>/dev/null | grep -q "seed: demo data ready"; then
     echo "demo seed present (after ${i}s)"
     break
   fi

@@ -252,7 +252,7 @@ fi
 # a genuinely fresh, different password -- thrown away right after (TOKEN, not ADMIN_PASSWORD, is
 # what the rest of this drill uses).
 source "${ROOT_DIR}/scripts/lib/clear-forced-password-change.sh"
-scp_clear_forced_password_change "${BASE_URL}/api/v1" "$TOKEN" "$ADMIN_PASSWORD"
+scp_clear_forced_password_change "${BASE_URL}/api/v1" "$TOKEN" "$ADMIN_PASSWORD" >/dev/null
 
 CREATE_RESPONSE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" \
   -H "authorization: Bearer ${TOKEN}" -H "content-type: application/json" \
