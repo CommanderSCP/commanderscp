@@ -1,7 +1,18 @@
 # Zero to running: the Standard Stack behind CommanderSCP
 
-**Status:** PROPOSED 2026-09-25, pending owner review. Four charter-level questions are in §7; nothing in §6 should be built
-before they are answered.
+**Status: DIRECTION ACCEPTED 2026-09-25.** The owner answered §7's questions by ruling on the principle: *"If that goes
+against the current charter, then the current charter must be fixed … CommanderSCP must be the surface. Though ideally
+CommanderSCP makes things automatic except where users set things to be manual (ex: manual deploy steps within a
+CommanderSCP pipeline)."* The charter now carries the **Managed Standard Stack** amendment and two adoption principles,
+**CommanderSCP Is the Surface** and **Automatic by Default** (PROJECT_CHARTER.md, 2026-09-25). The §7 recommendations are
+adopted as D1–D4:
+
+- **D1 (Q1):** a separate stack controller installs and operates the bundled backends.
+- **D2 (Q2):** credentials use write-only passthrough, with workload identity preferred.
+- **D3 (Q3):** the Standard Stack is on by default for a new install, sized by role.
+- **D4 (Q4):** backend UIs are hidden, with an audited, read-only break-glass link.
+
+§8 (M29) is the build plan, pending the owner's go.
 
 ## 1. The goal, in the owner's words
 

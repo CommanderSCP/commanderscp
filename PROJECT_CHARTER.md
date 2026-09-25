@@ -534,6 +534,24 @@ Not mandates.
 
 ---
 
+## CommanderSCP Is the Surface
+
+Adopted 2026-09-25 (owner decision).
+
+Complexity is why capable platforms get turned away. Every setup and operational act happens through CommanderSCP. The systems it coordinates or bundles sit behind it and are never a surface a user must learn in order to use CommanderSCP.
+
+---
+
+## Automatic by Default
+
+Adopted 2026-09-25 (owner decision).
+
+CommanderSCP does the next step automatically unless a user has chosen to make it manual, for example a manual deploy step inside a CommanderSCP pipeline. Manual is an explicit, visible configuration the user makes; it is never the result of something CommanderSCP left unwired.
+
+Decisions about authority, such as which repositories may run with which credentials and which namespaces CommanderSCP may deploy into, remain explicit. CommanderSCP proposes them in context, and one confirmation accepts the proposal.
+
+---
+
 # Deployment Philosophy
 
 ## Cloud Native First, Not Cloud Exclusive
@@ -1426,9 +1444,11 @@ Bundled backends keep their own infrastructure credentials and their own reconci
 
 CommanderSCP holds only a scoped API token to a bundled backend.
 
-Bundled backends are operator-installed.
+~~Bundled backends are operator-installed.~~
 
-CommanderSCP never applies or upgrades backend manifests.
+~~CommanderSCP never applies or upgrades backend manifests.~~
+
+The two struck clauses are superseded by the Managed Standard Stack amendment of 2026-09-25, below: CommanderSCP installs, wires, upgrades and operates the backends it bundles.
 
 Bundling distributes existing systems; it never reimplements them.
 
@@ -1443,6 +1463,28 @@ Opting into a bundled backend ends managed-execution eligibility for the classes
 The two preceding clauses have exactly one qualification: under the Managed Execution Exception amendment of 2026-09-23, CommanderSCP's per-domain SSH certificate authority may issue the per-run certificate for a host-reaching run CommanderSCP submits, to a pinned endpoint under a pinned sealing key, for its own host-operations catalog template on a bundled or organization-run Argo Workflows. The backend otherwise keeps its own infrastructure credentials, and the qualification covers no other backend, template or class.
 
 The bundled backend allowlist is the SCP Standard Stack.
+
+### Managed Standard Stack
+
+Amendment approved 2026-09-25 (owner decision, zero-to-running; docs/proposals/zero-to-running.md).
+
+*"If that goes against the current charter, then the current charter must be fixed. CommanderSCP must be the surface."*
+
+CommanderSCP installs, wires, upgrades and operates the Standard Stack it bundles. A customer who has none of these systems installs CommanderSCP and never has to open, configure or operate a bundled backend directly, for setup or for any operation.
+
+This is done by a stack controller that is deployed as part of CommanderSCP but is separate from the coordination server:
+
+- The stack controller holds the cluster rights needed to install, upgrade and configure the bundled backends in their own namespaces, and no others. It holds no credential to any infrastructure a backend manages.
+- The coordination server keeps only scoped API tokens to each backend, exactly as before. It never gains the stack controller's rights.
+- Desired state (which backends, versions, sizing and wiring) is declared through CommanderSCP's API, SDK, CLI, IaC and UI like every other capability. The stack's versions follow CommanderSCP's release: one CommanderSCP upgrade upgrades the stack it was tested with.
+
+Credentials a backend needs (a registry push token, cloud credentials, a git token) are entered through CommanderSCP and handed to the backend by the stack controller, written straight into the backend's own Secret. The coordination server never persists a backend credential and has no path to read one back; the audit record names who wrote which key, never the value. Workload identity is preferred wherever the substrate provides it, so that nothing needs to be entered at all. Bundled backends still keep their own infrastructure credentials: CommanderSCP brokers them in, it does not hold them.
+
+The Standard Stack is on by default for a new install, sized to the instance's federation role (commander, outpost or retrans). Every backend can instead be brought by the customer (bring-your-own), per backend, at install or later. PostgreSQL remains the only stateful dependency CommanderSCP itself requires; the stack's own stateful services belong to the stack, and by default they use a separate database on the same PostgreSQL server rather than another engine.
+
+A bundled backend's own interface is not exposed by default. A time-boxed, read-only, audited break-glass link exists for support and debugging; every write goes through CommanderSCP.
+
+This amendment changes who installs and operates the execution systems CommanderSCP bundles. It does not change the Foundational Principle: CommanderSCP still coordinates, and execution still belongs to execution systems. It extends no class allowlist, adds no executor verb, and grants no credential to the infrastructure those systems manage.
 
 The Standard Stack is ArgoCD, Argo Workflows, and Argo Events. Gitea is the default bundled registry; Harbor is not bundled — an existing Harbor is coordinated via the import path (ADR-0012).
 
