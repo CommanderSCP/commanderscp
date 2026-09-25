@@ -56,8 +56,10 @@ function fakeVendorRefreshIO(): VendorRefreshIO {
   };
 }
 
+// `deploy/helm-bundled/vendor/argocd/install.yaml` is deliberately ABSENT here: `planVendorRefresh`
+// gets that backend's own vendored content from `io.fetchText` (the upstream fetch), never from a
+// repo read — `readRepoFile` below is called only for the three shared downstream files.
 const REPO_FILES: Record<string, string> = {
-  "deploy/helm-bundled/vendor/argocd/install.yaml": "STALE — never read by this path", // n/a for argocd (raw-tree fetch, not a repo read)
   "deploy/helm-bundled/values.yaml": OLD_VALUES_YAML,
   "deploy/airgap/src/bundle-images.ts": OLD_BUNDLE_IMAGES_TS,
   "tools/ci-mirror/images.list": OLD_IMAGES_LIST
