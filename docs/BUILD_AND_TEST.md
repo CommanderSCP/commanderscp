@@ -2148,6 +2148,93 @@ below may be deferred to a successor milestone.** Deferring one is what this mil
     stand-ins; the real counterparties exercised were Gitea, `dnf`, `sshd`, OpenTofu and a
     throwaway kind cluster's server-side dry-run). The first live run belongs on the homelab.
 
+### M29 — zero to running: CommanderSCP is the surface — **OPEN**
+
+*Owner direction 2026-09-25: "CommanderSCP must be the surface … automatic except where users set things to be manual."
+Approved for M29 the same day. Design and decisions: [docs/proposals/zero-to-running.md](proposals/zero-to-running.md)
+(D1–D7, §3a mechanism, §9 keeping the stack current). Charter: **Managed Standard Stack** amendment plus the
+**CommanderSCP Is the Surface** and **Automatic by Default** principles (2026-09-25). As in M28, **no sub-milestone may
+be deferred to a successor**; if one cannot be delivered, stop and ask.*
+
+- **The measured gap** is in the proposal's §2 table (file:line for each), and is not re-derived here. In short: there is
+  no front door; the bootstrap password appears only in a pod log; auto-wire mints tokens but never registers the
+  execution system; Argo Workflows has no auto-wire; egress is declared in three places; canary needs a customer-hosted
+  carrier and silently degrades without one; backend credentials are hand-made Kubernetes Secrets; nothing keeps the
+  vendored backends current.
+
+- **Decisions fixed for the build** (owner invited to overrule; record an ADR per increment as it lands):
+  - **E1 — the stack controller is its own component and image** (`apps/stackd`, image `scp-stackd`), never a role of
+    `scpd`.
+    - **Its rights are near cluster-admin, and this is stated plainly.** Upstream Argo installs create CRDs, ClusterRoles
+      and ClusterRoleBindings, and granting a ClusterRole requires `escalate` and `bind`.
+    - **Mitigation is separation, not scoping it away.** Nothing a tenant supplies reaches the controller except the typed,
+      enumerated stack spec. It holds no infrastructure credential, and `scpd` never gains its rights.
+  - **E2 — desired state is instance-scoped operator configuration**, not tenant data. The stack serves every org on the
+    instance. It follows the `scanner_assignments` precedent: an instance-scoped registry row, tenant-read and
+    operator-write through the operator-credential tier. The controller is an API client of `scpd` using an operator
+    credential minted at install.
+  - **E3 — rendering reuses `deploy/helm-bundled`**, in-process: vendored, pinned `helm template` plus Kubernetes
+    server-side apply under the field manager `scp-stackd`, pruning by label. There is no Helm release, so there is no
+    1 MB limit. CRDs are applied as their own step and must be ready before anything else.
+  - **E4 — the stack's versions are the SCP release's.** The controller image carries the pinned manifests and images for
+    its release; upgrading SCP upgrades the stack (§9.2).
+
+- **Contents** (build order: M29.4 and M29.8a first, as the foundation; then M29.1, 29.2, 29.3, 29.5 and 29.6; then 29.7
+  and 29.8b):
+  - **M29.1 — the front door.**
+    - A root README and quickstart.
+    - `scp install --role commander|outpost|retrans [--profile eval|production] [--bundle …]`, for kube contexts and for
+      VMs. When there is no cluster, it offers single-node k3s (proposal §3a).
+    - The bootstrap admin credential is shown by the installer, never only in a log.
+    - An empty org lands on the first-run flow (the `/setup` checklist promoted to the home route).
+    - The HQ outpost is declared at install.
+    - **DoD:** a scripted install on a fresh kind cluster reaches a logged-in admin session without any `kubectl logs` or
+      `kubectl` against SCP's namespace, and deleting the installer's credential-surfacing step turns a test red.
+  - **M29.2 — complete auto-wire, in the controller.** Every enabled backend (Argo CD, Argo Workflows, Argo Events, Gitea)
+    is registered as an `execution-system`, with its scoped account, token, TLS trust and both egress layers, in one
+    reconcile. No bind command is printed for a human. Also `scp connect gitea`, and the stale Argo Workflows auth-mode
+    comment corrected.
+    - **DoD:** after enabling each backend through the API, its execution system exists and a real `observe()` against it
+      succeeds. Deleting any one wiring step turns a test red.
+  - **M29.3 — canary out of the box.** The authoring carrier is served from the bundled Gitea, and the dedicated AppProject
+    is created when Rollouts is enabled. Argo Rollouts is installed into every registered target cluster through an
+    authored Argo CD Application.
+    - A component requesting a canary where authoring is off is **refused with a Decision**, never rolled silently.
+    - **DoD:** a component's canary advances through its steps on a real Rollouts controller in kind; disabling authoring
+      produces the refusal Decision rather than a plain rolling update.
+  - **M29.4 — the stack controller and the Stack page** (the foundation: E1–E4).
+    - The desired-state API, and `scp stack status|enable|disable|upgrade|diagnostics`, with IaC parity.
+    - The controller reconciles and reports health, version and "needs" per backend, rolls upgrades backend by backend with
+      health checks, and falls back to the last good set.
+    - The Stack page in the UI.
+    - **DoD:** enabling and disabling a backend through the API alone installs and removes it on kind; a forced unhealthy
+      upgrade falls back; deleting the reconcile wiring turns a test red; no tenant-writable field reaches the
+      controller (census).
+  - **M29.5 — credentials through SCP (D2).** A write-only passthrough, from the API to the controller to the backend's
+    Secret; `scpd` persists nothing and cannot read it back. The audit records the key, never the value. Workload identity
+    is preferred where available.
+    - **DoD:** a registry token entered through the API lets a real build push. The value appears in no SCP table, log or
+      audit payload (asserted by scanning for the plaintext). There is no read route (census).
+  - **M29.6 — role stacks.** The outpost and retrans profiles (proposal §5), and import-and-take-over for existing Argo CD,
+    Gitea, Harbor, GitLab and GitHub (D5: configuration takeover by default, lifecycle adoption only for recognised
+    installs).
+    - **DoD:** an outpost install gets exactly its profile; importing a pre-existing Argo CD yields a registered, configured
+      execution system without the customer touching that Argo CD.
+  - **M29.7 — the standing proof.** A fresh kind cluster goes from `scp install` to an image build, a canary that advances
+    through its steps, and an infra plan and apply, **with no command addressed to any backend**. It runs **twice**: fresh,
+    and upgrading from the previous published release. This is the first run of every M28 lane against real controllers.
+    - **DoD:** the job is in CI (nightly and on stack-touching PRs), and removing any lane's wiring makes it red.
+  - **M29.8 — the stack stays current (proposal §9).**
+    - **(a) Foundation:** a `re-vendor` bump strategy for managed-dep, running `tools/vendor-refresh` to fetch a tag's full
+      manifests, pin by digest and update the air-gap list; and a reader test proving `parseKubernetesImages` inventories
+      every image in `deploy/helm-bundled/vendor/**` and `values.yaml`.
+    - **(b) Default on:** SCP registers its own repo and backends, and creates the stack's dependency subscriptions by
+      default on the publishing commander (the homelab first). A scan-triggered bump fires when a pinned image has a
+      fixable CRITICAL or HIGH. The publish-time release gate refuses a fixable CRITICAL.
+    - **DoD:** a real upstream patch release produces a SCP-authored re-vendor PR that passes CI including M29.7's upgrade
+      run; deleting a vendored image from the reader's reach turns the reader test red; a synthetic fixable CRITICAL
+      blocks publish.
+
 ## 9. Verification Mapping
 
 Every MVP Scope item from the charter, the milestone that delivers it, and the test layer that proves it (deepest layer listed; lower layers also cover it).
