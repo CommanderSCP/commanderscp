@@ -9,7 +9,7 @@ import {
   isCatalogTarget
 } from "./stack-credentials.js";
 
-/** M29.5 (ADR-0062): the credential catalog and its schemas. */
+/** M29.5 (ADR-0063): the credential catalog and its schemas. */
 
 describe("the credential catalog", () => {
   it("is fixed pairs, and a pair outside it is not a target even when both names are known", () => {

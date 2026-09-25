@@ -26,7 +26,7 @@ import type { KubeClient } from "./kube.js";
 import { backendNamespace, type StackRelease } from "./release.js";
 
 /**
- * CREDENTIALS THROUGH SCP — the controller's half (M29.5, ADR-0062).
+ * CREDENTIALS THROUGH SCP — the controller's half (M29.5, ADR-0063).
  *
  * The controller holds an X25519 key pair; the private half lives in a Secret in ITS OWN namespace
  * (ADR-0058 §6: no other identity the chart renders can read there) and never leaves this process

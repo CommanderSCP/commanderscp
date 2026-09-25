@@ -831,7 +831,7 @@ function verifyRpmCatalogTemplate(): void {
     `[${label}] fetch-source differs from scp-build-image-v1's. The checkout-by-commit is the property that ties a published artifact to a revision; the two copies must stay identical`
   );
 
-  // M29.5 (ADR-0062): THE PUSH CREDENTIAL IS BOUND TO ONE HOST in both build templates — the
+  // M29.5 (ADR-0063): THE PUSH CREDENTIAL IS BOUND TO ONE HOST in both build templates — the
   // destination is SCP-assembled from an org's registry object, so an unbound token goes wherever
   // that object points. Each container mounts `registryHost`, and the image script refuses a
   // mismatched host BEFORE the credential is written into its docker config.

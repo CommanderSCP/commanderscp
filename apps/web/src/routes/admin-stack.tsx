@@ -53,7 +53,7 @@ import { StackCredentials } from "./admin-stack-credentials";
  * serves (its wired backends are registered in each). Serving another org is an instance
  * decision: every served org drives the same scoped backend accounts.
  *
- * M29.5 (ADR-0062): the Credentials card (admin-stack-credentials.tsx) — a registry token, cloud
+ * M29.5 (ADR-0063): the Credentials card (admin-stack-credentials.tsx) — a registry token, cloud
  * credentials, a git token, entered once and written by the controller into the backend's Secret;
  * never shown back, because there is nothing to read them from.
  */
@@ -655,7 +655,7 @@ export function AdminStackPage(): React.JSX.Element {
             </span>
           </div>
           {canChange ? <ServedOrgs busy={busy} onChange={onOrgs} /> : null}
-          {/* M29.5 (ADR-0062): credentials through SCP — instance authority, write-only. */}
+          {/* M29.5 (ADR-0063): credentials through SCP — instance authority, write-only. */}
           {canChange ? <StackCredentials busy={busy} write={write} /> : null}
         </>
       )}

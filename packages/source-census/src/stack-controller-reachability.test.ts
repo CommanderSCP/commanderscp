@@ -80,7 +80,7 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
   attachServedOrg: "is the instance operator's decision to serve another organization",
   detachServedOrg: "stops serving one",
   listServedOrgs: "is the served-organizations read",
-  // M29.5 (ADR-0062): credentials through SCP. Controller half, then scpd half. (In-file wiring —
+  // M29.5 (ADR-0063): credentials through SCP. Controller half, then scpd half. (In-file wiring —
   // `deliverCredentials` calling `writeCredential`, `requestCredentialChange` calling
   // `sealCredential` — is proved by deleting it: credentials.test.ts, the integration suite and
   // the kind suite go red.)

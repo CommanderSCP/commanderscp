@@ -10,7 +10,7 @@ import {
 import type { KubeObject } from "./manifests.js";
 
 /**
- * WORKLOAD IDENTITY, PREFERRED WHEREVER THE SUBSTRATE PROVIDES IT (M29.5, ADR-0062).
+ * WORKLOAD IDENTITY, PREFERRED WHEREVER THE SUBSTRATE PROVIDES IT (M29.5, ADR-0063).
  *
  * A declaration names an enumerated ServiceAccount of a backend and a provider with its
  * pattern-bound identifier. The controller sets the provider's annotation on that ServiceAccount

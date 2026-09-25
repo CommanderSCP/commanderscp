@@ -320,7 +320,7 @@ export function registerStackCommands(program: Command): void {
       }
     });
 
-  // M29.5 (ADR-0062): `scp stack credential …` and `scp stack workload-identity …`.
+  // M29.5 (ADR-0063): `scp stack credential …` and `scp stack workload-identity …`.
   registerStackCredentialCommands(stack);
 }
 

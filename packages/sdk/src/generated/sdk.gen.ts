@@ -2668,7 +2668,7 @@ export const attachStackServedOrg = <ThrowOnError extends boolean = false>(optio
 });
 
 /**
- * The credentials the Standard Stack's backends take, and their state: which keys are set, pending or failed, who entered them and when they were delivered — never a value (instance-operator role or operator credential; ADR-0062)
+ * The credentials the Standard Stack's backends take, and their state: which keys are set, pending or failed, who entered them and when they were delivered — never a value (instance-operator role or operator credential; ADR-0063)
  */
 export const listStackCredentials = <ThrowOnError extends boolean = false>(options?: Options<ListStackCredentialsData, ThrowOnError>): RequestResult<ListStackCredentialsResponses, ListStackCredentialsErrors, ThrowOnError> => (options?.client ?? client).get<ListStackCredentialsResponses, ListStackCredentialsErrors, ThrowOnError>({
     responseValidator: async (data) => await zListStackCredentialsResponse.parseAsync(data),
@@ -2678,7 +2678,7 @@ export const listStackCredentials = <ThrowOnError extends boolean = false>(optio
 });
 
 /**
- * Remove one credential key from a Standard Stack backend's Secret — the stack controller deletes it (instance-operator role or operator credential; audited; ADR-0062)
+ * Remove one credential key from a Standard Stack backend's Secret — the stack controller deletes it (instance-operator role or operator credential; audited; ADR-0063)
  */
 export const deleteStackCredential = <ThrowOnError extends boolean = false>(options: Options<DeleteStackCredentialData, ThrowOnError>): RequestResult<DeleteStackCredentialResponses, DeleteStackCredentialErrors, ThrowOnError> => (options.client ?? client).delete<DeleteStackCredentialResponses, DeleteStackCredentialErrors, ThrowOnError>({
     responseValidator: async (data) => await zDeleteStackCredentialResponse.parseAsync(data),
@@ -2688,7 +2688,7 @@ export const deleteStackCredential = <ThrowOnError extends boolean = false>(opti
 });
 
 /**
- * Enter (or rotate) one credential a Standard Stack backend needs. The value is sealed to the stack controller's key and written by the controller into the backend's own Secret; SCP keeps no copy and has no way to read it back. A re-set replaces the value (instance-operator role or operator credential; audited without the value; ADR-0062)
+ * Enter (or rotate) one credential a Standard Stack backend needs. The value is sealed to the stack controller's key and written by the controller into the backend's own Secret; SCP keeps no copy and has no way to read it back. A re-set replaces the value (instance-operator role or operator credential; audited without the value; ADR-0063)
  */
 export const setStackCredential = <ThrowOnError extends boolean = false>(options: Options<SetStackCredentialData, ThrowOnError>): RequestResult<SetStackCredentialResponses, SetStackCredentialErrors, ThrowOnError> => (options.client ?? client).put<SetStackCredentialResponses, SetStackCredentialErrors, ThrowOnError>({
     responseValidator: async (data) => await zSetStackCredentialResponse.parseAsync(data),
@@ -2702,7 +2702,7 @@ export const setStackCredential = <ThrowOnError extends boolean = false>(options
 });
 
 /**
- * Withdraw a workload-identity declaration: the stack controller removes the provider's annotation from the ServiceAccount (instance-operator role or operator credential; audited; ADR-0062)
+ * Withdraw a workload-identity declaration: the stack controller removes the provider's annotation from the ServiceAccount (instance-operator role or operator credential; audited; ADR-0063)
  */
 export const deleteStackWorkloadIdentity = <ThrowOnError extends boolean = false>(options: Options<DeleteStackWorkloadIdentityData, ThrowOnError>): RequestResult<DeleteStackWorkloadIdentityResponses, DeleteStackWorkloadIdentityErrors, ThrowOnError> => (options.client ?? client).delete<DeleteStackWorkloadIdentityResponses, DeleteStackWorkloadIdentityErrors, ThrowOnError>({
     responseValidator: async (data) => await zDeleteStackWorkloadIdentityResponse.parseAsync(data),
@@ -2712,7 +2712,7 @@ export const deleteStackWorkloadIdentity = <ThrowOnError extends boolean = false
 });
 
 /**
- * Declare that a Standard Stack ServiceAccount gets its cloud authority from workload identity (AWS IRSA, GKE Workload Identity, Azure Workload Identity): the stack controller sets the provider's annotation, so no credential needs entering (instance-operator role or operator credential; audited; ADR-0062)
+ * Declare that a Standard Stack ServiceAccount gets its cloud authority from workload identity (AWS IRSA, GKE Workload Identity, Azure Workload Identity): the stack controller sets the provider's annotation, so no credential needs entering (instance-operator role or operator credential; audited; ADR-0063)
  */
 export const putStackWorkloadIdentity = <ThrowOnError extends boolean = false>(options: Options<PutStackWorkloadIdentityData, ThrowOnError>): RequestResult<PutStackWorkloadIdentityResponses, PutStackWorkloadIdentityErrors, ThrowOnError> => (options.client ?? client).put<PutStackWorkloadIdentityResponses, PutStackWorkloadIdentityErrors, ThrowOnError>({
     responseValidator: async (data) => await zPutStackWorkloadIdentityResponse.parseAsync(data),
@@ -2726,7 +2726,7 @@ export const putStackWorkloadIdentity = <ThrowOnError extends boolean = false>(o
 });
 
 /**
- * The stack controller publishes the X25519 public key credentials entered through SCP are sealed to; its private half never leaves the controller's namespace (the stack controller's credential ONLY; audited; ADR-0062)
+ * The stack controller publishes the X25519 public key credentials entered through SCP are sealed to; its private half never leaves the controller's namespace (the stack controller's credential ONLY; audited; ADR-0063)
  */
 export const putStackCredentialSealingKey = <ThrowOnError extends boolean = false>(options: Options<PutStackCredentialSealingKeyData, ThrowOnError>): RequestResult<PutStackCredentialSealingKeyResponses, PutStackCredentialSealingKeyErrors, ThrowOnError> => (options.client ?? client).put<PutStackCredentialSealingKeyResponses, PutStackCredentialSealingKeyErrors, ThrowOnError>({
     responseValidator: async (data) => await zPutStackCredentialSealingKeyResponse.parseAsync(data),
@@ -2740,7 +2740,7 @@ export const putStackCredentialSealingKey = <ThrowOnError extends boolean = fals
 });
 
 /**
- * The sealed credential envelopes waiting for the stack controller to write into a backend's Secret — sealed to the controller's key, which scpd does not hold (the stack controller's credential ONLY; ADR-0062)
+ * The sealed credential envelopes waiting for the stack controller to write into a backend's Secret — sealed to the controller's key, which scpd does not hold (the stack controller's credential ONLY; ADR-0063)
  */
 export const listStackCredentialDeliveries = <ThrowOnError extends boolean = false>(options?: Options<ListStackCredentialDeliveriesData, ThrowOnError>): RequestResult<ListStackCredentialDeliveriesResponses, ListStackCredentialDeliveriesErrors, ThrowOnError> => (options?.client ?? client).get<ListStackCredentialDeliveriesResponses, ListStackCredentialDeliveriesErrors, ThrowOnError>({
     responseValidator: async (data) => await zListStackCredentialDeliveriesResponse.parseAsync(data),
@@ -2750,7 +2750,7 @@ export const listStackCredentialDeliveries = <ThrowOnError extends boolean = fal
 });
 
 /**
- * The stack controller confirms a delivery — written into the backend's Secret, or refused (tampered, replayed, expired, wrong key) — and scpd drops the sealed envelope (the stack controller's credential ONLY; audited; ADR-0062)
+ * The stack controller confirms a delivery — written into the backend's Secret, or refused (tampered, replayed, expired, wrong key) — and scpd drops the sealed envelope (the stack controller's credential ONLY; audited; ADR-0063)
  */
 export const ackStackCredentialDelivery = <ThrowOnError extends boolean = false>(options: Options<AckStackCredentialDeliveryData, ThrowOnError>): RequestResult<AckStackCredentialDeliveryResponses, AckStackCredentialDeliveryErrors, ThrowOnError> => (options.client ?? client).post<AckStackCredentialDeliveryResponses, AckStackCredentialDeliveryErrors, ThrowOnError>({
     responseValidator: async (data) => await zAckStackCredentialDeliveryResponse.parseAsync(data),

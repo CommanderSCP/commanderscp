@@ -2398,6 +2398,51 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     is preferred where available.
     - **DoD:** a registry token entered through the API lets a real build push. The value appears in no SCP table, log or
       audit payload (asserted by scanning for the plaintext). There is no read route (census).
+    - **State (2026-09-25, ADR-0063): BUILT, PR open.** A fixed catalog (`STACK_CREDENTIAL_CATALOG`: Argo Workflows'
+      `scp-build-registry` — `gitToken`, `registryUsername`, `registryPassword`, `registryHost` — and the two infra
+      Secrets, their keys an enumerated list of cloud/state-backend variables, since each becomes an env var of a pod
+      running a repository's code). `PUT /instance/stack/credentials/{backend}/{secretName}/{key}` (instance authority)
+      SEALS the value — X25519 + HKDF-SHA256 + AES-256-GCM, the whole header as additional data — to the key the
+      controller published through its own door; only the envelope is stored (`stack_credentials`, drizzle/0130, no
+      `scp_app` grant at all). The controller reads the envelopes with its own credential, holds the target to the
+      catalog it carries, derives the namespace itself, opens, writes the key into the backend's Secret (server-side
+      apply, a field manager per key), confirms, and scpd nulls the envelope. Rotation is a re-set, deletion a sealed
+      `delete`. Workload identity (`PUT /instance/stack/workload-identities/{backend}/{sa}`): `aws-irsa`,
+      `gke-workload-identity`, `azure-workload-identity` for `scp-infra-plan`, `scp-infra-apply`,
+      `argocd-application-controller`, `argocd-server` (never `scp-build`); the controller annotates the
+      ServiceAccount in its own render. Parity: API → SDK → CLI (`scp stack credential list|set|delete`, the value
+      never an argument; `scp stack workload-identity set|delete`) → UI (Admin › Stack › Credentials); IaC N/A
+      (ADR-0058 §8). How each DoD item is proved:
+      - *a registry token entered through the API lets a real build push*: `stack-credentials.kind.test.ts` (job 4e) —
+        a token minted on the bundled Gitea is entered through the API alone, the controller writes it, SCP's plugin
+        path submits the SHIPPED `scp-build-image-v1`, rootless BuildKit pushes to the bundled Gitea's registry, and
+        the image is listed there at the commit. Run locally on a throwaway kind (v0.32.0) — green in ~70 s.
+      - *the value is in no table, log or audit payload*: the kind suite scans every row of every table, every scpd
+        and controller log line, the audit rows and the backend pods' logs; `stack-credentials.integration.test.ts`
+        scans a REAL `pg_dump` (while pending and after delivery), trace-level server logs and the audit rows, for
+        the value, its base64 and its hex.
+      - *no read route*: `stack-credential-no-read.test.ts`, a census over the whole emitted contract (the only
+        `value` request body is the set; no stack response can hold one; the envelope is returned by the controller's
+        delivery list alone; the credential paths are list/set/delete).
+      - *a replayed or redirected blob is refused*: the integration suite restores an older genuinely-sealed row
+        (refused `replayed`, the newer value stays) and rewrites a pending row's target to an infra Secret (refused
+        `tampered`, nothing written); `credentials.test.ts` covers op/sequence/id rewrites, a wrong key, an expired
+        envelope and a genuinely sealed out-of-catalog target.
+      - *deleting the controller's write step turns a test red*: `credentials.test.ts` and, on kind, the suite (the
+        Stack page's credentials need never clears) — the mutation log is in the PR.
+      - **Found on the way**, worth knowing: (1) ordering deliveries by scpd's SEQUENCE refused a fresh scpd's first
+        credential as a replay of the previous one (a restored or rebuilt database restarts the sequence) — they are
+        ordered by sealing time instead; (2) the build templates presented the push token to whatever host an org's
+        registry object named (the M28 shape, pre-existing) — the credential is now bound to `registryHost`, refused
+        before use elsewhere (a pre-M29.5 Secret without it keeps working with a warning); (3) no real
+        `scp-build-image-v1` had ever pushed to the bundled Gitea — its `ROOT_URL` was `http://git.example.com` (the
+        registry's token realm unresolvable), the fetch was `https://` only and BuildKit pushed over TLS only; fixed
+        (`ROOT_URL` is the Service; `sourceHost` may carry a scheme; in-cluster Services are pushed to over HTTP).
+      - **What the DoD does not prove**: the kind suite sets `buildImage.sourceHost` to the bundled Gitea in a copy of
+        the chart (a forge choice, D6, not a credential); its scpd is not a pod; the infra Secrets and the
+        workload-identity annotations are proved by the integration and unit suites, not by a real plan/apply or a
+        real cloud (M29.7). The envelope is confidential and target-bound, not signed by scpd: a writer of the table
+        (`scp_operator` — instance authority already) could seal a value of its own to a catalog target (ADR-0063 §3).
   - **M29.6 — role stacks.** The outpost and retrans profiles (proposal §5); **the air-gapped single-node k3s bootstrap
     for `scp install --bundle` on a machine with no cluster** (M29.1 refuses it with instructions for now, and it is carried
     here so it is not lost); **multi-org isolation on the shared bundled backends** — a per-org Argo CD AppProject and

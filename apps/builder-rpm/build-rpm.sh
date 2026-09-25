@@ -30,7 +30,7 @@ if [ -z "${REGISTRY_USERNAME:-}" ] || [ -z "${REGISTRY_PASSWORD:-}" ]; then
   exit 2
 fi
 
-# THE CREDENTIAL IS BOUND TO ONE HOST (M29.5, ADR-0062): the upload URL is assembled by SCP from a
+# THE CREDENTIAL IS BOUND TO ONE HOST (M29.5, ADR-0063): the upload URL is assembled by SCP from a
 # registry object an organization writes, so a `registryHost` entered with the token is the only
 # host it is presented to. Unset (a Secret made before M29.5), a warning — never a silent send.
 upload_authority=$(printf '%s' "$upload_url" | sed -e 's,^[a-zA-Z]*://,,' -e 's,/.*$,,')

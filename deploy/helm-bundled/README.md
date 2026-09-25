@@ -56,7 +56,7 @@ deployment-target gets its own workspace in it, and a repository carrying its ow
 phase (every key becomes an env var; SCP never reads either): `scp-infra-plan-credentials` —
 **read-only** for the cloud, because a plan runs the repository's own code before anyone approves
 it — and `scp-infra-apply-credentials`, which only an approved apply reaches. **You do not create
-them** (M29.5, ADR-0062): enter each key through SCP — `scp stack credential set argo-workflows
+them** (M29.5, ADR-0063): enter each key through SCP — `scp stack credential set argo-workflows
 scp-infra-plan-credentials AWS_ACCESS_KEY_ID` (the value from a hidden prompt, stdin or
 `--from-file`), or Admin › Stack › Credentials — and the stack controller writes it there; SCP keeps
 no copy. The keys are a fixed set (`scp stack credential list`). The same goes for the build

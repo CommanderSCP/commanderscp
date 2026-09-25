@@ -36,7 +36,7 @@ import { appendInstanceAudit } from "../auth/instance-authority.js";
 import { badRequest, conflict } from "../errors.js";
 
 /**
- * CREDENTIALS THROUGH SCP — scpd's half (M29.5, ADR-0062; charter "Managed Standard Stack":
+ * CREDENTIALS THROUGH SCP — scpd's half (M29.5, ADR-0063; charter "Managed Standard Stack":
  * "CommanderSCP brokers them in, it does not hold them").
  *
  * A value entered through the API lives in scpd for exactly one request: it is SEALED — X25519
@@ -62,7 +62,7 @@ import { badRequest, conflict } from "../errors.js";
  *    catalog it carries and derives the NAMESPACE from the backend itself — it is never sent.
  *  - WHO CAN FORGE ONE: anyone with the public key can seal SOMETHING, but the only writer of the
  *    table is `scp_operator`, which is instance authority already (the same authority the API
- *    door requires). Stated in ADR-0062, not hidden.
+ *    door requires). Stated in ADR-0063, not hidden.
  */
 
 const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");

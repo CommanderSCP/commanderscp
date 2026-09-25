@@ -21,7 +21,7 @@ import { printResult, type OutputFormat } from "./output.js";
 
 /**
  * `scp stack credential …` and `scp stack workload-identity …` — credentials through SCP (M29.5,
- * ADR-0062). WRITE-ONLY: a value goes in and never comes back — there is no `get`, because there is
+ * ADR-0063). WRITE-ONLY: a value goes in and never comes back — there is no `get`, because there is
  * no read route. The value is NEVER an argument (it would sit in shell history and `ps`): it is read
  * from a hidden prompt, from stdin when piped, or from `--from-file`.
  */

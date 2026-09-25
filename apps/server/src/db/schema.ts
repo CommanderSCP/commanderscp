@@ -2737,7 +2737,7 @@ export const stackSettings = pgTable(
     /** M29.2 — true once the bootstrap organization has been served by default (on the first
      *  wiring). Never set back: an operator who detaches it later is not overruled. */
     servedOrgsInitialized: boolean("served_orgs_initialized").notNull().default(false),
-    /** M29.5 (ADR-0062) — the stack controller's X25519 PUBLIC key (base64 of 32 bytes), published
+    /** M29.5 (ADR-0063) — the stack controller's X25519 PUBLIC key (base64 of 32 bytes), published
      *  through its own door; every credential entered through SCP is sealed to it. The private half
      *  never leaves the controller's namespace. */
     credentialSealingKey: text("credential_sealing_key"),
@@ -2851,7 +2851,7 @@ export const stackBackendRegistrations = pgTable(
 export const stackCredentialSeq = pgSequence("stack_credential_seq");
 
 /**
- * CREDENTIALS ENTERED THROUGH SCP, ON THEIR WAY TO A BACKEND'S SECRET (M29.5, ADR-0062).
+ * CREDENTIALS ENTERED THROUGH SCP, ON THEIR WAY TO A BACKEND'S SECRET (M29.5, ADR-0063).
  *
  * One row per catalog target (backend, Secret, key — `STACK_CREDENTIAL_CATALOG`). THE VALUE IS
  * NEVER HERE: `envelope` is the value SEALED to the stack controller's public key (X25519 +
@@ -2894,7 +2894,7 @@ export const stackCredentials = pgTable(
 );
 
 /**
- * WORKLOAD IDENTITIES DECLARED FOR THE STACK'S SERVICEACCOUNTS (M29.5, ADR-0062) — preferred
+ * WORKLOAD IDENTITIES DECLARED FOR THE STACK'S SERVICEACCOUNTS (M29.5, ADR-0063) — preferred
  * wherever the substrate provides them, so nothing needs entering at all. One row per enumerated
  * slot; the provider and its pattern-bound identifier are what the controller turns into the
  * provider's annotation on that ServiceAccount. Tenant-read (the spec read goes through the request

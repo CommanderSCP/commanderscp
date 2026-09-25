@@ -336,7 +336,7 @@ import {
   listStackServedOrgs as listStackServedOrgsRequest,
   attachStackServedOrg as attachStackServedOrgRequest,
   detachStackServedOrg as detachStackServedOrgRequest,
-  // M29.5 — credentials through SCP (ADR-0062).
+  // M29.5 — credentials through SCP (ADR-0063).
   listStackCredentials as listStackCredentialsRequest,
   setStackCredential as setStackCredentialRequest,
   deleteStackCredential as deleteStackCredentialRequest,

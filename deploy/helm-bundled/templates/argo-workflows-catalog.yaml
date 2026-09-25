@@ -264,7 +264,7 @@ spec:
               echo "template of your own if it does not build from a Dockerfile at all." >&2
               exit 2
             }
-            # THE PUSH CREDENTIAL IS BOUND TO ONE HOST (M29.5, ADR-0062). The destination is
+            # THE PUSH CREDENTIAL IS BOUND TO ONE HOST (M29.5, ADR-0063). The destination is
             # assembled by SCP from a registry object an organization writes, so without a binding
             # a registry re-pointed at another host would be handed this Secret's token. With
             # `registryHost` set (entered through SCP with the token), any other host is refused

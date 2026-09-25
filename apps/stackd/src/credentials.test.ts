@@ -31,7 +31,7 @@ import type { KubeObject } from "./manifests.js";
 import { FakeKube } from "./test-support/fake-kube.js";
 
 /**
- * M29.5 (ADR-0062): the controller's half of credentials through SCP, driven through the HOOK THE
+ * M29.5 (ADR-0063): the controller's half of credentials through SCP, driven through the HOOK THE
  * CONTROLLER INSTALLS (`installCredentialHooks`) against an in-memory API server. The envelopes
  * are sealed here by an independent implementation of the same construction (X25519 + HKDF-SHA256
  * + AES-256-GCM with the header as additional data); apps/server's integration suite seals with

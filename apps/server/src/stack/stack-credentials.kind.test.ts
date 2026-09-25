@@ -29,7 +29,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { resolveExecutorPluginInstance } from "../coordination/executor-bindings-repo.js";
 
 /**
- * M29.5 DoD, AGAINST REAL BACKENDS (ADR-0062): A REGISTRY TOKEN ENTERED THROUGH THE API LETS A REAL
+ * M29.5 DoD, AGAINST REAL BACKENDS (ADR-0063): A REGISTRY TOKEN ENTERED THROUGH THE API LETS A REAL
  * BUILD PUSH.
  *
  * A real scpd (Testcontainers Postgres, real `scp_operator`), the real stack controller with the

@@ -30,7 +30,7 @@ import {
 } from "../stack/credentials.js";
 
 /**
- * CREDENTIALS THROUGH SCP — the API (M29.5, ADR-0062). WRITE-ONLY: a value goes in through
+ * CREDENTIALS THROUGH SCP — the API (M29.5, ADR-0063). WRITE-ONLY: a value goes in through
  * `PUT …/credentials/{backend}/{secretName}/{key}` and never comes back out. The read model is
  * metadata (which keys are set, by whom, delivered when); the only response that carries anything
  * derived from a value is the controller's delivery list, which carries SEALED envelopes, to the
@@ -60,7 +60,7 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
       openapi: {
         operationId: "listStackCredentials",
         summary:
-          "The credentials the Standard Stack's backends take, and their state: which keys are set, pending or failed, who entered them and when they were delivered — never a value (instance-operator role or operator credential; ADR-0062)",
+          "The credentials the Standard Stack's backends take, and their state: which keys are set, pending or failed, who entered them and when they were delivered — never a value (instance-operator role or operator credential; ADR-0063)",
         tags: ["stack"]
       }
     },
@@ -82,7 +82,7 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
       openapi: {
         operationId: "setStackCredential",
         summary:
-          "Enter (or rotate) one credential a Standard Stack backend needs. The value is sealed to the stack controller's key and written by the controller into the backend's own Secret; SCP keeps no copy and has no way to read it back. A re-set replaces the value (instance-operator role or operator credential; audited without the value; ADR-0062)",
+          "Enter (or rotate) one credential a Standard Stack backend needs. The value is sealed to the stack controller's key and written by the controller into the backend's own Secret; SCP keeps no copy and has no way to read it back. A re-set replaces the value (instance-operator role or operator credential; audited without the value; ADR-0063)",
         tags: ["stack"]
       }
     },
@@ -115,7 +115,7 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
       openapi: {
         operationId: "deleteStackCredential",
         summary:
-          "Remove one credential key from a Standard Stack backend's Secret — the stack controller deletes it (instance-operator role or operator credential; audited; ADR-0062)",
+          "Remove one credential key from a Standard Stack backend's Secret — the stack controller deletes it (instance-operator role or operator credential; audited; ADR-0063)",
         tags: ["stack"]
       }
     },
@@ -148,7 +148,7 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
       openapi: {
         operationId: "putStackWorkloadIdentity",
         summary:
-          "Declare that a Standard Stack ServiceAccount gets its cloud authority from workload identity (AWS IRSA, GKE Workload Identity, Azure Workload Identity): the stack controller sets the provider's annotation, so no credential needs entering (instance-operator role or operator credential; audited; ADR-0062)",
+          "Declare that a Standard Stack ServiceAccount gets its cloud authority from workload identity (AWS IRSA, GKE Workload Identity, Azure Workload Identity): the stack controller sets the provider's annotation, so no credential needs entering (instance-operator role or operator credential; audited; ADR-0063)",
         tags: ["stack"]
       }
     },
@@ -178,7 +178,7 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
       openapi: {
         operationId: "deleteStackWorkloadIdentity",
         summary:
-          "Withdraw a workload-identity declaration: the stack controller removes the provider's annotation from the ServiceAccount (instance-operator role or operator credential; audited; ADR-0062)",
+          "Withdraw a workload-identity declaration: the stack controller removes the provider's annotation from the ServiceAccount (instance-operator role or operator credential; audited; ADR-0063)",
         tags: ["stack"]
       }
     },
@@ -210,7 +210,7 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
       openapi: {
         operationId: "putStackCredentialSealingKey",
         summary:
-          "The stack controller publishes the X25519 public key credentials entered through SCP are sealed to; its private half never leaves the controller's namespace (the stack controller's credential ONLY; audited; ADR-0062)",
+          "The stack controller publishes the X25519 public key credentials entered through SCP are sealed to; its private half never leaves the controller's namespace (the stack controller's credential ONLY; audited; ADR-0063)",
         tags: ["stack"]
       }
     },
@@ -233,7 +233,7 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
       openapi: {
         operationId: "listStackCredentialDeliveries",
         summary:
-          "The sealed credential envelopes waiting for the stack controller to write into a backend's Secret — sealed to the controller's key, which scpd does not hold (the stack controller's credential ONLY; ADR-0062)",
+          "The sealed credential envelopes waiting for the stack controller to write into a backend's Secret — sealed to the controller's key, which scpd does not hold (the stack controller's credential ONLY; ADR-0063)",
         tags: ["stack"]
       }
     },
@@ -258,7 +258,7 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
       openapi: {
         operationId: "ackStackCredentialDelivery",
         summary:
-          "The stack controller confirms a delivery — written into the backend's Secret, or refused (tampered, replayed, expired, wrong key) — and scpd drops the sealed envelope (the stack controller's credential ONLY; audited; ADR-0062)",
+          "The stack controller confirms a delivery — written into the backend's Secret, or refused (tampered, replayed, expired, wrong key) — and scpd drops the sealed envelope (the stack controller's credential ONLY; audited; ADR-0063)",
         tags: ["stack"]
       }
     },

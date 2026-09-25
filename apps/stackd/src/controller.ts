@@ -147,7 +147,7 @@ export async function buildControllerDeps(
 }
 
 /**
- * M29.5 (ADR-0062): credentials through SCP. Every tick delivers the sealed envelopes scpd holds
+ * M29.5 (ADR-0063): credentials through SCP. Every tick delivers the sealed envelopes scpd holds
  * into the backends' own Secrets, and a ready backend reports what it still needs entered. A hook
  * an override already set is kept. (`credentials.test.ts` drives the installed hook and watches the
  * Secret get written — a reference to `deliverCredentials` that is never called would pass a

@@ -28,7 +28,7 @@ import {
 import { provisionInstallTimePrincipals } from "../db/provision-install.js";
 
 /**
- * M29.5 — CREDENTIALS THROUGH SCP, end to end on real Postgres (ADR-0062). A real scpd writing
+ * M29.5 — CREDENTIALS THROUGH SCP, end to end on real Postgres (ADR-0063). A real scpd writing
  * through a real `scp_operator` login; the stack controller's REAL delivery hook (`@scp/stackd`,
  * `installCredentialHooks`) speaking to scpd with its own install-time credential, and writing
  * into a small in-memory Kubernetes API. scpd SEALS with its own code; the controller OPENS with

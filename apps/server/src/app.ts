@@ -296,7 +296,7 @@ export async function buildApp(
   registerInstanceScanExclusionAdmissionRoutes(app, deps);
   registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   registerStackRoutes(app, deps); // M29.4 the Standard Stack desired state + controller status (ADR-0058)
-  // M29.5 (ADR-0062): credentials through SCP — write-only, sealed to the stack controller.
+  // M29.5 (ADR-0063): credentials through SCP — write-only, sealed to the stack controller.
   registerStackCredentialRoutes(app, deps);
   registerInstanceOperatorRoutes(app, deps); // M29.4 the instance-operator role + instance audit chain
   registerScanDbRoutes(app, deps); // M13.3b-ii offline scanner-DB cache: status/staleness/refresh/load (ADR-0020)

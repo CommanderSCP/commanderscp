@@ -29,7 +29,7 @@ import {
 import { QueryErrorNotice } from "../components/query-error";
 
 /**
- * ADMIN › STACK › CREDENTIALS (M29.5, ADR-0062). Credentials a bundled backend needs — a registry
+ * ADMIN › STACK › CREDENTIALS (M29.5, ADR-0063). Credentials a bundled backend needs — a registry
  * push token, cloud credentials, a git token — entered ONCE here and written by the stack
  * controller into the backend's own Secret. WRITE-ONLY, by construction rather than by care: the
  * API has no route that returns a value, so this page can show which keys are set, by whom and when

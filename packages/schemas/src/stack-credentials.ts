@@ -2,7 +2,7 @@ import { z } from "zod";
 import { InstanceActorSchema, Sha256HexSchema } from "./stack-primitives.js";
 
 /**
- * CREDENTIALS THROUGH SCP (M29.5, ADR-0062; charter "Managed Standard Stack": "CommanderSCP
+ * CREDENTIALS THROUGH SCP (M29.5, ADR-0063; charter "Managed Standard Stack": "CommanderSCP
  * brokers them in, it does not hold them").
  *
  * A credential a bundled backend needs — a registry push token, cloud credentials for an infra

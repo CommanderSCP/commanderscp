@@ -174,7 +174,7 @@ bundledExecutor:
       #   registryPassword  — registry push token (for GHCR: a PAT with `packages:write`)
       #   registryHost      — the one registry host (host[:port]) the token may be presented to;
       #                       a build whose destination is any other host is refused (M29.5)
-      # NOT created by this chart, and never by hand (M29.5, ADR-0062): each key is ENTERED THROUGH
+      # NOT created by this chart, and never by hand (M29.5, ADR-0063): each key is ENTERED THROUGH
       # SCP (`scp stack credential set argo-workflows scp-build-registry <key>`, or Admin › Stack ›
       # Credentials), sealed to the stack controller, and written here by the controller. SCP keeps
       # no copy. The name and keys are a fixed catalog (@scp/schemas STACK_CREDENTIAL_CATALOG).
@@ -279,7 +279,7 @@ bundledExecutor:
         # Each Secret is mounted as environment variables (every key becomes one: AWS_ACCESS_KEY_ID,
         # ARM_CLIENT_SECRET, PG_CONN_STR, …), OPTIONAL at mount, NOT created by this chart and never
         # read by SCP. Its keys are ENTERED THROUGH SCP and written here by the stack controller
-        # (M29.5, ADR-0062) — from a FIXED set of key names, because a free key would become any
+        # (M29.5, ADR-0063) — from a FIXED set of key names, because a free key would become any
         # environment variable (LD_PRELOAD, TF_CLI_CONFIG_FILE) of a pod running a repository's
         # code. Workload identity is preferred: `scp stack workload-identity set argo-workflows
         # scp-infra-plan --provider aws-irsa|gke-workload-identity|azure-workload-identity …` makes

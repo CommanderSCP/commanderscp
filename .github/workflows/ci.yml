@@ -873,6 +873,11 @@ jobs:
       # in-cluster Service names, so both suites run INSIDE the kind node's network namespace
       # (`in-cluster-net`: CoreDNS, the node's kube-proxy rules; Testcontainers reaches the host's
       # daemon through the kind network gateway, and sets RYUK off for the blackhole's reason).
+      # M29.5 (ADR-0063) — AND A CREDENTIAL ENTERED THROUGH SCP: a push token minted on the bundled
+      # Gitea goes in through the API alone, the controller writes it into Argo Workflows' Secret,
+      # and a REAL scp-build-image-v1 run (rootless BuildKit, the build images from the harness
+      # registry) pushes to the bundled Gitea with it; then the token is searched for in every table,
+      # log and audit row (`stack-credentials.kind.test.ts`, picked up by the same config).
       - name: Drive the stack controller and its wiring against the real API server and backends (M29.4, M29.2)
         run: pnpm --filter @scp/server test:kind
       - name: Tear the cluster down

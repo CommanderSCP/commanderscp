@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { registerStackCommands } from "./stack-cli.js";
 import { credentialTargetOf, readCredentialValue } from "./stack-credentials-cli.js";
 
-describe("scp stack credential (M29.5, ADR-0062)", () => {
+describe("scp stack credential (M29.5, ADR-0063)", () => {
   it("holds a target to the catalog's pairs, not just its vocabulary", () => {
     expect(credentialTargetOf("argo-workflows", "scp-build-registry", "registryPassword")).toEqual({
       backend: "argo-workflows",

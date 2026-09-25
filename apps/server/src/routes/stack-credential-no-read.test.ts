@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * THERE IS NO READ ROUTE FOR A CREDENTIAL (M29.5 DoD, ADR-0062) — a census over the WHOLE emitted
+ * THERE IS NO READ ROUTE FOR A CREDENTIAL (M29.5 DoD, ADR-0063) — a census over the WHOLE emitted
  * contract (`tools/openapi/openapi.v1.json`, what the SDK, CLI and UI are generated from), not over
  * the routes this increment wrote: a read path added anywhere later is a red build here.
  *

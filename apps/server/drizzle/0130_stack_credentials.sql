@@ -38,7 +38,7 @@ CREATE UNIQUE INDEX "stack_credentials_delivery_uq" ON "stack_credentials" USING
 --> statement-breakpoint
 
 -- ===========================================================================================
--- M29.5 (ADR-0062) — hand-appended: grants and RLS, which drizzle-kit cannot express.
+-- M29.5 (ADR-0063) — hand-appended: grants and RLS, which drizzle-kit cannot express.
 --
 -- stack_credentials holds SEALED envelopes (never a value) and who asked for them. It is read and
 -- written ONLY through scp_operator — the instance-authority doors and the stack controller's
