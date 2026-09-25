@@ -212,6 +212,24 @@ describe("independentImageRefs() — the independent extractor, on synthetic fix
 describe("the vendored-image inventory census — parseKubernetesImages vs. the independent extractor", () => {
   const vendorFiles = listVendorYamlFiles(VENDOR_DIR);
 
+  // Each file is read and parsed EXACTLY ONCE for the whole describe block — the `it.each` loop below
+  // and the aggregate "all six images" check both need every file's result, and
+  // `argo-workflows/install-part-0{1..4}.yaml` alone is ~11 MB of YAML. Parsing it twice (once per
+  // consumer) measurably slowed this suite under CI's parallel load: a first version hit the
+  // package's own 20s `testTimeout` there while finishing in under 2s locally — CLAUDE.md's own
+  // "a claim about a tool cannot be verified with that tool" lesson applied to timing: this sandbox's
+  // speed said nothing about CI's shared, contended runner.
+  const parsedByFile = new Map<string, { expected: ImageRef[]; actual: ImageRef[] }>();
+  function parsedFile(file: string): { expected: ImageRef[]; actual: ImageRef[] } {
+    let entry = parsedByFile.get(file);
+    if (entry === undefined) {
+      const content = readFileSync(file, "utf8");
+      entry = { expected: independentImageRefs(content), actual: parserImageRefs(content) };
+      parsedByFile.set(file, entry);
+    }
+    return entry;
+  }
+
   it("the census actually found files (non-vacuity) — an empty walk would make every assertion below vacuous", () => {
     expect(vendorFiles.length).toBeGreaterThan(0);
     expect(vendorFiles.some((f) => f.includes("argo-workflows/install-part-"))).toBe(true);
@@ -220,9 +238,7 @@ describe("the vendored-image inventory census — parseKubernetesImages vs. the 
   it.each(vendorFiles.map((f) => [f.replace(`${VENDOR_DIR}/`, ""), f] as const))(
     "%s: the parser finds exactly the images the independent extractor finds",
     (_label, file) => {
-      const content = readFileSync(file, "utf8");
-      const expected = independentImageRefs(content);
-      const actual = parserImageRefs(content);
+      const { expected, actual } = parsedFile(file);
       const result = compare(expected, actual);
       expect(
         result,
@@ -265,7 +281,7 @@ describe("the vendored-image inventory census — parseKubernetesImages vs. the 
   it("the six Standard Stack images SCP tracks are ALL present in vendor/** ALONE, not only in values.yaml", () => {
     const vendorRefs = new Set<string>();
     for (const file of vendorFiles) {
-      for (const ref of parserImageRefs(readFileSync(file, "utf8"))) vendorRefs.add(refKey(ref));
+      for (const ref of parsedFile(file).actual) vendorRefs.add(refKey(ref));
     }
     const expectedCoordinates = [
       "quay.io/argoproj/argocd",
