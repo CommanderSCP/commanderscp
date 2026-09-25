@@ -52,12 +52,20 @@ scripts/scp-bundled.sh enable argo-workflows \
 once you name a state backend** — that is the switch, because they must never run with nowhere real
 to keep state. The backend is yours (a deployment-level setting, never tenant data SCP holds); each
 deployment-target gets its own workspace in it, and a repository carrying its own override file,
-`backend` or `cloud` block is refused. Credentials go in TWO Secrets you create in the Argo
-namespace, one per phase (every key becomes an env var; SCP never reads either):
-`scp-infra-plan-credentials` — **read-only** for the cloud, because a plan runs the repository's own
-code before anyone approves it — and `scp-infra-apply-credentials`, which only an approved apply
-reaches. Each phase also runs as its own ServiceAccount (`scp-infra-plan` / `scp-infra-apply`) for
-workload identity.
+`backend` or `cloud` block is refused. Credentials go in TWO Secrets in the Argo namespace, one per
+phase (every key becomes an env var; SCP never reads either): `scp-infra-plan-credentials` —
+**read-only** for the cloud, because a plan runs the repository's own code before anyone approves
+it — and `scp-infra-apply-credentials`, which only an approved apply reaches. **You do not create
+them** (M29.5, ADR-0062): enter each key through SCP — `scp stack credential set argo-workflows
+scp-infra-plan-credentials AWS_ACCESS_KEY_ID` (the value from a hidden prompt, stdin or
+`--from-file`), or Admin › Stack › Credentials — and the stack controller writes it there; SCP keeps
+no copy. The keys are a fixed set (`scp stack credential list`). The same goes for the build
+templates' `scp-build-registry` (`registryUsername`, `registryPassword`, `registryHost`,
+`gitToken`). Each phase also runs as its own ServiceAccount (`scp-infra-plan` / `scp-infra-apply`),
+and **workload identity is preferred**: `scp stack workload-identity set argo-workflows
+scp-infra-plan --provider aws-irsa --identifier arn:aws:iam::…:role/…` (or `gke-workload-identity`,
+`azure-workload-identity`) makes the controller annotate the ServiceAccount, and nothing needs
+entering.
 
 ```bash
 scripts/scp-bundled.sh enable argo-workflows \
