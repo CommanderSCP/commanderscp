@@ -240,6 +240,28 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
     });
     if (!adminLogin.ok) throw new Error(`bootstrap admin login failed: ${adminLogin.status}`);
     bootstrapAdminToken = ((await adminLogin.json()) as { token: string }).token;
+
+    // #422 review fix (SHOULD-FIX 3/4's forced-password-change gate) — ensureBootstrapAdmin always
+    // sets mustChangePassword:true, and requireAuth blocks every route but
+    // /auth/{me,logout,password} until it clears, including the SSO-groups case's own /groups and
+    // role-binding writes below (asAdmin). Same current/new password clears the flag without
+    // changing it (the same pattern install-cli.ts's finishLogin and seed.ts's demo-seed use).
+    const clearForcedChange = await fetch(`${SCP_BASE_URL}/auth/password`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${bootstrapAdminToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        currentPassword: bootstrap.oneTimePassword,
+        newPassword: bootstrap.oneTimePassword
+      })
+    });
+    if (!clearForcedChange.ok) {
+      throw new Error(
+        `clearing the bootstrap admin's forced-password-change flag failed: ${clearForcedChange.status}`
+      );
+    }
   }, 180_000);
 
   afterAll(async () => {

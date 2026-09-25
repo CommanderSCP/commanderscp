@@ -809,6 +809,16 @@ async function finishLogin(
   });
   if (opts.afterLogin) await opts.afterLogin();
 
+  // #422 review fix, closing a real gap the census missed the first time (found live: e2e-m6.sh's
+  // federation drill 403'd on its own `federation init` call). `ensureBootstrapAdmin` now ALWAYS
+  // sets `mustChangePassword: true`, and `requireAuth` blocks EVERY route but
+  // `/auth/{me,logout,password}` until it clears — including every call THIS installer itself is
+  // about to make (federation init, stack backend enable, HQ outpost declare). Submitting the SAME
+  // password as both "current" and "new" clears the flag without changing what the password IS, so
+  // the rest of THIS run succeeds and the operator's printed password still logs in afterward (the
+  // same reasoning apps/server/src/seed.ts's demo-seed login already uses).
+  await client.auth.changePassword(opts.password, opts.password);
+
   // The chart's SCP_FEDERATION_ROLE (helmSetArgs' federationRole=…) only controls
   // config.federationRole — promotion export / cosign minting / dependency automation's
   // fail-closed gate (component-journey-view.md §8.9). It does NOT set this ORG's federation

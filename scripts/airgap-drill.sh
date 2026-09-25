@@ -358,6 +358,12 @@ for i in $(seq 1 30); do curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1 && brea
 # PW was captured earlier (right after install.sh) via the restart-robust poll — reuse it here.
 TOKEN="$(curl -fsS -X POST "${BASE_URL}/api/v1/auth/login" -H 'content-type: application/json' -d "{\"username\":\"admin\",\"password\":\"${PW}\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
 [ -n "$TOKEN" ] || { echo "FAIL: login returned no token" >&2; exit 1; }
+# #422 review fix (SHOULD-FIX 3/4's forced-password-change gate) -- install.sh is a bare helm
+# install (no `scp install` in the loop), so ensureBootstrapAdmin's mustChangePassword:true is
+# still set; requireAuth now enforces it against every route but /auth/{me,logout,password},
+# including the POST below. Same current/new password clears the flag without changing it.
+CHANGE_PW_STATUS="$(curl -fsS -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/v1/auth/password" -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' -d "{\"currentPassword\":\"${PW}\",\"newPassword\":\"${PW}\"}")"
+[ "$CHANGE_PW_STATUS" = "204" ] || { echo "FAIL: clearing the forced-password-change flag returned ${CHANGE_PW_STATUS}" >&2; exit 1; }
 CREATE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' -d '{"name":"airgap-drill-service"}')"
 printf '%s' "$CREATE" | grep -q '"airgap-drill-service"' || { echo "FAIL: golden path service registration failed: $CREATE" >&2; exit 1; }
 log "PASS: golden path succeeded under the enforced zero-egress policy"

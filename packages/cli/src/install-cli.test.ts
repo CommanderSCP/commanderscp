@@ -391,6 +391,15 @@ vi.mock("@scp/sdk", async () => {
       sdkCalls.push({ method: "login", args: [username, password] });
       return { token: "tok-1", expiresAt: "2030-01-01T00:00:00Z", org: "default" };
     }
+    auth = {
+      // #422 review fix — finishLogin now clears ensureBootstrapAdmin's mustChangePassword:true
+      // flag right after login (same current/new password) so the REST of the install's own API
+      // calls (federation.init, stack.putBackend, federation.createOutpost below) don't 403 for
+      // real. This mock records the call the same way every other SDK method here does.
+      changePassword: async (currentPassword: string, newPassword: string) => {
+        sdkCalls.push({ method: "auth.changePassword", args: [currentPassword, newPassword] });
+      }
+    };
     federation = {
       init: async (req: unknown) => {
         sdkCalls.push({ method: "federation.init", args: [req] });
@@ -586,6 +595,17 @@ describe("runInstall — kube mode", () => {
         method: "login",
         args: ["admin", "correct-horse-battery-staple"]
       });
+      // #422 review fix, found via a REAL e2e drill 403ing on its own next call: ensureBootstrapAdmin
+      // always sets mustChangePassword:true, so the installer must clear it (same password in and
+      // out) BEFORE any of its own later calls (federation.init, stack.putBackend,
+      // federation.createOutpost) — every one of which would otherwise 403.
+      expect(sdkCalls.find((c) => c.method === "auth.changePassword")).toEqual({
+        method: "auth.changePassword",
+        args: ["correct-horse-battery-staple", "correct-horse-battery-staple"]
+      });
+      expect(sdkCalls.findIndex((c) => c.method === "auth.changePassword")).toBeLessThan(
+        sdkCalls.findIndex((c) => c.method === "federation.init")
+      );
       expect(sdkCalls.find((c) => c.method === "stack.putBackend")?.args).toEqual([
         "argocd",
         { enabled: true }
