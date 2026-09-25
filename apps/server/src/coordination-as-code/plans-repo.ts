@@ -1038,7 +1038,7 @@ export interface ObjectResolution {
 }
 
 /** Object write for ordinary types, policy write for governed. See docs/coordination-as-code.md §130. */
-function writePermissionFor(typeId: string): Permission {
+export function writePermissionFor(typeId: string): Permission {
   if (isGovernanceManagedObjectType(typeId)) return "policy:write";
   if (isPeerBoundObjectType(typeId)) return "federation:write";
   return "object:write";

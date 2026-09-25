@@ -3507,7 +3507,9 @@ export function buildProgram(): Command {
   // `scp iac render` (team-pipeline-iac.md D21(d), §12). See docs/cli.md §72.
   const iacCmd = program
     .command("iac")
-    .description("Local, offline tools for @scp/coordination-as-code manifests");
+    .description(
+      "Tools for @scp/coordination-as-code manifests and stacks — render is offline; export, scaffold and release call the API"
+    );
 
   iacCmd
     .command("render")
@@ -3682,6 +3684,60 @@ export function buildProgram(): Command {
           );
           for (const u of ungrouped) console.log(`  - ${u.name}`);
         }
+      }
+    );
+
+  // `scp iac release` — the audited door that clears a stack's ownership. See docs/coordination-as-code.md §328.
+  iacCmd
+    .command("release <stack>")
+    .description(
+      "Release a stack's ownership of the named objects/relationships so another stack may adopt them " +
+        "(e.g. a retired stack). Requires the authority to decommission the WHOLE stack; all-or-nothing; audited"
+    )
+    .option(
+      "--urn <urn>",
+      "an object the stack owns; repeatable",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[]
+    )
+    .option(
+      "--relationship <edge>",
+      'a relationship the stack owns, as "<typeId> <fromUrn> <toUrn>"; repeatable',
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[]
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (stack: string, opts: BaseCliOpts & { urn: string[]; relationship: string[] }) => {
+        const relationships = opts.relationship.map((edge) => {
+          const parts = edge.trim().split(/\s+/);
+          if (parts.length !== 3) {
+            throw new Error(`--relationship must be "<typeId> <fromUrn> <toUrn>", got "${edge}"`);
+          }
+          const [typeId, fromUrn, toUrn] = parts as [string, string, string];
+          return { typeId, fromUrn, toUrn };
+        });
+        if (opts.urn.length === 0 && relationships.length === 0) {
+          // Refused here as well as at the server: there is no "release everything" form.
+          throw new Error("name at least one --urn or --relationship to release");
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.stacks.release(stack, {
+          ...(opts.urn.length > 0 ? { urns: opts.urn } : {}),
+          ...(relationships.length > 0 ? { relationships } : {})
+        });
+        if (opts.output === "json") {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        for (const o of result.releasedObjects) console.log(`released ${o.urn} (${o.typeId})`);
+        for (const e of result.releasedRelationships) {
+          console.log(`released ${e.typeId} ${e.fromUrn} -> ${e.toUrn}`);
+        }
+        console.log(
+          `Stack "${result.stackName}" no longer owns these rows; another stack's apply may now adopt them.`
+        );
       }
     );
 

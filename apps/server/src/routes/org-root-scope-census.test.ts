@@ -470,6 +470,11 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     site: "routes/plans.ts :: GET /api/v1/plans/:id :: object:read",
     cls: "deferred",
     why: "reading a plan reads the same caller-supplied manifest and its diff, so it inherits POST /plans's exclusion"
+  },
+  {
+    site: "routes/plans.ts :: POST /api/v1/stacks/:stackName/release :: object:read",
+    cls: "deferred",
+    why: "the FLOOR only, and deliberately POST /plans's own: every apply of the stack being released cleared it first. The real bar is per-object — the write permission at every row the stack owns (docs/coordination-as-code.md §330) — so this inherits POST /plans's exclusion rather than adding a new org-root pin"
   }
 ];
 

@@ -13231,6 +13231,99 @@ export type ApplyPlanResponses = {
 
 export type ApplyPlanResponse = ApplyPlanResponses[keyof ApplyPlanResponses];
 
+export type ReleaseStackOwnershipData = {
+    body: {
+        /**
+         * Objects to release from the stack. Each must be a LIVE object this stack owns, or the whole request is refused with 409 — there is no silent skip that could mask a typo. There is no 'release everything' form: a request naming no objects and no relationships is a 400.
+         */
+        urns?: Array<string>;
+        /**
+         * Relationships to release, by (typeId, fromUrn, toUrn). Same all-or-nothing rule.
+         */
+        relationships?: Array<{
+            typeId: string;
+            fromUrn: string;
+            toUrn: string;
+        }>;
+    };
+    path: {
+        stackName: string;
+    };
+    query?: never;
+    url: '/stacks/{stackName}/release';
+};
+
+export type ReleaseStackOwnershipErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ReleaseStackOwnershipError = ReleaseStackOwnershipErrors[keyof ReleaseStackOwnershipErrors];
+
+export type ReleaseStackOwnershipResponses = {
+    /**
+     * Success
+     */
+    200: {
+        stackName: string;
+        releasedObjects: Array<{
+            id: string;
+            urn: string;
+            typeId: string;
+        }>;
+        releasedRelationships: Array<{
+            id: string;
+            typeId: string;
+            fromUrn: string;
+            toUrn: string;
+        }>;
+    };
+};
+
+export type ReleaseStackOwnershipResponse = ReleaseStackOwnershipResponses[keyof ReleaseStackOwnershipResponses];
+
 export type ListChangesData = {
     body?: never;
     path?: never;
