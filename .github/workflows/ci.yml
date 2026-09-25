@@ -334,12 +334,16 @@ jobs:
       - name: Pull each pre-built runner image, or build+push once on a cache miss
         run: |
           build_and_push() {
-            image="$1"; context="$2"
+            # $3 (dockerfile) is OPTIONAL — every caller but one builds "$context/Dockerfile"
+            # implicitly (plain `docker build -t "$image" "$context"`); scp-runner-dep-vendor is the
+            # one exception (repo-root context, an out-of-tree Dockerfile — see its own call below).
+            image="$1"; context="$2"; dockerfile="${3:-}"
+            file_args=(); [[ -n "$dockerfile" ]] && file_args=(-f "$dockerfile")
             if docker pull "$image"; then
               echo "cache hit: $image already in GHCR — no build needed."
             else
               echo "cache miss: building $image from $context and pushing to GHCR."
-              DOCKER_BUILDKIT=0 docker build -t "$image" "$context"
+              DOCKER_BUILDKIT=0 docker build "${file_args[@]}" -t "$image" "$context"
               docker push "$image"
             fi
           }
@@ -355,13 +359,9 @@ jobs:
           # M29.8a — scp-runner-dep-vendor, the `re-vendor` strategy's credential-free sandbox
           # (ADR-0059). BUILT WITH THE REPO ROOT AS CONTEXT (deliberate deviation — see
           # apps/runner-dep-vendor/Dockerfile's own header): every sibling runner above builds from
-          # its own apps/runner-*/ directory alone.
-          DOCKER_BUILDKIT=0 docker pull "$SCP_RUNNER_DEP_VENDOR_IMAGE_REF" 2>/dev/null && \
-            echo "cache hit: $SCP_RUNNER_DEP_VENDOR_IMAGE_REF already in GHCR — no build needed." || {
-            echo "cache miss: building $SCP_RUNNER_DEP_VENDOR_IMAGE_REF from repo root and pushing to GHCR."
-            DOCKER_BUILDKIT=0 docker build -f apps/runner-dep-vendor/Dockerfile -t "$SCP_RUNNER_DEP_VENDOR_IMAGE_REF" .
-            docker push "$SCP_RUNNER_DEP_VENDOR_IMAGE_REF"
-          }
+          # its own apps/runner-*/ directory alone, so this is the one `build_and_push` call that
+          # passes the optional third (dockerfile) argument.
+          build_and_push "$SCP_RUNNER_DEP_VENDOR_IMAGE_REF" . apps/runner-dep-vendor/Dockerfile
           # M27 — scp-runner-ops, the host-reaching catalog runner. Published here for the same
           # reason as its siblings and one more: its charter properties are enforced by DELETION
           # from the image (ADR-0050's allowlist), so `lockdown.integration.test.ts` can only ask

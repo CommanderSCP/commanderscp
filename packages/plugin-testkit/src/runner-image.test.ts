@@ -48,4 +48,28 @@ describe("@scp/plugin-testkit: resolveRunnerImage", () => {
 
     vi.unstubAllEnvs();
   });
+
+  it("THE OPTIONAL dockerfile ARG adds -f BEFORE -t (scp-runner-dep-vendor's out-of-tree build)", async () => {
+    execFileCalls.length = 0;
+    vi.stubEnv(OPTS.refEnvVar, "");
+
+    expect(
+      await resolveRunnerImage({ ...OPTS, dockerfile: "apps/runner-dep-vendor/Dockerfile" })
+    ).toBe("scp-runner-test:local");
+    expect(execFileCalls).toStrictEqual([
+      {
+        file: "docker",
+        args: [
+          "build",
+          "-f",
+          "apps/runner-dep-vendor/Dockerfile",
+          "-t",
+          "scp-runner-test:local",
+          "apps/runner-scan"
+        ]
+      }
+    ]);
+
+    vi.unstubAllEnvs();
+  });
 });
