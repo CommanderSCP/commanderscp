@@ -9,7 +9,7 @@ import { parseAllDocuments } from "yaml";
 import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runner-launcher";
 import { opsTemplateShapeProblems } from "@scp/plugin-argo-workflows";
 import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
-import { verifyExistingSecretOverrides, verifyStackController } from "./stackd.js";
+import { verifyBlocking2Guards, verifyExistingSecretOverrides, verifyStackController } from "./stackd.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
@@ -4323,6 +4323,18 @@ async function main(): Promise<void> {
 
   // #422 adversarial review (LIVE RISK) — GitOps/Argo CD stability of the existingSecret overrides.
   for (const note of verifyExistingSecretOverrides({
+    repoRoot: path.resolve(__dirname, "../../.."),
+    chartDir: CHART_DIR,
+    bundledChartDir: BUNDLED_CHART_DIR,
+    renderChart,
+    fail
+  })) {
+    console.log(note);
+  }
+
+  // #422 re-verify BLOCKING 2 — the homelab-shaped baseline stays unchanged, and two incomplete
+  // GitOps configurations fail the render loudly instead of silently mis-provisioning.
+  for (const note of verifyBlocking2Guards({
     repoRoot: path.resolve(__dirname, "../../.."),
     chartDir: CHART_DIR,
     bundledChartDir: BUNDLED_CHART_DIR,

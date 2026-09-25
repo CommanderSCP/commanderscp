@@ -432,6 +432,22 @@ stackd:
   # stackd.yaml's header comment for the mechanism.
   existingCredentialSecret: ""
   existingCredentialSecretKey: credential
+  # #422 re-verify, BLOCKING 2a — the migrations Job runs in the RELEASE namespace, a DIFFERENT
+  # namespace than `existingCredentialSecret` above (which lives in `stackd.namespace`), and it
+  # never needs the raw credential at all — only its id and the sha256 of its secret half
+  # (apps/server/src/db/provision-install.ts's `stackdCredentialMaterial`; this is exactly what the
+  # chart's OWN self-generated path already passes it). So rather than duplicating the raw
+  # credential into a SECOND Secret in the release namespace, set these two PLAIN, non-sensitive
+  # values instead — a sha256 hash and a bare id reveal nothing about the secret itself. Required
+  # together whenever `existingCredentialSecret` above is set (the chart FAILS the render
+  # otherwise: BLOCKING 2c's precedent — an incomplete existingSecret configuration must be loud,
+  # never a silent fall-through to a self-generated credential the controller was never given).
+  # Derive them from the SAME value you put in the controller's Secret,
+  # `scp_op_<tokenId>.<secret>`: `existingCredentialTokenId` is the part before the `.`;
+  # `existingCredentialSha256` is `printf '%s' '<secret>' | sha256sum | cut -d' ' -f1` (the part
+  # after the `.`, NOT the whole token).
+  existingCredentialTokenId: ""
+  existingCredentialSha256: ""
   image:
     repository: ghcr.io/commanderscp/scp-stackd
     # Empty = the scpd image's tag: the stack's versions ARE the SCP release's (E4).
@@ -487,6 +503,15 @@ oidc:
 bootstrap:
   orgName: default
   adminUsername: admin
+  # #422 re-verify, BLOCKING 2 — OFF by default: a bare `helm install`/upgrade with no opinion on
+  # any of this renders NEITHER the bootstrap-admin Secret below NOR the api Deployment env var
+  # that references it, so an EXISTING release (GitOps or otherwise) is never surprised by either
+  # on its next ordinary sync. `scp install` sets this `true` explicitly on a FIRST install only
+  # (never a re-run — install-cli.ts's idempotent re-run detection already skips credential
+  # surfacing entirely). With this false and `existingAdminPasswordSecret` below unset,
+  # `ensureBootstrapAdmin` falls all the way back to its pre-M29.1 behavior: a self-generated
+  # password logged once at `warn` in the api pod's own log.
+  generate: false
   # #422 review (LIVE RISK) — an existingSecret-style override for the bootstrap admin's one-time
   # password (deploy/helm/templates/secrets-generated.yaml, docs/adr/0060-front-door.md §2). Under
   # GitOps/Argo CD, `lookup` returns nothing on every render, so leaving this empty means a NEW

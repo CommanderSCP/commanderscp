@@ -2,6 +2,18 @@
 {{- if .Values.federation.serverMtls.enabled }}
 {{- fail "stackd.enabled with federation.serverMtls.enabled is not supported yet: serverMtls turns scpd's whole listener into HTTPS, and the stack controller dials scpd in-cluster over plain HTTP. Terminate federation mTLS at the ingress (ingress.mtls) instead — see ADR-0058" }}
 {{- end }}
+{{- /*
+#422 re-verify, BLOCKING 2c — `commanderscp.stackdImage` (_helpers.tpl) falls back to
+`.Values.image.tag` when `stackd.image.tag` is unset (E4: "the stack's versions ARE the SCP
+release's"), which is correct for a bare semantic tag but WRONG the moment `image.tag` carries a
+`tag@sha256:<digest>` pin — that digest identifies the SCPD image's content, not scp-stackd's, and
+Docker/OCI resolves `tag@digest` BY THE DIGEST, so the controller would try to pull a digest that
+belongs to an entirely different image (measured against the owner's homelab chart, which pins
+`image.tag` exactly this way). Rather than silently mis-resolving, fail loudly and say so.
+*/}}
+{{- if and (not .Values.stackd.image.tag) (contains "@" (.Values.image.tag | default "")) }}
+{{- fail (printf "stackd.enabled is true and image.tag (%q) carries a @digest — that digest belongs to the scpd image, not scp-stackd. Set stackd.image.tag explicitly to a real scp-stackd tag/digest." .Values.image.tag) }}
+{{- end }}
 {{- $name := printf "%s-stackd" (include "commanderscp.fullname" .) }}
 {{- $sns := include "commanderscp.stackdNamespace" . }}
 {{- include "commanderscp.assertStackdNamespaceIsolated" . }}

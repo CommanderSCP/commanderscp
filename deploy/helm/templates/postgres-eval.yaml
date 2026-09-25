@@ -15,13 +15,34 @@ first, then its credentials Secret, then migrations run against it. The migratio
 accepting connections yet". `"helm.sh/hook-delete-policy": hook-failed` (explicit, overriding
 Helm's own default of `before-hook-creation`) is what stops `helm upgrade` from deleting and
 recreating this PVC — and therefore the whole eval database — on every single upgrade.
+
+#422 re-verify, item 5 — `hook-failed` alone is not enough: measured against a real kind cluster,
+a SECOND `helm upgrade` (this milestone's own idempotent re-run) failed outright —
+`persistentvolumeclaims "…-postgres-eval" already exists`. Helm's hook execution does a raw
+`Create()` for every hook resource on EVERY firing, checked against existing ONLY when
+`hook-delete-policy` includes `before-hook-creation` (which this deliberately does NOT, per the
+paragraph above — that would delete-and-recreate the whole database). Without that check, a
+SECOND `Create()` against an object that already exists is a plain Kubernetes 409, for any kind —
+the PVC hit it first (declared first, so it runs first and the whole hook batch aborts there), but
+the Deployment and Service below would hit the identical error next. Fixed with the SAME
+`lookup`-and-preserve idiom this chart already uses for its generated Secrets (secrets-generated.yaml,
+stackd.yaml): each of the three resources below checks whether it ALREADY EXISTS and renders
+NOTHING at all when it does — Helm's hook machinery never attempts to re-`Create()` something
+already there. The trade-off, acceptable for something this doc's own header already calls
+EVALUATION-ONLY with "no tuning": once created, a `helm upgrade` never applies a LATER change to
+these three objects' spec (image tag, resources, …) — an eval operator who wants that deletes the
+object by hand first (`kubectl delete deploy/svc/pvc …-postgres-eval`) and re-runs `helm upgrade`.
+Under GitOps (`helm template`, no live cluster), `lookup` already returns nothing for everything —
+unchanged from today, and this feature is eval/kind-only regardless.
 */}}
 {{- if .Values.postgres.evalInCluster.enabled }}
 {{- if not .Values.postgres.evalInCluster.existingClaim }}
+{{- $pvcName := printf "%s-postgres-eval" (include "commanderscp.fullname" .) }}
+{{- if not (lookup "v1" "PersistentVolumeClaim" .Release.Namespace $pvcName) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "commanderscp.fullname" . }}-postgres-eval
+  name: {{ $pvcName }}
   labels:
     {{- include "commanderscp.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgres-eval
@@ -39,10 +60,13 @@ spec:
       storage: {{ .Values.postgres.evalInCluster.storage }}
 ---
 {{- end }}
+{{- end }}
+{{- $deployName := printf "%s-postgres-eval" (include "commanderscp.fullname" .) }}
+{{- if not (lookup "apps/v1" "Deployment" .Release.Namespace $deployName) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "commanderscp.fullname" . }}-postgres-eval
+  name: {{ $deployName }}
   labels:
     {{- include "commanderscp.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgres-eval
@@ -132,10 +156,13 @@ spec:
         - name: run
           emptyDir: {}
 ---
+{{- end }}
+{{- $svcName := printf "%s-postgres-eval" (include "commanderscp.fullname" .) }}
+{{- if not (lookup "v1" "Service" .Release.Namespace $svcName) }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "commanderscp.fullname" . }}-postgres-eval
+  name: {{ $svcName }}
   labels:
     {{- include "commanderscp.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgres-eval
@@ -151,4 +178,5 @@ spec:
     - port: 5432
       targetPort: 5432
       name: postgres
+{{- end }}
 {{- end }}

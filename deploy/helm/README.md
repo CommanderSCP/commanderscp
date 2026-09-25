@@ -410,27 +410,43 @@ the very next migrations Job PreSync hook fails, and every sync after it too, un
 intervenes by hand.
 
 **The fix: pre-provision each Secret yourself, outside this chart's own render**, and point the
-chart at it. Three values, `existingSecret`-style like `postgres.existingSecret` already is — set,
-the chart never generates or reads the corresponding value at all, so nothing about it can drift
-between syncs:
+chart at it. `existingSecret`-style like `postgres.existingSecret` already is — set, the chart
+never generates or reads the corresponding value at all, so nothing about it can drift between
+syncs. **The complete, final key list** (#422 re-verify BLOCKING 2 — this table replaces every
+earlier, incomplete version of itself):
 
-| What                                    | Value                                                                                                       | Secret key(s) to pre-provision                                                                                                                                                                                 | Where                                                                          |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `scp_operator`'s database login         | `operatorApi.databaseUrlSecret` (+ `operatorApi.databaseUrlSecretKey`, default `SCP_OPERATOR_DATABASE_URL`) | A full `postgres://scp_operator:<password>@<host>:<port>/<db>` connection string                                                                                                                               | Release namespace                                                              |
-| The stack controller's own credential   | `stackd.existingCredentialSecret` (+ `stackd.existingCredentialSecretKey`, default `credential`)            | One key holding `scp_op_<22-char-id>.<43-char-secret>` (any random id/secret of those lengths — this chart never validates the shape at render time, only `apps/server/src/auth/prefixed-token.ts` at runtime) | `stackd.namespace` (the CONTROLLER's own namespace, not the release namespace) |
-| The bootstrap admin's one-time password | `bootstrap.existingAdminPasswordSecret` (+ `bootstrap.existingAdminPasswordSecretKey`, default `password`)  | One key holding the password (any value — `scp install`/an operator reads and changes it on first login)                                                                                                       | Release namespace                                                              |
+| What                                              | Value(s)                                                                                                      | Content                                                                                                                                                                                                          | Where                                                                            | Kind                       |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | -------------------------- |
+| `scp_operator`'s database login                   | `operatorApi.databaseUrlSecret` (+ `operatorApi.databaseUrlSecretKey`, default `SCP_OPERATOR_DATABASE_URL`)     | A full `postgres://scp_operator:<password>@<host>:<port>/<db>` connection string                                                                                                                               | Release namespace                                                                | Kubernetes Secret          |
+| The stack controller's own credential (raw)       | `stackd.existingCredentialSecret` (+ `stackd.existingCredentialSecretKey`, default `credential`)                | One key holding `scp_op_<22-char-id>.<43-char-secret>` (any random id/secret of those lengths — this chart never validates the shape at render time, only `apps/server/src/auth/prefixed-token.ts` at runtime) | `stackd.namespace` (the CONTROLLER's OWN namespace — **not** the release namespace) | Kubernetes Secret          |
+| The same credential's id + hash (BLOCKING 2a)     | `stackd.existingCredentialTokenId`, `stackd.existingCredentialSha256`                                           | The `<id>` before the `.` above, and `sha256(<secret>)` hex (the part after the `.`) — **required together whenever `stackd.existingCredentialSecret` is set**, or the chart FAILS the render                  | Release namespace — the migrations Job's OWN namespace, which cannot read a Secret in `stackd.namespace` | Plain Helm value (not secret — a hash and an id reveal nothing about the credential) |
+| The bootstrap admin's one-time password           | `bootstrap.existingAdminPasswordSecret` (+ `bootstrap.existingAdminPasswordSecretKey`, default `password`)      | One key holding the password (any value — `scp install`/an operator reads and changes it on first login, which now REQUIRES setting it to something different — see "Forced password change" below)           | Release namespace                                                                | Kubernetes Secret          |
+| Turn the bootstrap-admin Secret on at all         | `bootstrap.generate`                                                                                             | `true` — **without this, the chart renders NO bootstrap-admin Secret at all** (BLOCKING 2, "unchanged homelab render"), whether or not the two `bootstrap.existingAdminPasswordSecret*` values above are set    | N/A (a plain boolean, default `false`)                                          | Plain Helm value           |
+| The stack controller's image tag (BLOCKING 2c)    | `stackd.image.tag`                                                                                               | **Must be set explicitly whenever `stackd.enabled` is true and `image.tag` is a scpd-specific value (e.g. a digest)** — the chart FAILS the render otherwise, rather than silently making the controller inherit scpd's own image reference | N/A                                                                              | Plain Helm value           |
 
 **One-time bootstrap sequence for a GitOps-tracked instance** (do this ONCE, before the first sync
 that sets `stackd.enabled: true`):
 
-1. Generate three random values yourself (`openssl rand -base64 32` or your usual secret tooling).
-2. Create the `scp_operator` Postgres role with the first value as its password (`CREATE ROLE
-scp_operator WITH LOGIN PASSWORD '...'` against the admin connection — the migrations Job
-   expects the role to already exist and skips `SCP_PROVISION_OPERATOR_ROLE` entirely when
-   `operatorApi.databaseUrlSecret` is set, so nothing else provisions it).
-3. Store the three values as Kubernetes Secrets (sops, External Secrets, sealed-secrets, …) at the
-   keys/namespaces in the table above.
-4. Set the three `*.existingSecret*` values in your Argo CD `Application`/`values.yaml`.
+1. Generate the stack controller's credential yourself: an id (22 random alphanumeric chars) and a
+   secret (43 random alphanumeric chars) — `openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c
+   43` for the secret half, similarly for the id. Compute its sha256:
+   `printf '%s' '<secret>' | sha256sum | cut -d' ' -f1`.
+2. Generate the `scp_operator` database password and the bootstrap admin password separately
+   (`openssl rand -base64 32` or your usual secret tooling).
+3. `scp_operator` is created **NOLOGIN** by migration 0076 (`apps/server/drizzle/0076_operator_write_role.sql`)
+   — its privilege shape is provisioned by the migrations Job regardless, deliberately separate from
+   granting it a password. Give it one yourself: `ALTER ROLE scp_operator WITH LOGIN PASSWORD '...'`
+   against the admin connection, **not** `CREATE ROLE` (that would collide with the role the
+   migrations Job already created). The migrations Job expects the role to already have a login and
+   skips granting one entirely when `operatorApi.databaseUrlSecret` is set.
+4. Store the two RAW-value Secrets (the stack controller's credential, the bootstrap admin's
+   password) as Kubernetes Secrets (sops, External Secrets, sealed-secrets, …) at the
+   keys/namespaces in the table above — the controller's credential in `stackd.namespace`
+   specifically, the bootstrap password in the release namespace.
+5. Set every value in the table above (`operatorApi.databaseUrlSecret*`,
+   `stackd.existingCredentialSecret*`, `stackd.existingCredentialTokenId`,
+   `stackd.existingCredentialSha256`, `bootstrap.existingAdminPasswordSecret*`,
+   `bootstrap.generate: true`, `stackd.image.tag`) in your Argo CD `Application`/`values.yaml`.
 
 `tools/helm-verify`'s `verifyExistingSecretOverrides` (`tools/helm-verify/src/stackd.ts`) renders
 twice with all three set and asserts NEITHER generated Secret is rendered and every referencing

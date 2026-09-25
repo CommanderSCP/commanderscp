@@ -134,18 +134,18 @@ spec:
             # controller's own namespace — and, when the chart generated it, gives `scp_operator`
             # its login.
             {{- if .Values.stackd.existingCredentialSecret }}
-            # #422 review (LIVE RISK) — `stackd.existingCredentialSecret` set: this chart never
-            # computed credentialTokenId/credentialSha256 for it (that would need `lookup` to read
-            # a Secret this chart does not generate, unavailable under GitOps). The Job reads the
-            # RAW credential natively instead (a real secretKeyRef, not a Helm-time read) and
-            # derives both AT RUNTIME — provision-install.ts's `stackdCredentialMaterial` already
-            # supports this form (`SCP_STACKD_OPERATOR_CREDENTIAL` whole-token), the same env name
-            # and parser the controller pod itself uses to read this exact Secret.
-            - name: SCP_STACKD_OPERATOR_CREDENTIAL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.stackd.existingCredentialSecret }}
-                  key: {{ .Values.stackd.existingCredentialSecretKey | default "credential" }}
+            {{- if or (not .Values.stackd.existingCredentialTokenId) (not .Values.stackd.existingCredentialSha256) }}
+            {{- fail "stackd.existingCredentialSecret is set but stackd.existingCredentialTokenId/existingCredentialSha256 are not — the migrations Job (release namespace) cannot derive them without reading the raw credential Secret in stackd.namespace, which this chart never does under GitOps. Set both (see values.yaml's comment on existingCredentialTokenId)." }}
+            {{- end }}
+            # #422 re-verify, BLOCKING 2a — the migrations Job runs in the RELEASE namespace, a
+            # DIFFERENT namespace than `stackd.existingCredentialSecret` (stackd.namespace), and it
+            # never needs the raw credential — only the id/sha256 pair, exactly like the chart's own
+            # self-generated path below. Plain values, not a Secret: a sha256 hash and a bare id are
+            # not sensitive on their own.
+            - name: SCP_STACKD_CREDENTIAL_TOKEN_ID
+              value: {{ .Values.stackd.existingCredentialTokenId | quote }}
+            - name: SCP_STACKD_CREDENTIAL_SHA256
+              value: {{ .Values.stackd.existingCredentialSha256 | quote }}
             {{- else }}
             - name: SCP_STACKD_CREDENTIAL_TOKEN_ID
               valueFrom:

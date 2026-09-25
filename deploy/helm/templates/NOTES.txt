@@ -15,7 +15,7 @@ secrets-table master key must stay stable, or every plugin credential encrypted 
 permanently undecryptable.
 {{- end }}
 
-{{- if not .Values.bootstrap.existingAdminPasswordSecret }}
+{{- if and .Values.bootstrap.generate (not .Values.bootstrap.existingAdminPasswordSecret) }}
 
 Bootstrap admin one-time password (#422 review fix — SHOULD-FIX 4): `scp install` reads and prints
 this for you automatically. Installing with plain `helm install`/`helm upgrade` instead, retrieve
@@ -27,6 +27,15 @@ change (`POST /auth/password`, `scp passwd`) before any other API call succeeds 
 docs/adr/0060-front-door.md §2. Once you've logged in and changed it, blank the Secret's plaintext
 yourself (the chart never deletes it):
   kubectl -n {{ .Release.Namespace }} patch secret {{ printf "%s-bootstrap-admin" (include "commanderscp.fullname" .) }} --type=merge -p '{"stringData":{"password":""}}'
+{{- else if not .Values.bootstrap.existingAdminPasswordSecret }}
+
+Bootstrap admin: `bootstrap.generate` is not set, so this chart rendered no dedicated Secret for
+it (#422 re-verify BLOCKING 2 — a bare `helm install`/upgrade renders nothing new by default). The
+api pod generated its own one-time password at boot and logged it once, at `warn`:
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=api --tail=-1 | grep "one-time password"
+Username: {{ .Values.bootstrap.adminUsername }}   Org: {{ .Values.bootstrap.orgName }}
+Re-run with `--set bootstrap.generate=true` (or use `scp install`, which sets it for you) for a
+retrievable Secret instead of a log line.
 {{- end }}
 
 {{- if .Values.ingress.enabled }}
