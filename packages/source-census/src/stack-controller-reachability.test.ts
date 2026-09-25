@@ -90,7 +90,8 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
     "withdraws authoring when a backend it needs is disabled or unwired — without it a canary is authored against a carrier that is gone",
   stackAuthoringDocument:
     "derives the registered Argo CD's authoring from the hand-off and release constants — the only source of it",
-  readStackAuthoringAsTenant: "reads the hand-off inside the tenant transaction that routes a trigger",
+  readStackAuthoringAsTenant:
+    "reads the hand-off inside the tenant transaction that routes a trigger",
   registeredArgoCdAuthoring:
     "is how the deploy lane takes a registration's authoring from the stack, never its properties",
   stackAuthoringView: "is the Stack page's (and `scp stack status`'s) authoring line"
