@@ -36,7 +36,6 @@ import {
 import { verifyOperatorCredential } from "../auth/operator-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { badRequest, conflict } from "../errors.js";
-import { withOperatorDb } from "./operator-db.js";
 import { withOperatorTx } from "./instance-operators.js";
 
 /**
