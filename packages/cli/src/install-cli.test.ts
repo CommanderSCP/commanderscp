@@ -174,8 +174,8 @@ function fakeShell(overrides: Partial<Shell> = {}): Shell {
       calls.push({ method: "readSecretKey", args: [] });
       return "correct-horse-battery-staple";
     },
-    async deleteSecret() {
-      calls.push({ method: "deleteSecret", args: [] });
+    async redactSecretKey() {
+      calls.push({ method: "redactSecretKey", args: [] });
     }
   };
   const shell = { ...base, ...overrides };
@@ -361,6 +361,10 @@ vi.mock("@scp/sdk", async () => {
       return { token: "tok-1", expiresAt: "2030-01-01T00:00:00Z", org: "default" };
     }
     federation = {
+      init: async (req: unknown) => {
+        sdkCalls.push({ method: "federation.init", args: [req] });
+        return { domainId: "dom-1", name: "hq", role: "commander" };
+      },
       self: async () => {
         sdkCalls.push({ method: "federation.self", args: [] });
         return { domainId: "dom-1", name: "hq", role: "commander" as const, publicKey: "pk" };
@@ -466,7 +470,8 @@ describe("runInstall — kube mode", () => {
         helmTimeoutSeconds: 60,
         stackTimeoutSeconds: 1,
         dryRun: false,
-        bootstrapK3s: false
+        bootstrapK3s: false,
+        set: []
       },
       shell
     );
@@ -481,10 +486,10 @@ describe("runInstall — kube mode", () => {
     expect(helmArgs).toContain("federationRole=commander");
     expect(helmArgs).toContain("bootstrap.orgName=default");
 
-    const deleteCalls = (shell as Shell & { __calls: { method: string; args: unknown[] }[] }).__calls.filter(
-      (c) => c.method === "deleteSecret"
+    const redactCalls = (shell as Shell & { __calls: { method: string; args: unknown[] }[] }).__calls.filter(
+      (c) => c.method === "redactSecretKey"
     );
-    expect(deleteCalls).toHaveLength(1);
+    expect(redactCalls).toHaveLength(1);
 
     expect(sdkCalls.find((c) => c.method === "login")).toEqual({
       method: "login",
@@ -495,6 +500,11 @@ describe("runInstall — kube mode", () => {
       { enabled: true }
     ]);
     expect(sdkCalls.find((c) => c.method === "federation.createOutpost")).toBeDefined();
+    // Measured against a real kind cluster: without this, HQ-outpost declare 400s — the chart's
+    // federationRole=commander value alone never reaches the org's federation identity row.
+    expect(sdkCalls.find((c) => c.method === "federation.init")?.args).toEqual([
+      { name: "default", role: "commander" }
+    ]);
 
     expect(summary.hqOutpostDeclared).toBe(true);
     expect(summary.loggedInAs).toBe("admin");
@@ -524,7 +534,8 @@ describe("runInstall — kube mode", () => {
         helmTimeoutSeconds: 60,
         stackTimeoutSeconds: 1,
         dryRun: false,
-        bootstrapK3s: false
+        bootstrapK3s: false,
+        set: []
       },
       shell
     );
@@ -551,7 +562,8 @@ describe("runInstall — kube mode", () => {
         helmTimeoutSeconds: 60,
         stackTimeoutSeconds: 1,
         dryRun: true,
-        bootstrapK3s: false
+        bootstrapK3s: false,
+        set: []
       },
       shell
     );

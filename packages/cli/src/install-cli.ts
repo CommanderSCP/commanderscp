@@ -169,7 +169,26 @@ export interface Shell {
     name: string;
     key: string;
   }): Promise<string | null>;
-  deleteSecret(opts: { context?: string; namespace: string; name: string }): Promise<void>;
+  /**
+   * Blanks a Secret's key — NEVER deletes the Secret object itself. Measured against a real kind
+   * cluster while building this command: the api Deployment's default `replicaCount: 2` means a
+   * pod can be (re)scheduled onto this Secret AFTER the installer has already logged in and moved
+   * on — a node drain, `kubectl rollout restart`, a later `helm upgrade`'s rolling update, anything
+   * that creates a new pod for this Deployment. `secretKeyRef` resolution is a kubelet-level,
+   * CONTAINER-START-TIME check: if the SECRET OBJECT is gone, the new pod never starts at all
+   * (`CreateContainerConfigError: secret "…-bootstrap-admin" not found`) — observed directly this
+   * way the first time this command deleted the whole Secret post-login. An emptied VALUE under an
+   * still-existing KEY has none of that failure mode (Kubernetes only refuses a missing Secret or a
+   * missing key, never an empty value), and it is enough: the plaintext is gone from the cluster,
+   * and the app-side property this exists for (ensureBootstrapAdmin's `existingAdmin` check) means
+   * no code path ever reads this env var again once the admin row exists, whatever it now contains.
+   */
+  redactSecretKey(opts: {
+    context?: string;
+    namespace: string;
+    name: string;
+    key: string;
+  }): Promise<void>;
 }
 
 function kubectlArgs(context: string | undefined, rest: string[]): string[] {
@@ -210,12 +229,14 @@ export function nodeShell(): Shell {
       if (result.code !== 0 || result.stdout.trim() === "") return null;
       return Buffer.from(result.stdout.trim(), "base64").toString("utf8");
     },
-    async deleteSecret({ context, namespace, name }) {
+    async redactSecretKey({ context, namespace, name, key }) {
       await this.exec("kubectl", [
-        ...kubectlArgs(context, ["delete", "secret", name]),
+        ...kubectlArgs(context, ["patch", "secret", name]),
         "-n",
         namespace,
-        "--ignore-not-found"
+        "--type=merge",
+        "-p",
+        JSON.stringify({ stringData: { [key]: "" } })
       ]);
     }
   };
@@ -247,6 +268,12 @@ export interface InstallOpts {
   stackTimeoutSeconds: number;
   dryRun: boolean;
   bootstrapK3s: boolean;
+  /** Escape hatch: additional raw `helm --set key=value` pairs (kube mode only — forwarded to
+   *  install.sh's SCP_EXTRA_HELM_SET under --bundle), for a chart value this command has no
+   *  dedicated flag for. Also what points a test run at a locally built/loaded image
+   *  (`--set image.repository=... --set image.tag=... --set image.pullPolicy=Never`) instead of
+   *  the published one — see the kind e2e script. */
+  set: string[];
 }
 
 /** The repo root, resolved from this file's own location — `deploy/helm`, `deploy/compose` and
@@ -525,7 +552,8 @@ export async function runInstall(
       "--timeout",
       `${opts.helmTimeoutSeconds}s`,
       ...(opts.kubeContext ? ["--kube-context", opts.kubeContext] : []),
-      ...helmSetArgs(opts)
+      ...helmSetArgs(opts),
+      ...opts.set.flatMap((kv) => ["--set", kv])
     ];
     await run(shell, "helm", args);
   } else if (opts.mode === "kube" && opts.bundle) {
@@ -535,9 +563,10 @@ export async function runInstall(
     if (!(await clusterReachable(shell, opts.kubeContext))) {
       await bootstrapK3sOrRefuse(shell, { bootstrapK3s: opts.bootstrapK3s, airGapped: true });
     }
-    const extraSet = helmSetArgs(opts)
-      .filter((_, i) => i % 2 === 1) // drop the interleaved "--set" tokens, keep "k=v"
-      .join(" ");
+    const extraSet = [
+      ...helmSetArgs(opts).filter((_, i) => i % 2 === 1), // drop the interleaved "--set" tokens
+      ...opts.set
+    ].join(" ");
     const args = [
       "--registry",
       opts.registry,
@@ -609,6 +638,7 @@ export async function runInstall(
       adminUsername: opts.adminUsername,
       password: env.SCP_BOOTSTRAP_ADMIN_PASSWORD as string,
       role: opts.role,
+      orgName: opts.orgName,
       desired: [],
       stackTimeoutSeconds: opts.stackTimeoutSeconds,
       afterLogin: null
@@ -641,18 +671,22 @@ export async function runInstall(
       adminUsername: opts.adminUsername,
       password,
       role: opts.role,
+      orgName: opts.orgName,
       desired,
       stackTimeoutSeconds: opts.stackTimeoutSeconds,
       afterLogin: async () => {
         // "shown once, not stored in plaintext" (docs/adr/0059-front-door.md): the Secret's only
         // job was getting the password from the chart to this process; once a real login has
-        // proven it round-tripped, there is nothing left for it to do. Removed HERE — after
-        // login, not before — so a failed login leaves the Secret for a retry instead of
-        // stranding the operator.
-        await shell.deleteSecret({
+        // proven it round-tripped, there is nothing left for it to do. Blanked HERE — after login,
+        // not before — so a failed login leaves the password for a retry instead of stranding the
+        // operator. The KEY stays (see redactSecretKey's doc): removing the whole Secret object
+        // broke a later pod's startup on a real kind cluster (CreateContainerConfigError) the
+        // first time this command tried that.
+        await shell.redactSecretKey({
           context: opts.kubeContext,
           namespace: opts.namespace,
-          name: bootstrapAdminSecretName(opts.releaseName)
+          name: bootstrapAdminSecretName(opts.releaseName),
+          key: "password"
         });
       }
     });
@@ -676,6 +710,7 @@ async function finishLogin(
     adminUsername: string;
     password: string;
     role: FederationRole;
+    orgName: string;
     desired: StackBackend[];
     stackTimeoutSeconds: number;
     afterLogin: (() => Promise<void>) | null;
@@ -691,6 +726,17 @@ async function finishLogin(
     expiresAt: login.expiresAt
   });
   if (opts.afterLogin) await opts.afterLogin();
+
+  // The chart's SCP_FEDERATION_ROLE (helmSetArgs' federationRole=…) only controls
+  // config.federationRole — promotion export / cosign minting / dependency automation's
+  // fail-closed gate (component-journey-view.md §8.9). It does NOT set this ORG's federation
+  // identity row, which `ensureFederationSelf` always creates as role 'unset' — only
+  // `POST /federation/init` (`scp federation init`) does that, and `federation outpost declare`
+  // for the HQ outpost below REFUSES with a 400 until it has (measured against a real kind
+  // cluster while building this command: "this instance's federation role is 'unset', not
+  // 'commander'"). Idempotent (a plain UPDATE; initFederationSelf), so safe on a re-run.
+  shell.log(`declaring this instance's federation identity (role: ${opts.role})...`);
+  await client.federation.init({ name: opts.orgName, role: opts.role });
 
   let stack: StackView | null = null;
   if (opts.desired.length > 0) {
@@ -749,6 +795,12 @@ export function registerInstallCommand(program: Command): void {
     .option("--timeout <seconds>", "helm --wait timeout", "300")
     .option("--stack-timeout <seconds>", "how long to wait for the stack controller to report", "300")
     .option("--bootstrap-k3s", "install a single-node k3s if no cluster is reachable (connected only)")
+    .option(
+      "--set <key=value>",
+      "an extra raw helm --set (repeatable) — escape hatch for a value this command has no flag for",
+      collect,
+      []
+    )
     .option("--dry-run", "print the plan; execute nothing")
     .action(async (raw: Record<string, unknown>) => {
       const role = raw.role as string;
@@ -784,7 +836,8 @@ export function registerInstallCommand(program: Command): void {
         helmTimeoutSeconds: Number(raw.timeout),
         stackTimeoutSeconds: Number(raw.stackTimeout),
         dryRun: Boolean(raw.dryRun),
-        bootstrapK3s: Boolean(raw.bootstrapK3s)
+        bootstrapK3s: Boolean(raw.bootstrapK3s),
+        set: raw.set as string[]
       });
     });
 }
