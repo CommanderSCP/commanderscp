@@ -114,7 +114,7 @@ export async function ensureBootstrapAdmin(
     // M29.1: the plaintext already has exactly one reader outside this process — the installer,
     // which read the same chart-generated Secret this password came from and prints it in its own
     // terminal. Logging it here too would make the pod log a second, uncontrolled copy of the
-    // credential the whole design exists to keep to one reader (docs/adr/0059-front-door.md).
+    // credential the whole design exists to keep to one reader (docs/adr/0060-front-door.md).
     log.warn(
       `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}' from ` +
         `a pre-generated credential (SCP_BOOTSTRAP_ADMIN_PASSWORD) — not logged; see the ` +

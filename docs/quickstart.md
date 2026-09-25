@@ -25,7 +25,7 @@ scp install --role commander --profile eval --kube-context <your-context>
 What this does, in order: installs the chart (turning on the stack controller and the commander's
 default backends — Argo CD, Argo Workflows, Argo Rollouts, Argo Events, Gitea), reads the
 bootstrap admin's one-time password (printed **in this terminal**, never in a pod log — see
-[docs/adr/0059-front-door.md](adr/0059-front-door.md)), logs in with it and stores the session,
+[docs/adr/0060-front-door.md](adr/0060-front-door.md)), logs in with it and stores the session,
 declares this instance's federation identity, enables the role's Standard Stack backends and waits
 for each to report ready or what it still needs, and declares the HQ outpost.
 
@@ -98,7 +98,7 @@ scp install --role commander --profile eval --bootstrap-k3s
 
 Installs a single-node k3s first (`curl https://get.k3s.io | sh -` — a network fetch, so this is for
 a **connected** install only; an air-gapped install with no cluster is refused with what to run
-instead — see [docs/adr/0059-front-door.md](adr/0059-front-door.md)).
+instead — see [docs/adr/0060-front-door.md](adr/0060-front-door.md)).
 
 ## Choosing which backends install
 

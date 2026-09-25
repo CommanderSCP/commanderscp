@@ -26,7 +26,7 @@ logged-in admin session, and — for a commander — declares the HQ outpost. No
 | An air-gapped bundle | `scp install --role commander --bundle <extracted-bundle-dir> --registry <your-registry> --pubkey <path-to-pubkey>` |
 
 No cluster yet? Add `--bootstrap-k3s` to install a single-node k3s first (connected installs only —
-see `scp install --help` and [docs/adr/0059-front-door.md](docs/adr/0059-front-door.md) for the
+see `scp install --help` and [docs/adr/0060-front-door.md](docs/adr/0060-front-door.md) for the
 air-gapped exception). `--profile production` for a real deployment; `eval` is for trying it out (an
 in-cluster Postgres, demo-friendly defaults). Every backend the role doesn't default to is a flag
 away: `--with <backend>` / `--without <backend>` (repeatable), or answer the interactive checklist.

@@ -1,4 +1,4 @@
-# ADR-0059: The front door — `scp install`, the bootstrap credential Secret, and an empty org's home route
+# ADR-0060: The front door — `scp install`, the bootstrap credential Secret, and an empty org's home route
 
 **Status:** Accepted (2026-09-25) — implements M29.1 (docs/BUILD_AND_TEST.md §M29 "the front door")
 of the zero-to-running plan (docs/proposals/zero-to-running.md §4, §8)

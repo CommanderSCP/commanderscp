@@ -37,7 +37,7 @@ export interface ServerConfig {
   /** M29.1 — `SCP_BOOTSTRAP_ADMIN_PASSWORD`, the chart-generated one-time password the installer
    *  also reads (from the `<release>-bootstrap-admin` Secret) and prints. Unset: unchanged
    *  behaviour, `ensureBootstrapAdmin` generates its own and logs it (dev/compose). See
-   *  docs/server.md and docs/adr/0059-front-door.md. */
+   *  docs/server.md and docs/adr/0060-front-door.md. */
   bootstrapAdminPassword?: string;
   cookieSecret: string;
   /** Base URL the server uses to call its own public API (UI SSR dogfoods the SDK). This is a

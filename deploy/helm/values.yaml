@@ -406,7 +406,7 @@ operatorApi:
 # namespaced rights exist only inside the five backend namespaces below (created by this chart,
 # each with its own RoleBinding), and nothing a tenant writes reaches it (ADR-0058).
 #
-# ON BY DEFAULT SINCE M29.1 (ADR-0058 "the default flip"; ADR-0059 "the front door"): the charter's
+# ON BY DEFAULT SINCE M29.1 (ADR-0058 "the default flip"; ADR-0060 "the front door"): the charter's
 # Managed Standard Stack is on by default for a new install (proposal D3), and `scp install` is no
 # longer what turns this on — a BARE `helm install` gets it too, matching every other bundled-by-
 # default choice this chart makes. Set `stackd.enabled=false` explicitly for a role (or an

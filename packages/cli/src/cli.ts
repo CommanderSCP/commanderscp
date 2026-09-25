@@ -7643,7 +7643,7 @@ export function buildProgram(): Command {
   registerStackCommands(program);
   registerInstanceOperatorCommands(program);
 
-  // M29.1 — the front door (docs/adr/0059-front-door.md).
+  // M29.1 — the front door (docs/adr/0060-front-door.md).
   registerInstallCommand(program);
 
   return program;

@@ -16,7 +16,7 @@ import { stackBackendRow, stackControllerLine } from "./stack-cli.js";
 import { printResult } from "./output.js";
 
 /**
- * `scp install` — M29.1, "the front door" (docs/BUILD_AND_TEST.md §M29, docs/adr/0059-front-door.md).
+ * `scp install` — M29.1, "the front door" (docs/BUILD_AND_TEST.md §M29, docs/adr/0060-front-door.md).
  *
  * Wraps the THREE install paths that already exist and does not re-implement any of them:
  *   - `deploy/helm` via `helm`, for a Kubernetes context (connected).
@@ -677,7 +677,7 @@ export async function runInstall(
       desired,
       stackTimeoutSeconds: opts.stackTimeoutSeconds,
       afterLogin: async () => {
-        // "shown once, not stored in plaintext" (docs/adr/0059-front-door.md): the Secret's only
+        // "shown once, not stored in plaintext" (docs/adr/0060-front-door.md): the Secret's only
         // job was getting the password from the chart to this process; once a real login has
         // proven it round-tripped, there is nothing left for it to do. Blanked HERE — after login,
         // not before — so a failed login leaves the password for a retry instead of stranding the

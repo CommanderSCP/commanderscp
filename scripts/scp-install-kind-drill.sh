@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M29.1 kind drill (docs/adr/0059-front-door.md, BUILD_AND_TEST.md §M29.1 DoD): a scripted
+# M29.1 kind drill (docs/adr/0060-front-door.md, BUILD_AND_TEST.md §M29.1 DoD): a scripted
 # `scp install --role commander --profile eval` against a fresh kind cluster reaches a logged-in
 # admin session, the role's default Standard Stack backends install (ready or their `needs`
 # shown), and the HQ outpost is declared — all through ONE command, never `kubectl logs` and never
@@ -101,7 +101,7 @@ cat "$INSTALL_LOG"
 log "asserting the install log proves every DoD item — NOT by reading kubectl logs, by reading what scp install itself already printed to ITS OWN terminal"
 
 grep -q "bootstrap admin one-time password (shown once — not stored in plaintext):" "$INSTALL_LOG" \
-  || fail "the credential-surfacing step did not run — the installer never printed the one-time password in its own terminal (docs/adr/0059-front-door.md §2)"
+  || fail "the credential-surfacing step did not run — the installer never printed the one-time password in its own terminal (docs/adr/0060-front-door.md §2)"
 
 grep -q "Logged in as 'admin'" "$INSTALL_LOG" \
   || fail "no logged-in admin session — the printed password never round-tripped through a real login"

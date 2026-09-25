@@ -1,6 +1,6 @@
 name: Deploy Drills (M8 kind / air-gap / Ansible)
 
-# A FOURTH drill was added 2026-09-25 (M29.1, docs/adr/0059-front-door.md): `scp-install-drill`, at
+# A FOURTH drill was added 2026-09-25 (M29.1, docs/adr/0060-front-door.md): `scp-install-drill`, at
 # the bottom of this file — `scp install --role commander` against a fresh kind cluster. It has
 # only been run locally (recorded in the M29.1 PR) as of this addition; it has not yet had its own
 # hosted-runner CI run, unlike the three below.
@@ -214,7 +214,7 @@ jobs:
 
   scp-install-drill:
     name: "scp install: helm install -> credential from the installer's own terminal -> login -> stack ready/needs -> HQ outpost"
-    # M29.1 (the front door, docs/adr/0059-front-door.md). Same posture as the three drills above —
+    # M29.1 (the front door, docs/adr/0060-front-door.md). Same posture as the three drills above —
     # nightly/on-demand, never merge-gating — and NOT folded into either of them: it needs a
     # DIFFERENT kind version. kind v0.27.0 (every drill above) cannot load an image into
     # `kindest/node:v1.36.1` (the pin `tools/ci-mirror/images.list` and CI job "4e" already use) —

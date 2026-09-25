@@ -2857,7 +2857,7 @@ async function main(): Promise<void> {
       "oidc.clientId=scp",
       "--set",
       "oidc.redirectUri=https://scp.example.com/callback",
-      // M29.1 (ADR-0058 "the default flip", ADR-0059): stackd.enabled is now the chart's OWN
+      // M29.1 (ADR-0058 "the default flip", ADR-0060): stackd.enabled is now the chart's OWN
       // default, and it REFUSES to render together with federation.serverMtls.enabled (above) —
       // a real, deliberate guard (stackd dials scpd in-cluster over plain HTTP; serverMtls turns
       // scpd's whole listener into HTTPS). That combination is not what THIS render is testing —

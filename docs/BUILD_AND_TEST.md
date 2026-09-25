@@ -2190,7 +2190,7 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     - The HQ outpost is declared at install.
     - **DoD:** a scripted install on a fresh kind cluster reaches a logged-in admin session without any `kubectl logs` or
       `kubectl` against SCP's namespace, and deleting the installer's credential-surfacing step turns a test red.
-    - **State (2026-09-25, ADR-0059): BUILT.** Root `README.md` + `docs/quickstart.md`; `scp install`
+    - **State (2026-09-25, ADR-0060): BUILT.** Root `README.md` + `docs/quickstart.md`; `scp install`
       (`packages/cli/src/install-cli.ts`) wrapping `deploy/helm`/`install.sh`/`deploy/compose` for
       `--role commander|outpost|retrans`, `--profile eval|production`, `--bundle`, `--kube-context`,
       `--mode kube|compose`, `--with`/`--without <backend>`, `--bootstrap-k3s`, `--set <k=v>`; the
@@ -2243,7 +2243,7 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
       - **Scope cut, stated rather than deferred silently**: an air-gapped single-node k3s bootstrap
         was not built (`--bootstrap-k3s` refuses cleanly for `--bundle` installs with the exact reason
         and what to run instead — the official k3s installer is a network fetch by design). See
-        ADR-0059's Consequences.
+        ADR-0060's Consequences.
       - **What M29.1 does NOT do**: register an enabled backend as a coordinated `execution-system`
         (token, TLS trust, both egress layers) — that is M29.2's `afterReady` seam (ADR-0058), a
         concurrent, separate lane. A freshly `scp install`ed commander's Argo CD is installed and
