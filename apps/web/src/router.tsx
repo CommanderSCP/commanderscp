@@ -36,6 +36,7 @@ import { AdminGovernancePage } from "./routes/admin-governance";
 import { AdminAccessPage } from "./routes/admin-access";
 import { AdminDecisionsPage } from "./routes/admin-decisions";
 import { AdminAuditPage } from "./routes/admin-audit";
+import { AdminStackPage } from "./routes/admin-stack";
 
 /** Code-based TanStack Router route tree. See docs/web.md §148. */
 const rootRoute = createRootRoute({ component: RootLayout });
@@ -301,6 +302,14 @@ const adminAuditRoute = createRoute({
   component: AdminAuditPage
 });
 
+// Admin › Stack (M29.4, ADR-0058) — the Standard Stack CommanderSCP runs for this instance. Linked
+// from BOTH nav tables: every role runs its own stack (a retrans runs an empty one).
+const adminStackRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/stack",
+  component: AdminStackPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
 // `/campaigns`, `/campaigns/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
@@ -356,6 +365,7 @@ const routeTree = rootRoute.addChildren([
     adminAccessRoute,
     adminDecisionsRoute,
     adminAuditRoute,
+    adminStackRoute,
     registryListRoute,
     registryDetailRoute
   ])
