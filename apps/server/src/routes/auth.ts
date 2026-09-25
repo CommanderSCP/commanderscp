@@ -14,7 +14,7 @@ import { extractToken, requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { bindingsAnywhereFor } from "../authz/resolve.js";
 import { isPatToken } from "../auth/pat.js";
-import { unauthorized } from "../errors.js";
+import { badRequest, unauthorized } from "../errors.js";
 import type { AppDeps } from "../types.js";
 
 export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -137,17 +137,31 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
       // requireAuth's own gate (require-auth.ts) explicitly allows THIS route through while
       // mustChangePassword is set — it is the one door that has to stay reachable to clear it.
       const auth = await requireAuth(deps, request);
+      // The raw bearer/cookie token identifies THIS session so changeLocalPassword can revoke
+      // every OTHER live session without logging the caller out of the request they're making
+      // right now (a PAT-authenticated call has no session row to preserve — extractToken still
+      // returns the PAT string, which simply matches nothing in `sessions`, so every session-table
+      // entry for this user is revoked instead, which is correct: there is no "current session").
+      const currentToken = extractToken(request) ?? undefined;
       const result = await changeLocalPassword(
         deps.db,
         auth.userId,
         request.body.currentPassword,
-        request.body.newPassword
+        request.body.newPassword,
+        currentToken
       );
       if (result === "no-local-password") {
         throw unauthorized("this account has no local password to change (OIDC-provisioned)");
       }
       if (result === "wrong-current-password") {
         throw unauthorized("current password is incorrect");
+      }
+      if (result === "same-as-current") {
+        throw badRequest(
+          "the new password must differ from the current password — #422 review fix: a " +
+            "same-password 'change' used to clear mustChangePassword without actually " +
+            "retiring the printed one-time password"
+        );
       }
       reply.status(204).send(undefined);
     }

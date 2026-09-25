@@ -252,7 +252,7 @@ async function main(): Promise<void> {
 
   // BUILD_AND_TEST.md §5.3 — eval-stack demo data. See docs/server.md §81.
   if (config.seedDemo && bootstrap) {
-    await loginAndSeedDemoData(config, bootstrap, {
+    await loginAndSeedDemoData(db, config, bootstrap, {
       info: (msg) => app.log.info(msg),
       warn: (msg) => app.log.warn(msg)
     }).catch((err: unknown) => {

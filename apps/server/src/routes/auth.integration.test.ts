@@ -256,6 +256,80 @@ describe("forced password change (mustChangePassword)", () => {
     }
   );
 
+  it(
+    "MUTATION-CAUGHT (#422 re-verify BLOCKING 0): a SAME-password 'change' is refused — it must " +
+      "not clear mustChangePassword or count as a real change",
+    async () => {
+      const admin = await freshBootstrapAdmin("same-pw");
+      const samePw = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/auth/password",
+        headers: authHeader(admin.token),
+        payload: { currentPassword: admin.password, newPassword: admin.password }
+      });
+      expect(samePw.statusCode, samePw.body).toBe(400);
+
+      // Still gated — the flag was NEVER cleared by the refused "change".
+      const stillBlocked = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/services",
+        headers: authHeader(admin.token),
+        payload: { name: "should-still-be-blocked" }
+      });
+      expect(stillBlocked.statusCode, stillBlocked.body).toBe(403);
+
+      // The original password still works — nothing was silently rotated either.
+      const stillLogsIn = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: { username: admin.username, password: admin.password }
+      });
+      expect(stillLogsIn.statusCode, stillLogsIn.body).toBe(200);
+    }
+  );
+
+  it(
+    "a real password change revokes every OTHER live session, but keeps the session that MADE " +
+      "the change alive",
+    async () => {
+      const admin = await freshBootstrapAdmin("revoke");
+      // A second, independent session for the SAME user (e.g. a second device/tab) — logging in
+      // again is blocked by the SAME gate until the flag clears, so this has to happen before the
+      // change below, same as `admin.token` did.
+      const secondLogin = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: { username: admin.username, password: admin.password }
+      });
+      expect(secondLogin.statusCode, secondLogin.body).toBe(200);
+      const secondToken = (secondLogin.json() as { token: string }).token;
+
+      const changed = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/auth/password",
+        headers: authHeader(admin.token),
+        payload: { currentPassword: admin.password, newPassword: "another-brand-new-pw-456" }
+      });
+      expect(changed.statusCode, changed.body).toBe(204);
+
+      // The session that MADE the change keeps working.
+      const viaFirst = await server.app.inject({
+        method: "GET",
+        url: "/api/v1/auth/me",
+        headers: authHeader(admin.token)
+      });
+      expect(viaFirst.statusCode, viaFirst.body).toBe(200);
+
+      // The OTHER session is revoked — even against an always-allowed route like /auth/me.
+      const viaSecond = await server.app.inject({
+        method: "GET",
+        url: "/api/v1/auth/me",
+        headers: authHeader(secondToken)
+      });
+      expect(viaSecond.statusCode, viaSecond.body).toBe(401);
+    }
+  );
+
   it("createTestOrg's fixture already has the flag cleared (onboarding modeled as finished)", async () => {
     const org = await createTestOrg(server, "pwd-fixture");
     const me = await server.app.inject({

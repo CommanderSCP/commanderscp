@@ -244,8 +244,9 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
     // #422 review fix (SHOULD-FIX 3/4's forced-password-change gate) — ensureBootstrapAdmin always
     // sets mustChangePassword:true, and requireAuth blocks every route but
     // /auth/{me,logout,password} until it clears, including the SSO-groups case's own /groups and
-    // role-binding writes below (asAdmin). Same current/new password clears the flag without
-    // changing it (the same pattern install-cli.ts's finishLogin and seed.ts's demo-seed use).
+    // role-binding writes below (asAdmin). #422 re-verify BLOCKING 0: a same-password "change" is
+    // refused server-side now, so this uses a genuinely fresh, thrown-away password — nothing later
+    // in this file re-uses bootstrap.oneTimePassword, only bootstrapAdminToken.
     const clearForcedChange = await fetch(`${SCP_BASE_URL}/auth/password`, {
       method: "POST",
       headers: {
@@ -254,7 +255,7 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
       },
       body: JSON.stringify({
         currentPassword: bootstrap.oneTimePassword,
-        newPassword: bootstrap.oneTimePassword
+        newPassword: `fresh-${randomUUID()}`
       })
     });
     if (!clearForcedChange.ok) {

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as argon2 from "argon2";
 import { v7 as uuidv7 } from "uuid";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { orgs, roleBindings, roles, sessions, users } from "../db/schema.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
@@ -220,19 +220,39 @@ export async function login(
   return { token: session.token, expiresAt: session.expiresAt, orgName: org.name };
 }
 
-export type ChangePasswordResult = "changed" | "wrong-current-password" | "no-local-password";
+export type ChangePasswordResult =
+  | "changed"
+  | "wrong-current-password"
+  | "no-local-password"
+  | "same-as-current";
 
 /**
  * `POST /auth/password` (#422 review fix — SHOULD-FIX 3). The ONLY door that clears
  * `mustChangePassword`, so it is also the door that actually retires a printed/handed-in one-time
  * password rather than leaving it valid forever (require-auth.ts's gate is what makes changing it
  * MANDATORY before anything else, not merely possible).
+ *
+ * #422 re-verify, BLOCKING 0 — measured live: submitting the SAME string as `currentPassword` and
+ * `newPassword` returned 204 and cleared `mustChangePassword` WITHOUT changing the password at
+ * all, so a printed one-time credential could "satisfy" this door forever and keep working. Now
+ * refused (`same-as-current`) — the only legitimate way to clear the flag is to actually set a
+ * different password. Callers that need automation to proceed past the gate (an installer, a demo
+ * seed, an E2E drill) must generate a FRESH password and use THAT, never re-submit the one they
+ * were handed — every caller in this repo was moved onto `randomPassword()` below for exactly this
+ * reason; see docs/adr/0060-front-door.md §2.
+ *
+ * Changing the password also revokes every OTHER live session for this user (never the one making
+ * THIS call, identified by `currentSessionToken` when the caller authenticated with a session
+ * token rather than a PAT) — a credential leaked before the change (e.g. via `helm get hooks`,
+ * §2's own documented exposure) stops being usable the moment a real password change happens, not
+ * only the one-time password itself.
  */
 export async function changeLocalPassword(
   db: Db,
   userId: string,
   currentPassword: string,
-  newPassword: string
+  newPassword: string,
+  currentSessionToken?: string
 ): Promise<ChangePasswordResult> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   // OIDC-only accounts (no local passwordHash) have nothing here to change — same "treat like a
@@ -242,12 +262,33 @@ export async function changeLocalPassword(
   const valid = await verifyPasswordHashLimited(user.passwordHash, currentPassword);
   if (!valid) return "wrong-current-password";
 
+  if (newPassword === currentPassword) return "same-as-current";
+
   const passwordHash = await argon2.hash(newPassword);
   await db
     .update(users)
     .set({ passwordHash, mustChangePassword: false })
     .where(eq(users.id, userId));
+
+  const keepTokenHash = currentSessionToken ? hashToken(currentSessionToken) : null;
+  await db
+    .update(sessions)
+    .set({ expiresAt: new Date(0) })
+    .where(
+      keepTokenHash
+        ? and(eq(sessions.userId, userId), ne(sessions.tokenHash, keepTokenHash))
+        : eq(sessions.userId, userId)
+    );
+
   return "changed";
+}
+
+/** Generates a fresh random one-time password — the SAME generator `ensureBootstrapAdmin`'s own
+ *  fallback already used, exported so every caller that must clear `mustChangePassword` (an
+ *  installer, a demo seed, a drill) mints a NEW password instead of re-submitting the one it was
+ *  handed, which `changeLocalPassword` above now refuses (`same-as-current`). */
+export function randomPassword(): string {
+  return randomBytes(18).toString("base64url");
 }
 
 /** Resolves a `users.id` to its full auth context. See docs/auth.md §15. */
