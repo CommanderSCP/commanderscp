@@ -4,6 +4,8 @@
 {{- if not $w.scpAccount }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .scpAccount is empty — SCP would have no identity to coordinate this backend as, and argo-server runs --auth-mode=client. Fail-closed." }}{{- end -}}
 {{- if not $w.tlsSecretName }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .tlsSecretName is empty — argo-server would mint a NEW self-signed certificate on every start, which makes its CA unpinnable and breaks SCP's executorTls trust at the first restart. Fail-closed." }}{{- end -}}
 {{- if not $w.controllerImage }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .controllerImage is empty — the vendored, retargeted workflow-controller image is required." }}{{- end -}}
+{{- if not $w.vendoredServerImage }}{{ fail "bundledExecutor.argoWorkflows.vendoredServerImage is empty — this is the retarget SOURCE (the upstream ref the vendored file currently declares). Fail-closed rather than silently skip the retarget." }}{{- end -}}
+{{- if not $w.vendoredControllerImage }}{{ fail "bundledExecutor.argoWorkflows.vendoredControllerImage is empty — same reasoning as vendoredServerImage." }}{{- end -}}
 # =============================================================================================
 # Bundled Argo Workflows (Mode B — bundled CI/build/test). Vendored, UNMODIFIED upstream v4.0.7
 # rendered into {{ $w.namespace }} via commanderscp.renderVendoredBackend, with only the two images
@@ -13,9 +15,25 @@
 # concatenation is byte-for-byte the original, sha256
 # 4e7112cd10dbb5a03c33653cda7509bdb8e876dcc64cf050c4c387aa07bf8524) and reassembled here.
 # =============================================================================================
+{{/* THE PART COUNT IS DERIVED, NEVER HARDCODED (2026-09-25 review, finding 7). A hardcoded list of
+     four names silently drops any part a future re-vendor adds (upstream's install.yaml grows past
+     4 parts at the tool's own split threshold) and silently REASSEMBLES A STALE, ORPHANED PART if a
+     future re-vendor SHRINKS the count (a leftover install-part-04.yaml from the previous version
+     would still be globbed and appended, producing a manifest that is neither the old nor the new
+     one). `.Files.Glob` finds whatever parts actually exist on disk right now; `sortAlpha` orders
+     them correctly because every name is zero-padded to two digits (tools/vendor-refresh's own
+     `partFileName` refuses to emit a name that would sort wrong). */}}
 {{- $manifest := "" -}}
-{{- range $p := (list "install-part-01.yaml" "install-part-02.yaml" "install-part-03.yaml" "install-part-04.yaml") -}}
-{{- $manifest = printf "%s\n---\n%s" $manifest ($.Files.Get (printf "vendor/argo-workflows/%s" $p)) -}}
+{{- $parts := dict -}}
+{{- range $path, $bytes := .Files.Glob "vendor/argo-workflows/install-part-*.yaml" -}}
+{{- $_ := set $parts $path (toString $bytes) -}}
+{{- end -}}
+{{- $partNames := keys $parts | sortAlpha -}}
+{{- if eq (len $partNames) 0 -}}
+{{- fail "commanderscp bundled argo-workflows: no vendor/argo-workflows/install-part-*.yaml files found — the vendored manifest is missing, was renamed, or the glob itself is broken. Fail-closed rather than render an empty backend." -}}
+{{- end -}}
+{{- range $p := $partNames -}}
+{{- $manifest = printf "%s\n---\n%s" $manifest (get $parts $p) -}}
 {{- end -}}
 {{- include "commanderscp.renderVendoredBackend" (dict
     "ctx" .
@@ -23,8 +41,8 @@
     "component" "bundled-argo-workflows"
     "manifest" $manifest
     "replaces" (list
-      (list "quay.io/argoproj/argocli:v4.0.7" $w.serverImage)
-      (list "quay.io/argoproj/workflow-controller:v4.0.7" $w.controllerImage)
+      (list $w.vendoredServerImage $w.serverImage)
+      (list $w.vendoredControllerImage $w.controllerImage)
     )
     "resources" $w.resources
     "containerArgs" (dict "argo-server" (list (printf "--tls-certificate-secret-name=%s" $w.tlsSecretName)))

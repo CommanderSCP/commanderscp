@@ -1,6 +1,7 @@
 {{- if .Values.bundledExecutor.argoRollouts.enabled -}}
 {{- $r := .Values.bundledExecutor.argoRollouts -}}
 {{- if not $r.image }}{{ fail "bundledExecutor.argoRollouts.enabled=true but .image is empty — the vendored, retargeted argo-rollouts image is required (set by the air-gap install.sh). Fail-closed." }}{{- end -}}
+{{- if not $r.vendoredImage }}{{ fail "bundledExecutor.argoRollouts.vendoredImage is empty — this is the retarget SOURCE (the upstream ref the vendored file currently declares). Fail-closed rather than silently skip the retarget." }}{{- end -}}
 # =============================================================================================
 # Bundled Argo Rollouts (Mode B). Vendored, UNMODIFIED upstream v1.10.0
 # (deploy/helm-bundled/vendor/argo-rollouts/install.yaml,
@@ -33,7 +34,7 @@
     "component" "bundled-argo-rollouts"
     "manifest" (.Files.Get "vendor/argo-rollouts/install.yaml")
     "replaces" (list
-      (list "quay.io/argoproj/argo-rollouts:v1.10.0" $r.image)
+      (list $r.vendoredImage $r.image)
     )
     "resources" $r.resources
   ) }}

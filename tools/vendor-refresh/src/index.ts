@@ -16,6 +16,7 @@ export {
 export {
   ARGOPROJ_BACKENDS,
   argoprojManifestUrl,
+  isValidUpstreamTag,
   type ArgoprojBackendSpec
 } from "./argoproj-backends.js";
 export { planArgoprojBackend } from "./argoproj-plan.js";

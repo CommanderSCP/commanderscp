@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ARGOPROJ_BACKENDS, argoprojManifestUrl } from "./argoproj-backends.js";
+import { ARGOPROJ_BACKENDS, argoprojManifestUrl, isValidUpstreamTag } from "./argoproj-backends.js";
 
 /**
  * REGRESSION, measured against the real network 2026-09-25 (see the PR body for the full smoke
@@ -29,6 +29,36 @@ describe("argoprojManifestUrl", () => {
     expect(argoprojManifestUrl(ARGOPROJ_BACKENDS["argo-rollouts"], "v1.10.0")).toBe(
       "https://github.com/argoproj/argo-rollouts/releases/download/v1.10.0/install.yaml"
     );
+  });
+
+  it("SECURITY (probe P1, 2026-09-25 review): refuses a path-traversal tag rather than building a URL from it", () => {
+    // Each of these resolved, via `new URL()`'s own path normalisation, to a completely different
+    // repository/path than the one intended — the exact attacker-controlled-fetch shape the review
+    // measured. All four are refused by the same tag grammar, before a URL is ever built.
+    const malicious = [
+      "../../../attacker/evil/main",
+      "v1.0.0/../../../../attacker/evil/main",
+      "%2e%2e/%2e%2e/%2e%2e/attacker/evil/main",
+      "../../../attacker/evil/releases/download/v1"
+    ];
+    for (const tag of malicious) {
+      expect(isValidUpstreamTag(tag), `'${tag}' must be rejected`).toBe(false);
+      expect(() => argoprojManifestUrl(ARGOPROJ_BACKENDS.argocd, tag)).toThrow(
+        /not a well-formed upstream release tag/
+      );
+      expect(() => argoprojManifestUrl(ARGOPROJ_BACKENDS["argo-workflows"], tag)).toThrow(
+        /not a well-formed upstream release tag/
+      );
+    }
+  });
+
+  it("isValidUpstreamTag accepts real upstream tag shapes and rejects lookalikes", () => {
+    for (const good of ["v3.4.5", "3.4.5", "v4.0.7", "v1.10.0-rc1", "v1.10.0-rc.1"]) {
+      expect(isValidUpstreamTag(good), good).toBe(true);
+    }
+    for (const bad of ["", "latest", "v3.4", "v3.4.5 ", " v3.4.5", "v3.4.5/../x", "v3.4.5\n"]) {
+      expect(isValidUpstreamTag(bad), JSON.stringify(bad)).toBe(false);
+    }
   });
 
   it("every backend declares a urlKind consistent with its URL fields (no half-filled spec)", () => {

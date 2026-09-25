@@ -1,6 +1,7 @@
 {{- if .Values.bundledExecutor.gitea.enabled -}}
 {{- $g := .Values.bundledExecutor.gitea -}}
 {{- if not $g.image }}{{ fail "bundledExecutor.gitea.enabled=true but .image is empty — the vendored, retargeted Gitea image is required (set by the air-gap install.sh). Fail-closed, like the other bundled backends." }}{{- end -}}
+{{- if not $g.vendoredImage }}{{ fail "bundledExecutor.gitea.vendoredImage is empty — this is the retarget SOURCE (the upstream ref the vendored file currently declares). Fail-closed rather than silently skip the retarget." }}{{- end -}}
 # =============================================================================================
 # Bundled Gitea (Mode B — the DEFAULT unified registry: image + code + package, ADR-0012).
 # Vendored, UNMODIFIED upstream Gitea Helm chart gitea-charts/gitea v12.6.0 (app 1.26.1),
@@ -26,7 +27,7 @@
     "component" "bundled-gitea"
     "manifest" (.Files.Get "vendor/gitea/install-no-secrets.yaml")
     "replaces" (list
-      (list "docker.gitea.com/gitea:1.26.1-rootless" $g.image)
+      (list $g.vendoredImage $g.image)
     )
     "resources" $g.resources
   ) }}

@@ -30,7 +30,14 @@ export function patchImageRefs(content: string, images: readonly TrackedImage[])
   const replacedCount = new Map<string, number>();
   for (const image of images) {
     const coordinate = image.tagRef.slice(0, image.tagRef.lastIndexOf(":"));
-    const pattern = new RegExp(`${escapeRegExp(coordinate)}:[^\\s"'#]+`, "g");
+    // ANCHORED ON THE LEFT (2026-09-25 review, finding 10): without the lookbehind, a coordinate
+    // that is a SUFFIX of a longer one nearby (`legacy-quay.io/argoproj/argocd:v3.4.5`, or two
+    // tracked coordinates that happen to share a tail) would match mid-string — the replace would
+    // fire on bytes that are not actually this image's own reference. The negative lookbehind
+    // requires the character immediately before the coordinate to be something that could not be
+    // part of a longer registry/repository path (not alphanumeric, `.`, `_`, `-` or `/`), or the
+    // start of the file.
+    const pattern = new RegExp(`(?<![A-Za-z0-9._/-])${escapeRegExp(coordinate)}:[^\\s"'#]+`, "g");
     let count = 0;
     out = out.replace(pattern, () => {
       count += 1;

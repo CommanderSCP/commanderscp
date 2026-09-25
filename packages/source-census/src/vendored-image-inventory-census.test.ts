@@ -56,37 +56,81 @@ function refKey(ref: ImageRef): string {
 }
 
 /**
- * THE INDEPENDENT EXTRACTOR. A single-line `<key>: <ref>` scalar, where `<key>` is `image`,
- * `serverImage` or `controllerImage` (the two spellings `deploy/helm-bundled/values.yaml` uses for
- * Argo Workflows' images, M29.8a) — the ONE shape every real declaration in these files uses today
- * (verified by hand against every `grep -rna "image:"` hit in `deploy/helm-bundled/vendor/` and
- * `values.yaml` before this test was written: zero split `registry`/`repository`/`tag` shapes exist
- * there). This is deliberately NOT a general-purpose Kubernetes-image reader — that is exactly the
- * parser under test — it exists only to answer the same question a second, structurally different
- * way, so the two can be compared.
+ * THE INDEPENDENT EXTRACTOR (rewritten 2026-09-25, review finding 4). The first version hand-listed
+ * the parser's OWN key vocabulary (`image`, `serverImage`, `controllerImage`) — which meant it could
+ * never disagree with the parser about a key the parser did not yet know either, and a rename of
+ * either key would have kept both sides silently in lockstep. Missed by that version, found once this
+ * one existed: `values.yaml`'s `valkeyImage`, `builderImage` and `gitImage`.
+ *
+ * This version scans for "ANY SCALAR THAT PARSES AS AN IMAGE REFERENCE, WHATEVER ITS KEY" — any
+ * plain-identifier YAML key (deliberately excluding dotted/slashed keys: Kubernetes
+ * labels/annotations such as `app.kubernetes.io/name` are never image fields, and restricting the
+ * key charset to identifiers is what keeps this scan out of that noise without a hand-picked key
+ * list) whose value SHAPE looks like a real image reference (`registry.example.com/path/name:tag` or
+ * `...@sha256:<64 hex>`), with an EXPLICIT, NAMED exclusion
+ * ({@link KNOWN_UNREACHABLE_EMBEDDED_IMAGES}) for the one shape found empirically that this
+ * extractor sees but `parseKubernetesImages` structurally cannot — see that constant's own comment.
  */
+
+/**
+ * Values the shape check below finds that `parseKubernetesImages` genuinely CANNOT see — NOT because
+ * they are false positives (they are real, deployable images) but because of WHERE they live: found
+ * running this extractor against the real files, 2026-09-25. `deploy/helm-bundled/vendor/argo-events/
+ * install.yaml` ships a ConfigMap (`argo-events-controller-config`) whose `data."controller-config.
+ * yaml"` value is a YAML BLOCK SCALAR (`|`) — a STRING, to the outer document — that happens to
+ * contain more YAML-shaped text as its CONTENT, naming five default images the argo-events
+ * EventBus/EventSource controller can provision (`natsio/prometheus-nats-exporter`,
+ * `natsio/nats-server-config-reloader`, two versions each, plus a third). `parseKubernetesImages`
+ * walks the outer document's AST; a block scalar's content is opaque bytes to that walk, by
+ * construction — correctly so for the general case (a ConfigMap can carry a Prometheus rule file, an
+ * `application.properties`, or literally anything else as text, and treating every block scalar as
+ * "maybe more YAml" would be a much larger, differently-shaped feature: recursive embedded-document
+ * parsing, not a key-name widening). Recognising THESE specific five needs that larger feature, which
+ * is out of scope for this fix. Listed here BY VALUE (not silently dropped) so this reachability gap
+ * stays visible rather than looking like "the census passed" — see the PR body for the same note to
+ * the owner. A future M29.8 increment that wants full coverage of controller-embedded default images
+ * needs to teach the parser (or a sibling one) to recurse into `.yaml`/`.yml`-suffixed block-scalar
+ * ConfigMap data keys specifically — narrower than "every block scalar", but still real, new scope.
+ */
+const KNOWN_UNREACHABLE_EMBEDDED_IMAGES: ReadonlySet<string> = new Set([
+  "natsio/prometheus-nats-exporter:0.8.0",
+  "natsio/prometheus-nats-exporter:0.14.0",
+  "natsio/prometheus-nats-exporter:0.9.1",
+  "natsio/nats-server-config-reloader:0.14.0",
+  "natsio/nats-server-config-reloader:0.7.0"
+]);
+
 function independentImageRefs(content: string): ImageRef[] {
   const refs: ImageRef[] = [];
   // `[ \t]*(?:- )?` — a sequence item's FIRST key commonly rides the same line as its `-`
   // (`containers:\n  - image: foo:1.2`), which is exactly the shape `argo-rollouts/install.yaml`
-  // uses and the first version of this extractor missed entirely (caught by this test disagreeing
-  // with the parser on that real file — see the PR body's mutation log).
-  const re =
-    /^[ \t]*(?:- )?(?:image|serverImage|controllerImage):[ \t]*["']?([^"'\s#]+)["']?[ \t]*(?:#.*)?$/gm;
+  // uses. The KEY itself is any plain identifier (letters/digits/`_`/`-`) — never a label/annotation
+  // key, which always contains a `.` or `/` before its own `:`.
+  const re = /^[ \t]*(?:- )?[A-Za-z][A-Za-z0-9_-]*:[ \t]*["']?([^"'\s#]+)["']?[ \t]*(?:#.*)?$/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(content)) !== null) {
     const raw = m[1]!;
+    if (KNOWN_UNREACHABLE_EMBEDDED_IMAGES.has(raw)) continue;
     const at = raw.lastIndexOf("@");
     if (at > 0 && /^sha256:[0-9a-f]{64}$/.test(raw.slice(at + 1))) {
-      refs.push({ coordinate: raw.slice(0, at), digest: raw.slice(at + 1) });
+      const coordinate = raw.slice(0, at);
+      if (!coordinate.includes("/")) continue; // no registry/repo path — not image-shaped
+      refs.push({ coordinate, digest: raw.slice(at + 1) });
       continue;
     }
     const colon = raw.lastIndexOf(":");
     const firstSlash = raw.indexOf("/");
+    if (firstSlash < 0) continue; // no path at all — not image-shaped (rules out ports, versions, …)
     // A colon before the first `/` is a registry PORT (`localhost:5000/x`), not a tag separator.
-    // None of the real files use one; kept for correctness, not because it is exercised today.
-    if (colon > 0 && (firstSlash < 0 || colon > firstSlash)) {
-      refs.push({ coordinate: raw.slice(0, colon), declared: raw.slice(colon + 1) });
+    if (colon > 0 && colon > firstSlash) {
+      const coordinate = raw.slice(0, colon);
+      const tag = raw.slice(colon + 1);
+      // The tag itself must not contain `/` (a coordinate with no tag at all, e.g. a bare
+      // `acme/api`, is not image-SHAPED enough to trust without a version — this repo's real files
+      // never declare one bare, and admitting it would risk matching an ordinary "a/b/c" path value).
+      if (tag.length > 0 && !tag.includes("/")) {
+        refs.push({ coordinate, declared: tag });
+      }
     }
   }
   return refs;
@@ -206,6 +250,19 @@ describe("independentImageRefs() — the independent extractor, on synthetic fix
     expect(
       independentImageRefs("containers:\n  - image: quay.io/argoproj/argo-rollouts:v1.10.0\n")
     ).toEqual([{ coordinate: "quay.io/argoproj/argo-rollouts", declared: "v1.10.0" }]);
+  });
+
+  // MUTATION-PROVE BY KEY RENAME (2026-09-25 review, finding 4's own worked example: "renaming
+  // serverImage/controllerImage keys keeps it 22/22 green"). This extractor is key-agnostic by
+  // construction, so it must keep finding an image reference under a key NEITHER it nor the parser
+  // has ever seen named — proving the disagreement mechanism the census rests on would actually FIRE
+  // if the production parser (kubernetes-images.ts) were ever narrowed back to a fixed key list: a
+  // fixed-list parser would report nothing for `totallyNovelCacheRef`, this extractor still would,
+  // and `compare()` would report it missing — red for the right reason.
+  it("finds an image reference under a key NEITHER this extractor nor the parser has ever been told to expect", () => {
+    expect(independentImageRefs("totallyNovelCacheRef: valkey/valkey:8-alpine\n")).toEqual([
+      { coordinate: "valkey/valkey", declared: "8-alpine" }
+    ]);
   });
 });
 

@@ -1,6 +1,7 @@
 {{- if .Values.bundledExecutor.argoEvents.enabled -}}
 {{- $e := .Values.bundledExecutor.argoEvents -}}
 {{- if not $e.image }}{{ fail "bundledExecutor.argoEvents.enabled=true but .image is empty — the vendored, retargeted argo-events image is required (set by the air-gap install.sh). Fail-closed." }}{{- end -}}
+{{- if not $e.vendoredImage }}{{ fail "bundledExecutor.argoEvents.vendoredImage is empty — this is the retarget SOURCE (the upstream ref the vendored file currently declares). Fail-closed rather than silently skip the retarget." }}{{- end -}}
 # =============================================================================================
 # Bundled Argo Events (Mode B). Vendored, UNMODIFIED upstream v1.9.10
 # (deploy/helm/vendor/argo-events/install.yaml, sha256-pinned) rendered into {{ $e.namespace }} via
@@ -14,7 +15,7 @@
     "component" "bundled-argo-events"
     "manifest" (.Files.Get "vendor/argo-events/install.yaml")
     "replaces" (list
-      (list "quay.io/argoproj/argo-events:v1.9.10" $e.image)
+      (list $e.vendoredImage $e.image)
     )
     "resources" $e.resources
   ) }}

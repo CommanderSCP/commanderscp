@@ -46,6 +46,17 @@ bundledExecutor:
     # them to the customer registry at a pinned digest.
     image: quay.io/argoproj/argocd:v3.4.5 # Argo CD (Apache-2.0)
     valkeyImage: valkey/valkey:8-alpine # Valkey (BSD-3) — Argo CD's cache; an OWNED, TESTED deviation from upstream's Redis
+    # THE RETARGET SOURCE, kept in sync with the vendored file — see docs/adr/0059 §"the retargeting
+    # bug". `templates/argocd.yaml` replaces THIS exact text (never a hardcoded literal) with `.image`
+    # above; `tools/vendor-refresh` rewrites both fields together on every re-vendor, and
+    # `_bundled-executor.tpl`'s `renderVendoredBackend` FAILS the render if the vendored file no
+    # longer contains this text (a re-vendor that forgot to update this field, or a hand edit that
+    # drifted from it, would otherwise leave the upstream ref live and un-air-gapped, silently).
+    vendoredImage: quay.io/argoproj/argocd:v3.4.5
+    # THE UPSTREAM REDIS REF this backend's OWN vendored file currently declares — NOT the same
+    # coordinate as `valkeyImage` above (that is SCP's owned substitute, never touched by
+    # vendor-refresh, since it is not upstream's own pin). Kept in sync the same way.
+    vendoredRedisImage: public.ecr.aws/docker/library/redis:8.2.3-alpine
     # The scoped, non-admin account SCP mints in the bundled Argo CD and coordinates through. The
     # auto-wire hook (in the MAIN chart) mints its token and stores it as an SCP secret.
     scpAccount: scp-coordinator
@@ -116,6 +127,10 @@ bundledExecutor:
     # Upstream defaults (connected enable works out of the box); air-gap install.sh retargets.
     serverImage: quay.io/argoproj/argocli:v4.0.7 # argo-server / UI
     controllerImage: quay.io/argoproj/workflow-controller:v4.0.7 # workflow-controller
+    # THE RETARGET SOURCES, kept in sync with the vendored file (docs/adr/0059 §"the retargeting
+    # bug") — see bundledExecutor.argocd.vendoredImage's comment for the full reasoning.
+    vendoredServerImage: quay.io/argoproj/argocli:v4.0.7
+    vendoredControllerImage: quay.io/argoproj/workflow-controller:v4.0.7
     # The Secret holding argo-server's TLS certificate, created by `scp-bundled.sh enable` if it
     # does not exist and NEVER regenerated afterwards.
     #
@@ -337,6 +352,8 @@ bundledExecutor:
     enabled: false
     namespace: scp-argo-rollouts
     image: quay.io/argoproj/argo-rollouts:v1.10.0 # Argo Rollouts (Apache-2.0)
+    # THE RETARGET SOURCE — see bundledExecutor.argocd.vendoredImage's comment.
+    vendoredImage: quay.io/argoproj/argo-rollouts:v1.10.0
     resources:
       # Upstream ships ONLY an ephemeral-storage limit on this container and no cpu/memory at all,
       # which leaves it BestEffort and first to be evicted. The injection REPLACES the whole
@@ -351,6 +368,8 @@ bundledExecutor:
     enabled: false
     namespace: scp-argo-events
     image: quay.io/argoproj/argo-events:v1.9.10 # argo-events controller — retargeted by install.sh
+    # THE RETARGET SOURCE — see bundledExecutor.argocd.vendoredImage's comment.
+    vendoredImage: quay.io/argoproj/argo-events:v1.9.10
     # Per-CONTAINER resources; upstream ships none.
     resources:
       controller-manager:
@@ -371,6 +390,8 @@ bundledExecutor:
     # customer registry at a pinned digest. In chart v12.6.0 the running workload is a SINGLE image
     # (the only upstream busybox ref was the helm-test Pod, which is stripped).
     image: docker.gitea.com/gitea:1.26.1-rootless # Gitea (MIT)
+    # THE RETARGET SOURCE — see bundledExecutor.argocd.vendoredImage's comment.
+    vendoredImage: docker.gitea.com/gitea:1.26.1-rootless
     # Operator override for the bundled admin password; empty ⇒ SCP generates a random one per
     # install (persisted across upgrade via lookup). SCP only ever holds the SCOPED token derived
     # from this account at runtime, never the password.

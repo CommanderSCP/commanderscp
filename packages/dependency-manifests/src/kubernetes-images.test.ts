@@ -820,14 +820,13 @@ describe("T17 — duplicate keys, and the composer scan that was quadratic", () 
   });
 });
 
-describe("T11 — `image` is an EXACT key, never a substring", () => {
-  it("imagePullPolicy, imagePullSecrets, initImage and global.imageRegistry declare nothing", () => {
+describe("T11 — `image` is an EXACT key, never a bare substring — but an `xImage` SUFFIX now is (M29.8a)", () => {
+  it("imagePullPolicy, imagePullSecrets, imageCredentials and global.imageRegistry declare nothing", () => {
     const declarations = parseKubernetesImages(
       [
         "imagePullPolicy: Always",
         "imagePullSecrets:",
         "  - name: regcred",
-        "initImage: acme/init:1.0.0",
         "imageCredentials:",
         "  registry: ghcr.io",
         "global:",
@@ -835,8 +834,21 @@ describe("T11 — `image` is an EXACT key, never a substring", () => {
       ].join("\n")
     );
     // A count IS the assertion here, and it is a negative control: every one of those keys contains
-    // "image", and a substring match would mint five phantom dependencies.
+    // "image" as a substring, but NONE of them end in the `xImage` camelCase suffix
+    // (`readAdditionalCompleteImageKeys`'s property, M29.8a) — a substring match anywhere would mint
+    // four phantom dependencies; this parser matches neither a bare substring nor a prefix.
     expect(declarations).toEqual([]);
+  });
+
+  it("initImage DOES resolve — it genuinely ends in the `xImage` suffix, same property as serverImage/valkeyImage", () => {
+    // Moved out of the negative control above (2026-09-25 review, finding 4): the reader census's
+    // independent oracle disagreeing with an EARLIER, key-list version of this parser is what found
+    // `valkeyImage`/`builderImage`/`gitImage` missing in this repo's own values.yaml. `initImage` is
+    // the same shape by the same property (ends in `Image`, camelCase) and SHOULD resolve — a chart
+    // spelling an init container's image this way is exactly the case the property-based rule exists
+    // to catch, and asserting it declares nothing would be re-introducing the enumerated-list gap.
+    const entry = at(parseKubernetesImages("initImage: acme/init:1.0.0\n"), "acme/init");
+    expect(entry).toMatchObject({ declared: "1.0.0", declaredIn: "initImage" });
   });
 });
 
@@ -992,5 +1004,36 @@ describe("parseKubernetesImages — serverImage/controllerImage (M29.8a reader c
     );
     expect(at(declared, "acme/api")?.declared).toBe("1.2.3");
     expect(at(declared, "quay.io/argoproj/argocli")?.declared).toBe("v4.0.7");
+  });
+
+  // BY PROPERTY, NOT A KEY LIST (2026-09-25 review, finding 4): the independent reader census
+  // (packages/source-census/src/vendored-image-inventory-census.test.ts) found THREE MORE `xImage`
+  // keys this repo's own values.yaml already used — `valkeyImage`, `builderImage`, `gitImage` — that
+  // an earlier, exact-two-name version of this rule missed silently. None of these three are
+  // hardcoded anywhere in this file; they resolve because they share the SAME property (a camelCase
+  // key ending in `Image`), which is the whole point of generalising past an enumerated list.
+  it("resolves ANY camelCase *Image key, not just serverImage/controllerImage — valkeyImage/builderImage/gitImage", () => {
+    const declared = parseKubernetesImages(
+      [
+        "valkeyImage: valkey/valkey:8-alpine",
+        "builderImage: ghcr.io/commanderscp/scp-builder-rpm:sha-abc123",
+        "gitImage: alpine/git:2.47.2"
+      ].join("\n")
+    );
+    expect(at(declared, "valkey/valkey")?.declared).toBe("8-alpine");
+    expect(at(declared, "ghcr.io/commanderscp/scp-builder-rpm")?.declared).toBe("sha-abc123");
+    expect(at(declared, "alpine/git")?.declared).toBe("2.47.2");
+  });
+
+  it("MUTATION PROOF (review's own ask): renaming an xImage key to a NEW, never-hardcoded name still resolves", () => {
+    // The exact failure mode named in the review — "renaming serverImage/controllerImage keys keeps
+    // it 22/22 green" — applied to THIS parser instead of the census: a key this file has never seen
+    // before, `totallyNovelWidgetImage`, must still resolve, because the rule is "ends in Image", not
+    // "is one of these strings".
+    const entry = at(
+      parseKubernetesImages("totallyNovelWidgetImage: acme/widget:9.9.9\n"),
+      "acme/widget"
+    );
+    expect(entry?.declared).toBe("9.9.9");
   });
 });

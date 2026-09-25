@@ -304,33 +304,54 @@ function unreadSiblingNote(names: readonly string[]): string | undefined {
 }
 
 /**
- * Key names whose value, when a plain scalar, is a COMPLETE image reference exactly like a bare
- * `image:` (rule a) — for charts that spell "the image" under a project-specific name instead of the
- * Kubernetes-conventional `image`. Found missing entirely (M29.8a reader check): this repo's own
- * `deploy/helm-bundled/values.yaml` declares Argo Workflows' two tracked images as `serverImage:` /
- * `controllerImage:`, and neither produced any row at all — not even an `unresolved` one, because
- * nothing here looked at those keys — which means the M21 dependency-subscription inventory this
- * parser also feeds would have silently never seen either image as a declared dependency of this
- * repo's own `argo-workflows` component.
+ * BY PROPERTY, NOT BY A GROWING LIST (2026-09-25 review, finding 4): any key whose NAME ends in
+ * `Image` (camelCase, `image` itself excepted — that is rule (a)'s own job) is treated as a
+ * project-specific spelling of "the image", and its value, when a plain scalar, is a COMPLETE image
+ * reference exactly like a bare `image:`. The first version of this enumerated exactly two key names
+ * (`serverImage`, `controllerImage`) found by hand against one file; the census built to prove
+ * coverage (`packages/source-census/src/vendored-image-inventory-census.test.ts`) found the SAME
+ * repo's OWN `values.yaml` ALSO declares `valkeyImage`, `builderImage` and `gitImage` this way, and a
+ * key-name RENAME (there is nothing structural distinguishing `serverImage` from `valkeyImage`) would
+ * have kept the enumerated version 22/22 green while missing every one of them — the growing list is
+ * exactly the "by symptom, not by property" trap CLAUDE.md warns about. The suffix rule generalises to
+ * every future `xImage` field with no further edits here.
+ *
+ * `imagePullPolicy` / `imagePullSecrets` are unaffected: neither ENDS in `Image` (they end in
+ * `Policy`/`Secrets`), so the suffix rule excludes them by construction, not by a denylist.
  *
  * Deliberately NOT folded into {@link IMAGE_KEY}/{@link IMAGE_KEYS}: those drive the split-shape
  * (`registry`+`repository`+`tag`+`digest`) sibling logic and the `underImageKey` context a nested
- * mapping inherits from `image:`, and every declaration under these two keys anywhere in this repo is
+ * mapping inherits from `image:`, and every declaration under an `xImage` key anywhere in this repo is
  * a flat, complete scalar — nothing here exercises siblings or nested context. Widening the much more
  * load-bearing set risks a duplicate/anchor/split-shape interaction the file's own "trap" comments
- * spent real effort keeping narrow (trap 11: "nothing is matched by prefix or by substring"). This is
- * additive and independent instead: it can only ADD occurrences alongside `readMapping`'s, on a
+ * spent real effort keeping narrow (trap 11: "nothing is matched by prefix or by substring" — the
+ * suffix rule below is a DIFFERENT, deliberately narrower match than "contains image anywhere"). This
+ * is additive and independent instead: it can only ADD occurrences alongside `readMapping`'s, on a
  * SEPARATE pass, and never changes what the `image:` key's own logic reports.
  */
-const ADDITIONAL_COMPLETE_IMAGE_KEYS = ["serverImage", "controllerImage"] as const;
+const ADDITIONAL_COMPLETE_IMAGE_KEY_SUFFIX = "Image";
 
-/** {@link ADDITIONAL_COMPLETE_IMAGE_KEYS}, each treated as its own independent bare `image:` scalar
- *  (rule a) — malformed-check, split, and the same resolved/unresolved shape `readMapping`'s
- *  `image.kind === "text"` branch produces, minus registry/tag/digest joining (there is no sibling
- *  concept for these keys). Runs on EVERY mapping, unconditionally — the same rule (a) applies
- *  regardless of `underImageKey`, exactly as a bare `image:` scalar does. */
+function isAdditionalCompleteImageKey(name: string): boolean {
+  return (
+    name !== IMAGE_KEY &&
+    name.length > ADDITIONAL_COMPLETE_IMAGE_KEY_SUFFIX.length &&
+    name.endsWith(ADDITIONAL_COMPLETE_IMAGE_KEY_SUFFIX)
+  );
+}
+
+/** Every key matching {@link isAdditionalCompleteImageKey} in this mapping, each treated as its own
+ *  independent bare `image:` scalar (rule a) — malformed-check, split, and the same resolved/
+ *  unresolved shape `readMapping`'s `image.kind === "text"` branch produces, minus registry/tag/digest
+ *  joining (there is no sibling concept for these keys). Runs on EVERY mapping, unconditionally — the
+ *  same rule (a) applies regardless of `underImageKey`, exactly as a bare `image:` scalar does. */
 function readAdditionalCompleteImageKeys(map: YAMLMap, path: string, ctx: WalkContext): void {
-  for (const keyName of ADDITIONAL_COMPLETE_IMAGE_KEYS) {
+  const keyNames = new Set<string>();
+  for (const item of map.items) {
+    if (!isScalar(item.key)) continue;
+    const name = String(item.key.value);
+    if (isAdditionalCompleteImageKey(name)) keyNames.add(name);
+  }
+  for (const keyName of keyNames) {
     const pairs = map.items.filter(
       (item) => isScalar(item.key) && String(item.key.value) === keyName
     );

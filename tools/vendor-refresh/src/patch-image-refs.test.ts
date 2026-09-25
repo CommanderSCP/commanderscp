@@ -44,6 +44,23 @@ describe("patchImageRefs", () => {
     expect(replacedCount.get("argocd")).toBe(0);
   });
 
+  it("REGRESSION (review finding 10): never touches a coordinate that only shares a SUFFIX — the match is anchored on the left", () => {
+    // Before the left-anchor, this pattern (no word boundary before the coordinate) matched
+    // `quay.io/argoproj/argocd:v3.4.5` INSIDE `legacy-quay.io/argoproj/argocd:v3.4.5` and replaced
+    // it — a byte range that is not actually this image's own reference.
+    const content = "image: legacy-quay.io/argoproj/argocd:v3.4.5\n";
+    const { content: patched, replacedCount } = patchImageRefs(content, [ARGOCD]);
+    expect(patched).toBe(content);
+    expect(replacedCount.get("argocd")).toBe(0);
+  });
+
+  it("still matches when the coordinate is the very first thing on the line or in the file", () => {
+    const content = "quay.io/argoproj/argocd:v3.4.5 is the pin";
+    const { content: patched, replacedCount } = patchImageRefs(content, [ARGOCD]);
+    expect(patched).toBe("quay.io/argoproj/argocd:v3.5.0 is the pin");
+    expect(replacedCount.get("argocd")).toBe(1);
+  });
+
   it("returns zero replacements (not an error) when the file does not mention the image at all", () => {
     const { replacedCount } = patchImageRefs("nothing here", [ARGOCD]);
     expect(replacedCount.get("argocd")).toBe(0);

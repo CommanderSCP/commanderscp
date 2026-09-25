@@ -108,9 +108,36 @@ export const ARGOPROJ_BACKENDS: Record<
   }
 };
 
+/**
+ * A strict upstream release-tag grammar — `v`-optional semver, optional `-prerelease`. This is the
+ * ONE gate between a caller-influenced tag string and a URL path segment; every `argoprojManifestUrl`
+ * call refuses anything else. Found exploitable in review (2026-09-25, probe P1): an unvalidated tag
+ * like `../../../attacker/evil/main` or `v1.0.0/../../../../attacker/evil/main` resolves via `new
+ * URL()`'s own path normalisation to a DIFFERENT repository/path entirely — `fetchText` would then
+ * happily fetch and vendor an attacker-controlled file as if it were upstream's. `%2e%2e/...`
+ * (pre-encoded traversal) is refused by the same grammar without needing a decode step, since it
+ * simply is not a well-formed tag either.
+ */
+const UPSTREAM_TAG_PATTERN = /^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+
+export function isValidUpstreamTag(tag: string): boolean {
+  return UPSTREAM_TAG_PATTERN.test(tag);
+}
+
 export function argoprojManifestUrl(spec: ArgoprojBackendSpec, tag: string): string {
-  if (spec.urlKind === "release-asset") {
-    return `https://github.com/${spec.upstreamRepo}/releases/download/${tag}/${spec.releaseAssetName}`;
+  if (!isValidUpstreamTag(tag)) {
+    throw new Error(
+      `vendor-refresh: '${tag}' is not a well-formed upstream release tag (expected v-optional ` +
+        "semver, e.g. v3.5.0 or v3.5.0-rc1) — refusing to build a fetch URL from it"
+    );
   }
-  return `https://raw.githubusercontent.com/${spec.upstreamRepo}/${tag}/${spec.manifestPath}`;
+  // encodeURIComponent even though the grammar above already excludes `/`, `.`/`..` segments and
+  // every URL-meaningful character: belt-and-braces so a FUTURE grammar relaxation (e.g. allowing a
+  // build-metadata suffix) cannot reopen this by itself — the encoding step does not depend on the
+  // grammar staying exactly this strict.
+  const safeTag = encodeURIComponent(tag);
+  if (spec.urlKind === "release-asset") {
+    return `https://github.com/${spec.upstreamRepo}/releases/download/${safeTag}/${spec.releaseAssetName}`;
+  }
+  return `https://raw.githubusercontent.com/${spec.upstreamRepo}/${safeTag}/${spec.manifestPath}`;
 }
