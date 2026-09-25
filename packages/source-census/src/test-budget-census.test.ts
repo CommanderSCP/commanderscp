@@ -28,7 +28,9 @@ const NON_UNIT_CONFIGS = [
   "packages/plugins/managed-ops/vitest.integration.config.ts",
   "packages/plugins/managed-scan/vitest.integration.config.ts",
   "packages/runner-launcher/vitest.integration.config.ts",
-  "packages/runner-launcher/vitest.kind.config.ts"
+  "packages/runner-launcher/vitest.kind.config.ts",
+  "apps/server/vitest.kind.config.ts",
+  "apps/stackd/vitest.integration.config.ts"
 ];
 
 interface UnitSuite {
@@ -302,11 +304,25 @@ const NON_UNIT_HOOK_BUDGETS: Record<string, { ms: number; why: string }> = {
   "packages/runner-launcher/vitest.kind.config.ts": {
     ms: 120_000,
     why: "real Job create/teardown against a kind API server; the CLUSTER is created by scripts/kind-runner-harness.sh, outside vitest"
+  },
+  "apps/server/vitest.kind.config.ts": {
+    ms: 180_000,
+    why:
+      "M29.4: beforeAll starts a real scpd on Testcontainers Postgres and provisions scp_operator; " +
+      "the controller's install/fallback waits run inside the tests (testTimeout 600_000), not hooks"
+  },
+  "apps/stackd/vitest.integration.config.ts": {
+    ms: 900_000,
+    why: "beforeAll BUILDS scp-stackd from the repo root when SCP_STACKD_IMAGE_REF is unset (a developer box); CI pulls it"
   }
 };
 
 /** Per-hook overrides are named rather than absorbed. See docs/source-census.md §26. */
 const UNIT_HOOK_OVERRIDES: Record<string, { ms: number; why: string }> = {
+  "packages/cli/src/stack-cli.test.ts": {
+    ms: 30_000,
+    why: "same warm-up as its CLI siblings"
+  },
   "packages/cli/src/login-base-url.test.ts": {
     ms: 30_000,
     why: "warms the lazy import('./cli.js') so the first `it` does not pay the CLI module graph's transform; now equal to the package budget and kept for the site-local reasoning"

@@ -4,7 +4,8 @@ import { defineConfig } from "vitest/config";
 /** COVERAGE THRESHOLDS — a RATCHET, not a target. See docs/server.md §100. */
 export default defineConfig({
   test: {
-    exclude: ["**/node_modules/**", "**/dist/**", "**/*.integration.test.ts"],
+    // `*.kind.test.ts` needs a kind cluster and FAILS without one (vitest.kind.config.ts).
+    exclude: ["**/node_modules/**", "**/dist/**", "**/*.integration.test.ts", "**/*.kind.test.ts"],
     // RAISED FROM THE 5s DEFAULT BECAUSE COVERAGE IS NOW ON IN CI. See docs/server.md §101.
     testTimeout: 20_000,
     // The hook budget: a second deadline nobody chose. See docs/server.md §102.

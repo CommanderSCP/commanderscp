@@ -127,6 +127,27 @@ spec:
                 secretKeyRef:
                   name: {{ include "commanderscp.postgresSecretName" . }}
                   key: {{ .Values.postgres.existingSecretKeys.pgboss }}
+            {{- if .Values.stackd.enabled }}
+            # M29.4 — the install-time principals (apps/server/src/db/provision-install.ts): this
+            # Job, holding the admin connection, records the stack controller's credential — its
+            # id and the sha256 of its secret, never the credential itself, which lives only in the
+            # controller's own namespace — and, when the chart generated it, gives `scp_operator`
+            # its login.
+            - name: SCP_STACKD_CREDENTIAL_TOKEN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "commanderscp.fullname" . }}-stackd-install
+                  key: credentialTokenId
+            - name: SCP_STACKD_CREDENTIAL_SHA256
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "commanderscp.fullname" . }}-stackd-install
+                  key: credentialSha256
+            {{- if eq (include "commanderscp.generatesOperatorDbPassword" .) "true" }}
+            - name: SCP_PROVISION_OPERATOR_ROLE
+              value: "1"
+            {{- end }}
+            {{- end }}
             {{- if .Values.migrations.allowPasswordReset }}
             # B9 guard opt-out (proposal §4-B9, §7.4) — see values.yaml's doc comment. Restores the
             # pre-guard unconditional ALTER ROLE ... PASSWORD for a deliberate rotation; unset

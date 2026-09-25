@@ -17,6 +17,7 @@
     { "path": "../../packages/plugins/fake-executor" },
     { "path": "../../packages/plugins/webhook-control" },
     { "path": "../../packages/plugins/scan-result-control" },
-    { "path": "../../packages/plugins/managed-scan" }
+    { "path": "../../packages/plugins/managed-scan" },
+    { "path": "../stackd" }
   ]
 }

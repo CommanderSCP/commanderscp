@@ -3,6 +3,8 @@ import { loadConfig, loadFederationServerMtlsConfig } from "./config.js";
 import { createDb, createPool } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import { provisionPgBossRole, provisionRuntimeRole, runtimeCredentials } from "./db/provision.js";
+import { provisionInstallTimePrincipals } from "./db/provision-install.js";
+import { grantBootstrapInstanceOperator } from "./routes/instance-operators.js";
 import { ensureBootstrapAdmin } from "./auth/local-auth.js";
 import { startPgBoss } from "./events/pgboss.js";
 import { domainEventRouters } from "./events/domain-event-registry.js";
@@ -52,6 +54,9 @@ async function main(): Promise<void> {
     await provisionRuntimeRole(adminPool, creds.user, creds.password);
     const pgBossCreds = runtimeCredentials(config.pgBossDatabaseUrl);
     await provisionPgBossRole(adminPool, pgBossCreds.user, pgBossCreds.password);
+    for (const line of await provisionInstallTimePrincipals(adminPool, config)) {
+      console.log(`[scpd] ${line}.`);
+    }
     await adminPool.end();
   }
 
@@ -86,6 +91,22 @@ async function main(): Promise<void> {
         { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) }
       )
     : null;
+
+  // M29.4 — the M29.1 installer's seam: grant the instance-operator role to the bootstrap admin,
+  // once, when the deployment asks for it (SCP_BOOTSTRAP_INSTANCE_OPERATOR=1) and has no live
+  // grant. Never fatal: a deployment without the operator connection simply skips it, loudly.
+  if (bootstrap) {
+    await grantBootstrapInstanceOperator(deps, {
+      orgId: bootstrap.orgId,
+      username: config.bootstrapAdminUsername
+    })
+      .then((r) => {
+        if (r !== "skipped") app.log.info(`[scpd] bootstrap instance-operator grant: ${r}`);
+      })
+      .catch((err) =>
+        app.log.warn(`[scpd] could not grant the bootstrap instance-operator role: ${String(err)}`)
+      );
+  }
 
   // THE FEDERATION-IDENTITY STARTUP CHECK. See docs/server.md §70.
   await warnOnFederationSelfOriginDivergence(db, {

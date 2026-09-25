@@ -50,6 +50,68 @@ app.kubernetes.io/component: worker
 {{- end -}}
 
 {{/*
+The stack controller's selector labels (M29.4, ADR-0058). DELIBERATELY NOT a superset of
+`commanderscp.selectorLabels`: every chart-wide NetworkPolicy allow (postgres, the executor
+egress list, the runner kube-API allow) selects pods by those labels, and none of them is for the
+controller. It gets its own default-deny and its own three allows in stackd.yaml instead.
+*/}}
+{{- define "commanderscp.stackdSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "commanderscp.name" . }}-stackd
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: stackd
+{{- end -}}
+
+{{- define "commanderscp.stackdLabels" -}}
+helm.sh/chart: {{ include "commanderscp.chart" . }}
+{{ include "commanderscp.stackdSelectorLabels" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/* The stack controller's image: the scpd tag unless pinned separately (E4 — one release). */}}
+{{- define "commanderscp.stackdImage" -}}
+{{- printf "%s:%s" .Values.stackd.image.repository (.Values.stackd.image.tag | default .Values.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+
+{{/* The release identifier the controller reports: the image tag, minus any @digest. */}}
+{{- define "commanderscp.stackdRelease" -}}
+{{- .Values.stackd.image.tag | default .Values.image.tag | default .Chart.AppVersion | splitList "@" | first | trunc 128 -}}
+{{- end -}}
+
+{{/*
+Does this render GENERATE the operator database password? Yes when the stack controller is on and
+the operator has not supplied their own `scp_operator` connection (`operatorApi.databaseUrlSecret`).
+The migrations Job provisions the login from it (`SCP_PROVISION_OPERATOR_ROLE=1`), which is the
+drizzle/0076 follow-up: no `ALTER ROLE` typed by hand.
+*/}}
+{{- define "commanderscp.stackdNamespace" -}}
+{{- required "stackd.namespace is required: the stack controller runs in a namespace of its own" .Values.stackd.namespace -}}
+{{- end -}}
+
+{{/*
+THE CONTROLLER'S NAMESPACE HOLDS NOTHING ELSE (review B1). Anything that can create a pod in the
+namespace a ServiceAccount lives in can run a pod AS it; the stack controller's ServiceAccount holds
+near-cluster-admin rights, so its namespace may not be one where anything else this chart renders
+has rights: not the release namespace (the api/worker pods, the runner Role when runners share it),
+not the runner namespace, not a backend namespace.
+*/}}
+{{- define "commanderscp.assertStackdNamespaceIsolated" -}}
+{{- $sns := include "commanderscp.stackdNamespace" . -}}
+{{- if eq $sns .Release.Namespace -}}
+{{- fail (printf "stackd.namespace '%s' is the release namespace: the stack controller must run in a namespace of its own (anything that can create a pod there could run as it) — ADR-0058" $sns) -}}
+{{- end -}}
+{{- if eq $sns (.Values.managedRunners.kubernetes.namespace | default .Release.Namespace) -}}
+{{- fail (printf "stackd.namespace '%s' is the runner namespace: the runner Role creates Jobs there, and a Job could run as the stack controller — ADR-0058" $sns) -}}
+{{- end -}}
+{{- if has $sns .Values.stackd.backendNamespaces -}}
+{{- fail (printf "stackd.namespace '%s' is a backend namespace: the backends' own identities hold rights there — ADR-0058" $sns) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "commanderscp.generatesOperatorDbPassword" -}}
+{{- and .Values.stackd.enabled (not .Values.operatorApi.databaseUrlSecret) -}}
+{{- end -}}
+
+{{/*
 The label set carried by EVERY bundled-executor auto-wire HOOK pod (argocd, gitea, and any future
 one) — the chart's selector labels PLUS the `commanderscp.io/autowire-hook` marker.
 
@@ -216,6 +278,12 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ .Values.bootstrap.orgName | quote }}
 - name: SCP_BOOTSTRAP_ADMIN_USERNAME
   value: {{ .Values.bootstrap.adminUsername | quote }}
+{{- if .Values.instanceOperator.grantBootstrapAdmin }}
+{{- /* M29.1's seam (ADR-0058 §7): the bootstrap admin gets the instance-operator role, once,
+       while no live grant exists — so the first login can run the Stack page. */}}
+- name: SCP_BOOTSTRAP_INSTANCE_OPERATOR
+  value: "1"
+{{- end }}
 - name: SCP_SEED_DEMO
   value: {{ .Values.seedDemo | quote }}
 - name: SCP_FEDERATION_ROLE
@@ -307,6 +375,26 @@ since those three differ between the migrations Job and the api/worker Deploymen
     secretKeyRef:
       name: {{ .Values.operatorApi.databaseUrlSecret }}
       key: {{ .Values.operatorApi.databaseUrlSecretKey }}
+{{- end }}
+{{- if and .Values.stackd.enabled (not .Values.operatorApi.enabled) }}
+{{- /* M29.4 — the stack controller's two doors (spec read, status write) are operator doors, so
+       scpd needs the `scp_operator` connection even when the human operator surface is off. The
+       operator's own connection wins when supplied; otherwise the chart-generated password, whose
+       login the migrations Job provisions (config.ts `operatorUrlFromPassword`). NOT the stack
+       controller's credential: that is mounted into the controller and the migrations Job only. */}}
+{{- if .Values.operatorApi.databaseUrlSecret }}
+- name: SCP_OPERATOR_DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.operatorApi.databaseUrlSecret }}
+      key: {{ .Values.operatorApi.databaseUrlSecretKey }}
+{{- else }}
+- name: SCP_OPERATOR_DATABASE_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "commanderscp.fullname" . }}-stackd-install
+      key: operatorDatabasePassword
+{{- end }}
 {{- end }}
 {{- if .Values.artifactChannel.ociRegistryHosts }}
 {{- /* ADR-0019 §4 — the APPLICATION half of the two-layer egress model. The NETWORK half is

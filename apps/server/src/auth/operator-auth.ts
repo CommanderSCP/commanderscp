@@ -9,10 +9,12 @@ import { instanceOperatorCredentials } from "../db/schema.js";
 import { forbidden } from "../errors.js";
 import { withOperatorDb } from "../routes/operator-db.js";
 import type { AppDeps } from "../types.js";
+import type pg from "pg";
 import {
   generateTokenId,
   generateTokenSecret,
   mintPrefixedToken,
+  SHA256_HASH_PREFIX,
   verifyPrefixedToken
 } from "./prefixed-token.js";
 
@@ -25,6 +27,8 @@ export type OperatorAuthMechanism = "credential" | "bootstrap-env-token";
 
 export interface OperatorAuthResult {
   mechanism: OperatorAuthMechanism;
+  /** `full` for every door; `stack-controller` only for the stack controller's two (ADR-0058). */
+  scope: "full" | "stack-controller";
   /** The credential row's id, or `null` for the env token. */
   credentialId: string | null;
   credentialName: string | null;
@@ -117,6 +121,105 @@ export async function revokeOperatorCredential(config: ServerConfig, id: string)
   });
 }
 
+/** The name the install-time stack-controller credential is recorded under (M29.4, ADR-0058). */
+export const STACKD_INSTALL_CREDENTIAL_NAME = "scp-stackd (install-time)";
+
+/** Advisory-lock class for install-credential provisioning, distinct from provision.ts's. */
+const INSTALL_CREDENTIAL_LOCK_CLASSID = 0x5c_70_57_ad;
+
+/**
+ * INSTALL-TIME OPERATOR CREDENTIAL for the stack controller (M29.4, ADR-0058).
+ *
+ * The chart generates the whole `scp_op_<tokenId>.<secret>` once and mounts it into exactly two
+ * pods: the stack controller, which presents it, and the migrations Job, which calls this with its
+ * ADMIN connection to record the argon2 hash. The api/worker pods never hold the plaintext, and no
+ * route returns it: `listOperatorCredentials` never projects a secret or a hash.
+ *
+ * Idempotent on every upgrade. A token id already present with a matching secret is left alone; a
+ * present id whose secret does NOT verify is refused rather than overwritten, because that row is
+ * somebody else's; a present row an operator REVOKED stays revoked. When the chart's Secret is replaced (a deliberate rotation), the previous
+ * install-time row is revoked in the same transaction — only rows this function wrote (bootstrap-
+ * minted, carrying this name), never a credential a person minted.
+ */
+export async function provisionInstallOperatorCredential(
+  adminPool: pg.Pool,
+  input: { name: string; tokenId: string; secretSha256: string }
+): Promise<"created" | "unchanged" | "revoked"> {
+  const tokenId = input.tokenId.trim();
+  const sha = input.secretSha256.trim().toLowerCase();
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(tokenId) || !/^[0-9a-f]{64}$/.test(sha)) {
+    throw new Error(
+      `the install-time operator credential for '${input.name}' is not well-formed ` +
+        "(a token id of 16-64 URL-safe characters and a sha256 in hex) — refusing to record it"
+    );
+  }
+  const tokenHash = `${SHA256_HASH_PREFIX}${sha}`;
+  const client = await adminPool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
+      INSTALL_CREDENTIAL_LOCK_CLASSID,
+      input.name
+    ]);
+    const existing = await client.query<{
+      id: string;
+      token_hash: string;
+      revoked_at: Date | null;
+      scope: string;
+    }>(
+      "SELECT id, token_hash, revoked_at, scope FROM instance_operator_credentials WHERE token_id = $1",
+      [tokenId]
+    );
+    let outcome: "created" | "unchanged" | "revoked" = "unchanged";
+    let id: string;
+    const row = existing.rows[0];
+    if (row) {
+      if (row.token_hash !== tokenHash || row.scope !== "stack-controller") {
+        throw new Error(
+          `an operator credential with this token id already exists and does not match ` +
+            `'${input.name}' — refusing to overwrite it; replace the install secret`
+        );
+      }
+      id = row.id;
+      // A revocation is an operator's decision and survives every upgrade: never resurrected here.
+      if (row.revoked_at !== null) outcome = "revoked";
+    } else {
+      id = uuidv7();
+      await client.query(
+        `INSERT INTO instance_operator_credentials
+           (id, name, token_id, token_hash, created_by_user_id, scope)
+         VALUES ($1, $2, $3, $4, NULL, 'stack-controller')`,
+        [id, input.name, tokenId, tokenHash]
+      );
+      outcome = "created";
+    }
+    // ROTATION REVOKES BY ID. The previous install-time credential is the one this deployment
+    // recorded, never "whatever else carries this name" (a person can mint any name).
+    const previous = await client.query<{ controller_credential_id: string | null }>(
+      "SELECT controller_credential_id FROM stack_settings WHERE id = 'instance'"
+    );
+    const previousId = previous.rows[0]?.controller_credential_id ?? null;
+    if (previousId !== null && previousId !== id) {
+      await client.query(
+        "UPDATE instance_operator_credentials SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",
+        [previousId]
+      );
+    }
+    await client.query(
+      `INSERT INTO stack_settings (id, controller_credential_id) VALUES ('instance', $1)
+       ON CONFLICT (id) DO UPDATE SET controller_credential_id = EXCLUDED.controller_credential_id`,
+      [id]
+    );
+    await client.query("COMMIT");
+    return outcome;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 /** Verifies a presented `x-scp-operator-token`. See docs/auth.md §29. */
 export async function verifyOperatorCredential(
   db: Db,
@@ -137,7 +240,12 @@ export async function verifyOperatorCredential(
   });
   if (!row) return null;
 
-  return { mechanism: "credential", credentialId: row.id, credentialName: row.name };
+  return {
+    mechanism: "credential",
+    scope: row.scope === "stack-controller" ? "stack-controller" : "full",
+    credentialId: row.id,
+    credentialName: row.name
+  };
 }
 
 /** THE ONE DEFINITION of what admits an instance-operator request. See docs/auth.md §30. */
@@ -150,10 +258,17 @@ export async function requireInstanceOperator(
 
   if (typeof presented === "string" && presented.length > 0) {
     const viaCredential = await verifyOperatorCredential(deps.db, presented);
-    if (viaCredential) return viaCredential;
+    // A stack-controller-scoped credential opens the controller's two doors and nothing else
+    // (ADR-0058, review N1): it is refused here exactly like an unknown one.
+    if (viaCredential && viaCredential.scope === "full") return viaCredential;
 
     if (bootstrapTokenMatches(presented, deps.config.operatorToken)) {
-      return { mechanism: "bootstrap-env-token", credentialId: null, credentialName: null };
+      return {
+        mechanism: "bootstrap-env-token",
+        scope: "full",
+        credentialId: null,
+        credentialName: null
+      };
     }
   }
 

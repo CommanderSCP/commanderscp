@@ -24,6 +24,7 @@ export default tseslint.config(
       "**/drizzle/**",
       "packages/sdk/src/generated/**",
       "apps/web/dist/**",
+      "apps/stackd/bundle/**",
       ".claude/**"
     ]
   },

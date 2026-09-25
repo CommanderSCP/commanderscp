@@ -7221,6 +7221,564 @@ export const zPutScannerAssignmentResponse = z.object({
 /**
  * Success
  */
+export const zGetStackResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        purgeGeneration: z.int().gte(0).lte(9007199254740991),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zPutStackBackendResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        purgeGeneration: z.int().gte(0).lte(9007199254740991),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zPurgeStackBackendResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        purgeGeneration: z.int().gte(0).lte(9007199254740991),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zPutStackSettingsResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        purgeGeneration: z.int().gte(0).lte(9007199254740991),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zRequestStackUpgradeResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        purgeGeneration: z.int().gte(0).lte(9007199254740991),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zGetStackDiagnosticsResponse = z.object({
+    generatedAt: z.string(),
+    stack: z.object({
+        settings: z.object({
+            updatePolicy: z.enum(['automatic', 'manual']),
+            upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+        }),
+        controller: z.object({
+            release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastSeenAt: z.string().nullable(),
+            reporting: z.boolean(),
+            observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+        }),
+        backends: z.array(z.object({
+            backend: z.enum([
+                'argocd',
+                'argo-workflows',
+                'argo-rollouts',
+                'argo-events',
+                'gitea'
+            ]),
+            enabled: z.boolean(),
+            sizeTier: z.enum([
+                'small',
+                'medium',
+                'large'
+            ]),
+            purgeGeneration: z.int().gte(0).lte(9007199254740991),
+            status: z.object({
+                phase: z.enum([
+                    'installing',
+                    'ready',
+                    'degraded',
+                    'upgrading',
+                    'failed',
+                    'removing',
+                    'disabled'
+                ]),
+                runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+                targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+                lastError: z.string().max(2000).nullable(),
+                needs: z.array(z.object({
+                    code: z.enum([
+                        'infra-state-backend',
+                        'infra-runner-image',
+                        'rpm-builder-image',
+                        'upgrade-approval',
+                        'upgrade-rolled-back',
+                        'data-retained',
+                        'state-integrity'
+                    ]),
+                    message: z.string().min(1).max(500)
+                })).max(20),
+                observedAt: z.string()
+            }).nullable()
+        }))
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        detail: z.array(z.string())
+    }))
+});
+
+/**
+ * Success
+ */
+export const zGetStackSpecResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        purgeGeneration: z.int().gte(0).lte(9007199254740991)
+    })),
+    integrity: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        lastGoodSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+        inventorySha256: z.string().regex(/^[0-9a-f]{64}$/).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zPutStackStatusResponse = z.void();
+
+/**
+ * Success
+ */
+export const zGetInstanceOperatorSelfResponse = z.object({
+    holdsRole: z.boolean()
+});
+
+/**
+ * Success
+ */
+export const zListInstanceOperatorsResponse = z.object({
+    items: z.array(z.object({
+        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        username: z.string(),
+        grantedBy: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        }),
+        grantedAt: z.string(),
+        revokedAt: z.string().nullable(),
+        revokedBy: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        }).nullable()
+    })),
+    callerHoldsRole: z.boolean()
+});
+
+/**
+ * Success
+ */
+export const zGrantInstanceOperatorResponse = z.object({
+    id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    username: z.string(),
+    grantedBy: z.object({
+        mechanism: z.enum([
+            'session-role',
+            'credential',
+            'bootstrap-env-token',
+            'install'
+        ]),
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        username: z.string().nullable(),
+        credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }),
+    grantedAt: z.string(),
+    revokedAt: z.string().nullable(),
+    revokedBy: z.object({
+        mechanism: z.enum([
+            'session-role',
+            'credential',
+            'bootstrap-env-token',
+            'install'
+        ]),
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        username: z.string().nullable(),
+        credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }).nullable()
+});
+
+/**
+ * Success
+ */
+export const zRevokeInstanceOperatorResponse = z.object({
+    id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    username: z.string(),
+    grantedBy: z.object({
+        mechanism: z.enum([
+            'session-role',
+            'credential',
+            'bootstrap-env-token',
+            'install'
+        ]),
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        username: z.string().nullable(),
+        credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }),
+    grantedAt: z.string(),
+    revokedAt: z.string().nullable(),
+    revokedBy: z.object({
+        mechanism: z.enum([
+            'session-role',
+            'credential',
+            'bootstrap-env-token',
+            'install'
+        ]),
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        username: z.string().nullable(),
+        credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }).nullable()
+});
+
+/**
+ * Success
+ */
+export const zListInstanceAuditEventsResponse = z.object({
+    items: z.array(z.object({
+        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        seq: z.int().gte(-9007199254740991).lte(9007199254740991),
+        action: z.string(),
+        actor: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        }),
+        subject: z.string().nullable(),
+        detail: z.record(z.string(), z.unknown()),
+        requestId: z.string(),
+        occurredAt: z.string(),
+        prevHash: z.string(),
+        rowHash: z.string()
+    })),
+    chainValid: z.boolean(),
+    brokenAt: z.string().nullable()
+});
+
+/**
+ * Success
+ */
 export const zGetScanDbStatusResponse = z.object({
     cacheConfigured: z.boolean(),
     present: z.boolean(),

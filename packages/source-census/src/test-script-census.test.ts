@@ -20,7 +20,9 @@ const INTEGRATION_FLAG_ALLOWLIST: Record<string, string> = {
     "M27 — docker-backed suite (lockdown, SSTI closure, catalog); a shard may draw zero files",
   "@scp/plugin-managed-scan": "single-file suite; the other shard legitimately draws zero files",
   "@scp/runner-launcher":
-    "single-file suite (reaper.integration.test.ts, M23.1 phase 4); the other shard legitimately draws zero files"
+    "single-file suite (reaper.integration.test.ts, M23.1 phase 4); the other shard legitimately draws zero files",
+  "@scp/stackd":
+    "M29.4 — single-file suite (image.integration.test.ts); the other shards legitimately draw zero files"
 };
 
 /** `test:integration` scripts that are allowed to have no integration test file at all today. */

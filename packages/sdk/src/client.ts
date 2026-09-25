@@ -317,7 +317,21 @@ import {
   // The live event stream (`GET /events/stream`) — a generated SSE operation like any other
   // generated operation, `responseValidator` included, since the SSE API-parity work declared it
   // in the contract.
-  streamEvents as streamEventsRequest
+  streamEvents as streamEventsRequest,
+  // M29.4 — the Standard Stack (ADR-0058).
+  getStack as getStackRequest,
+  putStackBackend as putStackBackendRequest,
+  putStackSettings as putStackSettingsRequest,
+  requestStackUpgrade as requestStackUpgradeRequest,
+  getStackDiagnostics as getStackDiagnosticsRequest,
+  getStackSpec as getStackSpecRequest,
+  putStackStatus as putStackStatusRequest,
+  purgeStackBackend as purgeStackBackendRequest,
+  getInstanceOperatorSelf as getInstanceOperatorSelfRequest,
+  listInstanceOperators as listInstanceOperatorsRequest,
+  grantInstanceOperator as grantInstanceOperatorRequest,
+  revokeInstanceOperator as revokeInstanceOperatorRequest,
+  listInstanceAuditEvents as listInstanceAuditEventsRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -528,7 +542,18 @@ import type {
   ArgoOpsPinRequest,
   ArgoOpsPinView,
   InfrastructureMembershipDiff,
-  ObservedMember
+  ObservedMember,
+  StackBackend,
+  StackView,
+  StackDiagnostics,
+  StackSpecDocument,
+  PutStackBackendRequest,
+  PutStackSettingsRequest,
+  PutStackStatusRequest,
+  InstanceOperatorGrant,
+  InstanceOperatorGrantList,
+  InstanceAuditEventList,
+  CreateInstanceOperatorGrantRequest
 } from "@scp/schemas";
 import { ScpApiError, ScpResponseValidationError } from "./errors.js";
 import { installResponseValidationErrors } from "./response-validation.js";
@@ -544,6 +569,11 @@ interface ApiResult<TData> {
   data?: TData;
   error?: unknown;
   response?: Response;
+}
+
+/** The operator header when a credential is given; nothing when the session carries the role. */
+function operatorHeaders(operatorToken: string | undefined): Record<string, string> {
+  return operatorToken ? { "x-scp-operator-token": operatorToken } : {};
 }
 
 function unwrap<TData>(result: ApiResult<TData>): TData {
@@ -2191,6 +2221,123 @@ export class ScpClient {
         client: this.client,
         body: req,
         headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    }
+  };
+
+  /**
+   * M29.4 — the Standard Stack (ADR-0058). `get` is an ordinary session read. Every change needs
+   * INSTANCE AUTHORITY: the instance-operator role on this client's session (owner decision
+   * 2026-09-25 — the Web UI uses this, holding no credential), or a deployment operator credential
+   * passed as `operatorToken` (scripts, the CLI with `--operator-token`). `spec` and `putStatus`
+   * are the stack controller's two doors: it holds its own credential and no session.
+   */
+  readonly stack = {
+    get: async (): Promise<StackView> => {
+      const result = await getStackRequest({ client: this.client });
+      return unwrap(result);
+    },
+    putBackend: async (
+      backend: StackBackend,
+      req: PutStackBackendRequest,
+      operatorToken?: string
+    ): Promise<StackView> => {
+      const result = await putStackBackendRequest({
+        client: this.client,
+        path: { backend },
+        body: req,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    purge: async (backend: StackBackend, operatorToken?: string): Promise<StackView> => {
+      const result = await purgeStackBackendRequest({
+        client: this.client,
+        path: { backend },
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    putSettings: async (
+      req: PutStackSettingsRequest,
+      operatorToken?: string
+    ): Promise<StackView> => {
+      const result = await putStackSettingsRequest({
+        client: this.client,
+        body: req,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    requestUpgrade: async (operatorToken?: string): Promise<StackView> => {
+      const result = await requestStackUpgradeRequest({
+        client: this.client,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    diagnostics: async (operatorToken?: string): Promise<StackDiagnostics> => {
+      const result = await getStackDiagnosticsRequest({
+        client: this.client,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    spec: async (operatorToken: string): Promise<StackSpecDocument> => {
+      const result = await getStackSpecRequest({
+        client: this.client,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    putStatus: async (req: PutStackStatusRequest, operatorToken: string): Promise<void> => {
+      const result = await putStackStatusRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrapVoid(result);
+    }
+  };
+
+  /** M29.4 — the instance-operator ROLE (owner decision 2026-09-25): who holds it, grant, revoke,
+   *  and the instance audit chain. Same authority rule as `stack`'s changes. */
+  readonly instanceOperators = {
+    self: async (): Promise<boolean> => {
+      const result = await getInstanceOperatorSelfRequest({ client: this.client });
+      return unwrap(result).holdsRole;
+    },
+    list: async (operatorToken?: string): Promise<InstanceOperatorGrantList> => {
+      const result = await listInstanceOperatorsRequest({
+        client: this.client,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    grant: async (
+      req: CreateInstanceOperatorGrantRequest,
+      operatorToken?: string
+    ): Promise<InstanceOperatorGrant> => {
+      const result = await grantInstanceOperatorRequest({
+        client: this.client,
+        body: req,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    revoke: async (grantId: string, operatorToken?: string): Promise<InstanceOperatorGrant> => {
+      const result = await revokeInstanceOperatorRequest({
+        client: this.client,
+        path: { grantId },
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    auditEvents: async (operatorToken?: string): Promise<InstanceAuditEventList> => {
+      const result = await listInstanceAuditEventsRequest({
+        client: this.client,
+        headers: operatorHeaders(operatorToken)
       });
       return unwrap(result);
     }

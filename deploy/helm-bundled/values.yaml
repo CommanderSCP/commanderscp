@@ -375,6 +375,11 @@ bundledExecutor:
     # install (persisted across upgrade via lookup). SCP only ever holds the SCOPED token derived
     # from this account at runtime, never the password.
     adminPassword: ""
+    # Gitea's generate-once SECRET_KEY and INTERNAL_TOKEN. Empty ⇒ random per install (persisted via
+    # lookup on an in-cluster `helm upgrade`). The stack controller renders with `helm template`,
+    # where lookup sees nothing, so it passes the LIVE values back here to keep them from rotating.
+    secretKey: ""
+    internalToken: ""
     # The Gitea admin account SCP creates + coordinates through. The auto-wire hook basic-auths as
     # this account and mints a SCOPED (least-privilege, non-admin) API token, stored as an SCP secret.
     scpAccount: scp-gitea-admin

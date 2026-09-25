@@ -205,6 +205,9 @@ importers:
       '@scp/source-census':
         specifier: workspace:*
         version: link:../../packages/source-census
+      '@scp/stackd':
+        specifier: workspace:*
+        version: link:../stackd
       '@scp/test-tmpdir':
         specifier: workspace:*
         version: link:../../packages/test-tmpdir
@@ -232,6 +235,34 @@ importers:
       tsx:
         specifier: ^4.19.0
         version: 4.23.0
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  apps/stackd:
+    dependencies:
+      '@scp/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@scp/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+      zod:
+        specifier: ^4.0.0
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.1
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
@@ -949,6 +980,12 @@ importers:
       '@scp/runner-launcher':
         specifier: workspace:*
         version: link:../../packages/runner-launcher
+      '@scp/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@scp/stackd':
+        specifier: workspace:*
+        version: link:../../apps/stackd
       yaml:
         specifier: ^2.9.0
         version: 2.9.0

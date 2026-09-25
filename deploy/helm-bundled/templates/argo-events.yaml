@@ -7,6 +7,12 @@
 # commanderscp.renderVendoredBackend, with only the controller image retargeted. Event sources/
 # sensors defined here can POST to SCP's change-source webhook — feeding the observe() path (M10.2)
 # for domains that can't be webhooked directly by their upstream systems.
+#
+# NAMESPACE-SCOPED (#421 review). Upstream binds `argo-events-sa` cluster-wide to a role that
+# creates pods, deployments and secrets — in EVERY namespace, the stack controller's included. SCP's
+# event sources and sensors live here, so the controller runs `--namespaced` on this namespace and
+# its role is bound by a RoleBinding here only (bindInNamespace). What that gives up: EventSources /
+# Sensors in other namespaces are not reconciled by the bundled controller (none ship).
 # =============================================================================================
 {{- include "commanderscp.renderVendoredBackend" (dict
     "ctx" .
@@ -17,5 +23,7 @@
       (list "quay.io/argoproj/argo-events:v1.9.10" $e.image)
     )
     "resources" $e.resources
+    "bindInNamespace" (list "argo-events-binding")
+    "containerArgs" (dict "controller-manager" (list "--namespaced" (printf "--managed-namespace=%s" $e.namespace)))
   ) }}
 {{- end }}

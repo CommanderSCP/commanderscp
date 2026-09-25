@@ -6,7 +6,17 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../../packages/runner-launcher" },
-    { "path": "../../packages/plugins/argo-workflows" }
+    {
+      "path": "../../packages/runner-launcher"
+    },
+    {
+      "path": "../../packages/plugins/argo-workflows"
+    },
+    {
+      "path": "../../apps/stackd"
+    },
+    {
+      "path": "../../packages/schemas"
+    }
   ]
 }

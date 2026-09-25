@@ -12,6 +12,8 @@
   "dependencies": {
     "@scp/plugin-argo-workflows": "workspace:*",
     "@scp/runner-launcher": "workspace:*",
+    "@scp/schemas": "workspace:*",
+    "@scp/stackd": "workspace:*",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
