@@ -24,25 +24,26 @@
 # from Docker Hub on a cache miss (charter principle 5, air-gap CI). No feature here needs it.
 
 ARG NODE_IMAGE=docker.io/library/node@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284
-ARG HELM_PINNED_ARCHIVE=helm-v3.16.4-linux-amd64.tar.gz
-ARG HELM_PINNED_SHA256=fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179
+ARG HELM_PINNED_VERSION=v3.20.2
+ARG HELM_TARBALL_SHA256=258e830a9e613c8a7a302d6059b4bb3b9758f2f3e1bb8ea0d707ce10a9a72fea
 
 # ---------------------------------------------------------------------------------------------
-# THE PINNED HELM BINARY (tools/helm/pin.env). Fetched by ARCHIVE NAME + verified against the
-# CHECKSUM below BEFORE extraction — Helm publishes no first-party container image to `COPY
-# --from=` the way cosign/skopeo/OpenTofu's pins do (see tools/helm/pin.env's own header for why
-# this is a tarball+checksum pin rather than a digest-pinned image). This stage is the ONLY place
-# in the whole build that reaches the network — the runtime stage below never does.
+# THE PINNED HELM BINARY (tools/helm/pin.env — shared with apps/stackd's pin, one source of
+# truth). Fetched by VERSION + verified against the CHECKSUM below BEFORE extraction — Helm
+# publishes no first-party container image to `COPY --from=` the way cosign/skopeo/OpenTofu's
+# pins do (see tools/helm/pin.env's own header for why this is a tarball+checksum pin rather than
+# a digest-pinned image). This stage is the ONLY place in the whole build that reaches the
+# network — the runtime stage below never does.
 # ---------------------------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS helm-fetch
-ARG HELM_PINNED_ARCHIVE
-ARG HELM_PINNED_SHA256
+ARG HELM_PINNED_VERSION
+ARG HELM_TARBALL_SHA256
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 RUN set -eu; \
-    curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/${HELM_PINNED_ARCHIVE}"; \
-    echo "${HELM_PINNED_SHA256}  /tmp/helm.tgz" | sha256sum -c -; \
+    curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-${HELM_PINNED_VERSION}-linux-amd64.tar.gz"; \
+    echo "${HELM_TARBALL_SHA256}  /tmp/helm.tgz" | sha256sum -c -; \
     tar -xzf /tmp/helm.tgz -C /tmp; \
     mkdir -p /helm-bin; \
     mv /tmp/linux-amd64/helm /helm-bin/helm; \

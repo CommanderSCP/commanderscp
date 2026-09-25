@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-bundle/
+# scp-stackd's esbuild output (`pnpm --filter @scp/stackd bundle`) — built into its image only.
+apps/stackd/bundle/
 .turbo/
 *.log
 .env

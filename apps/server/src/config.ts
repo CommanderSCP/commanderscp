@@ -273,6 +273,18 @@ export function loadFederationServerMtlsConfig(
   return { caFile, certFile, keyFile, crlFile, crlHardFailOnExpiry, ca, cert, key, crl };
 }
 
+/** `scp_operator` at the runtime connection's address, with a generated password (M29.4). */
+export function operatorUrlFromPassword(
+  runtimeDatabaseUrl: string,
+  password: string | undefined
+): string | undefined {
+  if (!password || password.trim() === "") return undefined;
+  const url = new URL(runtimeDatabaseUrl);
+  url.username = "scp_operator";
+  url.password = encodeURIComponent(password.trim());
+  return url.toString();
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const port = Number(env.PORT ?? 8080);
   const host = env.HOST ?? "0.0.0.0";
@@ -289,9 +301,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     runtimeDatabaseUrl: env.SCP_RUNTIME_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl),
     pgBossDatabaseUrl:
       env.SCP_PGBOSS_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl, "scp_pgboss"),
-    // Not derived like the two above, and the reason why. See docs/server.md §51.
+    // Not derived like the two above, and the reason why. See docs/server.md §51. The one derived
+    // form (M29.4): a chart-GENERATED `SCP_OPERATOR_DATABASE_PASSWORD`, which the migrations Job
+    // provisions (`provisionOperatorRole`) before any pod uses it — the runtime URL's host, port
+    // and database with the user and password swapped, so the chart never needs to know the host.
     operatorDatabaseUrl:
-      env.SCP_OPERATOR_DATABASE_URL ?? (skipMigrations ? undefined : databaseUrl),
+      env.SCP_OPERATOR_DATABASE_URL ??
+      operatorUrlFromPassword(
+        env.SCP_RUNTIME_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl),
+        env.SCP_OPERATOR_DATABASE_PASSWORD
+      ) ??
+      (skipMigrations ? undefined : databaseUrl),
     role: (env.SCP_ROLE as ServerConfig["role"] | undefined) ?? "all",
     federationRole: loadFederationRole(env),
     // Whether the operator SET it, kept beside the value it resolved to — see the field's doc.

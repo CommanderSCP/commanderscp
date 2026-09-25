@@ -5,6 +5,7 @@ import { AdminDependenciesPage } from "./routes/admin-dependencies";
 import { AdminGovernancePage } from "./routes/admin-governance";
 import { AdminDecisionsPage } from "./routes/admin-decisions";
 import { AdminAuditPage } from "./routes/admin-audit";
+import { AdminStackPage } from "./routes/admin-stack";
 
 /** THE ROUTE TABLE STILL RESOLVES THE URLS OTHER THINGS DEPEND ON. See docs/web.md §147. */
 
@@ -65,7 +66,8 @@ describe("router: URLs other code depends on still resolve", () => {
       "/admin/decisions",
       "both nav tables' Admin › Decisions entry + the object-page 'Decisions about this object' link (registry-detail.tsx)"
     ],
-    ["/admin/audit", "both nav tables' Admin › Audit entry — the hash-chained audit log"]
+    ["/admin/audit", "both nav tables' Admin › Audit entry — the hash-chained audit log"],
+    ["/admin/stack", "both nav tables' Admin › Stack entry — the Standard Stack (M29.4)"]
   ])("resolves %s — needed by %s", (url) => {
     expect(resolves(url)).toBe(true);
   });
@@ -125,6 +127,12 @@ describe("router: URLs other code depends on still resolve", () => {
     const audit = registeredComponents().find((r) => r.path === "/admin/audit");
     expect(audit?.component, "the /admin/audit route must exist").toBeDefined();
     expect(audit?.component).toBe(AdminAuditPage);
+  });
+
+  it("`/admin/stack` renders AdminStackPage (the URL AND the view)", () => {
+    const stack = registeredComponents().find((r) => r.path === "/admin/stack");
+    expect(stack?.component, "the /admin/stack route must exist").toBeDefined();
+    expect(stack?.component).toBe(AdminStackPage);
   });
 
   it("`/components/{id}/dependencies` renders ComponentDependenciesPage (the URL AND the view — a registered path pointed at another page is the same break)", () => {

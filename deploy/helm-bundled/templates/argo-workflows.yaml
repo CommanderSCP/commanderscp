@@ -14,6 +14,13 @@
 # Helm's 5 MB per-file limit), so it is vendored SPLIT into 4 ordered <5 MB parts (their
 # concatenation is byte-for-byte the original, sha256
 # 4e7112cd10dbb5a03c33653cda7509bdb8e876dcc64cf050c4c387aa07bf8524) and reassembled here.
+#
+# NAMESPACE-SCOPED (#421 review). Upstream binds the workflow-controller's `argo` and argo-server's
+# SAs cluster-wide; `argo` creates pods in every namespace — the stack controller's included. Every
+# catalog template SCP ships, every pin and every binding the bundle auto-wires name THIS namespace,
+# so both run `--namespaced --managed-namespace={{ $w.namespace }}` and their roles are bound here
+# only (bindInNamespace). What that gives up, deliberately: Workflows in other namespaces, and
+# ClusterWorkflowTemplates, are not run by the BUNDLED instance (a BYO Argo Workflows is unaffected).
 # =============================================================================================
 {{/* THE PART COUNT IS DERIVED, NEVER HARDCODED (2026-09-25 review, finding 7). A hardcoded list of
      four names silently drops any part a future re-vendor adds (upstream's install.yaml grows past
@@ -60,7 +67,10 @@
       (list $w.vendoredControllerImage $w.controllerImage)
     )
     "resources" $w.resources
-    "containerArgs" (dict "argo-server" (list (printf "--tls-certificate-secret-name=%s" $w.tlsSecretName)))
+    "containerArgs" (dict
+      "argo-server" (list (printf "--tls-certificate-secret-name=%s" $w.tlsSecretName) "--namespaced" (printf "--managed-namespace=%s" $w.namespace))
+      "workflow-controller" (list "--namespaced" (printf "--managed-namespace=%s" $w.namespace)))
+    "bindInNamespace" (list "argo-binding" "argo-server-binding")
   ) }}
 
 ---

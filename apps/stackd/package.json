@@ -1,0 +1,28 @@
+{
+  "name": "@scp/stackd",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "bundle": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=bundle/stackd.mjs --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
+    "dev": "tsc -b -w",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests ${SCP_INTEGRATION_SHARD:-}"
+  },
+  "dependencies": {
+    "@scp/schemas": "workspace:*",
+    "@scp/sdk": "workspace:*",
+    "yaml": "^2.9.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.28.1",
+    "typescript": "~5.8.0",
+    "vitest": "^3.0.0"
+  }
+}

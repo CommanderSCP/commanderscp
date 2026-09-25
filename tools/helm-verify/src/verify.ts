@@ -9,6 +9,7 @@ import { parseAllDocuments } from "yaml";
 import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runner-launcher";
 import { opsTemplateShapeProblems } from "@scp/plugin-argo-workflows";
 import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
+import { verifyStackController } from "./stackd.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
@@ -1195,8 +1196,13 @@ function verifySocketInvariantMatrix(): void {
       !text.includes("SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH"),
       `[${label}] deploy/helm/${file} plumbs SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH — that variable makes the runner Job mount a host directory, and it is deliberately reachable only from the kind harness`
     );
-    /** M23.6 CLAUSE 5, WIDENED. See docs/helm-verify.md §16. */
-    for (const clusterKind of ["ClusterRole", "ClusterRoleBinding"]) {
+    /** M23.6 CLAUSE 5, WIDENED. See docs/helm-verify.md §16. ONE file is exempt, by name: the
+     *  stack controller's RBAC (M29.4, ADR-0058 E1), which is cluster-scoped by necessity, renders
+     *  only under `stackd.enabled`, and is held to its own assertions in ./stackd.ts instead. */
+    const stackdException =
+      file === "templates/stackd-rbac.yaml" &&
+      text.trimStart().startsWith("{{- if .Values.stackd.enabled }}");
+    for (const clusterKind of stackdException ? [] : ["ClusterRole", "ClusterRoleBinding"]) {
       const emitted = text
         .split("\n")
         .filter((line) => !/^\s*#/.test(line))
@@ -2348,16 +2354,29 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   }
 
   // Bundled backends now live in a separate chart. See docs/helm-verify.md §26.
-  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events", "scp-gitea"];
+  // scp-argo-rollouts was missing from this list until M29.4 added the fifth backend namespace to
+  // the main chart's own renders; the list is every namespace deploy/helm-bundled installs into.
+  const bundledNamespaces = [
+    "scp-argocd",
+    "scp-argo-workflows",
+    "scp-argo-rollouts",
+    "scp-argo-events",
+    "scp-gitea"
+  ];
   // The ONLY main-chart resources allowed in a bundled namespace are the auto-wire hooks' tiny
   // cross-namespace RBAC (a Role + RoleBinding in scp-argocd / scp-gitea, to read the backend's
-  // admin secret) — identified by the *-autowire component labels. Anything else means a VENDORED
-  // backend (Deployment/CRD/ConfigMap/…) crept back into the release-stored main chart.
+  // admin secret) — identified by the *-autowire component labels — and the stack controller's
+  // per-namespace RoleBinding (M29.4: its namespaced rights exist only there; ./stackd.ts pins it).
+  // Anything else means a VENDORED backend (Deployment/CRD/ConfigMap/…) crept back into the
+  // release-stored main chart.
   const autowireComponents = new Set(["argocd-autowire", "gitea-autowire"]);
   const strayBundled = docs.filter(
     (d) =>
       bundledNamespaces.includes(d.metadata?.namespace ?? "") &&
-      !autowireComponents.has(d.metadata?.labels?.["app.kubernetes.io/component"] ?? "")
+      !autowireComponents.has(d.metadata?.labels?.["app.kubernetes.io/component"] ?? "") &&
+      !(
+        d.kind === "RoleBinding" && d.metadata?.labels?.["app.kubernetes.io/component"] === "stackd"
+      )
   );
   assert(
     strayBundled.length === 0,
@@ -2745,7 +2764,7 @@ function verifyBundledChart(docs: K8sDoc[]): void {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   // SCP_HELM_VERIFY selects what a missing helm MEANS (2026-08-31). See docs/helm-verify.md §31.
   const mode = process.env["SCP_HELM_VERIFY"] ?? "";
   if (mode !== "" && mode !== "skip" && mode !== "require") {
@@ -4264,6 +4283,28 @@ function main(): void {
   verifyRpmCatalogTemplate();
   verifyInfraCatalogTemplates();
 
+  // M29.4 — the stack controller: hardened like every workload, and its one exception to the
+  // no-ClusterRole rule held to its own assertions (./stackd.ts).
+  console.log("helm-verify: M29.4 stack controller — rendering stackd.enabled=true...");
+  verifyRender(
+    "stackd",
+    renderChart("verify-stackd", [
+      "--set",
+      "stackd.enabled=true",
+      "--set",
+      "networkPolicy.enabled=true"
+    ])
+  );
+  for (const note of await verifyStackController({
+    repoRoot: path.resolve(__dirname, "../../.."),
+    chartDir: CHART_DIR,
+    bundledChartDir: BUNDLED_CHART_DIR,
+    renderChart,
+    fail
+  })) {
+    console.log(note);
+  }
+
   if (failures.length > 0) {
     console.error(`\nhelm-verify: ${failures.length} assertion(s) FAILED:\n`);
     for (const f of failures) console.error(`  - ${f}`);
@@ -4273,4 +4314,7 @@ function main(): void {
   console.log("\nhelm-verify: all hardened-defaults assertions passed.");
 }
 
-main();
+main().catch((err: unknown) => {
+  console.error("helm-verify: FATAL", err);
+  process.exit(1);
+});

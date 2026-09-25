@@ -117,6 +117,15 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
     expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/audit");
   });
 
+  /** Admin › Stack (M29.4, ADR-0058) — the Standard Stack this instance runs. Per instance, so the
+   *  outpost table carries it too (pinned below). */
+  it("links to Admin › Stack (/admin/stack), under the Admin section", () => {
+    expect(navHrefs(html)).toContain("/admin/stack");
+    expect(html).toContain(">Stack</a>");
+    const adminSection = COMMANDER_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/stack");
+  });
+
   /** G5 (outpost-ui.md §4 close) — "Setup" lives under the pre-existing FEDERATION section
    *  (with Outposts and Federation status), not a new heading; both survive alongside it. */
   it("links to the setup landing, under the pre-existing Federation section", () => {
@@ -231,6 +240,12 @@ describe("app nav: the OUTPOST site is the small one (outpost-ui.md §9)", () =>
     expect(adminSection?.entries.map((e) => e.to)).toEqual(
       expect.arrayContaining(["/admin/decisions", "/admin/audit"])
     );
+  });
+
+  it("carries Admin › Stack (an outpost runs its own stack)", () => {
+    expect(hrefs).toContain("/admin/stack");
+    const adminSection = OUTPOST_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/stack");
   });
 
   it("is a strict SUBSET of the commander site's destinations (plus nothing new)", () => {

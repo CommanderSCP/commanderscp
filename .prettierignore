@@ -6,6 +6,7 @@ coverage
 drizzle
 packages/sdk/src/generated
 apps/web/dist
+apps/stackd/bundle
 pnpm-lock.yaml
 tools/openapi/openapi.v1.json
 

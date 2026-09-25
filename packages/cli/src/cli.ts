@@ -130,6 +130,7 @@ import {
 } from "@scp/coordination-as-code";
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, resolveLoginBaseUrl } from "./client-factory.js";
+import { registerInstanceOperatorCommands, registerStackCommands } from "./stack-cli.js";
 import { readServiceExportSpec } from "./estate-reader.js";
 import { discoveryRequestForExecutionSystem, groupDiscoveryProposal } from "./scaffold-reader.js";
 import { promptLine } from "./prompt.js";
@@ -7611,6 +7612,10 @@ export function buildProgram(): Command {
         printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
+
+  // M29.4 — the Standard Stack (ADR-0058).
+  registerStackCommands(program);
+  registerInstanceOperatorCommands(program);
 
   return program;
 }

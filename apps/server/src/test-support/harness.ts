@@ -12,6 +12,11 @@ import { ScpClient } from "@scp/sdk";
 import type { CreateComponentRequest, GraphObject } from "@scp/schemas";
 import { loadConfig } from "../config.js";
 import { createDb, createPool } from "../db/client.js";
+import {
+  deriveRuntimeDatabaseUrl,
+  provisionOperatorRole,
+  runtimeCredentials
+} from "../db/provision.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changes, roleBindings, roles, users } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
@@ -54,6 +59,24 @@ export function testRuntimeDatabaseUrl(): string {
   return url;
 }
 
+/**
+ * A REAL `scp_operator` login-role URL for this worker's database (M29.4). Grants LOGIN once (the
+ * migrations leave the role NOLOGIN) with the superuser's password — the same password every
+ * caller derives, so concurrent workers agree rather than clobber. Use it wherever a test must
+ * prove an operator write holds its GRANT and RLS policy, which the superuser default cannot.
+ */
+export async function testOperatorDatabaseUrl(): Promise<string> {
+  const url = deriveRuntimeDatabaseUrl(testDatabaseUrl(), "scp_operator");
+  const admin = new pg.Pool({ connectionString: testDatabaseUrl(), max: 1 });
+  try {
+    const creds = runtimeCredentials(url);
+    await provisionOperatorRole(admin, creds.user, creds.password);
+  } finally {
+    await admin.end();
+  }
+  return url;
+}
+
 /** Schema-scoped `scp_pgboss` login-role URL. See docs/test-support.md §10. */
 export function testPgBossDatabaseUrl(): string {
   const url = process.env.TEST_PGBOSS_DATABASE_URL;
@@ -81,6 +104,10 @@ export async function buildTestServer(
      *  device-authorization flow's `verificationUri` is built from. Unset ⇒ the route falls back
      *  to a relative `/device` path (routes/device-flow.ts). */
     publicBaseUrl?: string;
+    /** Sets `SCP_OPERATOR_DATABASE_URL`. Unset, the operator doors write as the harness SUPERUSER,
+     *  which bypasses grants and RLS; a test proving an operator write's grant must set this to a
+     *  real `scp_operator` login (see `testOperatorDatabaseUrl`). */
+    operatorDatabaseUrl?: string;
   } = {}
 ): Promise<TestServer> {
   const config = loadConfig({
@@ -97,7 +124,8 @@ export async function buildTestServer(
     ...(opts.federationRole ? { SCP_FEDERATION_ROLE: opts.federationRole } : {}),
     // M21.7 follow-up: the PROCESS axis. See docs/test-support.md §12.
     ...(opts.role ? { SCP_ROLE: opts.role } : {}),
-    ...(opts.publicBaseUrl ? { SCP_PUBLIC_BASE_URL: opts.publicBaseUrl } : {})
+    ...(opts.publicBaseUrl ? { SCP_PUBLIC_BASE_URL: opts.publicBaseUrl } : {}),
+    ...(opts.operatorDatabaseUrl ? { SCP_OPERATOR_DATABASE_URL: opts.operatorDatabaseUrl } : {})
   });
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
@@ -146,10 +174,13 @@ export async function listenTestServer(
      *  wrongly carries the process axis misbehaves. Note this does NOT stop the caller starting the
      *  loops below: the flags here are independent, exactly as `main.ts`'s are. */
     role?: "all" | "api" | "worker";
+    /** See `buildTestServer`'s option of the same name. */
+    operatorDatabaseUrl?: string;
   } = {}
 ): Promise<ListeningTestServer> {
   const server = await buildTestServer({
     ...(opts.operatorToken ? { operatorToken: opts.operatorToken } : {}),
+    ...(opts.operatorDatabaseUrl ? { operatorDatabaseUrl: opts.operatorDatabaseUrl } : {}),
     ...(opts.federationRole ? { federationRole: opts.federationRole } : {}),
     ...(opts.role ? { role: opts.role } : {})
   });

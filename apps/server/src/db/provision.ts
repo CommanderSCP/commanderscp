@@ -150,6 +150,33 @@ export async function provisionPgBossRole(
   );
 }
 
+/**
+ * Boot-time `scp_operator` provisioning — the follow-up drizzle/0076's header names as owed. Same
+ * compare-and-skip-or-refuse mechanism as the two roles above. Only ever called when the chart
+ * GENERATED the operator connection string (`SCP_PROVISION_OPERATOR_ROLE=1`, M29.4): a deployment
+ * that manages `scp_operator` itself keeps doing so, and a password mismatch there is refused
+ * rather than rotated.
+ */
+export async function provisionOperatorRole(
+  adminPool: pg.Pool,
+  operatorUser: string,
+  operatorPassword: string,
+  options?: { allowPasswordReset?: boolean }
+): Promise<void> {
+  if (operatorUser !== "scp_operator") {
+    throw new Error(
+      `[scpd] refusing to provision '${operatorUser}' as the operator role: the operator connection ` +
+        "must authenticate as `scp_operator`, the role drizzle/0076 gives the instance-tier write grants"
+    );
+  }
+  await ensureManagedRolePassword(
+    adminPool,
+    operatorUser,
+    operatorPassword,
+    options?.allowPasswordReset ?? passwordResetAllowedByDefault()
+  );
+}
+
 /** Derives the runtime. See docs/db.md §24. */
 export function deriveRuntimeDatabaseUrl(
   adminDatabaseUrl: string,

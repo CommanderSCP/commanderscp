@@ -13,6 +13,7 @@ import {
   Puzzle,
   Scale,
   ScrollText,
+  ServerCog,
   Users,
   Waypoints,
   type LucideIcon,
@@ -108,7 +109,10 @@ export const COMMANDER_NAV: NavSection[] = [
       // so both are per-instance facts exactly like Governance above. Pinned in both
       // COMMANDER_NAV and OUTPOST_NAV by app-shell-nav.test.tsx.
       { to: "/admin/decisions", label: "Decisions", icon: FileSearch },
-      { to: "/admin/audit", label: "Audit", icon: ScrollText }
+      { to: "/admin/audit", label: "Audit", icon: ScrollText },
+      // The Standard Stack (M29.4, ADR-0058) — per instance, like the three above, so BOTH
+      // tables carry it. Pinned by app-shell-nav.test.tsx.
+      { to: "/admin/stack", label: "Stack", icon: ServerCog }
     ]
   }
 ];
@@ -140,7 +144,10 @@ export const OUTPOST_NAV: NavSection[] = [
       // Same rule as the commander table above: Decisions and the audit log are per-instance
       // facts, not federation-management, so the outpost carries both too.
       { to: "/admin/decisions", label: "Decisions", icon: FileSearch },
-      { to: "/admin/audit", label: "Audit", icon: ScrollText }
+      { to: "/admin/audit", label: "Audit", icon: ScrollText },
+      // The Standard Stack (M29.4, ADR-0058) — per instance, like the three above, so BOTH
+      // tables carry it. Pinned by app-shell-nav.test.tsx.
+      { to: "/admin/stack", label: "Stack", icon: ServerCog }
     ]
   }
 ];

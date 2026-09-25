@@ -278,10 +278,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
-      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+) — pinned here, not trusted from the runner image"
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
-        with:
-          version: latest
+      # THE PIN (M29.4): tools/helm/pin.env, sha256-verified. The stack controller refuses any helm
+      # but the pin, and helm-verify's stack-controller checks render through it — `latest` would
+      # both fail that check and gate a render production never performs.
+      - name: "Install the pinned Helm (tools/helm/pin.env) — not trusted from the runner image"
+        run: scripts/install-pinned-helm.sh
       - run: pnpm build
       # `require` (2026-08-31): helm ABSENT now FAILS this job instead of skipping. The script's
       # default probe mode cannot tell "nothing regressed" from "nothing ran" — if azure/setup-helm
@@ -334,9 +335,10 @@ jobs:
       - name: Pull each pre-built runner image, or build+push once on a cache miss
         run: |
           build_and_push() {
-            # $3 (dockerfile) is OPTIONAL — every caller but one builds "$context/Dockerfile"
-            # implicitly (plain `docker build -t "$image" "$context"`); scp-runner-dep-vendor is the
-            # one exception (repo-root context, an out-of-tree Dockerfile — see its own call below).
+            # $3 (dockerfile) is OPTIONAL — most callers build "$context/Dockerfile" implicitly
+            # (plain `docker build -t "$image" "$context"`); scp-stackd and scp-runner-dep-vendor
+            # are the exceptions (repo-root context, an out-of-tree Dockerfile — see their own
+            # calls below).
             image="$1"; context="$2"; dockerfile="${3:-}"
             file_args=(); [[ -n "$dockerfile" ]] && file_args=(-f "$dockerfile")
             if docker pull "$image"; then
@@ -347,6 +349,12 @@ jobs:
               docker push "$image"
             fi
           }
+          # M29.4 — scp-stackd, the Standard Stack controller. Built from the REPO ROOT (it bundles
+          # workspace packages) and asked to render every backend with its pinned helm before it is
+          # trusted; `apps/stackd/src/image.integration.test.ts` then asks the pulled artifact what
+          # it carries. Its tag hashes the chart and the helm pin too (runner-image-tags.sh).
+          build_and_push "$SCP_STACKD_IMAGE_REF" . apps/stackd/Dockerfile
+          docker run --rm --network none "$SCP_STACKD_IMAGE_REF" --self-test
           build_and_push "$SCP_RUNNER_SCAN_IMAGE_REF" apps/runner-scan
           build_and_push "$SCP_RUNNER_IAC_IMAGE_REF" apps/runner-iac
           # M21.5 — scp-runner-dep, the isolated editor scp-managed-dep launches per bump. Built and
@@ -651,10 +659,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
-      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+)"
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
-        with:
-          version: latest
+      - name: "Install the pinned Helm (tools/helm/pin.env)"
+        run: scripts/install-pinned-helm.sh
       # FIRST, before anything that pulls an image. Everything below this point — the two pinned CLI
       # installers, the runner-image pulls, and the whole Testcontainers/skopeo test tier — is served
       # from the GHCR mirror job 4d populated, and `seed` is what makes that true: it re-tags each
@@ -671,7 +677,7 @@ jobs:
           # to skip precisely because this job runs `blackhole` below: a skip that ever turned out
           # wrong fails the consumer loudly at pull time instead of quietly reopening the
           # live-upstream hole — see ci-mirror.sh's comment.
-          SCP_SEED_SKIP: kindest/node node
+          SCP_SEED_SKIP: kindest/node node quay.io/argoproj/argo-events
         run: scripts/ci-mirror.sh seed
       - name: Install the PINNED cosign (the same binary the scp image ships)
         # PINNED, not `sigstore/cosign-installer@v3` (M17.3 E1). Two reasons the unpinned network
@@ -720,7 +726,7 @@ jobs:
       - name: Pull the pre-built runner images (in parallel — the pulls share no layers)
         run: |
           pids=""
-          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF" "$SCP_BUILDER_RPM_IMAGE_REF"; do
+          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF" "$SCP_BUILDER_RPM_IMAGE_REF" "$SCP_STACKD_IMAGE_REF"; do
             docker pull "$ref" & pids="$pids $!"
           done
           # `wait` PER PID, not a bare `wait`: a bare one exits 0 even when a pull failed.
@@ -821,10 +827,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
-      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+) — the harness renders the chart's own RBAC"
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
-        with:
-          version: latest
+      - name: "Install the pinned Helm (tools/helm/pin.env) — the harness renders the chart's own RBAC, and the stack controller renders with it"
+        run: scripts/install-pinned-helm.sh
       - name: Install kind (binary only — this job creates its own cluster)
         # PINNED, not `latest`. `tools/ci-mirror/images.list` pins `kindest/node:v1.36.1`, which is
         # kind v0.32.0's default node image; a kind that defaulted elsewhere would either pull an
@@ -852,6 +856,19 @@ jobs:
         # is present (a `skipIf` is how a gate becomes a green job that ran nothing), so it must be
         # reachable from exactly one place — here.
         run: pnpm --filter @scp/runner-launcher test:kind
+      # M29.4 (ADR-0058) — THE STACK CONTROLLER against the same real API server: a real scpd on
+      # Testcontainers Postgres (postgres:16, seeded above), the real controller, the vendored chart
+      # rendered by the pinned helm, and the chart's own stackd RBAC (the harness applied it). The
+      # DoD — enable through the API installs and reaches ready, disable removes, a never-ready
+      # upgrade falls back — is this step. It imports @scp/stackd/@scp/sdk from dist, so build first.
+      - name: Build what the stack controller suite imports
+        run: pnpm exec turbo run build --filter=@scp/server...
+      - name: Drive the stack controller against the real API server (M29.4)
+        run: pnpm --filter @scp/server test:kind
+        env:
+          # Same reason as job 5's: the reaper sidecar is an unmirrored Docker Hub pull, and the
+          # blackhole above would (correctly) fail it.
+          TESTCONTAINERS_RYUK_DISABLED: "true"
       - name: Tear the cluster down
         if: always()
         run: scripts/kind-runner-harness.sh down
@@ -962,7 +979,7 @@ jobs:
       # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
         with:
-          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux quay.io/argoproj/argo-events
           blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m0.sh
@@ -990,7 +1007,7 @@ jobs:
       # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
         with:
-          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux quay.io/argoproj/argo-events
           blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m4.sh
@@ -1020,7 +1037,7 @@ jobs:
       # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
         with:
-          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux quay.io/argoproj/argo-events
           blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m5.sh
@@ -1060,7 +1077,7 @@ jobs:
       # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
         with:
-          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux quay.io/argoproj/argo-events
           blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m6.sh
@@ -1096,7 +1113,7 @@ jobs:
       # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
         with:
-          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux quay.io/argoproj/argo-events
           blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m7.sh
@@ -1180,7 +1197,7 @@ jobs:
       # acquisition below, whose fork-PR fallback build legitimately reaches upstream.
       - uses: ./.github/actions/mirror-seed
         with:
-          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux quay.io/argoproj/argo-events
 
       - name: Compute the same toolchain image tag as the ci-image job
         id: img

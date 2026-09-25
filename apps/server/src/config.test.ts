@@ -47,3 +47,37 @@ describe("loadConfig — publicBaseUrl", () => {
     );
   });
 });
+
+/** M29.4 — the chart-generated `scp_operator` password becomes a connection at the RUNTIME
+ *  connection's address; an explicit URL always wins; nothing generated means nothing derived. */
+describe("loadConfig — operatorDatabaseUrl from a generated password", () => {
+  const runtime = "postgres://scp_app:app-pw@db.internal:5433/scp";
+
+  it("derives scp_operator at the runtime connection's host, port and database", () => {
+    const config = loadConfig({
+      SCP_SKIP_MIGRATIONS: "true",
+      SCP_RUNTIME_DATABASE_URL: runtime,
+      SCP_OPERATOR_DATABASE_PASSWORD: "gen/p@ss"
+    });
+    const url = new URL(config.operatorDatabaseUrl!);
+    expect(url.username).toBe("scp_operator");
+    expect(decodeURIComponent(url.password)).toBe("gen/p@ss");
+    expect(url.host).toBe("db.internal:5433");
+    expect(url.pathname).toBe("/scp");
+  });
+
+  it("an explicit SCP_OPERATOR_DATABASE_URL wins over the generated password", () => {
+    const config = loadConfig({
+      SCP_SKIP_MIGRATIONS: "true",
+      SCP_RUNTIME_DATABASE_URL: runtime,
+      SCP_OPERATOR_DATABASE_URL: "postgres://scp_operator:mine@elsewhere/scp",
+      SCP_OPERATOR_DATABASE_PASSWORD: "gen"
+    });
+    expect(config.operatorDatabaseUrl).toBe("postgres://scp_operator:mine@elsewhere/scp");
+  });
+
+  it("with neither, an api/worker pod (no self-migration) has no operator connection", () => {
+    const config = loadConfig({ SCP_SKIP_MIGRATIONS: "true", SCP_RUNTIME_DATABASE_URL: runtime });
+    expect(config.operatorDatabaseUrl).toBeUndefined();
+  });
+});

@@ -77,7 +77,21 @@ sshd_fixture_hash=$(find tools/sshd-fixture -type f -exec sha256sum {} + | sort 
 # is the whole input.
 builder_rpm_hash=$(find apps/builder-rpm -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)
 
+# scp-stackd (M29.4): the Standard Stack controller. NOT a runner and not built from its own
+# directory alone — it bundles workspace packages and CARRIES the vendored chart and the helm pin
+# (E4: the image IS the release's stack), so every one of those is part of what it is. A chart bump
+# with no controller change must still yield a new image.
+# TRACKED files only: this tag is computed in job 4c (fresh checkout) AND in the integration job
+# (after `pnpm build`), and a build drops dist/, *.tsbuildinfo and .turbo/ into these very paths —
+# a `find` over them made the two jobs disagree and the integration pull 404 (measured, first CI run).
+stackd_hash=$(
+  git ls-files -z apps/stackd packages/schemas packages/sdk deploy/helm-bundled \
+      tools/helm/pin.env tools/node/pin.env pnpm-lock.yaml package.json tsconfig.base.json \
+    | xargs -0 sha256sum | sort | sha256sum | cut -c1-16
+)
+
 echo "SCP_RUNNER_SCAN_IMAGE_REF=${registry}/scp-runner-scan:${scan_hash}"
+echo "SCP_STACKD_IMAGE_REF=${registry}/scp-stackd:${stackd_hash}"
 echo "SCP_RUNNER_IAC_IMAGE_REF=${registry}/scp-runner-iac:${iac_hash}"
 echo "SCP_RUNNER_DEP_IMAGE_REF=${registry}/scp-runner-dep:${dep_hash}"
 echo "SCP_RUNNER_DEP_VENDOR_IMAGE_REF=${registry}/scp-runner-dep-vendor:${dep_vendor_hash}"

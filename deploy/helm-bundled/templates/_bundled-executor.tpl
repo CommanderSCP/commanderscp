@@ -29,13 +29,22 @@ Argo CD / Argo Workflows / Argo Events bundle templates so the 33k-line render l
 Args (dict): ctx (root context `.`), namespace, component (label), manifest (raw yaml string from
 `.Files.Get`), replaces (list of [from, to] pairs), resources (dict: container name -> resource
 block; optional), containerArgs (dict: container name -> list of args APPENDED to the vendored
-ones; optional). Args are appended rather than replaced so upstream's own invocation is preserved
+ones; optional), strategies (dict: Deployment name -> the `spec.strategy` to use instead of
+upstream's; optional — see gitea.yaml for the one caller and why), bindInNamespace (list of
+ClusterRoleBinding names to render as RoleBindings `<name>-in-namespace` in the target namespace
+instead — same roleRef, same subjects; optional — see argo-events.yaml / argo-workflows.yaml). Args are appended rather than replaced so upstream's own invocation is preserved
 and only augmented — a replace would silently drop whatever upstream adds in a later version.
+
+bindInNamespace IS HOW A CLUSTER-WIDE UPSTREAM IDENTITY IS NARROWED TO ITS OWN NAMESPACE (#421
+review): a RoleBinding to a ClusterRole grants that role's rules in the binding's namespace only.
+The caller also runs the component namespace-scoped (`--namespaced`), so it never asks for more.
 */}}
 {{- define "commanderscp.renderVendoredBackend" -}}
 {{- $ns := .namespace -}}
 {{- $res := (.resources | default dict) -}}
 {{- $extraArgs := (.containerArgs | default dict) -}}
+{{- $strategies := (.strategies | default dict) -}}
+{{- $bindHere := (.bindInNamespace | default (list)) -}}
 {{- $raw := .manifest -}}
 {{- range $pair := (.replaces | default (list)) -}}
 {{- $from := index $pair 0 -}}
@@ -54,6 +63,13 @@ and only augmented — a replace would silently drop whatever upstream adds in a
 {{- $out = append $out $t -}}
 {{- else if $kind -}}
 {{- $obj := fromYaml $t -}}
+{{- if and (eq $kind "ClusterRoleBinding") (has ($obj.metadata.name | default "") $bindHere) -}}
+{{- $_ := set $obj "kind" "RoleBinding" -}}
+{{- /* Renamed: upstream Argo Workflows ships a RoleBinding AND a ClusterRoleBinding both called
+       `argo-binding`, and two RoleBindings of one name in one namespace are one object. */ -}}
+{{- $_ := set $obj.metadata "name" (printf "%s-in-namespace" $obj.metadata.name) -}}
+{{- $kind = "RoleBinding" -}}
+{{- end -}}
 {{- if or (eq $kind "ClusterRoleBinding") (eq $kind "RoleBinding") -}}
 {{- $subs := list -}}
 {{- range $s := ($obj.subjects | default (list)) -}}
@@ -64,6 +80,9 @@ and only augmented — a replace would silently drop whatever upstream adds in a
 {{- if eq $kind "RoleBinding" -}}{{- $_ := set $obj.metadata "namespace" $ns -}}{{- end -}}
 {{- else if ne $kind "ClusterRole" -}}
 {{- $_ := set $obj.metadata "namespace" $ns -}}
+{{- end -}}
+{{- if and (eq $kind "Deployment") (index $strategies ($obj.metadata.name | default "")) -}}
+{{- $_ := set $obj.spec "strategy" (index $strategies $obj.metadata.name) -}}
 {{- end -}}
 {{- if or (eq $kind "Deployment") (eq $kind "StatefulSet") (eq $kind "DaemonSet") -}}
 {{- $podSpec := ((($obj.spec).template).spec) -}}
