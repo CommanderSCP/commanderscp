@@ -530,3 +530,42 @@ export const ApplyPlanResponseSchema = z.object({
   summary: PlanDiffSummarySchema
 });
 export type ApplyPlanResponse = z.infer<typeof ApplyPlanResponseSchema>;
+
+/** Releasing a stack's ownership of named rows. See docs/coordination-as-code.md §328. */
+export const StackNameParamSchema = z.object({ stackName: z.string().min(1).max(200) });
+
+export const StackReleaseRelationshipSchema = z.object({
+  typeId: z.string().min(1),
+  fromUrn: UrnSchema,
+  toUrn: UrnSchema
+});
+export type StackReleaseRelationship = z.infer<typeof StackReleaseRelationshipSchema>;
+
+export const ReleaseStackOwnershipRequestSchema = z.object({
+  urns: z
+    .array(UrnSchema)
+    .max(500)
+    .optional()
+    .describe(
+      "Objects to release from the stack. Each must be a LIVE object this stack owns, or the whole " +
+        "request is refused with 409 — there is no silent skip that could mask a typo. There is no " +
+        "'release everything' form: a request naming no objects and no relationships is a 400."
+    ),
+  relationships: z
+    .array(StackReleaseRelationshipSchema)
+    .max(500)
+    .optional()
+    .describe("Relationships to release, by (typeId, fromUrn, toUrn). Same all-or-nothing rule.")
+});
+export type ReleaseStackOwnershipRequest = z.infer<typeof ReleaseStackOwnershipRequestSchema>;
+
+export const ReleaseStackOwnershipResponseSchema = z.object({
+  stackName: z.string(),
+  releasedObjects: z.array(
+    z.object({ id: z.string().uuid(), urn: z.string(), typeId: z.string() })
+  ),
+  releasedRelationships: z.array(
+    z.object({ id: z.string().uuid(), typeId: z.string(), fromUrn: z.string(), toUrn: z.string() })
+  )
+});
+export type ReleaseStackOwnershipResponse = z.infer<typeof ReleaseStackOwnershipResponseSchema>;

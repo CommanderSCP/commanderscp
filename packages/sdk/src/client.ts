@@ -161,6 +161,7 @@ import {
   createPlan as createPlanRequest,
   getPlan as getPlanRequest,
   applyPlan as applyPlanRequest,
+  releaseStackOwnership as releaseStackOwnershipRequest,
   // M3: the Change lifecycle + Decision records (BUILD_AND_TEST.md §8 M3, routes/changes.ts).
   proposeChange as proposeChangeRequest,
   listChanges as listChangesRequest,
@@ -320,6 +321,8 @@ import {
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
+  ReleaseStackOwnershipRequest,
+  ReleaseStackOwnershipResponse,
   AuditEvent,
   AuditEventListResponse,
   AuthConfig,
@@ -1645,6 +1648,22 @@ export class ScpClient {
     },
     apply: async (id: string): Promise<ApplyPlanResponse> => {
       const result = await applyPlanRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    }
+  };
+
+  /** Coordination-as-code STACKS, as opposed to one plan. See docs/coordination-as-code.md §328. */
+  readonly stacks = {
+    /** Releases the stack's ownership of exactly the named rows (all-or-nothing, audited). */
+    release: async (
+      stackName: string,
+      body: ReleaseStackOwnershipRequest
+    ): Promise<ReleaseStackOwnershipResponse> => {
+      const result = await releaseStackOwnershipRequest({
+        client: this.client,
+        path: { stackName },
+        body
+      });
       return unwrap(result);
     }
   };

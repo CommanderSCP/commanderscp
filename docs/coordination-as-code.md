@@ -27,7 +27,8 @@ used to sit inline. Each source file below carries a one-line headline at the si
 - [`apps/server/src/coordination-as-code/plan-diff.ts`](#apps-server-src-iac-plan-diff-ts) — §58–§102
 - [`apps/server/src/coordination-as-code/plans-repo.ts`](#apps-server-src-iac-plans-repo-ts) — §103–§164
 - [`apps/server/src/coordination-as-code/rollout-convergence-repo.ts`](#apps-server-src-iac-rollout-convergence-repo-ts) — §165–§165
-- [`apps/server/src/coordination-as-code/stack-ownership.ts`](#apps-server-src-iac-stack-ownership-ts) — §166–§169
+- [`apps/server/src/coordination-as-code/stack-ownership.ts`](#apps-server-src-iac-stack-ownership-ts) — §166–§169, §329
+- [`apps/server/src/coordination-as-code/stack-release.ts`](#apps-server-src-coordination-as-code-stack-release-ts) — §328, §330–§331
 - [`packages/coordination-as-code/src/behaviors.test.ts`](#packages-iac-src-behaviors-test-ts) — §170–§171
 - [`packages/coordination-as-code/src/behaviors.ts`](#packages-iac-src-behaviors-ts) — §172–§177
 - [`packages/coordination-as-code/src/canonical.ts`](#packages-iac-src-canonical-ts) — §178–§178
@@ -1322,9 +1323,9 @@ Ownership derives from the COMPONENT, exactly as it does for `pipeline_hooks`, `
 
 ## `apps/server/src/coordination-as-code/stack-ownership.ts`
 
-### §166. THE SOLE WRITER OF `managed_by_stack`
+### §166. THE ONE MODULE THAT WRITES `managed_by_stack`, and its two writers
 
-THE SOLE WRITER OF `managed_by_stack` — "a description is not an assertion" (drizzle/0068)
+THE ONE MODULE THAT WRITES `managed_by_stack` on objects and relationships — "a description is not an assertion" (drizzle/0068). It has exactly TWO writers: **stamp** (`stampObjectStackOwnership` / `stampRelationshipStackOwnership`, called by an apply for every row its manifest declares) and **release** (`releaseObjectStackOwnership` / `releaseRelationshipStackOwnership`, called only by the audited `POST /api/v1/stacks/{stackName}/release` door, §328). Until 2026-09-24 it had one, and this header called it "the sole writer"; `stack-ownership-reachability.test.ts` now holds the claim that no other production file writes the column.
 
 ## What this closes
 
@@ -1342,11 +1343,11 @@ DERIVED BY READING THE CODE, NOT REPRODUCED END-TO-END, and flagged as such beca
 
 ## The one rule
 
-**A stack owns exactly the rows its manifest declares, plus the rows it already owned.** Nothing else can put a row in a stack's prune pool, and nothing a request can send takes one out.
+**A stack owns exactly the rows its manifest declares, plus the rows it already owned.** Nothing else can put a row in a stack's prune pool, and the only request that takes one out is an explicit, audited release (§328) by a caller holding the authority to decommission the whole stack (§330) — never a label, a field in an object body, or a side effect of some other write.
 
 Ownership is therefore stamped for every NON-DELETE entry in the diff — `create`, `update` and `noop` alike. `noop` is not an optimisation to skip: a declared row that happens to be byte-identical to what is stored is still a row this stack declares, and leaving it unstamped would make it undeletable by the stack that owns it (the escape direction, arrived at by accident). Each half below is ONE bulk UPDATE whose predicate skips rows already carrying this stack, so an apply that changes no ownership writes no rows — this must not become per-object write amplification on the hottest path IaC has.
 
-Ownership is never CLEARED here. A row leaves a stack by being pruned (which deletes it), and the only other way out would be another stack declaring it — which is a `create`/`update`/`noop` in that stack's diff, i.e. a re-stamp by this same function.
+Ownership is never cleared BY AN APPLY. A row leaves a stack by being pruned (which deletes it), or by being RELEASED (§328). Another stack declaring it is not a way out for objects: since §4 that is refused as theft at plan and at apply, which is exactly why a retired stack's objects were stuck until release existed. (Edges are the exception — see §331's last paragraph.)
 
 ### §167. Stamps the stack onto every object, skipping owned rows
 
@@ -2395,3 +2396,55 @@ The rule is now machine-checked by `@scp/source-census`'s `test-budget-census.te
 ### §327. The hook budget: a second deadline nobody chose
 
 THE HOOK BUDGET, declared for the reason `@scp/source-census`'s `test-budget-census.test.ts` gives in full: vitest's `hookTimeout` is a SECOND, independent deadline whose implicit default (10,000ms) nobody chose, and the only hook cost this repo has ever measured under CI's load profile — `@scp/cli`'s lazy-import warm-up — was 5,400ms against it. 30,000 is 25x the isolated worst case in the unit layer (1,205ms) and half the un-declarable 60,000ms `onTaskUpdate` RPC deadline a synchronous hook would otherwise be free to cross.
+
+## `apps/server/src/coordination-as-code/stack-release.ts`
+
+### §328. RELEASING A STACK'S OWNERSHIP — why the door exists, and the theft it must not become
+
+`POST /api/v1/stacks/{stackName}/release` (SDK `client.stacks.release`, CLI `scp iac release <stack> --urn <urn> [--urn …] [--relationship "<typeId> <fromUrn> <toUrn>" …]`) clears `managed_by_stack` from exactly the named live rows the stack owns. Decided in [ADR-0057](adr/0057-stack-ownership-release.md).
+
+**WHY IT EXISTS.** §4 made cross-stack adoption a refusal: a stack declaring an object another stack owns gets a 409 at plan and again at apply. That is right while the owning stack is alive. But nothing ever cleared the column — an apply only stamps (§166), and a row leaves a stack only by being pruned. So when a stack is RETIRED (its manifest stops being applied, rather than being applied empty), every object it still owns stays owned forever, and no other stack can ever manage it. The live case that prompted this: a retired stack `agentkit-org` still owns a shared deployment-target and a user. Pruning is the wrong tool — it deletes rows other things depend on — and hand-editing the column is exactly the unaudited server-only write drizzle/0068 exists to forbid.
+
+**WHY IT IS DANGEROUS.** Release followed by another stack's adoption IS the takeover §4 refuses, split into two requests. And release on its own is §52's R2 ESCAPE: a row released from a stack is outside its prune pool, so it survives that stack's decommission. Both of those were defects precisely because they were reachable at a weaker authority than the one that authored the stack. So the door is only as safe as its authority bar (§330), and it is:
+
+- **explicit** — it names every row; there is no "release everything" form, and an empty request is a 400;
+- **all-or-nothing** — a named row the stack does not own (unknown, tombstoned, unmanaged, or another stack's) refuses the WHOLE request with a 409 that lists each one and what was found instead. A silent skip would report success for a typo, and the typo's intended target would stay stuck with nothing to say so;
+- **audited** — one hash-chained `stack.release` event per request, in the same transaction, naming the stack and every released URN and edge (principle 6);
+- **D7-gated** — a stack bound to a config source is refused with the same 409 as a direct apply (docs/routes.md §311): its repo's next sync would re-adopt every row it still declares, so the release would be silently undone. Unbind the stack first, which is the act that says it is no longer repo-owned.
+
+**WHAT THE STACK'S OWN NEXT APPLY DOES — measured, not argued (`stack-release.integration.test.ts`).** A released object the manifest STILL declares is unowned, so the next plan marks it `adopted` and the apply re-stamps it: release does not survive a stack that is still being applied, and it says so visibly in the plan rather than silently. A released object the manifest has DROPPED is outside the prune pool, so no delete is proposed for it. If another stack adopted it in between, the releasing stack's next plan is the thief and gets §4's 409 naming the new owner — release is not reversible behind anyone's back.
+
+**NOT RELEASED HERE: `roles` and `role_bindings`.** They carry their own `managed_by_stack` (drizzle/0108), written by `rbac-apply.ts` at row creation, and a retired stack's custom roles are stuck by the same property (`upsertStackManagedRole` refuses a role another stack — or no stack — owns). Releasing them is a different authority — the RBAC doors' subset rule and administrative floor, not object write — so it is left as a named follow-up rather than bolted onto this bar.
+
+### §329. RELEASE — the second writer
+
+`releaseObjectStackOwnership` / `releaseRelationshipStackOwnership` set the column to NULL for the given ids, and only where the row is LIVE and carries THIS stack's name. The predicate is the writer's own contract, not a restatement of the caller's validation: the route validates first, so through the route it is unreachable, and it exists so a future caller that skips validation still cannot clear another stack's ownership or touch a tombstone (the "writer itself" case pins it by calling the writer directly with another stack's row). It returns the count released; the verb refuses if that is not every row it validated, rather than audit a list that is not true.
+
+Nothing else changes: not `labels` (the `scp:managed-by`/`scp:stack` mirror is descriptive and decides nothing, §166 — clearing it would be a tenant-visible write for no decision), not `revision`, not the content hash. The column does not federate, so there is nothing to journal.
+
+### §330. The authority a release requires: what DECOMMISSIONING THE WHOLE STACK would
+
+For every LIVE object the stack owns, the type's apply write permission at that object (`writePermissionFor` — `object:write`, or `policy:write` / `federation:write` for governed and peer-bound types, the same function `prepareApplyChecks` uses); for every LIVE edge it owns, `relationship:write` at both endpoints. That is exactly the set of checks an apply of the stack's EMPTY manifest — its full decommission — would push. Plus the floor every apply already cleared, `object:read` at the org root (`POST /plans`'s own).
+
+**NOT just the released rows, and the reason is §52.** The per-object bar — "you may release what you could delete" — sounds like parity, and it admits the R2 escape: an Operator bound at ONE object holds `object:write` there, so it could release that object and it would survive its stack's decommission. That was a defect when the key was a label, and would be the same defect with an audit row attached. The prune pool is the STACK's decision; the authority to change it is the authority to change the stack. The "escape" case pins this and fails under a per-object bar (mutation m1).
+
+**NOT org admin either.** A team that owns a container holds write on everything beneath it; its stacks live there, so it can release from its own retired stack without asking an org owner (the "container" case). An edge that reaches OUTSIDE the container needs `relationship:write` at the far end too, because decommissioning the stack would delete that edge (the "edges" case, mutation m3).
+
+**CHECKED BEFORE ANY NAMED ROW — OR THE STACK'S CONFIG-SOURCE BINDING — IS READ,** so a caller without the stack's authority gets the same 403 whatever it names and learns nothing about which rows the stack owns or which config source (D7) claims it. (Review of #419: the D7 lookup first ran ahead of the bar, so a Viewer got a 409 naming the config source.) A stack that owns nothing contributes no checks, so the request reaches the ownership validation and 409s — revealing only that the stack owns none of the named rows, which the `object:read` floor already lets the caller see through `POST /plans`.
+
+**THE BAR AND THE RELEASE ARE THE SAME SET OF ROWS — the load-bearing half, found in adversarial review of #419.** The bar enumerates the stack's rows in one statement and the release locks the NAMED rows in a later one; under READ COMMITTED those are two snapshots. Measured probe: a stack owning nothing yields zero checks; a separate connection then commits a legitimate apply that stamps object Z onto the stack; the release, naming Z, cleared it with no authority ever checked for Z. Two parts close it:
+
+- **(a) set membership, which is load-bearing.** `stackReleaseAuthorityChecks` returns the ids it covered, and `releaseStackOwnership` refuses (409, "changed during the release … retry") any named row the stack owns that is not in that set. Nothing is released and nothing is audited.
+- **(b) the bar's read is `FOR UPDATE`.** This pins the rows it covered, so none can be pruned, retyped or moved under the check. It CANNOT block a row stamped onto the stack after the read — `FOR UPDATE` locks existing rows, and Z was not the stack's yet — which is exactly why (a), not (b), is what closes the probe.
+
+The probe is permanent (the "TOCTOU" case: the bar read in an open transaction, a concurrent apply committed through HTTP on another connection, the release refused), and removing (a) turns it red (m11).
+
+### §331. The verb: validate, release, audit — in one transaction
+
+Named object rows are read by URN (unique per org INCLUDING tombstones) with `FOR UPDATE`, so a concurrent apply's stamp cannot move ownership between validation and write. Duplicates in the request collapse. Edges are resolved by `(typeId, fromUrn, toUrn)` through LIVE endpoints.
+
+**TOMBSTONED ROWS ARE REFUSED, not released.** A pruned row keeps its `managed_by_stack` (soft delete), but every reader of the column filters `deleted_at IS NULL` and there is no restore path, so that ownership is inert: releasing it would change nothing anyone can observe, and reporting success for it would hide a request aimed at the wrong row. The 409 says `deleted`.
+
+The audit event is withheld from peers (`subjectDomainLocal`) when any released object — or either endpoint of a released edge — is domain-local, because its reason names URNs (docs/audit.md §4). The local chain records it either way.
+
+**THE EDGE ASYMMETRY THIS DOES NOT FIX.** Cross-stack adoption is refused for OBJECTS only. An edge another stack owns reads as a `noop` in a second stack's diff, and `stampRelationshipStackOwnership`'s `IS DISTINCT FROM` re-stamps it — a silent edge takeover, the §4 property on the other table, pre-existing and out of this door's scope. Consequence here: a retired stack's edges never block anyone, so releasing one is only needed to take it out of that stack's prune pool.

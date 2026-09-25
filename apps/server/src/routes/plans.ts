@@ -5,14 +5,17 @@ import {
   CreatePlanRequestSchema,
   PlanIdParamSchema,
   PlanSchema,
-  ProblemSchema
+  ProblemSchema,
+  ReleaseStackOwnershipRequestSchema,
+  ReleaseStackOwnershipResponseSchema,
+  StackNameParamSchema
 } from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
-import { conflict } from "../errors.js";
+import { badRequest, conflict } from "../errors.js";
 import { commanderOnlyFederationVerdict } from "../dependencies/commander-only.js";
 import { evaluateCliApplyOwnership } from "../config-source/cli-apply-guard.js";
 import { findStackConfigSourceBinding } from "../config-source/config-sources-repo.js";
@@ -25,6 +28,10 @@ import {
   markPlanApplied,
   prepareApplyChecks
 } from "../coordination-as-code/plans-repo.js";
+import {
+  releaseStackOwnership,
+  stackReleaseAuthorityChecks
+} from "../coordination-as-code/stack-release.js";
 
 /** Server-side `@scp/coordination-as-code` plan/apply. See docs/routes.md §310. */
 export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -190,6 +197,82 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
         });
 
         return { plan: applied, summary };
+      });
+      reply.status(200).send(result);
+    }
+  });
+  typed.route({
+    method: "POST",
+    url: "/api/v1/stacks/:stackName/release",
+    schema: {
+      params: StackNameParamSchema,
+      body: ReleaseStackOwnershipRequestSchema,
+      response: {
+        200: ReleaseStackOwnershipResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "releaseStackOwnership",
+        summary:
+          "Release a coordination-as-code stack's ownership of named objects/relationships, so another stack may adopt them",
+        description:
+          "Requires the authority that decommissioning the WHOLE stack would: the type's write permission at every " +
+          "live object the stack owns and relationship:write at both endpoints of every live edge it owns — not just " +
+          "at the rows released (docs/coordination-as-code.md §330). All-or-nothing: a named row the stack does not " +
+          "own (unknown, deleted, unmanaged, or another stack's) refuses the whole request with 409. Audited.",
+        tags: ["plans"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const urns = request.body.urns ?? [];
+      const edges = request.body.relationships ?? [];
+      if (urns.length === 0 && edges.length === 0) {
+        throw badRequest(
+          "a release must name the rows it releases (urns and/or relationships) — there is no 'release everything' form"
+        );
+      }
+      const { stackName } = request.params;
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // The floor every apply already cleared: `POST /plans` requires it.
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: auth.orgId
+        });
+        // BEFORE anything else reads about the stack or the named rows — the D7 binding included — so
+        // a caller without the stack's authority learns nothing. See docs/coordination-as-code.md §330.
+        const authorized = await stackReleaseAuthorityChecks(tx, auth.orgId, stackName);
+        for (const check of authorized.checks) {
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: check.permission,
+            scopeObjectId: check.scopeObjectId
+          });
+        }
+
+        // D7, for the reason it guards apply: the repo's next sync would re-adopt what is released.
+        const ownership = evaluateCliApplyOwnership(
+          await findStackConfigSourceBinding(tx, auth.orgId, stackName)
+        );
+        if (!ownership.allowed) throw conflict(ownership.message);
+
+        return releaseStackOwnership(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          stackName,
+          urns,
+          relationships: edges,
+          authorized
+        });
       });
       reply.status(200).send(result);
     }
